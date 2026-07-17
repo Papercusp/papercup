@@ -127,18 +127,57 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('a WorkspaceContendedError degrades to a structured TRANSIENT workspace_contended (never a false holder, never a raw PG leak) — EI-9478', async () => {
-    routeM.mockRejectedValue(new WorkspaceContendedError('ws', '55P03', new Error('advisory lock timeout')));
-    const b = body(await call({}));
-    // EI-9478: an EXPLICIT transient reason with an EMPTY busy list — so no
-    // downstream reader (esp. the edit hook) can render it as "held by another
-    // agent" with a fabricated holder. The pre-fix code returned a bare busy:[],
-    // which the hook then printed under a "file(s) held by another agent:" header
-    // with zero holders.
-    expect(b).toMatchObject({ ok: false, reason: 'workspace_contended', transient: true, busy: [] });
-    // The advice steers to a plain RETRY and explicitly AWAY from wake_on_grant
-    // (there is no holder to wait on).
-    expect(String(b.advice)).toMatch(/retry/i);
-    expect(String(b.advice)).toMatch(/do NOT queue wake_on_grant/i);
+    // Mirrors the real WorkspaceContendedError shape (`.name` set) so this
+    // exercises the EI-13189 contention-retry path (below) before degrading —
+    // not just an immediate instanceof-check bypass.
+    routeM.mockRejectedValue(
+      Object.assign(new WorkspaceContendedError('ws', '55P03', new Error('advisory lock timeout')), {
+        name: 'WorkspaceContendedError',
+        pgCode: '55P03',
+      }),
+    );
+    vi.useFakeTimers();
+    try {
+      const p = call({});
+      await vi.runAllTimersAsync(); // advance both contention-retry backoff windows (routed + local-fallback)
+      const b = body(await p);
+      // EI-9478: an EXPLICIT transient reason with an EMPTY busy list — so no
+      // downstream reader (esp. the edit hook) can render it as "held by another
+      // agent" with a fabricated holder. The pre-fix code returned a bare busy:[],
+      // which the hook then printed under a "file(s) held by another agent:" header
+      // with zero holders.
+      expect(b).toMatchObject({ ok: false, reason: 'workspace_contended', transient: true, busy: [] });
+      // The advice steers to a plain RETRY and explicitly AWAY from wake_on_grant
+      // (there is no holder to wait on).
+      expect(String(b.advice)).toMatch(/retry/i);
+      expect(String(b.advice)).toMatch(/do NOT queue wake_on_grant/i);
+      // EI-13189: contention is retried (LOCK_CONTENTION_BACKOFFS_MS = 3 backoffs,
+      // i.e. 4 attempts) before degrading to workspace_contended — not surfaced on
+      // the very first timeout.
+      expect(routeM.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('EI-13189: a TRANSIENT contention that clears on retry acquires normally (no user-visible failure)', async () => {
+    let n = 0;
+    routeM.mockImplementation(async () => {
+      if (n++ < 1) {
+        throw Object.assign(new Error('workspace contended'), { name: 'WorkspaceContendedError', pgCode: '55P03' });
+      }
+      return { value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] } };
+    });
+    vi.useFakeTimers();
+    try {
+      const p = call({});
+      await vi.runAllTimersAsync();
+      const b = body(await p);
+      expect(b).toMatchObject({ ok: true, lock_id: 'L1', held: ['a.ts'] });
+      expect(routeM.mock.calls.length).toBe(2); // one transient miss, then a clean grant
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('wake_on_grant queues a waiter + await and returns immediately', async () => {
