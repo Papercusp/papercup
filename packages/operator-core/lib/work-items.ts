@@ -2374,11 +2374,20 @@ export function reservedPlanLaneExclusionSql(sql: OrgSql, assignee: string) {
  * {@link diagnoseClaimNextMiss} (the READY count) so the miss diagnosis can never
  * disagree with what the claim actually serves.
  */
-export function crossMachineRigExclusionSql(sql: OrgSql, rigAvailable: boolean | undefined) {
+export function crossMachineRigExclusionSql(
+  sql: OrgSql,
+  rigAvailable: boolean | undefined,
+  // EI-14806: which payload column this predicate reads. The issue-family callers run in a
+  // `FROM … work_items wi` context (aliased `wi.payload`, the default); the FEATURE-family
+  // floor (claimFloorsWhereSql, over harness_features_consolidated) runs UNALIASED, so it
+  // passes 'payload'. A closed literal union — never interpolated user input — so composing
+  // it via sql.unsafe is injection-safe.
+  payloadCol: 'wi.payload' | 'payload' = 'wi.payload',
+) {
   if (rigAvailable) return sql`TRUE`;
   // COALESCE the payload so a NULL-payload row (no rig tag) reads as '{}'::jsonb->>'...' =
   // NULL, and `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
-  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'needs_2_machine_rig' IS DISTINCT FROM 'true'`;
+  return sql`COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) ->> 'needs_2_machine_rig' IS DISTINCT FROM 'true'`;
 }
 
 /**
