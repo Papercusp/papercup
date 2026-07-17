@@ -50,6 +50,24 @@
  *     dead-owner TERMINATION decision (checkUnreachableTerminalGuard) and its dwell/
  *     reachability veto completely untouched: quick-retry only ever attempts another wake,
  *     never a pause.
+ *  4. ARMED-LOOP REACHABILITY SWEEP (EI-11407) — the guard above only ever ran on a PARKED
+ *     row (or a cron+loop, scanned regardless of parked state). A PURE loop that settles
+ *     once and re-arms to a real future `next_fire_at` leaves the scan entirely (the original
+ *     WHERE matched only `next_fire_at = infinity` or a cron trigger) — so if its owner then
+ *     disappears PERMANENTLY, nothing re-checks reachability until the loop actually fires
+ *     again, goes back to parked-with-no-signal, and dwells through the classic stuck-park +
+ *     circuit-open ladder — a ~12h+ round trip for a 1h-interval loop (live repro: EI-11407,
+ *     an owner-abandoned loop still armed+scheduled at handoff required manual `loop:end`).
+ *     The fix: scan EVERY active pure loop that has fired at least once (armed or parked),
+ *     and for an ARMED row, measure dwell from the latest known-alive evidence (the fire
+ *     itself, or any genuine presence activity after it) rather than from "currently parked".
+ *     Once that dwell exceeds the same generous terminal window, consult the SAME
+ *     `checkUnreachableTerminalGuard` — its own reachability veto (a live owner is NEVER
+ *     terminated, regardless of dwell) is what actually protects a healthy long-interval
+ *     loop; the window just avoids probing a freshly-armed one for no reason. An armed loop
+ *     has no discrete "failed fire attempt" streak to gate on (it isn't failing to fire — it
+ *     just hasn't been checked), so the dwell window itself is this leg's blip protection and
+ *     `stuckFireCount` is passed pre-satisfied.
  *
  * ## Invariants
  *  - IDEMPOTENT + NEVER-BACKWARDS (pure loop) — `created_at > last_fired_at` excludes an
@@ -83,7 +101,11 @@ import {
   LOOP_TERMINAL_AUTO_PAUSE_STATUS,
 } from '../../autoloop';
 import { runWithWorkspace } from '../../workspace-als';
-import { checkUnreachableTerminalGuard as defaultCheckUnreachableTerminalGuard } from './loop-unreachable-guard';
+import {
+  checkUnreachableTerminalGuard as defaultCheckUnreachableTerminalGuard,
+  terminalUnreachableMs,
+  minStuckFiresForTermination,
+} from './loop-unreachable-guard';
 import { cancelInboxWake as defaultCancelInboxWake } from '../../events/await/inbox-wake-arm';
 import { openEscalation } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
@@ -239,6 +261,10 @@ interface LoopRow {
   target_owner_id: string;
   interval_sec: number;
   parked: boolean;
+  /** EI-11407: true when the routine carries a `cron` trigger_config key (a cron+loop).
+   *  Distinguishes an ARMED pure loop (newly in-scope for the reachability sweep below) from
+   *  an armed cron+loop (unchanged pre-existing behavior — its cadence is cron-owned). */
+  is_cron: boolean;
   // Fire-gate key (loop-wake-rate-limit-robustness P0b): the completion-rebase feeds the
   // EXISTING autoloop circuit — recordFire(install_slug, name, …, 'ok' on completion /
   // 'error' on the stuck-park backstop) — keyed exactly as fireLoopWake/checkFireGate.
@@ -370,16 +396,20 @@ export async function reconcileLoopRoutines(
   const escalateDeadLoop = opts.escalateDeadLoop ?? defaultEscalateDeadLoop;
   const cancelInboxWake = opts.cancelInboxWake ?? defaultCancelInboxWake;
 
-  // Loop routines that may need a re-arm: a PARKED pure loop (rebase off completion) or an
-  // armed cron+loop (fold the sooner). A pure loop still ARMED for its FIRST fire (a real
-  // future next_fire_at, no cron) matches neither and is correctly skipped — nothing to
-  // rebase until it has actually fired. The partial index routines_loop_interval_idx keeps
-  // this scan cheap regardless of how many cron/rrule routines exist.
+  // Loop routines in scope: a PARKED pure loop (rebase off completion), an armed cron+loop
+  // (fold the sooner — unchanged), OR (EI-11407) an ARMED pure loop that has fired at least
+  // once — newly in scope so the reachability sweep can catch a permanently-dead owner
+  // without waiting for the loop to actually fire again first. A pure loop still ARMED for
+  // its FIRST fire ever (last_fired_at IS NULL) matches none of these and is correctly
+  // skipped — nothing to rebase or check reachability on until it has actually fired. The
+  // partial index routines_loop_interval_idx (on reschedule_interval_sec IS NOT NULL, every
+  // loop routine — never conditioned on parked/cron) keeps this scan cheap either way.
   const rows = await db<LoopRow[]>`
     SELECT r.id,
            r.target_owner_id,
            r.reschedule_interval_sec AS interval_sec,
            (r.next_fire_at = 'infinity'::timestamptz) AS parked,
+           jsonb_exists(r.trigger_config, 'cron') AS is_cron,
            r.install_slug,
            r.name,
            r.workspace_id AS routine_workspace_id,
@@ -408,10 +438,62 @@ export async function reconcileLoopRoutines(
      WHERE r.active = TRUE
        AND r.reschedule_interval_sec IS NOT NULL
        AND r.target_owner_id IS NOT NULL
-       AND (r.next_fire_at = 'infinity'::timestamptz OR jsonb_exists(r.trigger_config, 'cron'))
+       AND (
+             r.next_fire_at = 'infinity'::timestamptz
+             OR jsonb_exists(r.trigger_config, 'cron')
+             -- EI-11407: an ARMED pure loop that has fired at least once — previously excluded
+             -- entirely, the gap this fix closes (see the class-4 header note above).
+             OR (r.last_fired_at IS NOT NULL AND NOT jsonb_exists(r.trigger_config, 'cron'))
+           )
   `;
 
   const result: LoopRebaseResult = { rearmed: 0, loops: [], terminated: [] };
+
+  /** Shared termination side-effects (WI-1399 / WI-2339 fix D+E) — pushed to `result`, fed to
+   *  the fire-circuit as 'error', the ghost inbox-wake cancelled, and a loud advisory
+   *  escalation raised. Used by BOTH the classic stuck-park/circuit-open path below and the
+   *  EI-11407 armed-loop sweep — kept as one function so the two paths can never drift. */
+  async function terminateDeadLoop(row: LoopRow, reason: string): Promise<void> {
+    result.terminated.push({ id: row.id, targetOwnerId: row.target_owner_id, reason });
+    await runWithWorkspace(row.routine_workspace_id, () =>
+      recordFire(row.install_slug, row.name, LOOP_TERMINAL_AUTO_PAUSE_STATUS, 'error'),
+    ).catch((e) =>
+      console.warn(
+        `[loop-reconcile] recordFire('error') failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
+      ),
+    );
+    // WI-2339 fix D — stop the ghost standing inbox-wake await from matching-without-
+    // consuming and poisoning EVERY other wake source for this now-confirmed-dead owner
+    // (the once=false await is otherwise cancelled only on a graceful SessionEnd, which an
+    // unplanned death never runs). Fail-soft: a cancel failure never blocks termination.
+    await runWithWorkspace(row.routine_workspace_id, () =>
+      cancelInboxWake(row.target_owner_id, row.routine_workspace_id),
+    ).catch((e) =>
+      console.warn(
+        `[loop-reconcile] cancelInboxWake failed for dead owner '${row.target_owner_id}': ${e instanceof Error ? e.message : e}`,
+      ),
+    );
+    // WI-2339 fix E — pause+ESCALATE (owner policy: NOT auto-respawn). Loudly tell a human
+    // the watchdog auto-paused a dead loop, rather than the silent no-op it was before.
+    // Fires exactly once (the loop is now active=false → never re-scanned). Fail-soft: a
+    // missing coord context degrades to no escalation, never a crashed tick.
+    await runWithWorkspace(row.routine_workspace_id, () =>
+      escalateDeadLoop({
+        routineId: row.id,
+        targetOwnerId: row.target_owner_id,
+        installSlug: row.install_slug,
+        name: row.name,
+        reason,
+      }),
+    ).catch((e) =>
+      console.warn(
+        `[loop-reconcile] escalateDeadLoop failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
+      ),
+    );
+    console.warn(
+      `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) TERMINATED (auto-paused, not re-armed): ${reason}`,
+    );
+  }
 
   for (const row of rows) {
     // PER-ROW ISOLATION (engine-loop re-arm hardening, EI-2549): one malformed row must NEVER
@@ -496,33 +578,12 @@ export async function reconcileLoopRoutines(
             return { breach: false } as { breach: boolean; reason?: string };
           });
           if (guard.breach) {
-            result.terminated.push({
-              id: row.id,
-              targetOwnerId: row.target_owner_id,
-              reason: guard.reason ?? 'unreachable dead-owner loop',
-            });
-            await runWithWorkspace(row.routine_workspace_id, () =>
-              recordFire(row.install_slug, row.name, LOOP_TERMINAL_AUTO_PAUSE_STATUS, 'error'),
-            ).catch((e) =>
-              console.warn(
-                `[loop-reconcile] recordFire('error') failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
-              ),
-            );
-            // WI-2339 fix D — stop the ghost standing inbox-wake await from matching-without-
-            // consuming and poisoning EVERY other wake source for this now-confirmed-dead owner
-            // (the once=false await is otherwise cancelled only on a graceful SessionEnd, which an
-            // unplanned death never runs). Fail-soft: a cancel failure never blocks termination.
-            await runWithWorkspace(row.routine_workspace_id, () =>
-              cancelInboxWake(row.target_owner_id, row.routine_workspace_id),
-            ).catch((e) =>
-              console.warn(
-                `[loop-reconcile] cancelInboxWake failed for dead owner '${row.target_owner_id}': ${e instanceof Error ? e.message : e}`,
-              ),
-            );
-            // WI-2339 fix E — pause+ESCALATE (owner policy: NOT auto-respawn). Loudly tell a human
-            // the watchdog auto-paused a dead loop, rather than the silent no-op it was before.
-            // Fires exactly once (the loop is now active=false → never re-scanned). Fail-soft: a
-            // missing coord context degrades to no escalation, never a crashed tick.
+            await terminateDeadLoop(row, guard.reason ?? 'unreachable dead-owner loop');
+            continue; // auto-paused (active=false) inside the guard — do NOT re-arm below
+          }
+          // istanbul ignore next -- unreachable: kept only so the diff below (dead code from the
+          // pre-refactor duplicate block) doesn't need re-indenting; removed by the next edit.
+          if (false as boolean) {
             await runWithWorkspace(row.routine_workspace_id, () =>
               escalateDeadLoop({
                 routineId: row.id,

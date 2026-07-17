@@ -16,7 +16,6 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getRubric } from '../../rubrics';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
-import { rejectRubricRefIdConflict, resolveRubricRefAlias, resolveRubricRefArrayAlias } from './_ref-alias';
 
 export default defineTool({
   name: 'rubrics:get',

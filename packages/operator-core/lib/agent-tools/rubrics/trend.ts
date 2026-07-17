@@ -14,7 +14,6 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { scorecardTrend } from '../../scorecards';
-import { rejectRubricRefIdConflict, resolveRubricRefAlias } from './_ref-alias';
 
 export default defineTool({
   name: 'rubrics:trend',
@@ -38,8 +37,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      rubricRef: z.string().optional().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric; alias: rubricId)'),
-      rubricId: z.string().optional().describe('alias for rubricRef (EI-11400)'),
+      rubricRef: z.string().optional().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric)'),
       sourceHive: z.string().optional().describe('restrict the trend to one source-hive'),
       since: z
         .string()
@@ -59,16 +57,13 @@ export default defineTool({
           'also return each criterion\'s chronological series as RLE runs {rating, from, to, n} (default false — the summary fields are the payload)',
         ),
     })
-    .superRefine(rejectRubricRefIdConflict)
-    .refine((a) => Boolean(resolveRubricRefAlias({ rubricRef: a.rubricRef, rubricId: a.rubricId })), {
-      message: 'pass `rubricRef` or `rubricId` (required)',
+    .refine((a) => Boolean(a.rubricRef), {
+      message: 'pass `rubricRef` (required)',
     }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    // Resolve alias to canonical name
-    const rubricRef = resolveRubricRefAlias({ rubricRef: args.rubricRef, rubricId: args.rubricId });
     const trend = await scorecardTrend({
-      rubricRef: rubricRef!,
+      rubricRef: args.rubricRef!,
       sourceHive: args.sourceHive,
       since: args.since,
       limit: args.limit,

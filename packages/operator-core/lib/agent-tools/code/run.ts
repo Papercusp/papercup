@@ -23,7 +23,6 @@ import {
   effectiveDispatchWorkspace,
   synthesizeDispatchPrincipal,
 } from '../../endpoint-route/routes/transport/role-principal-caps';
-import { rejectScriptCodeConflict, resolveScriptAlias } from './_script-alias';
 
 /**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
@@ -90,18 +89,11 @@ export default defineTool({
         .string()
         .min(1)
         .max(20_000)
-        .optional()
         .describe(
           'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
             'No setTimeout/setInterval (not ambient in this sandbox) — use `await sleep(ms)` for a ' +
-            'short bounded delay (e.g. write-then-reverify) instead. Alias: code (EI-11400).',
+            'short bounded delay (e.g. write-then-reverify) instead.',
         ),
-      code: z
-        .string()
-        .min(1)
-        .max(20_000)
-        .optional()
-        .describe('Alias for script (EI-11400)'),
       title: z
         .string()
         .max(120)
@@ -138,14 +130,9 @@ export default defineTool({
             `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
             `into multiple code:run calls or fall back to individual tool calls.`,
         ),
-    })
-    .superRefine(rejectScriptCodeConflict)
-    .refine((a) => Boolean(resolveScriptAlias({ script: a.script, code: a.code })), {
-      message: 'pass `script` or `code` (required)',
     }),
   async handler(args, ctx) {
-    // Resolve alias to canonical name
-    const script = resolveScriptAlias({ script: args.script, code: args.code })!;
+    const script = args.script;
     
     const all = listAllProjectedTools();
     // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
