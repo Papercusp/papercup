@@ -342,30 +342,10 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 is lit (is-on) while the chat face shows and returns to it from
                 the pot view (the symmetric dual of the 🫖 toggle). The old
                 raised, glowing 38px orb is gone. */}
-            {/* EI-13037 (owner ask 2026-07-16): the Inbox face sits LEFT of
-                the Papercup button — [📥 Inbox] [🥤 Papercup] [🫖 Pot Health]
-                — the pane's three peer faces. Badge = live "needs you" count. */}
-            <Tooltip label={inboxOpen ? 'Back to chat' : 'Inbox — decisions, escalations & messages that need YOU'}>
-              <button
-                type="button"
-                className={`op-chat-inbox-toggle${inboxOpen ? ' is-on' : ''}`}
-                onClick={() => void setView(inboxOpen ? 'chat' : 'inbox')}
-                aria-pressed={inboxOpen}
-                aria-label={inboxOpen ? 'Back to chat' : 'Show inbox'}
-                data-testid="op-chat-inbox-toggle"
-              >
-                <InboxIcon className="op-chat-inbox-icon" aria-hidden="true" />
-                <span className="op-chat-inbox-toggle-label">Inbox</span>
-                {inboxPending > 0 ? (
-                  <span className="op-chat-inbox-badge" data-testid="op-chat-inbox-badge">
-                    {inboxBadge}
-                  </span>
-                ) : null}
-              </button>
-            </Tooltip>
-            {/* owner-plans-single-pane-2026-07-17: the Plans face sits beside
-                the Inbox face — [📥 Inbox] [📋 Plans] [🥤 Papercup] [🫖 Pot
-                Health]. Simplified plan tracking; badge = plans that need YOU. */}
+            {/* owner-plans-single-pane-2026-07-17 + owner ask 2026-07-17: the
+                Plans face sits LEFT of the Inbox face — [📋 Plans] [📥 Inbox]
+                [🥤 Papercup] [🫖 Pot Health]. Simplified plan tracking; badge =
+                plans that need YOU. */}
             <Tooltip label={plansOpen ? 'Back to chat' : 'Plans — track active plans, open one in a popup, view its agent sessions'}>
               <button
                 type="button"
@@ -380,6 +360,27 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 {plansNeedingYou > 0 ? (
                   <span className="op-chat-inbox-badge" data-testid="op-chat-plans-badge">
                     {plansBadge}
+                  </span>
+                ) : null}
+              </button>
+            </Tooltip>
+            {/* EI-13037 (owner ask 2026-07-16): the Inbox face sits LEFT of
+                the Papercup button; Plans sits left of Inbox (owner ask
+                2026-07-17). Badge = live "needs you" count. */}
+            <Tooltip label={inboxOpen ? 'Back to chat' : 'Inbox — decisions, escalations & messages that need YOU'}>
+              <button
+                type="button"
+                className={`op-chat-inbox-toggle${inboxOpen ? ' is-on' : ''}`}
+                onClick={() => void setView(inboxOpen ? 'chat' : 'inbox')}
+                aria-pressed={inboxOpen}
+                aria-label={inboxOpen ? 'Back to chat' : 'Show inbox'}
+                data-testid="op-chat-inbox-toggle"
+              >
+                <InboxIcon className="op-chat-inbox-icon" aria-hidden="true" />
+                <span className="op-chat-inbox-toggle-label">Inbox</span>
+                {inboxPending > 0 ? (
+                  <span className="op-chat-inbox-badge" data-testid="op-chat-inbox-badge">
+                    {inboxBadge}
                   </span>
                 ) : null}
               </button>
