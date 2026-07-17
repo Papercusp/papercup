@@ -350,23 +350,18 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
         const now = Date.now();
         const severedEscalationMs = opts.severedEscalationMs ?? DEFAULT_SEVERED_ESCALATION_MS;
         for (const st of topics.values()) {
-          const inFastWindow = now - st.fastWindowStartMs < fastWindowMs;
-          const slowDue = now - st.lastRefreshMs >= slowRefreshMs;
-          if (!inFastWindow && !slowDue) continue;
-          st.lastRefreshMs = now;
-          try {
-            void Promise.resolve(st.discovery?.refresh?.()).catch(() => {});
-          } catch {
-            /* best-effort per topic */
-          }
-
           // ── EI-13317 escalation ladder ──
-          // Mirrors swarm.ts's severed-link escalation (see its doc for the
-          // forensics): refresh() alone does not recover a link severed by a
-          // one-side restart. Once this topic HAS paired before
-          // (`everPaired`) and now sits at ZERO paired channels for
-          // `severedEscalationMs` despite refresh() ticking, force a fresh
-          // topic leave+rejoin and fire the loud health signal.
+          // Evaluated on EVERY tick for EVERY topic, independent of that
+          // topic's own inFastWindow/slowDue refresh-cadence gate below (a
+          // topic can sit past the severed threshold DURING the dead zone
+          // between its fast window lapsing and its next slow-keepalive
+          // tick, and that gap must not delay detection). Mirrors swarm.ts's
+          // severed-link escalation (see its doc for the forensics):
+          // refresh() alone does not recover a link severed by a one-side
+          // restart. Once this topic HAS paired before (`everPaired`) and
+          // now sits at ZERO paired channels for `severedEscalationMs`
+          // despite refresh() ticking, force a fresh topic leave+rejoin and
+          // fire the loud health signal.
           if (severedEscalationMs > 0) {
             const severedMs = now - st.fastWindowStartMs;
             const genuinelySevered = st.everPaired && st.channels.size === 0;
@@ -407,6 +402,16 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
                   // escalation tick (lastEscalationMs already advanced).
                 });
             }
+          }
+
+          const inFastWindow = now - st.fastWindowStartMs < fastWindowMs;
+          const slowDue = now - st.lastRefreshMs >= slowRefreshMs;
+          if (!inFastWindow && !slowDue) continue;
+          st.lastRefreshMs = now;
+          try {
+            void Promise.resolve(st.discovery?.refresh?.()).catch(() => {});
+          } catch {
+            /* best-effort per topic */
           }
         }
       },

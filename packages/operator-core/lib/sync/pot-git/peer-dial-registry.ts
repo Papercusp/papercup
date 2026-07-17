@@ -55,6 +55,7 @@ import { Duplex } from 'node:stream';
 import { appendFileSync } from 'node:fs';
 import Protomux, { type ProtomuxChannel } from 'protomux';
 import c, { type CompactEncoding } from 'compact-encoding';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { verifyEd25519 } from '../../identity/ed25519';
 import { openHiveGitFetchDuplex } from './serve-wiring';
 
@@ -200,6 +201,86 @@ interface MuxerDialConfig {
 
 const dialConfigByMuxer = new WeakMap<object, MuxerDialConfig>();
 
+/** Topics THIS BOX has explicitly wired via `wireHiveGitDial` on ANY connection
+ *  (process-global), with the identity that signs their hellos. WI-5210 (P-303
+ *  Leg B live drill): `MuxerDialConfig.topics` is per-connection, so a channel
+ *  pair-materialized on a muxer whose own `wireHiveGitDial(topic)` call never
+ *  ran (connection churn — the wire landed on an earlier, since-dead
+ *  connection) could RECEIVE the peer's hello but never SIGN/SEND its own:
+ *  one fetch direction stayed dead for the life of the connection (hours),
+ *  while the other worked. Signing for a topic found here is safe on any
+ *  muxer — this box deliberately joined+wired that topic; the gate this must
+ *  NEVER weaken is signing for a remote-chosen id nobody here wired. */
+const wiredTopicConfig = new Map<
+  string,
+  { topic: Buffer; selfDevicePubkeyBase64: string; sign: (bytes: Buffer) => Promise<Buffer> | Buffer }
+>();
+
+/** Muxers with pot-git-hello state worth heal-sweeping (see `healSweep`).
+ *  Strong refs are fine: entries are dropped on the first sweep after their
+ *  stream destroys, so retention is bounded by live-connection count + 60s. */
+const trackedMuxers = new Set<Protomux>();
+
+const HEAL_SWEEP_MS = 60_000;
+let healSweepTimer: ManagedHandle | null = null;
+
+function ensureHealSweep(): void {
+  if (healSweepTimer) return;
+  healSweepTimer = managedSetInterval('pot-git-dial-heal', HEAL_SWEEP_MS, () => healSweep(), {
+    category: 'lifecycle',
+  });
+}
+
+/** WI-5210: the pot-git analogue of the hyperbee plane's repair-on-detect.
+ *  Every 60s, for each live tracked muxer: (a) re-dial any EXPLICITLY-wired
+ *  topic whose channel state is missing (evicted after a never-opened close
+ *  once `maybeScheduleRedial`'s capped fast retries exhausted — this sweep is
+ *  the uncapped steady-state tail, so a churn-window rejection heals in ≤60s
+ *  instead of never); (b) for any live open channel that has not sent its
+ *  hello (pair-materialized before this box's identity was known), seed from
+ *  `wiredTopicConfig` and send now. Without (b) a one-sided hello gap leaves
+ *  one fetch direction dead until a simultaneous pair restart (the live
+ *  fence-25 incident this WI documents). */
+function healSweep(): void {
+  for (const mux of [...trackedMuxers]) {
+    const muxKey = mux as unknown as object;
+    const stream = (mux as unknown as { stream?: { destroyed?: boolean } }).stream;
+    if (stream?.destroyed) {
+      trackedMuxers.delete(mux);
+      continue;
+    }
+    const states = statesFor(muxKey);
+    const cfg = dialConfigByMuxer.get(muxKey);
+    if (cfg) {
+      for (const topicHex of cfg.topics) {
+        const g = wiredTopicConfig.get(topicHex);
+        if (!g) continue;
+        if (!states.has(topicHex)) {
+          try {
+            ensureChannel(mux, g.topic);
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+    }
+    for (const [topicHex, state] of states) {
+      if (!state.opened || state.helloSent) continue;
+      if (!state.selfDevicePubkeyBase64 || !state.sign) {
+        const g = wiredTopicConfig.get(topicHex);
+        if (!g) continue;
+        state.selfDevicePubkeyBase64 = g.selfDevicePubkeyBase64;
+        state.sign = g.sign;
+      }
+      maybeSendHello(state, Buffer.from(topicHex, 'hex'));
+    }
+  }
+  if (trackedMuxers.size === 0 && healSweepTimer) {
+    healSweepTimer.stop();
+    healSweepTimer = null;
+  }
+}
+
 /** Muxers on which the lazy-accept `pair()` notifier is already registered —
  *  `pair()` is idempotent to call twice, but this avoids redundant
  *  re-registration on every `resolveMuxStream` call. */
@@ -270,6 +351,22 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
       state.sign = cfg.sign;
     }
   }
+  // WI-5210: a pair-materialized channel on a muxer whose OWN wire call for
+  // this topic never ran (connection churn) must still be able to sign+send —
+  // a topic in `wiredTopicConfig` was explicitly wired by this box on SOME
+  // connection, which is the property the signing gate protects. Without this
+  // the peer registers US (receive side heals via the cfg/socket fallbacks
+  // below) but we never announce ourselves: one fetch direction dead for the
+  // life of the connection.
+  if (!state.selfDevicePubkeyBase64 || !state.sign) {
+    const g = wiredTopicConfig.get(topicHex);
+    if (g) {
+      state.selfDevicePubkeyBase64 = g.selfDevicePubkeyBase64;
+      state.sign = g.sign;
+    }
+  }
+  trackedMuxers.add(mux);
+  ensureHealSweep();
   dbg('[HGDEBUG-dial] ensureChannel: calling createChannel', { topicHex });
   const channel: ProtomuxChannel | null = mux.createChannel({
     protocol: POT_GIT_HELLO_PROTOCOL,
@@ -341,6 +438,11 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
       } else {
         dbg('[HGDEBUG-dial] verified hello had NO resolvable socket — not registered', { topicHex });
       }
+      // WI-5210: a received hello PROVES the channel is open both ways — if
+      // ours hasn't gone out yet (materialized before identity was known,
+      // any ordering gap), complete the handshake now instead of leaving the
+      // peer's registry one-sided. Idempotent via `helloSent`.
+      maybeSendHello(state!, topic);
     },
   });
   channel.open();
@@ -454,7 +556,14 @@ export function wireHiveGitDial(
       cfg.sign = sign;
       cfg.socket = socket;
     }
-    cfg.topics.add(topic.toString('hex'));
+    const topicHex = topic.toString('hex');
+    cfg.topics.add(topicHex);
+    // Process-global (survives this connection): any later muxer may sign
+    // hellos for this explicitly-wired topic, and the heal sweep watches the
+    // muxer from now on (WI-5210).
+    wiredTopicConfig.set(topicHex, { topic, selfDevicePubkeyBase64, sign });
+    trackedMuxers.add(mux);
+    ensureHealSweep();
     const register = (): void => {
       try {
         dbg('[HGDEBUG-dial] register() running');
@@ -545,7 +654,16 @@ export async function openHiveGitDuplexToDevice(
 
 export const _testing = {
   registryByTopic,
+  wiredTopicConfig,
+  trackedMuxers,
+  healSweep,
   reset(): void {
     registryByTopic.clear();
+    wiredTopicConfig.clear();
+    trackedMuxers.clear();
+    if (healSweepTimer) {
+      healSweepTimer.stop();
+      healSweepTimer = null;
+    }
   },
 };

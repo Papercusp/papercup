@@ -260,9 +260,16 @@ function compileLeaf(sql: OrgSql, leaf: FilterLeaf) {
       const cmp = fm.kind === 'scalar-num' ? sql`${col}` : sql`${col}::text`;
       switch (op) {
         case '=':
+          // NULL never matches a positive `=` — correct, and matches the JS evaluator.
           return sql`${cmp} = ${bound}`;
         case '!=':
-          return sql`${cmp} <> ${bound}`;
+          // IS DISTINCT FROM, not `<>` (EI-13306). A NULL row is DISTINCT from any value, so
+          // `plan != 'x'` ADMITS a row with no plan — which is what the author means, and what
+          // the ARRAY branches above already do: text-array `!=` compiles to
+          // `NOT (v = ANY(COALESCE(col, ARRAY[]::text[])))`, which on a NULL column is
+          // `NOT false` = true. Scalar `<>` was the odd one out, yielding NULL -> row dropped.
+          // The JS evaluator's compareScalar carries the matching null-admits case for `!=`.
+          return sql`${cmp} IS DISTINCT FROM ${bound}`;
         case '<':
           return sql`${cmp} < ${bound}`;
         case '<=':
@@ -472,8 +479,21 @@ export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
       // Parenthesize the OR so it binds correctly when ANDed into the floors.
       return parts.reduce((acc, p) => sql`(${acc} OR ${p})`);
     }
-    // not
-    return sql`NOT (${walk(node.not)})`;
+    // `not` — COALESCE to false BEFORE negating (EI-13306). SQL three-valued logic makes
+    // a bare `NOT (...)` silently drop every row whose field is NULL: for a nullable column
+    // (plan/assignee/risk_tier/...), `plan = 'x'` on a NULL row is NULL, and `NOT NULL` is
+    // NULL — which a WHERE clause treats as not-TRUE, so the row VANISHES. That is the exact
+    // inverse of what `not:` means to a spec author ("a row with no plan is certainly not in
+    // plan X — admit it"), and it fails SILENT: the spec validates ok, and get_next reports an
+    // honest-looking scoped miss while the whole backlog is invisible. It has starved this
+    // fleet twice: `not:{plan glob 'p2p-*'}` and `not:{plan = '<slug>'}`, the latter measured
+    // collapsing the claimable pool 2341 -> 4.
+    //
+    // COALESCE(inner, false) maps "unknown" to "did not match", so `not` then ADMITS the row.
+    // This is also what the JS evaluator (claim-spec-match.ts `matchesClaimSpecFilter`) has
+    // always done — `!matchLeaf(...)` on a null subject is `!false` = true. The two evaluators
+    // of one spec language MUST agree; claim-spec-null-semantics.integration.test.ts pins that parity.
+    return sql`NOT COALESCE((${walk(node.not)}), false)`;
   }
   return sql`(${walk(filter)})`;
 }

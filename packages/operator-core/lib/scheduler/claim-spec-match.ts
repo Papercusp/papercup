@@ -98,7 +98,18 @@ function globRegex(pattern: string): RegExp {
 }
 
 function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolean {
-  if (actual == null) return false; // mirrors SQL NULL comparison semantics
+  if (actual == null) {
+    // A NULL/absent field has NO value, so it matches no positive predicate (`=`, `glob`,
+    // `in`, relational) — but it IS distinct from every concrete value, so `!=` MATCHES.
+    // This mirrors the SQL compiler's `IS DISTINCT FROM` (get-next.ts) and the array
+    // branches in matchLeaf below, where `!=` on an absent field is likewise true.
+    // (EI-13306: the previous blanket `return false` claimed to "mirror SQL NULL comparison
+    // semantics" — it did not. SQL's bare `NOT (...)` DROPS null rows while this evaluator's
+    // `!matchLeaf(...)` ADMITS them, so the two evaluators of one spec language disagreed on
+    // exactly the filter shape that starved a 10-agent fleet twice. Both are now null-safe
+    // and claim-spec-null-semantics.integration.test.ts pins their parity.)
+    return leaf.op === '!=';
+  }
   const values = Array.isArray(leaf.value) ? leaf.value : [leaf.value];
   if (leaf.op === 'in') return values.some((v) => String(actual) === String(v));
   if (leaf.op === 'glob') return globRegex(String(leaf.value)).test(String(actual));

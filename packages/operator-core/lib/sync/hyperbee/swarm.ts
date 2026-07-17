@@ -1133,31 +1133,14 @@ export async function joinHarnessSwarm(
     if (refreshMs > 0) {
       refreshTimer = managedSetInterval('hyperbee-swarm-refresh', refreshMs, () => {
         const now = Date.now();
-        const inFastWindow = now - fastWindowStartMs < fastWindowMs;
-        // WI-1534: a stalled admitted log re-arms the FAST cadence exactly
-        // like a fresh join/peer-loss would — best-effort, never throws past
-        // this call (a caller predicate that throws is treated as "no stall").
-        let stalled = false;
-        if (opts.hasStalledLogs) {
-          try {
-            stalled = opts.hasStalledLogs();
-          } catch {
-            stalled = false;
-          }
-        }
-        const slowDue = now - lastRefreshMs >= slowRefreshMs;
-        if (!inFastWindow && !stalled && !slowDue) return;
-        lastRefreshMs = now;
-        try {
-          // Re-announce (server) + re-lookup (client) — the same call the
-          // swarm-chaos test uses as its deterministic reconnect driver. A throw
-          // / rejection must never crash the host.
-          void Promise.resolve(discovery?.refresh?.({ client: true, server: true })).catch(() => {});
-        } catch {
-          // best-effort — refresh is keepalive, not load-bearing for this tick
-        }
 
         // ── EI-13317 escalation ladder ──
+        // Evaluated on EVERY tick, independent of the refresh cadence below
+        // (inFastWindow/slowDue gates when to call discovery.refresh(), NOT
+        // when to check for a severed link — a topic can sit past the
+        // severed threshold DURING the dead zone between the fast window
+        // lapsing and the next slow-keepalive tick, and that gap must not
+        // delay detection).
         // refresh() alone does NOT recover a link severed by a ONE-SIDE
         // RESTART (forensics: fast-window ticks fire every ~2.5s with zero
         // paired peers for 20+ minutes; only a fresh process/swarm.join ever
@@ -1217,6 +1200,31 @@ export async function joinHarnessSwarm(
                 // so this waits a full severedEscalationMs before retrying).
               });
           }
+        }
+
+        // ── WI-752 / FED-2 self-heal re-peer loop ──
+        const inFastWindow = now - fastWindowStartMs < fastWindowMs;
+        // WI-1534: a stalled admitted log re-arms the FAST cadence exactly
+        // like a fresh join/peer-loss would — best-effort, never throws past
+        // this call (a caller predicate that throws is treated as "no stall").
+        let stalled = false;
+        if (opts.hasStalledLogs) {
+          try {
+            stalled = opts.hasStalledLogs();
+          } catch {
+            stalled = false;
+          }
+        }
+        const slowDue = now - lastRefreshMs >= slowRefreshMs;
+        if (!inFastWindow && !stalled && !slowDue) return;
+        lastRefreshMs = now;
+        try {
+          // Re-announce (server) + re-lookup (client) — the same call the
+          // swarm-chaos test uses as its deterministic reconnect driver. A throw
+          // / rejection must never crash the host.
+          void Promise.resolve(discovery?.refresh?.({ client: true, server: true })).catch(() => {});
+        } catch {
+          // best-effort — refresh is keepalive, not load-bearing for this tick
         }
       }, { category: 'lifecycle', instanced: true });
     }
