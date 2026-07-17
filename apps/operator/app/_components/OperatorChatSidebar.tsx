@@ -24,16 +24,19 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
-import { ChevronLeft, ChevronRight, Inbox as InboxIcon, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardList, Inbox as InboxIcon, Volume2, VolumeX } from 'lucide-react';
 import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { PotHealthPane } from './PotHealthPane';
-import { useInboxPendingCount } from './inbox/use-inbox-pending';
+import { useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
 
 // The Inbox view (EI-13037) pulls the Queue detail card chain — lazy so the
 // boot-critical chat chunk stays lean; it loads on first toggle.
 const InboxPane = lazy(() => import('./inbox/InboxPane'));
+// The Plans view (owner-plans-single-pane-2026-07-17) pulls PlanDetail + the
+// plan popup + sessions tab — lazy for the same boot-lean reason as Inbox.
+const PlansPane = lazy(() => import('./plans/PlansPane'));
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { useShortcutAction } from '@/lib/hotkeys';
@@ -288,12 +291,15 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const [view, setView] = useQueryState('opcv', viewParser);
   const potOpen = view === 'pot';
   const inboxOpen = view === 'inbox';
+  const plansOpen = view === 'plans';
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;
   // Live decision-tier count (shared plans.attention sync feed) — badge on
   // the Inbox toggle + the collapsed rail, so "needs you" is visible either way.
   const inboxPending = useInboxPendingCount();
   const inboxBadge = inboxPending > 99 ? '99+' : String(inboxPending);
+  const plansNeedingYou = usePlansNeedingYouCount();
+  const plansBadge = plansNeedingYou > 99 ? '99+' : String(plansNeedingYou);
 
   return (
     <aside

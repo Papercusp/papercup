@@ -56,3 +56,19 @@ export function useInboxPendingCount(): number {
   const { items } = useInboxAttention();
   return useMemo(() => items.filter((i) => effectiveTier(i) === 'decision').length, [items]);
 }
+
+/** Live count of distinct PLANS with ≥1 decision-tier ("needs you") item —
+ *  drives the Plans-face badge (owner-plans-single-pane-2026-07-17 P-001). This
+ *  differs from useInboxPendingCount (which counts ITEMS): the Plans tab answers
+ *  "how many plans need me", not "how many decisions are open". Same shared
+ *  `plans.attention` cache entry, so mounting it adds no new query. */
+export function usePlansNeedingYouCount(): number {
+  const { items } = useInboxAttention();
+  return useMemo(() => {
+    const plans = new Set<string>();
+    for (const i of items) {
+      if (i.planSlug && effectiveTier(i) === 'decision') plans.add(i.planSlug);
+    }
+    return plans.size;
+  }, [items]);
+}
