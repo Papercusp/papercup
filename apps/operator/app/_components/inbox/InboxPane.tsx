@@ -167,7 +167,9 @@ export default function InboxPane({ onDiscussInChat }: {
       return;
     }
     if (sel !== lastScrolledSel.current && selectedRowRef.current) {
-      selectedRowRef.current.scrollIntoView({ block: 'nearest' });
+      // Guard: jsdom (unit tests) doesn't implement scrollIntoView; real
+      // browsers do. Never let a missing scroll API break selection.
+      selectedRowRef.current.scrollIntoView?.({ block: 'nearest' });
       lastScrolledSel.current = sel;
     }
   }, [sel, visible]);

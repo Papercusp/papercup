@@ -1,9 +1,12 @@
 /**
  * WI-1937 unit tests for offer-executor-prod-deps.ts's `applyCapabilityEnvelope`
- * guard. Pins the resolved deny-all mechanism (`denyCapabilities: ['*']`, NOT an
- * empty `allowCapabilities`) and the fail-closed-until-step-7 sequencing: this
- * MUST throw today (ROLE_ENVELOPES carries no 'foreign-session' entry yet), and
- * a future entry only satisfies it if it is a genuine deny-all shape.
+ * port. D-001 (p2p-public-release-remaining-lanes-2026-07-16, owner Avi,
+ * 2026-07-17) RETIRED the deny-all capability-envelope gate this used to
+ * verify — a foreign session's only v1 security layer is now the trust chain
+ * upstream of execution, not this port. These tests pin the new contract: the
+ * port is a no-op that ALWAYS resolves, regardless of what (if anything)
+ * `ROLE_ENVELOPES['foreign-session']` holds — the port no longer reads it at
+ * all (this file no longer even imports `ROLE_ENVELOPES`).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { ROLE_ENVELOPES } from '../capability-envelope/policy';
@@ -28,26 +31,12 @@ const spec = {
   fleetSlug: 'fleet-a',
 };
 
-describe('applyCapabilityEnvelopeForForeignSession (WI-1937 C2 fail-closed guard)', () => {
-  it('RESOLVES today — ROLE_ENVELOPES.foreign-session is the landed deny-all v1 policy (step 7 landed)', async () => {
-    // Pins the actual shipping shape (policy.ts) — denyCapabilities:['*'], never
-    // an empty allowCapabilities (see the dedicated gotcha test below).
-    expect(ROLE_ENVELOPES['foreign-session']).toEqual({ denyCapabilities: ['*'] });
-    await expect(applyCapabilityEnvelopeForForeignSession(spec)).resolves.toBeUndefined();
+describe('applyCapabilityEnvelopeForForeignSession (D-001: retired to a no-op)', () => {
+  it('resolves — capability-envelope.ts no longer carries a foreign-session entry at all (D-001 HISTORY note)', () => {
+    expect(ROLE_ENVELOPES['foreign-session']).toBeUndefined();
   });
 
-  it("an empty allowCapabilities:[] entry does NOT satisfy the guard (the exact gotcha this WI resolved)", async () => {
-    const saved = ROLE_ENVELOPES['foreign-session'];
-    (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'] = { allowCapabilities: [] };
-    try {
-      await expect(applyCapabilityEnvelopeForForeignSession(spec)).rejects.toThrow(/does not resolve to a deny-all/);
-    } finally {
-      if (saved === undefined) delete (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'];
-      else (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'] = saved;
-    }
-  });
-
-  it("denyCapabilities:['*'] DOES satisfy the guard — the correct future step-7 shape", async () => {
+  it('ALWAYS resolves regardless of ROLE_ENVELOPES.foreign-session, including the old deny-all shape', async () => {
     const saved = ROLE_ENVELOPES['foreign-session'];
     (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'] = { denyCapabilities: ['*'] };
     try {
@@ -58,14 +47,13 @@ describe('applyCapabilityEnvelopeForForeignSession (WI-1937 C2 fail-closed guard
     }
   });
 
-  it("a narrow denyCapabilities (not '*') does NOT satisfy the guard — must be genuinely all-denying", async () => {
+  it('resolves even with no ROLE_ENVELOPES.foreign-session entry at all (today\'s actual state)', async () => {
     const saved = ROLE_ENVELOPES['foreign-session'];
-    (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'] = { denyCapabilities: ['capability:bash'] };
+    delete (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'];
     try {
-      await expect(applyCapabilityEnvelopeForForeignSession(spec)).rejects.toThrow(/does not resolve to a deny-all/);
+      await expect(applyCapabilityEnvelopeForForeignSession(spec)).resolves.toBeUndefined();
     } finally {
-      if (saved === undefined) delete (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'];
-      else (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'] = saved;
+      if (saved !== undefined) (ROLE_ENVELOPES as Record<string, unknown>)['foreign-session'] = saved;
     }
   });
 

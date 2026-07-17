@@ -23,11 +23,26 @@ import {
  *      and duplicated on each pass — an encoding feedback loop.
  *
  * The fix: write via TanStack's FUNCTIONAL search updater
- * (`navigate({ search: (prev) => … })`). `prev` is the current *validated*
- * search object, so non-nuqs params survive; nuqs's watched keys are laid on
- * top; and TanStack stringifies exactly once. nuqs deletions apply because a
- * removed watched key is absent from `nuqsSearch` (and every watched key is
- * stripped from `prev` before re-applying nuqs's state).
+ * (`navigate({ search: () => … })`), rebuilding the search object from the
+ * composed flush state, and TanStack stringifies exactly once.
+ *
+ * FLUSH SCOPE (the "plan popup won't close" bug, 2026-07-17): nuqs passes an
+ * adapter instance whose `watchKeys` are ONLY THE FLUSHING HOOK'S keys — but
+ * its GLOBAL throttle queue drains EVERY pending update (across all hooks)
+ * through that one adapter (`globalThrottleQueue.flush` → `applyPendingUpdates`
+ * composes all pending keys onto `getSearchParamsSnapshot()` and hands the
+ * result to `updateUrl`). Two same-tick setters from two components (the plan
+ * popup's `setView(null)` + the pane's `setPopupPlan(null)`) therefore flush
+ * once, under ONE hook's watchKeys. A `watchKeys`-scoped merge-over-prev
+ * dropped the OTHER hook's REMOVAL (sets survived via overlay; removals died
+ * with the key still in `prev`) — the popup's `pplan` could never be cleared
+ * by its own close button. So:
+ *   - `getSearchParamsSnapshot` returns ALL current params (NOT filtered to
+ *     watchKeys), making the queue's composed output the COMPLETE authoritative
+ *     next search — non-nuqs params ride through the compose untouched;
+ *   - `updateUrl` rebuilds the search object purely from that composed state.
+ *     A removed key is simply absent. Nothing merges over `prev`, so no scope
+ *     list can silently resurrect a key.
  *
  * TYPE-FAITHFUL HANDOFF (the "clicking the dev rail closes it" regression):
  * nuqs serializes values as plain strings (`parseAsBoolean` → 'true'), but
@@ -103,16 +118,17 @@ export function decodeQueryValue(raw: string): unknown {
 /**
  * Project a TanStack-typed search object onto the URLSearchParams nuqs reads:
  * arrays become repeated keys, objects JSON-stringify, scalars String().
- * Filtered to nuqs's watched keys — native typed params are none of nuqs's
- * business (they flow through `prev` in the functional updater untouched).
+ * Optionally filtered to a key list (the read side scopes to the hook's own
+ * keys to limit re-renders; the flush snapshot passes null = ALL keys, so the
+ * queue's composed output is the complete next search — see FLUSH SCOPE).
  */
 export function searchObjectToParams(
   search: Record<string, unknown>,
-  watchKeys: readonly string[],
+  watchKeys: readonly string[] | null,
 ): URLSearchParams {
   return new URLSearchParams(
     Object.entries(search)
-      .filter(([key]) => watchKeys.includes(key))
+      .filter(([key]) => watchKeys === null || watchKeys.includes(key))
       .flatMap(([key, value]) => {
         if (Array.isArray(value))
           return value.map((v) => [key, String(v)] as [string, string]);
@@ -123,17 +139,15 @@ export function searchObjectToParams(
   );
 }
 
-/** Pure merge: nuqs's watched-key state laid over the current search object. */
-export function applyNuqsToSearch(
-  prev: Record<string, unknown>,
-  watchKeys: readonly string[],
-  nuqsSearch: URLSearchParams,
-): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...prev };
-  // Drop nuqs's keys from the base — nuqs re-adds exactly the ones it wants.
-  for (const key of watchKeys) delete next[key];
-  // Group nuqs's desired state (repeated keys = arrays), decoding each value
-  // to its TanStack-typed form (see decodeQueryValue), then overlay.
+/**
+ * Rebuild the TanStack search object from the queue's composed flush state —
+ * the COMPLETE authoritative next search (snapshot of all params + every
+ * pending update applied). Repeated keys group into arrays; each value decodes
+ * to its TanStack-typed form (see decodeQueryValue). A key absent here was
+ * either never set or was REMOVED by this flush — either way it must not
+ * survive, which is why nothing merges over the previous search object.
+ */
+export function composedSearchToObject(nuqsSearch: URLSearchParams): Record<string, unknown> {
   const grouped: Record<string, unknown> = {};
   for (const [key, value] of nuqsSearch.entries()) {
     const decoded = decodeQueryValue(value);
@@ -141,7 +155,7 @@ export function applyNuqsToSearch(
     grouped[key] =
       cur === undefined ? decoded : Array.isArray(cur) ? [...cur, decoded] : [cur, decoded];
   }
-  return { ...next, ...grouped };
+  return grouped;
 }
 
 function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
@@ -163,14 +177,15 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
     // nuqs composes each flush on top of this snapshot. Default is the raw
     // `location.search`, whose encoding (TanStack's quoted strings) diverges
     // from what the read-side `searchParams` reports — read from the router's
-    // parsed search instead so compose-base and read-back agree.
+    // parsed search instead so compose-base and read-back agree. UNFILTERED
+    // (all params, not this hook's watchKeys): the global queue drains EVERY
+    // pending hook's updates through this one snapshot, so it must carry the
+    // full search for the composed output to be the complete next state (see
+    // FLUSH SCOPE above).
     getSearchParamsSnapshot: useCallback(
       () =>
-        searchObjectToParams(
-          router.latestLocation.search as Record<string, unknown>,
-          watchKeysJoined === '' ? [] : watchKeysJoined.split(','),
-        ),
-      [router, watchKeysJoined],
+        searchObjectToParams(router.latestLocation.search as Record<string, unknown>, null),
+      [router],
     ),
     updateUrl: useCallback(
       (nuqsSearch: URLSearchParams, options: AdapterOptions) => {
@@ -187,8 +202,7 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
         startTransition(() => {
           navigate({
             to: currentPath,
-            search: (prev) =>
-              applyNuqsToSearch(prev as Record<string, unknown>, watchKeys, nuqsSearch),
+            search: () => composedSearchToObject(nuqsSearch),
             replace: options.history === 'replace',
             resetScroll: options.scroll,
             hash: (prevHash) => prevHash ?? '',
@@ -196,8 +210,7 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
           });
         });
       },
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [navigate, router, watchKeysJoined],
+      [navigate, router],
     ),
     rateLimitFactor: 1,
   };
