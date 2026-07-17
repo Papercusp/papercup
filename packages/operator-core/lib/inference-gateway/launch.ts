@@ -254,7 +254,7 @@ function makeCredentialHealthAlert(
 function makeOrgDisallowedDeactivator(
   ws: string | undefined,
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
-): (info: { accountId: string; consecutive: number }) => void {
+): (info: { accountId: string; consecutive: number; affectedOwners?: string[] }) => void {
   const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
   return ({ accountId, consecutive, affectedOwners }) => {
     void (async () => {

@@ -192,9 +192,16 @@ export function backgroundWorkspaceIds(): string[] {
 /**
  * Is `id` a workspace this host knows about? Used by the request-scope
  * middleware to distinguish a *missing* header (→ global fallback) from a
- * *present-but-unknown* one (→ hard error, D-007). The literal default
- * workspace is always known (the desktop guarantees it exists), even if a
- * sparse registry hasn't listed it.
+ * *present-but-unknown* one (→ hard error, D-007). The literal 'default' id
+ * is always treated as known, even if a sparse registry hasn't listed it —
+ * a defensive fallback for legacy pre-WI-5321 installs (whose real workspace
+ * really is id "default") and tests. Since WI-5321 a FRESH install mints a
+ * real, unique, non-'default' workspace id (workspaces.rs `ensure_initialized`)
+ * specifically because the literal string collides with
+ * `DEFAULT_COORD_WORKSPACE` — the p2p/allotment layer's coordination-shared
+ * partition sentinel (WI-1564) — so "the desktop guarantees it exists" no
+ * longer holds for new installs; this fallback exists for the legacy case,
+ * not as a promise every install has one.
  *
  * A process PINNED to a workspace via PAPERCUSP_WORKSPACE_ID (the P-020
  * single-workspace model — orchestrator agents, hermetic gym operators) knows
