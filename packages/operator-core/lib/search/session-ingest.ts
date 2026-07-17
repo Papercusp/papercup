@@ -50,6 +50,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { cooperativeYield } from '../event-loop-lag-monitor';
 
 /** How far back a source file's mtime may be and still get ingested. */
 const INGEST_WINDOW_DAYS = 45;
@@ -60,6 +61,12 @@ const MAX_FILES_PER_TICK = 200;
 const MAX_TURNS_PER_TICK = 4000;
 const MAX_BYTES_PER_FILE_PER_TICK = 5 * 1024 * 1024;
 const MAX_CHATS_PER_TICK = 50;
+/** WI-5218: cooperative-yield granularity for the per-line parse loop in
+ * readNewLines — large enough that a quiet host pays only a handful of
+ * macrotask hops per file (not thousands), small enough that even a single
+ * MAX_BYTES_PER_FILE_PER_TICK-sized file can no longer block the main thread
+ * for tens of milliseconds straight. */
+const LINE_YIELD_EVERY = 1000;
 /** Historical EI-9970 counter repair caps. The cursor persists across ticks. */
 const MAX_COUNT_BACKFILL_FILES_PER_TICK = 25;
 const MAX_COUNT_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
@@ -644,21 +651,37 @@ export async function readNewLines(
     let responseCount = 0;
     let toolCallCount = 0;
     let cursor = lastInferenceId;
+    // WI-5218: this loop does per-line JSON.parse (parseLine + classifyLine)
+    // fully synchronously with zero await points — on a large transcript file
+    // (up to MAX_BYTES_PER_FILE_PER_TICK = 5 MiB, tens of thousands of lines)
+    // that blocks the main thread long enough to starve the routine ticker
+    // (measured: 10-50 loop-governor "event loop recovered" recoveries/h,
+    // blender scout recombine timeouts, outbox-drain pass-timeouts — root
+    // cause confirmed via journal correlation, session-ingest pass durations
+    // trending to 20-30s as scanned-file count grew). Cooperative-yield every
+    // LINE_YIELD_EVERY lines: cheap on a quiet host (a handful of macrotask
+    // hops per file), aggressive under real pressure (cooperativeYield yields
+    // on every call once loopPressure() is already elevated) — same fix class
+    // as the WI-2344 precedent (plugin-host boot warm-up).
+    let yielded = 0;
     for (const line of usable.split('\n')) {
-      if (!line.trim()) continue;
-      const t = parseLine(line);
-      if (t) turns.push(t);
-      const sig = classifyLine(line);
-      if (!sig) continue;
-      if (sig.isPrompt) promptCount += 1;
-      toolCallCount += sig.toolCallCount;
-      if (sig.isResponsePayload) {
-        // A null id is never deduped (no basis to compare); a stable id only
-        // counts as a NEW response when it differs from the immediately
-        // preceding response line's id (a multi-line split shares one id).
-        if (sig.inferenceId === null || sig.inferenceId !== cursor) responseCount += 1;
-        cursor = sig.inferenceId;
+      if (line.trim()) {
+        const t = parseLine(line);
+        if (t) turns.push(t);
+        const sig = classifyLine(line);
+        if (sig) {
+          if (sig.isPrompt) promptCount += 1;
+          toolCallCount += sig.toolCallCount;
+          if (sig.isResponsePayload) {
+            // A null id is never deduped (no basis to compare); a stable id only
+            // counts as a NEW response when it differs from the immediately
+            // preceding response line's id (a multi-line split shares one id).
+            if (sig.inferenceId === null || sig.inferenceId !== cursor) responseCount += 1;
+            cursor = sig.inferenceId;
+          }
+        }
       }
+      yielded = await cooperativeYield(yielded, LINE_YIELD_EVERY);
     }
     return {
       turns,

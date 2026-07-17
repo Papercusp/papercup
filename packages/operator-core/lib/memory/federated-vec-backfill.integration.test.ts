@@ -59,7 +59,11 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
   });
 
   afterAll(async () => {
-    await db.cleanup();
+    // WI-5188 (same class as WI-5194/WI-5195): guard against `db` never being
+    // assigned when beforeAll itself fails (dev-PG crash-recovery / a dropped
+    // testcontainer connection) — an unconditional db.cleanup() cascades into a
+    // confusing secondary NPE that masks the real infra error.
+    if (db) await db.cleanup();
   });
 
   beforeEach(async () => {
