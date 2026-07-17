@@ -13,7 +13,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
-const H = vi.hoisted(() => ({ overwatchOn: false, pathname: '/adv', inboxPending: 0 }));
+const H = vi.hoisted(() => ({ overwatchOn: false, pathname: '/adv' }));
 
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.overwatchOn }));
 vi.mock('@/lib/router-compat/navigation', () => ({ usePathname: () => H.pathname }));
@@ -29,11 +29,6 @@ vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwa
 vi.mock('./SwarmTab', () => ({ default: () => <div data-testid="panel-swarm" /> }));
 vi.mock('./VoiceTab', () => ({ default: () => <div data-testid="panel-voice" /> }));
 vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
-vi.mock('./InboxTab', () => ({ default: () => <div data-testid="panel-inbox" /> }));
-// The badge hook is a NON-lazy import (it feeds the rail badge), so stub it —
-// the real one pulls plans-api → @papercusp/sync, which this shell test
-// doesn't stand up. Its own behavior is covered by InboxTab.test.tsx.
-vi.mock('./use-inbox-pending', () => ({ useInboxPendingCount: () => H.inboxPending }));
 
 import LeftSidebar from './LeftSidebar';
 
@@ -63,7 +58,6 @@ beforeEach(() => {
   localStorage.clear();
   H.overwatchOn = false;
   H.pathname = '/adv';
-  H.inboxPending = 0;
   document.body.className = '';
 });
 afterEach(() => {
@@ -208,51 +202,4 @@ describe('<LeftSidebar> shell', () => {
     expect(document.documentElement.style.getPropertyValue('--left-sidebar-w')).toBeTruthy();
   });
 
-  /* ── Inbox tab (EI-13037) — the human inbox beside Papercup ───────────── */
-
-  it('places the Inbox tab immediately BEFORE Papercup/sentinel (owner ask 2026-07-16, placement refinement)', () => {
-    H.overwatchOn = true; // both flag mocks share this value → sentinel visible too
-    renderRail();
-    const ids = within(screen.getByRole('tablist'))
-      .getAllByRole('tab')
-      .map((x) => x.getAttribute('data-testid'));
-    const inboxAt = ids.indexOf('left-sidebar-tab-inbox');
-    expect(inboxAt).toBeGreaterThan(-1);
-    expect(ids[inboxAt + 1]).toBe('left-sidebar-tab-sentinel');
-  });
-
-  it('keeps the Inbox tab when the role flags are off (it is not flag-gated)', () => {
-    H.overwatchOn = false;
-    renderRail();
-    expect(screen.getByTestId('left-sidebar-tab-inbox')).toBeTruthy();
-  });
-
-  it('mounts the Inbox panel when its tab is clicked', async () => {
-    renderRail();
-    fireEvent.click(screen.getByTestId('left-sidebar-tab-inbox'));
-    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('inbox'));
-    expect(await screen.findByTestId('panel-inbox')).toBeTruthy();
-  });
-
-  it('shows the pending badge on the expanded tab AND the collapsed rail when decisions are pending', () => {
-    H.inboxPending = 3;
-    renderRail();
-    expect(screen.getByTestId('inbox-badge-tab').textContent).toBe('3');
-    cleanup();
-    renderRail('?lsb=false');
-    expect(screen.getByTestId('inbox-badge-rail').textContent).toBe('3');
-  });
-
-  it('renders no badge when nothing needs the owner', () => {
-    H.inboxPending = 0;
-    renderRail();
-    expect(screen.queryByTestId('inbox-badge-tab')).toBeNull();
-    expect(screen.queryByTestId('inbox-badge-rail')).toBeNull();
-  });
-
-  it('caps the badge at 99+', () => {
-    H.inboxPending = 132;
-    renderRail();
-    expect(screen.getByTestId('inbox-badge-tab').textContent).toBe('99+');
-  });
 });

@@ -241,23 +241,39 @@ export async function buildOperatorPrompt(
     role === 'papercup'
       ? (async () => {
           try {
-            const { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps, sentinelScopeLabel } =
-              await import('../../papercup/papercup-context');
-            const { isWorkspaceCoordinationOn } = await import('../../workspace-brain-scope');
+            // Cached + deadline-bounded (P-009, evidence EI-13193): the raw gather
+            // measured ~6.5–10.8s per turn with no bound — the dominant prompt-build
+            // phase once WI-5094 killed the memory-embed cost. getSentinelBlockBounded
+            // serves fresh/stale from the operator SWR cache and caps a cold miss at
+            // SENTINEL_BLOCK_COLD_DEADLINE_MS (section omitted this turn; the
+            // single-flight build serves the next). A sentinel_scan turn has no human
+            // waiting, so it takes a generous deadline and warms the cache for typed
+            // turns instead.
+            const { getSentinelBlockBounded } = await import('../../papercup/sentinel-block-cache');
             const wsId = activeWorkspaceId();
             // The primary hive the anomalies leg addresses: the first registered harness
             // in the workspace (the operator chat has no single harness in scope).
             // Best-effort — an empty pool falls back to the workspace id.
             const primaryHive = harnessSlugs[0] ?? wsId;
-            // Heading scope LABEL: when the workspace-brain re-key is ON the summary's
-            // digest legs already span every hive (D-008), so present it as
-            // workspace-scoped rather than mislabeled with one harness. OFF =
-            // byte-identical (the primary hive). Only the LABEL changes — the anomalies
-            // leg's potSlug (overwatch addressing) stays primaryHive.
-            const scopeLabel = sentinelScopeLabel(wsId, primaryHive, await isWorkspaceCoordinationOn());
-            const ctxInput = await gatherSentinelContext(buildSentinelContextDeps(wsId, primaryHive), { potSlug: scopeLabel });
-            const ctxBlock = renderSentinelContext(ctxInput);
-            return ctxBlock.trim() ? ctxBlock : null;
+            return await getSentinelBlockBounded(
+              wsId,
+              primaryHive,
+              async () => {
+                const { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps, sentinelScopeLabel } =
+                  await import('../../papercup/papercup-context');
+                const { isWorkspaceCoordinationOn } = await import('../../workspace-brain-scope');
+                // Heading scope LABEL: when the workspace-brain re-key is ON the summary's
+                // digest legs already span every hive (D-008), so present it as
+                // workspace-scoped rather than mislabeled with one harness. OFF =
+                // byte-identical (the primary hive). Only the LABEL changes — the anomalies
+                // leg's potSlug (overwatch addressing) stays primaryHive.
+                const scopeLabel = sentinelScopeLabel(wsId, primaryHive, await isWorkspaceCoordinationOn());
+                const ctxInput = await gatherSentinelContext(buildSentinelContextDeps(wsId, primaryHive), { potSlug: scopeLabel });
+                const ctxBlock = renderSentinelContext(ctxInput);
+                return ctxBlock.trim() ? ctxBlock : null;
+              },
+              input.trigger === 'sentinel_scan' ? { deadlineMs: 60_000 } : undefined,
+            );
           } catch (err) {
             console.warn(
               '[converse-prompt] sentinel read-context build failed (omitting the section):',
