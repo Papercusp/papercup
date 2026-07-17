@@ -181,10 +181,20 @@ describe('pending-retry re-entrancy (audit P-022)', () => {
     const decision = await handle.onAnnounce(frame);
     expect(decision).toEqual({ admit: false, reason: 'pending' });
 
-    // Let several slow ticks elapse: 250ms ≈ 3-4 sequential 60ms ticks; the
-    // old interval would have fired ~16 overlapping ones.
-    await new Promise((r) => setTimeout(r, 250));
+    // Poll until the sequential retry chain has ticked several times, rather
+    // than sleeping a fixed 250ms and asserting a count. A fixed wall-clock
+    // sleep is flaky: on a loaded/oversubscribed gate host the retry timers are
+    // starved, so fewer ticks complete in the window and the count undercounts
+    // (observed: only 2 ticks in 250ms → gate red). Waiting for the CONDITION
+    // keeps the real timers + real re-entrancy behavior under test while
+    // decoupling from host load. The invariant that actually matters — a slow
+    // tick never overlaps the next (maxInFlight === 1) — holds however long the
+    // individual ticks take under load.
+    const deadline = Date.now() + 4000;
+    while (calls < 3 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
     expect(calls).toBeGreaterThanOrEqual(3); // the chain IS still retrying
     expect(maxInFlight).toBe(1); // …but never concurrently
-  });
+  }, 20_000);
 });

@@ -349,6 +349,8 @@ export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' 
 /**
  * Classify a single candidate into its risk tier. The order is deliberate:
  *   0. explicit needs-human routing (improvements:resolve back-edge) → HUMAN.
+ *   0.4. already triaged 'gate'/'reject' by the D-005 routing taxonomy (EI-815) → HUMAN,
+ *        regardless of kind — an explicit routing decision this classifier must respect.
  *   0.5. filed by the replication-liveness detector (EI-8455) → HUMAN, regardless
  *        of kind — a "wrong tool" bar like infra-environment, not a safety bar.
  *   1. kind gate — not an auto kind → HUMAN immediately (the common case).
@@ -367,6 +369,22 @@ export function classifyImprovement(
   if (c.needsHuman) {
     reasons.push('explicitly routed to a human (needs-human — set via improvements:resolve) → human');
     return { tier: 'human', reasons };
+  }
+
+  // EI-815: an item already triaged 'gate' (owner-escalation) or 'reject' by the D-005
+  // routing taxonomy (classifyIdeaType/triageIdea in triage.ts) must never re-enter the
+  // auto lane just because it also happens to be kind=bug with no infra watchdogKey,
+  // no protected path, and no protected keyword — e.g. EI-402 (a Latitude-VM environment
+  // fact whose title matched none of the keyword/path heuristics). The triage verdict
+  // lives ONLY in payload.ideaLifecycle.triageDecision, which this classifier otherwise
+  // never consults — so the auto-implement dispatcher kept re-picking it up every cadence
+  // tick (implementAttempts incrementing) until a worker manually routed it needs-human
+  // each time. Mirrors the needsHuman gate: an explicit routing decision this classifier
+  // must respect, not re-derive from kind/paths/keywords (D-003: one verdict chain).
+  if (c.ideaLifecycle?.triageDecision === 'gate' || c.ideaLifecycle?.triageDecision === 'reject') {
+    const decision = c.ideaLifecycle.triageDecision;
+    reasons.push(`already triaged '${decision}' (owner-escalation/rejected) — never re-enters the auto lane → human`);
+    return { tier: 'human', reasons, protectedHit: `triageDecision:${decision}` };
   }
 
   // EI-8455: a system:replication-liveness detector EI is a RUNTIME p2p-fleet
