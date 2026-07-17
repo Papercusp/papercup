@@ -23,7 +23,7 @@ import { Lightbulb, Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
 import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
-import { CHAT_SEED_EVENT, consumePendingChatSeed } from './inbox/chat-seed';
+import { CHAT_SEED_EVENT, consumePendingChatSeed, readChatDraft, writeChatDraft } from './inbox/chat-seed';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { Tooltip } from '../harness/Tooltip';
 
@@ -105,8 +105,14 @@ export function OperatorChat({
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
   // unmounted while the inbox view showed), and listen for the live event in
-  // case a seed arrives while mounted. Consume-once either way.
-  const [input, setInput] = useState<string>(() => consumePendingChatSeed() ?? '');
+  // case a seed arrives while mounted. Consume-once either way. A fresh seed
+  // wins over a persisted draft; otherwise the draft survives REMOUNTS (body
+  // swap to the inbox/pot view and back, reconnect re-keys) via the
+  // per-workspace sessionStorage mirror kept in sync below.
+  const [input, setInput] = useState<string>(() => consumePendingChatSeed() ?? readChatDraft() ?? '');
+  useEffect(() => {
+    writeChatDraft(input);
+  }, [input]);
   useEffect(() => {
     const onSeed = () => {
       const t = consumePendingChatSeed();

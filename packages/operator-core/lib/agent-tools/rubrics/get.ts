@@ -38,25 +38,15 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      rubricRef: z.string().min(1).optional().describe('a single rubric ref/slug, e.g. "pot-coordination-health" (n=1 shorthand for rubricRefs:[ref]; alias: rubricId)'),
-      rubricId: z.string().min(1).optional().describe('alias for rubricRef (EI-11400)'),
-      rubricRefs: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric refs/slugs to fetch (1–100); alias: rubricIds'),
-      rubricIds: z.array(z.string().min(1)).min(1).max(100).optional().describe('alias for rubricRefs (EI-11400)'),
+      rubricRef: z.string().min(1).optional().describe('a single rubric ref/slug, e.g. "pot-coordination-health" (n=1 shorthand for rubricRefs:[ref])'),
+      rubricRefs: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric refs/slugs to fetch (1–100)'),
     })
-    .superRefine(rejectRubricRefIdConflict)
-    .refine((a) => {
-      const ref = resolveRubricRefAlias({ rubricRef: a.rubricRef, rubricId: a.rubricId });
-      const refs = resolveRubricRefArrayAlias({ rubricRefs: a.rubricRefs, rubricIds: a.rubricIds });
-      return Boolean(ref) || (refs?.length ?? 0) > 0;
-    }, {
-      message: 'pass `rubricRef`/`rubricId` (one) or `rubricRefs`/`rubricIds` (many)',
+    .refine((a) => Boolean(a.rubricRef) || (a.rubricRefs?.length ?? 0) > 0, {
+      message: 'pass `rubricRef` (one) or `rubricRefs` (many)',
     }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    // Resolve aliases to canonical names
-    const rubricRef = resolveRubricRefAlias({ rubricRef: args.rubricRef, rubricId: args.rubricId });
-    const rubricRefs = resolveRubricRefArrayAlias({ rubricRefs: args.rubricRefs, rubricIds: args.rubricIds });
-    const ids = mergeIds(rubricRef, rubricRefs);
+    const ids = mergeIds(args.rubricRef, args.rubricRefs);
     const env = await runBulk(
       ids,
       async (rubricId) => {
