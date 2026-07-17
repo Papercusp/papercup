@@ -118,6 +118,49 @@ describe('planItemLaneBlockReason', () => {
     expect(got).toBeNull();
   });
 
+  // EI-13337/13352/13267/14693: the linked plan item is already terminal (done),
+  // but the work-item is still todo — stale residue the fleet must not re-work.
+  it('reports terminal for an item whose own plan item is already done', async () => {
+    getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-018', storedStatus: 'done' })] });
+    const got = await planItemLaneBlockReason({
+      payload: { plan_item: { plan_slug: 'agent-operability-improvements-implementation-2026-07-13', item_id: 'P-018' } },
+      harness: 'papercusp',
+    });
+    expect(got).not.toBeNull();
+    expect(got?.effectiveStatus).toBe('done');
+    expect(got?.itemId).toBe('P-018');
+    expect(got?.reason).toMatch(/already done/);
+    expect(got?.reason).toMatch(/stale residue/);
+  });
+
+  it('reports terminal for an item whose own plan item is dropped', async () => {
+    getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-007', storedStatus: 'dropped' })] });
+    const got = await planItemLaneBlockReason({
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-007' } },
+      harness: 'papercusp',
+    });
+    expect(got).not.toBeNull();
+    expect(got?.effectiveStatus).toBe('dropped');
+    expect(got?.reason).toMatch(/already dropped/);
+  });
+
+  // The item's OWN done status blocks it; but a done item used only as a BLOCKER
+  // must still UNblock its dependents (guarded by the existing blocker-resolves
+  // test) — this pins that we didn't over-broaden into that case.
+  it('does not report terminal for a todo item merely blocked-by a done item', async () => {
+    getPlanRowMock.mockResolvedValue({
+      items: [
+        planItem({ id: 'P-001', storedStatus: 'done' }),
+        planItem({ id: 'P-002', storedStatus: 'todo', blockedBy: ['P-001'] }),
+      ],
+    });
+    const got = await planItemLaneBlockReason({
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-002' } },
+      harness: 'papercusp',
+    });
+    expect(got).toBeNull();
+  });
+
   it('reports needs-human for an item carrying the stored needs-human token', async () => {
     getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-009', storedStatus: 'needs-human' })] });
     const got = await planItemLaneBlockReason({

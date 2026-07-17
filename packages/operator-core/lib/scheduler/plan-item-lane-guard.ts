@@ -13,6 +13,21 @@
  * causes damage when run early (WI-3667: a Phase-5 close-out claimed mid-outage-
  * diagnosis, before the diagnosis had settled).
  *
+ * ─ TERMINAL-lane residue (EI-13337 / EI-13352 / EI-13267 / EI-14693) ──────────
+ * The costlier, recurring variant: the linked plan item is already TERMINAL
+ * (`done`/`dropped`) yet the work-item is sitting at `state:'todo'` — a stale
+ * residue (a completion that never terminalized the WI, a WI reset back to todo
+ * after its plan item was already done, or a WI minted after the item completed).
+ * `reconcileLinkedWorkItemsForPlanItem` (the reverse mirror, EI-5925/6960) heals
+ * this — but ONLY on the plan-item's done TRANSITION; once the item is already
+ * done, that reaction never re-fires, so a WI that lands in `todo` afterwards is
+ * never reconciled. Nothing then stops the backlog-drain fleet from claiming it,
+ * re-verifying "already done, no code needed", and re-closing it by hand — the
+ * exact repeated fleet-time cost those four issues each report. This guard closes
+ * that gap defensively: a claimed WI whose linked plan item is terminal is treated
+ * the same as a blocked one (release + retry, never served), independent of
+ * WHATEVER left the WI non-terminal.
+ *
  * effectiveStatus resolution (blocked-by graph, cycles, missing refs — see
  * @papercusp/plan-parser's resolveEffectiveStatusForItems) is genuinely a JS-side
  * computation over the plan's JSONB `items` index, not a cheap SQL predicate — so
@@ -48,9 +63,9 @@ function extractPlanItemStamp(payload: unknown): { plan_slug: string; item_id: s
 
 /**
  * Whether a just-claimed work-item's linked plan-item lane is currently
- * blocked / needs-human — the case self-select must not silently hand out.
- * Returns null when the item carries no plan-item back-pointer, the linked
- * plan/item can't be found, or the lane is clear.
+ * blocked / needs-human / already-terminal — the cases self-select must not
+ * silently hand out. Returns null when the item carries no plan-item
+ * back-pointer, the linked plan/item can't be found, or the lane is clear.
  */
 export async function planItemLaneBlockReason(
   workItem: Pick<WorkItem, 'payload' | 'harness'>,
@@ -67,6 +82,17 @@ export async function planItemLaneBlockReason(
     const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
     const item = items.find((i) => i.id === stamp.item_id);
     if (!item) return null;
+    // Already-terminal lane (EI-13337/13352/13267/14693): the plan item is done or
+    // dropped, so this work-item is stale residue — completed/abandoned work, not
+    // open work. Never hand it to a self-selector to re-verify + re-close by hand.
+    if (item.effectiveStatus === 'done' || item.effectiveStatus === 'dropped') {
+      return {
+        reason: `plan-item ${stamp.plan_slug}#${stamp.item_id} is already ${item.effectiveStatus} — its work-item is stale residue of completed/abandoned work, not open work`,
+        planSlug: stamp.plan_slug,
+        itemId: stamp.item_id,
+        effectiveStatus: item.effectiveStatus,
+      };
+    }
     if (item.effectiveStatus === 'blocked') {
       const blockers = item.unresolvedBlockers.length > 0 ? ` (blocked-by: ${item.unresolvedBlockers.join(', ')})` : '';
       return {
