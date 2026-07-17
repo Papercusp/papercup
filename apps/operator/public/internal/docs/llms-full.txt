@@ -23686,6 +23686,39 @@ A sibling plan (D-004 of `fleet-deltas-leader-primitives-2026-07-10`) re-raised 
 * **Reusable lesson #2 — a 7-day rolling telemetry window BACKDATES an already-landed fix into a fresh “opportunity.”** `fleet-deltas-leader-primitives-2026-07-10` D-003 (written 2026-07-10 \~04:40Z) ranked this traffic as “\~50 GB/week of byte-identical re-fetches”, and that figure propagated unchecked into the P-011 item text, WI-3776’s title, and an owner-facing report. Per-**day** telemetry shows it was already false when written: `plans:attention` collapsed \~4 orders of magnitude on **07-04** (19–22 GB/day → 8.7 MB/day) and `plans:list` bytes \~17× on **07-05** (10.1 GB → 582 MB) — i.e. the **2026-07-03** EI-7028 poll-frequency/Inbox-gating fix, the very fix this document describes, had already retired the elephant. The 7d window was simply still carrying the two pre-fix days that held essentially all the volume. Current run-rate is \~0.6 GB/week, making `shared_cache.rs` worth \~150–200 MB/week: a real, well-tested win, roughly two orders of magnitude smaller than advertised. **Rank optimization work by a CURRENT run-rate (last 1h / last 24h), and plot per-day before quoting any multi-day total — otherwise you will measure a corpse and bill it to the future.** (Recorded as D-009 on that plan.)
 * **Reusable lesson**: this is the third time in this doc a delta/optimization mechanism turned out to be inert on its actual dominant caller — TOOL\_DELTA\_PROTOCOL was ON but nothing sent `_meta.delta` (2026-07-10 morning finding, `fleet-deltas-leader-primitives-2026-07-10` D-003), SYNC\_RESOURCE\_DELTA was ON but wired to a caller that was never the traffic source (this section). **Before trusting a flag/mechanism state, trace the actual caller’s code path to the mechanism — a flag being ON proves the mechanism *exists*, not that the specific traffic in question flows through it.**
 
+# The Plans face — simplified plan tracking + per-plan agent sessions
+
+> The op-chat sidebar's Plans tab, its read-first PlanDetail popup, and the planSessions.list resolver + plan-scoped transcript search that back it.
+
+The **Plans face** (`?opcv=plans`, beside Inbox in the op-chat sidebar) is the owner’s simplified plan tracker — a *status glance*, not the Create dock’s 11-facet browser. Shipped by `owner-plans-single-pane-2026-07-17`.
+
+## Where the pieces live
+
+[Section titled “Where the pieces live”](#where-the-pieces-live)
+
+* **Face + list** — `apps/operator/app/_components/plans/PlansPane.tsx`. Active buckets only (`bucketOf ∈ draft/ready/running`), one search box, one “Finished” toggle. Rows carry a **needs-you** badge (distinct plans with a decision-tier `plans.attention` item — `usePlansNeedingYouCount`), a **live-agents** count (`advRoster.list` active entries’ `currentPlanSlug`), item **progress** (`itemCounts`), and a **stale** chip (no activity ≥14d). Sorted needs-you desc, then recency. Pure helpers (`buildGlanceRows` / `progressOf` / `agoLabel` / `isStale`) are unit-tested.
+* **Popup** — `PlanPopupModal.tsx`. A `Modal` wrapping the SAME `PlanDetail` the Create dock renders (4th mount context), **read-first**, with a dirty-edit close guard and a `.pc-plans__main` scroll wrapper (without it PlanDetail clips inside the modal — the dock’s old clipping lesson). Tabs: **Plan | Sessions** on `?ppv`.
+* **Sessions tab** — `PlanSessionsTab.tsx`. Lists every agent session that touched the plan, opens each in `SessionChatModal` (the chat-grade viewer, not the raw inspector), and plan-scopes the transcript search. ”＋ Launch agent” is a plain plan-bound `launchAgent({ planSlug })` — no new kickoff kind.
+
+## planSessions.list — plan → its agent sessions
+
+[Section titled “planSessions.list — plan → its agent sessions”](#plansessionslist--plan--its-agent-sessions)
+
+The sync query `planSessions.list` (resolver in `sync-resolver/index.ts`, backed by `listPlanSessions` in `packages/operator-core/lib/adv-sessions.ts`) answers “which agents worked on this plan”, with **two attribution legs** (D-005):
+
+1. **primary** — `adv_sessions.plan_slug = $slug` (the launch binding);
+2. **supplement** — plan-UNBOUND sessions (`plan_slug IS NULL`) of an agent that is `terminal_owner`/`taken_by` on a feature-family `work_items` row created from this plan (`source_plan_slug`). Catches an agent that claimed plan work but was launched without a plan binding. A session bound to a *different* plan is deliberately excluded, so it never misattributes.
+
+Deduped `DISTINCT ON (coord_owner_id)` — one row per agent identity (the unit `SessionChatModal` resolves owner → transcript from). Invalidated by any `adv_sessions` write (`table-to-query-names.ts`), so the tab refreshes live.
+
+## Plan-scoped transcript search — `?plan` via `filters.owners`
+
+[Section titled “Plan-scoped transcript search — ?plan via filters.owners”](#plan-scoped-transcript-search--plan-via-filtersowners)
+
+`GET /api/adv/sessions/search-transcripts` takes a `?plan=<slug>` param. It resolves the plan’s owner set (via `listPlanSessions`) and pushes it into the shared search engine as **`filters.owners`** — the `session_turn` source ANDs `owner = ANY(owners)` in both rankers.
+
+**Why engine-level, not a post-filter:** the first cut filtered the engine’s top-N hits by session handle *after* ranking. For a common term (e.g. “escalation”) a plan’s hits rank below the GLOBAL top-N and were all dropped → 0 results even though the plan’s transcripts clearly contained the term. Pushing the owner set into the engine makes the ranking happen *within* the plan’s turns from the start. If you scope a search to a subset, scope it in the ranker (`filters.owners`), never after the cut.
+
 # Plans vs work-items — how a plan item becomes claimable, and which surface a coordinator pushes work onto
 
 > A plan item (P-NNN) is authoring/intent; a work-item (WI-/F-NNN) is the claimable execution unit. The two bridges (plans:start promotion + plan_items:convert at pickup), how the lane is claimed, and what a coordinator/Mug actually pushes work onto.
@@ -36842,7 +36875,7 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 
 * **Boot the VM**: `~/windows-vm/boot-windows.sh` (detach it — a killed parent session takes QEMU down with it; `setsid … & disown` or a user-level systemd unit). SSH: `ssh -i ~/.ssh/papercup-vm-win -p 2223 user@127.0.0.1`. SPICE viewer on `:5931` for pixels.
 * **Build**: `papercusp-desktop/bin/build-windows-on-vm.sh` does the whole lane — pack (D-006 exclusions live in its tar step) → scp → clean extract → `npm install` + `npx tauri build --no-bundle` + **ISCC (Inno Setup 6.5.2+)** under vcvars64 → collect → **host-side** `tauri signer sign` (updater `.sig`). It builds BOTH roles (Papercusp GUI + Papercusp Server) and packs each with Inno (template `src-tauri/windows/inno/papercusp.iss`, output collected to `src-tauri/target/windows-vm/bundle/inno/`), NOT Tauri’s bundler. **(Changed 2026-07-06, WI-3172: cut over from Tauri’s NSIS bundle to Inno Setup — see sharp edge §5 for why.)** Authenticode signing is in-VM via `WINDOWS_SIGN_*` / `WINDOWS_CERT_*` env (D-004; unset ⇒ unsigned dev/dogfood build); the minisign updater `.sig` is still minted host-side (the private key never leaves this box), though the Windows auto-updater itself is PENDING REWORK post-Inno-cutover — it expected the NSIS artifact (WI-3172).
-* **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList /S -Wait`.
+* **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait`. **NOT `/S`** — see sharp edge §23 (`/S` is the NSIS convention; this is now Inno Setup, and Inno silently ignores the unrecognized switch, launching the full interactive wizard instead of installing headlessly).
 * **Launch with logs**: `schtasks /run /tn papercusp-e2e` — an *Interactive-only* scheduled task running `papercusp-launch.cmd`, which redirects the app’s stdout+stderr to `C:\Users\user\papercusp-bk.log`. This is the ONLY way to get the GUI app’s output on Windows; launching over a bare ssh session puts the app in the wrong session (no webview) and captures nothing. `papercusp-e2e-direct` launches without the log redirect.
 * **Observe**: tail `papercusp-bk.log` for the chain `pg: listening` → `migrations` → `[serve] listening` → `wrote operator.json`. Operator health from inside the VM: `Invoke-WebRequest http://127.0.0.1:<port>/api/health`.
 * **Reach into the runtime**: `wsl -d papercup-runtime --user papercup --exec <cmd>` over ssh. Append `| tr -d '\r\0'` host-side — wsl.exe emits UTF-16 (it ignores `WSL_UTF8=1` in some paths; the desktop decodes by sniffing, you must too).
@@ -36902,6 +36935,8 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
     * heredoc content mis-split by cmd.exe before reaching bash: `cat: '# WI-3328...': No such file or directory`
     * a pipe meant for bash intercepted by cmd.exe instead: `'grep' is not recognized as an internal or external command`
     * single-quote nesting breaking across the ssh→cmd.exe→wsl→bash boundary: `/bin/bash: -c: line 1: unexpected EOF while looking for matching ''` **The fix is never to inline multi-layer quoting for anything beyond a single bare command.** Instead: (1) write a plain script file locally, (2) `scp` it to the VM using a **Windows-style** destination path (`user@127.0.0.1:C:/Users/User/<file>` — NOT `/mnt/c/Users/User/<file>`, which fails with `scp: dest open "/mnt/c/...": No such file or directory` because the SSH server’s sftp-server is native Windows and does not resolve WSL-mount paths as its own root), (3) execute with ONE clean invocation and zero further nested quoting: `ssh ... wsl -d papercup-runtime --exec bash /mnt/c/Users/User/<script>.sh` (or `node ... .mjs`) — note this is where §1’s `--exec` (not `--`) still applies, one layer downstream of the fix this item is about.
+
+23. **`/S` is a false-silent flag post-Inno-cutover — the installer looks perfectly “hung” instead of erroring** (found live 2026-07-17, WI-5013 Windows P-031/032 E2E). `/S` is the **NSIS** silent switch; this repo’s installer has been **Inno Setup** since WI-3172 (§5/§22 context above), and Inno Setup silently *ignores* any command-line switch it doesn’t recognize — it does not error, it just launches the full interactive setup wizard. Over `Start-Process -Wait` (headless, no one to click “Next”), this looks EXACTLY like a hung/deadlocked installer: the process stays alive and Responding:True, CPU/IO deltas go to zero within seconds, the extraction temp dir (`is-XXXXXX.tmp\…setup.tmp` + `_isetup\_setup64.tmp`) freezes at its fixed SFX-stub overhead size (\~4.3 MB) forever, and the real destination dir (`{app}`) never gets created — because the wizard is sitting on its welcome page, not extracting. Diagnostic tell: a proper Session-1 `EnumWindows` check (§18 pattern) shows a **visible** window titled `Setup - <ProductName> version <x.y.z>` owned by the `…-setup.tmp` child pid. **Fix**: use Inno’s real unattended switches — `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` (`/SILENT` still shows a progress bar with no wizard pages if you want *some* visual signal). Don’t spend 20+ minutes sampling I/O/Defender/disk-queue looking for a resource-contention cause before checking for a live wizard window — check the window FIRST, it’s a 10-second Session-1 EnumWindows call and rules this whole class out immediately.
 
 ## Where the artifacts live
 
