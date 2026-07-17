@@ -1,0 +1,112 @@
+#!/usr/bin/env node
+// Attach to a running node process's inspector (opened via SIGUSR1), run the V8
+// CPU profiler for a window, and print the top self-time call-sites. Companion to
+// leak-sample.mjs (heap allocation) — this one is for CPU/event-loop attribution.
+// Mirrors the manual method in the agent-insight
+// "attributing-loop-saturation-via-cpuprofiles": subtracts the profiler's own
+// observer-effect (node:inspector / (idle) / (program) frames) before ranking.
+//
+// Usage: node scripts/cpu-sample.mjs <pid> [durationMs] [inspectorPort] [--save <path>]
+import WebSocket from 'ws';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { writeFileSync } from 'node:fs';
+
+const args = process.argv.slice(2);
+const saveIdx = args.indexOf('--save');
+const savePath = saveIdx >= 0 ? args[saveIdx + 1] : null;
+const positional = args.filter((a, i) => !a.startsWith('--') && i !== saveIdx + 1);
+
+const pid = Number(positional[0]);
+const durationMs = Number(positional[1] || 30000);
+const startPort = Number(positional[2] || 9229);
+if (!pid) { console.error('usage: cpu-sample.mjs <pid> [durationMs] [port] [--save <path>]'); process.exit(1); }
+
+// 1) open the inspector on the target
+try { process.kill(pid, 'SIGUSR1'); } catch (e) { console.error('SIGUSR1 failed:', e.message); process.exit(1); }
+await sleep(1200);
+
+// 2) discover the inspector ws url (Node picks startPort, or next free)
+async function findWs() {
+  for (let port = startPort; port < startPort + 6; port++) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
+      const list = await r.json();
+      const t = list.find((x) => x.webSocketDebuggerUrl);
+      if (t) return t.webSocketDebuggerUrl;
+    } catch { /* try next */ }
+  }
+  return null;
+}
+let wsUrl = null;
+for (let i = 0; i < 8 && !wsUrl; i++) { wsUrl = await findWs(); if (!wsUrl) await sleep(700); }
+if (!wsUrl) { console.error('could not find inspector ws url (SIGUSR1 may need --inspect support)'); process.exit(1); }
+console.error('inspector:', wsUrl);
+
+const ws = new WebSocket(wsUrl, { maxPayload: 1024 * 1024 * 1024 });
+let id = 0;
+const pending = new Map();
+const send = (method, params) => new Promise((res, rej) => { const i = ++id; pending.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params })); });
+ws.on('message', (buf) => {
+  const m = JSON.parse(buf.toString());
+  if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.rej(new Error(m.error.message)) : p.res(m.result); }
+});
+await new Promise((r) => ws.on('open', r));
+
+await send('Profiler.enable');
+await send('Profiler.setSamplingInterval', { interval: 200 }); // µs; 200us = 5kHz, plenty for a 30s window
+await send('Profiler.start');
+console.error(`profiling ${durationMs}ms ...`);
+await sleep(durationMs);
+const { profile } = await send('Profiler.stop');
+ws.close();
+
+if (savePath) {
+  writeFileSync(savePath, JSON.stringify(profile));
+  console.error(`saved raw profile to ${savePath}`);
+}
+
+// 3) aggregate self-time per call frame (function@file:line), EXCLUDING the
+// profiler's own observer-effect (node:inspector / (idle) / (program) frames).
+const nodeById = new Map();
+for (const n of profile.nodes) nodeById.set(n.id, n);
+const selfUs = new Map(); // nodeId -> self time (µs)
+for (let i = 0; i < profile.samples.length; i++) {
+  const sid = profile.samples[i];
+  const dt = Math.max(0, profile.timeDeltas[i] || 0);
+  selfUs.set(sid, (selfUs.get(sid) || 0) + dt);
+}
+
+function shortUrl(u) {
+  if (!u) return '(native)';
+  u = u.replace(/^file:\/\//, '');
+  for (const m of ['/papercup/', '/papercup-release/', '/papercusp/']) {
+    const i = u.indexOf(m);
+    if (i >= 0) return u.slice(i + 1);
+  }
+  if (u.includes('/node_modules/')) return 'node_modules/' + u.split('/node_modules/').pop();
+  return u;
+}
+
+let totalUs = 0;
+let excludedUs = 0;
+const byFrame = new Map();
+for (const [nid, us] of selfUs) {
+  const n = nodeById.get(nid);
+  const cf = n?.callFrame || {};
+  const url = cf.url || '';
+  const fn = cf.functionName || '(anonymous)';
+  const isExcluded = url.includes('inspector') || fn === '(idle)' || fn === '(program)' || fn === '(garbage collector)' && false;
+  totalUs += us;
+  if (url.includes('inspector')) { excludedUs += us; continue; }
+  const key = `${fn || '(anon)'} @ ${shortUrl(url)}:${cf.lineNumber ?? '?'}`;
+  byFrame.set(key, (byFrame.get(key) || 0) + us);
+}
+
+const realUs = totalUs - excludedUs;
+const top = [...byFrame.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30);
+console.log(`\n=== TOP CPU SELF-TIME (sampled ${(durationMs/1000)|0}s, total ${(totalUs/1e6).toFixed(1)}s, profiler-excluded ${(excludedUs/1e6).toFixed(1)}s [${((excludedUs/totalUs)*100).toFixed(1)}%], real workload ${(realUs/1e6).toFixed(1)}s) ===`);
+for (const [site, us] of top) {
+  const s = (us / 1e6).toFixed(2);
+  const pct = ((us / realUs) * 100).toFixed(1);
+  console.log(`${s.padStart(7)}s  ${pct.padStart(5)}%  ${site}`);
+}

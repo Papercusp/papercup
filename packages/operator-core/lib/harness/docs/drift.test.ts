@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkSubjectRefDrift, checkDocDrift, submoduleForPath } from './drift';
+import { checkSubjectRefDrift, checkDocDrift, submoduleForPath, __clearSubmoduleBaselineShaCacheForTests } from './drift';
 import type { GitRunner } from './subject-ref';
 
 /** Real git runner over a fixture repo — exactly the shape run-git-sync injects. */
@@ -318,5 +318,52 @@ describe('submodule drift routing (#3): superproject log is blind; routed log se
       submodulePaths: ['libs/x'],
     });
     expect(r.stale).toBe(true);
+  });
+
+  // WI-5282: (repoRoot, baseline, submodulePath) → gitlink SHA is content-addressed
+  // (immutable per commit) — a freshness-sweep candidate loop calling this for MANY
+  // docs sharing the same baseline/submodule must not re-spawn `git ls-tree` per doc.
+  describe('submoduleBaselineSha caching (WI-5282)', () => {
+    beforeEach(() => __clearSubmoduleBaselineShaCacheForTests());
+    afterAll(() => __clearSubmoduleBaselineShaCacheForTests());
+
+    it('a second checkSubjectRefDrift call for the same (repoRoot, baseline, submodule) does not re-spawn ls-tree', async () => {
+      let lsTreeCalls = 0;
+      const countingRunGit: GitRunner = (args, cwd) => {
+        if (args[0] === 'ls-tree') lsTreeCalls++;
+        return runGit(args, cwd);
+      };
+      const opts = { runGit: countingRunGit, repoRoot: sup, submodulePaths: ['libs/x'] };
+
+      const r1 = await checkSubjectRefDrift({ kind: 'path', globs: ['libs/x/mod.ts'] }, s.supc0, opts);
+      expect(r1.stale).toBe(true);
+      expect(lsTreeCalls).toBe(1);
+
+      // Different doc, same (repoRoot, baseline, submodule) pair — must hit the cache.
+      const r2 = await checkSubjectRefDrift({ kind: 'path', globs: ['libs/x/stable.ts'] }, s.supc0, opts);
+      expect(r2.stale).toBe(false);
+      expect(lsTreeCalls).toBe(1); // still 1 — no redundant spawn
+    });
+
+    it('a DIFFERENT baseline is not served the wrong (stale) cache entry', async () => {
+      let lsTreeCalls = 0;
+      const countingRunGit: GitRunner = (args, cwd) => {
+        if (args[0] === 'ls-tree') lsTreeCalls++;
+        return runGit(args, cwd);
+      };
+      const opts = { runGit: countingRunGit, repoRoot: sup, submodulePaths: ['libs/x'] };
+
+      await checkSubjectRefDrift({ kind: 'path', globs: ['libs/x/mod.ts'] }, s.supc0, opts);
+      expect(lsTreeCalls).toBe(1);
+
+      // A never-before-seen baseline must still resolve via a real (fresh) ls-tree call.
+      const rHead = await checkSubjectRefDrift(
+        { kind: 'path', globs: ['libs/x/mod.ts'] },
+        g(sup, ['rev-parse', 'HEAD']),
+        opts,
+      );
+      expect(rHead.stale).toBe(false); // HEAD..HEAD range — nothing changed since itself
+      expect(lsTreeCalls).toBe(2);
+    });
   });
 });
