@@ -65,6 +65,13 @@ export interface ScoutCycleLike {
   survivors?: readonly unknown[];
   /** Why the cycle ended (ScoutCycleResult.stop). */
   stop?: string;
+  /**
+   * EI-13119: per-ideator slot outcomes, persisted on the 'ran' tick detail so a
+   * no-ideas streak is ledger-diagnosable — ok:true raw:0 (model empty) vs ok:true
+   * raw>0 produced:0 (grounding/shape filter drops) vs ok:false (spec/transport) —
+   * instead of requiring a live re-probe of the LLM path (the 07-14..16 outage class).
+   */
+  ideators?: readonly { lens: string; ok: boolean; raw: number; produced: number; error?: string }[];
 }
 
 /**
@@ -340,6 +347,8 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         ...(typeof state.signalScore === 'number' && Number.isFinite(state.signalScore)
           ? { signalScore: state.signalScore }
           : {}),
+        // EI-13119: per-ideator slot outcomes — see ScoutCycleLike.ideators.
+        ...(cycle.ideators && cycle.ideators.length > 0 ? { ideators: cycle.ideators } : {}),
       },
     });
     return {

@@ -205,6 +205,24 @@ describe('runScoutTick — tick observability (P-034)', () => {
     expect(calls.ticks[0]).toMatchObject({ status: 'ran', ideasGenerated: 0, ideasRouted: 0, ideasDeduped: 0 });
   });
 
+  it('persists per-ideator slot outcomes on the ran tick detail when the cycle carries them (EI-13119)', async () => {
+    const ideators = [
+      { lens: 'analogical', ok: true, raw: 3, produced: 0 },
+      { lens: 'first-principles', ok: false, raw: 0, produced: 0, error: 'transport boom' },
+    ];
+    const { deps, calls } = makeDeps({ runCycle: async () => ({ ...fakeCycle([]), ideators }) });
+    await runScoutTick(deps);
+    expect(calls.ticks[0].status).toBe('ran');
+    expect(calls.ticks[0].detail?.ideators).toEqual(ideators);
+  });
+
+  it('omits the ideators detail key entirely when the cycle reports none (EI-13119)', async () => {
+    const { deps, calls } = makeDeps({ runCycle: async () => fakeCycle([]) });
+    await runScoutTick(deps);
+    expect(calls.ticks[0].status).toBe('ran');
+    expect(calls.ticks[0].detail ?? {}).not.toHaveProperty('ideators');
+  });
+
   it('records an error tick (with the message) when the cycle throws', async () => {
     const { deps, calls } = makeDeps({
       runCycle: async () => {

@@ -282,7 +282,22 @@ export async function readNoveltyCorpus(): Promise<CorpusEntry[]> {
  * the real `captureImprovement`, harness-scoped). Each LLM step takes the
  * recorder-wrapped call `runScoutCycle` passes in.
  */
-export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycleDeps {
+/** EI-13119: compact per-ideator outcome the ideate leg captures for the tick ledger. */
+export interface IdeationSlotOutcome {
+  lens: string;
+  ok: boolean;
+  raw: number;
+  produced: number;
+  error?: string;
+}
+
+export function buildScoutCycleDeps(
+  opts: BuildScoutCycleDepsOptions,
+): ScoutCycleDeps & { readonly lastIdeation: IdeationSlotOutcome[] | undefined } {
+  // EI-13119: the ideate leg's per-slot outcomes, written by generate() below and read
+  // back by the cycle runner AFTER runScoutCycle resolves (via the getter on the returned
+  // deps) so the scheduler can persist them on the 'ran' tick detail.
+  let lastIdeation: IdeationSlotOutcome[] | undefined;
   const routerPorts: RouterPorts = {
     plansNew: buildPlansNewPort(opts.createPlanDraft),
     gymDispatch: buildGymDispatchPort(opts.archive),
@@ -404,6 +419,9 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     llmCall: opts.llmCall,
     limits: opts.limits,
     cycleId: opts.cycleId,
+    get lastIdeation() {
+      return lastIdeation;
+    },
     ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}),
     ...(opts.onPhase ? { onPhase: opts.onPhase } : {}),
     readCorpus: async () => {

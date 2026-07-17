@@ -348,7 +348,10 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   });
   try {
     onPhase?.('run-cycle');
-    return await runScoutCycle(deps);
+    const result = await runScoutCycle(deps);
+    // EI-13119: attach the ideate leg's per-slot outcomes so the scheduler persists
+    // them on the 'ran' tick detail (a no-ideas streak becomes ledger-diagnosable).
+    return { ...result, ...(deps.lastIdeation ? { ideators: deps.lastIdeation } : {}) };
   } finally {
     // Persist scout seeds (P-012) even if the cycle threw mid-route.
     if (isFlushable(archive)) {
