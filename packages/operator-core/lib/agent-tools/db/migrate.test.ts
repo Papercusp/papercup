@@ -16,13 +16,26 @@
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// WI-5217: explicit result/param types so `.mock.calls[...]` destructures and
+// `.mockResolvedValue({...extra fields})` overrides typecheck against the real
+// shapes (checkResourceAction's ResourceActionRecord has an optional fence_seq;
+// openEscalation takes (identity, input) — an untyped `vi.fn(async () => ...)`
+// infers a ZERO-arg mock, so `.mock.calls[0]` was a `[]` tuple with no index 0/1).
+type ResourceActionResult = { applied: boolean; fence_seq?: number; applied_ts?: Date };
+type EscalationInputLike = {
+  severity: string;
+  summary: string;
+  body: string;
+  meta?: { subjectSignature?: string };
+};
+
 const h = vi.hoisted(() => ({
   spawnSync: vi.fn(),
   readFileSync: vi.fn(() => 'CREATE TABLE foo (id int);\n'),
-  checkResourceAction: vi.fn(async () => ({ applied: false })),
+  checkResourceAction: vi.fn(async (): Promise<ResourceActionResult> => ({ applied: false })),
   recordResourceAction: vi.fn(async () => undefined),
   inWorkspaceTxn: vi.fn(async (_domain: unknown, _owner: unknown, fn: (tx: unknown) => unknown) => fn({})),
-  openEscalation: vi.fn(async () => ({ msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' })),
+  openEscalation: vi.fn(async (_identity: unknown, _input: EscalationInputLike) => ({ msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' })),
 }));
 
 vi.mock('node:child_process', () => ({ spawnSync: h.spawnSync }));

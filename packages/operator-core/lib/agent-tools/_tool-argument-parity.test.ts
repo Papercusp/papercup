@@ -37,10 +37,10 @@ describe('Tool Argument Parity Guard (EI-11400, WI-4652)', () => {
       const tool = lookupByMcpName(toolName);
       expect(tool, `${toolName} not registered`).toBeDefined();
 
-      if (tool?.argsSchema?.shape) {
-        const shape = tool.argsSchema.shape as Record<string, unknown>;
+      const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+      if (properties) {
         expect(
-          shape[canonicalFieldName],
+          properties[canonicalFieldName],
           `${toolName} must accept canonical field \`${canonicalFieldName}\``,
         ).toBeDefined();
       }
@@ -50,10 +50,10 @@ describe('Tool Argument Parity Guard (EI-11400, WI-4652)', () => {
       const tool = lookupByMcpName(toolName);
       expect(tool, `${toolName} not registered`).toBeDefined();
 
-      if (tool?.argsSchema?.shape) {
-        const shape = tool.argsSchema.shape as Record<string, unknown>;
+      const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+      if (properties) {
         expect(
-          shape['rubricId'],
+          properties['rubricId'],
           `${toolName} must accept alias \`rubricId\` (backward compatibility for EI-11400)`,
         ).toBeDefined();
       }
@@ -77,9 +77,9 @@ describe('Tool Argument Parity Guard (EI-11400, WI-4652)', () => {
       const tool = lookupByMcpName('code:run');
       expect(tool, 'code:run not registered').toBeDefined();
 
-      if (tool?.argsSchema?.shape) {
-        const shape = tool.argsSchema.shape as Record<string, unknown>;
-        expect(shape['script'], 'code:run must accept canonical field `script`').toBeDefined();
+      const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+      if (properties) {
+        expect(properties['script'], 'code:run must accept canonical field `script`').toBeDefined();
       }
     });
 
@@ -87,10 +87,10 @@ describe('Tool Argument Parity Guard (EI-11400, WI-4652)', () => {
       const tool = lookupByMcpName('code:run');
       expect(tool, 'code:run not registered').toBeDefined();
 
-      if (tool?.argsSchema?.shape) {
-        const shape = tool.argsSchema.shape as Record<string, unknown>;
+      const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+      if (properties) {
         expect(
-          shape['code'],
+          properties['code'],
           'code:run must accept alias `code` (backward compatibility for EI-11400)',
         ).toBeDefined();
       }
