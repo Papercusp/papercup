@@ -128,7 +128,7 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
       changedFiles: new Set(['b.ts']),
     });
     expect(r.verdict).toBe('ok-peer-drift');
-    expect(r.peerDrift.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
+    expect(r.peerDrift!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
     expect(r.attributed).toEqual([]);
   });
 
@@ -140,7 +140,7 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
       changedFiles: new Set(['a.ts']),
     });
     expect(r.verdict).toBe('fail-attributed');
-    expect(r.attributed.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
   });
 
   it('a bare run (no --mine) gates ANY regression — CI stays strict', () => {
