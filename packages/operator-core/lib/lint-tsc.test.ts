@@ -12,6 +12,8 @@
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import { parseTscErrors, syntaxBrokenFiles, countByFile, decidePerFile, TSC_COMMAND } from '../../../scripts/lint-tsc.mjs';
+// eslint-disable-next-line import/no-relative-packages
+import { TSC_COMMAND as OPERATOR_VITE_TSC_COMMAND } from '../../../scripts/lint-tsc-operator-vite.mjs';
 
 describe('TSC_COMMAND (EI-487 regression guard)', () => {
   it('always measures fresh — never trusts a warm/stale incremental cache', () => {
@@ -25,6 +27,16 @@ describe('TSC_COMMAND (EI-487 regression guard)', () => {
     // as a "harmless" perf tweak without re-deriving why it's here.
     expect(TSC_COMMAND).toContain('--incremental false');
     expect(TSC_COMMAND).toContain('--noEmit');
+  });
+});
+
+// EI-847: the operator-vite counterpart of the gate above, built on the same shared
+// scripts/lib/tsc-baseline-gate.mjs policy (see lint-tsc-operator-vite.mjs).
+describe('operator-vite TSC_COMMAND (EI-847)', () => {
+  it('targets the operator-vite tsconfig and carries the same fresh-measurement guard', () => {
+    expect(OPERATOR_VITE_TSC_COMMAND).toContain('apps/operator-vite/tsconfig.json');
+    expect(OPERATOR_VITE_TSC_COMMAND).toContain('--incremental false');
+    expect(OPERATOR_VITE_TSC_COMMAND).toContain('--noEmit');
   });
 });
 

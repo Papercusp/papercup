@@ -40,4 +40,28 @@ describe('EI-6479 — typecheck script exists and runs the real baseline gate', 
     ).toBeTruthy();
     expect(s.typecheck).toMatch(/lint-tsc\.mjs/);
   });
+
+  // EI-847: operator-vite's `typecheck` used to be a raw `tsc --noEmit`, which floods with
+  // hundreds of pre-existing errors (native-module ambient-type gaps transitively reachable
+  // through operator-core) and gives an agent editing one component no clean per-file signal.
+  // It must stay aliased onto the same per-file baseline gate as operator-core (via
+  // scripts/lint-tsc-operator-vite.mjs, built on the shared scripts/lib/tsc-baseline-gate.mjs
+  // policy) — this test fails if it regresses back to a bare `tsc --noEmit`.
+  it('operator-vite package.json defines a `typecheck` script wired to the baseline gate, not a raw tsc flood', () => {
+    const s = scripts('apps/operator-vite/package.json');
+    expect(
+      s.typecheck,
+      'apps/operator-vite/package.json must define a `typecheck` script',
+    ).toBeTruthy();
+    expect(s.typecheck).toMatch(/lint-tsc-operator-vite\.mjs/);
+    expect(s.typecheck).not.toMatch(/^tsc\b/);
+  });
+
+  it('apps/operator-vite/.tsc-baseline.json exists with a per-file `files` map', () => {
+    const baseline = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'apps/operator-vite/.tsc-baseline.json'), 'utf-8'),
+    );
+    expect(baseline.files, 'baseline must have a files map').toBeTypeOf('object');
+    expect(Object.keys(baseline.files).length).toBeGreaterThan(0);
+  });
 });
