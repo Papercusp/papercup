@@ -85,18 +85,23 @@ describe('CreateHarnessPicker close × real adapter (stuck-modal regression)', (
   // case the two steps ever diverge in how Modal/Radix mounts them.
   it('Escape on the TOP-LEVEL PICKER GRID (no ?picker) clears ?create; the modal unmounts', async () => {
     mountAt('/?create=true');
-    await waitFor(() => expect(screen.getByText('Add a Hive')).toBeTruthy());
+    // The grid step renders BOTH the (hidden) Dialog.Title AND the PickerStep's
+    // own visible <h2>, both reading "Add a Hive" — getByText throws on the
+    // ambiguous match; getByRole('heading', ...) resolves the visible <h2> only
+    // (the Dialog.Title is display:none, so it never satisfies the heading role's
+    // default accessibility-tree visibility filtering).
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Add a Hive' })).toBeTruthy());
     expect(window.location.search).toContain('create=true');
 
     fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
 
     await waitFor(() => expect(window.location.search).not.toContain('create=true'));
-    await waitFor(() => expect(screen.queryByText('Add a Hive')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Add a Hive' })).toBeNull());
   });
 
   it('a backdrop click on the picker grid step also closes it', async () => {
     mountAt('/?create=true');
-    await waitFor(() => expect(screen.getByText('Add a Hive')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Add a Hive' })).toBeTruthy());
 
     // Radix mounts the Overlay as the `data-anim="fade"` sibling ahead of the
     // Dialog.Content inside the Portal (document.body).
@@ -107,6 +112,6 @@ describe('CreateHarnessPicker close × real adapter (stuck-modal regression)', (
     fireEvent.click(backdrop as Element);
 
     await waitFor(() => expect(window.location.search).not.toContain('create=true'));
-    await waitFor(() => expect(screen.queryByText('Add a Hive')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Add a Hive' })).toBeNull());
   });
 });

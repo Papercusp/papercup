@@ -90,7 +90,28 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
     };
   }
   const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
-  if (workItem) return { ok: true, id: it.id, workItem };
+  if (workItem) {
+    // EI-529: this is the NAMED-assignee dispatch path (a leader/dispatcher assigning a
+    // SPECIFIC item to a SPECIFIC agent) — exactly the shape the report's "brief dispatch
+    // re-assigns already-completed work" pattern hit. Surface a prior holder's checkpoint
+    // (when one exists) so the new assignee starts in verify-mode instead of rebuilding.
+    const hint = await getClaimTimeCheckpointHint({
+      harness: workItem.harness ?? it.harness ?? null,
+      workItemId: it.id,
+      workspaceId: identity.workspaceId ?? undefined,
+    }).catch(() => null);
+    return hint
+      ? {
+          ok: true,
+          id: it.id,
+          workItem,
+          checkpoint: hint.checkpoint,
+          checkpointAgeMs: hint.checkpointAgeMs,
+          checkpointWarning:
+            'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
+        }
+      : { ok: true, id: it.id, workItem };
+  }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
   const current = await getWorkItem(it.id, it.harness);
   const failure = classifyClaimFailure(current, claimer);

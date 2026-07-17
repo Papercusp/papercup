@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareScopes, makeGithubProvider } from './providers';
+import { CLAUDE_OAUTH_DEFAULTS, compareScopes, makeClaudeProvider, makeGithubProvider } from './providers';
 
 describe('compareScopes', () => {
   it('flags exact matches', () => {
@@ -50,5 +50,28 @@ describe('GitHub provider authorize URL', () => {
     expect(url.searchParams.get('scope')).toBe('repo read:user');
     expect(url.searchParams.get('state')).toBe('STATE_TOKEN');
     expect(url.searchParams.get('redirect_uri')).toContain('localhost:3055');
+  });
+});
+
+describe('Claude provider endpoints (EI-553 regression)', () => {
+  // Pins CLAUDE_OAUTH_DEFAULTS to the hosts confirmed live against the `claude` CLI's
+  // own bundled OAuth config (v2.1.212) — catches a future silent re-drift back to the
+  // retired `claude.ai` / `console.anthropic.com` hosts.
+  it('defaults to the current claude.com/cai + platform.claude.com hosts, not the retired ones', () => {
+    expect(CLAUDE_OAUTH_DEFAULTS.authorizeUrl).toBe('https://claude.com/cai/oauth/authorize');
+    expect(CLAUDE_OAUTH_DEFAULTS.tokenUrl).toBe('https://platform.claude.com/v1/oauth/token');
+    expect(CLAUDE_OAUTH_DEFAULTS.redirectUri).toBe('https://platform.claude.com/oauth/code/callback');
+    // The client_id is UNCHANGED across the host migration — same PKCE client, re-hosted.
+    expect(CLAUDE_OAUTH_DEFAULTS.clientId).toBe('9d1c250a-e61b-44d9-88ed-5944d1962f5e');
+  });
+
+  it('builds an authorize URL on the live host with the PKCE params intact', () => {
+    const provider = makeClaudeProvider({ codeVerifier: 'test-verifier' });
+    const url = new URL(provider.buildAuthorizeUrl([], 'STATE_TOKEN'));
+    expect(url.origin + url.pathname).toBe('https://claude.com/cai/oauth/authorize');
+    expect(url.searchParams.get('redirect_uri')).toBe('https://platform.claude.com/oauth/code/callback');
+    expect(url.searchParams.get('client_id')).toBe(CLAUDE_OAUTH_DEFAULTS.clientId);
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.get('state')).toBe('STATE_TOKEN');
   });
 });

@@ -981,8 +981,23 @@ export interface GatewayStats {
   /** Bee-FACING final 503s (2026-06-22 audit) — what the bee receives after the gateway exhausts internal
    *  retries. Makes egress-proxy leakage visible (it isn't a rate shed, so shedAllThrottled never counted it). */
   beeFacing503: { egressExhausted: number; tokenStall: number };
-  /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
-  unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
+  /** The bound account's most-constraining unified window, if seen (D-009 / P-014).
+   *  `observedAt`/`staleAsOfMs`/`rejectedActuallyEnforced` (EI-535, gateway-healthz-stale-latch fix):
+   *  this reading freezes at its last-observed value once traffic goes idle (no new upstream response
+   *  to run `recordHeaders` again) — `rejected` alone can't tell a caller "genuinely still rejected"
+   *  from "last seen hours ago, and that window has long since rolled over". `observedAt` = when this
+   *  reading was actually taken; `staleAsOfMs` = how long ago (derived, `now - observedAt`, present
+   *  only when observedAt is known); `rejectedActuallyEnforced` = `rejected && resetAt > now` — the
+   *  self-describing verdict a consumer should trust instead of the raw (possibly stale) `rejected`. */
+  unified?: {
+    window: string;
+    utilization: number;
+    resetAt: number;
+    rejected: boolean;
+    observedAt?: number;
+    staleAsOfMs?: number;
+    rejectedActuallyEnforced?: boolean;
+  };
   /** RPM-SMOOTHING observability (hive-inference-gateway-stability P-005): is the burst-dodging pace
    *  actually engaged, AS DATA not inference. The gateway runs its OWN per-account governor registry
    *  (invisible to dev:rate_governor_status), so this is the only window into "is smoothing working".

@@ -329,7 +329,7 @@ export default defineTool({
     if (res?.workItem) {
       const wi = res.workItem as { id: string; harness?: string | null };
       checkpointHint = await import('../../work-item-checkpoint')
-        .then((m) => m.getClaimTimeCheckpointHint({ harness: wi.harness ?? null, workItemId: wi.id, workspaceId: ident.workspaceId }))
+        .then((m) => m.getClaimTimeCheckpointHint({ harness: wi.harness ?? null, workItemId: wi.id, workspaceId: ident.workspaceId ?? undefined }))
         .catch(() => null);
     }
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
