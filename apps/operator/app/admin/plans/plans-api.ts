@@ -230,9 +230,11 @@ export interface AttentionItem {
   triagedAt: string | null;
   actions: AttentionAction[];
   ref: { kind: AttentionKind } & Record<string, unknown>;
-  /** Structured report payload (kind `operator-report` only) — the shared
-   *  ReportBlock the detail pane renders natively via ReportBlockCard.
-   *  report-cards-inbox-reconciliation-2026-06-05 D-001/D-003. */
+  /** Structured report payload — the shared ReportBlock the detail pane
+   *  renders natively via ReportBlockCard. Set by `operator-report` items
+   *  (report-cards-inbox-reconciliation-2026-06-05 D-001/D-003) and by a
+   *  report-carrying `coord-message` (an agent/fleet-leader status card sent
+   *  via coord:send `report` — agent-report-cards-2026-07-17 P-002). */
   report?: ReportBlock;
   /** The autonomy category this item's disposition belongs to (or null for an
    *  ungoverned signal). Drives the category badge. */

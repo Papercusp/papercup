@@ -225,6 +225,66 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
         _strip_shell_quotes(command)):
     deny(_os_scheduler_deny_reason(command))
 
+# ── systemd user-manager exit/kill guard (EI-13135, 2026-07-17) ─────────────
+# `systemctl --user exit` (or `start exit.target`) cleanly shuts down the
+# WHOLE user@<uid> manager in one shot — bg-host, :3070, :3170, the inference
+# gateway, git-sync, mcp-proxy, every timer/watchdog, AND every other live
+# agent session's scope, all at once. Confirmed root cause of the 2026-07-16
+# 23:00:47Z fleet-wide outage (EI-13135): the manager logged "Activating
+# special unit exit.target", exited 0/SUCCESS at 23:01:09Z, and every service
+# stayed dead for ~15min until an owner-authorized `sudo systemctl start
+# user@1000.service` recovered it. `loginctl terminate-user`/`kill-user` and
+# `systemctl stop|kill user@<uid>.service` are the SAME class (they too tear
+# down every unit under that user in one shot) — same deny.
+#
+# UNCONDITIONAL — NOT gated on PAPERCUSP_AGENT_SESSION or the canonical-tree
+# check the git-guard uses. EI-7872 already established the marker is
+# silently unset in exactly the fleet-launched headless sessions this must
+# protect, and unlike the git-guard the resource here isn't scoped to a
+# particular working tree — it's the WHOLE HOST's service plane, host-wide
+# regardless of cwd. This hook only mediates Claude/Codex Bash-tool calls, so
+# an unconditional deny here never blocks the owner's own terminal — only a
+# Bash-tool-mediated call, which has no legitimate reason to tear down the
+# shared host's entire service plane.
+_EXIT_GUARD_DENY = (
+    'systemd user-manager exit/kill guard (EI-13135): `{op}` would tear down '
+    'the ENTIRE shared user@<uid> service plane in one shot — bg-host, :3070, '
+    ':3170, the inference gateway, git-sync, mcp-proxy, every timer/watchdog, '
+    'and every OTHER live agent session\'s scope, all at once. This caused a '
+    '~15min fleet-wide outage on 2026-07-16 (EI-13135). There is no '
+    'legitimate agent reason to do this — if you mean to restart one specific '
+    'papercusp service, use the blessed wrapper (dev:restart) instead.'
+)
+for _seg in re.split(r'[;&|\n]', command):
+    _es = _strip_shell_quotes(_seg.strip())
+    # Peel the same benign leading wrappers the git-guard peels (sudo/env/nice/
+    # ionice/xargs/rtk/time/command/nohup/exec/setsid/…), defined fresh here so
+    # this block never depends on the git-guard's conditionally-defined
+    # `_unwrap` (which may not exist at all when that `if` didn't execute) —
+    # this guard must fire independent of whether that branch ran.
+    for _ in range(8):
+        _next = re.sub(
+            r'^\s*(?:'
+            r'sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*'
+            r'|env(?:\s+[A-Za-z_]\w*=\S*)*'
+            r'|nice(?:\s+-n\s*-?\d+)?'
+            r'|ionice(?:\s+-\w+(?:\s+\d+)?)*'
+            r'|xargs(?:\s+-\w+)*'
+            r'|rtk|time|command|nohup|exec|setsid|nocorrect|stdbuf|doas|nocache'
+            r')\s+',
+            '', _es, count=1)
+        if _next == _es:
+            break
+        _es = _next
+    if re.match(r'systemctl\b(?:\s+--user)?\s+(?:start\s+exit\.target|exit)\b(?:\s|$)', _es):
+        deny(_EXIT_GUARD_DENY.format(op='systemctl --user exit'))
+    if re.match(r'systemctl\b(?:\s+--user)?\s+(?:halt|poweroff)\b(?:\s|$)', _es):
+        deny(_EXIT_GUARD_DENY.format(op='systemctl --user halt/poweroff'))
+    if re.match(r'loginctl\b\s+(?:terminate-user|kill-user)\b(?:\s|$)', _es):
+        deny(_EXIT_GUARD_DENY.format(op='loginctl terminate-user/kill-user'))
+    if re.match(r'systemctl\b\s+(?:stop|kill)\s+user@\d+\.service\b(?:\s|$)', _es):
+        deny(_EXIT_GUARD_DENY.format(op='systemctl stop/kill user@<uid>.service'))
+
 # ── tauri-agent-tools target guard (EI-10939) ────────────────────────────────
 # SAFETY. `tauri-agent-tools` picks its target by scanning /tmp for
 # `tauri-dev-bridge-<pid>.token` files and taking THE FIRST LIVE ONE IT HAPPENS

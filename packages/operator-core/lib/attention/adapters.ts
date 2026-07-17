@@ -273,9 +273,13 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
   // blocked/failing rows surfaces as an Alert even on a broadcast) but NEVER
   // to Decision — a coord message stays a COMMUNICATION (ack-only, P-102/D-011);
   // a needs-human status in a report card caps at Alert, and a genuine ask
-  // still routes through coord:escalate.
+  // still routes through coord:escalate. An auto/lifecycle broadcast is never
+  // elevated (lifecycle wins — the same rule that keeps an auto directToOwner
+  // message at activity), so machine-stamped robot chatter can't self-promote.
   const tier: AttentionTier =
-    report && baseTier === 'activity' && reportTier(report) !== 'activity' ? 'alert' : baseTier;
+    report && !isAuto && baseTier === 'activity' && reportTier(report) !== 'activity'
+      ? 'alert'
+      : baseTier;
   const needsHuman = needsHumanForTier(tier);
   return {
     id: `coord-message:${m.msgId}`,

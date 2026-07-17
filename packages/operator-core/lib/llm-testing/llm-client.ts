@@ -104,7 +104,11 @@ export function canonicalizeAnthropicModel(model: string): string {
   if (lastColon > 0 && KNOWN_EFFORT_SUFFIXES.has(base.slice(lastColon + 1).toLowerCase())) {
     base = base.slice(0, lastColon);
   }
-  if (!/^claude-/i.test(base)) {
+  // A real Anthropic model id never contains a colon — an UNRECOGNIZED colon
+  // suffix (a typo'd effort word, a `provider:` prefix) is just as unresolvable
+  // as a missing `claude-` prefix, so fold it into the same loud rejection
+  // instead of forwarding a still-fleet-flavored string to the API.
+  if (!/^claude-/i.test(base) || base.includes(':')) {
     throw new Error(
       `unresolvable model spec for the anthropic-direct backend: ${JSON.stringify(trimmed)} → ` +
         `${JSON.stringify(base)} is not a raw Anthropic model id. Fleet-spec syntax ([1m], :effort, ` +

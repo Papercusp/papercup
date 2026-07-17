@@ -693,3 +693,72 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
     expect(r.success).toBe(true);
   });
 });
+
+describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
+  it('a valid report is normalized and stamped on the envelope (extra.report)', async () => {
+    const b = await body({
+      to: ['human'],
+      summary: '📋 Fleet update — 2 progressed',
+      report: {
+        title: '  Fleet update  ',
+        plans: [
+          { title: 'p2p-public-release', status: 'wip', items: [{ id: 'P-003', text: 'lanes', status: 'done' }] },
+        ],
+      },
+    });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const opts = sendM.mock.calls[0]![1] as { extra?: { report?: unknown } };
+    expect(opts.extra?.report).toEqual({
+      // NORMALIZED by parseReportBlock: title trimmed, valid plan kept.
+      title: 'Fleet update',
+      plans: [
+        {
+          slug: undefined,
+          title: 'p2p-public-release',
+          status: 'wip',
+          summary: undefined,
+          items: [{ id: 'P-003', text: 'lanes', status: 'done' }],
+        },
+      ],
+    });
+  });
+
+  it('an invalid report (no valid plan survives) is a LOUD report_invalid refusal — nothing sent', async () => {
+    const b = await body({
+      to: ['human'],
+      summary: 'bad card',
+      report: { plans: [{ status: 'done' }] }, // no title/slug → parseReportBlock null
+    });
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'report_invalid' });
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('items axis: an invalid-report item fails ALONE; the valid one lands with its card', async () => {
+    const b = await body({
+      items: [
+        { to: ['human'], summary: 'good', report: { plans: [{ title: 'lane-a', status: 'wip' }] } },
+        { to: ['human'], summary: 'bad', report: { plans: [{ summary: 'no label' }] } },
+      ],
+    });
+    expect(b.counts).toEqual({ ok: 1, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[1]).toMatchObject({ ok: false, error: 'report_invalid' });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const opts = sendM.mock.calls[0]![1] as { extra?: { report?: { plans: { title?: string }[] } } };
+    expect(opts.extra?.report?.plans[0]?.title).toBe('lane-a');
+  });
+
+  it('no report arg → no extra.report key (plain sends unchanged)', async () => {
+    await body({ to: ['human'], summary: 'plain' });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.report).toBeUndefined();
+  });
+
+  it('the report shape parses through the tool arg schema (single + items axes)', () => {
+    const report = { title: 'Fleet update', plans: [{ title: 'lane', items: [{ text: 'x', status: 'done' }] }] };
+    expect(tool.args.safeParse({ to: ['human'], summary: 'hi', report }).success).toBe(true);
+    expect(tool.args.safeParse({ items: [{ to: ['human'], summary: 'hi', report }] }).success).toBe(true);
+  });
+});

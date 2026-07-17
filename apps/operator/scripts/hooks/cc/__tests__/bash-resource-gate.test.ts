@@ -425,6 +425,57 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
   });
 });
 
+/**
+ * EI-13135 — systemd user-manager exit/kill guard.
+ *
+ * `systemctl --user exit` tears down the WHOLE shared user@<uid> manager in
+ * one shot (bg-host, :3070, :3170, gateway, git-sync, mcp-proxy, every other
+ * live agent session's scope) — confirmed root cause of a ~15min fleet-wide
+ * outage on 2026-07-16. UNCONDITIONAL: unlike the git-guard, this fires with
+ * NO agent marker and NO tree/cwd condition at all — the resource is the
+ * whole host, not a working tree, so every test here omits AGENT/CANON_ENV
+ * entirely to prove that.
+ */
+function expectExitGuardDeny(out: { stdout: string; status: number | null }) {
+  const reason = denyReason(out);
+  expect(reason).toContain('EI-13135');
+}
+
+describe('systemd user-manager exit/kill guard (EI-13135)', () => {
+  it.each([
+    ['systemctl --user exit', 'systemctl --user exit'],
+    ['systemctl exit (no --user flag)', 'systemctl exit'],
+    ['systemctl --user start exit.target', 'systemctl --user start exit.target'],
+    ['systemctl --user halt', 'systemctl --user halt'],
+    ['systemctl --user poweroff', 'systemctl --user poweroff'],
+    ['loginctl terminate-user', 'loginctl terminate-user marsh-office'],
+    ['loginctl kill-user', 'loginctl kill-user 1000'],
+    ['systemctl stop user@<uid>.service', 'systemctl stop user@1000.service'],
+    ['systemctl kill user@<uid>.service', 'systemctl kill user@1000.service'],
+    ['sudo-prefixed exit', 'sudo systemctl --user exit'],
+    ['compound && exit', 'cd /tmp && systemctl --user exit'],
+    ['compound ; halt', 'echo done ; systemctl --user halt'],
+    ['newline-separated', 'true\nsystemctl --user exit'],
+    ['rtk-wrapped (the same wrapper-bypass class as the git-guard)', 'rtk systemctl --user exit'],
+    ['time-wrapped', 'time systemctl --user exit'],
+    ['env-wrapped', 'env FOO=bar systemctl --user exit'],
+  ])('denies %s — with NO agent marker, NO tree cwd', (_label, command) => {
+    expectExitGuardDeny(runGate(bashCmd(command)));
+  });
+
+  it.each([
+    ['status is not exit', 'systemctl --user status papercup-staging-api.service'],
+    ['restart a real service is not exit', 'systemctl --user restart papercup-staging-api.service'],
+    ['stop a real service is not the user@ class', 'systemctl --user stop papercup-vite.service'],
+    ['"exit" only in a commit message, not command position', 'git commit -m "handle process exit"'],
+    ['"systemctl --user exit" inside a quoted string, not command position', 'echo "systemctl --user exit"'],
+    ['a stop of an unrelated numbered service (not user@)', 'systemctl stop worker@1000.service'],
+    ['ordinary command', 'ls -la'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command)));
+  });
+});
+
 describe('owner sessions + fail-open (D-003)', () => {
   it("never fires without the agent marker — the owner's crontab is their business", () => {
     expectAllow(runGate(bashCmd('crontab -l')));

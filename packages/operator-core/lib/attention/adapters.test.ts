@@ -234,6 +234,101 @@ describe('coordMessageToAttention — structured classification (D-003)', () => 
   });
 });
 
+describe('coordMessageToAttention — report card payload (agent-report-cards P-002)', () => {
+  const fleetUpdate = {
+    title: 'Fleet update',
+    plans: [
+      {
+        title: 'p2p-public-release',
+        status: 'wip',
+        items: [
+          { id: 'P-003', text: 'remaining lanes', status: 'done' },
+          { text: 'bg-host residual CPU load', status: 'wip' },
+        ],
+      },
+    ],
+  };
+
+  it('stamps the validated ReportBlock onto the item (the card the detail pane renders)', () => {
+    const a = coordMessageToAttention({
+      msgId: 'm-r1',
+      summary: '📋 Fleet update — 2 progressed',
+      directToOwner: true,
+      report: fleetUpdate,
+    });
+    expect(a.report).toBeDefined();
+    expect(a.report?.title).toBe('Fleet update');
+    expect(a.report?.plans[0]?.items?.length).toBe(2);
+  });
+
+  it('body falls back to the plain-text report rendition when the message has no body', () => {
+    const a = coordMessageToAttention({
+      msgId: 'm-r2',
+      summary: '📋 Fleet update',
+      report: fleetUpdate,
+    });
+    expect(a.body).toContain('p2p-public-release');
+    expect(a.body).toContain('P-003');
+    // …but the sender's own prose always wins when present.
+    const b = coordMessageToAttention({
+      msgId: 'm-r3',
+      summary: '📋 Fleet update',
+      body: 'my own prose',
+      report: fleetUpdate,
+    });
+    expect(b.body).toBe('my own prose');
+  });
+
+  it('a clean report (no red statuses) on a broadcast stays activity — no elevation', () => {
+    const a = coordMessageToAttention({ msgId: 'm-r4', summary: 'status', report: fleetUpdate });
+    expect(a.tier).toBe('activity');
+  });
+
+  it('blocked/failing report statuses elevate a broadcast to alert (D-003)', () => {
+    const a = coordMessageToAttention({
+      msgId: 'm-r5',
+      summary: 'status',
+      report: { plans: [{ title: 'lane', items: [{ text: 'stuck on deploy', status: 'blocked' }] }] },
+    });
+    expect(a.tier).toBe('alert');
+    expect(a.needsHuman).toBe(false);
+  });
+
+  it('a needs-human report status CAPS at alert — a message is ack-only, never a decision (P-102/D-011)', () => {
+    const a = coordMessageToAttention({
+      msgId: 'm-r6',
+      summary: 'status',
+      directToOwner: true,
+      report: { plans: [{ title: 'lane', status: 'needs-human' }] },
+    });
+    expect(a.tier).toBe('alert');
+    expect(a.needsHuman).toBe(false);
+    expect(a.actions.some((x) => x.id === 'ack')).toBe(true);
+  });
+
+  it('an auto lifecycle broadcast is NOT elevated by its report (lifecycle wins, matching the D-003 rule)', () => {
+    const a = coordMessageToAttention({
+      msgId: 'm-r7',
+      summary: 'status',
+      auto: true,
+      lifecycle: 'completion',
+      report: { plans: [{ title: 'lane', status: 'blocked' }] },
+    });
+    expect(a.tier).toBe('activity');
+  });
+
+  it('an invalid/foreign report payload degrades to a plain message — no report field, tier unchanged', () => {
+    const a = coordMessageToAttention({
+      msgId: 'm-r8',
+      summary: 'weird row',
+      report: { plans: [{ status: 'done' }] }, // no title/slug on any plan → parseReportBlock null
+    });
+    expect(a.report).toBeUndefined();
+    expect(a.tier).toBe('activity');
+    expect(a.body).toBe('weird row'); // summary fallback, not a rendition of nothing
+  });
+});
+
 describe('smokeFailToAttention — alert tier', () => {
   it('is an alert (a problem to surface), not a decision', () => {
     const a = smokeFailToAttention({ harnessSlug: 'papercup', failureContent: 'boot crashed' });

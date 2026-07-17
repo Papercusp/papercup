@@ -325,10 +325,13 @@ export interface AttentionItem {
   triagedAt: string | null;
   actions: AttentionAction[];
   ref: AttentionRef;
-  /** Structured report payload (kind `operator-report` only) — the one
-   *  `ReportBlock` schema from `@papercusp/chat-protocol`, rendered natively
-   *  in the detail pane (desktop card / TUI two-tier list). Absent on every
-   *  other kind. report-cards-inbox-reconciliation-2026-06-05 D-001/D-003. */
+  /** Structured report payload — the one `ReportBlock` schema from
+   *  `@papercusp/chat-protocol`, rendered natively in the detail pane (desktop
+   *  card / TUI two-tier list). Set by kind `operator-report` (the operator's
+   *  `<report>` turns — report-cards-inbox-reconciliation-2026-06-05 D-001/D-003)
+   *  and by a report-carrying `coord-message` (an agent/fleet-leader status card
+   *  sent via coord:send `report` — agent-report-cards-2026-07-17 P-002). Absent
+   *  on every other kind. */
   report?: ReportBlock;
   /** The autonomy category this item's disposition belongs to (B-14 / P-100 ·
    *  D-009/D-011), or `null` for an ungoverned signal/report. Set by the

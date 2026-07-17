@@ -147,6 +147,7 @@ async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise
  *  rather than breaking the caller's (fire-and-forget reaction) path. */
 export async function reconcileLinkedWorkItemsForPlanItem(
   item: CompletedPlanItem,
+  opts: { knownTerminalStatus?: TerminalPlanItemStatus } = {},
 ): Promise<ReconcileLinkedWorkItemsResult> {
   const out: ReconcileLinkedWorkItemsResult = {
     planSlug: item.planSlug,
@@ -156,28 +157,40 @@ export async function reconcileLinkedWorkItemsForPlanItem(
     skippedAlreadyTerminal: [],
   };
   try {
-    // EI-8970: this reaction fires fire-and-forget off the triggering
-    // `plans:set-status` event's SNAPSHOT ("this item just went done"). By the
-    // time the sweep actually runs, a peer may already have CORRECTED the
-    // SAME plan item back off `done` (e.g. a premature done, caught and
-    // flipped back to wip moments later). Acting on the stale snapshot would
-    // terminal-flip every linked work-item under a now-false premise — the
-    // exact race observed on cup-lexicon-full-rename-2026-07-09#P-006 /
-    // WI-3463. Re-read the plan item's CURRENT stored status right before
-    // acting and bail the WHOLE sweep (touch nothing) if it is no longer
-    // `done` — the next genuine ->done transition re-fires this rule and
-    // reconciles correctly then. Fails OPEN (proceeds as before) on any read
-    // hiccup or when the row/item can't be resolved — this guard must never
-    // turn a DB blip or a missing derived index into a missed reconcile.
-    const row = await getPlanRow(item.planSlug, {
-      harnessSlug: item.harnessSlug ?? undefined,
-    }).catch(() => null);
-    if (row) {
-      const current = row.items.find((i) => i.id === item.itemId);
-      if (current && current.status !== 'done') {
+    // Resolve the plan item's TERMINAL status (done vs dropped) — it both gates
+    // the sweep (bail if it is no longer terminal) and selects the settled state
+    // each linked work-item is flipped to (TERMINAL_PLAN_ITEM_TARGET).
+    let terminalStatus: TerminalPlanItemStatus;
+    if (opts.knownTerminalStatus) {
+      // The periodic data-heal sweep (reconcileOrphanedPlanItemWorkItems) has
+      // ALREADY re-read the plan row fresh and CONFIRMED this item terminal, so it
+      // is fail-CLOSED at the caller (it never passes a non-terminal item). Trust
+      // that read and skip a redundant per-item getPlanRow round-trip.
+      terminalStatus = opts.knownTerminalStatus;
+    } else {
+      // EI-8970: the reaction path fires fire-and-forget off the triggering
+      // `plans:set-status` event's SNAPSHOT ("this item just went done"). By the
+      // time the sweep actually runs, a peer may already have CORRECTED the SAME
+      // plan item back off terminal (a premature done, caught and flipped back to
+      // wip moments later). Acting on the stale snapshot would terminal-flip every
+      // linked work-item under a now-false premise — the exact race observed on
+      // cup-lexicon-full-rename-2026-07-09#P-006 / WI-3463. Re-read the item's
+      // CURRENT stored status and bail the WHOLE sweep (touch nothing) if it is no
+      // longer terminal — the next genuine terminal transition re-fires this rule
+      // and reconciles correctly then. Fails OPEN as `done` (the reaction only
+      // ever fires on a done transition) on any read hiccup or when the row/item
+      // can't be resolved — this guard must never turn a DB blip or a missing
+      // derived index into a missed reconcile.
+      const row = await getPlanRow(item.planSlug, {
+        harnessSlug: item.harnessSlug ?? undefined,
+      }).catch(() => null);
+      const current = row?.items.find((i) => i.id === item.itemId);
+      if (current && !isTerminalPlanItemStatus(current.status)) {
         return out;
       }
+      terminalStatus = current && isTerminalPlanItemStatus(current.status) ? current.status : 'done';
     }
+    const target = TERMINAL_PLAN_ITEM_TARGET[terminalStatus];
 
     const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
     for (const wi of linked) {
@@ -192,12 +205,14 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         out.skippedInFlight.push(wi.id);
         continue;
       }
-      const targetState = wi.family === 'feature' ? 'passed' : 'resolved';
+      const targetState = wi.family === 'feature' ? target.feature : target.issue;
       try {
         await setWorkItemState(wi.id, targetState, {
           harness: wi.harness ?? undefined,
           by: 'system:plan-item-reconcile',
-          completionRef: `Reconciled via plan-item status: ${item.planSlug}#${item.itemId} completed`,
+          completionRef: `Reconciled via plan-item status: ${item.planSlug}#${item.itemId} ${
+            terminalStatus === 'dropped' ? 'dropped' : 'completed'
+          }`,
         });
         out.reconciled.push(wi.id);
       } catch {
@@ -220,6 +235,147 @@ export async function reconcileLinkedWorkItemsForCompletedPlanItems(
   const out: ReconcileLinkedWorkItemsResult[] = [];
   for (const item of items) {
     out.push(await reconcileLinkedWorkItemsForPlanItem(item));
+  }
+  return out;
+}
+
+interface OrphanCandidate {
+  planSlug: string;
+  itemId: string;
+  harnessSlug: string | null;
+}
+
+export interface OrphanReconcileSweepResult {
+  /** Distinct (plan_slug, item_id) pairs enumerated from non-terminal, stamped
+   *  work-items — the candidate frontier before the terminal-status check. */
+  candidatePlanItems: number;
+  /** Of those candidates, how many were CONFIRMED terminal (done/dropped) and
+   *  therefore actually swept. */
+  terminalPlanItems: number;
+  /** Work-item ids terminalized by this sweep. */
+  reconciled: string[];
+  /** Linked but carrying independent in-flight progress — left alone. */
+  skippedInFlight: string[];
+  /** Linked but already terminal — nothing to do. */
+  skippedAlreadyTerminal: string[];
+}
+
+/** Default per-tick candidate cap — a generous bound (orphan residue is bursty at
+ *  worst; a healthy fleet clears it in a few ticks). Overridable via the routine's
+ *  trigger_config `candidate_cap`. */
+export const DEFAULT_ORPHAN_SWEEP_CAP = 500;
+
+/**
+ * The PERIODIC data-heal (EI-14693). `reconcileLinkedWorkItemsForPlanItem` only
+ * ever runs off the plan item's done *transition* (reconcile-rule.ts) — so a
+ * work-item that lands in a non-terminal state AFTER its plan item is already
+ * terminal (a reset [EI-13337], a complete-without-state [D-004: EI-13318/13346/
+ * 14676], or a late create) is never re-healed and pollutes every surface that
+ * reads raw work-item `state` (the claim path — now guarded by
+ * plan-item-lane-guard.ts — plus pot:survey placement, backlog counts, …).
+ *
+ * This sweep closes the transition-gap "fix the data, not the view" style: it
+ * finds every NON-terminal work-item still carrying a `payload.plan_item` stamp,
+ * re-reads each referenced plan item's CURRENT status, and for the ones that are
+ * genuinely terminal (done OR dropped), reuses the exact same per-item reconciler
+ * — inheriting all its safety rails (skip already-terminal, skip independent
+ * in-flight `lastProgressAt` progress, never throw).
+ *
+ * FAIL-CLOSED by construction: a candidate whose plan can't be resolved, or whose
+ * item is not (or no longer) terminal, is SKIPPED — never terminalized on a guess.
+ * Idempotent: a second pass over already-healed data is a clean no-op.
+ *
+ * Homed on the `system:plan-item-orphan-reconcile` routine (a bounded periodic
+ * sweep — NOT a bare setInterval), mirroring `system:gc-plan-runs`.
+ */
+export async function reconcileOrphanedPlanItemWorkItems(
+  opts: { candidateCap?: number } = {},
+): Promise<OrphanReconcileSweepResult> {
+  const cap = opts.candidateCap && opts.candidateCap > 0 ? opts.candidateCap : DEFAULT_ORPHAN_SWEEP_CAP;
+  const out: OrphanReconcileSweepResult = {
+    candidatePlanItems: 0,
+    terminalPlanItems: 0,
+    reconciled: [],
+    skippedInFlight: [],
+    skippedAlreadyTerminal: [],
+  };
+
+  const { sql } = getOrgPg();
+  // 1. Enumerate candidate plan-items from NON-terminal work-items carrying a
+  //    plan_item stamp. Workspace-agnostic on the stamp exactly like
+  //    findAllLinkedWorkItems above — the plan-item ref is the join key; the
+  //    per-item reconciler re-resolves the plan properly. `harness_slug` (feature)
+  //    / `scope` (issue) give a best-effort harness hint for that re-read.
+  const cands = new Map<string, OrphanCandidate>();
+  const npF = normalizedPayloadExpr(sql, 'payload');
+  const key = (planSlug: string, itemId: string) => `${planSlug} ${itemId}`;
+
+  const featureRows = await sql<{ plan_slug: string; item_id: string; harness_slug: string | null }[]>`
+    SELECT DISTINCT ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
+                    ${npF}->'plan_item'->>'item_id'  AS item_id,
+                    harness_slug
+      FROM harness_shared.harness_features_consolidated
+     WHERE status NOT IN ('passed', 'deprecated')
+       AND payload IS NOT NULL
+       AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
+       AND ${npF}->'plan_item'->>'item_id' IS NOT NULL
+     LIMIT ${cap}`;
+  for (const r of featureRows) {
+    const k = key(r.plan_slug, r.item_id);
+    if (!cands.has(k)) cands.set(k, { planSlug: r.plan_slug, itemId: r.item_id, harnessSlug: r.harness_slug ?? null });
+  }
+
+  const issueRows = await sql<{ plan_slug: string; item_id: string; scope: string | null }[]>`
+    SELECT DISTINCT ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
+                    ${npF}->'plan_item'->>'item_id'  AS item_id,
+                    scope
+      FROM harness_shared.engineer_issues
+     WHERE state NOT IN ('resolved', 'closed')
+       AND payload IS NOT NULL
+       AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
+       AND ${npF}->'plan_item'->>'item_id' IS NOT NULL
+     LIMIT ${cap}`;
+  for (const r of issueRows) {
+    const k = key(r.plan_slug, r.item_id);
+    if (!cands.has(k)) {
+      const harnessSlug =
+        typeof r.scope === 'string' && r.scope.startsWith('harness:') ? r.scope.slice('harness:'.length) : null;
+      cands.set(k, { planSlug: r.plan_slug, itemId: r.item_id, harnessSlug });
+    }
+  }
+  out.candidatePlanItems = cands.size;
+
+  // 2. Group candidates by plan so each plan is read ONCE.
+  const byPlan = new Map<string, { harnessSlug: string | null; items: OrphanCandidate[] }>();
+  for (const c of cands.values()) {
+    let g = byPlan.get(c.planSlug);
+    if (!g) {
+      g = { harnessSlug: c.harnessSlug, items: [] };
+      byPlan.set(c.planSlug, g);
+    }
+    if (!g.harnessSlug && c.harnessSlug) g.harnessSlug = c.harnessSlug;
+    g.items.push(c);
+  }
+
+  // 3. Per plan: read once, CONFIRM which candidate items are terminal (fail-closed
+  //    — an unresolvable plan or a non-terminal item is skipped), then heal each via
+  //    the shared per-item reconciler with the confirmed status.
+  for (const [planSlug, g] of byPlan) {
+    const row = await getPlanRow(planSlug, { harnessSlug: g.harnessSlug ?? undefined }).catch(() => null);
+    if (!row) continue; // fail-closed: cannot confirm terminality → touch nothing.
+    const statusById = new Map(row.items.map((i) => [i.id, i.status]));
+    for (const c of g.items) {
+      const st = statusById.get(c.itemId);
+      if (!isTerminalPlanItemStatus(st)) continue; // still open / unknown → leave alone.
+      out.terminalPlanItems += 1;
+      const r = await reconcileLinkedWorkItemsForPlanItem(
+        { planSlug: c.planSlug, itemId: c.itemId, harnessSlug: c.harnessSlug },
+        { knownTerminalStatus: st },
+      );
+      out.reconciled.push(...r.reconciled);
+      out.skippedInFlight.push(...r.skippedInFlight);
+      out.skippedAlreadyTerminal.push(...r.skippedAlreadyTerminal);
+    }
   }
   return out;
 }

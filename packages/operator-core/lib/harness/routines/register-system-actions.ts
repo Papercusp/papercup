@@ -312,6 +312,15 @@ import './hive-git-gc-action';
 // entry when FLAGS.SUPERVISOR_AUTO_RESTART (default ON) && entry.autoRestart, with uniform
 // flap-damping; report-only otherwise. Seeded ACTIVE by seed-supervision-reconcile-routine.ts.
 import './supervision-reconcile-action';
+// EI-14693: `system:plan-item-orphan-reconcile` — the periodic data-heal for the
+// transition-gap in the plan-item → work-item reconciler. The reaction rule
+// (plan-items/reconcile-rule.ts) only fires on a plan item's done TRANSITION, so a
+// work-item that lands non-terminal AFTER its plan item is already terminal (reset /
+// complete-without-state / late create) is never re-healed. This 15-min sweep
+// terminalizes that residue (fail-closed, idempotent, skips in-flight), extended to
+// cover `dropped` plan items too. Seeded ACTIVE (seed-plan-item-orphan-reconcile-routine.ts)
+// — pure data reconciliation, no owner-authority surface (mirrors gc-plan-runs).
+import './plan-item-orphan-reconcile-action';
 // WI-5144 (follow-up from WI-4964 / rubric-system-and-auto-loop-release-profile-
 // 2026-07-15 P-011): `system:autoloop-release-readiness-monitor` — hourly cadence for
 // evaluateAutoloopReleaseProfile() (apps/operator/lib/release/release-profile.ts,

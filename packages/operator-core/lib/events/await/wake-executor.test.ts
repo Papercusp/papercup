@@ -15,6 +15,7 @@ import {
   ompResumePtyLooksReady,
   resumeCommandFor,
   wakeTurnText,
+  rehydrateLoopWakeText,
   applyInjectionDoor,
   type ExecuteWakeDeps,
 } from './wake-executor';
@@ -300,6 +301,61 @@ describe('wakeTurnText', () => {
     const single = coalesceDeliveries([work({ id: 60, payload: { timeout: true } })]);
     expect((single.payload as { timeout?: boolean }).timeout).toBe(true);
     expect(wakeTurnText(single)).toMatch(/TIMEOUT/);
+  });
+});
+
+describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', () => {
+  const STALE_TEXT =
+    'Loop fired.\n\n⛔ OPEN WALLS — owner-gated / pending decisions:\n  • LIVE entity re-link backfill — irreversible, awaiting go/no-go';
+
+  it('a NON-loop wake (no marker on payload) is byte-identical — no carry-note read at all', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({ note: null, updatedAtMs: null }));
+    const d = work({ payload: null });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
+    expect(out).toBe(STALE_TEXT);
+    expect(getLoopCarryNoteWithMetaFn).not.toHaveBeenCalled();
+  });
+
+  it('a LOOP wake whose FRESH carry-note now has NO open walls explicitly says so — supersedes a stale OPEN WALLS block above (the exact EI-10935 regression)', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: '## Did\nCleared the wall after the owner go-ahead.\n\n## Left\nNothing.',
+      updatedAtMs: Date.now() - 5_000,
+    }));
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 5 }, subscriberId: 'su-loop-1' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      ownerId: 'su-loop-1',
+      workspaceId: d.workspaceId,
+    });
+    // The stale text is still present (never mutated/removed)...
+    expect(out).toContain(STALE_TEXT);
+    // ...but a live re-check block is appended, EXPLICITLY stating no walls are
+    // open now — an agent reading to the end sees the wall was cleared, not
+    // still pending.
+    expect(out).toMatch(/LIVE RE-CHECK/);
+    expect(out).toMatch(/none open — any wall shown OPEN above has been CLEARED since/);
+    expect(out).toMatch(/TRUST THIS BLOCK/);
+  });
+
+  it('a LOOP wake whose FRESH carry-note STILL has an open wall renders it in the re-check block', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: '## Did\nStill mid-way.\n\n## Walls\n- a genuinely still-open irreversible action',
+      updatedAtMs: Date.now() - 1_000,
+    }));
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 2 }, subscriberId: 'su-loop-2' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
+    expect(out).toMatch(/LIVE RE-CHECK/);
+    expect(out).toContain('a genuinely still-open irreversible action');
+  });
+
+  it('fails soft to the original text when the fresh carry-note read throws', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => {
+      throw new Error('pg unreachable');
+    });
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 1 } });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
+    expect(out).toBe(STALE_TEXT);
   });
 });
 
