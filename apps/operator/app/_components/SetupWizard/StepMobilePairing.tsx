@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import RouteLink from '../RouteLink';
+import { listWorkspaces } from '@papercusp/operator-core/lib/workspaces-tauri';
+import { getBrowserWorkspaceId, resolveActiveWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 
 interface QrPayload {
   server: string;
@@ -30,10 +32,20 @@ export function StepMobilePairing() {
     setBusy(true);
     setError(null);
     try {
+      // Resolve THIS WINDOW's real active workspace id (D-005 pattern, same as
+      // WorkspaceSwitcher) — never hardcode the literal 'default' string. It is
+      // not an ambient/always-present placeholder: it's `DEFAULT_COORD_WORKSPACE`,
+      // a distinct coordination-shared partition the p2p/allotment layer refuses
+      // (WI-1564), and since WI-5321 a fresh install's real workspace id is a
+      // minted non-'default' value that mint-pair-token validates via
+      // `workspaceById` — sending the literal string here 400s as
+      // `workspace_not_found` for any such install.
+      const reg = await listWorkspaces();
+      const workspaceId = resolveActiveWorkspaceId(reg, getBrowserWorkspaceId());
       const res = await fetch('/api/device/desktop/mint-pair-token', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'default' }),
+        body: JSON.stringify({ workspaceId }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = (await res.json()) as MintResp;

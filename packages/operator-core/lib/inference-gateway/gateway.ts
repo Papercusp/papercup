@@ -41,6 +41,7 @@ import {
   type PriorityTierMap,
 } from '@papercusp/papercusp-shared/agent';
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover';
+import { selectAffectedOwners } from './affected-owners';
 import { withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
@@ -812,7 +813,7 @@ export interface GatewayDeps {
    *  in-memory pause can't cure (it resets on every gateway restart, re-exposing the dead account — aviynw,
    *  2026-07-01). The launch layer wires this to PERSISTENTLY remove the account from the pool (survives
    *  restarts, never re-selected) + a loud escalation. The per-account streak resets on the next 2xx. */
-  onOrgDisallowed?(info: { accountId: string; consecutive: number }): void;
+  onOrgDisallowed?(info: { accountId: string; consecutive: number; affectedOwners?: string[] }): void;
   /** Consecutive org-disallowed 403s that trigger `onOrgDisallowed` deactivation. Default
    *  `DEFAULT_ORG_DISALLOWED_DEACTIVATE_THRESHOLD` (1 — fire on the first definitive hit). ≤0 disables. */
   orgDisallowedDeactivateThreshold?: number;
@@ -3423,7 +3424,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (orgDisallowedDeactivateThreshold > 0 && orgStreak === orgDisallowedDeactivateThreshold) {
                 log('error', `inference-gateway: account '${active.accountId}' PERMANENTLY org/subscription-disallowed (${orgStreak} consecutive 403s) → deactivating it from the pool + failover`);
                 try {
-                  deps.onOrgDisallowed?.({ accountId: active.accountId, consecutive: orgStreak });
+                  // EI-15153: name the LIVE sessions that were routing through this account when it
+                  // died (their last route was it + they were recently active — they did not fail
+                  // over off it, so they are at risk of a cold orphan). Computed from the per-owner
+                  // ledger the gateway already keeps; passed to the disable side-channel so the alert
+                  // says WHICH sessions to check instead of an untargeted "account removed" notice.
+                  const affectedOwners = selectAffectedOwners(
+                    [...ownerLedger.entries()].map(([ownerId, e]) => ({ ownerId, lastAccount: e.lastAccount, lastAt: e.lastAt })),
+                    active.accountId,
+                    Date.now(),
+                  );
+                  deps.onOrgDisallowed?.({ accountId: active.accountId, consecutive: orgStreak, affectedOwners });
                 } catch {
                   /* fire-and-forget: the deactivate side-channel must NEVER throw into the request hot path */
                 }

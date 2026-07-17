@@ -12,21 +12,42 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 vi.mock('../RouteLink', () => ({ default: ({ children }: { children: React.ReactNode }) => <a>{children}</a> }));
 
+// WI-5321: the step now resolves the real active workspace id (never the
+// hardcoded literal 'default') via listWorkspaces() + resolveActiveWorkspaceId
+// (same D-005 pattern as WorkspaceSwitcher) before minting. `reg.value` is
+// mutable per-test so we can assert both the unchanged single-'default'-
+// workspace case AND a real (post-WI-5321) minted non-'default' id.
+const { reg } = vi.hoisted(() => ({
+  reg: {
+    value: {
+      current: 'default',
+      workspaces: [{ id: 'default', name: 'Default', createdAt: 0 }],
+    } as { current: string; workspaces: { id: string; name: string; createdAt: number }[] },
+  },
+}));
+
+vi.mock('@papercusp/operator-core/lib/workspaces-tauri', () => ({
+  listWorkspaces: vi.fn(async () => reg.value),
+}));
+
 import { StepMobilePairing } from './StepMobilePairing';
 
 let mintOk: boolean;
 let expiresAt: number;
 let posts: number;
+let lastBody: any;
 function installFetch() {
   posts = 0;
+  lastBody = null;
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/api/device/desktop/mint-pair-token')) {
       posts += 1;
+      lastBody = init?.body ? JSON.parse(String(init.body)) : null;
       if (!mintOk) return new Response('{}', { status: 500 });
       return new Response(
         JSON.stringify({
-          qrPayload: { server: 'https://x', pairToken: 'tok-1', workspaceId: 'default' },
+          qrPayload: { server: 'https://x', pairToken: 'tok-1', workspaceId: lastBody?.workspaceId ?? 'default' },
           expiresAt,
         }),
         { status: 200 },
@@ -41,6 +62,10 @@ function installFetch() {
 beforeEach(() => {
   mintOk = true;
   expiresAt = Date.now() + 120_000; // 2 min in the future
+  reg.value = {
+    current: 'default',
+    workspaces: [{ id: 'default', name: 'Default', createdAt: 0 }],
+  };
 });
 afterEach(() => {
   cleanup();
@@ -83,6 +108,18 @@ describe('StepMobilePairing (SetupWizard mobile-pairing step)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Generate pairing QR code/i }));
     expect(await screen.findByText(/Couldn.t generate\./i)).toBeTruthy();
     expect(screen.getByText(/HTTP 500/i)).toBeTruthy();
+  });
+
+  it('WI-5321: threads the REAL active (non-default) workspace id into the mint request — never the hardcoded literal "default"', async () => {
+    reg.value = {
+      current: 'workspace-a1b2c3d4',
+      workspaces: [{ id: 'workspace-a1b2c3d4', name: 'Default', createdAt: 0 }],
+    };
+    installFetch();
+    render(<StepMobilePairing />);
+    fireEvent.click(screen.getByRole('button', { name: /Generate pairing QR code/i }));
+    await screen.findByAltText('Pairing QR code');
+    expect(lastBody?.workspaceId).toBe('workspace-a1b2c3d4');
   });
 
   it('the generate button shows "Generating…" while the mint is in flight', async () => {

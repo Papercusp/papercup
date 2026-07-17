@@ -14,6 +14,7 @@ import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { CODEX_CLI_REF_PREFIX, parseCodexCliRef, type CodexCliAccount } from './codex-cli-bridge';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
+import { formatAtRiskAlertSuffix } from './affected-owners';
 import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type AccountPool, type ActiveAccount, type InferenceGateway } from './gateway';
 import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 import type { LocalBackendRecord } from './local-backend-store';
@@ -255,12 +256,20 @@ function makeOrgDisallowedDeactivator(
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
 ): (info: { accountId: string; consecutive: number }) => void {
   const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
-  return ({ accountId, consecutive }) => {
+  return ({ accountId, consecutive, affectedOwners }) => {
     void (async () => {
+      // EI-15153 (detector): name the live sessions that were routing through this account when it
+      // was disabled — they cannot self-drain (their next inference turn 403s) so their claimed work
+      // risks being silently orphaned. The gateway already computed + filtered `affectedOwners` from
+      // its per-owner routing ledger; we just render them into the ALREADY-firing escalation +
+      // broadcast so the alert says WHO to check. Empty when none → alert unchanged (purely additive).
+      const atRiskOwners = affectedOwners ?? [];
+      const atRiskSuffix = formatAtRiskAlertSuffix(atRiskOwners);
       const summary = `Inference account '${accountId}' is org/subscription-DISABLED for Claude Code — removed from the pool`;
       const body =
         `Account '${accountId}' returned ${consecutive} consecutive org/subscription-disqualified 403s ("not allowed for this organization" / "subscription disabled for claude code") — a PERMANENT Anthropic-side disable, NOT a throttle. The gateway's 6h pause only lived in memory + reset on every restart, so the dead account kept re-entering rotation and failing spawns. It has now been PERSISTENTLY removed from the pool. ` +
-        `To restore it: re-enable OAuth API / Claude Code access in that account's Anthropic organization, then re-register it (accounts:register).`;
+        `To restore it: re-enable OAuth API / Claude Code access in that account's Anthropic organization, then re-register it (accounts:register).` +
+        atRiskSuffix;
       // 1. PERSISTENTLY remove the dead account (survives gateway/bg-host restarts; the in-memory pause did not).
       try {
         const [{ loadAccountPool, saveAccountPool }, { removeAccount }] = await Promise.all([
@@ -289,7 +298,7 @@ function makeOrgDisallowedDeactivator(
             severity: 'blocker',
             summary,
             body,
-            meta: { source: 'account-org-disallowed', deadAccountId: accountId, consecutive },
+            meta: { source: 'account-org-disallowed', deadAccountId: accountId, consecutive, atRiskOwners },
           });
         }
       } catch (e) {
