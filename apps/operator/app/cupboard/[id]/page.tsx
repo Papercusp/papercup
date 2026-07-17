@@ -58,6 +58,7 @@ import {
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { CupboardErrorState } from '../CupboardErrorState';
 import KnowledgePackInstall from './KnowledgePackInstall';
+import BundleAppInstall from './BundleAppInstall';
 import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
 import { Button } from '../../harness/Button';
 import { Tooltip } from '../../harness/Tooltip';
@@ -147,11 +148,12 @@ export default function CupboardDetailPage() {
     if (kind === 'knowledge-pack') {
       return;
     }
-    // app (cupboard-app-distribution P-005): the AppDownloadPanel below owns the
-    // standalone-app download handoff (fetch latest.json → resolve the viewer-OS
-    // installer → hand off the link; the Cupboard never re-hosts). No generic
-    // primary-button action — guard against a stray call (e.g. a bundle app that
-    // one day routes 'install' here would fall through to the plugin path).
+    // app (cupboard-app-distribution P-005/P-008): a STANDALONE app's
+    // AppDownloadPanel owns the download handoff (fetch latest.json → resolve
+    // the viewer-OS installer → hand off the link; the Cupboard never
+    // re-hosts); a BUNDLE app's BundleAppInstall panel owns install + the
+    // conflict review. Neither kind has a generic primary-button action —
+    // guard against a stray call (both panels render their own button).
     if (kind === 'app') {
       return;
     }
@@ -583,17 +585,28 @@ export default function CupboardDetailPage() {
             fetches the app's latest.json, resolves the viewer-OS installer, and
             hands off the link — the Cupboard never re-hosts. Owns the download
             action for this kind; the generic primary button below is suppressed
-            for a download app (a future bundle app keeps the generic Install). */}
+            for a download app. */}
         {kind === 'app' && action === 'download' && (
           <AppDownloadPanel listing={listing} />
         )}
 
+        {/* app / bundle (cupboard-app-distribution P-008): the bundle-app install
+            panel fetches + parses bundle.yaml server-side and runs the one
+            conflict review across every declared unit before installing —
+            generalizes the P-016 knowledge-pack install pattern. Owns the
+            install action for this kind; the generic primary button below is
+            suppressed for a bundle app. */}
+        {kind === 'app' && action === 'install' && (
+          <BundleAppInstall listing={listing} />
+        )}
+
         {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
             join is retired; nothing to act on), for knowledge packs (the
-            KnowledgePackInstall panel owns their Install action), and for a
-            standalone-download app (the AppDownloadPanel owns its handoff). */}
+            KnowledgePackInstall panel owns their Install action), and for an
+            app (the AppDownloadPanel / BundleAppInstall panel owns its
+            download/install action per delivery_type). */}
         <div style={{ marginTop: SIZES.lg, display: 'flex', gap: 8 }}>
-          {action && kind !== 'knowledge-pack' && !(kind === 'app' && action === 'download') && (
+          {action && kind !== 'knowledge-pack' && kind !== 'app' && (
           <Button
             size="lg"
             variant="primary"
