@@ -50,6 +50,32 @@ const envMs = (name: string, dflt: number): number => {
 /** Subcommands that touch the network (a hung remote must fail fast, not stall the fire). */
 const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', 'clone']);
 
+/**
+ * WI-5111: git-sync commits under the box's GLOBAL git identity, which on every
+ * shared dev box is the OWNER's own `user.name`/`user.email` (agents never commit
+ * under their own identity — CLAUDE.md "git-sync owns commit + push — you do
+ * neither"). The result: `git blame` / `git log --format=%an` on EVERY line of
+ * EVERY file returns the owner's name, indistinguishable from the owner having
+ * typed the change himself. This is not a harmless dead end (an agent that trusts
+ * blame just gets "unknown") — it is a FALSE-POSITIVE generator (an agent gets a
+ * confident, wrong, and highly plausible answer). Observed harm: a release-fixer's
+ * blame-the-regression triage escalated an AGENT's own incomplete migration to the
+ * owner as a blocker, in the second person ("YOUR migration ... YOU updated"),
+ * entirely on the strength of `git blame` (escalation mro7nmi5, 2026-07-17).
+ *
+ * Fix: EVERY git-sync commit is made under this bot identity via `-c user.name=`
+ * / `-c user.email=` (per-invocation override — never touches the box's global git
+ * config, so an interactive `git commit` elsewhere on the box is unaffected).
+ * Blame now visibly shows a bot, an agent cannot form "the owner wrote this", and
+ * a REAL owner commit (there are none on this tree going forward, but historical
+ * ones stay as-is) is trivially distinguishable from the automation. Prepended
+ * BEFORE the subcommand in the argv (gitSubcommand already special-cases `-c`
+ * pairs when reading past them for the timeout/network classification above).
+ */
+export const GIT_SYNC_BOT_NAME = 'papercusp-git-sync';
+export const GIT_SYNC_BOT_EMAIL = 'git-sync@papercusp.local';
+const GIT_SYNC_IDENTITY_ARGS = ['-c', `user.name=${GIT_SYNC_BOT_NAME}`, '-c', `user.email=${GIT_SYNC_BOT_EMAIL}`];
+
 /** The git SUBCOMMAND in an argv — skipping leading global flags AND the separate
  *  value a `-c`/`-C` option consumes (`['-c','x=y','fetch']` → 'fetch', not 'x=y'). */
 const gitSubcommand = (args: string[]): string => {
@@ -646,7 +672,7 @@ export async function commitAttributedGroups(
   for (const g of groups) {
     if (g.agent === null || g.files.length === 0) continue; // catch-all handled by the caller's add -A
     await runGit(['add', '--', ...g.files], repoPath);
-    const args = ['commit', '--no-verify', '-m', `${g.subject}${suffix}`];
+    const args = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', '-m', `${g.subject}${suffix}`];
     if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
     // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
     // trailers so the commit↔work-item link travels IN git history (and is read back
@@ -784,7 +810,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         };
       }
     }
-    const c = await runGit(['commit', '--no-verify', '-m', message], repoPath);
+    const c = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', '-m', message], repoPath);
     if (c.code === 0) {
       committedAny = true;
     } else if (!nothingToCommit(c)) {
@@ -864,7 +890,10 @@ async function reconcileAndPushOneRepo(
     return committedLocal ? { status: 'synced', pushed: false, merged: false } : { status: 'nothing' };
   }
 
-  const merge = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
+  // WI-5111: a non-fast-forward merge creates its own commit under the box's git
+  // identity too — same bot-identity override as the commit calls above, so a
+  // merge commit git-sync makes is never misattributed to the owner either.
+  const merge = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
   if (merge.code !== 0) {
     const conflicted = await conflictedFiles(runGit, repoPath);
     const mergeOut = `${merge.stdout}\n${merge.stderr}`.trim();
@@ -885,7 +914,7 @@ async function reconcileAndPushOneRepo(
     if (push.code !== 0 && rejectedNonFastForward(push)) {
       // A peer pushed between our fetch and push — re-fetch + re-merge once.
       await runGit(['fetch', remote, branch], repoPath);
-      const m2 = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
+      const m2 = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
       if (m2.code !== 0) {
         const conflicted = await conflictedFiles(runGit, repoPath);
         const m2Out = `${m2.stdout}\n${m2.stderr}`.trim();

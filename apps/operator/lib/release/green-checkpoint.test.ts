@@ -1305,6 +1305,39 @@ describe('parseFailingFilesByWorkspace (load-flake isolation)', () => {
     expect(parseFailingFilesByWorkspace('')).toEqual([]);
     expect(parseFailingFilesByWorkspace('=== SPA BUILD FAILED (@papercusp/operator-vite) ===\nerror TS2304')).toEqual([]);
   });
+
+  // 2026-07-17 phantom-workspace incident: the gate captures each task's stdout/stderr and
+  // block-flushes them, so vitest's "Failed Tests" epilogue (` FAIL file > case` rows) can
+  // land AFTER later workspaces' headers. The bare FAIL row then re-attributed operator-core's
+  // quarantined hyperbee failure to @papercupai/gitnexus-bridge — a phantom un-quarantined
+  // entry that kept an all-failures-quarantined run red AND emptied the re-triage's file list.
+  it('does NOT re-attribute a rollup-named file via a displaced FAIL epilogue row under a later header', () => {
+    const out = [
+      '>>> @papercusp/operator-core :: npm run test',
+      ' ❯ lib/sync/hyperbee/__tests__/hive-two-peer-federation.test.ts (2 tests | 1 failed) 22943ms',
+      '',
+      '>>> @papercupai/gitnexus-bridge :: npm run test',
+      ' Tests  12 passed (12)',
+      ' FAIL  lib/sync/hyperbee/__tests__/hive-two-peer-federation.test.ts > Shared Hive federation > federates a presence announce',
+      '>>> @papercusp/operator-core FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)',
+    ].join('\n');
+    expect(parseFailingFilesByWorkspace(out)).toEqual([
+      { workspace: '@papercusp/operator-core', file: 'lib/sync/hyperbee/__tests__/hive-two-peer-federation.test.ts' },
+    ]);
+  });
+
+  it('still attributes a FAIL-only file (transform/setup error — no rollup row exists for it)', () => {
+    const out = [
+      '>>> @papercusp/operator-core :: npm run test',
+      ' ❯ lib/a.test.ts (3 tests | 1 failed) 10ms',
+      '>>> @papercusp/web :: npm run test',
+      ' FAIL  app/broken-transform.test.ts > setup',
+    ].join('\n');
+    expect(parseFailingFilesByWorkspace(out)).toEqual([
+      { workspace: '@papercusp/operator-core', file: 'lib/a.test.ts' },
+      { workspace: '@papercusp/web', file: 'app/broken-transform.test.ts' },
+    ]);
+  });
 });
 
 describe('test quarantine filtering (v1 gate scope)', () => {

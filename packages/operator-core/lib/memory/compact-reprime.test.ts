@@ -185,3 +185,52 @@ describe('buildCompactReprimeBlock — P-026 verdict-gated enrichment retirement
     ).resolves.toBe('## R\n\n- x');
   });
 });
+
+describe('buildCompactReprimeBlock — P-026 leg (a): retirement emits pull-precise HANDLES, not bare null (WI-5001)', () => {
+  it('a proven class with an id-bearing held item returns a deterministic work-item handle block, no recall paid', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## R\n\n- would-have-injected');
+    const out = await buildCompactReprimeBlock(
+      { ownerId: 'sid-1', heldItems: [{ id: 'WI-1', title: 'wire the prelude', harness: 'papercusp' }] },
+      { retireFlagFn: async () => true, provenClassFn: async () => 'claude-headless' },
+    );
+    expect(out).toBe('Pull-precise carry handles (no recall)\n- [work-item:WI-1] pull: wire the prelude');
+    expect(buildLaunchMemoryBlock).not.toHaveBeenCalled(); // still no speculative recall
+  });
+
+  it('a proven class with only title/harness (no id) still returns null — same as pre-P-026(a) behavior, nothing resolvable to point at', async () => {
+    const out = await buildCompactReprimeBlock(
+      { ownerId: 'sid-1', heldItems: [{ title: 'WI-1 wire prelude', harness: 'papercusp' }] /* no id field */ },
+      { retireFlagFn: async () => true, provenClassFn: async () => 'claude-headless' },
+    );
+    expect(out).toBeNull();
+  });
+
+  it('threads awaits ("open threads") and dead-end facts into the handles block even with no held items', async () => {
+    const out = await buildCompactReprimeBlock(
+      {
+        ownerId: 'sid-1',
+        heldItems: [],
+        awaits: [{ eventKey: 'work-item:claimable', note: 'lane drained' }],
+        facts: [
+          { key: 'dead-end:tried-x', body: 'tried X, broke Y' },
+          { key: 'not-a-dead-end', body: 'ordinary standing fact' },
+        ],
+      },
+      { retireFlagFn: async () => true, provenClassFn: async () => 'claude-headless' },
+    );
+    expect(out).toBe(
+      'Pull-precise carry handles (no recall)\n' +
+        '- [topic:work-item:claimable] pull: lane drained\n' +
+        '- [fact:dead-end:tried-x] pull: tried X, broke Y',
+    );
+  });
+
+  it('an unproven class is unaffected by leg (a) — still runs the full resolver-driven re-prime', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## R\n\n- x');
+    const out = await buildCompactReprimeBlock(
+      { ownerId: 'sid-1', heldItems: [{ id: 'WI-1', title: 'wire the prelude', harness: 'papercusp' }] },
+      { retireFlagFn: async () => true, provenClassFn: async () => null },
+    );
+    expect(out).toBe('## R\n\n- x');
+  });
+});

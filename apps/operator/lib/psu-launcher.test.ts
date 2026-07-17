@@ -1965,6 +1965,23 @@ describe('psu-launcher arg parsing', () => {
     })).toEqual({});
   });
 
+  it('sanitizeInheritedEnv strips the spawner claude session-identity markers (child-session transcript suppression, WI-5002)', () => {
+    // CLAUDE_CODE_CHILD_SESSION=1 inherited from a spawning claude session makes
+    // the launched psu claude treat itself as a child session and silently skip
+    // transcript persistence (live-bisected 2026-07-17). The whole ancestry
+    // family must be re-derived by the child, never inherited.
+    expect(sanitizeInheritedEnv({
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'aaaa-bbbb',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_BRIDGE_SESSION_ID: 'cccc',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_EXECPATH: '/versions/2.1.211',
+      CLAUDE_CONFIG_DIR: '/home/u/.papercusp/session-claude/su-spawner',
+      KEEP_ME: 'v',
+    })).toEqual({ KEEP_ME: 'v' });
+  });
+
   it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {
     const current = [
       '# existing config',

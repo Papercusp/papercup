@@ -804,23 +804,53 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
   // `FAIL  lib/x/y.test.ts …` — a failed-suite row (transform/setup errors).
   const SUITE_FAIL = new RegExp(`^\\s*FAIL\\s+(${TEST_FILE.source})\\b`);
 
-  const out: FailingFile[] = [];
-  const seen = new Set<string>();
-  let currentWs: string | null = null;
   // Strip ANSI FIRST: every matcher below is line-anchored, and vitest colourizes both
-  // the `❯` rollup and ` FAIL ` rows. Without this the parse silently returned [] on real
+  // the rollup and ` FAIL ` rows. Without this the parse silently returned [] on real
   // gate output — which quietly disabled load-flake AND worker-crash absorption (they
   // re-run "the originally failing files", of which there were apparently none). Same
   // root cause as the empty `failingTests` in the 2026-07-10 verdict.
-  for (const line of stripAnsi(fullOutput).split('\n')) {
+  const lines = stripAnsi(fullOutput).split('\n');
+
+  // Pre-scan: files named by a rollup summary row (SUMMARY_FAIL) inside SOME workspace
+  // section. Rollups are child stdout printed inside the child's own section, so their
+  // header attribution is trustworthy. Bare ` FAIL ` rows also appear in vitest's
+  // "Failed Tests" epilogue, which the gate's captured-stream block-flush can DISPLACE
+  // past later workspaces' headers — on 2026-07-17 operator-core's quarantined hyperbee
+  // failure re-parsed under @papercupai/gitnexus-bridge as a phantom un-quarantined
+  // entry, redding an all-failures-quarantined run. A FAIL row may therefore only
+  // INTRODUCE a file the rollups never named (transform/setup errors emit no rollup),
+  // never re-attribute a rollup-named file to whatever section its epilogue landed in.
+  const rollupFiles = new Set<string>();
+  {
+    let ws: string | null = null;
+    for (const line of lines) {
+      const h = HEADER.exec(line);
+      if (h) {
+        ws = h[1];
+        continue;
+      }
+      const m = SUMMARY_FAIL.exec(line);
+      if (m && ws) rollupFiles.add(m[1]);
+    }
+  }
+
+  const out: FailingFile[] = [];
+  const seen = new Set<string>();
+  let currentWs: string | null = null;
+  for (const line of lines) {
     const h = HEADER.exec(line);
     if (h) {
       currentWs = h[1];
       continue;
     }
-    const m = SUMMARY_FAIL.exec(line) ?? SUITE_FAIL.exec(line);
+    const summary = SUMMARY_FAIL.exec(line);
+    const m = summary ?? SUITE_FAIL.exec(line);
     if (m) {
       const file = m[1];
+      // A FAIL row naming a rollup-attributed file is either a dup of its rollup pair
+      // or a displaced epilogue row under a foreign header — the rollup wins; keeping
+      // this pair would manufacture a workspace that never ran the file.
+      if (!summary && rollupFiles.has(file)) continue;
       // A file before any `>>>` header (or a non-affected-runner invocation) has no
       // known workspace; skip it — we can't run `vitest run <file>` without a cwd.
       if (!currentWs) continue;

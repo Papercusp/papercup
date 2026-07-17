@@ -196,7 +196,11 @@ describe('runGitSync (real git, no submodule)', () => {
     // like an index.lock race that never wrote the commit.
     let attributedCommitFailed = false;
     const runGit: RunGit = async (args, cwd) => {
-      const isAttributedCommit = args[0] === 'commit' && args.some((a) => a.startsWith('Papercusp-Agent:'));
+      // WI-5111: commit calls now carry a leading `-c user.name=... -c
+      // user.email=...` bot-identity override before the `commit` subcommand
+      // (run-git-sync.ts GIT_SYNC_IDENTITY_ARGS) — match on inclusion, not
+      // args[0], so this injected fault still targets the right call.
+      const isAttributedCommit = args.includes('commit') && args.some((a) => a.startsWith('Papercusp-Agent:'));
       if (isAttributedCommit && !attributedCommitFailed) {
         attributedCommitFailed = true;
         return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };
@@ -730,10 +734,23 @@ describe('runGitSync — EI-18 oversized in a SUBMODULE does not defer the super
 });
 
 describe('runGitSync — P-002 failure classification (injected git)', () => {
-  /** A stub RunGit driven by a per-call decision fn — deterministic, no real git. */
+  /** A stub RunGit driven by a per-call decision fn — deterministic, no real git.
+   *  WI-5111: commit/merge calls now carry a leading `-c user.name=... -c
+   *  user.email=...` bot-identity override (run-git-sync.ts GIT_SYNC_IDENTITY_ARGS)
+   *  BEFORE the subcommand — strip those global-flag pairs first (mirrors the
+   *  production `gitSubcommand` skip-logic) so `handle`'s `args.join(' ').startsWith(...)`
+   *  matchers still see the subcommand first, unaffected by the identity prefix. */
+  const stripGitCFlags = (args: string[]): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-c' || args[i] === '-C') { i++; continue; }
+      out.push(args[i]!);
+    }
+    return out;
+  };
   const fakeGit = (handle: (args: string[]) => { code: number; stdout?: string; stderr?: string }): RunGit =>
     async (args) => {
-      const r = handle(args);
+      const r = handle(stripGitCFlags(args));
       return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
 

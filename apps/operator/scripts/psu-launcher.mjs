@@ -4596,6 +4596,26 @@ export function sanitizeInheritedEnv(env) {
   ]) {
     delete out[key];
   }
+  // WI-5002: a psu launch is an INDEPENDENT session, but an agent-spawned launch
+  // (a claude session's Bash running psu-launcher) inherits the SPAWNER's claude
+  // session-identity markers. Claude Code treats a process carrying these as a
+  // CHILD session and silently skips transcript persistence — the session runs
+  // fine, completes work, and leaves NO projects/<slug>/<id>.jsonl (bisected
+  // live 2026-07-17: stripping these flips persistence back on; flags/config-dir
+  // shape/version all ruled out). Strip the whole ancestry family so the child's
+  // claude context is always re-derived, never inherited; the envelope re-adds
+  // CLAUDE_CONFIG_DIR when psu pins one.
+  for (const key of [
+    'CLAUDECODE',
+    'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDE_CODE_BRIDGE_SESSION_ID',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_CODE_EXECPATH',
+    'CLAUDE_CONFIG_DIR',
+  ]) {
+    delete out[key];
+  }
   return out;
 }
 
