@@ -190,6 +190,48 @@ describe('needs-human routing (close-loop D-001 — the resolve back-edge)', () 
   });
 });
 
+describe('an item already triaged gate/reject never re-enters the auto lane (EI-815)', () => {
+  it("triageDecision='gate' forces human even for a plain auto-eligible bug with no watchdogKey/paths", () => {
+    const d = classifyImprovement(
+      cand({
+        id: 'gt1',
+        kind: 'bug',
+        title: 'Latitude VM creates platform-broken environment, unreachable on all ports',
+        ideaLifecycle: { state: 'triaged', ideaType: 'infra-environment', triageDecision: 'gate' } as any,
+      }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.reasons.join(' ')).toMatch(/already triaged 'gate'/);
+    expect(d.protectedHit).toBe('triageDecision:gate');
+  });
+
+  it("triageDecision='reject' also forces human", () => {
+    const d = classifyImprovement(
+      cand({ id: 'gt2', kind: 'bug', ideaLifecycle: { state: 'triaged', triageDecision: 'reject' } as any }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toBe('triageDecision:reject');
+  });
+
+  it("beats even a graduated policy (an explicit routing decision, not a kind dial)", () => {
+    const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change', 'feature'] };
+    const d = classifyImprovement(
+      cand({ id: 'gt3', kind: 'bug', ideaLifecycle: { state: 'triaged', triageDecision: 'gate' } as any }),
+      graduated,
+    );
+    expect(d.tier).toBe('human');
+  });
+
+  it("triageDecision='place' (or absent) is unaffected — stays auto-eligible on its own merits", () => {
+    expect(
+      classifyImprovement(
+        cand({ id: 'gt4', kind: 'bug', ideaLifecycle: { state: 'triaged', triageDecision: 'place' } as any }),
+      ).tier,
+    ).toBe('auto');
+    expect(classifyImprovement(cand({ id: 'gt5', kind: 'bug' })).tier).toBe('auto');
+  });
+});
+
 describe('replication-liveness detector EIs never reach the auto lane (EI-8455)', () => {
   it('createdBy=system:replication-liveness forces human even for an auto-eligible kind=bug', () => {
     const d = classifyImprovement(
