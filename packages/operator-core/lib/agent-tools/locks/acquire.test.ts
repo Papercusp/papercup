@@ -166,7 +166,10 @@ describe('locks:acquire — outcome branches', () => {
       if (n++ < 1) {
         throw Object.assign(new Error('workspace contended'), { name: 'WorkspaceContendedError', pgCode: '55P03' });
       }
-      return { value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] } };
+      // WI-5217: `as never` matches the established pattern for every other routeM
+      // mock return in this file — RouteResult<T> requires a `via` field this test
+      // fixture doesn't (need to) supply.
+      return { value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] } } as never;
     });
     vi.useFakeTimers();
     try {

@@ -8,6 +8,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const resolveEnvMock = vi.fn();
 const setMock = vi.fn();
 const deleteMock = vi.fn();
+// EI-14076: prove the route resolves the REQUEST's active workspace rather than a
+// hardcoded 'default' — a non-default id here would silently be masked if the route
+// regressed back to DEFAULT_WORKSPACE_ID.
+const activeWorkspaceIdMock = vi.fn();
 
 vi.mock('../../../harness/routines/hive-release-env', () => ({
   resolveHiveReleaseEnv: (...a: unknown[]) => resolveEnvMock(...a),
@@ -15,6 +19,9 @@ vi.mock('../../../harness/routines/hive-release-env', () => ({
 vi.mock('../../../hive-settings-store', () => ({
   setReleaseGreenCmdOverride: (...a: unknown[]) => setMock(...a),
   deleteReleaseGreenCmdOverride: (...a: unknown[]) => deleteMock(...a),
+}));
+vi.mock('../../../workspace-registry', () => ({
+  activeWorkspaceId: (...a: unknown[]) => activeWorkspaceIdMock(...a),
 }));
 
 import routes from './git-pot-green-cmd';
@@ -35,6 +42,7 @@ beforeEach(() => {
   resolveEnvMock.mockReset();
   setMock.mockReset().mockResolvedValue(undefined);
   deleteMock.mockReset().mockResolvedValue(true);
+  activeWorkspaceIdMock.mockReset().mockReturnValue('test-workspace-active');
 });
 
 describe('POST /desktop/git/pot-green-cmd', () => {
@@ -72,7 +80,7 @@ describe('POST /desktop/git/pot-green-cmd', () => {
       .mockResolvedValueOnce({ enabled: true, isOperatorHome: false, greenCmd: 'npm run gate:custom', greenCmdOverridden: true }); // after
     const res = await post.handler(jsonReq({ slug: 'c-hive', greenCmd: 'npm run gate:custom' }));
     expect(res.status).toBe(200);
-    expect(setMock).toHaveBeenCalledWith('default', 'c-hive', 'npm run gate:custom');
+    expect(setMock).toHaveBeenCalledWith('test-workspace-active', 'c-hive', 'npm run gate:custom');
     expect(deleteMock).not.toHaveBeenCalled();
     expect(await res.json()).toMatchObject({
       ok: true,
@@ -89,7 +97,7 @@ describe('POST /desktop/git/pot-green-cmd', () => {
       .mockResolvedValueOnce({ enabled: true, isOperatorHome: false, greenCmd: 'npm run test:affected', greenCmdOverridden: false });
     const res = await post.handler(jsonReq({ slug: 'c-hive', greenCmd: '   ' }));
     expect(res.status).toBe(200);
-    expect(deleteMock).toHaveBeenCalledWith('default', 'c-hive');
+    expect(deleteMock).toHaveBeenCalledWith('test-workspace-active', 'c-hive');
     expect(setMock).not.toHaveBeenCalled();
     expect(await res.json()).toMatchObject({ ok: true, cleared: true, greenCmdOverridden: false });
   });

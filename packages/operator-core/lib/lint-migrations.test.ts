@@ -206,7 +206,13 @@ describe('the real libs/papercusp/libs/db/sql/ directory (gate wiring)', () => {
       const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
       if (num < ENFORCED_FROM) continue; // applied history: immutable (sha256-verified by the runner)
       const hits = findLiteralTenantDefault(readFileSync(join(SQL_DIR, f), 'utf8'));
-      if (hits.length) violations.push(`${f}: ${hits.map((h) => `${h.column}=${h.value}`).join(', ')}`);
+      // WI-5217: `hits` is `any[]` (the .mjs import has no declaration file — a
+      // pre-existing, baselined TS7016), so the callback param needs an explicit
+      // type to avoid a NEW noImplicitAny error; shape per findLiteralTenantDefault.
+      if (hits.length)
+        violations.push(
+          `${f}: ${hits.map((h: { column: string; value: string }) => `${h.column}=${h.value}`).join(', ')}`,
+        );
     }
     expect(violations).toEqual([]);
   });

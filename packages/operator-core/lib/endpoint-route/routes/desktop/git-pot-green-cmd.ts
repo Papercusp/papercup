@@ -22,7 +22,7 @@ import {
   setReleaseGreenCmdOverride,
   deleteReleaseGreenCmdOverride,
 } from '../../../hive-settings-store';
-import { DEFAULT_WORKSPACE_ID } from '../../../workspace-id-constant';
+import { activeWorkspaceId } from '../../../workspace-registry';
 
 const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json' };
 
@@ -49,7 +49,13 @@ export default [
       const slug = typeof body.slug === 'string' ? body.slug.trim() : '';
       if (!slug) return json({ ok: false, error: 'missing_slug' }, 400);
 
-      const ws = DEFAULT_WORKSPACE_ID;
+      // EI-14076: resolve the REQUEST's active workspace (x-papercusp-workspace header
+      // -> ALS, per activeWorkspaceId()'s precedence) rather than hardcoding the
+      // 'default' tenant — this route is called from the /admin/git UI inside a real
+      // workspace session, and a hardcoded default silently reads/writes the WRONG
+      // tenant's row on any box where the live pot is not literally workspace 'default'
+      // (this box: 'papercusp-workspace'), while still returning a confident 200.
+      const ws = activeWorkspaceId();
       // Only a gated, repo-backed, NON-home coding hive can carry an override.
       const env = await resolveHiveReleaseEnv(slug, ws);
       if (!env.enabled) return json({ ok: false, error: 'not_gated', reason: env.reason }, 404);

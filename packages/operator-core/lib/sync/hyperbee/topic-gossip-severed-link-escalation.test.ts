@@ -94,7 +94,10 @@ vi.mock('protomux', () => ({
 }));
 
 const { createTopicGossip, DEFAULT_SEVERED_ESCALATION_MS } = await import('./topic-gossip');
-type GossipSeveredLinkInfo = { topicHex: string; severedMs: number };
+// WI-5217: was a hand-duplicated local `{ topicHex, severedMs }` type that drifted from
+// the real GossipSeveredLinkInfo (which gained `neverPaired?: boolean`) — import the real
+// type instead so it can never drift again.
+import type { GossipSeveredLinkInfo } from './topic-gossip';
 import type { HyperswarmLike } from './swarm';
 
 const TOPIC = Buffer.alloc(32, 11);

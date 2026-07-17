@@ -32,6 +32,9 @@ const routine = (over: Partial<RoutineRow> = {}): RoutineRow => ({
   next_fire_at: null,
   last_fired_at: null,
   metadata: null,
+  // WI-5217: RoutineRow.group_slug (WI-5018) is a required field this factory
+  // predates — default to null (ungrouped), overridable via `over`.
+  group_slug: null,
   ...over,
 });
 
