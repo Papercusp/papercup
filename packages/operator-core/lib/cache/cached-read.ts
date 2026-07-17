@@ -217,7 +217,7 @@ export function resetCachedReadStatsForTests(): void {
  */
 export async function cachedRead<V>(
   ctx: CachedReadCtx,
-  opts: CachedReadOptions,
+  opts: CachedReadOptions<V>,
   factory: () => Promise<V> | V,
 ): Promise<V> {
   // Vitest safety gate: bypass the cache under test (the ECA isn't wired) unless a cache
@@ -226,7 +226,7 @@ export async function cachedRead<V>(
   const workspaceId = resolveCacheWorkspaceId(ctx);
   const keyPart = typeof opts.key === "string" ? opts.key : stableKey(opts.key);
   const fullKey = `${opts.tool}|${keyPart}`;
-  return getOperatorCache().getOrSet(workspaceId, fullKey, factory, {
+  const getOrSetOpts = {
     tags: opts.tags,
     ...(opts.softTtlMs !== undefined ? { softTtlMs: opts.softTtlMs } : {}),
     // WI-1547: no explicit hardTtl ⇒ the bounded-staleness default (see above).
@@ -235,6 +235,29 @@ export async function cachedRead<V>(
       return hard !== undefined ? { hardTtlMs: hard } : {};
     })(),
     ...(opts.cacheEmpty !== undefined ? { cacheEmpty: opts.cacheEmpty } : {}),
-    onOutcome: (outcome) => recordOutcome(opts.tool, outcome),
+    onOutcome: (outcome: CacheOutcome) => recordOutcome(opts.tool, outcome),
+  };
+
+  if (opts.deadlineMs === undefined) {
+    return getOperatorCache().getOrSet(workspaceId, fullKey, factory, getOrSetOpts);
+  }
+
+  // EI-184: bound the wait via getOrSetBounded — the underlying build keeps
+  // running (single-flight) and lands in cache for the next caller even after
+  // this caller's wait times out. `onDeadline` is the caller's required degrade
+  // policy (never invented here); a factory error is re-thrown, preserving
+  // today's throw-on-error semantics for the unbounded path above.
+  if (!opts.onDeadline) {
+    throw new Error(
+      `cachedRead(${opts.tool}): deadlineMs requires onDeadline (the degrade-on-timeout value)`,
+    );
+  }
+  const outcome = await getOrSetBounded(getOperatorCache(), workspaceId, fullKey, factory, {
+    ...getOrSetOpts,
+    deadlineMs: opts.deadlineMs,
   });
+  if (outcome.ok) return outcome.value;
+  if (outcome.reason === "error") throw outcome.error;
+  recordDeadline(opts.tool);
+  return opts.onDeadline();
 }

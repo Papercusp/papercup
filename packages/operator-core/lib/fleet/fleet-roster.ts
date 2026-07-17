@@ -28,7 +28,11 @@ import {
   type SessionState,
   type WakeabilitySignals,
 } from '../agent-tools/coordination/presence-wakeability';
-import { deriveVerdict } from '../agent-tools/coordination/liveness-oracle';
+import {
+  deriveVerdict,
+  resolveSessionStates,
+  type LivenessSubject,
+} from '../agent-tools/coordination/liveness-oracle';
 import { recordedLiveOwnerIds } from '../adv-sessions';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
 import {
@@ -519,23 +523,62 @@ export function splitFleetRosterCounts(entries: Array<{ agentRole: string | null
   return { members, bees };
 }
 
+/**
+ * P-006 (presence-derivation-unification-2026-07-17): the ids among `subjects`
+ * whose oracle verdict matches `deadStates`. The availability/audience reads
+ * below used to be raw heartbeat-freshness SQL — a cleanly-ENDED session with a
+ * still-warm heartbeat counted as a live member for routing (fleet:list
+ * "available") and for `@fleet:<slug>` audience expansion for up to
+ * PRESENCE_STALE_MS (EI-5858's bug pattern on the counts path). Fail-soft to
+ * the EMPTY set: a degraded oracle read must degrade these to the legacy
+ * heartbeat-only behavior, never break them.
+ */
+async function oracleDeadOwnerIds(
+  subjects: LivenessSubject[],
+  deadStates: readonly string[],
+): Promise<Set<string>> {
+  if (subjects.length === 0) return new Set();
+  try {
+    const verdicts = await resolveSessionStates(subjects);
+    const dead = new Set<string>();
+    for (const [id, v] of verdicts) if (deadStates.includes(v.sessionState)) dead.add(id);
+    return dead;
+  } catch {
+    return new Set();
+  }
+}
+
 /** IO seam: live member/bee counts per fleet_slug — presence rows with a fresh heartbeat
  *  (within PRESENCE_STALE_MS) carrying a fleet_slug, grouped by fleet AND split by
- *  substrate (WI-1764 #4: members = agent_role != 'bee'; bees = agent_role = 'bee'). */
+ *  substrate (WI-1764 #4: members = agent_role != 'bee'; bees = agent_role = 'bee').
+ *  P-006: rows whose oracle verdict is ended/suspect/draining are excluded — the same
+ *  non-runnable set fleet:status's memberCount already excludes, so "available"
+ *  in fleet:list can never disagree with the roster it routes to. */
 async function liveFleetAgentCounts(workspaceId: string): Promise<Map<string, FleetLiveCounts>> {
   const { sql } = getOrgPg();
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
-  const rows = await sql<{ fleet_slug: string; members: number; bees: number }[]>`
-    SELECT fleet_slug,
-           count(*) FILTER (WHERE agent_role IS DISTINCT FROM 'cup')::int AS members,
-           count(*) FILTER (WHERE agent_role = 'cup')::int AS bees
+  const rows = await sql<
+    { fleet_slug: string; owner_id: string; agent_role: string | null; heartbeat_at: string }[]
+  >`
+    SELECT fleet_slug, owner_id, agent_role, heartbeat_at
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug IS NOT NULL
        AND heartbeat_at > now() - ${`${secs} seconds`}::interval
-     GROUP BY fleet_slug
   `;
-  return new Map(rows.map((r) => [r.fleet_slug, { members: Number(r.members), bees: Number(r.bees) }]));
+  const dead = await oracleDeadOwnerIds(
+    rows.map((r) => ({ ownerId: r.owner_id, heartbeatAt: r.heartbeat_at, agentRole: r.agent_role })),
+    ['ended', 'suspect', 'draining'],
+  );
+  const counts = new Map<string, FleetLiveCounts>();
+  for (const r of rows) {
+    if (dead.has(r.owner_id)) continue;
+    const c = counts.get(r.fleet_slug) ?? { members: 0, bees: 0 };
+    if (isBeeRole(r.agent_role)) c.bees += 1;
+    else c.members += 1;
+    counts.set(r.fleet_slug, c);
+  }
+  return counts;
 }
 
 /**
@@ -611,14 +654,27 @@ export async function liveFleetBeeCountsFromNursery(workspaceId: string): Promis
 export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string): Promise<string[]> {
   const { sql } = getOrgPg();
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
-  const rows = await sql<{ owner_id: string; agent_role: string | null }[]>`
-    SELECT owner_id, agent_role
+  const rows = await sql<{ owner_id: string; agent_role: string | null; heartbeat_at: string }[]>`
+    SELECT owner_id, agent_role, heartbeat_at
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug = ${fleetSlug}
        AND heartbeat_at > now() - ${`${secs} seconds`}::interval
   `;
-  return livePsuFleetMemberIds(rows.map((r) => ({ ownerId: r.owner_id, agentRole: r.agent_role })));
+  // P-006: drop AUTHORITATIVELY-dead owners (ended|suspect) before expanding the
+  // audience — a warm-heartbeat corpse must not receive a fleet send. `draining`
+  // is deliberately KEPT here (unlike the availability counts above): a draining
+  // agent may still be winding down and the send is durable — never drop a
+  // message to a maybe-alive recipient.
+  const dead = await oracleDeadOwnerIds(
+    rows.map((r) => ({ ownerId: r.owner_id, heartbeatAt: r.heartbeat_at, agentRole: r.agent_role })),
+    ['ended', 'suspect'],
+  );
+  return livePsuFleetMemberIds(
+    rows
+      .filter((r) => !dead.has(r.owner_id))
+      .map((r) => ({ ownerId: r.owner_id, agentRole: r.agent_role })),
+  );
 }
 
 /**

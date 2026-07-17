@@ -74,6 +74,29 @@ import { runWithWorkspace } from "../../workspace-als";
  */
 const PLANS_ATTENTION_SOFT_TTL_MS = 20_000;
 
+/**
+ * EI-184: cap the caller's wait on a genuinely-blocking build (a cold L1 — e.g. right
+ * after an operator restart, since this process's cache is L1-only/in-memory — or a
+ * forced rebuild past the hard TTL/an invalidation). Live telemetry showed p50 ~225ms
+ * but a p99 of ~55s and a max of ~85s — comfortably past the 60s tool-call ceiling on
+ * the rare slow build, which is exactly what generated this watchdog signal (15/48436
+ * calls timed out). 45s leaves a safety margin under 60s while still giving a genuinely
+ * slow build most of its time; the build keeps running in the background regardless
+ * (getOrSetBounded/single-flight) and lands in cache for the next caller.
+ */
+const PLANS_ATTENTION_DEADLINE_MS = 45_000;
+
+/** The degrade-on-timeout value (EI-184) — an empty feed, consistent with every
+ *  individual source already being best-effort ("degrades to fewer items, never a
+ *  failed read"): a deadline is just the whole-aggregate version of that same policy. */
+function emptyAttentionResult(): {
+  groups: ReturnType<typeof buildAttentionGroups>;
+  tierCounts: ReturnType<typeof groupByTier>["counts"];
+  itemCount: number;
+} {
+  return { groups: buildAttentionGroups([]), tierCounts: groupByTier([]).counts, itemCount: 0 };
+}
+
 const argsSchema = z.object({
   harnessSlug: z
     .string()
@@ -196,6 +219,11 @@ export default defineTool({
         },
         tags: ["harness_plans", "plan_revisions", "plan_runs"],
         softTtlMs: PLANS_ATTENTION_SOFT_TTL_MS,
+        // EI-184: bound a genuinely-blocking build (cold L1 / forced rebuild) so this
+        // tool call can't exceed its 60s ceiling; degrade to an empty feed on deadline
+        // (the build keeps running in the background and lands in cache regardless).
+        deadlineMs: PLANS_ATTENTION_DEADLINE_MS,
+        onDeadline: emptyAttentionResult,
       },
       async () => {
         const items: AttentionItem[] = [];

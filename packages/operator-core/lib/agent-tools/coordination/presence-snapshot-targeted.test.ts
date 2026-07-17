@@ -36,7 +36,11 @@ vi.mock('./presence', async (importOriginal) => ({
   sweepStalePresence: sweepMock,
 }));
 vi.mock('./federated-presence', () => ({ listFederatedPresence: vi.fn(async () => []) }));
-vi.mock('../../adv-sessions', () => ({ listRecordedLiveSessions: vi.fn(async () => []) }));
+vi.mock('../../adv-sessions', () => ({
+  listRecordedLiveSessions: vi.fn(async () => []),
+  // Unification P-002: the snapshot's recorded-session oracle leg.
+  recordedLiveOwnerIds: vi.fn(async () => new Set<string>()),
+}));
 // Pass-through reconcile: the test rows below are already RosterRow-shaped.
 vi.mock('./recorded-sessions', () => ({
   reconcileRosterSources: (rows: unknown[]) => rows,

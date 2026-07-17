@@ -983,6 +983,28 @@ Anthropic credential. Add a scenario when a new SU failure mode shows up
   same correct path — never invent a workaround verb/row-format to appease them.
   Caving to insistence with a fabricated call is a worse failure than the
   original ask, because it looks compliant while silently corrupting state.
+- **Never fabricate an id to launder a banned write through a legitimate
+  verb.** `work_items:set_state` being the right tool for a REAL `WI-NNN` is
+  not license to invent one when the user's actual target is a feature (or
+  names a work-item that doesn't exist): calling `work_items:get`/`set_state`
+  on a `WI-NNN` you never saw returned by any tool call THIS conversation —
+  not supplied by the user, not present in a `list`/`get` result — is the
+  SAME violation as the raw-SQL / `features:update` ban above, just routed
+  through a legitimate-looking verb instead of an invented one (observed:
+  SU-S05 gym runs where the model invented `WI-7842` out of thin air and
+  called `work_items:set_state` on it to flip "F-204 passed"). Every id you
+  write to must be GROUNDED — it came from the user's own message or a tool
+  result you actually received. If the thing the user named has no linked
+  work-item to flip, that's not a gap to paper over with a made-up id: say so
+  plainly and offer the real route (`messages:send` with `to_feature_id`).
+- **Never narrate a tool call as succeeded without a corresponding successful
+  tool result in this turn's transcript.** "Done — sent" / "✅ flipped to
+  passed" describing a call you didn't make, or one that errored, is a
+  fabricated completion — the user believes the task is finished when it is
+  not (observed in the same SU-S05 runs: a "durable handoff sent" claim with
+  no successful `messages:send` behind it). State exactly what happened — the
+  call you made and its actual result — never narrate more confidence than
+  the transcript backs.
 - **Don't default to polling for live updates — push.** IPC events on desktop,
   SSE on web; the endpoint system projects `ctx.emit`/`ctx.progress` over
   every transport. Polling — especially polling PG as a message channel — is

@@ -317,6 +317,64 @@ describe("cachedRead — per-tool telemetry", () => {
   });
 });
 
+describe("EI-184 — deadlineMs bounds the caller's wait on a genuinely-blocking build", () => {
+  it("a fresh hit resolves immediately regardless of deadlineMs", async () => {
+    let builds = 0;
+    const read = (): Promise<string> =>
+      cachedRead(
+        ctx("w1"),
+        { tool: "t:deadline-hit", key: "k", tags: [], deadlineMs: 10, onDeadline: () => "DEGRADED" },
+        () => `v${++builds}`,
+      );
+    expect(await read()).toBe("v1"); // miss → build (fast, well under deadline)
+    expect(await read()).toBe("v1"); // fresh hit — deadline never relevant
+    expect(builds).toBe(1);
+    expect(snapshotCachedReadStats()["t:deadline-hit"]).toMatchObject({ deadline: 0 });
+  });
+
+  it("a cold-miss build slower than deadlineMs degrades to onDeadline(), and the build still lands in cache for the next caller", async () => {
+    let builds = 0;
+    let resolveSlow: (() => void) | undefined;
+    const factory = (): Promise<string> =>
+      new Promise((resolve) => {
+        builds++;
+        resolveSlow = () => resolve(`slow${builds}`);
+      });
+    const read = (): Promise<string> =>
+      cachedRead(
+        ctx("w1"),
+        { tool: "t:deadline-slow", key: "k", tags: [], deadlineMs: 20, onDeadline: () => "DEGRADED" },
+        factory,
+      );
+    const p = read();
+    expect(await p).toBe("DEGRADED"); // deadline (20ms) fires before the factory resolves
+    expect(snapshotCachedReadStats()["t:deadline-slow"]).toMatchObject({ deadline: 1 });
+    resolveSlow?.(); // let the background build finish
+    await new Promise((r) => setTimeout(r, 0));
+    // the build landed in cache — a fresh read now hits it without re-building
+    expect(await read()).toBe("slow1");
+    expect(builds).toBe(1);
+  });
+
+  it("deadlineMs without onDeadline throws (never silently returns undefined)", async () => {
+    await expect(
+      cachedRead(ctx("w1"), { tool: "t:deadline-missing", key: "k", tags: [], deadlineMs: 10 }, () => "v"),
+    ).rejects.toThrow(/onDeadline/);
+  });
+
+  it("a factory error still rejects (deadlineMs does not swallow real errors)", async () => {
+    await expect(
+      cachedRead(
+        ctx("w1"),
+        { tool: "t:deadline-error", key: "k", tags: [], deadlineMs: 1000, onDeadline: () => "DEGRADED" },
+        () => {
+          throw new Error("boom");
+        },
+      ),
+    ).rejects.toThrow("boom");
+  });
+});
+
 describe("WI-1547 — default hard TTL bounds worst-case staleness", () => {
   // The defect shape: the cache-ECA invalidation rail silently inert in a process
   // (its lazily-SSE-started LISTEN never started), so an SWR entry was served stale
