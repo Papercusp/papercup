@@ -32,7 +32,12 @@ function resolveHarnessAdminUrl(): string {
     return cachedDbUrl;
   }
 
-  const discoveryPath = join(osHomedir(), '.papercusp', 'embedded-pg.json');
+  // EI-13917: honor PAPERCUSP_HOME before the box-wide `~/.papercusp` — mirrors
+  // the matching fix in connection.ts / serve.ts. A caller with its own isolated
+  // PAPERCUSP_HOME (a gate/smoke-test instance) must discover ITS OWN discovery
+  // file, never the box-canonical one.
+  const papercuspDir = process.env.PAPERCUSP_HOME || join(osHomedir(), '.papercusp');
+  const discoveryPath = join(papercuspDir, 'embedded-pg.json');
   try {
     const raw = readFileSync(discoveryPath, 'utf8');
     const parsed = JSON.parse(raw) as { url?: string; port?: number };

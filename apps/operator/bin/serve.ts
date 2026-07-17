@@ -77,7 +77,23 @@ import { managedSetInterval } from "@papercusp/scheduled-registry";
 // init, so the packaged bundle is unchanged in shape and only the eager
 // evaluation goes away.
 
-const PAPERCUSP_DIR = join(homedir(), ".papercusp");
+// EI-13917: honor PAPERCUSP_HOME (the established isolation escape hatch —
+// see packages/operator-core/lib/papercusp-root.ts) BEFORE falling back to the
+// box-wide `~/.papercusp`. Without this, ANY isolated invocation of this
+// script — a packaged Papercusp Server run with its own PAPERCUSP_HOME +
+// PAPERCUSP_PG_PORT for a gate/smoke test — still wrote its discovery file
+// (embedded-pg.json), operator.json, superuser-token, and cold-start lock
+// into the REAL user's `~/.papercusp/`, silently hijacking every other
+// env-less process on the box onto its own (often throwaway/partial-schema)
+// embedded PG the moment it started. Live incident: a leaked
+// `papercup-live-federation-gate` instance (PAPERCUSP_HOME set, PAPERCUSP_PG_
+// PORT=16757) overwrote the box-canonical embedded-pg.json at 2026-07-17
+// 08:29Z, pointing the shared bg-host's pools at its own empty DB for ~5min
+// (routines engine read "0 active routines" — box-wide git-sync/kettle/scout
+// stall) — see EI-13917. A process that already does the isolation-correct
+// thing (sets PAPERCUSP_HOME) now gets FULL isolation instead of only
+// half of it.
+const PAPERCUSP_DIR = process.env.PAPERCUSP_HOME || join(homedir(), ".papercusp");
 const OPERATOR_JSON = join(PAPERCUSP_DIR, "operator.json");
 const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
 const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, "superuser-token");

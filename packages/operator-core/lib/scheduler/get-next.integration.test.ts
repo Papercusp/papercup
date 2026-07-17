@@ -756,18 +756,21 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
   // backlog (tier 3 is the ONLY path that serves issue-family work) whenever a spec pinned even
   // one extra id via an `any` clause, exactly the live backlog-drain-clean@12 shape. The fix:
   // tier 3 always runs; it narrows by `ids` only when positiveIdCohortIds can safely extract a
-  // genuine closed-world set (unchanged EI-10062/WI-4309 guarantee below), and otherwise leans
-  // on the same post-claim `matchesWorkItemClaimSpec` + bounded release-and-retry safety net a
-  // no-id-leaf spec already depends on to enforce full OR/AND correctness.
+  // genuine closed-world set (unchanged EI-10062/WI-4309 guarantee below).
+  //
+  // At THIS layer (getNextWorkItem, called directly, no wrapper) tier 3's SQL-side query can
+  // only narrow by kind/id when those are safely extractable — that has ALWAYS been true (a
+  // title/plan/paths constraint was never pushed into tier 3's SQL either, even pre-fix); full
+  // filter correctness for whatever tier 3's SQL can't narrow by has always been the CALLER's
+  // job (claim-spec-store.ts's getNextForBee: mandatory post-claim `matchesWorkItemClaimSpec` +
+  // bounded release-and-retry — independently covered by
+  // get-next-for-bee-plan-lane-guard.test.ts's generic "quarantines an issue-family fallback
+  // that fails the complete claim spec" case, which doesn't care what filter shape caused the
+  // mismatch). So this test proves exactly what changed at this layer: a single item that only
+  // an `any`-nested id leaf admits is now SERVED instead of producing a false, permanent miss.
   it('tier 3 (WI-5275): an id leaf nested in `any` no longer starves tier 3 — it still serves a matching item', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
-    // Oldest, but matches NEITHER branch of the `any` (kind='task', id not in the allowlist) —
-    // proves the post-claim safety net still enforces full-filter correctness even though tier
-    // 3's SQL-side query can't narrow by the `any` shape: this row gets claimed-then-released
-    // (not served) despite ranking first by age.
-    await seedIssue('EI-wrong', { state: 'open', createdTs: 1, kind: 'task' });
-    // Newer, but matches the `any`'s id branch (kind='task' so it does NOT match the kind
-    // branch either — only the id leaf admits it).
+    // Only admitted via the `any`'s id branch — kind='task' does not match the kind='bug' branch.
     await seedIssue('EI-any-named', { state: 'open', createdTs: 100, kind: 'task' });
     const s = spec({
       specVersion: '1.0',

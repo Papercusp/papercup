@@ -295,6 +295,31 @@ async function raceRowStage<T>(
 const loggedQuarantinedRowIds = new Set<string>();
 
 /**
+ * EI-13917: is `e` a postgres.js "the client this pass is using was already
+ * `.end()`-ed" error? `connection.ts`'s `getOrgPg()`/`getOrgPgApp()` correctly
+ * invalidate + rebuild their SHARED client when the discovery-file URL changes
+ * (e.g. another local install rewrote `~/.papercusp/embedded-pg.json` — WI-5244)
+ * — but this drain loop is handed that client ONCE at `startOutboxDrain` and
+ * closes over it for its entire lifetime (the poll timer + LISTEN handler never
+ * re-resolve it). So when the shared client gets replaced out from under this
+ * closure, every subsequent write on the OLD (now-ended) handle fails with
+ * `code: 'CONNECTION_ENDED'` — forever, since nothing here ever re-fetches a
+ * fresh client. This is the exact "600x/min CONNECTION_ENDED, no self-recovery"
+ * incident this drain was filed on (EI-13917).
+ *
+ * Mirrors `own-log-fork-guard.ts`'s `isSessionClosedError` shape + the existing
+ * CONNECTION_ENDED/CONNECTION_DESTROYED classification in
+ * `service-health-events.ts` — same postgres.js error family, same
+ * `.code`/message shape.
+ */
+export function isConnectionEndedError(e: unknown): boolean {
+  const code = typeof e === 'object' && e !== null ? (e as { code?: unknown }).code : undefined;
+  if (code === 'CONNECTION_ENDED' || code === 'CONNECTION_DESTROYED') return true;
+  const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+  return /CONNECTION_ENDED|CONNECTION_DESTROYED|Connection ended/i.test(msg);
+}
+
+/**
  * WI-3619 (WI-2009-class per-stage detector): when a drain pass hangs, the
  * PASS TIMEOUT watchdog names the PASS but not the STAGE — the journal says
  * "hung await (keychain unwrap / epoch-key resolution / append)" and the
