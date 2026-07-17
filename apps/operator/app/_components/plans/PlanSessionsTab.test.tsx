@@ -12,7 +12,7 @@ const { nuqs, setters, sessionRows, openedOwner, launchAgent } = vi.hoisted(() =
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
   sessionRows: { value: [] as unknown[] },
   openedOwner: { value: null as string | null },
-  launchAgent: vi.fn(async () => ({ ok: true as const })),
+  launchAgent: vi.fn(async (_o?: unknown) => ({ ok: true as const })),
 }));
 function mkSetter(key: string) {
   if (!setters[key]) setters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });

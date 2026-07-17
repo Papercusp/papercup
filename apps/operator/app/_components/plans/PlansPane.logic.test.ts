@@ -115,6 +115,21 @@ describe('progressOf', () => {
   });
 });
 
+describe('isStale', () => {
+  const now = Date.parse('2026-07-17T00:00:00Z');
+  it('flags an active plan with no activity for ≥14d', () => {
+    expect(isStale('2026-07-01T00:00:00Z', now)).toBe(true); // 16d
+    expect(isStale('2026-07-10T00:00:00Z', now)).toBe(false); // 7d
+    expect(isStale(null, now)).toBe(false);
+    expect(isStale('not-a-date', now)).toBe(false);
+  });
+  it('uses a 14-day threshold', () => {
+    expect(STALE_MS).toBe(14 * 24 * 60 * 60 * 1000);
+    expect(isStale(new Date(now - STALE_MS - 1).toISOString(), now)).toBe(true);
+    expect(isStale(new Date(now - STALE_MS + 60_000).toISOString(), now)).toBe(false);
+  });
+});
+
 describe('agoLabel', () => {
   it('formats recency compactly and guards bad input', () => {
     const now = Date.now();

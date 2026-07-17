@@ -24,6 +24,7 @@ import { getFleet } from '../../agent-fleets-store';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { listWorkOffers } from '../../p2p/offer-store';
 import { publishSpawnRequest } from '../../p2p/spawn-request-publish';
+import { resolveRemotePlacementHive } from './launch-on-plan';
 import { fleetRoleFor, json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
 export default defineTool({
@@ -61,6 +62,13 @@ export default defineTool({
       .min(1)
       .optional()
       .describe('Target seat-offer id (seat-<hex16>). Optional when the fleet has exactly one open seat-offer.'),
+    hive: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "On a MULTI-hive workspace: which shared hive's federated seat-offers to spend (mirror of resource:delegate's `hive`). Defaults to the single shared hive; otherwise the call lists the candidate hives and refuses until you name one.",
+      ),
     launchContext: z
       .string()
       .min(1)
@@ -89,12 +97,11 @@ export default defineTool({
     }
 
     const scope = await resolveWorkspaceHiveScope(workspaceId);
-    if (scope.kind !== 'one') {
-      return json(
-        { ok: false, error: `seat-offers federate over the ONE shared hive and this workspace has ${scope.kind === 'none' ? 'none' : 'several'} — cross-machine launch needs a single shared hive` },
-        true,
-      );
+    const hivePick = resolveRemotePlacementHive(scope, args.hive, null);
+    if (!hivePick.ok) {
+      return json({ ok: false, error: hivePick.error }, true);
     }
+    const hiveHomeSlug = hivePick.homeSlug;
 
     // Target selection: explicit pair, else the fleet's single open seat-offer.
     let targetPublisher = args.publisher ?? null;
@@ -102,7 +109,7 @@ export default defineTool({
     if ((targetPublisher == null) !== (targetOffer == null)) {
       return json({ ok: false, error: 'pass BOTH publisher + offer to pick a target seat-offer, or NEITHER to auto-pick' }, true);
     }
-    const seatOffers = await listWorkOffers(workspaceId, scope.homeSlug, {
+    const seatOffers = await listWorkOffers(workspaceId, hiveHomeSlug, {
       fleetSlug: args.fleet,
       kind: 'seat',
       status: 'open',
