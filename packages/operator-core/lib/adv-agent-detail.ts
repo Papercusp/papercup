@@ -29,7 +29,9 @@ import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './role-codex-home';
 import {
   nativeSessionHandleForAdvSession,
+  claudeHandleAfterRematerializeAttempt,
   type NativeSessionHandle,
+  type ClaudeNativeSessionHandle,
 } from './native-session-handles';
 
 // ──────────────────────────── DTOs (the endpoint JSON contract) ────────────
@@ -302,15 +304,68 @@ async function getAgentNativeSession(owner: string): Promise<NativeSessionHandle
   try {
     const session = await latestAdvSessionByCoordOwner(owner);
     if (!session) return null;
+    let handle: NativeSessionHandle | null;
     if (session.agent === 'codex') {
       const diagnostics = readCodexHomeDiagnostics(session.id);
-      return nativeSessionHandleForAdvSession(session, {
+      handle = nativeSessionHandleForAdvSession(session, {
         findCodexRolloutId: () => diagnostics.latestRolloutId,
       });
+    } else {
+      handle = nativeSessionHandleForAdvSession(session);
     }
-    return nativeSessionHandleForAdvSession(session);
+    // WI-5226 (EI-308 gap 2): an ENDED claude session's transcript is almost
+    // always already deleted (archive-at-death hook, ~15s after turn end) by
+    // the time a human opens this dossier — verify + best-effort rematerialize
+    // before telling the UI "exact resume: supported" with a command that would
+    // otherwise ENOENT. Only for ended sessions — a live one's dir is untouched.
+    if (
+      handle?.backend === 'claude' &&
+      handle.exactResumeSupported &&
+      session.endedAt &&
+      handle.sessionId &&
+      handle.configDir
+    ) {
+      handle = await ensureClaudeResumeDirMaterialized(handle);
+    }
+    return handle;
   } catch {
     return null;
+  }
+}
+
+/**
+ * I/O wrapper for {@link claudeHandleAfterRematerializeAttempt}: checks whether
+ * `handle`'s session transcript is actually present on disk under `configDir`,
+ * and if not, best-effort rematerializes it from the archive (the SAME primitive
+ * `/adv/sessions/rematerialize` and the wake-executor already use). Never throws
+ * — a failed check/rematerialize just downgrades the handle, it never breaks the
+ * dossier. Lazy import: session-archive fails LOUD at import when zstd is
+ * unavailable, matching the rematerialize route's own lazy-import rationale.
+ */
+async function ensureClaudeResumeDirMaterialized(
+  handle: ClaudeNativeSessionHandle,
+): Promise<ClaudeNativeSessionHandle> {
+  const sessionId = handle.sessionId;
+  const configDir = handle.configDir;
+  if (!sessionId || !configDir) return handle;
+  try {
+    const { listClaudeSessionIds, rematerializeSession } = await import('./session-archive');
+    const present = (await listClaudeSessionIds(configDir)).includes(sessionId);
+    if (present) {
+      return claudeHandleAfterRematerializeAttempt(handle, { presentOnDisk: true, rematerialized: false });
+    }
+    const result = await rematerializeSession({ sourceKind: 'claude', sessionId, targetRoot: configDir });
+    return claudeHandleAfterRematerializeAttempt(handle, {
+      presentOnDisk: false,
+      rematerialized: result.ok,
+      rematReason: result.ok ? undefined : result.reason,
+    });
+  } catch (e) {
+    return claudeHandleAfterRematerializeAttempt(handle, {
+      presentOnDisk: false,
+      rematerialized: false,
+      rematReason: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 

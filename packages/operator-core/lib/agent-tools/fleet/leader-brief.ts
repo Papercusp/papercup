@@ -64,6 +64,10 @@ import type { SessionState } from '../coordination/presence-wakeability';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
+import {
+  readUnownedCriticalsForFleet,
+  type UnownedCriticalCandidate,
+} from '../../harness/improvements/unowned-critical-escalation';
 
 export interface LeaderBriefMember {
   agentId: string;
@@ -255,6 +259,16 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Also include members with no claims and a stale heartbeat (default false — dead/idle noise).'),
+    unowned_critical_age_hours: z
+      .number()
+      .positive()
+      .max(168)
+      .optional()
+      .describe(
+        'WI-5213: escalation bar for an unowned critical work-item (open, severity=critical, no ' +
+          'assignee) that THIS fleet\'s claim spec would admit — "filing is not fixing", so a ' +
+          'critical left orphaned this long surfaces here without anyone asking. Default 4h.',
+      ),
   }),
   async handler(args, ctx) {
     let actorWorkspace: string | null = null;

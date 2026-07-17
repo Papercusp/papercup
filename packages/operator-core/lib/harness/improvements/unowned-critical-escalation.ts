@@ -19,7 +19,8 @@
  * + `matchesWorkItemClaimSpec` (the existing claim-spec predicate) are the
  * whole substrate.
  */
-import { listWorkItems, type WorkItem } from '../../work-items';
+import { issueToWorkItem, ISSUE_FAMILY_KINDS, type WorkItem } from '../../work-items';
+import { listIssues } from '../../issues-engineer';
 import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
 import { getClaimSpec, fleetSpecBeeKey } from '../../scheduler/claim-spec-store';
 
@@ -89,10 +90,13 @@ export function unownedCriticalsMatchingFleetSpec(
 /**
  * IO: read the workspace's open+critical+unassigned issue-family backlog and
  * narrow it to what `fleet`'s claim spec would admit — the one-call shell
- * `fleet:leader-brief` uses. Fails soft to `[]` on any read error (this must
- * never break the health brief it decorates); callers that need to
- * distinguish "none found" from "read failed" should call the two pure
- * halves directly instead.
+ * `fleet:leader-brief` uses. Queries `listIssues` with `severity`+`state`
+ * pushed server-side (NOT `listWorkItems`'s recency-capped cross-family scan,
+ * which would systematically miss exactly the OLD stale items this sweep
+ * exists to catch once the backlog exceeds the cap). Fails soft to `[]` on
+ * any read error (this must never break the health brief it decorates);
+ * callers that need to distinguish "none found" from "read failed" should
+ * call the two pure halves directly instead.
  */
 export async function readUnownedCriticalsForFleet(args: {
   fleet: string;
@@ -101,10 +105,17 @@ export async function readUnownedCriticalsForFleet(args: {
   ageHours?: number;
 }): Promise<UnownedCriticalCandidate[]> {
   try {
-    const [items, spec] = await Promise.all([
-      listWorkItems({ harness: args.harness, state: 'open', limit: 200 }),
+    const [issues, spec] = await Promise.all([
+      listIssues({
+        state: 'open',
+        severity: 'critical',
+        kinds: ISSUE_FAMILY_KINDS,
+        scope: args.harness ? `harness:${args.harness}` : undefined,
+        limit: 100,
+      }),
       getClaimSpec({ cupId: fleetSpecBeeKey(args.fleet), workspaceId: args.workspaceId }),
     ]);
+    const items: WorkItem[] = issues.map(issueToWorkItem);
     return unownedCriticalsMatchingFleetSpec(items, spec, { ageHours: args.ageHours });
   } catch {
     return [];

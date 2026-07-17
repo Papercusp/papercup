@@ -157,3 +157,32 @@ export function nativeSessionHandleForSpawnedAgent(
     missingReason: row.ompThreadId ? null : 'spawned OMP agent has no thread id recorded',
   };
 }
+
+/**
+ * EI-308 gap 2 / WI-5226: an ENDED claude session's transcript is deleted by the
+ * archive-at-death hook within ~15s of turn end (independent of session-dir-gc's
+ * later whole-dir sweep) — so by the time a human opens the dossier and copies the
+ * `claude --resume` command it hands back, the file the command needs is almost
+ * always already gone, and the command ENOENTs despite the dossier claiming "exact
+ * resume: supported". The async caller (adv-agent-detail.ts) checks the real disk
+ * state and best-effort rematerializes from the archive BEFORE trusting the handle;
+ * this is the PURE outcome-decision half of that (no I/O), kept separate so it is
+ * unit-tested without a real fs/PG.
+ *
+ * Returns `handle` unchanged when the transcript is present on disk (either it
+ * always was, or the rematerialize attempt just restored it); otherwise downgrades
+ * `exactResumeSupported` so the UI never hands out a command that will ENOENT.
+ */
+export function claudeHandleAfterRematerializeAttempt(
+  handle: ClaudeNativeSessionHandle,
+  opts: { presentOnDisk: boolean; rematerialized: boolean; rematReason?: string },
+): ClaudeNativeSessionHandle {
+  if (opts.presentOnDisk || opts.rematerialized) return handle;
+  return {
+    ...handle,
+    exactResumeSupported: false,
+    missingReason:
+      'session transcript was cleaned up and could not be restored' +
+      (opts.rematReason ? ` (${opts.rematReason})` : ''),
+  };
+}
