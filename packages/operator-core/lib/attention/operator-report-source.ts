@@ -60,6 +60,11 @@ export async function readRecentOperatorReports(opts?: {
      WHERE c.workspace_id = ${ws}
        AND t.role = 'assistant'
        AND t.report IS NOT NULL
+       -- deterministic-status-cards-2026-07-17 P-002: a source='system' report
+       -- turn is a CURATOR status card that renders in the CHAT (its signals —
+       -- escalations/blockers — are already in the inbox via their own sources);
+       -- only the operator's OWN <report> turns (text_typed/voice_tts) belong here.
+       AND t.source <> 'system'
        AND t.created_at > ${cutoff}
      ORDER BY t.created_at DESC
      LIMIT ${limit}

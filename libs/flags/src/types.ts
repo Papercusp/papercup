@@ -30,6 +30,16 @@ export const FLAGS = {
   // (that flag is parked/cut for V1). Default ON (derived FLAG_DEFAULTS);
   // flip OFF via /admin/features to hide the sidebar without a rebuild.
   OPERATOR_CHAT_SIDEBAR: "papercusp-operator-chat-sidebar",
+  // The curator-operator's deterministic status messages render in the chat as
+  // structured CARDS instead of flattened markdown lines
+  // (deterministic-status-cards-2026-07-17): status glyph + source + an
+  // ACTIONABLE drill-in, vs the old dead `drill in: \`escalation:<id>\`` monospace.
+  // Additive — the curator turn always carries both the plain text (fallback for
+  // voice/search) and the report card; this flag only gates the CHAT RENDER.
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS). OFF = the clean
+  // kill-switch: the chat falls back to the turn's plain-text lines
+  // byte-identically, no data change.
+  CURATOR_STATUS_CARDS: "papercusp-curator-status-cards",
   // WI-5071 (reply-latency TTFT): reuse ONE claude-code brain session per chat
   // conversation — turns 2+ resume the session with a DELTA prompt (new
   // trigger/utterance only; the session carries the verbatim history) instead

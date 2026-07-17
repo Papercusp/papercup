@@ -35,6 +35,19 @@ describe('surfaceCuratedMessage', () => {
       role: 'assistant',
       text: 'hello',
       source: 'system',
+      report: null,
+    });
+  });
+
+  it('carries a status-card ReportBlock onto the turn when passed (P-002)', async () => {
+    const report = { plans: [{ title: 'Fleet status', items: [{ text: 'Blocked — x', status: 'blocked', ref: 'escalation:e1' }] }] };
+    await surfaceCuratedMessage('🚧 Blocked — x', report);
+    expect(mockedAppend).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      role: 'assistant',
+      text: '🚧 Blocked — x',
+      source: 'system',
+      report,
     });
   });
 

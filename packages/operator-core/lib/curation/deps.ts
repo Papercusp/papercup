@@ -354,7 +354,7 @@ export function buildCurationDeps(): CurationDeps {
     readers: buildFleetReaders(),
     loadSurfaced: (windowMs) => loadRecentSurfaced(windowMs),
     recordSurfaced: (entries, policyVersion) => recordSurfaced(entries, policyVersion),
-    surface: (text) => surfaceCuratedMessage(text),
+    surface: (text, report) => surfaceCuratedMessage(text, report),
     // P-003 recovery close-the-loop: escalation/blocker signals still OPEN
     // per the curation-log flap guard, diffed against this tick's gather.
     loadOpenRecoverable: () => loadOpenRecoverable(),

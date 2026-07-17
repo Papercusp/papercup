@@ -26,6 +26,7 @@ import {
 } from './salience-policy';
 import { gatherFleetSignals, type FleetReaders } from './fleet-signals';
 import type { SurfacedEntry, OpenRecoverableEntry } from './curation-log';
+import type { ReportBlock, ReportItem } from '@papercusp/chat-protocol';
 
 // ── Cadence / backoff constants (the "faster when busy, slower when quiet" rule)
 /** The adaptive interval floor — how often a busy workspace re-curates. */
@@ -43,8 +44,11 @@ export interface CurationDeps {
   loadSurfaced: (windowMs?: number) => Promise<Set<string>>;
   /** Persist what we surfaced/batched this tick. */
   recordSurfaced: (entries: readonly SurfacedEntry[], policyVersion: string) => Promise<void>;
-  /** Emit one curated message into the operator's single voice. */
-  surface: (text: string) => Promise<unknown>;
+  /** Emit one curated message into the operator's single voice. `report`
+   *  (deterministic-status-cards-2026-07-17 P-002) is the structured status
+   *  CARD for the same content — the sink persists it on the turn so the chat
+   *  renders a card; `text` stays the fallback for text-only surfaces. */
+  surface: (text: string, report?: ReportBlock) => Promise<unknown>;
   /** P-003 recovery close-the-loop: previously-surfaced escalation/blocker
    *  signals still considered OPEN (per `curation-log.loadOpenRecoverable`'s
    *  flap guard). Diffed against the current gather each tick to compute
@@ -98,23 +102,86 @@ const KIND_LABEL: Record<string, string> = {
   cleared: 'Cleared',
 };
 
+/** deterministic-status-cards-2026-07-17 P-002/D-003: map a signal kind onto a
+ *  ReportBlock status token so the card renderer picks the right glyph+tone
+ *  (reusing ReportBlockCard's existing status→glyph map — done/resolved → ●
+ *  good, wip → ◐ accent, blocked/failing → ■ bad, needs-human/review → review).
+ *  The human LABEL is still carried in the row text (information-preservation,
+ *  D-006) so escalation-vs-blocker (both ■) stays distinguishable. */
+const KIND_STATUS: Record<string, string> = {
+  escalation: 'blocked',
+  blocker: 'blocked',
+  decision: 'needs-human',
+  completion: 'done',
+  progress: 'wip',
+  health: 'failing',
+  cleared: 'resolved',
+};
+
+/** The signal's rendered BODY — everything after the marker and before the
+ *  drill-in ref (label + harness + requested + title + detail + aging). Shared
+ *  by the text line (formatSignalLine) and the card row (signalToReportItem) so
+ *  the two renditions never drift and no field is dropped (D-006). */
+function signalBody(c: ClassifiedSignal, now: () => number = Date.now): string {
+  const { signal } = c;
+  const label = KIND_LABEL[signal.kind] ?? signal.kind;
+  const where = signal.harness ? ` [${signal.harness}]` : '';
+  const requested = signal.kind === 'completion' && signal.userRequested ? ' (you asked for this)' : '';
+  let body = `**${label}**${where}${requested} — ${signal.title}`;
+  if (signal.detail) body += ` · ${signal.detail}`;
+  const aging = agingAnnotation(signal, now());
+  if (aging) body += ` · ${aging}`;
+  return body;
+}
+
 /** Format ONE always-surface signal into a calm line, with the drill-in ref
  *  (D-005 — curation never hides; the raw item is always reachable). `now`
  *  (injectable for tests) drives the P-006 aging annotation — a still-open
  *  escalation/blocker at least a day old gets a "still open — day N" tag so a
- *  re-nag past the idempotency window reads as a reminder, not new news. */
+ *  re-nag past the idempotency window reads as a reminder, not new news.
+ *  This is the TEXT rendition (voice/search/text-only surfaces + the card's own
+ *  fallback); the card rendition rides the turn's `report` (buildSurfaceReport). */
 export function formatSignalLine(c: ClassifiedSignal, now: () => number = Date.now): string {
-  const { signal } = c;
-  const marker = KIND_MARKER[signal.kind] ?? '•';
-  const label = KIND_LABEL[signal.kind] ?? signal.kind;
-  const where = signal.harness ? ` [${signal.harness}]` : '';
-  const requested = signal.kind === 'completion' && signal.userRequested ? ' (you asked for this)' : '';
-  let line = `${marker} **${label}**${where}${requested} — ${signal.title}`;
-  if (signal.detail) line += ` · ${signal.detail}`;
-  const aging = agingAnnotation(signal, now());
-  if (aging) line += ` · ${aging}`;
-  if (signal.ref) line += ` · drill in: \`${signal.ref}\``;
+  const marker = KIND_MARKER[c.signal.kind] ?? '•';
+  let line = `${marker} ${signalBody(c, now)}`;
+  if (c.signal.ref) line += ` · drill in: \`${c.signal.ref}\``;
   return line;
+}
+
+/** One card ROW for a signal — the structured counterpart of formatSignalLine
+ *  (P-002). `status` drives the glyph/tone; `ref` becomes the row's actionable
+ *  drill-in (P-003/D-004) instead of the dead monospace `drill in: \`…\``. */
+export function signalToReportItem(c: ClassifiedSignal, now: () => number = Date.now): ReportItem {
+  return {
+    text: signalBody(c, now),
+    status: KIND_STATUS[c.signal.kind] ?? c.signal.kind,
+    ...(c.signal.ref ? { ref: c.signal.ref } : {}),
+  };
+}
+
+/** The always-surface (urgent-first) items as a status CARD — the structured
+ *  counterpart of formatSurfaceMessage (P-002). Rides the curator turn's
+ *  `report`; renders in the chat via ReportBlockCard. */
+export function buildSurfaceReport(
+  surfaceNow: readonly ClassifiedSignal[],
+  now: () => number = Date.now,
+): ReportBlock {
+  return { plans: [{ title: 'Fleet status', items: surfaceNow.map((c) => signalToReportItem(c, now)) }] };
+}
+
+/** Max card rows for the routine digest — the card can show more than the text
+ *  digest's 3 samples, but stays bounded so a large batch never balloons it. */
+const DIGEST_CARD_MAX_ROWS = 20;
+
+/** The routine batch as a compact rollup CARD (P-004): the count-by-kind header
+ *  as the card title, up to DIGEST_CARD_MAX_ROWS signal rows. */
+export function buildDigestReport(
+  batch: readonly ClassifiedSignal[],
+  now: () => number = Date.now,
+): ReportBlock {
+  const header = formatBatchDigest(batch).split('\n')[0] ?? '📋 Fleet update';
+  const rows = batch.slice(0, DIGEST_CARD_MAX_ROWS).map((c) => signalToReportItem(c, now));
+  return { title: header, plans: [{ title: 'Recent', items: rows }] };
 }
 
 /** Compose the single always-surface message (urgent-first). */
@@ -204,7 +271,7 @@ export async function runCurationTick(
   // 1) Always-surface items → one calm operator message (urgent leads).
   if (surfaceNow.length > 0) {
     const text = formatSurfaceMessage(surfaceNow, deps.now ?? Date.now);
-    await deps.surface(text);
+    await deps.surface(text, buildSurfaceReport(surfaceNow, deps.now ?? Date.now));
     messages.push(text);
     for (const c of surfaceNow) recorded.push({ id: c.signal.id, kind: c.signal.kind, title: c.signal.title });
   }
@@ -217,7 +284,7 @@ export async function runCurationTick(
   if (batch.length > 0) {
     if (canEmitDigest) {
       const text = formatBatchDigest(batch);
-      await deps.surface(text);
+      await deps.surface(text, buildDigestReport(batch, deps.now ?? Date.now));
       messages.push(text);
       digestEmitted = true;
       batchedCount = batch.length;
