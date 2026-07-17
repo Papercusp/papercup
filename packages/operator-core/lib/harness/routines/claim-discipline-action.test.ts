@@ -5,6 +5,7 @@ import {
   nudgeSummary,
   nudgeBody,
   NUDGE_PREFIX,
+  filterCompletedPlanTargets,
   filterStoreBackedTargets,
   filterParkedTargets,
   filterHealthyLoopTargets,
@@ -165,6 +166,34 @@ describe('filterStoreBackedTargets — EI-7402', () => {
     const { keep, skippedStoreAbsent } = filterStoreBackedTargets(targets, workspaceByAgent, existsByKey);
     expect(keep.map((t) => t.agentId)).toEqual(['a']);
     expect(skippedStoreAbsent).toBe(1);
+  });
+});
+
+describe('filterCompletedPlanTargets — EI-13286', () => {
+  it('suppresses a freshly completed plan after its final claim is released', () => {
+    const targets = [
+      declaredPresence({ agentId: 'finished', declaredPlanSlug: 'finished-plan' }),
+      declaredPresence({ agentId: 'working', declaredPlanSlug: 'active-plan' }),
+    ];
+    const workspaceByAgent = new Map([
+      ['finished', 'ws1'],
+      ['working', 'ws1'],
+    ]);
+    const completedByKey = new Map([
+      [storeExistsKey('ws1', 'finished-plan'), true],
+      [storeExistsKey('ws1', 'active-plan'), false],
+    ]);
+
+    const result = filterCompletedPlanTargets(targets, workspaceByAgent, completedByKey);
+    expect(result.keep.map((target) => target.agentId)).toEqual(['working']);
+    expect(result.skippedCompletedPlan).toBe(1);
+  });
+
+  it('fails open when completion state is missing or the read failed', () => {
+    const targets = [declaredPresence({ agentId: 'unknown', declaredPlanSlug: 'plan-a' })];
+    const result = filterCompletedPlanTargets(targets, new Map([['unknown', 'ws1']]), new Map());
+    expect(result.keep).toEqual(targets);
+    expect(result.skippedCompletedPlan).toBe(0);
   });
 });
 

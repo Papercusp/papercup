@@ -10,6 +10,7 @@ import { CREATIVE_LENSES } from '../types';
 import {
   allocateExtraIdeators,
   buildIdeatorRoster,
+  IDEATOR_OUTPUT_HEADROOM_TOKENS,
   parseIdeasPayload,
   runIdeators,
 } from '../ideators';
@@ -212,11 +213,24 @@ describe('runIdeators', () => {
     expect(res.ideators.every((i) => !i.ok && i.error?.includes('aborted'))).toBe(true);
   });
 
+  // maxTokens = the requested thinking budget PLUS the response headroom — the
+  // headroom is asserted via the exported constant, never a re-typed literal:
+  // this test previously pinned its own `4096` and redded the release gate when
+  // ideators.ts raised the headroom to fix the EI-13119 truncation outage.
   it('passes a thinking budget through to the llmCall when set', async () => {
     const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
     await runIdeators(digest, { llmCall: call, thinkingBudgetTokens: 2000 });
     expect(calls[0].thinkingBudgetTokens).toBe(2000);
-    expect(calls[0].maxTokens).toBe(2000 + 4096);
+    expect(calls[0].maxTokens).toBe(2000 + IDEATOR_OUTPUT_HEADROOM_TOKENS);
+  });
+
+  // The no-thinking path must ALSO carry the headroom: server-side thinking bills
+  // against maxTokens even when no budget is requested (the actual EI-13119 shape).
+  it('sends the response headroom as maxTokens when no thinking budget is set', async () => {
+    const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
+    await runIdeators(digest, { llmCall: call });
+    expect(calls[0].thinkingBudgetTokens).toBeUndefined();
+    expect(calls[0].maxTokens).toBe(IDEATOR_OUTPUT_HEADROOM_TOKENS);
   });
 
   it('threads stepping-stone priming into every ideator user prompt (P-012)', async () => {

@@ -130,6 +130,55 @@ describe('classifyLadderEscalations (pure verdict)', () => {
     expect(out).toEqual([]);
   });
 
+  it('never escalates unread mail from machine senders that cannot receive a reply (EI-13286)', () => {
+    const out = classifyLadderEscalations({
+      rows: [
+        row('su-finished', {
+          cnt: 1,
+          newest_from: 'claim-discipline-watch',
+          newest_summary: 'claim your lane',
+          recent_msgs: [
+            msg(6, {
+              from: 'claim-discipline-watch',
+              summary: 'claim your lane',
+            }),
+          ],
+        }),
+      ],
+      lastReadByOwner: new Map([['su-finished', new Date(NOW - 30 * MIN).toISOString()]]),
+      signals: new Map([['su-finished', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('still escalates a peer message when machine chatter shares the candidate window', () => {
+    const out = classifyLadderEscalations({
+      rows: [
+        row('su-mixed', {
+          cnt: 2,
+          newest_from: 'claim-discipline-watch',
+          newest_summary: 'claim your lane',
+          recent_msgs: [
+            msg(6, { from: 'claim-discipline-watch', summary: 'claim your lane' }),
+            msg(7, { from: 'su-peer', summary: 'can you review this?' }),
+          ],
+        }),
+      ],
+      lastReadByOwner: new Map([['su-mixed', new Date(NOW - 30 * MIN).toISOString()]]),
+      signals: new Map([['su-mixed', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      candidateCount: 1,
+      newestFrom: 'su-peer',
+      newestSummary: 'can you review this?',
+    });
+  });
+
   it('skips a row with an unparseable newest ts (never escalate on bad data)', () => {
     const out = classifyLadderEscalations({
       rows: [row('su-garbage', { newest_ts_ms: 'not-a-number' })],

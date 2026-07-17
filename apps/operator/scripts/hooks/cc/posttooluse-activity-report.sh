@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # PostToolUse hook — report a psu worker's native tool call to the cross-CLI
-# ACTIVITY BRIDGE (papercusp-worker-integration-2026-06-04, D-003). Fires after
-# EVERY tool call (matcher "*"), so each worker's native tool stream (Edit / Write
-# / Bash / Read / apply_patch / Task-todos) is mirrored into harness_shared.
-# agent_activity → the pui fleet-status view + the curator.
+# ACTIVITY BRIDGE (papercusp-worker-integration-2026-06-04, D-003), AND fold
+# in the delta-aware coordination bundle (EI-11405 / RPC-fanout-collapse
+# -2026-07-16) that used to be a SEPARATE posttooluse-coord-inbox.sh round
+# trip. Fires after EVERY tool call (matcher "*"), so each worker's native
+# tool stream (Edit / Write / Bash / Read / apply_patch / Task-todos) is
+# mirrored into harness_shared.agent_activity → the pui fleet-status view +
+# the curator, AND any NEW coord:inbox messages reach the agent mid-turn —
+# in ONE MCP round trip instead of two.
 #
 # SHARED by Claude AND Codex (D-002): the same `cc/` shell contract. Claude
 # PostToolUse and Codex PostToolUse both deliver JSON on stdin with `tool_name` /
@@ -11,43 +15,76 @@
 # whichever shape is present. (Codex PreToolUse doesn't fire on edits — D-006 — but
 # PostToolUse DOES, so the activity push works on both.)
 #
-# FIRE-AND-FORGET (the Risk note: "keep it cheap, non-blocking, payload-capped"):
-# unlike the coord-inbox hook this NEVER injects context and NEVER needs a response,
-# so by default it POSTs in a DETACHED background process and returns immediately —
-# zero added latency on the agent's tool stream. Set PAPERCUSP_ACTIVITY_SYNC=1 to
-# POST synchronously (tests). Output is ALWAYS empty (exit 0, no stdout) so the tool
-# result stands untouched.
+# WHY THIS IS NOW SYNCHRONOUS (EI-11405 — was fire-and-forget-detached): the
+# server's `activity:report` tool accepts an optional `hook_bundle` cursor
+# (`{generation, since_ts}`) and, ONLY when the coordination generation has
+# actually advanced since our last call, folds a fresh coord:inbox snapshot
+# into the SAME response (packages/operator-core/lib/agent-tools/activity/
+# hook-bundle.ts). That is the fix for the RPC fanout this hook + the now-
+# deleted posttooluse-coord-inbox.sh together caused: N manual tool calls used
+# to pay ~2N automatic round trips (one detached activity report + one
+# blocking coord:inbox poll, EVERY call); this hook now pays exactly ONE
+# blocking round trip per call, and the SERVER performs an O(1) (no extra
+# inbox/glance query) hydration whenever nothing changed. To read the folded
+# result we must wait for the response — hence synchronous. Bounded by
+# HTTP_TIMEOUT below so a slow/wedged operator degrades to "no injection this
+# call" rather than stalling the agent's turn.
+#
+# Per-owner CURSOR (generation + since_ts) persists in
+# $PAPERCUSP_LOCKS_CACHE_DIR/activity-hook-bundle-<owner>.json — the same
+# cache dir + per-owner-file convention the old coord-inbox hook used for its
+# `coord-cursor-<owner>.json`. FIRST run this session: seed since_ts to "now"
+# (existing inbox backlog is already shown at session start) and generation to
+# null; the resulting bundle's inbox surface is then empty by construction
+# (hook-bundle.ts never dumps history for a since_ts with nothing after it),
+# so nothing is injected, but the returned generation is captured for the
+# NEXT call — exactly one "seed" round trip, matching the old hook's contract
+# (never inject on the very first tool call of a session).
 #
 # Scope guard: runs ONLY in a psu session (PAPERCUSP_SID set + su-token present),
-# exactly like the coord-inbox hook. A plain `claude`/`codex` elsewhere has no
-# PAPERCUSP_SID and bails instantly. owner == PAPERCUSP_SID (the same id baked into
-# the agent's MCP `?client=`), so activity is grouped by the worker's coord identity.
+# exactly like the deleted coord-inbox hook. A plain `claude`/`codex` elsewhere has no
+# PAPERCUSP_SID and bails instantly. owner == PAPERCUSP_SID (the same id baked
+# into the agent's MCP `?client=`), so activity is grouped AND coord is folded
+# under the worker's coordination identity.
+#
+# Output contract (Claude Code PostToolUse), unchanged from the old coord-inbox
+# hook: exit 0 with
+#   { "hookSpecificOutput": { "hookEventName": "PostToolUse",
+#       "additionalContext": "..." } }
+# injects context for the model's next step WITHOUT a `decision` (so the
+# tool result stands and the model is not stopped). Exit 0 + no stdout =
+# no-op. We NEVER block a tool and NEVER exit non-zero on a coord/report
+# blip — a reporting or coordination failure fails OPEN.
 
 set -euo pipefail
 
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
+CACHE_DIR="${PAPERCUSP_LOCKS_CACHE_DIR:-${HOME}/.papercusp/locks-cache}"
 
-# psu-session gate + install gate (mirror posttooluse-coord-inbox.sh).
+# psu-session gate + install gate.
 if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
+
+mkdir -p "$CACHE_DIR"
+chmod 700 "$CACHE_DIR" 2>/dev/null || true
 
 TOKEN=$(cat "$TOKEN_PATH")
 INPUT=$(cat)
 AGENT="${PAPERCUSP_AGENT:-}"
 
-# The reporter: build the activity:report args from the hook stdin and POST. Kept in
-# a function so the SYNC and DETACHED paths share one body. Any crash inside fails
-# open (the `|| true` at the call sites) — a reporting blip must never affect a tool.
-report() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" <<'PYEOF'
-import json, sys, urllib.request, urllib.parse
+# Fail-open backstop: any uncaught crash in the body ALLOWS the turn to
+# proceed with no injection and no report — a coord/activity blip must never
+# wedge a tool.
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" <<'PYEOF' || exit 0
+import json, os, re, sys, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, owner, agent = sys.argv[1:6]
-HTTP_TIMEOUT = 3
+raw, operator_url, token, owner, agent, cache_dir = sys.argv[1:7]
+HTTP_TIMEOUT = 4
 STR_CAP = 500
+ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1'
 
 try:
     ev = json.loads(raw)
@@ -116,6 +153,58 @@ else:
     # Cap string fields so a full Write `content` / patch body never bloats the POST.
     args['tool_input'] = {k: cap(v) for k, v in tool_input.items()}
 
+# ── delta-aware coordination fold (EI-11405) ─────────────────────────────
+# Cursor is keyed by PAPERCUSP_SID (per-launch), so a fresh session never
+# re-shows old mail and never inherits a stale generation from a prior host.
+
+
+def cursor_path():
+    safe = re.sub(r'[^A-Za-z0-9._-]', '_', owner)[:120]
+    return os.path.join(cache_dir, f'activity-hook-bundle-{safe}.json')
+
+
+def read_cursor():
+    try:
+        with open(cursor_path()) as f:
+            v = json.load(f)
+        gen = v.get('generation')
+        since = v.get('since_ts')
+        return (
+            gen if isinstance(gen, str) and gen else None,
+            since if isinstance(since, str) and since else None,
+        )
+    except Exception:
+        return (None, None)
+
+
+def write_cursor(gen, since):
+    try:
+        p = cursor_path()
+        tmp = p + '.tmp-' + str(os.getpid())
+        with open(tmp, 'w') as f:
+            f.write(json.dumps({'generation': gen, 'since_ts': since}))
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
+def now_iso():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+generation, since_ts = read_cursor()
+if since_ts is None:
+    # FIRST run this session: seed since_ts to now (the session-start read
+    # already showed the existing backlog) and persist immediately so a crash
+    # mid-request never re-seeds (and never replays history) on retry.
+    since_ts = now_iso()
+    write_cursor(generation, since_ts)
+
+args['hook_bundle'] = {
+    'generation': generation,
+    'since_ts': since_ts,
+}
+
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
     'params': {'name': 'activity:report', 'arguments': args},
@@ -132,17 +221,91 @@ req = urllib.request.Request(
     method='POST',
 )
 try:
-    urllib.request.urlopen(req, timeout=HTTP_TIMEOUT).read()
+    raw_resp = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT).read().decode('utf-8', errors='replace')
 except Exception:
-    sys.exit(0)  # operator unreachable / slow → fail open; a missed report is harmless.
-PYEOF
-}
+    sys.exit(0)  # operator unreachable / slow → fail open; a missed report+fold is retried next call.
 
-if [ -n "${PAPERCUSP_ACTIVITY_SYNC:-}" ]; then
-  report >/dev/null 2>&1 || true
-else
-  # Detached fire-and-forget: ( cmd & ) reparents the POST to init and returns now,
-  # and the >/dev/null on the subshell releases the hook's stdout pipe immediately.
-  ( report >/dev/null 2>&1 & ) >/dev/null 2>&1 || true
-fi
+# Parse the first JSON-RPC result from a JSON or text/event-stream body
+# (mirrors the deleted coord-inbox hook's SSE-tolerant parse).
+result = None
+for line in raw_resp.splitlines():
+    line = line.strip()
+    if not line or line.startswith('event:'):
+        continue
+    if line.startswith('data:'):
+        line = line[5:].strip()
+    try:
+        cand = json.loads(line)
+        if isinstance(cand, dict) and 'result' in cand:
+            result = cand['result']
+            break
+    except Exception:
+        pass
+
+if not result:
+    sys.exit(0)
+
+inner = None
+for item in (result.get('content') or []):
+    if item.get('type') == 'text':
+        try:
+            inner = json.loads(item['text'])
+            break
+        except Exception:
+            continue
+
+if not isinstance(inner, dict):
+    sys.exit(0)
+
+bundle = inner.get('hook_bundle')
+if not isinstance(bundle, dict) or bundle.get('schemaVersion') != ACTIVITY_HOOK_BUNDLE_SCHEMA:
+    # No usable bundle (server predates the fold, or errored) — never advance
+    # the cursor on a guess; next call retries from the same baseline.
+    sys.exit(0)
+
+new_generation = bundle.get('generation')
+if not isinstance(new_generation, str) or not new_generation:
+    new_generation = None
+complete = bundle.get('complete') is True
+changed = bundle.get('changed') is True
+
+next_since = since_ts
+out_text = None
+
+if changed:
+    surfaces = bundle.get('surfaces') if isinstance(bundle.get('surfaces'), dict) else {}
+    inbox = surfaces.get('inbox') if isinstance(surfaces, dict) else None
+    if isinstance(inbox, dict):
+        summ = inbox.get('summary') if isinstance(inbox.get('summary'), dict) else {}
+        newest = summ.get('newest_ts')
+        if isinstance(newest, str) and newest:
+            next_since = newest
+
+        injection = inbox.get('injection')
+        if isinstance(injection, str) and injection.strip():
+            out_text = injection
+        else:
+            # DUMB PIPE parity with the deleted coord-inbox hook (P-015): no new
+            # entries, but still surface the ≥80% LOUD context gauge so a
+            # heads-down session sees its own usage even on a quiet fold.
+            entries = inbox.get('entries')
+            if isinstance(entries, list) and not entries:
+                gauge = inbox.get('context_gauge')
+                if isinstance(gauge, str) and gauge.strip():
+                    out_text = gauge
+
+# Only a COMPLETE fold advances the generation — an incomplete one (partial
+# hydrate failure) must retry the FULL hydrate next call, mirroring the OMP
+# consumer (consumeActivityHookBundle: `bundle.complete ? bundle.generation : null`).
+write_cursor(new_generation if complete else None, next_since)
+
+if not out_text:
+    sys.exit(0)
+
+json.dump({'hookSpecificOutput': {
+    'hookEventName': 'PostToolUse',
+    'additionalContext': out_text,
+}}, sys.stdout)
+sys.exit(0)
+PYEOF
 exit 0

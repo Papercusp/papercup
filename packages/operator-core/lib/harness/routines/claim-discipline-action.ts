@@ -27,7 +27,10 @@ import { STALE_MS } from '../../liveness';
 import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import { planSlugExistsInWorkspace } from '../../agent-tools/plans/source';
+import {
+  planSlugAllItemsTerminalInWorkspace,
+  planSlugExistsInWorkspace,
+} from '../../agent-tools/plans/source';
 import { inspectEventKey, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { getLoopStatuses } from './loop';
 
@@ -130,6 +133,34 @@ export function filterStoreBackedTargets<T extends { agentId: string; declaredPl
     keep.push(t);
   }
   return { keep, skippedStoreAbsent };
+}
+
+/**
+ * EI-13286: terminal completion releases the final plan-item claim before the
+ * agent's next turn clears its presence declaration. That is a healthy finish,
+ * not an unclaimed lane. Suppress only an AFFIRMATIVE all-items-terminal read;
+ * a missing/failed lookup stays eligible so detector failures cannot hide real
+ * claim-discipline misses.
+ */
+export function filterCompletedPlanTargets<T extends { agentId: string; declaredPlanSlug: string | null }>(
+  targets: readonly T[],
+  workspaceByAgent: ReadonlyMap<string, string>,
+  completedByKey: ReadonlyMap<string, boolean>,
+): { keep: T[]; skippedCompletedPlan: number } {
+  const keep: T[] = [];
+  let skippedCompletedPlan = 0;
+  for (const target of targets) {
+    const plan = target.declaredPlanSlug;
+    const completed = plan
+      ? completedByKey.get(storeExistsKey(workspaceByAgent.get(target.agentId) ?? 'default', plan))
+      : false;
+    if (completed === true) {
+      skippedCompletedPlan += 1;
+      continue;
+    }
+    keep.push(target);
+  }
+  return { keep, skippedCompletedPlan };
 }
 
 /**
@@ -315,6 +346,32 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     existsByKey,
   );
 
+  // EI-13286: work_items:complete atomically closes the linked plan item and
+  // releases its claim, while presence is intentionally session-owned and can
+  // retain the completed plan slug until the next turn. Resolve the distinct
+  // plan keys once and suppress only confirmed all-terminal plans. Read errors
+  // fail open (false), preserving real nudges.
+  const completedByKey = new Map<string, boolean>();
+  const storeBackedKeys = new Set(
+    storeBacked
+      .filter((target): target is typeof target & { declaredPlanSlug: string } => !!target.declaredPlanSlug)
+      .map((target) =>
+        storeExistsKey(workspaceByAgent.get(target.agentId) ?? 'default', target.declaredPlanSlug),
+      ),
+  );
+  await Promise.all(
+    Array.from(storeBackedKeys).map(async (key) => {
+      const [workspaceId, plan] = key.split('::');
+      const completed = await planSlugAllItemsTerminalInWorkspace(workspaceId, plan).catch(() => false);
+      completedByKey.set(key, completed);
+    }),
+  );
+  const { keep: activePlans, skippedCompletedPlan } = filterCompletedPlanTargets(
+    storeBacked,
+    workspaceByAgent,
+    completedByKey,
+  );
+
   // EI-11881: scheduler:get_next emits fleet:drained:<slug> after a scoped
   // miss when the fleet is genuinely idle. Read that durable event history and
   // suppress only targets whose current declaration predates a fresh signal.
@@ -327,7 +384,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   }
   const drainedAtByFleet = new Map<string, string>();
   const fleetSlugs = new Set(
-    storeBacked.flatMap((target) => {
+    activePlans.flatMap((target) => {
       const fleet = fleetByAgent.get(target.agentId);
       return fleet ? [fleet] : [];
     }),
@@ -343,7 +400,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     }),
   );
   const drainedAtByAgent = new Map<string, string>();
-  for (const target of storeBacked) {
+  for (const target of activePlans) {
     const fleet = fleetByAgent.get(target.agentId);
     const drainedAt = fleet ? drainedAtByFleet.get(fleet) : undefined;
     if (drainedAt) drainedAtByAgent.set(target.agentId, drainedAt);
@@ -352,7 +409,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     presenceRows.map((row) => [row.ownerId, row.intentDeclaredAt] as const),
   );
   const { keep: notDrained, skippedDrained } = filterDrainedTargets(
-    storeBacked,
+    activePlans,
     drainedAtByAgent,
     intentDeclaredAtByAgent,
   );
@@ -403,6 +460,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   console.log(
     `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${targets.length} nudged` +
       (skippedStoreAbsent ? `, ${skippedStoreAbsent} skipped (declared plan not in store — undischargeable remedy)` : '') +
+      (skippedCompletedPlan ? `, ${skippedCompletedPlan} skipped (all plan items terminal)` : '') +
       (skippedParked.length
         ? `, ${skippedParked.length} skipped (parked on events:await: ${skippedParked
             .map((s) => `${s.agentId.slice(0, 8)}→${s.parkedOn}`)

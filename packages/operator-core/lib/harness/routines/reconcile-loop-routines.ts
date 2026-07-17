@@ -507,6 +507,46 @@ export async function reconcileLoopRoutines(
       if (lastFiredMs == null) continue;
       const intervalMs = row.interval_sec * 1000;
 
+      // EI-11407 ARMED-LOOP REACHABILITY SWEEP — a pure loop (never cron: cron+loop keeps its
+      // pre-existing fold-the-sooner handling below, untouched) that is NOT parked has already
+      // settled its last fire (that's WHY it's armed with a real future next_fire_at) — there is
+      // no in-flight turn to rebase. But nothing previously re-checked whether its owner is still
+      // alive while it waits out the interval, so a permanently-dead owner sat armed+scheduled
+      // until the loop fired again and dwelled through the full stuck-park/circuit ladder (see the
+      // class-4 header note). Measure dwell from the LATEST known-alive evidence — the fire
+      // itself, or any genuine presence activity after it, whichever is more recent — and consult
+      // the SAME reachability guard once that dwell exceeds the generous terminal window. The
+      // guard's own reachability veto (a live owner is NEVER terminated, any dwell) is what
+      // actually protects a healthy long-interval armed loop; the window here just avoids probing
+      // a freshly-armed one for no reason.
+      if (!row.parked && !row.is_cron) {
+        const lastActiveMs = tsMs(row.presence_last_active_at);
+        const sinceAliveMs = nowMs - Math.max(lastFiredMs, lastActiveMs ?? lastFiredMs);
+        if (sinceAliveMs >= terminalUnreachableMs(intervalMs)) {
+          const guard = await checkUnreachableTerminalGuard({
+            sql: db,
+            routineId: row.id,
+            targetOwnerId: row.target_owner_id,
+            parkedForMs: sinceAliveMs,
+            intervalMs,
+            // An armed loop has no discrete "failed fire attempt" streak to gate on — it isn't
+            // failing to fire, it just hasn't been checked since it settled. The dwell window
+            // above is this leg's blip protection, so pre-satisfy the guard's fire-count floor.
+            stuckFireCount: minStuckFiresForTermination(),
+            circuitOpen: false,
+          }).catch((e) => {
+            console.warn(
+              `[loop-reconcile] armed-loop unreachable-guard check failed for '${row.id}' — leaving it armed: ${e instanceof Error ? e.message : e}`,
+            );
+            return { breach: false } as { breach: boolean; reason?: string };
+          });
+          if (guard.breach) {
+            await terminateDeadLoop(row, guard.reason ?? 'unreachable dead-owner loop (armed, EI-11407 sweep)');
+          }
+        }
+        continue; // armed pure loop: nothing to rebase either way (see comment above)
+      }
+
       // Resolve the re-arm time + provenance.
       let completedAt: number;
       let via: RebaseVia;
@@ -579,27 +619,6 @@ export async function reconcileLoopRoutines(
           });
           if (guard.breach) {
             await terminateDeadLoop(row, guard.reason ?? 'unreachable dead-owner loop');
-            continue; // auto-paused (active=false) inside the guard — do NOT re-arm below
-          }
-          // istanbul ignore next -- unreachable: kept only so the diff below (dead code from the
-          // pre-refactor duplicate block) doesn't need re-indenting; removed by the next edit.
-          if (false as boolean) {
-            await runWithWorkspace(row.routine_workspace_id, () =>
-              escalateDeadLoop({
-                routineId: row.id,
-                targetOwnerId: row.target_owner_id,
-                installSlug: row.install_slug,
-                name: row.name,
-                reason: guard.reason ?? 'unreachable dead-owner loop',
-              }),
-            ).catch((e) =>
-              console.warn(
-                `[loop-reconcile] escalateDeadLoop failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
-              ),
-            );
-            console.warn(
-              `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) TERMINATED (auto-paused, not re-armed): ${guard.reason}`,
-            );
             continue; // auto-paused (active=false) inside the guard — do NOT re-arm below
           }
         }

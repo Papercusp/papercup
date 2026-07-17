@@ -62,6 +62,7 @@ import { wakeRecipients } from './inbox-wake';
 import { lastInboxReadAtBatch } from './inbox-read-freshness';
 import { fetchWakeability, type WakeabilitySignals } from './presence-wakeability';
 import type { AgentIdentity } from './identity';
+import { isMachineAuthoredSender, MACHINE_SENDER_PATTERN } from './machine-authored';
 
 /** Sender identity stamped on ladder marker messages + wake sources (audit). */
 export const DELIVERY_LADDER_OWNER = 'system:delivery-ladder';
@@ -276,10 +277,21 @@ export function classifyLadderEscalations(input: {
     // them verbatim tells a recipient who read 17 of 19 that all 19 are unread. Narrow to
     // the messages that actually post-date their last read; the escalation text ("N messages
     // you have not read, oldest ~Xm") is only true of THIS set.
-    const msgs = (r.recent_msgs ?? []).filter((m) => Number.isFinite(Number(m?.ts)));
+    const sourceMsgs = r.recent_msgs ?? [];
+    const msgs = sourceMsgs.filter(
+      (m) => Number.isFinite(Number(m?.ts)) && !isMachineAuthoredSender(m.from),
+    );
     const unread = Number.isFinite(lastReadMs)
       ? msgs.filter((m) => Number(m.ts) > lastReadMs)
       : msgs;
+
+    // EI-13286: watchdogs and system routines cannot read or act on a reply.
+    // Their directed notices may be useful inbox context, but they must never
+    // spend another agent turn through the delivery escalation ladder. The SQL
+    // below filters them at source; this pure guard is defense-in-depth and
+    // keeps injected/legacy row shapes honest too.
+    if (sourceMsgs.length > 0 && unread.length === 0) continue;
+    if (sourceMsgs.length === 0 && isMachineAuthoredSender(r.newest_from)) continue;
 
     // Degrade, don't lie: with no per-message rows (older row shape / stubbed IO) fall back
     // to the window aggregates — the same numbers as before this fix, never worse. A
@@ -298,8 +310,16 @@ export function classifyLadderEscalations(input: {
       oldestAgeMs: Number.isFinite(oldestUnreadMs)
         ? Math.max(0, input.nowMs - oldestUnreadMs)
         : 0,
-      ...(r.newest_from ? { newestFrom: r.newest_from } : {}),
-      ...(r.newest_summary ? { newestSummary: r.newest_summary } : {}),
+      ...(unread[0]?.from
+        ? { newestFrom: unread[0].from }
+        : r.newest_from
+          ? { newestFrom: r.newest_from }
+          : {}),
+      ...(unread[0]?.summary
+        ? { newestSummary: unread[0].summary }
+        : r.newest_summary
+          ? { newestSummary: r.newest_summary }
+          : {}),
       unread: unread.slice(0, LADDER_PREVIEW_LIMIT),
       // Never-read = no coord:inbox/orient invocation AT ALL. Only this is evidence of a
       // broken hook; a merely-stale read means the hook works and the agent is behind.
@@ -339,7 +359,11 @@ async function findLadderCandidates(
          AND NOT (e.body ? 'audience')
          AND jsonb_typeof(e.body->'to') = 'array'
          AND e.body->>'from' IS DISTINCT FROM r
-         AND e.body->>'from' NOT LIKE 'system:%'
+         -- Machine senders cannot receive or act on a reply. Keep their notices
+         -- in the inbox, but never turn unread robot output into a billable wake.
+         -- Shared with sendMessage/unanswered-directed so new watchdog names are
+         -- covered automatically rather than by an ever-growing local allowlist.
+         AND NOT (e.body->>'from' ~ ${MACHINE_SENDER_PATTERN})
          AND r NOT IN ('*', 'human', '')
          AND r NOT LIKE '@%'
          AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)

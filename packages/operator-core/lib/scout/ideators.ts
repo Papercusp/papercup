@@ -43,6 +43,26 @@ export const SCOUT_IDEATOR_MODEL = DEFAULT_SCOUT_IDEATOR_MODEL;
 export const DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS = 180_000;
 
 /**
+ * Output-token headroom for ONE ideator call — the room left for the response
+ * ON TOP OF any requested thinking budget (`maxTokens = thinking + this`, or
+ * just this when no thinking is requested).
+ *
+ * ⚠ Sized for SERVER-SIDE thinking, which bills against this same budget even
+ * when no thinkingBudgetTokens is requested (client-side thinking is not even
+ * plumbed — agent-chat-stream ignores it). At the previous 4096, thinking
+ * consumed ~2.5-4k tokens and the JSON payload was TRUNCATED MID-ARRAY (or never
+ * started) → parseIdeasPayload → [] → a silent ok:true/raw:0 outage (2026-07-16,
+ * EI-13119 textHead capture + repro: outTok exactly 4096, textLen 0-2173, tail
+ * cut mid-JSON). 16384 fits worst-case thinking + 4 full ideas with wide margin;
+ * only generated tokens are billed, so the raise costs nothing on a normal call.
+ *
+ * Exported so the test asserts against THIS constant instead of re-typing the
+ * literal: the 4096→16384 raise redded the release gate because ideators.test.ts
+ * pinned the old number independently (WI-5097 gate sweep).
+ */
+export const IDEATOR_OUTPUT_HEADROOM_TOKENS = 16_384;
+
+/**
  * Grace added to the admission backstop timer. The governor is supposed to bail on its own at
  * `governorMaxWaitMs` with an honest capacity error; this backstop only exists for a transport
  * that neither admits nor returns. The grace lets the governor's own error win that race.
@@ -370,16 +390,14 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
             system,
             messages: [{ role: 'user', content: user }],
             responseFormat: 'json',
-            // ⚠ maxTokens must leave room for SERVER-SIDE thinking: claude-sonnet-5
-            // emits adaptive thinking tokens against this same budget even when no
-            // thinkingBudgetTokens is requested (client-side thinking is not even
-            // plumbed — agent-chat-stream ignores it). At 4096, thinking consumed
-            // ~2.5-4k tokens and the JSON payload was TRUNCATED MID-ARRAY (or never
-            // started) → parseIdeasPayload → [] → a silent ok:true/raw:0 outage
-            // (2026-07-16, EI-13119 textHead capture + repro: outTok exactly 4096,
-            // textLen 0-2173, tail cut mid-JSON). 16384 fits worst-case thinking +
-            // 4 full ideas with wide margin; only generated tokens are billed.
-            ...(thinking ? { thinkingBudgetTokens: thinking, maxTokens: thinking + 16384 } : { maxTokens: 16384 }),
+            // ⚠ maxTokens must leave room for SERVER-SIDE thinking — see
+            // IDEATOR_OUTPUT_HEADROOM_TOKENS for the sizing evidence (EI-13119).
+            ...(thinking
+              ? {
+                  thinkingBudgetTokens: thinking,
+                  maxTokens: thinking + IDEATOR_OUTPUT_HEADROOM_TOKENS,
+                }
+              : { maxTokens: IDEATOR_OUTPUT_HEADROOM_TOKENS }),
           },
           slot,
         );
