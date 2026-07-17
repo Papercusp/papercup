@@ -392,20 +392,21 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
   });
 
-  // WI-4640 runtime casualty (2026-07-17): kettle@papercusp went hard-down when
-  // its COMMITTED default moved to the Codex-only gpt-5.6-luna:high (P-020) —
-  // backend inference keyed only off PAPERCUSP_SPAWN_MODEL, so the fallback
-  // `claude -p` carried `--model gpt-5.6-luna` and Anthropic 404'd every fire
-  // (23:54Z/00:24Z/00:55Z/01:25Z, rc=1 in ~5s). The swap must key off the
-  // EFFECTIVE spec: per-spawn override > AGENT_MODELS > committed default.
-  it('a Codex-shaped COMMITTED default swaps the backend (kettle hard-down regression)', () => {
+  // WI-4623 revert (2026-07-17): kettle's committed default returned to a claude-
+  // shaped `sonnet[1m]:high`, so buildInvokeOnce keeps it on the `claude` CLI and
+  // does NOT swap to codex — the standing guard against the P-020 kettle@papercusp
+  // hard-down (its Codex-only gpt-5.6-luna:high default made the fallback `claude -p`
+  // carry `--model gpt-5.6-luna`, which Anthropic 404'd every fire at 23:54Z/00:24Z/
+  // 00:55Z/01:25Z, rc=1 in ~5s). The codex-swap MECHANISM itself (effective-spec
+  // inference: per-spawn override > AGENT_MODELS > committed default) is still
+  // exercised for an EXPLICIT codex spec by the two tests below.
+  it('kettle\'s committed default stays on the claude backend (WI-4623 revert; hard-down guard)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const { env } = buildInvokeOnce(spec({ role: 'kettle' }));
-    expect(env.AGENT_CMD).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
-    expect(env.CLAUDE).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
-    expect(env.AGENT_BACKEND).toBe('codex');
-    expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
+    expect(env.AGENT_CMD).toBe('claude -p --model sonnet[1m] --effort high');
+    expect(env.AGENT_BACKEND).not.toBe('codex');
+    expect(env.PAPERCUSP_SPAWN_BACKEND).not.toBe('codex');
   });
 
   it('a Codex-shaped AGENT_MODELS entry swaps the backend the same way', () => {
@@ -585,9 +586,8 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
   it('P-012: worker buckets to its committed sonnet tier without env (no silent CLI-default bucket)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
-    // P-020: cup's committed floor is now gpt-5.6-luna:high, not haiku — a
-    // Codex-only id, so the bucket is CODEX (WI-4640 effective-spec inference):
-    // the spawn really hits OpenAI, and the governor must pace that bucket.
-    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'codex', model: 'gpt-5.6-luna' });
+    // WI-4623 revert: cup's committed floor is the bare `sonnet[1m]:high`, a claude
+    // id — so the bucket is the claude-code sonnet[1m] bucket, not a codex one.
+    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
   });
 });

@@ -9,6 +9,7 @@ import {
   aggregateRepeatMetrics,
   buildBenchmarkKickoff,
   buildLogFixture,
+  buildSweepSpawnArgs,
   extractCellMetricsFromJsonl,
   makeHeadlessPsuCellDriver,
   sweepWorkDir,
@@ -164,6 +165,33 @@ describe('aggregateRepeatMetrics', () => {
 
   it('no repeats ⇒ empty metrics', () => {
     expect(aggregateRepeatMetrics([])).toEqual(emptyCellMetrics());
+  });
+});
+
+describe('buildSweepSpawnArgs — WI-5003 live-canary finding', () => {
+  it('ALWAYS includes --harness — omitting it makes psu skip su bootstrap entirely, so the', () => {
+    // per-session CLAUDE_CONFIG_DIR is never seeded and the transcript lookup
+    // (newestTranscriptUnderOwner) finds nothing even though the session ran the
+    // benchmark task to completion. Reproduced live 2026-07-17: 12/12 unit files
+    // written, transcript unfindable, because this flag was missing.
+    const args = buildSweepSpawnArgs(
+      { ownerId: 'su-sweep-x-r1-abc', kickoff: 'do the thing', workDir: '/tmp/x', cellId: 'x', timeoutMs: 1000, harness: 'papercusp' },
+      '/repo',
+    );
+    expect(args).toContain('--harness=papercusp');
+    expect(args).toContain('--agent=claude');
+    expect(args).toContain('--headless');
+    expect(args).toContain('--owner-id=su-sweep-x-r1-abc');
+    expect(args).toContain('--kickoff=do the thing');
+    expect(args[0]).toBe('/repo/apps/operator/scripts/psu-launcher.mjs');
+  });
+
+  it('threads a non-default harness through', () => {
+    const args = buildSweepSpawnArgs(
+      { ownerId: 'su-sweep-y-r1-def', kickoff: 'k', workDir: '/tmp/y', cellId: 'y', timeoutMs: 1000, harness: 'some-other-harness' },
+      '/repo',
+    );
+    expect(args).toContain('--harness=some-other-harness');
   });
 });
 
