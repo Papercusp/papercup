@@ -8,7 +8,7 @@
  * the confirm dialog are stubbed to passthrough.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 const isDesktop = vi.fn(() => true);
@@ -26,6 +26,20 @@ vi.mock('@papercusp/operator-core/lib/version-tauri', () => ({
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+
+// `@tauri-apps/api/event` — UpdateChip dynamically imports `listen` to drive the
+// download-progress bar (WI-5011). Capture the registered callback + a spy
+// unlisten fn so tests can fire synthetic `update-download-progress` events
+// and assert the listener is torn down on unmount.
+type ProgressListener = (event: { payload: { downloaded: number; total: number | null } }) => void;
+let progressListener: ProgressListener | null = null;
+const unlistenSpy = vi.fn();
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async (_event: string, cb: ProgressListener) => {
+    progressListener = cb;
+    return unlistenSpy;
+  }),
+}));
 
 // Operator connectivity — drives the background-check gate. Default online.
 let offlineState = false;
@@ -63,6 +77,8 @@ beforeEach(() => {
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
   vi.mocked(toast.info).mockClear();
+  progressListener = null;
+  unlistenSpy.mockClear();
 });
 afterEach(cleanup);
 
@@ -214,6 +230,37 @@ describe('UpdateChip', () => {
     await waitFor(() => expect(confirmFn).toHaveBeenCalled());
     expect(installUpdate).not.toHaveBeenCalled();
   });
+
+  // The standalone footer "Update to vX" button also reflects progress inline
+  // once a total is known (the popover card's fuller readout is covered
+  // below, WI-5011).
+  it('the footer install button appends a live percentage once a total is known', async () => {
+    checkForUpdate.mockResolvedValue({
+      available: true,
+      new_version: '2.0.0',
+      current_version: '1.2.3',
+      notes: null,
+    });
+    render(<UpdateChip />);
+    const btn = await screen.findByRole('button', { name: /Update to v2\.0\.0/ });
+    fireEvent.click(btn);
+    await waitFor(() => expect(installUpdate).toHaveBeenCalled());
+    await waitFor(() => expect(progressListener).not.toBeNull());
+
+    act(() => {
+      progressListener!({ payload: { downloaded: 1_717_986_918, total: 3_650_722_201 } });
+    });
+
+    await screen.findByRole('button', { name: /Installing… 47%/ });
+  });
+
+  it('unlistens the progress listener on unmount', async () => {
+    render(<UpdateChip />);
+    await screen.findByRole('button', { name: /v1\.2\.3/ });
+    await waitFor(() => expect(progressListener).not.toBeNull());
+    cleanup();
+    expect(unlistenSpy).toHaveBeenCalled();
+  });
 });
 
 /* ── Update Center panel (P-3) ─────────────────────────────────────────
@@ -358,5 +405,54 @@ describe('UpdateChip — Update Center panel', () => {
     await waitFor(() =>
       expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringMatching(/failed: fetch_failed/)),
     );
+  });
+
+  // WI-5011: install_update/revert_to previously passed an empty chunk
+  // callback to download_and_install, so a multi-GB download rendered only a
+  // bare "Installing…"/"Reverting…" spinner for minutes with zero feedback.
+  // Rust now emits `update-download-progress`; the Update Center card renders
+  // a real byte/percentage readout from it.
+  it('shows live download progress in the install card from the update-download-progress event (WI-5011)', async () => {
+    checkForUpdate.mockResolvedValue({
+      available: true,
+      new_version: '2.0.0',
+      current_version: '1.2.3',
+      notes: null,
+    });
+    await openPanel();
+    const btn = await screen.findByRole('button', { name: /Install v2\.0\.0 and restart/ });
+    fireEvent.click(btn);
+    await waitFor(() => expect(confirmFn).toHaveBeenCalled());
+    await waitFor(() => expect(installUpdate).toHaveBeenCalled());
+    // The progress listener attaches on mount, independent of the install
+    // click — wait for it before firing the synthetic event.
+    await waitFor(() => expect(progressListener).not.toBeNull());
+
+    // Before any chunk lands, the card shows an indeterminate readout rather
+    // than nothing.
+    await screen.findByText('Starting download…');
+
+    act(() => {
+      progressListener!({ payload: { downloaded: 1_717_986_918, total: 3_650_722_201 } });
+    });
+
+    // ~47% of ~3.4GB — the exact wording is fmtProgress's; this asserts the
+    // card is showing real numbers instead of a bare spinner.
+    await screen.findByText(/1\.6 GB \/ 3\.4 GB \(47%\)/);
+  });
+
+  it('shows live download progress on the reverting row from the same event (WI-5011)', async () => {
+    await openPanel();
+    await screen.findByText('v2.0.0-alpha');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revert' })[0]);
+    await waitFor(() => expect(confirmFn).toHaveBeenCalled());
+    await waitFor(() => expect(revertTo).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(progressListener).not.toBeNull());
+
+    act(() => {
+      progressListener!({ payload: { downloaded: 500_000_000, total: 1_000_000_000 } });
+    });
+
+    await screen.findByText(/476\.8 MB \/ 953\.7 MB \(50%\)/);
   });
 });

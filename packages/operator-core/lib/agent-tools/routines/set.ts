@@ -52,7 +52,7 @@ export default defineTool({
   name: 'routines:set',
   profile: 'engineer',
   description:
-    "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, scout, …) without raw SQL: change its cron, its active flag (active:false = PAUSE, active:true = RESUME), its trigger_config, its GROUP (group — metadata only, see routines:groups), and/or DEEP-merge a patch into its payload_template (the routine's own run knobs — e.g. the scout singleton's payload.budget.maxIdeators). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
+    "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, scout, …) without raw SQL: change its cron, its active flag (active:false = PAUSE, active:true = RESUME), its trigger_config, its GROUP (group — metadata only, see routines:group-set / routines:list { rollup:true }), and/or DEEP-merge a patch into its payload_template (the routine's own run knobs — e.g. the scout singleton's payload.budget.maxIdeators). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
   capability: 'operator:write',
   guidance: {
     when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps), assign/clear its group (group — WI-5018 routines grouping), or retune a routine\'s RUN KNOBS (payloadTemplate — e.g. the scout singleton\'s budget.maxIdeators / models.ideator) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
@@ -60,7 +60,7 @@ export default defineTool({
     chaining: 'routines:list first to get the exact name + installSlug; routines:list after to confirm the change.',
     seeAlso: [
       'routines:list (get the exact name + installSlug first)',
-      'routines:groups (see/manage the group registry)',
+      'routines:list (rollup:true — see/manage the group registry)',
       'routines:group-set (bulk pause/resume a whole group)',
       'autoloop:control (a harness blueprint autoloop instead)',
     ],
@@ -87,7 +87,7 @@ export default defineTool({
       .nullable()
       .optional()
       .describe(
-        'Assign this routine to a routine group (WI-5018 — metadata + management ONLY, never fires anything). Pass a slug (e.g. "health") to assign — the group is auto-created in harness_shared.routine_groups with blank metadata if it does not exist yet (fill it in via routines:groups). Pass null to clear (ungroup).',
+        'Assign this routine to a routine group (WI-5018 — metadata + management ONLY, never fires anything). Pass a slug (e.g. "health") to assign — the group is auto-created in harness_shared.routine_groups with blank metadata if it does not exist yet (fill it in via routines:group-set). Pass null to clear (ungroup).',
       ),
     dryRun: z.boolean().optional(),
   }),
@@ -134,7 +134,7 @@ export default defineTool({
     const writeSnap = async (snap: RoutineSnap): Promise<void> => {
       // Auto-create the group (blank metadata) on first assignment — the FK
       // (workspace_id, group_slug) -> routine_groups requires the row to exist;
-      // routines:groups is where a steward fills in description/steward/cadence.
+      // routines:group-set is where a steward fills in description/steward/cadence.
       if (snap.groupSlug) {
         await sql`
           INSERT INTO harness_shared.routine_groups (workspace_id, slug)

@@ -37,7 +37,12 @@ import {
 import { harnessOfScope } from './work-item-scope';
 import { renderOwnerDirectivesBlock, type OwnerDirectiveRow } from './owner-directives';
 import type { QueryHandle } from './ambient-push';
-import { DEAD_END_KEY_PREFIX } from './agent-facts/store';
+import { DEAD_END_KEY_PREFIX, type FactSourceProvenance } from './agent-facts/store';
+import {
+  checkCarriedFactsStaleness,
+  renderFactsStalenessWarning,
+  type FactStalenessResult,
+} from './carry-fact-staleness';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -80,8 +85,26 @@ export interface CarryBrief {
    *  they are open commitments, and prose dissolves them. */
   walls: WallEntry[];
   /** Owner-scoped standing facts — the softer standing-context carrier (structured
-   *  walls live in `walls` since P-006; facts remain for everything else). */
-  facts: Array<{ key: string; body: string }>;
+   *  walls live in `walls` since P-006; facts remain for everything else).
+   *  `sourceRef`/`sourceProvenance` ride along (when the store has them) purely
+   *  as the input to {@link factsStaleness} — carried facts still render by
+   *  `key`/`body` everywhere else. */
+  facts: Array<{
+    key: string;
+    body: string;
+    sourceRef?: string | null;
+    sourceProvenance?: FactSourceProvenance | null;
+  }>;
+  /**
+   * P-026 leg (b) (WI-5141): embedding staleness verdicts for `facts` above —
+   * one entry per fact, `possibly-stale` when its verified typed source has
+   * drifted since assert time. Empty/absent when `facts` is empty or nothing
+   * in it qualifies (see carry-fact-staleness.ts) — never a failure signal on
+   * its own. OPTIONAL (not just empty-array-default) so every pre-existing
+   * `CarryBrief` literal (tests, other builders) stays valid without an edit —
+   * renderers treat a missing array the same as an empty one.
+   */
+  factsStaleness?: FactStalenessResult[];
   /** Armed event awaits (infra inbox-wake rows excluded) — they survive the
    *  boundary and WILL wake the successor. */
   awaits: Array<{ eventKey: string; note: string | null }>;
@@ -208,7 +231,13 @@ export interface BuildCarryBriefOpts {
   listOwnerFactsFn?: (
     ownerId: string,
     workspaceId: string | undefined,
-  ) => Promise<Array<{ key: string; body: string }>>;
+  ) => Promise<
+    Array<{ key: string; body: string; sourceRef?: string | null; sourceProvenance?: FactSourceProvenance | null }>
+  >;
+  /** P-026 leg (b) (WI-5141): injectable staleness checker — defaults to the
+   *  real {@link checkCarriedFactsStaleness} (which itself resolves the real
+   *  embedder unless `checkFactsStalenessFn` is supplied, e.g. in tests). */
+  checkFactsStalenessFn?: typeof checkCarriedFactsStaleness;
   listActiveAwaitsFn?: (
     ownerId: string,
   ) => Promise<Array<{ eventKey: string; note: string | null }>>;
@@ -242,6 +271,7 @@ export async function buildCarryBrief(
     directivesTotalOpen: 0,
     walls: [],
     facts: [],
+    factsStaleness: [],
     awaits: [],
     fleet: null,
   };
@@ -313,9 +343,26 @@ export async function buildCarryBrief(
           { workspaceId: ws, limitPerSelector: CARRY_BRIEF_MAX_FACTS },
           opts.sql,
         );
-        return facts.map((f) => ({ key: f.key, body: f.body }));
+        return facts.map((f) => ({
+          key: f.key,
+          body: f.body,
+          sourceRef: f.sourceRef,
+          sourceProvenance: f.sourceProvenance,
+        }));
       });
     brief.facts = (await listOwnerFacts(ownerId, workspaceId)).slice(0, CARRY_BRIEF_MAX_FACTS);
+  } catch {
+    /* section stays empty */
+  }
+
+  try {
+    // P-026 leg (b) (WI-5141): embedding staleness-check of the facts JUST
+    // folded above — deliberately runs AFTER the facts leg (not merged into
+    // it) so a staleness failure can never blank out the facts themselves,
+    // matching every other leg's independent-best-effort contract. Skips
+    // entirely (stays []) when there are no facts to check.
+    const checkStaleness = opts.checkFactsStalenessFn ?? checkCarriedFactsStaleness;
+    brief.factsStaleness = await checkStaleness(brief.facts);
   } catch {
     /* section stays empty */
   }
@@ -487,6 +534,13 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   }
   if (brief.facts.length > 0) {
     parts.push(`standing facts (folded into every orient): ${brief.facts.map((f) => f.key).join(', ')}`);
+    // P-026 leg (b) (WI-5141): flag which ones drifted — ids only, pointer-style.
+    const staleKeys = (brief.factsStaleness ?? [])
+      .filter((r) => r.verdict === 'possibly-stale')
+      .map((r) => r.key);
+    if (staleKeys.length > 0) {
+      parts.push(`⚠ possibly-stale facts (source drifted, re-verify): ${staleKeys.join(', ')}`);
+    }
   }
   if (brief.awaits.length > 0) {
     parts.push(`armed awaits: ${brief.awaits.map((a) => a.eventKey).join(', ')}`);
@@ -542,6 +596,10 @@ export function renderCarryBriefColdExtras(brief: CarryBrief): string {
     sections.push(
       `Your standing facts (owner-scoped; folded into every orient until retracted — walls/commitments live here):\n${lines.join('\n')}`,
     );
+    // P-026 leg (b) (WI-5141): a fact whose verified typed source has drifted
+    // since assert time — surfaced right after the facts block it annotates.
+    const stalenessWarning = renderFactsStalenessWarning(brief.factsStaleness ?? []);
+    if (stalenessWarning) sections.push(stalenessWarning);
   }
   if (brief.awaits.length > 0) {
     const lines = brief.awaits.map(

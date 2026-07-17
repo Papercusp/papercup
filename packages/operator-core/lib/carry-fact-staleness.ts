@@ -28,12 +28,23 @@
  * never a false `possibly-stale`. Fail-soft by contract, like every carry-brief
  * leg: a hydrate/embed/store failure degrades that ONE fact to `unknown`,
  * never fails the whole check or the brief it feeds.
+ *
+ * Import discipline: only `parseRefToken` (ref-hydrate.ts is explicitly
+ * documented "pure + import-free") is a STATIC value import here. `hydrateRefs`
+ * (ref-hydrate-resolve.ts, the IO half — transitively pulls in coord messages /
+ * work-items / plans / events, which themselves register top-level flag
+ * listeners) and the embedder cascade (embed-backfill.ts /
+ * embed-space-self-check.ts — memory/configure, embed-admission,
+ * embed-sidecar-wiring) are DYNAMICALLY imported inside the functions that use
+ * them. This module is imported STATICALLY by carry-brief.ts, which many
+ * narrowly-mocked tests (e.g. compact-reprime.test.ts's `@papercusp/flags/server`
+ * stub) also import statically — a static pull of the heavy IO graph here would
+ * fatten carry-brief.ts's own import surface and break every one of them at
+ * module-evaluation time, not just at call time. Mirrors the SAME dynamic-import
+ * discipline compact-reprime.ts already uses for its own carry-brief dependency.
  */
 import type { ResolvedEmbedder } from '@papercusp/memory';
-import { parseRefToken } from './agent-tools/coordination/ref-hydrate';
-import { hydrateRefs } from './agent-tools/coordination/ref-hydrate-resolve';
-import { cosineDistance } from './search/embed-space-self-check';
-import { resolveBackfillEmbedder } from './search/embed-backfill';
+import { parseRefToken, type HydratableRef } from './agent-tools/coordination/ref-hydrate';
 import type { FactSourceProvenance } from './agent-facts/store';
 
 /** The subset of a carried fact this check needs — callers with only some of
@@ -69,10 +80,48 @@ export const DEFAULT_FACT_DRIFT_THRESHOLD = 0.15;
 
 const HYDRATABLE_KINDS = new Set(['work-item', 'msg']);
 
+/** Matches ref-hydrate-resolve.ts's `hydrateRefs` shape without a static import of it. */
+export type HydrateRefsFn = (
+  refs: HydratableRef[],
+  opts?: { budget?: unknown; resolvers?: unknown },
+) => Promise<Array<{ ok: boolean; snippet: string; error?: string }>>;
+
 export interface CheckCarriedFactsStalenessDeps {
-  hydrateRefsFn?: typeof hydrateRefs;
+  hydrateRefsFn?: HydrateRefsFn;
   resolveEmbedderFn?: () => Promise<ResolvedEmbedder>;
   distanceThreshold?: number;
+}
+
+/** The real hydrateRefs — dynamically imported so a STATIC import of this module
+ *  (carry-brief.ts) never pulls in ref-hydrate-resolve.ts's heavy IO graph. */
+async function defaultHydrateRefs(refs: HydratableRef[]) {
+  const { hydrateRefs } = await import('./agent-tools/coordination/ref-hydrate-resolve');
+  return hydrateRefs(refs);
+}
+
+/** The real embedder cascade — dynamically imported for the same reason. */
+async function defaultResolveEmbedder(): Promise<ResolvedEmbedder> {
+  const { resolveBackfillEmbedder } = await import('./search/embed-backfill');
+  return resolveBackfillEmbedder();
+}
+
+/** Cosine DISTANCE (1 - cosine similarity) — duplicated from (rather than
+ *  imported from) search/embed-space-self-check.ts on purpose: that module's
+ *  OTHER exports drag in embed-backfill.ts + agent-tools/coordination/escalations.ts,
+ *  and this formula is 8 lines of pure math not worth a heavy static import for.
+ *  Keep in sync with embed-space-self-check.ts's `cosineDistance` if either changes. */
+function cosineDistance(a: readonly number[], b: readonly number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 1;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 1;
+  return 1 - dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
 /** A fact qualifies only with a verified, quoted, re-hydratable-kind provenance stamp. */
@@ -94,7 +143,7 @@ export async function checkFactStaleness(
   }
   let resolved: ResolvedEmbedder;
   try {
-    resolved = await (deps.resolveEmbedderFn ?? resolveBackfillEmbedder)();
+    resolved = await (deps.resolveEmbedderFn ?? defaultResolveEmbedder)();
   } catch {
     return { key: fact.key, verdict: 'unknown', distance: null, reason: 'embedder_resolve_failed' };
   }
@@ -107,7 +156,7 @@ export async function checkFactStaleness(
     return { key: fact.key, verdict: 'unknown', distance: null, reason: 'unresolvable_ref' };
   }
 
-  const hydrate = deps.hydrateRefsFn ?? hydrateRefs;
+  const hydrate = deps.hydrateRefsFn ?? defaultHydrateRefs;
   try {
     const [hydrated] = await hydrate([ref]);
     if (!hydrated.ok || !hydrated.snippet) {
@@ -149,7 +198,7 @@ export async function checkCarriedFactsStaleness(
 
   let resolved: ResolvedEmbedder;
   try {
-    resolved = await (deps.resolveEmbedderFn ?? resolveBackfillEmbedder)();
+    resolved = await (deps.resolveEmbedderFn ?? defaultResolveEmbedder)();
   } catch {
     return facts.map((f) => ({ key: f.key, verdict: 'unknown' as const, distance: null, reason: 'embedder_resolve_failed' }));
   }

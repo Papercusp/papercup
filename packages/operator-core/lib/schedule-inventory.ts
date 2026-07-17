@@ -58,6 +58,8 @@ export interface ScheduleInventoryRow {
   /** ISO next-fire, or null. */
   nextFire: string | null;
   lastError: string | null;
+  /** WI-5018 routines grouping — the routine's group_slug (source 'routines' only; null otherwise/ungrouped). A first-class field (not buried in detail) since grouping is a primary render/filter axis once the routines table passes a few hundred rows. */
+  groupSlug: string | null;
   /** source-specific extras (mode, queue, targetRole, intervalMs, shed, …). */
   detail: Record<string, unknown>;
 }
@@ -72,6 +74,8 @@ export interface RoutineRow {
   next_fire_at: Date | null;
   last_fired_at: Date | null;
   metadata: Record<string, unknown> | null;
+  /** WI-5018 routines grouping — null for ungrouped rows (most in-flight loop-<id> rows). */
+  group_slug: string | null;
 }
 
 export interface InProcessCheckLite {
@@ -148,7 +152,7 @@ async function defaultGetRoutines(): Promise<RoutineRow[]> {
     const ws = activeWorkspaceId();
     return await sql<RoutineRow[]>`
       SELECT install_slug, name, trigger_kind, trigger_config, target_role,
-             active, next_fire_at, last_fired_at, metadata
+             active, next_fire_at, last_fired_at, metadata, group_slug
         FROM harness_shared.routines
        WHERE workspace_id = ${ws}
        ORDER BY install_slug, name`;
@@ -230,6 +234,7 @@ export async function collectScheduleInventory(
       lastFire: isoFromMs(d.lastFireMs),
       nextFire: null,
       lastError: null,
+      groupSlug: null,
       detail: { mode: d.mode, queueName: d.queueName, lastStatus: d.lastStatus },
     });
   }
@@ -252,6 +257,7 @@ export async function collectScheduleInventory(
       lastFire: iso(r.last_fired_at),
       nextFire: iso(r.next_fire_at),
       lastError,
+      groupSlug: r.group_slug,
       detail: { triggerKind: r.trigger_kind, targetRole: r.target_role },
     });
   }
@@ -273,6 +279,7 @@ export async function collectScheduleInventory(
       lastFire: isoFromMs(m.lastFireAt),
       nextFire: null,
       lastError: m.lastError,
+      groupSlug: null,
       detail: {
         intervalMs: m.intervalMs,
         shed: m.shed,
@@ -302,6 +309,7 @@ export async function collectScheduleInventory(
       lastFire: null,
       nextFire: null,
       lastError: null,
+      groupSlug: null,
       detail: { intervalMs: c.intervalMs, shed: c.shed ?? false, fireOnArm: c.fireOnArm ?? false },
     });
   }
@@ -323,6 +331,7 @@ export async function collectScheduleInventory(
       lastFire: null,
       nextFire: null,
       lastError: null,
+      groupSlug: null,
       detail: { process: e.process, source: e.source, note: 'static manifest — live fire-state requires P-014 federation' },
     });
   }

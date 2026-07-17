@@ -40,6 +40,10 @@ function deps(over: Partial<LockAuthorityDeps> & {
     fetchPresenceRows: async () => over.rows ?? [],
     resolveSelf: async () => (over.self === undefined ? null : over.self),
     staleMs: over.staleMs,
+    // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; the
+    // selection/routing tests in this file assert the argmin ROLLBACK path, so pin
+    // it OFF here. HRW-path tests pass useHrwRendezvous: true explicitly.
+    useHrwRendezvous: over.useHrwRendezvous ?? false,
   };
 }
 
@@ -145,6 +149,7 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
       staleMs,
       fetchPresenceRows: async () => afterLooseSql,
       resolveSelf: async () => null,
+      useHrwRendezvous: false, // asserts argmin equivalence — pin the rollback path
     });
     const fromFull = selectAuthorityFromRows(allRows, null, NOW, staleMs);
     expect(fromPrefiltered).toEqual(fromFull);
@@ -299,16 +304,17 @@ describe('lockAuthorityFor / lockAuthorityForHive — HRW rendezvous cutover (WI
     await expect(resolveUseHrwRendezvous({ useHrwRendezvous: false })).resolves.toBe(false);
   });
 
-  it('resolveUseHrwRendezvous: defaults to the live flag, which is dark (OFF) with no PostHog client / override store configured in tests', async () => {
-    await expect(resolveUseHrwRendezvous({})).resolves.toBe(false);
+  it('resolveUseHrwRendezvous: defaults to the live flag, which is ON by default since the 2026-07-17 graduation', async () => {
+    await expect(resolveUseHrwRendezvous({})).resolves.toBe(true);
   });
 
-  it('flag OFF (default, undeclared) → lockAuthorityFor is byte-identical to the argmin path, even with a scopeKey set', async () => {
+  it('flag OFF (pinned rollback path) → lockAuthorityFor is byte-identical to the argmin path, even with a scopeKey set', async () => {
     const r = await lockAuthorityFor('h', {
       now: () => NOW,
       staleMs,
       fetchPresenceRows: async () => rows,
       resolveSelf: async () => self,
+      useHrwRendezvous: false,
       scopeKey: 'some-fine-grained-scope', // ignored while the flag is off
     });
     expect(r).toEqual(selectAuthorityFromRows(rows, self, NOW, staleMs));
@@ -493,6 +499,7 @@ describe('routeFileLockOp — file-claim scope guard (D-009)', () => {
           { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: NOW - 1000 },
           { device_pubkey: 'mmm', github_user_id: 2, machine_label: 'm2', last_seen_ms: NOW - 1000 },
         ],
+        useHrwRendezvous: false, // fixture expects the argmin winner (aaa ≠ self) — pin the rollback path
       },
     );
     expect(res.via).toBe('fail-open');

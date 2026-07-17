@@ -104,6 +104,16 @@ export default defineTool({
         ],
       };
     }
+    // WI-5124: the #1 reason this tool is fired manually is "I just fixed the reds — re-judge"
+    // — at which point the fix may be seconds old and the quiet-cut (default 240s) silently
+    // steps the candidate BACK to an older commit that doesn't have it, guaranteeing a red on
+    // tests the caller just fixed. Surface that loudly in the reply instead of leaving it only
+    // in the detached process's own /tmp log (which nobody reads when the tool just said ok:true).
+    const excluded = result.willJudge?.excludedCommits ?? [];
+    const excludedWarning = excluded.length
+      ? ` ⚠ quiet-cut EXCLUDED ${excluded.length} commit(s) newer than the judged candidate — ` +
+        `if your fix is among them, this run will NOT see it (it gets the NEXT run): ${excluded.slice(0, 5).join(' | ')}${excluded.length > 5 ? ' | …' : ''}`
+      : '';
     return {
       content: [
         {
@@ -113,8 +123,8 @@ export default defineTool({
             ...result,
             note: result.launched
               ? result.replacedStale
-                ? `green-checkpoint suite launched (detached, up to ~55 min) after stopping a STALE prior run (was judging ${result.replacedStale.candidate?.slice(0, 12) ?? 'unknown'}, superseded by ${result.replacedStale.current_candidate?.slice(0, 12) ?? 'current staging'}). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.`
-                : 'green-checkpoint suite launched (detached, up to ~55 min). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.'
+                ? `green-checkpoint suite launched (detached, up to ~55 min) after stopping a STALE prior run (was judging ${result.replacedStale.candidate?.slice(0, 12) ?? 'unknown'}, superseded by ${result.replacedStale.current_candidate?.slice(0, 12) ?? 'current staging'}). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.${excludedWarning}`
+                : `green-checkpoint suite launched (detached, up to ~55 min). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.${excludedWarning}`
               : `not launched: ${result.reason ?? 'unknown'} — a manual checkpoint may already be running (see the log), or a cron tick is mid-run (which is fine — it will produce the verdict).`,
           }),
         },

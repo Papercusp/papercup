@@ -348,4 +348,138 @@ describe('Phase-4 (a): a plan-item assignment federates A↔B end-to-end through
     },
     60_000,
   );
+
+  // WI-971 remnant (2026-07-16 live-fed gate + gate-matrix): item-assignments FAILS
+  // the BACKFILL leg (a row that existed on A BEFORE B ever joined) while INCREMENTAL
+  // (post-join) passes both directions — the one test gap the case above doesn't
+  // cover (there, B is already booted+merging when A's insert happens). This
+  // reproduces the backfill ordering exactly: A gets its assignment + drain BEFORE
+  // B is even booted, so B's very first merge pass folds A's log from index 0
+  // (the "full-history fold" boot.ts describes) instead of an on-append tick.
+  it(
+    'a PRE-EXISTING assignment (written + drained on A before B ever boots) backfills to B with origin=remote',
+    async () => {
+      const dbA: FreshPgDb = await createFreshPgDb('piA2');
+      cleanups.push(() => dbA.cleanup());
+      const dbB: FreshPgDb = await createFreshPgDb('piB2');
+      cleanups.push(() => dbB.cleanup());
+      await setupPeerSchema(dbA.sql);
+      await setupPeerSchema(dbB.sql);
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const idA = makeIdentityOverride('alice2', 43, 'kc-alice2');
+      const idB = makeIdentityOverride('bob2', 8, 'kc-bob2');
+      const swarmA = makeSwarm(testnet.bootstrap);
+      const swarmB = makeSwarm(testnet.bootstrap);
+      const rootA = makeWorkspaceRoot('pia2-A-');
+      const rootB = makeWorkspaceRoot('pia2-B-');
+
+      let handleA: BootedHarnessHandle | undefined;
+      let handleB: BootedHarnessHandle | undefined;
+      let applyA: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      let applyB: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      // WI-971 backfill repro gotcha: unlike the incremental case above, B's swarm
+      // peer-connect handshake can trigger an IMMEDIATE merge pass (onAnnounce →
+      // admitPeer → mergeOnePass) SYNCHRONOUSLY inside bootHarnessSubstrate — i.e.
+      // BEFORE the `handleB = await bootHarnessSubstrate(...)` assignment below
+      // completes — because A already has content to fold on B's very first
+      // connection. Buffer any op that arrives before `handleB` is set and replay
+      // it once real `applyB` exists, rather than crashing on `handleB!.ownLog`.
+      const preBootOpsB: Array<{ op: OpEnvelope; resolve: (v: boolean) => void; reject: (e: unknown) => void }> = [];
+
+      // ── Boot ONLY A, write + drain the assignment, THEN close nothing — B does
+      // not exist yet. This is the backfill precondition: the op is already in A's
+      // log before any peer relationship forms. ──
+      handleA = await bootHarnessSubstrate({
+        workspaceRoot: rootA,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: HARNESS_SLUG,
+        swarmBinding: BINDING,
+        swarmOverride: swarmA,
+        verifyBindingOverride: async (_pk, _login, userId) => (userId === idB.userId ? 'verified' : 'fail'),
+        applyOverride: (op) => {
+          applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+          return applyA(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idA.override,
+      });
+      cleanups.push(async () => {
+        await handleA?.close();
+        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug: HARNESS_SLUG });
+      });
+
+      await insertAssignment(dbA.sql, 'P-SEED', 'builder-seed', 'alice2');
+      expect(await countOutbox(dbA.sql, 'demo-plan:P-SEED')).toBe(1);
+      const lenA0 = handleA.ownLog.length;
+      expect(await drainOutboxOnce(handleA, dbA.sql)).toBeGreaterThanOrEqual(1);
+      expect(handleA.ownLog.length).toBeGreaterThan(lenA0);
+
+      // ── NOW boot B — it joins a hive that ALREADY has this content in A's log. ──
+      handleB = await bootHarnessSubstrate({
+        workspaceRoot: rootB,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: HARNESS_SLUG,
+        swarmBinding: BINDING,
+        swarmOverride: swarmB,
+        verifyBindingOverride: async (_pk, _login, userId) => (userId === idA.userId ? 'verified' : 'fail'),
+        applyOverride: (op) => {
+          if (!handleB) {
+            return new Promise<boolean>((resolve, reject) => preBootOpsB.push({ op, resolve, reject }));
+          }
+          applyB ??= buildPeerApply(dbB.sql, handleB.ownLog.keyHex);
+          return applyB(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idB.override,
+      });
+      cleanups.push(async () => {
+        await handleB?.close();
+        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug: HARNESS_SLUG });
+      });
+      applyB ??= buildPeerApply(dbB.sql, handleB.ownLog.keyHex);
+      while (preBootOpsB.length) {
+        const queued = preBootOpsB.shift()!;
+        try {
+          queued.resolve(await applyB(queued.op));
+        } catch (e) {
+          queued.reject(e);
+        }
+      }
+
+      expect(handleA.swarm).not.toBeNull();
+      expect(handleB.swarm).not.toBeNull();
+      expect(handleA.swarm!.topicHex).toBe(handleB.swarm!.topicHex);
+
+      const seedOnB = await pollUntil(
+        async () => {
+          await Promise.all([handleA.mergeNow(), handleB.mergeNow()]);
+          return readAssignment(dbB.sql, 'P-SEED');
+        },
+        { timeoutMs: 25_000, intervalMs: 250 },
+      );
+
+      expect(seedOnB, "A's PRE-EXISTING assignment P-SEED never reached B's PG (backfill failed)").toBeTruthy();
+      expect(seedOnB).toMatchObject({
+        item_id: 'P-SEED',
+        assignee_name: 'builder-seed',
+        assigned_by_user: 'alice2',
+        origin: 'remote', // WI-971: this is expected to currently FAIL as 'local'
+        workspace_id: WORKSPACE_ID,
+      });
+    },
+    60_000,
+  );
 });

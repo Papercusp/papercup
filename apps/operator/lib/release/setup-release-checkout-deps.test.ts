@@ -707,3 +707,89 @@ describe('unresolved_workspace_pkgs pin-awareness (EI-13127)', () => {
     expect(out).toContain('@papercusp/post-pin-pkg');
   });
 });
+
+/**
+ * WI-5110: green-checkpoint's stale-candidate re-triage twice reported a false
+ * "failures REPRODUCE at tip <sha>" verdict (2026-07-17) — tests that demonstrably
+ * PASSED when re-run by hand at the named tip. The re-triage trusts a zero exit
+ * from this script as proof its throwaway tree is actually at the requested ref;
+ * assert_checkout_landed() is the fix — a fatal, script-level guarantee that a
+ * zero exit really does mean HEAD == TARGET_SHA, for every caller (candidate
+ * judgment, tip re-run, prefix salvage), not just the tip-retriage path.
+ */
+describe('assert_checkout_landed (WI-5110)', () => {
+  let releaseRoot: string;
+  let targetSha: string;
+
+  function runAssert(env: Record<string, string> = {}): { status: number | null; stderr: string } {
+    const wrapper = [
+      'set -uo pipefail',
+      'source <(sed -n "/^assert_checkout_landed()/,/^}/p" "$SETUP_SCRIPT")',
+      'assert_checkout_landed',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        RELEASE_ROOT: releaseRoot,
+        TARGET_SHA: targetSha,
+        REF: 'main',
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+    return { status: r.status, stderr: r.stderr };
+  }
+
+  const git3 = (...args: string[]) => {
+    const r = spawnSync(
+      'git',
+      ['-C', releaseRoot, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+      { encoding: 'utf8' },
+    );
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  beforeEach(() => {
+    releaseRoot = realpathSync(mkdtempSync(join(tmpdir(), 'assert-checkout-')));
+    git3('init', '-q');
+    writeFileSync(join(releaseRoot, 'f.txt'), 'v1');
+    git3('add', '-A');
+    git3('commit', '-q', '-m', 'c1');
+    targetSha = git3('rev-parse', 'HEAD');
+  });
+
+  afterEach(() => {
+    rmSync(releaseRoot, { recursive: true, force: true });
+  });
+
+  it('HEAD matches TARGET_SHA: exits 0, no FATAL', () => {
+    const r = runAssert();
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toContain('FATAL');
+  });
+
+  it('HEAD is a DIFFERENT commit than TARGET_SHA: exits 1 with a FATAL naming both shas', () => {
+    writeFileSync(join(releaseRoot, 'f.txt'), 'v2');
+    git3('add', '-A');
+    git3('commit', '-q', '-m', 'c2');
+    const staleTargetSha = targetSha; // the tree moved on; TARGET_SHA still names the OLD commit
+    const r = runAssert({ TARGET_SHA: staleTargetSha });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('FATAL');
+    expect(r.stderr).toContain(staleTargetSha);
+  });
+
+  it('RELEASE_ROOT is not a git repo at all (git rev-parse fails): exits 1, reports "unknown" rather than crashing', () => {
+    const notARepo = realpathSync(mkdtempSync(join(tmpdir(), 'not-a-repo-')));
+    try {
+      const r = runAssert({ RELEASE_ROOT: notARepo });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('FATAL');
+      expect(r.stderr).toContain('unknown');
+    } finally {
+      rmSync(notARepo, { recursive: true, force: true });
+    }
+  });
+});

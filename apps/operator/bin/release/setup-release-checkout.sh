@@ -99,6 +99,38 @@ else
   git -C "$INTEGRATION_ROOT" worktree add --detach "$RELEASE_ROOT" "$TARGET_SHA"
 fi
 
+# 1a. Verify the checkout actually landed (WI-5110) ------------------------
+# A caller trusts a ZERO exit from this script as proof the tree is at
+# $TARGET_SHA — the green-checkpoint stale-candidate re-triage in particular
+# renders a "failures REPRODUCE at tip <sha>" verdict straight off that
+# assumption (apps/operator/lib/release/green-checkpoint.ts runTestsAtRef).
+# Twice on 2026-07-17 that verdict was FALSE for tests that demonstrably
+# passed when re-run by hand at the same sha — i.e. something upstream of
+# this assertion produced a green exit code without the working tree actually
+# reflecting $TARGET_SHA (a worktree race, a swallowed git error, or similar;
+# root cause not yet isolated). Rather than let ANY caller keep trusting a
+# postcondition this script has not actually verified, assert it here, once,
+# at the source: fail loudly (exit 1, no swap/no test run happens on a
+# throwaway tree) if HEAD does not match. This makes a zero exit from this
+# script an honest guarantee for every caller (candidate judgment, tip
+# re-run, prefix salvage) instead of requiring each one to re-verify a value
+# this script should have gotten right the first time.
+# Named function (reads RELEASE_ROOT / TARGET_SHA / REF from the outer scope) for
+# sed-extraction unit tests — same convention as need_node_modules /
+# prune_post_pin_workspace_pkgs (setup-release-checkout-deps.test.ts). Exits the
+# whole script non-zero on a mismatch: this check is fatal by design — a
+# throwaway checkpoint/release tree that is not provably at TARGET_SHA must never
+# be handed to a caller as if it were.
+assert_checkout_landed() {
+  local actual
+  actual="$(git -C "$RELEASE_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  if [ "$actual" != "$TARGET_SHA" ]; then
+    echo "[setup-release] FATAL: release tree HEAD (${actual:-unknown}) does not match target ref ${REF:-?} ($TARGET_SHA) after checkout — refusing to let a caller trust this tree" >&2
+    exit 1
+  fi
+}
+assert_checkout_landed
+
 # 2. Submodule SOURCE — git archive at the exact pinned sha (local objects) ---
 log "extracting submodule source at pinned shas (git archive, local objects)"
 while IFS= read -r P; do

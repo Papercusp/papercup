@@ -603,4 +603,168 @@ describe('federation ISSUES+ASSIGNMENTS matrix — engineer_issues + plan_item_a
     },
     180_000,
   );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // WI-971 remnant (2026-07-16 live-fed-gate + gate-matrix): item-assignments BACKFILL
+  // (a row that existed on the OWNER before the JOINER ever boots/discovers/joins) fails
+  // in the real deb/smoke topology while INCREMENTAL (post-join) passes both directions.
+  // The two `it`s above both author AFTER both peers are already booted + have admitted
+  // each other's log (STEP-1 admission) — i.e. they never exercise a JOINER's very FIRST
+  // merge pass folding the owner's PRE-EXISTING history from index 0 through the REAL
+  // remote_hive-view rebind + membership-guard machinery. This one does: boot ONLY the
+  // OWNER, author + drain the assignment, THEN boot the JOINER fresh (real
+  // receiverIsJoiner:true rebind) so its first-ever merge pass is the backfill fold.
+  // ────────────────────────────────────────────────────────────────────────────
+  it(
+    'BACKFILL: a plan_item_assignment authored+drained on the OWNER BEFORE the JOINER ever boots still lands as origin=remote',
+    async () => {
+      const HIVE_HOME = 'eia-backfill-owner-hive';
+      const JOINER_SLUG = 'eia-backfill-joined-owner-hive';
+      const authorSlug = HIVE_HOME;
+      const receiverSlug = JOINER_SLUG;
+      const memberSlug = JOINER_SLUG;
+
+      const orgDb = await createOrgTestDb();
+      cleanups.push(async () => {
+        await orgDb.cleanup();
+      });
+      const authorDb = await createOrgTestDb();
+      cleanups.push(async () => {
+        await authorDb.cleanup();
+      });
+      installTraceAndEnv(orgDb);
+
+      const idAuthor = makeIdentityOverride('bf-author', 199, 'kc-bf-author');
+      const idReceiver = makeIdentityOverride('bf-receiver', 107, 'kc-bf-receiver');
+
+      const hivePubkeyB64 = await seedHive(orgDb, HIVE_HOME, [
+        { userId: idAuthor.userId, login: idAuthor.login, devicePubkey: idAuthor.devicePubkey },
+        { userId: idReceiver.userId, login: idReceiver.login, devicePubkey: idReceiver.devicePubkey },
+      ]);
+
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/eia-bf-home', harness_kind: 'hive', remote_hive: true },
+            { slug: memberSlug, path: `/tmp/${memberSlug}`, hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+      _clearHiveMemberDeviceSetCacheForTest();
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const swarmAuthor = makeSwarm(testnet.bootstrap);
+      const swarmReceiver = makeSwarm(testnet.bootstrap);
+      const rootAuthor = makeWorkspaceRoot('eia-bf-author-');
+      const rootReceiver = makeWorkspaceRoot('eia-bf-receiver-');
+
+      let handleAuthor: BootedHarnessHandle | undefined;
+      let handleReceiver: BootedHarnessHandle | undefined;
+      let applyAuthor: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+
+      // ── Boot ONLY the OWNER, author + drain — the JOINER does not exist yet. ──
+      handleAuthor = await bootHarnessSubstrate({
+        workspaceRoot: rootAuthor,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: authorSlug,
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
+        swarmOverride: swarmAuthor,
+        verifyBindingOverride: async (_pk, _login, userId) => (userId === idReceiver.userId ? 'verified' : 'fail'),
+        applyOverride: (op) => {
+          applyAuthor ??= buildIssuesAssignmentsPeerApply(authorDb.adminSql, authorSlug, handleAuthor!.ownLog.keyHex);
+          return applyAuthor(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idAuthor.override,
+      });
+      cleanups.push(async () => {
+        await handleAuthor?.close();
+        await closeHarnessStore({ workspaceRoot: rootAuthor, harnessSlug: authorSlug });
+      });
+
+      await authorAssignment(authorDb.adminSql, {
+        slug: HIVE_HOME,
+        planSlug: 'backfill-plan',
+        itemId: 'P-BF1',
+        assignee: 'owner-bee-bf',
+        assignedBy: 'su-bf-A',
+        strategy: 'default',
+        note: 'pre-existing, before the joiner ever boots',
+      });
+      expect(await countOutbox(authorDb.adminSql, 'plan_item_assignments', 'backfill-plan:P-BF1')).toBe(1);
+      const lenA0 = handleAuthor.ownLog.length;
+      expect(await drainOutboxOnce(handleAuthor, authorDb.adminSql)).toBeGreaterThanOrEqual(1);
+      expect(handleAuthor.ownLog.length).toBeGreaterThan(lenA0);
+
+      // ── NOW boot the JOINER — its very FIRST merge pass folds the owner's log from 0,
+      // and MUST go through the real remote_hive-view rebind (receiverIsJoiner shape). ──
+      const preBootOpsB: Array<{ op: OpEnvelope; resolve: (v: boolean) => void; reject: (e: unknown) => void }> = [];
+      handleReceiver = await bootHarnessSubstrate({
+        workspaceRoot: rootReceiver,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: receiverSlug,
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
+        swarmOverride: swarmReceiver,
+        verifyBindingOverride: async (_pk, _login, userId) => (userId === idAuthor.userId ? 'verified' : 'fail'),
+        // NO applyOverride — the REAL boot scoped apply → getOrgPg() → orgDb (env-routed).
+        // But boot may synchronously trigger a merge pass (on peer-connect) BEFORE this
+        // await resolves — there is nothing to buffer here (real apply doesn't need
+        // `handleReceiver` in scope), so this mirrors the two `it`s above verbatim.
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idReceiver.override,
+      });
+      cleanups.push(async () => {
+        await handleReceiver?.close();
+        await closeHarnessStore({ workspaceRoot: rootReceiver, harnessSlug: receiverSlug });
+      });
+      void preBootOpsB; // unused in this variant (real apply needs no handle capture)
+
+      expect(handleAuthor.swarm).not.toBeNull();
+      expect(handleReceiver.swarm).not.toBeNull();
+      expect(handleAuthor.swarm!.topicHex).toBe(handleReceiver.swarm!.topicHex);
+
+      const admitted =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleAuthor!.mergeNow(), handleReceiver!.mergeNow()]);
+            return handleReceiver!.admitted.has(handleAuthor!.ownLog.keyHex) ? true : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? false;
+      expect(admitted, "the JOINER did NOT admit the OWNER's log (STEP-1 admission)").toBe(true);
+
+      const asgOnB = await pollUntil(
+        async () => {
+          await Promise.all([handleAuthor!.mergeNow(), handleReceiver!.mergeNow()]);
+          return readAssignment(orgDb.adminSql, 'backfill-plan', 'P-BF1');
+        },
+        { timeoutMs: 25_000, intervalMs: 250 },
+      );
+      expect(asgOnB, "the PRE-EXISTING assignment never reached the JOINER's PG (backfill failed)").toBeTruthy();
+      expect(asgOnB).toMatchObject({
+        harness_slug: HIVE_HOME,
+        plan_slug: 'backfill-plan',
+        item_id: 'P-BF1',
+        assignee_name: 'owner-bee-bf',
+        strategy: 'default',
+        origin: 'remote', // WI-971: expected to currently FAIL as 'local' if this reproduces it
+      });
+    },
+    180_000,
+  );
 });

@@ -37,11 +37,17 @@
  * land as type:'system' subtype:'compact_boundary'; result-door spills name their
  * scratch path inline) — no second telemetry join needed for v1.
  *
- * ⚠ CANARY HELD (WI-5075): the carry-respawn kill-loop (adv_sessions never
- * re-anchored after recycleChild) can kill any session the compaction watchdog
- * estimates over-limit — a small-maxTurn sweep cell compacts often and is
- * exactly in the blast radius. Do not run the live canary until WI-5075's fix
- * deploys (blocks-link on the ledger).
+ * ✅ CANARY UNBLOCKED (WI-5075, resolved + live-verified 2026-07-16): the
+ * carry-respawn kill-loop that used to re-kill any session the compaction
+ * watchdog estimated over-limit (a small-maxTurn sweep cell compacts often and
+ * was exactly in the blast radius) is fixed — adv_sessions now re-anchors on
+ * respawn, journalctl showed zero re-fires across 4+ post-fix sweeps. The live
+ * canary is safe to run. What is STILL missing as of WI-5003 (P-025): no CLI/
+ * script entry point invokes runMaxTurnSweep+makeHeadlessPsuCellDriver — every
+ * call site today is this file's own tests (mocked seams). Running an actual
+ * canary or the full matrix needs (a) a small runner script and (b) an explicit
+ * decision to spend real headless-session time/tokens on the live campaign —
+ * see WI-5003's follow-up for the concrete next step.
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';

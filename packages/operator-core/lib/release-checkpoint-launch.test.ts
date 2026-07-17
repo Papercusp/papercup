@@ -342,15 +342,20 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
   it('skips the active check and spawns anyway when force:true', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn(() => child) as never;
-    const execFn = vi.fn();
+    // WI-5124: force:true still skips checkActiveCheckpointRun (no systemctl probe), but
+    // execFn IS now called for the willJudge resolution (currentCheckpointCandidate) — a
+    // real git response, not a bare vi.fn(), so that resolution doesn't blow up on undefined.
+    const execFn = vi.fn(() => ({ status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' }));
 
     const p = launchDetachedCheckpoint({ root: '/tree', force: true }, spawnFn, execFn);
     child.emit('close', 0);
     const r = await p;
 
-    expect(execFn).not.toHaveBeenCalled();
+    // No systemctl/active-check call landed — every execFn call is a `git -C ...` willJudge read.
+    expect(execFn.mock.calls.every((c) => c[0] === 'git')).toBe(true);
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
+    expect(r.willJudge?.candidate).toBe('deadbeef00000000000000000000000000000000');
   });
 
   it('proceeds to spawn when the active check reports inactive', async () => {
@@ -364,6 +369,57 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
 
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
+  });
+
+  it('WI-5124: reports willJudge with quietCutApplied + excludedCommits when the quiet-cut steps back from a fresh tip — the exact "my just-landed fix silently excluded" trap', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const freshTip = 'f'.repeat(40);
+    const agedCandidate = 'a'.repeat(40);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return { status: 0, stdout: 'ActiveState=inactive', stderr: '' };
+      const j = args.join(' ');
+      if (j.includes('rev-parse HEAD')) return { status: 0, stdout: freshTip, stderr: '' };
+      if (j.includes('show -s --format=%ct')) return { status: 0, stdout: String(nowSec - 30), stderr: '' }; // 30s old — well inside the default 240s quiet window
+      if (j.includes('rev-list -1 --before=')) return { status: 0, stdout: agedCandidate, stderr: '' };
+      if (j.includes('rev-parse --verify ready')) return { status: 1, stdout: '', stderr: '' }; // no ready ref → skip the ancestor guard
+      if (j.includes('log --oneline --no-decorate')) return { status: 0, stdout: `${freshTip.slice(0, 7)} my just-landed fix\n`, stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+
+    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn, execFn, () => null);
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(r.launched).toBe(true);
+    expect(r.willJudge).toMatchObject({
+      candidate: agedCandidate,
+      tip: freshTip,
+      quietCutApplied: true,
+      excludedCommits: [`${freshTip.slice(0, 7)} my just-landed fix`],
+    });
+  });
+
+  it('WI-5124: willJudge.quietCutApplied is false and excludedCommits is empty when the tip is old enough to judge directly', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const tip = 'c'.repeat(40);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return { status: 0, stdout: 'ActiveState=inactive', stderr: '' };
+      const j = args.join(' ');
+      if (j.includes('rev-parse HEAD')) return { status: 0, stdout: tip, stderr: '' };
+      if (j.includes('show -s --format=%ct')) return { status: 0, stdout: String(nowSec - 9999), stderr: '' }; // well past the quiet window
+      return { status: 1, stdout: '', stderr: '' };
+    });
+
+    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn, execFn, () => null);
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(r.launched).toBe(true);
+    expect(r.willJudge).toMatchObject({ candidate: tip, tip, quietCutApplied: false, excludedCommits: [] });
   });
 });
 

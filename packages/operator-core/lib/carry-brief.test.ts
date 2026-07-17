@@ -146,6 +146,9 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
       directivesTotalOpen: 0,
       walls: [],
       facts: [],
+      // P-026 leg (b) (WI-5141): facts is empty, so the staleness leg short-circuits
+      // to [] without even reaching its own throwing seam here — still asserted.
+      factsStaleness: [],
       awaits: [],
       fleet: null,
     });

@@ -2265,6 +2265,14 @@ export function realCheckpointDeps(
       // .catch(() => null) maps it to tipRetest=null → the classifier's own
       // 'tip re-run unavailable' branch, which holds the gate just the same but says
       // the true thing. Same verdict, honest reason.
+      //
+      // WI-5110: the root fix now lives IN setupTree's own script
+      // (setup-release-checkout.sh's assert_checkout_landed) — a zero exit from it
+      // is an honest, self-verified guarantee that HEAD == ref, so this call either
+      // succeeds with a genuinely-correct tree or throws (propagating to the caller's
+      // .catch(() => null) → the honest 'tip re-run unavailable' fallback below).
+      // No redundant re-check needed here; kept unduplicated on purpose (the single
+      // source of truth is the script, not this call site).
       await this.setupTree(ref);
       const byWorkspace = new Map<string, string[]>();
       for (const f of files) byWorkspace.set(f.workspace, [...(byWorkspace.get(f.workspace) ?? []), f.file]);

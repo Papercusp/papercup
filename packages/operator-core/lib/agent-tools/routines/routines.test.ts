@@ -86,6 +86,66 @@ describe('routines:list', () => {
     const flatArgs = sqlMock.mock.calls.flat();
     expect(flatArgs.some((v) => typeof v === 'string' && v.startsWith('%') && v.endsWith('%'))).toBe(false);
   });
+
+  it('passes through group_slug as `group` on each row', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'git-sync',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */10 * * * *' },
+        target_role: 'system:git-sync',
+        active: true,
+        next_fire_at: null,
+        last_fired_at: null,
+        group_slug: 'git-sync',
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0]).toMatchObject({ name: 'git-sync', group: 'git-sync' });
+  });
+
+  // WI-5018: rollup:true switches to the per-group aggregate query — a distinct SELECT
+  // shape (group_slug/description/steward/review_cadence/last_reviewed_at + counts), not
+  // the raw routines rows.
+  it('rollup:true returns a per-group aggregate with reviewDue computed from review_cadence + last_reviewed_at', async () => {
+    const overdue = new Date(Date.now() - 100 * 86_400_000); // 100 days ago, cadence 90d -> due
+    sqlMock.mockResolvedValue([
+      {
+        group_slug: 'health',
+        description: 'Cleanup + integrity sweeps.',
+        steward: null,
+        review_cadence: '90d',
+        last_reviewed_at: overdue,
+        count: '12',
+        active_count: '10',
+        most_recent_fire: null,
+      },
+    ]);
+    const b = body(await listTool.handler({ rollup: true } as never, { role: 'su' } as never));
+    expect(b.rollup).toHaveLength(1);
+    expect(b.rollup[0]).toMatchObject({
+      group: 'health',
+      count: 12,
+      activeCount: 10,
+      inactiveCount: 2,
+      reviewDue: true,
+    });
+  });
+
+  it('group:"" (ungrouped-only) passes groupFilterActive=true and groupIsNull=true to the query, distinctly from a normal group filter', async () => {
+    await listTool.handler({ group: '' } as never, { role: 'su' } as never);
+    const emptyGroupArgs = sqlMock.mock.calls.flat();
+    sqlMock.mockClear();
+    await listTool.handler({ group: 'health' } as never, { role: 'su' } as never);
+    const namedGroupArgs = sqlMock.mock.calls.flat();
+    // Both narrow (groupFilterActive:true in both), but group:'' passes groupIsNull:true
+    // while group:'health' passes groupIsNull:false and the literal slug 'health' as groupVal.
+    expect(emptyGroupArgs.filter((v) => v === true).length).toBeGreaterThan(
+      namedGroupArgs.filter((v) => v === true).length,
+    );
+    expect(namedGroupArgs).toContain('health');
+  });
 });
 
 describe('routines:set', () => {
@@ -101,10 +161,33 @@ describe('routines:set', () => {
     expect(b).toMatchObject({ ok: true, applied: true });
   });
 
-  it('requires cron, active, triggerConfig, or payloadTemplate', async () => {
+  it('requires cron, active, triggerConfig, payloadTemplate, or group', async () => {
     await expect(
       setTool.handler({ name: 'git-sync' } as never, { role: 'operator' } as never),
-    ).rejects.toThrow(/requires cron, active, triggerConfig, and\/or payloadTemplate/i);
+    ).rejects.toThrow(/requires cron, active, triggerConfig, payloadTemplate, and\/or group/i);
+  });
+
+  // WI-5018: assigning a group auto-creates it (blank metadata) in routine_groups —
+  // the FK requires the row to exist; routines:group-set is where a steward fills it in.
+  it('assigns a group — auto-creates the group row (INSERT ... ON CONFLICT DO NOTHING) then writes group_slug', async () => {
+    sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *' }, active: true, next_fire_at: null, group_slug: null }]);
+    const b = body(
+      await setTool.handler({ name: 'git-sync', group: 'git-sync' } as never, { role: 'operator' } as never),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true });
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
+    expect(calls.some((c) => c.includes('routine_groups') && c.includes('ON CONFLICT'))).toBe(true);
+    expect(calls.some((c) => c.includes('group_slug') && c.includes('git-sync'))).toBe(true);
+  });
+
+  it('clears a group with group:null (ungroup) — no auto-create INSERT fires', async () => {
+    sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *' }, active: true, next_fire_at: null, group_slug: 'health' }]);
+    const b = body(
+      await setTool.handler({ name: 'git-sync', group: null } as never, { role: 'operator' } as never),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true });
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
+    expect(calls.some((c) => c.includes('routine_groups') && c.includes('ON CONFLICT'))).toBe(false);
   });
 
   // WI-4482: the scout singleton's run knobs live in payload_template, NOT trigger_config —

@@ -17,13 +17,13 @@ export default defineTool({
   name: 'schedule:inventory',
   profile: 'engineer',
   description:
-    'Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), live managedSetInterval timers + in-process-periodic health sweeps (ephemeral tier), and bespoke separate-process timers (external-process: the inference gateway, its watchdog, the psu-launcher — listed for visibility, live fire-state pending federation). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError}. Read-only.',
+    'Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), live managedSetInterval timers + in-process-periodic health sweeps (ephemeral tier), and bespoke separate-process timers (external-process: the inference gateway, its watchdog, the psu-launcher — listed for visibility, live fire-state pending federation). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError,groupSlug}. groupSlug (WI-5018) is populated for `routines` rows only — null elsewhere/ungrouped. Read-only.',
   capability: 'operator:read',
   guidance: {
-    when: 'See ALL cadences in one place — what runs on a schedule and how often (DBOS crons, system routines, in-process sweeps) — before tuning/pausing one or diagnosing a missing tick.',
+    when: 'See ALL cadences in one place — what runs on a schedule and how often (DBOS crons, system routines, in-process sweeps) — before tuning/pausing one or diagnosing a missing tick. Pass group to narrow to one routines group instead of the flat cross-source list.',
     notWhen:
-      'To CHANGE a routine use routines:set; for DBOS execution rows (status counts/recent runs) use the /admin/dbos view; for routine-only detail use routines:list.',
-    chaining: 'routines:set to retune a routine row you find here; routines:list for routine-only detail.',
+      'To CHANGE a routine use routines:set; for DBOS execution rows (status counts/recent runs) use the /admin/dbos view; for routine-only detail (incl. group filter/rollup) use routines:list.',
+    chaining: 'routines:set to retune a routine row you find here; routines:list for routine-only detail (incl. { rollup:true } for the group view).',
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
@@ -45,6 +45,10 @@ export default defineTool({
       .string()
       .optional()
       .describe('Case-insensitive substring filter on `installSlug` (routines only; other sources have installSlug=null and never match).'),
+    group: z
+      .string()
+      .optional()
+      .describe('Filter to one routine group slug (WI-5018; routines source only — other sources have groupSlug=null and never match). Pass "" for ungrouped-only.'),
   }),
   async handler(args) {
     let rows = await collectScheduleInventory();
@@ -57,6 +61,9 @@ export default defineTool({
     if (args.installSlug) {
       const needle = args.installSlug.toLowerCase();
       rows = rows.filter((r) => (r.installSlug ?? '').toLowerCase().includes(needle));
+    }
+    if (args.group !== undefined) {
+      rows = args.group === '' ? rows.filter((r) => r.groupSlug === null) : rows.filter((r) => r.groupSlug === args.group);
     }
     const summary = summarizeInventory(rows);
     return { content: [{ type: 'text', text: JSON.stringify({ summary, rows }) }] };

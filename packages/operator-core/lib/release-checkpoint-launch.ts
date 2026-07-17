@@ -105,6 +105,27 @@ export interface LaunchCheckpointResult {
   /** EI-9672: set when `replaceStale:true` found the active run CONFIRMED stale and stopped
    *  it before this launch — the detail of what was stopped, for the caller's audit trail. */
   replacedStale?: ActiveCheckpointCheck;
+  /** WI-5124: which commit this launch will ACTUALLY judge, computed the same way the run
+   *  itself resolves it (quiet-cut applied) — set on every launch attempt (successful or
+   *  refused), so a caller who just committed a fix and re-fires can see, from the REPLY
+   *  alone, whether their fix is IN or EXCLUDED from this run. Absent only if the git reads
+   *  themselves failed (current_head null). */
+  willJudge?: {
+    /** The commit that will be judged (post quiet-cut). */
+    candidate: string | null;
+    /** The true tip of the integration branch BEFORE any quiet-cut step-back. */
+    tip: string | null;
+    /** Did the quiet-cut step the candidate back from the tip? */
+    quietCutApplied: boolean;
+    /** The quiet window (seconds) in effect; 0/null when disabled. */
+    quietCutSec: number | null;
+    /** One-line `sha subject` entries for commits strictly newer than `candidate` — i.e. NOT
+     *  judged by this run (your just-landed fix may be in here). Empty when quietCutApplied
+     *  is false. Best-effort (BENIGN RACE, WI-5124): computed at launch time; the detached
+     *  process re-resolves its own candidate ~1-2s later and a git-sync tick in that gap can
+     *  shift it — this is "will judge as of launch", not a guarantee. */
+    excludedCommits: string[];
+  };
 }
 
 /** Detail of a live (already-active) manual checkpoint run for THIS root, or its absence. */
@@ -188,7 +209,23 @@ function shaMatches(a: string | null | undefined, b: string | null | undefined):
   return a.startsWith(b) || b.startsWith(a);
 }
 
-function currentCheckpointCandidate(root: string, execFn: ExecSyncLike): {
+/** WI-5124: one-line `sha subject` entries for commits strictly newer than `from` up to (and
+ *  including) `to` — the sync/execFn counterpart of git-ops.ts's async `commitsBetween`, for
+ *  reporting `willJudge.excludedCommits` on a launch. `from === to` (nothing excluded) short-
+ *  circuits without a git call. */
+function commitsBetweenSync(root: string, from: string, to: string, execFn: ExecSyncLike): string[] {
+  if (from === to) return [];
+  const out = gitOutput(root, ['log', '--oneline', '--no-decorate', `${from}..${to}`], execFn);
+  return out ? out.split('\n').filter(Boolean) : [];
+}
+
+/** WI-5124: exported so `launchDetachedCheckpoint` can report `willJudge` on a fresh launch,
+ *  not just (via `checkActiveCheckpointRun`) on an already-running refusal. Same quiet-cut
+ *  resolution the run itself applies (green-checkpoint.ts's inline logic) — kept as a
+ *  SEPARATE sync/execFn-based implementation rather than importing apps/operator/lib/release's
+ *  async git-ops one: this operator-core module must not depend on apps/operator (the wrong
+ *  dependency direction — see checkpointPipelineName's comment for the same constraint). */
+export function currentCheckpointCandidate(root: string, execFn: ExecSyncLike): {
   current_head: string | null;
   current_candidate: string | null;
   quiet_cut_sec: number | null;
@@ -575,6 +612,25 @@ export function launchDetachedCheckpoint(
     opts.target === undefined ? resolveHomeGateTarget() : opts.target,
   );
 
+  // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this
+  // run will ACTUALLY judge, so the caller sees it in the REPLY instead of having to read the
+  // detached process's own log to discover their just-landed fix was quiet-cut EXCLUDED. See
+  // the LaunchCheckpointResult.willJudge doc for the benign launch-time-vs-run-time race this
+  // does not (and cannot) close.
+  const current = currentCheckpointCandidate(root, execFn);
+  const willJudge: LaunchCheckpointResult['willJudge'] = {
+    candidate: current.current_candidate,
+    tip: current.current_head,
+    quietCutApplied: Boolean(
+      current.current_head && current.current_candidate && current.current_head !== current.current_candidate,
+    ),
+    quietCutSec: current.quiet_cut_sec,
+    excludedCommits:
+      current.current_head && current.current_candidate && current.current_head !== current.current_candidate
+        ? commitsBetweenSync(root, current.current_candidate, current.current_head, execFn)
+        : [],
+  };
+
   return new Promise<LaunchCheckpointResult>((resolve) => {
     // Report the RUN's own path: it is the file that survives the next re-fire, and the
     // one an agent should quote when triaging this verdict.
@@ -583,6 +639,7 @@ export function launchDetachedCheckpoint(
       unit,
       argv,
       logPath: runLogPath,
+      willJudge,
       ...(replacedStale ? { replacedStale } : {}),
     };
     let stderr = '';

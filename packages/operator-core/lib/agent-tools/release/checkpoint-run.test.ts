@@ -33,6 +33,45 @@ describe('release:checkpoint-run', () => {
     expect(parse(result as never)).toMatchObject({ ok: true, launched: true, unit: 'papercup-green-checkpoint-manual' });
   });
 
+  it('WI-5124: warns loudly in `note` when the quiet-cut excluded fresh commits (the "my fix was silently excluded" trap)', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual.log',
+      willJudge: {
+        candidate: 'aaaaaaa',
+        tip: 'fffffff',
+        quietCutApplied: true,
+        quietCutSec: 240,
+        excludedCommits: ['fffffff my just-landed fix'],
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+    expect(b.ok).toBe(true);
+    expect(String(b.note)).toMatch(/EXCLUDED 1 commit/i);
+    expect(String(b.note)).toContain('my just-landed fix');
+  });
+
+  it('WI-5124: no exclusion warning in `note` when the quiet-cut judged the tip directly', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual.log',
+      willJudge: { candidate: 'aaaaaaa', tip: 'aaaaaaa', quietCutApplied: false, quietCutSec: 240, excludedCommits: [] },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+    expect(b.ok).toBe(true);
+    expect(String(b.note)).not.toMatch(/EXCLUDED/i);
+  });
+
   it('reports ok:false with the reason when the launch is refused', async () => {
     const launchSpy = vi.fn(async () => ({
       launched: false,

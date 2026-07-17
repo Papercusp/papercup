@@ -56,6 +56,9 @@ describe('lockAuthorityFor (harness scope — unchanged behavior)', () => {
       },
       resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'bbb' }),
       now: () => NOW,
+      // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; the
+      // argmin assertions in this file pin the rollback path explicitly.
+      useHrwRendezvous: false,
     });
     expect(r).toMatchObject({ isSelf: false, liveCount: 3 });
     expect(r.peer?.devicePubkey).toBe('aaa');
@@ -75,6 +78,7 @@ describe('lockAuthorityForHive (P-009 — Hive scope)', () => {
       },
       resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'ccc' }),
       now: () => NOW,
+      useHrwRendezvous: false, // lowest-pubkey assertion = the argmin rollback path
     });
     expect(r).toMatchObject({ isSelf: false, liveCount: 3 });
     expect(r.peer?.devicePubkey).toBe('aaa');
@@ -95,6 +99,7 @@ describe('lockAuthorityForHive (P-009 — Hive scope)', () => {
       fetchHivePresenceRows: async () => [row('zzz')],
       resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }),
       now: () => NOW,
+      useHrwRendezvous: false, // "lowest" = argmin semantics; pin the rollback path
     });
     expect(r.isSelf).toBe(true);
   });
@@ -120,7 +125,7 @@ describe('routeToAuthorityForHive (P-009 routing — local / fail-open)', () => 
     const r = await routeToAuthorityForHive(
       'h',
       { local: async () => 7 },
-      { fetchHivePresenceRows: async () => [row('aaa')], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }), now: () => NOW },
+      { fetchHivePresenceRows: async () => [row('aaa')], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }), now: () => NOW, useHrwRendezvous: false },
     );
     expect(r.via).toBe('fail-open');
     expect(r.value).toBe(7);
