@@ -3084,7 +3084,17 @@ export async function explainIssueClaimFloors(
 export async function claimNextIssueWorkItem(
   filter: ClaimNextFilter,
   _ws: string,
-  opts: { issueKinds?: readonly IssueStoreKind[]; ids?: readonly string[] } = {},
+  opts: {
+    issueKinds?: readonly IssueStoreKind[];
+    ids?: readonly string[];
+    /** WI-5258: ids the caller's spec NEGATIVELY excludes (e.g. `not:{id in [...]}` —
+     *  "already handled, skip these") — extracted by get-next.ts's tier 3 caller.
+     *  Without this, a fleet leader's exclusion clause silently vanished the moment
+     *  tier 1/2 missed and tier 3 took over: claimNextIssueWorkItem previously had no
+     *  way to see it, so the very ids a spec meant to skip came right back through the
+     *  fallback. Undefined/empty ⇒ no exclusion, unchanged behavior. */
+    excludeIds?: readonly string[];
+  } = {},
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // Scope the issue-claim to the canonical ISSUE workspace (issuesScopeWorkspace — honors the

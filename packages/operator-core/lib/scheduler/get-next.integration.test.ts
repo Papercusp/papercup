@@ -776,6 +776,42 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
 
+  // backlog-drain-clean@6 live incident (2026-07-17): a fleet leader's spec excluded 2
+  // already-handled ids via `{ not: { field:'id', op:'in', value:[...] } }` — a NEGATIVE
+  // exclusion, structurally identical in intent to `id != X` (already proven safe above)
+  // but expressed via the `not` combinator instead of the `!=` op. Before the fix,
+  // filterHasIdConstraint's `return walk(node.not)` recursed into the inner leaf and read
+  // it AS IF UNNEGATED — a bare `{field:'id', op:'in'}` reads as a positive closed-world
+  // allowlist — so this ordinary exclusion inside an otherwise wide-open kind-restricted
+  // spec was misdiagnosed as "the spec names an explicit id set", landed on the
+  // can't-safely-extract branch (positiveIdCohortIds correctly returns null for a
+  // not-wrapped leaf), and skipped tier 3 ENTIRELY — a whole 10-member issue-family fleet
+  // silently starved against a genuinely open, unbounded issue lane. This is the OPPOSITE
+  // shape of the `any` conservatism test above: a `not`-wrapped id leaf must NEVER count
+  // as a positive constraint (a negation can't express a closed-world allowlist), so tier
+  // 3 must run and serve the non-excluded item.
+  it('tier 3: a NOT-wrapped id EXCLUSION (`not:{id in [...]}`) is a negative exclusion, not a positive allowlist — tier 3 still serves the non-excluded open issue', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-excluded', { state: 'open', createdTs: 100, kind: 'bug' });
+    await seedIssue('EI-other', { state: 'open', createdTs: 200, kind: 'bug' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'not-id-exclusion',
+      revision: 1,
+      view: {
+        filter: {
+          all: [
+            { field: 'kind', op: 'in', value: ['bug'] },
+            { not: { field: 'id', op: 'in', value: ['EI-excluded'] } },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-other');
+  });
+
   // EI-11291 (drain-claim-spec-hardening-2026-07-13 P-001): a `kind`-filtered claim spec
   // must match on the `item_kind` discriminator, NEVER the legacy `kind` column (unrelated
   // free-text metadata — 'security'/'infra'/etc on a handful of rows, NULL on the rest). The
