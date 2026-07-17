@@ -66,7 +66,7 @@ vi.mock('nuqs', () => ({
   },
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkSession, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, activityLiveness, activityLivenessTitle, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkSession, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -505,7 +505,7 @@ describe('<AgentsRunningPill>', () => {
   });
 });
 
-describe('isLiveByActivity (pure — WI-1488: live = turn in last 10m OR loop armed)', () => {
+describe('activityLiveness (pure — displayed liveness from GENUINE activity, not keepalive or armed loop; owner 2026-07-17)', () => {
   const NOW = Date.parse('2026-07-01T12:00:00Z');
   const mk = (o: Partial<RosterAgent>): Pick<RosterAgent, 'lastActiveAt' | 'loopArmed'> => ({
     lastActiveAt: null,
@@ -513,26 +513,40 @@ describe('isLiveByActivity (pure — WI-1488: live = turn in last 10m OR loop ar
     ...o,
   });
 
-  it('live when a turn happened within the last 10 minutes', () => {
-    expect(isLiveByActivity(mk({ lastActiveAt: new Date(NOW - 60_000).toISOString() }), NOW)).toBe(true);
-    expect(isLiveByActivity(mk({ lastActiveAt: new Date(NOW - (LIVE_TURN_MS - 1_000)).toISOString() }), NOW)).toBe(true);
+  it('live when a turn happened within the last minute', () => {
+    expect(activityLiveness(mk({ lastActiveAt: new Date(NOW - 30_000).toISOString() }), NOW)).toBe('live');
   });
 
-  it('NOT live when the last turn is older than 10 minutes (no loop)', () => {
-    expect(isLiveByActivity(mk({ lastActiveAt: new Date(NOW - (LIVE_TURN_MS + 1_000)).toISOString() }), NOW)).toBe(false);
+  it('idle when the last turn is 1–10 minutes old', () => {
+    expect(activityLiveness(mk({ lastActiveAt: new Date(NOW - 120_000).toISOString() }), NOW)).toBe('idle');
+    expect(activityLiveness(mk({ lastActiveAt: new Date(NOW - (LIVE_TURN_MS - 1_000)).toISOString() }), NOW)).toBe('idle');
   });
 
-  it('live when a loop is armed, regardless of last-turn age', () => {
-    expect(isLiveByActivity(mk({ loopArmed: true }), NOW)).toBe(true);
-    expect(isLiveByActivity(mk({ loopArmed: true, lastActiveAt: new Date(NOW - 3_600_000).toISOString() }), NOW)).toBe(true);
+  it('stale when the last turn is older than 10 minutes', () => {
+    expect(activityLiveness(mk({ lastActiveAt: new Date(NOW - (LIVE_TURN_MS + 1_000)).toISOString() }), NOW)).toBe('stale');
   });
 
-  it('NOT live with no activity and no loop (does NOT fall back to the keepalive heartbeat)', () => {
-    expect(isLiveByActivity(mk({ lastActiveAt: null }), NOW)).toBe(false);
+  it('an ARMED LOOP does NOT force live — a loop-armed session whose last turn is hours stale reads stale (the owner-reported bug: "it thought you were still live even though you didn\'t have a turn in a few hours")', () => {
+    // Healthy loop: fresh activity ⇒ live/idle from the activity alone (no loop rescue needed).
+    expect(activityLiveness(mk({ loopArmed: true, lastActiveAt: new Date(NOW - 30_000).toISOString() }), NOW)).toBe('live');
+    // Dead/killed loop: armed but not firing ⇒ stale, NOT a false "live".
+    expect(activityLiveness(mk({ loopArmed: true, lastActiveAt: new Date(NOW - 3_600_000).toISOString() }), NOW)).toBe('stale');
+    expect(activityLiveness(mk({ loopArmed: true, lastActiveAt: null }), NOW)).toBe('stale');
   });
 
-  it('NOT live for an unparseable lastActiveAt', () => {
-    expect(isLiveByActivity(mk({ lastActiveAt: 'not-a-date' }), NOW)).toBe(false);
+  it('stale with no activity stamp (does NOT fall back to the keepalive heartbeat)', () => {
+    expect(activityLiveness(mk({ lastActiveAt: null }), NOW)).toBe('stale');
+  });
+
+  it('stale for an unparseable lastActiveAt', () => {
+    expect(activityLiveness(mk({ lastActiveAt: 'not-a-date' }), NOW)).toBe('stale');
+  });
+
+  it('activityLivenessTitle: a stalled armed loop is called out as "loop armed but not firing"', () => {
+    expect(activityLivenessTitle(mk({ loopArmed: true, lastActiveAt: new Date(NOW - 3_600_000).toISOString() }), NOW))
+      .toContain('loop armed but not firing');
+    expect(activityLivenessTitle(mk({ loopArmed: true, lastActiveAt: new Date(NOW - 30_000).toISOString() }), NOW))
+      .toContain('live');
   });
 });
 

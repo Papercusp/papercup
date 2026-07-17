@@ -30,11 +30,13 @@ import {
   type FacetSelection,
 } from '@papercusp/facets';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
-import { LivenessDot } from '@/app/coord/presence-ui';
+import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import {
+  activityLiveness,
+  activityLivenessTitle,
   agentGlyph,
   canForkSession,
   displayName,
@@ -247,6 +249,8 @@ function SearchResultRow({
   meta,
   result,
   query,
+  liveness,
+  livenessTitle,
   onInspect,
 }: {
   title: string;
@@ -255,6 +259,13 @@ function SearchResultRow({
   meta: string;
   result: SearchSessionResult;
   query: string;
+  /** The liveness dot for this matched session — activity-derived for an ACTIVE
+   *  result (a killed/idle session reads idle/stale, never a false "live"), and
+   *  always 'stale' for an INACTIVE (ended) one. The search results used to show
+   *  no liveness at all (owner-reported 2026-07-17: "it didn't show that you were
+   *  live in the search results page"). */
+  liveness: Liveness;
+  livenessTitle?: string;
   onInspect: (t: InspectTarget) => void;
 }) {
   const openHit = (hit: SearchTurnHit) => {
@@ -285,7 +296,10 @@ function SearchResultRow({
           if ((e.key === 'Enter' || e.key === ' ') && top) { e.preventDefault(); openHit(top); }
         }}
       >
-        <span className="pc-agents-sessions__kind" aria-hidden>{result.sourceKind}</span>
+        <span className="pc-agents-roster__live">
+          <LivenessDot liveness={liveness} size={7} title={livenessTitle} />
+          <span className="pc-agents-sessions__kind" aria-hidden>{result.sourceKind}</span>
+        </span>
         <span className="pc-agents-roster__glyph" style={color ? { color } : undefined} aria-hidden>{glyph}</span>
         <span className="pc-agents-roster__name" style={color ? { color } : undefined}>{title}</span>
         <span className="pc-agents-roster__doing">{meta}</span>
@@ -626,6 +640,8 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
                     meta={a.intent || a.currentPlanSlug || '—'}
                     result={res}
                     query={query}
+                    liveness={activityLiveness(a, nowMs)}
+                    livenessTitle={activityLivenessTitle(a, nowMs)}
                     onInspect={setInspecting}
                   />
                 );
@@ -654,6 +670,8 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
                   meta={meta}
                   result={s}
                   query={query}
+                  liveness="stale"
+                  livenessTitle={endedAgo || 'ended session'}
                   onInspect={setInspecting}
                 />
               );

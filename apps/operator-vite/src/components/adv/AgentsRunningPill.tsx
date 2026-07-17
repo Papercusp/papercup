@@ -18,6 +18,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { LivenessDot } from '@/app/coord/presence-ui';
+import { LIVE_MS, type Liveness } from '@papercusp/operator-core/lib/liveness';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
 import { InactiveSessionsSection, SessionSearchResults, SessionsSearchInput } from './AgentsPillSessions';
@@ -202,23 +203,54 @@ export function fmtCompactAge(iso: string | null | undefined, nowMs: number): st
 export const LIVE_TURN_MS = 600_000;
 
 /**
- * Whether an agent is "live" for this dropdown, per the owner's definition: it took
- * a turn within the last 10 minutes (lastActiveAt — GENUINE activity, not the 60s
- * keepalive heartbeat), OR an engine loop is armed (it will keep working on a
- * cadence). This is deliberately NOT the heartbeat-based `liveness` (which is
- * keepalive-polluted and effectively means "process alive"). Pure — exported for
- * tests.
+ * The liveness to DISPLAY for a running agent — derived from GENUINE activity
+ * (`lastActiveAt`, a real turn / tool dispatch), never the 60s keepalive
+ * heartbeat and never a merely-armed loop:
+ *   · live  — took a turn within the last minute (LIVE_MS): actively working.
+ *   · idle  — took a turn within LIVE_TURN_MS (10m): alive but between turns /
+ *             mid-reasoning, or a loop waiting for its next wake.
+ *   · stale — no genuine turn in LIVE_TURN_MS: NOT live — a wedged/killed session,
+ *             or an armed loop that has stopped firing.
+ *
+ * `loopArmed` is deliberately NOT a liveness signal here. A HEALTHY loop keeps
+ * `lastActiveAt` fresh on its own cadence (so it reads live/idle without help);
+ * an armed-but-not-firing loop is exactly the warm-dead session this must report
+ * as stale. The old WI-1488 "loop armed ⇒ live" short-circuit painted a KILLED
+ * loop-armed session green — owner-reported 2026-07-17: "it thought you were
+ * still live even though you didn't have a turn in a few hours".
+ *
+ * A missing/blank/unparseable `lastActiveAt` (older/pending rows that never
+ * stamped it) is `stale`, never a keepalive-derived "live" (the owner's standing
+ * rule — the keepalive heartbeat is not evidence of taking turns). Pure —
+ * exported for tests.
  */
-export function isLiveByActivity(
+export function activityLiveness(
+  a: Pick<RosterAgent, 'lastActiveAt'>,
+  nowMs: number,
+): Liveness {
+  const iso = a.lastActiveAt ?? null;
+  if (!iso) return 'stale';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return 'stale';
+  const age = nowMs - t;
+  if (age < LIVE_MS) return 'live';
+  if (age < LIVE_TURN_MS) return 'idle';
+  return 'stale';
+}
+
+/** The tooltip for an agent's activity-liveness dot — the honest state plus,
+ *  when a loop is armed, whether it is still firing (fresh) or has stalled
+ *  (stale). Pure — exported for tests. */
+export function activityLivenessTitle(
   a: Pick<RosterAgent, 'lastActiveAt' | 'loopArmed'>,
   nowMs: number,
-): boolean {
-  if (a.loopArmed) return true;
-  const iso = a.lastActiveAt ?? null;
-  if (!iso) return false;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return false;
-  return nowMs - t < LIVE_TURN_MS;
+): string {
+  const state = activityLiveness(a, nowMs);
+  if (state === 'live') return `live — took a turn in the last minute${a.loopArmed ? ' · loop armed' : ''}`;
+  if (state === 'idle') return `idle — no turn in the last minute${a.loopArmed ? ' · loop armed' : ''}`;
+  return a.loopArmed
+    ? 'stale — no turn in over 10m (loop armed but not firing)'
+    : 'stale — no turn in over 10m';
 }
 
 /** Distinct machines represented in the roster — local machines by their label,
@@ -893,15 +925,9 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                     <ThinkingDot size={7} title={`${displayName(a, lex)} — thinking`} />
                   ) : (
                     <LivenessDot
-                      liveness={isLiveByActivity(a, nowMs) ? 'live' : 'idle'}
+                      liveness={activityLiveness(a, nowMs)}
                       size={7}
-                      title={
-                        isLiveByActivity(a, nowMs)
-                          ? a.loopArmed
-                            ? 'live — loop armed'
-                            : 'live — took a turn in the last 10m'
-                          : 'idle — no turn in the last 10m'
-                      }
+                      title={activityLivenessTitle(a, nowMs)}
                     />
                   )}
                   {fmtCompactAge(a.lastActiveAt ?? a.heartbeatAt, nowMs) ? (
@@ -992,7 +1018,7 @@ function AgentDetailStrip({
       <div className="pc-agents-roster__detail-head" style={color ? { color } : undefined}>
         {agentGlyph(agent)} <strong>{displayName(agent, lex)}</strong>
         {agent.fleetSlug ? <span className="pc-agents-roster__detail-fleet"> · {agent.fleetSlug}</span> : null}
-        <span className="pc-agents-roster__detail-live"> · {isLiveByActivity(agent, nowMs) ? (agent.loopArmed ? 'live (loop armed)' : 'live') : 'idle'}</span>
+        <span className="pc-agents-roster__detail-live" title={activityLivenessTitle(agent, nowMs)}> · {activityLiveness(agent, nowMs)}{agent.loopArmed ? ' (loop armed)' : ''}</span>
         {agent.thinking ? (
           <span className="pc-agents-roster__detail-thinking" style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 4, color: '#6aa84f' }}>
             <ThinkingDot size={6} /> thinking
