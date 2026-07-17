@@ -4648,11 +4648,17 @@ export function ccHookEnrollment(settingsText, { event, hookName, scriptExists }
 }
 
 /** Back-compat thin wrapper — same signature/behavior pre-generalization; the
- *  pinned unit tests (cc-coord-hook-enrollment.test.ts) import this name. */
+ *  pinned unit tests (cc-coord-hook-enrollment.test.ts) import this name.
+ *  EI-11405 (coordination-hook-rpc-fanout-collapse-2026-07-16): the standalone
+ *  posttooluse-coord-inbox.sh hook this used to probe for is RETIRED — its
+ *  coord:inbox mid-turn delivery is now folded into posttooluse-activity-
+ *  report.sh's own round trip (delta-aware `hook_bundle`), so THAT is the
+ *  script whose enrollment now gates "is this session deaf to mid-turn coord
+ *  mail". */
 export function ccCoordHookEnrollment(settingsText, { scriptExists } = {}) {
   return ccHookEnrollment(settingsText, {
     event: 'PostToolUse',
-    hookName: 'posttooluse-coord-inbox.sh',
+    hookName: 'posttooluse-activity-report.sh',
     scriptExists,
   });
 }
@@ -4721,7 +4727,7 @@ function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
 function ensureCcCoordHookEnrollment(env) {
   ensureCcHookEnrollment(env, {
     event: 'PostToolUse',
-    hookName: 'posttooluse-coord-inbox.sh',
+    hookName: 'posttooluse-activity-report.sh',
     label: 'COORD-INBOX HOOK',
     degradedNote:
       'THIS SESSION WILL BE DEAF TO MID-TURN COORD MAIL — peer messages will only land at session start / orient / an explicit wake, and the fleet sees it flagged coordHook:missing in coord:presence',

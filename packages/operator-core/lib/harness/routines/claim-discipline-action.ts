@@ -137,11 +137,11 @@ export function filterStoreBackedTargets<T extends { agentId: string; declaredPl
 }
 
 /**
- * EI-13286: terminal completion releases the final plan-item claim before the
- * agent's next turn clears its presence declaration. That is a healthy finish,
- * not an unclaimed lane. Suppress only an AFFIRMATIVE all-items-terminal read;
- * a missing/failed lookup stays eligible so detector failures cannot hide real
- * claim-discipline misses.
+ * EI-13286: terminal completion releases a plan-item claim before the agent's
+ * next turn clears or replaces its presence declaration. That is a healthy
+ * convergence window, not an abandoned lane. Suppression is bounded, tied to
+ * the same owner+plan, and requires completion after the current declaration;
+ * missing evidence fails open so detector faults cannot hide a real miss.
  */
 export function recentCompletionKey(workspaceId: string, agentId: string, planSlug: string): string {
   return `${workspaceId}::${agentId}::${planSlug}`;

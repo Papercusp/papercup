@@ -17,9 +17,9 @@
  *   - TTL 5 min (env PAPERCUSP_COORD_LADDER_TTL_MS, clamped >=60s).
  *   - "Directed" = explicit ownerId sends ONLY — never a broadcast or
  *     `@audience` selector (no `audience` stamp; mirrors unanswered-directed's
- *     definition), sender != recipient, and never a `system:%` sender (system
- *     notices are periodic/bulk with their own delivery machinery, and the
- *     ladder's own marker message must not re-trigger the ladder).
+ *     definition), sender != recipient, and never a machine-authored sender
+ *     (watchers/sweeps/system notices have their own delivery machinery and
+ *     cannot receive a reply; the ladder's own marker must not re-trigger it).
  *   - Storm cap: 1 auto-wake per recipient per 10 min (env
  *     PAPERCUSP_COORD_LADDER_STORM_MS, clamped >=60s). The wake is never
  *     delivered MID-turn — wakeRecipients fires the standing await, which the

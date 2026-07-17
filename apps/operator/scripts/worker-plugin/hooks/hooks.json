@@ -21,10 +21,6 @@
       },
       {
         "matcher": "*",
-        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/posttooluse-coord-inbox.sh" }]
-      },
-      {
-        "matcher": "*",
         "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/posttooluse-activity-report.sh" }]
       }
     ]

@@ -39,11 +39,11 @@ function commands(section: Array<{ hooks: Array<{ command: string }> }> | undefi
 }
 
 describe('papercusp-worker hooks.json', () => {
-  it('wires the lock + coord + activity-bridge PostToolUse hooks', () => {
+  it('wires the lock + activity-bridge (coord-folding, EI-11405) PostToolUse hooks', () => {
     const post = commands(hooks.hooks.PostToolUse);
     expect(post.some((c) => c.includes('posttooluse-locks-release.sh'))).toBe(true);
-    expect(post.some((c) => c.includes('posttooluse-coord-inbox.sh'))).toBe(true);
-    // The headline: the cross-CLI activity bridge.
+    // The headline: the cross-CLI activity bridge, which also folds in the
+    // coord:inbox PUSH (the separate posttooluse-coord-inbox.sh is retired).
     expect(post.some((c) => c.includes('posttooluse-activity-report.sh'))).toBe(true);
   });
 
