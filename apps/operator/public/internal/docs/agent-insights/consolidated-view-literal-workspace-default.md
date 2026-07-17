@@ -53,6 +53,26 @@ scans **raw** text, unlike its siblings: these `ALTER`s live inside a per-schema
 `DO $$ … $$` loop that `stripSqlBodies` removes, so a stripped scan would pass —
 that false green is the whole bug.
 
+### Migrations are only half of it — the runtime scaffolder clones the trap
+
+**Fixing the migrations is not enough, and this is the part that will bite you.**
+`packages/operator-core/lib/scaffold-harness-schema.ts` builds these same views at
+**runtime** for every NEW harness, and it carried five copies of the same literal
+under a comment reading *"matches migration 116"*. So a migration that fixes every
+existing schema still **decays one new harness at a time** — each newly created
+harness is born with the bug. The migration lint scans `libs/papercusp/libs/db/sql/`
+only, so it is structurally blind to that file; it has its own source-text guard in
+`scaffold-harness-schema.test.ts`.
+
+> **Rule.** When you fix schema DDL, grep for a **runtime** provisioner that emits
+> the same DDL — `grep -rn "ALTER COLUMN <col> SET DEFAULT" --include=*.ts`. A
+> migration fixes the past; the scaffolder decides the future. Fix both or the
+> class comes back.
+
+Editing that file has a sharp edge: its DDL lives inside a **JS template literal**,
+so a **backtick** in a comment terminates the string and breaks the build with a
+confusing `TS1005`. Apostrophes are fine; backticks are not.
+
 ### The net that already existed
 
 `harness_shared.fill_workspace_id_from_projects()` — a `BEFORE INSERT` trigger that

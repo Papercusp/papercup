@@ -111,3 +111,34 @@ describe('ensureFleetMemberWakeAuto — fleet-member wake immunity (WI-2185)', (
     expect(kv.store.get('wake_mode:agent:s-x')).toBe('auto');
   });
 });
+
+describe('EI-597 idempotent-skip — repeated set-to-same-value skips the write', () => {
+  it('setDefaultWakeMode is a no-op INSERT/UPDATE when already at the target', async () => {
+    await setDefaultWakeMode('manual');
+    expect(kv.sql).toHaveBeenCalledTimes(1); // the one real write
+    await setDefaultWakeMode('manual'); // repeat — already manual
+    expect(kv.sql).toHaveBeenCalledTimes(2); // +1 read, NO extra INSERT/UPDATE
+    expect(await getDefaultWakeMode()).toBe('manual');
+  });
+  it('setDefaultWakeMode still writes when the value actually changes', async () => {
+    await setDefaultWakeMode('manual');
+    await setDefaultWakeMode('auto');
+    expect(await getDefaultWakeMode()).toBe('auto');
+  });
+  it('setWakeMode is a no-op when the per-agent override already matches', async () => {
+    await setWakeMode('s-1', 'manual');
+    const callsAfterFirst = kv.sql.mock.calls.length;
+    await setWakeMode('s-1', 'manual'); // repeat — already manual
+    // Only a read was added, not another INSERT.
+    const insertCalls = kv.sql.mock.calls.filter((c) => (c[0] as TemplateStringsArray).join('§').includes('INSERT'));
+    expect(insertCalls.length).toBe(1);
+    expect(kv.sql.mock.calls.length).toBeGreaterThan(callsAfterFirst); // the read still happened
+    expect(await getWakeModeOverride('s-1')).toBe('manual');
+  });
+  it('a HAMMERING caller (EI-597 repro shape) settles after the first write with zero further writes', async () => {
+    // Simulates the runaway pattern: many rapid identical set calls.
+    for (let i = 0; i < 50; i++) await setDefaultWakeMode('auto'); // already auto (the default) every time
+    const insertCalls = kv.sql.mock.calls.filter((c) => (c[0] as TemplateStringsArray).join('§').includes('INSERT'));
+    expect(insertCalls.length).toBe(0); // never wrote — already at target from the start
+  });
+});

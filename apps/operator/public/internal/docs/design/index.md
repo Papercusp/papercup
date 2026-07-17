@@ -10,6 +10,17 @@ keyboard nav, focus management, scroll lock, and portal positioning
 correctly. **Do not hand-roll modals, dropdowns, tabs, tooltips, or
 checkboxes.** Reach for the wrappers in `app/harness/` first.
 
+The `design-phase:get_design_spec` / `design-phase:list_tokens` MCP tools currently
+resolve an **empty DESIGN\_SPEC** and a stale **light-mode `react-tailwind` palette**
+(`packages/*/design/tokens/base.json`) — neither matches this app. The operator UI
+is themed with **CSS custom properties** (`var(--accent)`, `var(--fg-mute)`, …) +
+hand-authored `pc-*` classes (see [design tokens](/internal/docs/design/tokens)),
+not Tailwind. **For operator UI work, design-first means this page + the
+[tokens page](/internal/docs/design/tokens) — not the `design-phase:*` IR/validate/lint
+pipeline**, until that tooling is either pointed at the real `design-tokens/*.tokens.json`
+source or explicitly re-scoped to new/standalone react-tailwind surfaces. See EI-604
+for the full gap + proposed remedies.
+
 ## Why we have a library guide
 
 Hand-rolled UI controls (a `<div role="dialog">`, a `<select>` styled to look custom, a `title=` attribute used as a tooltip) consistently break in subtle ways: focus traps leak, ESC handling races with other listeners, scroll locks miss iOS, screen readers narrate the wrong thing, the dark theme fights the OS-native control. We've seen all of those in this codebase.

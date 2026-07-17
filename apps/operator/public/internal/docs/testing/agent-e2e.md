@@ -1801,6 +1801,23 @@ loadavg 9.5–48.6):
   `user_message | quiet_wait_resume | open_canvas | user_says_ready |
   user_welcomed | continue` — anything else streams a single
   `event: error` frame (`invalid_args`) and closes.
+* **Teardown hygiene: `pkill -f <pattern>` self-matches your own shell,
+  and over-kills a shared WM.** `pkill -f "openbox"` / `pgrep -f 'Xvfb
+  :96'` match against `/proc/<pid>/cmdline` for EVERY process — including
+  the very shell invoking the command, if that command's own text
+  contains the pattern (it will; you just typed it). SIGTERM'ing your own
+  cleanup shell mid-teardown shows up as an unexplained exit 144. Worse,
+  `pkill -f openbox` is not scoped to *your* Xvfb session — it kills every
+  openbox WM on the box, including a peer e2e agent's. Kill by the
+  **recorded PID** instead (per §15.4's own `/tmp/tauri-xvfb.pid` /
+  `/tmp/openbox90.pid` / `/tmp/xvfb90.pid` convention —
+  `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid)
+  2>/dev/null`), or match the exact process by name + cmdline instead of
+  a substring:
+  `for p in $(pgrep -x Xvfb); do tr '\0' ' ' </proc/$p/cmdline | grep -q
+  ' :96 ' && kill -TERM $p; done`. Never `pkill -f <pattern>` from a
+  command whose own text contains `<pattern>`; never broad-match a
+  shared WM/binary by bare name. (EI-606, 2026-06-14.)
 
 ### 15.4 Xvfb / xdotool / OCR fallback cookbook
 

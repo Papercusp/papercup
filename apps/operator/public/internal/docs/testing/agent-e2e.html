@@ -3211,6 +3211,20 @@ Xvfb display: <code dir="auto">WID=$(DISPLAY=:9X xdotool search --name Papercusp
 <code dir="auto">/api/agent-mcp/operator-converse</code> directly, <code dir="auto">trigger</code> must be one of
 <code dir="auto">user_message | quiet_wait_resume | open_canvas | user_says_ready | user_welcomed | continue</code> — anything else streams a single
 <code dir="auto">event: error</code> frame (<code dir="auto">invalid_args</code>) and closes.</li>
+<li><strong>Teardown hygiene: <code dir="auto">pkill -f &#x3C;pattern></code> self-matches your own shell,
+and over-kills a shared WM.</strong> <code dir="auto">pkill -f "openbox"</code> / <code dir="auto">pgrep -f 'Xvfb :96'</code> match against <code dir="auto">/proc/&#x3C;pid>/cmdline</code> for EVERY process — including
+the very shell invoking the command, if that command’s own text
+contains the pattern (it will; you just typed it). SIGTERM’ing your own
+cleanup shell mid-teardown shows up as an unexplained exit 144. Worse,
+<code dir="auto">pkill -f openbox</code> is not scoped to <em>your</em> Xvfb session — it kills every
+openbox WM on the box, including a peer e2e agent’s. Kill by the
+<strong>recorded PID</strong> instead (per §15.4’s own <code dir="auto">/tmp/tauri-xvfb.pid</code> /
+<code dir="auto">/tmp/openbox90.pid</code> / <code dir="auto">/tmp/xvfb90.pid</code> convention —
+<code dir="auto">kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid) 2>/dev/null</code>), or match the exact process by name + cmdline instead of
+a substring:
+<code dir="auto">for p in $(pgrep -x Xvfb); do tr '\0' ' ' &#x3C;/proc/$p/cmdline | grep -q ' :96 ' &#x26;&#x26; kill -TERM $p; done</code>. Never <code dir="auto">pkill -f &#x3C;pattern></code> from a
+command whose own text contains <code dir="auto">&#x3C;pattern></code>; never broad-match a
+shared WM/binary by bare name. (EI-606, 2026-06-14.)</li>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="154-xvfb--xdotool--ocr-fallback-cookbook">15.4 Xvfb / xdotool / OCR fallback cookbook</h3><a class="sl-anchor-link" href="#154-xvfb--xdotool--ocr-fallback-cookbook"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.4 Xvfb / xdotool / OCR fallback cookbook”</span></a></div>
 <p>The bridge covers 99% of cases. Reach for this stack only when:</p>

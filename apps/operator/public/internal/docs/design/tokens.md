@@ -14,6 +14,11 @@ custom themes** swap the same variables (see [Themes](#themes--frost--black--cus
 This page is the reference for what exists, **the contract agents must follow**,
 and how to change it.
 
+`design-phase:list_tokens` reads a stale, disconnected light-mode `react-tailwind`
+palette — it does **not** reflect the tokens on this page. This page (the
+`design-tokens/*.tokens.json` → `_semantic.css` pipeline below) is the operator's
+real, live token system. Use this page for any operator UI token work.
+
 Components must reference a **semantic `var(--…)` token**, never a brand
 primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`,
 `#7dd3fc`, `#bae6fd`, `rgba(125, 211, 252, …)`, …). A theme can only swap the

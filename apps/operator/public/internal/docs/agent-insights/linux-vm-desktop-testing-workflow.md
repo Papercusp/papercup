@@ -27,9 +27,12 @@ Layout: `images/golden.qcow2` (the provisioned desktop image) +
   for pixels, slirp `hostfwd` for SSH — the same box convention as the Mac/Windows
   build VMs. It no-ops if the instance is already running.
 * **Per-instance ports** (`ports_for()` in `common.sh`): instance `clean` →
-  **SSH `2224`, SPICE `127.0.0.1:5932`, operator-forward `3072`**. (`fed-a`/`fed-b`
+  **SSH `2224`, SPICE `127.0.0.1:5932`, operator-forward `3090`**. (`fed-a`/`fed-b`
   are +1/+2 for federation runs, each on a distinct slirp subnet so hyperswarm
-  holepunching doesn't dial itself.)
+  holepunching doesn't dial itself.) The operator-forward base moved off `3072`→`3090`
+  (EI-495): `3072-3074` sat inside the green release operator's own `:3070`/`:3073`
+  listener neighborhood, so fed-a's default forward (`3073`) collided with it and
+  FATAL'd `vm-federation.sh` boots whenever a green operator was running.
 * **SSH**: user **`tester`** (`VM_USER` default), key
   **`~/.ssh/papercup-vm-linux`**. One-liner:
   `ssh -i ~/.ssh/papercup-vm-linux -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 2224 tester@127.0.0.1`

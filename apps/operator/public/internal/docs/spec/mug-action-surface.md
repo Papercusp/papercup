@@ -154,10 +154,10 @@ lives in `action-surface.ts`.
 | Dismiss / resolve an inbox message            | inbox-triage        | rev       | system    | `messages:dismiss`                            | covered  |
 | Resolve an escalation                         | escalations         | rev       | system    | `coord:resolve`                               | covered  |
 | Answer an agent question                      | escalations         | rev       | system    | `conversations:answer`                        | covered  |
-| Answer a `ctx.askUser` card                   | escalations         | rev       | owner     | `conversations:answer`                        | partial  |
+| Answer a `ctx.askUser` card                   | escalations         | rev       | owner     | `coord:resolve`, `coord:escalations`          | covered  |
 | Ask another pot / request work                | escalations         | rev       | system    | `pot:ask`, `pot:request_work`                 | covered  |
 | Ratify a `needs-human` plan item              | plan-governance     | rev       | owner     | `plans:set-status`                            | covered  |
-| Ratify a `D-NNN` decision                     | plan-governance     | rev       | owner     | `plans:add-decision`                          | partial  |
+| Ratify a `D-NNN` decision                     | plan-governance     | rev       | owner     | `plans:add-decision`, `plans:ratify-decision` | covered  |
 | Set plan status / Now / priority              | plan-governance     | rev       | system    | `plans:set-plan-status`, `plans:set-now`      | covered  |
 | Promote plan → features / waves               | plan-governance     | rev       | system    | `plans:promote`                               | covered  |
 | Convert plan item → work-item                 | plan-governance     | rev       | system    | `plan_items:convert`                          | covered  |
@@ -171,7 +171,7 @@ lives in `action-surface.ts`.
 | Approve / dispatch auto-implement             | implementation      | rev       | system    | `work_items:create`, `improvements:resolve`   | partial  |
 | Judge a gym candidate                         | review-merge        | rev       | system    | `gym:judge`                                   | covered  |
 | Record a design reviewer verdict              | review-merge        | rev       | system    | `design-phase:record_review`                  | covered  |
-| **Approve a code review / merge**             | review-merge        | rev       | system    | —                                             | **gap**  |
+| Approve a code review / merge                 | review-merge        | rev       | system    | `review:approve`, `merge:approve`             | covered  |
 | Approve / run a deploy                        | release-deploy      | **irrev** | owner     | `deploy:harness`                              | covered  |
 | Tear down a deploy target                     | release-deploy      | **irrev** | owner     | `deploy:teardown`                             | covered  |
 | Promote staging → green                       | release-deploy      | **irrev** | owner     | — (automation)                                | partial  |
@@ -205,20 +205,23 @@ genuine **gap** (human-only, no Mug verb) and the notable **partials** are filed
 as build items so the coverage invariant can eventually go green for the whole
 surface:
 
-* **`review.approve-code-review-merge`** *(gap)* — code-review approval +
-  merge-to-staging is handled by pipeline roles + the git-sync routine +
-  merge-resolver; there is no Mug-accessible "approve review / approve merge"
-  verb. Until one exists, **review & merge** is observable but not a governable
-  category.
-* **`plan.ratify-decision`** *(partial)* — `plans:add-decision` authors a decision
-  but ratification is encoded as prose ("RATIFIED by owner"); there is no explicit
-  ratification state/verb to distinguish propose vs ratify.
-* **`escalations.answer-card`** *(partial)* — answering a `ctx.askUser` card routes
-  through conversations / the owner-decision-queue; there is no first-class
-  "answer card N" verb keyed to the card id.
 * **`implementation.dispatch-auto-implement`** *(partial)* — driven by the
   promote-policy + improvement triage rather than one owner-facing
   "approve this implementation" verb.
+
+**EI-458 (2026-07-17)** closed the other two P-016 partials — behavior-neutral,
+code-only refinements (B-12 still ungates nothing new):
+
+* **`plan.ratify-decision`** → **covered**. `plans:ratify-decision` appends an
+  idempotent `Ratified: <by> on <date>` line to the decision body, so "propose"
+  (`plans:add-decision`) and "ratify" are now separately governable actions
+  instead of free prose.
+* **`escalations.answer-card`** → **covered**. Re-audit found `coord:resolve`
+  already realizes this: `chat:ask_choice`'s `onCard` hook links the escalation
+  to the live card (`cardCorrelationId`/`cardWorkspaceId`), `coord:escalations`
+  surfaces that id, and `coord:resolve { msg_id, choice }` both records the
+  ledgered `escalation_resolved` event AND resolves the SAME live card
+  (`card-link.ts`'s `unblockLinkedCard`) in one write — no new verb was needed.
 
 `release.promote-to-green` (partial) and `credentials.auth-flag` (partial) are
 **intentional** non-gaps: promotion to green is automation-only by design, and

@@ -1430,6 +1430,51 @@ test('stats().smoothing reports engaged:false when smoothRpm is OFF (config visi
   assert.equal(entry?.effectivePaceMs, 0, 'no smoothing floor → no enforced pace (free burst, the pre-fix behavior)');
 });
 
+test('stats().pausedActuallyEnforced + unified.rejectedActuallyEnforced are LIVE, not frozen — a lapsed pause/window reads as NOT enforced even though the raw fields still show the old values (EI-535 gateway-healthz-stale-latch fix)', () => {
+  // The bug this guards: /healthz's HTTP status code already re-checks pausedUntil > Date.now() live, but
+  // any OTHER reader of the JSON body (/stats, /admin/stats, a direct incident curl) got only the raw
+  // pausedUntil epoch-ms + the last-observed `unified.rejected` — with NO way to tell "still enforced" from
+  // "long lapsed, just never got a fresh header to clear it" on an idle account. These derived fields make
+  // that unambiguous without the reader doing its own clock math.
+  const acct: ActiveAccount = { accountId: 'lapsed-acct', token: async () => 'T' };
+  const pool: AccountPool = { active: () => acct, peek: () => acct, onExhausted: () => null };
+  const governor = new RateLimitGovernor({ maxConcurrent: 20 });
+  const now = Date.now();
+  governor.state.pausedUntil = now - 60_000; // lapsed a minute ago
+  governor.state.unified = { window: '5h', utilization: 1.02, rejected: true, resetAt: now - 30_000, observedAt: now - 4 * 60 * 60_000 }; // window "reset" 30s ago; last actually OBSERVED 4h ago (the idle-fleet scenario)
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+    governorFor: () => governor,
+  });
+  const s = gw.stats();
+  assert.equal(s.pausedUntil, now - 60_000, 'raw pausedUntil is untouched (still whatever was last recorded)');
+  assert.equal(s.pausedActuallyEnforced, false, 'but it is SELF-DESCRIBING: a lapsed deadline reads as not-enforced without the caller comparing to Date.now() itself');
+  assert.equal(s.unified?.rejected, true, 'raw rejected flag is untouched — the frozen-latch value the bug report observed');
+  assert.equal(s.unified?.rejectedActuallyEnforced, false, 'but the TRUSTWORTHY verdict says the window this reading described has already reset — not still rejected');
+  assert.ok((s.unified?.staleAsOfMs ?? 0) >= 4 * 60 * 60_000, 'staleAsOfMs reports how old the underlying reading actually is (~4h here), so a consumer can judge trust for themselves too');
+});
+
+test('stats().pausedActuallyEnforced + unified.rejectedActuallyEnforced read TRUE for a genuinely live pause/rejection (the non-stale control case)', () => {
+  const acct: ActiveAccount = { accountId: 'live-acct', token: async () => 'T' };
+  const pool: AccountPool = { active: () => acct, peek: () => acct, onExhausted: () => null };
+  const governor = new RateLimitGovernor({ maxConcurrent: 20 });
+  const now = Date.now();
+  governor.state.pausedUntil = now + 60_000;
+  governor.state.unified = { window: '5h', utilization: 1.02, rejected: true, resetAt: now + 60_000, observedAt: now };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+    governorFor: () => governor,
+  });
+  const s = gw.stats();
+  assert.equal(s.pausedActuallyEnforced, true, 'a still-future pausedUntil IS actually enforced');
+  assert.equal(s.unified?.rejectedActuallyEnforced, true, 'a still-future resetAt means the rejected verdict is still live');
+  assert.equal(s.unified?.staleAsOfMs, 0, 'just observed → zero staleness');
+});
+
 test('per-account egress isolation: each pinned account routes via its OWN dispatcher; cached per-account; localAddress builds an Agent (B-GW-3 / per-account IP routing, D-003)', async () => {
   // The capacity win: each Max subscription egresses from its OWN IP, so Anthropic's per-IP opus
   // throttle becomes per-ACCOUNT (rotation works + ~8× aggregate RPM). Proof, in one request flow:

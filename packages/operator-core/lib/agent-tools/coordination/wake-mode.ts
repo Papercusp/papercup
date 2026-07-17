@@ -62,7 +62,21 @@ export async function getDefaultWakeMode(): Promise<WakeMode> {
   return coerceWakeMode(await readSetting(DEFAULT_KEY)) ?? DEFAULT_WAKE_MODE;
 }
 
+/**
+ * EI-597 idempotent-skip: a caller (or a caller LOOP — the runaway 'palette'
+ * pattern that hammered this ~37×/min for hours in the 2026-06-18 decision-ledger,
+ * ~490 rows/hour of pure pollution + wasted PG writes) may repeatedly set the mode
+ * to the value it's ALREADY at. Skip the write (and its `operator_settings` UPDATE)
+ * when the stored value already equals the target — a plain read-then-maybe-write,
+ * default-preserving for every existing caller since the observable result
+ * (getDefaultWakeMode() afterwards) is identical either way. This does not by
+ * itself silence the decision-ledger row for the *call* (that's logged at the
+ * dispatch chokepoint per governed call, not per mutation) — it hardens the STORE
+ * against a hammering caller wasting real PG writes, and is a no-regret change
+ * regardless of whether the specific caller is ever pinned down.
+ */
 export async function setDefaultWakeMode(mode: WakeMode): Promise<void> {
+  if ((await getDefaultWakeMode()) === mode) return;
   await writeSetting(DEFAULT_KEY, mode, 'Global default agent wake mode (hive-agent-tabs P-015 / D-005).');
 }
 
@@ -71,7 +85,9 @@ export async function getWakeModeOverride(ownerId: string): Promise<WakeMode | n
   return coerceWakeMode(await readSetting(agentKey(ownerId)));
 }
 
+/** EI-597 idempotent-skip (see setDefaultWakeMode above) — same reasoning, per-agent. */
 export async function setWakeMode(ownerId: string, mode: WakeMode, description?: string): Promise<void> {
+  if ((await getWakeModeOverride(ownerId)) === mode) return;
   await writeSetting(agentKey(ownerId), mode, description ?? `Per-agent wake mode for ${ownerId} (hive-agent-tabs P-015).`);
 }
 
