@@ -25,7 +25,7 @@
  * deep-linkable and agent-driveable (ui:get_state / ui:dispatch), per the
  * nuqs-by-default policy.
  */
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQueryState, useQueryStates, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { MessageCircle } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
@@ -135,6 +135,11 @@ export default function InboxPane({ onDiscussInChat }: {
     [items, chatOwner],
   );
 
+  // deterministic-status-cards-2026-07-17 P-003: when a curator card's drill-in
+  // deep-links a selection (opcis), scroll that row into view once it renders.
+  const selectedRowRef = useRef<HTMLLIElement | null>(null);
+  const lastScrolledSel = useRef<string | null>(null);
+
   const visible = useMemo(() => {
     const filtered = items.filter((i) => {
       const tier = effectiveTier(i);
@@ -151,6 +156,21 @@ export default function InboxPane({ onDiscussInChat }: {
       )
       .map((x) => x.item);
   }, [items, filter]);
+
+  // Scroll a freshly deep-linked selection into view once its row is in the DOM.
+  // Guarded so it fires only when `sel` CHANGES to a new value (not on every
+  // background list refresh) — otherwise it would yank the user back after they
+  // scroll away. `visible` in the deps retries after the async items load.
+  useEffect(() => {
+    if (!sel) {
+      lastScrolledSel.current = null;
+      return;
+    }
+    if (sel !== lastScrolledSel.current && selectedRowRef.current) {
+      selectedRowRef.current.scrollIntoView({ block: 'nearest' });
+      lastScrolledSel.current = sel;
+    }
+  }, [sel, visible]);
 
   return (
     <div className="op-inbox" data-testid="inbox-tab">
@@ -188,7 +208,11 @@ export default function InboxPane({ onDiscussInChat }: {
             .filter(Boolean)
             .join(' · ');
           return (
-            <li key={i.id} className={`op-inbox__row${isSel ? ' is-selected' : ''}`}>
+            <li
+              key={i.id}
+              ref={isSel ? selectedRowRef : undefined}
+              className={`op-inbox__row${isSel ? ' is-selected' : ''}`}
+            >
               {/* A `div` (not `button`) — the row now nests a real chat-launch
                   <button>, and nested interactive elements are invalid HTML /
                   silently mis-parsed by the browser. Same click+keyboard

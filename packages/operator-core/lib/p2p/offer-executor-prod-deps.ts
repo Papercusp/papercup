@@ -9,55 +9,40 @@
  * lives next to what it wires INTO (capability-envelope/policy.ts,
  * fleet/operator-spawn.ts) rather than inside the pure execution engine.
  *
- * Sequencing note (leader decision, WI-1937, msg mre4g13q 2026-07-09,
- * UPDATED 2026-07-09 once step 7 landed): this module intentionally does NOT
- * edit capability-envelope/policy.ts — it only READS the exported
- * `ROLE_ENVELOPES` map. `applyCapabilityEnvelope` below is a FAIL-CLOSED
- * GUARD: it verifies (never mutates) that `ROLE_ENVELOPES['foreign-session']`
- * resolves to a genuine deny-all profile before permitting ANY foreign-work
- * spawn. Step 7 has now landed `denyCapabilities: ['*']` on that entry
- * (policy.ts) — the SHIPPING v1 policy, not a placeholder — so this guard now
- * RESOLVES rather than throws, and the spawn leg this module wires
- * (`launchSession`) is LIVE: every foreign session that actually launches
- * still runs under a default-deny-ALL capability envelope, confined further
- * by the P-105 sandbox tier. Any grant beyond deny-all is a separate,
- * explicitly owner-ratified follow-up work-item — never widened here.
+ * D-001 UPDATE (p2p-public-release-remaining-lanes-2026-07-16, owner Avi,
+ * 2026-07-17 — supersedes the 2026-07-09 sequencing note this used to carry):
+ * the deny-all `ROLE_ENVELOPES['foreign-session']` entry `applyCapabilityEnvelope`
+ * below used to verify is RETIRED (capability-envelope/policy.ts HISTORY note).
+ * Owner's verbatim call: "we don't want os OR app level containment... We
+ * already have a trust layer... That's the only security layer I want to
+ * support for v1." So this port is now a NO-OP: the capability-envelope layer
+ * no longer participates in gating a foreign-work spawn at all — the trust
+ * chain upstream of execution (offer-authorship.ts + resolveForeignWorkAdmission
+ * + P-202 allotments + user_trust_list) is the entire v1 security model. The
+ * port SHAPE (`Promise<void>`, throw = refuse) is kept byte-identical so
+ * offer-executor.ts's call site and every existing test double are unchanged;
+ * only this implementation's body changed. Re-arm a real check here only via a
+ * fresh, explicitly owner-ratified follow-up.
  */
-import { ROLE_ENVELOPES, matchesAny } from '../capability-envelope/policy';
 import { spawnAgentInHarness } from '../fleet/operator-spawn';
 import { ephemeralForeignHarnessSlug } from '../harness-registry';
 import { buildForeignProcessEnv } from './sandbox/pg-credential-isolation';
 import type { ForeignLaunchSpec, OfferExecutorDeps } from './offer-executor';
 
 /**
- * C2: verify (never mutate) that `ROLE_ENVELOPES['foreign-session']` resolves
- * to a genuine deny-all profile before permitting ANY foreign-work spawn.
- * `denyCapabilities: ['*']` is the correct deny-all shape — an EMPTY
- * `allowCapabilities: []` does NOT deny anything (evaluateCapabilityEnvelope's
- * `env.allowCapabilities.length > 0` guard treats it as absent ⇒ default-allow;
- * this was the exact gotcha this WI's plan flagged and resolved by reading
- * evaluateCapabilityEnvelope's implementation directly, not by guessing).
- *
- * Throws (never returns a falsy "refused" value) so a caller that forgets to
- * check a return value can't accidentally launch unclamped — the offer-executor
- * pipeline doc comment already documents "an envelope failure parks the row".
+ * D-001: capability-envelope gating for foreign sessions is retired (see the
+ * module doc above) — this always resolves. Kept as a named, awaited step
+ * (rather than deleting the port/call site) so offer-executor.ts's pipeline
+ * shape — and its "envelope failure parks the row" refusal path — stays
+ * exercised and ready if a future owner-ratified policy re-arms a real check.
  */
-export async function applyCapabilityEnvelopeForForeignSession(spec: {
+export async function applyCapabilityEnvelopeForForeignSession(_spec: {
   sessionRole: 'foreign-session';
   offerId: string;
   workspaceId: string;
   fleetSlug: string;
 }): Promise<void> {
-  const env = ROLE_ENVELOPES[spec.sessionRole];
-  const isDenyAll = !!env?.denyCapabilities && matchesAny('capability:anything-at-all', env.denyCapabilities);
-  if (!isDenyAll) {
-    throw new Error(
-      `applyCapabilityEnvelope: ROLE_ENVELOPES['${spec.sessionRole}'] does not resolve to a deny-all ` +
-        `envelope (expected denyCapabilities:['*']) — refusing to launch a foreign session unclamped ` +
-        `(offer ${spec.offerId}, workspace ${spec.workspaceId}, fleet ${spec.fleetSlug}). This is the ` +
-        `expected refusal until WI-1937 step 7 lands the deny-all ROLE_ENVELOPES entry — it is not a bug.`,
-    );
-  }
+  // D-001: no-op by design — see module doc comment.
 }
 
 /**

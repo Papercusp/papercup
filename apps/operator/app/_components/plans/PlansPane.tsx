@@ -143,7 +143,7 @@ export default function PlansPane() {
   const debouncedQuery = useDebouncedValue(query, 200);
 
   const planList = usePlanList({});
-  const { items: attentionItems, loading: attentionLoading } = useInboxAttention();
+  const { items: attentionItems } = useInboxAttention();
   const workspaceId = useWorkspaceId();
 
   // Live-agent counts: the shared Sessions-roster sync entry (no new query
@@ -287,7 +287,6 @@ export default function PlansPane() {
           })}
         </ul>
       )}
-      {attentionLoading && rows.length === 0 ? null : null}
 
       <PlanPopupModal
         planSlug={popupPlan}

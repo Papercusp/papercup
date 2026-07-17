@@ -110,24 +110,24 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   kettle: {
     denyCapabilities: ['capability:fs-write', 'capability:bash'],
   },
-  // WI-1937 step 7 (p2p-work-distribution-2026-07-02 / P-105): FOREIGN-SESSION —
-  // the execution identity for work CLAIMED FROM A PEER HOST over the p2p
-  // work-distribution plane (D-007). This is the shipping v1 policy, not a
-  // placeholder (leader policy call, msg mre4ok0h 2026-07-09): DEFAULT-DENY-ALL.
-  // A foreign session did not author the code it runs and neither did anyone on
-  // this host — it is confined to the P-105 sandbox (process/credential
-  // isolation, loopback-only network, enforced-kill) AND, at this layer, denied
-  // every capability outright. `denyCapabilities: ['*']` — NOT an empty
-  // `allowCapabilities: []` — is the correct deny-all shape: an empty
-  // allowCapabilities is treated as ABSENT by evaluateCapabilityEnvelope
-  // (`env.allowCapabilities.length > 0` guards it) and falls through to
-  // default-allow, which is the exact gotcha offer-executor-prod-deps.ts's
-  // `applyCapabilityEnvelopeForForeignSession` fail-closed guard was written to
-  // catch (see its test file). Any grant beyond deny-all is a SEPARATE,
-  // explicitly owner-ratified follow-up work-item — never silently widened here.
-  'foreign-session': {
-    denyCapabilities: ['*'],
-  },
+  // FOREIGN-SESSION — HISTORY (p2p-public-release-remaining-lanes-2026-07-16
+  // D-001, owner Avi, 2026-07-17): the WI-1937 step 7 DENY-ALL entry that
+  // lived here (`denyCapabilities: ['*']`) is RETIRED, not tightened. Owner's
+  // verbatim call: "we don't want os OR app level containment. ship v1
+  // without the app level containment and without the sandbox. We already
+  // have a trust layer where users need to explicitly trust other users to
+  // pick up others work… That's the only security layer I want to support
+  // for v1." The P-105 sandbox was never built and is no longer a v1
+  // prerequisite; this capability-envelope deny-all was the OTHER half of
+  // that containment posture and is retired alongside it. A foreign session
+  // is now a normal agent session for capability-envelope purposes — gated
+  // ONLY by the trust chain upstream of execution (offer-authorship.ts
+  // publisher-set + epoch revocation, resolveForeignWorkAdmission opt-in +
+  // kill-switch, P-202 allotment grants, work-items-admission.ts
+  // user_trust_list), all verified implemented + fail-closed BEFORE a claim
+  // is ever won. Re-add a `foreign-session` entry here only via a fresh,
+  // explicitly owner-ratified follow-up (mirrors the `bee`/EI-524 pattern
+  // above: this is a HISTORY note, not a live confinement).
 };
 
 export interface EnvelopeDecision {
