@@ -330,10 +330,28 @@ describe('scoreMaxTurnSweep (P-025) — per-class advisory recommendation', () =
     expect(rep.recommendations[0].recommendedMaxTurnTokens).toBeNull();
   });
 
-  it('a point with a null gate metric never passes (no fabricated success)', () => {
-    // taskSuccessRate present + good, but spillChaseSuccessRate never captured (null).
-    const rep = scoreMaxTurnSweep([okResult('ornith-drone', 8_000, { taskSuccessRate: 1, stopReasonLengthRate: 0, spillChaseSuccessRate: null })]);
+  it('a point with a null PRIMARY gate metric never passes (no fabricated success)', () => {
+    // No task-success reading ⇒ not recommendable, however clean the rest looks.
+    const rep = scoreMaxTurnSweep([okResult('ornith-drone', 8_000, { taskSuccessRate: null, stopReasonLengthRate: 0, spillChaseSuccessRate: 1 })]);
     expect(rep.points[0].qualityPassing).toBe(false);
+    // Same for a missing length-stop reading.
+    const rep2 = scoreMaxTurnSweep([okResult('ornith-drone', 8_000, { taskSuccessRate: 1, stopReasonLengthRate: null, spillChaseSuccessRate: 1 })]);
+    expect(rep2.points[0].qualityPassing).toBe(false);
+  });
+
+  // WI-5003: null spill-chase means NOT EXERCISED (e.g. a drain-only point), not
+  // failed — the old null-fails reading made the gate structurally unsatisfiable
+  // for raw-file workloads and vetoed every 2026-07-17 campaign point.
+  it('null spill-chase is NOT-EXERCISED: it does not veto an otherwise-passing point', () => {
+    const rep = scoreMaxTurnSweep([okResult('ornith-drone', 8_000, { taskSuccessRate: 1, stopReasonLengthRate: 0, spillChaseSuccessRate: null })]);
+    expect(rep.points[0].qualityPassing).toBe(true);
+    expect(rep.recommendations[0].recommendedMaxTurnTokens).toBe(8_000);
+  });
+
+  it('a MEASURED low spill-chase still fails the gate', () => {
+    const rep = scoreMaxTurnSweep([okResult('ornith-drone', 8_000, { taskSuccessRate: 1, stopReasonLengthRate: 0, spillChaseSuccessRate: 0.5 })]);
+    expect(rep.points[0].qualityPassing).toBe(false);
+    expect(rep.recommendations[0].recommendedMaxTurnTokens).toBeNull();
   });
 
   it('sorts points and recommendations deterministically by class then target', () => {

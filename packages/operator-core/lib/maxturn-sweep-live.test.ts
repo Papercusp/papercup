@@ -144,8 +144,9 @@ describe('extractCellMetricsFromJsonl — the pure transcript grader', () => {
 
     it('full paged coverage ⇒ 1; overlap never double-counts', () => {
       const jsonl = [
-        readLine(0, 'm1', { file_path: FIXTURE, offset: 1, limit: 2000 }),
-        readLine(1, 'm2', { file_path: FIXTURE, offset: 1500, limit: 2500 }), // overlaps + finishes
+        readLine(0, 'm1', { file_path: FIXTURE, offset: 1, limit: 2000 }), // lines 1..2000
+        readLine(1, 'm2', { file_path: FIXTURE, offset: 1500, limit: 2000 }), // 1500..3499 (overlap)
+        readLine(2, 'm3', { file_path: FIXTURE, offset: 3001, limit: 1000 }), // 3001..4000 — finishes
       ].join('\n');
       expect(extractCellMetricsFromJsonl(jsonl, opts).spillChaseSuccessRate).toBe(1);
     });
@@ -202,6 +203,20 @@ describe('buildBenchmarkKickoff / buildLogFixture', () => {
     expect(fixture).toBe(buildLogFixture(1_000)); // deterministic
     expect(fixture.split('\n')).toHaveLength(1_000);
     expect(fixture).toContain('ERROR');
+  });
+
+  // WI-5003 benchmark-calibration fixes (owner 2026-07-17 "fix it"):
+  it('the long-log kickoff MANDATES Read-tool paging (coverage is the spill-chase metric; shell reads are invisible to it)', () => {
+    const text = buildBenchmarkKickoff({ id: cell.taskId, kind: cell.taskKind, summary: '' }, cell, '/tmp/wd');
+    expect(text).toContain('Read tool with offset/limit');
+    expect(text).toContain('never shell commands');
+  });
+
+  it('file-writes asks for 3 docs — completable inside the task timeout (8 docs ≈ 23min vs the cap zeroed taskSuccess on every 2026-07-17 cell)', () => {
+    const fw = expandSweepCells().find((x) => x.taskKind === 'file-heavy-writes')!;
+    const text = buildBenchmarkKickoff({ id: fw.taskId, kind: fw.taskKind, summary: '' }, fw, '/tmp/wd');
+    expect(text).toContain('doc-3.md');
+    expect(text).not.toContain('doc-8.md');
   });
 
   it('sweepWorkDir sanitizes the cell id into a safe path segment', () => {
@@ -360,6 +375,47 @@ describe('makeHeadlessPsuCellDriver — the seam-injected cell run', () => {
     const driver = makeHeadlessPsuCellDriver(deps);
     await expect(driver(cell, config, { repeats: 1, now: Date.now })).rejects.toThrow(/no transcript/);
     expect(deps.clearOverride).toHaveBeenCalledTimes(1);
+  });
+
+  // WI-5003: a session that spawned but never completed ONE API call is a
+  // routing/capacity failure, not a benchmark result — the 2026-07-17 campaign
+  // silently recorded 10+ all-null rows stamped 'ok' exactly where load peaked.
+  it('a ZERO-HOP transcript THROWS (status:error, never an all-null row stamped ok)', async () => {
+    const { deps } = stubDeps();
+    deps.readTranscript = vi.fn(async () =>
+      JSON.stringify({ type: 'user', timestamp: ts(0), message: { content: [{ type: 'text', text: 'kickoff' }] } }),
+    );
+    const driver = makeHeadlessPsuCellDriver(deps);
+    await expect(driver(cell, config, { repeats: 1, now: Date.now })).rejects.toThrow(/zero-hop/);
+    expect(deps.clearOverride).toHaveBeenCalledTimes(1);
+  });
+
+  it('a long-log-analysis cell threads its fixture into extraction — full Read coverage scores spill-chase 1', async () => {
+    const { join } = await import('node:path');
+    const logCell: SweepCell = expandSweepCells().find((c) => c.taskKind === 'long-log-analysis' && c.maxTurnTargetTokens === 8_000)!;
+    const logConfig = resolveCellConfig(logCell);
+    const fixturePath = join(sweepWorkDir(`${logCell.cellId}-r1`), 'fixture.log');
+    const { deps } = stubDeps();
+    deps.readTranscript = vi.fn(async () =>
+      [
+        JSON.stringify({
+          type: 'assistant',
+          timestamp: ts(0),
+          message: {
+            id: 'm1',
+            model: 'claude-opus-4-8',
+            stop_reason: 'tool_use',
+            usage: { input_tokens: 1 },
+            content: [{ type: 'tool_use', name: 'Read', input: { file_path: fixturePath, offset: 1, limit: 4_000 } }],
+          },
+        }),
+        assistantLine({ id: 'm2', i: 1, text: SWEEP_TASK_DONE_MARKER }),
+      ].join('\n'),
+    );
+    const driver = makeHeadlessPsuCellDriver(deps);
+    const metrics = await driver(logCell, logConfig, { repeats: 1, now: Date.now });
+    expect(metrics.spillChaseSuccessRate).toBe(1);
+    expect(metrics.taskSuccessRate).toBe(1);
   });
 
   it('a clear failure never masks the run result (warned, swallowed)', async () => {

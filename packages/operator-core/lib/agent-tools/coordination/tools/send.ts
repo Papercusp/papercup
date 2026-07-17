@@ -17,6 +17,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { fetchPresenceFleet } from '../presence-fleet';
 import { scopeBroadcastAudience, ALLHIVE_BROADCAST_FIELD } from '../scope-broadcast';
@@ -98,6 +99,12 @@ interface SendMsg {
    *  to keep `'*'` literal and reach every agent (system-wide issue / urgent notice).
    *  No effect for a non-fleeted sender or a directed send. */
   allHive?: boolean;
+  /** agent-report-cards-2026-07-17 P-001: a structured `ReportBlock` status card
+   *  (shape as parseReportBlock accepts). Validated at send — an invalid payload
+   *  is a loud `report_invalid` refusal (nothing sent); the NORMALIZED block is
+   *  stamped on the envelope, and a message to ['human'] renders it as a 📋
+   *  card in the owner's Inbox (the coord-message attention item's `report`). */
+  report?: unknown;
 }
 
 /** Whether `to` is a DIRECTED send: at least one recipient, ALL concrete (none a
@@ -208,6 +215,36 @@ const noBodyRefsArg = z
     "P-008 body auto-refs OPT-OUT: by default, WI-/EI- ids mentioned in your summary/body auto-hydrate at delivery into a one-line live status+title+checkpoint suffix on the receiver's [coord+N] line (first 3 ids, ~150 chars each — receivers stop re-fetching cited items). Set true when that live status would MISLEAD: the ids are historical/illustrative examples, or you are deliberately quoting stale state.",
   );
 
+/** agent-report-cards-2026-07-17 P-001 / D-004: a DELIBERATELY loose shape —
+ *  `parseReportBlock` (@papercusp/chat-protocol) is the single canonical
+ *  validator (loud `report_invalid` refusal in sendOne), so this zod shape is
+ *  introspection/documentation only and cannot drift from it. */
+const reportArg = z
+  .object({
+    title: z.string().optional(),
+    plans: z.array(
+      z.object({
+        slug: z.string().optional(),
+        title: z.string().optional(),
+        status: z.string().optional(),
+        summary: z.string().optional(),
+        items: z
+          .array(
+            z.object({
+              id: z.string().optional(),
+              text: z.string().optional(),
+              status: z.string().optional(),
+            }),
+          )
+          .optional(),
+      }),
+    ),
+  })
+  .optional()
+  .describe(
+    'Structured status card (ReportBlock): { title?, plans:[{ title, status?, summary?, items?:[{ id?, text, status? }] }] }. Sent to ["human"] it renders as a 📋 card in the owner\'s Inbox (fleet updates, status digests) instead of plain text. Statuses like blocked/failing surface it as an Alert; a genuine decision still goes through coord:escalate. Invalid shape → loud report_invalid refusal (nothing sent).',
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -232,6 +269,7 @@ const itemSpec = z.object({
   backstop: backstopArg,
   scope: scopeArg,
   allHive: allHiveArg,
+  report: reportArg,
 });
 
 /**
@@ -248,6 +286,26 @@ async function sendOne(
   bcast?: { scoped?: { from: '*'; to: string; reason: string }; allHive?: boolean },
   cueAuthority?: CueAuthorityStamp | null,
 ): Promise<BulkItemResult> {
+  // agent-report-cards-2026-07-17 P-001 / D-004: validate a structured report
+  // card payload FIRST (pure, cheap) through the ONE canonical validator. A
+  // payload that yields no valid block is a LOUD refusal — a silently-dropped
+  // card would be indistinguishable from a delivered one to the sender.
+  let reportBlock: ReportBlock | null = null;
+  if (msg.report !== undefined && msg.report !== null) {
+    reportBlock = parseReportBlock(msg.report);
+    if (!reportBlock) {
+      return {
+        ok: false,
+        to: msg.to,
+        error: 'report_invalid',
+        message:
+          'report did not validate as a ReportBlock — nothing was sent. Shape: { title?, plans:[{ ' +
+          'title, status?, summary?, items?:[{ id?, text, status? }] }] } with at least one plan ' +
+          'carrying a title (or slug). Fix the payload, or drop `report` and send plain text.',
+      };
+    }
+  }
+
   // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
   // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
   // backstop (silent miss). Legacy boolean coerces: true → 'required' (the safe
@@ -376,6 +434,11 @@ async function sendOne(
   // P-008: the sender's body-auto-ref opt-out rides the envelope so DELIVERY
   // (the receiver's inbox seam + renderer) honors it — no receiver-side config.
   if (msg.noBodyRefs) extra[BODY_REFS_OPT_OUT_FIELD] = true;
+  // agent-report-cards P-001: the NORMALIZED report block rides the envelope
+  // (non-reserved key — survives the merge + readInbox). The plans:attention
+  // coord-message source stamps it onto the inbox item, which renders it as a
+  // 📋 ReportBlockCard in the owner's Inbox detail pane.
+  if (reportBlock) extra.report = reportBlock;
   // P-010 (H5b): persist the CONSCIOUS hive-wide claim on the envelope — the
   // durable trace the allhive-broadcast-sweep detector keys on. A plain
   // non-fleeted sender's bare '*' is NOT stamped (routine traffic, live data:
@@ -868,6 +931,7 @@ export default defineTool({
     backstop: backstopArg,
     scope: scopeArg,
     allHive: allHiveArg,
+    report: reportArg,
     items: z
       .array(itemSpec)
       .min(1)
@@ -910,6 +974,7 @@ export default defineTool({
             backstop: args.backstop,
             scope: args.scope,
             allHive: args.allHive,
+            report: args.report,
           },
         ];
     // fleet-scoped-broadcast-default: resolve the sender's fleet ONCE (only when a

@@ -15,7 +15,7 @@
  */
 
 import { type Importance } from '@papercusp/plan-parser';
-import type { ReportBlock } from '@papercusp/chat-protocol';
+import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
 import {
   type AttentionItem,
   type AttentionAction,
@@ -244,6 +244,12 @@ export interface CoordMessageInput {
   /** True when the message is addressed DIRECTLY to the human (its `to`
    *  includes the human owner id), not solely a `*` broadcast. */
   directToOwner?: boolean;
+  /** agent-report-cards-2026-07-17 P-002: the envelope's structured report-card
+   *  payload (`extra.report` stamped by coord:send), RAW — re-validated here
+   *  through the canonical `parseReportBlock` (defensive: a foreign/legacy row
+   *  may not match the schema; invalid ⇒ silently treated as absent, mirroring
+   *  `reportTurnsToAttention`). */
+  report?: unknown;
 }
 
 export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
@@ -258,7 +264,18 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
   // (both used to land in Decisions): escalations are now the sole decision
   // coord-channel.
   const isAuto = m.auto === true || (typeof m.lifecycle === 'string' && m.lifecycle.length > 0);
-  const tier: AttentionTier = isAuto ? 'activity' : m.directToOwner ? 'alert' : 'activity';
+  const baseTier: AttentionTier = isAuto ? 'activity' : m.directToOwner ? 'alert' : 'activity';
+  // agent-report-cards P-002: a structured report card riding the message
+  // (coord:send `report`, re-validated through the one canonical validator —
+  // invalid/foreign payloads degrade to a plain text message, never throw).
+  const report = m.report !== undefined && m.report !== null ? parseReportBlock(m.report) : null;
+  // D-003: report statuses may ELEVATE the message (a fleet update carrying
+  // blocked/failing rows surfaces as an Alert even on a broadcast) but NEVER
+  // to Decision — a coord message stays a COMMUNICATION (ack-only, P-102/D-011);
+  // a needs-human status in a report card caps at Alert, and a genuine ask
+  // still routes through coord:escalate.
+  const tier: AttentionTier =
+    report && baseTier === 'activity' && reportTier(report) !== 'activity' ? 'alert' : baseTier;
   const needsHuman = needsHumanForTier(tier);
   return {
     id: `coord-message:${m.msgId}`,
@@ -269,7 +286,10 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
     planSlug: m.planSlug ?? null,
     itemRef: null,
     title: clip(m.summary || m.body || 'Message'),
-    body: m.body?.trim() || m.summary || '',
+    // Text-only surfaces (mobile route, search) see the sender's prose when
+    // there is any, else the report's plain-text rendition — the structured
+    // payload rides `report` for the native card renderers.
+    body: m.body?.trim() || (report ? reportBody(report) : '') || m.summary || '',
     // Neutral status — there is no real read/ack tracking yet, so don't
     // imply one with an "unread" badge.
     status: 'message',
