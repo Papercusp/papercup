@@ -28,7 +28,7 @@ import {
 } from './theme';
 import { Tooltip } from './Tooltip';
 import { useLexicon } from '../../lib/useLexicon';
-import type { TermKey } from '@papercusp/lexicon';
+import { agentTermKey } from './agent-display';
 
 /**
  * Shared chip-pill geometry — the SeverityPill recipe (tinted rounded-full
@@ -248,25 +248,6 @@ export const AGENT_KIND_GLYPH: Record<string, string> = {
   papercup: '🥤',
 };
 
-// Cast members whose LABEL routes through the active brand pack. classic/Pot →
-// Mug / Papercup / Kettle / Contributor; the-hive (internal) → Queen / Sentinel
-// / Overwatch / Bee. planner/su have no cast term key → keep their static
-// theme label. (Colors stay from the AGENT_KIND theme table; only the word
-// flips with the pack.)
-const AGENT_KIND_TERM: Partial<Record<string, TermKey>> = {
-  mug: 'brain',
-  papercup: 'operator',
-  kettle: 'overwatch',
-  cup: 'contributor',
-  // Pre-rename agent-kind values (WI-2932): live session/spawn rows minted
-  // before the rename still carry the old kinds — route them to the same pack
-  // terms so the pill never shows the retired static label mid-transition.
-  queen: 'brain',
-  sentinel: 'operator',
-  overwatch: 'overwatch',
-  bee: 'contributor',
-};
-
 /** Agent kind badge — cup-cast glyph + label chip, colored from the canonical
  * AGENT_KIND table (same recipe as KindPill). The label pack-routes via the
  * active lexicon for cast roles; an unknown kind keeps its raw name on the
@@ -282,7 +263,7 @@ export function AgentKindPill({
 }) {
   const t = useLexicon();
   const s = AGENT_KIND[kind as AgentKindKey];
-  const termKey = AGENT_KIND_TERM[kind];
+  const termKey = agentTermKey(kind);
   const labelOverride = termKey
     ? t(termKey)
     : kind in AGENT_KIND

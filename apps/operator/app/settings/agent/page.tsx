@@ -29,6 +29,7 @@ import { useDebouncedSave } from '../../harness/useDebouncedSave';
 import { DraftInput, FormField } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
+import { agentRoleLabel, agentTermKey } from '../../harness/agent-display';
 import {
   AGENT_BACKENDS,
   DEFAULT_MODEL_TIERS,
@@ -191,13 +192,7 @@ export default function AgentSettingsPage() {
   // Blender role (its role id is 'scanner'); doc-steward/merge/etc have no cast
   // key so their label is unchanged.
   const displayLabel = (row: { role: string; label: string }): string =>
-    row.role === 'mug'
-      ? t('brain')
-      : row.role === 'overwatch' || row.role === 'kettle'
-        ? t('overwatch')
-        : row.role === 'scanner'
-          ? t('scout')
-          : row.label;
+    agentTermKey(row.role) ? agentRoleLabel(row.role, t) : row.label;
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);

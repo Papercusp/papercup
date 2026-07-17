@@ -709,6 +709,16 @@ describe('structural contract with scout/types.ts', () => {
     }
   });
 
+  it('the recent-commit category (NOV-2 / WI-4635) stays in sync across the schema enum + types.ts', () => {
+    const pattern: TypesMetaPattern = {
+      category: 'recent-commit',
+      summary: 's',
+      ref: 'commit-churn:area',
+      weight: 1,
+    };
+    expect(() => MetaPatternSchema.parse(pattern)).not.toThrow();
+  });
+
   it('a digest pattern is a valid MetaPattern per the schema validator', async () => {
     const { recurringFriction } = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
     expect(() => MetaPatternSchema.parse(recurringFriction[0])).not.toThrow();

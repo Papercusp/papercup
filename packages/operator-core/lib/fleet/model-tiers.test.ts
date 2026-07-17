@@ -28,7 +28,9 @@ describe('roleDefaultSpec — the floor input', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ cup: 'sonnet' }));
     expect(roleDefaultSpec('cup')).toBe('sonnet');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(roleDefaultSpec('cup')).toBe('haiku');
+    // P-020 (autonomous-loop-prod-audit-2026-07-02): cup's committed floor moved off
+    // haiku onto the autonomous-loop GPT-5.6 Luna tier.
+    expect(roleDefaultSpec('cup')).toBe('gpt-5.6-luna:high');
     expect(roleDefaultSpec('release-manager')).toBe('opus:xhigh');
     // The launch-fixer family's committed floors (git-sync-content-guard D-008
     // follow-up): the two fleet-blast-radius fixers pin opus:xhigh — merge-resolver
@@ -58,7 +60,7 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
   it('unknown tier fails LOUD, listing the valid menu', () => {
     const r = resolveTierSpec({ tier: 'turbo', role: 'cup' });
     expect(r.ok).toBe(false);
-    expect((r as { error: string }).error).toContain('quick, standard, deep, max');
+    expect((r as { error: string }).error).toContain('quick, standard, deep, luna, max');
   });
 
   it('FLOOR: a pick below the role default clamps UP (worker default sonnet, pick quick → standard)', () => {
@@ -83,7 +85,10 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
 
   it('CEILING: a pick above the role ceiling clamps DOWN', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const r = resolveTierSpec({ tier: 'max', role: 'cup', tierCeilings: { cup: 'standard' } });
+    // `worker`, not `cup` — cup's own floor is now `luna` (P-020, above `standard`),
+    // which would trip the FLOOR-outranks-ceiling rule below instead of a plain
+    // ceiling clamp; worker stays sonnet-floored so this exercises the ceiling path.
+    const r = resolveTierSpec({ tier: 'max', role: 'worker', tierCeilings: { worker: 'standard' } });
     expect(r).toMatchObject({ ok: true, spec: 'sonnet[1m]', tier: 'standard', clamped: 'ceiling' });
   });
 
@@ -132,7 +137,10 @@ describe('resolveTierSpec — user-defined menu', () => {
 
   it('an empty tiers array falls back to the default menu', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveTierSpec({ tier: 'standard', role: 'cup', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet[1m]' });
+    // `worker`, not `cup` — cup's own floor is now `luna` (P-020), which would clamp
+    // a `standard` pick up past it; worker stays sonnet-floored, so `standard` resolves
+    // unclamped and this purely exercises the empty-array→default-menu fallback.
+    expect(resolveTierSpec({ tier: 'standard', role: 'worker', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet[1m]' });
   });
 
   it('per-tier backend rides the resolution — including through a clamp', () => {

@@ -178,6 +178,29 @@ describe('POST /device/voice/turn — EI-13027 no-reply drop', () => {
     expect(append.mock.calls[0][0]).toMatchObject({ source: 'voice_stt' });
   });
 
+  it('emits clean sentence deltas — raw <say>/tag markup never hits the wire (EI-13172)', async () => {
+    // Tag split across chunk boundaries — the streaming case that defeats a
+    // naive per-chunk regex strip.
+    brainStreaming(
+      ['<sa', 'y>A spider has eight legs.', ' Neat!</say', '>'],
+      '<say>A spider has eight legs. Neat!</say>',
+    );
+    await voiceTurn.handler(turnReq(), { params: {} });
+    await captured.ready;
+
+    const deltas = captured.events.filter((e) => e.name === 'delta');
+    expect(deltas.length).toBeGreaterThan(0);
+    const joined = deltas.map((d) => (d.data as { text: string }).text).join('');
+    expect(joined).toBe('A spider has eight legs. Neat!');
+    expect(joined).not.toContain('<');
+    // The turn still completes and persists the clean say text.
+    expect(captured.events.map((e) => e.name)).toContain('done');
+    expect(append.mock.calls[1][0]).toMatchObject({
+      source: 'voice_tts',
+      text: 'A spider has eight legs. Neat!',
+    });
+  });
+
   it('completes normally (done + persisted voice_tts) when the brain produces a reply', async () => {
     brainYielding('<say>A spider has eight legs.</say>');
     await voiceTurn.handler(turnReq(), { params: {} });

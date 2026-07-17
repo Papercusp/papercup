@@ -318,14 +318,17 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
   });
 
-  it('P-012 model-tier policy: execution tier → sonnet, volume tier → haiku, without env', () => {
+  it('P-012 model-tier policy: execution tier → sonnet, autonomous-loop tier → gpt-5.6-luna:high, without env', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet[1m]');
     expect(applyRoleModel('claude -p', 'validator')).toBe('claude -p --model sonnet[1m]');
     expect(applyRoleModel('claude -p', 'documenter')).toBe('claude -p --model sonnet[1m]');
-    expect(applyRoleModel('claude -p --model opus', 'cup')).toBe('claude -p --model haiku');
-    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model haiku');
-    expect(applyRoleModel('claude -p', 'judge')).toBe('claude -p --model haiku');
+    // P-020 (autonomous-loop-prod-audit-2026-07-02): cup/scanner/judge moved OFF the
+    // haiku volume tier onto the autonomous-loop GPT-5.6 Luna floor — no role
+    // currently occupies haiku (ROLE_MODEL_DEFAULTS comment).
+    expect(applyRoleModel('claude -p --model opus', 'cup')).toBe('claude -p --model gpt-5.6-luna --effort high');
+    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model gpt-5.6-luna --effort high');
+    expect(applyRoleModel('claude -p', 'judge')).toBe('claude -p --model gpt-5.6-luna --effort high');
     // Escalation stays explicit: an AGENT_MODELS entry overrides the tier.
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:high' }));
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus[1m] --effort high');
@@ -369,18 +372,22 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
   // left the orchestrator-level resolveModel test asserting the OLD `kettle:
   // 'sonnet'` default (invoke.test.ts) — this is the exec-boundary (applyRoleModel)
   // twin, asserted per-role so a regression on any ONE role names itself.
-  it('the P-012 judgment-tier roles resolve to sonnet[1m]:high --effort high without env', () => {
+  it('the P-020 autonomous-loop roles resolve to gpt-5.6-luna:high --effort high without env', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    for (const role of ['queen', 'bee', 'mug', 'kettle', 'overwatch', 'sentinel', 'operator']) {
-      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model sonnet[1m] --effort high');
+    // `operator` is DELIBERATELY excluded — it's the interactive brain surface, not
+    // an autonomous-loop role, and P-020 left it with no committed default (the
+    // orchestrator's own invoke.test.ts pins `resolveModel({}, 'operator')` === '').
+    for (const role of ['queen', 'bee', 'mug', 'kettle', 'overwatch', 'sentinel']) {
+      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model gpt-5.6-luna --effort high');
     }
+    expect(applyRoleModel('claude -p', 'operator')).toBe('claude -p');
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model sonnet[1m] --effort high');
-    // resolveSpawnBackendModel keys it to the sonnet[1m] bucket
+    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model gpt-5.6-luna --effort high');
+    // resolveSpawnBackendModel keys it to the gpt-5.6-luna bucket
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
+    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'gpt-5.6-luna' });
   });
 });
 
@@ -479,10 +486,10 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
 
     expect(roleBackendOverride('mug')).toBe('codex');
     const env = buildInvokeOnce(spec({ role: 'mug' })).env;
-    // mug resolves to sonnet[1m]:high (model-switch-2026-07-15, EI-12657) — when applied with codex backend,
-    // [1m] marker stays and :high maps to codex's model_reasoning_effort config.
-    expect(env.AGENT_CMD).toBe('codex exec --model sonnet[1m] -c model_reasoning_effort="high"');
-    expect(env.CLAUDE).toBe('codex exec --model sonnet[1m] -c model_reasoning_effort="high"');
+    // mug resolves to gpt-5.6-luna:high (P-020, autonomous-loop-prod-audit-2026-07-02) —
+    // when applied with codex backend, :high maps to codex's model_reasoning_effort config.
+    expect(env.AGENT_CMD).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
+    expect(env.CLAUDE).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
     expect(env.AGENT_BACKEND).toBe('codex');
     expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
     // EI-7138: omp takes a `<model>:<effort>` spec as ONE opaque value natively (no
@@ -540,6 +547,7 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
   it('P-012: worker buckets to its committed sonnet tier without env (no silent CLI-default bucket)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
-    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'haiku' });
+    // P-020: cup's committed floor is now gpt-5.6-luna:high, not haiku.
+    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'gpt-5.6-luna' });
   });
 });

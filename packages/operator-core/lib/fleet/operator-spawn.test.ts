@@ -423,7 +423,11 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
   it('mints + records a session_id and threads forceSessionId for a claude backend', async () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     try {
-      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+      // P-020: cup's own committed floor is now the codex-family gpt-5.6-luna:high,
+      // which the account-steering fix (operator-spawn.ts) promotes ahead of AGENT_CMD
+      // — so testing the CLAUDE-specific forced-session-id path (P-016/D-007) for a
+      // role with no explicit pin now needs an explicit claude-family modelSpec.
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup', modelSpec: 'sonnet' });
       expect(res.ok).toBe(true);
 
       // forceSessionId (a uuid) is threaded to the launcher so buildInvokeOnce bakes --session-id.

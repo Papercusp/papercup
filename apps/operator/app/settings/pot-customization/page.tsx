@@ -28,6 +28,7 @@ import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
+import { agentRoleLabel } from '../../harness/agent-display';
 import { HivePolicyPanel } from './HivePolicyPanel';
 
 interface HiveRow {
@@ -272,11 +273,11 @@ function ConfigOverrideEditor({
         >
           {feedback.dropped && feedback.dropped.length > 0 ? (
             <div style={{ color: 'var(--warn)' }}>
-              Dropped unknown/invalid keys: {feedback.dropped.join(', ')} — the scout loop
+              Dropped unknown/invalid keys: {feedback.dropped.join(', ')} — the {t('scout', { lower: true })} loop
               ignores these (it parses defensively).
             </div>
           ) : (
-            <div>Accepted — the scout loop reads this on its next per-{t('pot', { lower: true })} cycle.</div>
+            <div>Accepted — the {t('scout', { lower: true })} loop reads this on its next per-{t('pot', { lower: true })} cycle.</div>
           )}
         </div>
       )}
@@ -284,14 +285,13 @@ function ConfigOverrideEditor({
   );
 }
 
-export default function HiveCustomizationPage() {
+export default function PotCustomizationPage() {
   const t = useLexicon();
   // Role ids are internal (D-001 — never renamed); only their DISPLAYED label routes
   // through the lexicon, so the dropdown reads in the active vocabulary (queen→brain,
   // bee→cup). Lower-cased to match the other raw role ids shown (su/overwatch/operator,
   // whose classic label is unchanged). The Select `value` stays the raw role id.
-  const roleLabel = (r: string): string =>
-    r === 'mug' ? t('brain', { lower: true }) : r === 'cup' ? t('contributor', { lower: true }) : r;
+  const roleLabel = (r: string): string => agentRoleLabel(r, t, { lower: true });
   const { data: hiveData, loading: hivesLoading } = useSyncQuery<HiveRow>({ queryName: 'learning.hiveList' });
   const hives = useMemo<HiveRow[]>(() => hiveData ?? [], [hiveData]);
 
@@ -383,7 +383,7 @@ export default function HiveCustomizationPage() {
         Specialize a {t('pot', { lower: true })}'s agents for its domain without forking the shared blueprint. The {t('pot', { lower: true })}'s
         reusable blueprint personas stay generic; only this {t('pot', { lower: true })}'s deltas live here, and they federate
         to every node of a shared {t('pot', { lower: true })}. Two editors: a <strong>prose</strong> per-role persona delta,
-        and a <strong>structured</strong> scout-tuning config (which prose can't express).
+        and a <strong>structured</strong> {t('scout', { lower: true })}-tuning config (which prose can't express).
       </p>
 
       {error && (
@@ -444,13 +444,15 @@ export default function HiveCustomizationPage() {
                 ariaLabel="Config section"
                 options={CONFIG_SECTIONS.map((s) => ({
                   value: s,
-                  label: configBySection[s] != null ? `${s} ●` : s,
+                  label: configBySection[s] != null
+                    ? `${agentRoleLabel(s, t, { lower: true })} ●`
+                    : agentRoleLabel(s, t, { lower: true }),
                 }))}
               />
             </div>
             <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '0 0 10px' }}>
               {section === 'scout'
-                ? `How this ${t('pot', { lower: true })}'s scout loop ideates, critiques, and routes — lenses, novelty/verdict thresholds, and routing. A partial override; omitted keys keep the engine default.`
+                ? `How this ${t('pot', { lower: true })}'s ${t('scout', { lower: true })} loop ideates, critiques, and routes — lenses, novelty/verdict thresholds, and routing. A partial override; omitted keys keep the engine default.`
                 : 'JSON config delta for this section.'}
             </p>
             <ConfigOverrideEditor

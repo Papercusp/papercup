@@ -155,7 +155,9 @@ describe('runScoutRevisionCycle (P-001 targeted revision)', () => {
 
 describe('revise helpers', () => {
   it('DEFAULT_REVISION_MODEL is the synthesis-tier model', () => {
-    expect(DEFAULT_REVISION_MODEL).toBe('claude-sonnet-4-6');
+    // model-switch (autonomous-loop-prod-audit-2026-07-02 P-020): scout's model
+    // constants moved to gpt-5.6 alongside the rest of the gym/loop layer.
+    expect(DEFAULT_REVISION_MODEL).toBe('gpt-5.6');
   });
 
   it('looksLikePlanMarkdown requires frontmatter + the slug', () => {

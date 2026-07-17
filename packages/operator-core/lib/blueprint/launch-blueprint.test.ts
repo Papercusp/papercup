@@ -275,17 +275,17 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
 
   it('GAP-2: an owner tier override raises the QUEEN\'s OWN model (bodyExtra.spawnModel) at launch', async () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // Owner set the menu (standard tier) to opus:xhigh in the 👑-tab → session override.
+    // Owner set the menu (mug's home tier, P-020 `luna`) to opus:xhigh in the 👑-tab → session override.
     getOwnerSteering.mockResolvedValueOnce({
       directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null,
-      modelTiers: [{ name: 'standard', spec: 'opus:xhigh' }], tierCeilings: null,
+      modelTiers: [{ name: 'luna', spec: 'opus:xhigh' }], tierCeilings: null,
     });
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
     const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
     expect(target.role).toBe('mug');
     expect(fired).toHaveLength(1);
-    // Her OWN model is now tier-driven — resolved from the owner's menu, not her sonnet default.
+    // Her OWN model is now tier-driven — resolved from the owner's menu, not her gpt-5.6-luna:high default.
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:xhigh');
   });
 

@@ -556,6 +556,18 @@ export function buildScoutCycleDeps(
       } catch {
         /* best-effort */
       }
+      // RECENT-COMMIT CHURN lane (NOV-2 / WI-4635): repo-area rollup of recently-
+      // touched file paths — the exogenous stimulus so ideation also sees where
+      // the tree is actively morphing, independent of whether a work-item tracked
+      // the edit. Fail-soft (the lane module returns [] on a non-git tree / spawn
+      // failure / outage).
+      try {
+        const { buildRecentCommitLane } = await import('./exogenous-commit-lane');
+        const commitLane = await buildRecentCommitLane();
+        if (commitLane.length > 0) digest.recentCommits = commitLane;
+      } catch {
+        /* best-effort */
+      }
       // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
       // WI-4319): diff this digest against the previous fired cycle's persisted
       // snapshot — read the previous refs, persist the CLEAN fresh digest as

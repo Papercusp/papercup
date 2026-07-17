@@ -208,6 +208,18 @@ describe('AgentKindPill', () => {
     expect(screen.getByText(AGENT_KIND_GLYPH.queen)).toBeTruthy(); // ☕ (the Mug)
   });
 
+  it.each([
+    ['queen', 'Mug'],
+    ['sentinel', 'Papercup'],
+    ['overwatch', 'Kettle'],
+    ['scout', 'Blender'],
+    ['bee', 'Cup'],
+  ])('normalizes the historical %s kind to %s', (kind, label) => {
+    render(<AgentKindPill kind={kind} />);
+    expect(screen.getByText(label)).toBeTruthy();
+    cleanup();
+  });
+
   it('covers every glyph kind in the AGENT_KIND table (and vice versa)', () => {
     expect(Object.keys(AGENT_KIND_GLYPH).sort()).toEqual(Object.keys(AGENT_KIND).sort());
   });

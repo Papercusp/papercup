@@ -180,14 +180,16 @@ export type WorkItemKindKey = keyof typeof _WORK_ITEM_KIND_TABLE;
 // fallback as WORK_ITEM_KIND so the Agents table's pill columns speak the same
 // visual language as Work items.
 const _AGENT_KIND_TABLE = {
-  queen:    { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Queen' },
-  bee:      { solid: 'var(--accent)', bg: 'color-mix(in oklab, var(--accent), transparent 86%)',  text: 'var(--accent-strong, var(--accent))', label: 'Bee' },
-  sentinel: { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',  text: '#6ee7b7', label: 'Sentinel' },
+  // Historical keys remain valid wire values; fallback labels use the public
+  // vocabulary so a missed caller cannot leak the retired cast.
+  queen:    { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Mug' },
+  bee:      { solid: 'var(--accent)', bg: 'color-mix(in oklab, var(--accent), transparent 86%)',  text: 'var(--accent-strong, var(--accent))', label: 'Cup' },
+  sentinel: { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',  text: '#6ee7b7', label: 'Papercup' },
   planner:  { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)',  text: '#d8b4fe', label: 'Planner' },
   su:       { solid: '#ec4899', bg: 'rgba(236,72,153,0.15)',  text: '#f9a8d4', label: 'SU' },
   // overwatch-role-2026-06-15 B-01: the autonomous system-health supervisor (a sibling to
   // the Queen). Indigo — distinct from the queen's amber so the roster separates them.
-  overwatch: { solid: '#6366f1', bg: 'rgba(99,102,241,0.15)',  text: '#a5b4fc', label: 'Overwatch' },
+  overwatch: { solid: '#6366f1', bg: 'rgba(99,102,241,0.15)',  text: '#a5b4fc', label: 'Kettle' },
   // Renamed agent kinds (WI-2932 pot-rename) — same hues as their pre-rename
   // twins so mixed-generation rows read as one roster during the expand phase.
   // (AgentKindPill pack-routes the LABEL via AGENT_KIND_TERM; these labels are

@@ -187,6 +187,10 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     ['owner-correction', digest.ownerCorrections ?? []],
     ['knowledge-reuse-gap', digest.knowledgeReuseGaps ?? []],
     ['plan-health', digest.planHealth ?? []],
+    // NOV-2 (autonomous-loop-prod-audit-2026-07-02 / WI-4635): recent-commit churn
+    // hotspots ride the flatten so ideation also sees where the tree is actively
+    // morphing right now, independent of whether a work-item tracked the edit.
+    ['recent-commit', digest.recentCommits ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -235,6 +239,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Knowledge reuse gap (repeated zero-hit demand or reusable knowledge aging unused)';
     case 'plan-health':
       return 'Plan health (lifecycle drift, drained-but-unclosed work, or stale planning backlog)';
+    case 'recent-commit':
+      return 'Recent-commit churn (repo areas under active edit right now — exogenous entropy, not resampled from the tracked-completions view)';
   }
 }
 

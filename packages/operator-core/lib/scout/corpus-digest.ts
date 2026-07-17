@@ -308,6 +308,11 @@ export const DigestSchema = z.object({
   ownerCorrections: z.array(MetaPatternSchema).optional(),
   knowledgeReuseGaps: z.array(MetaPatternSchema).optional(),
   planHealth: z.array(MetaPatternSchema).optional(),
+  /** RECENT-COMMIT CHURN (NOV-2 / WI-4635) — a repo-area rollup of recently-touched
+   *  file paths, the "external entropy" stimulus so ideation is not resampled
+   *  purely from Scout's own operational-history readers. OPTIONAL + fail-soft,
+   *  populated by the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
+  recentCommits: z.array(MetaPatternSchema).optional(),
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS cycle's persisted digest snapshot carried
    *  (scout_digest_snapshots, migration 582). renderDigest leads with the

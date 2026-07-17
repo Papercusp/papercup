@@ -91,11 +91,13 @@ describe('flattenDigest / digestRefSet / renderDigest', () => {
     ownerCorrections: [pat('owner-correction:5', 'E')],
     knowledgeReuseGaps: [pat('knowledge:6', 'F')],
     planHealth: [pat('plan-health:7', 'G')],
+    recentCommits: [pat('commit-churn:8', 'H')],
   } as Partial<CorpusDigest>);
 
   it('flattenDigest collapses all lanes, stamping each pattern with its category lane', () => {
     const flat = flattenDigest(d);
     expect(flat.map((p) => p.ref).sort()).toEqual([
+      'commit-churn:8',
       'gap:2',
       'knowledge:6',
       'owner-correction:5',
@@ -110,6 +112,7 @@ describe('flattenDigest / digestRefSet / renderDigest', () => {
     expect(flat.find((p) => p.ref === 'owner-correction:5')!.category).toBe('owner-correction');
     expect(flat.find((p) => p.ref === 'knowledge:6')!.category).toBe('knowledge-reuse-gap');
     expect(flat.find((p) => p.ref === 'plan-health:7')!.category).toBe('plan-health');
+    expect(flat.find((p) => p.ref === 'commit-churn:8')!.category).toBe('recent-commit');
   });
 
   it('flattenDigest tolerates missing lanes (?? [])', () => {
@@ -118,6 +121,7 @@ describe('flattenDigest / digestRefSet / renderDigest', () => {
 
   it('digestRefSet is the set of every ref across the lanes', () => {
     expect([...digestRefSet(d)].sort()).toEqual([
+      'commit-churn:8',
       'gap:2',
       'knowledge:6',
       'owner-correction:5',
