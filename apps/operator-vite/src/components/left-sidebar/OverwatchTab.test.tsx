@@ -35,9 +35,10 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string }) =>
     opts.queryName === 'overwatch.snapshot' ? H.snapshotResult : H.controlResult,
 }));
-// Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates the
-// routed "Supervised {pot}" tooltip from the THE_HIVE flag hook (restore-pot-lexicon P-005).
-vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+vi.mock('@/lib/useLexicon', async () => {
+  const { lexiconFor } = await vi.importActual<typeof import('@/lib/lexicon')>('@/lib/lexicon');
+  return { useLexicon: () => lexiconFor('classic') };
+});
 
 import OverwatchTab from './OverwatchTab';
 
@@ -116,7 +117,7 @@ describe('OverwatchTab (sidebar)', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     render(<OverwatchTab active />);
-    fireEvent.click(screen.getByRole('button', { name: 'Pause overwatch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pause Kettle' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
     expect(url).toBe('/api/agent-mcp/run-tool');
@@ -131,6 +132,6 @@ describe('OverwatchTab (sidebar)', () => {
     H.snapshotResult = { data: [], loading: false, error: null };
     render(<OverwatchTab active />);
     expect(screen.getByText('Paused')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Start overwatch' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start Kettle' })).toBeTruthy();
   });
 });

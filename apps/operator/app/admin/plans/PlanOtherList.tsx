@@ -386,7 +386,14 @@ export default function PlanOtherList({
   );
 }
 
-export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
+export function OtherDetail({ item, onResolved, onDiscuss }: {
+  item: AttentionItem | null;
+  onResolved: () => void;
+  /** Host override for the Discuss pick (owner ask 2026-07-16: the sidebar
+   *  Inbox routes Discuss to the Papercup chat). Return true = handled —
+   *  the inline DiscussPanel is suppressed; false/omitted = default panel. */
+  onDiscuss?: (item: AttentionItem) => boolean;
+}) {
   const [discussOpen, setDiscussOpen] = useState(false);
   // D-027 follow-on (1): the inline Answer InputCard (conversation kind). State
   // resets per selection — PlansClient remounts OtherDetail with key={item.id}.
@@ -417,6 +424,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
   const onResponse = async (resp: AskChoiceResponse) => {
     if (resp.action === 'navigate') {
       if (resp.option_id === 'discuss') {
+        if (onDiscuss?.(item)) return;
         setDiscussOpen(true);
       } else if (resp.option_id === 'answer') {
         // D-027 follow-on (1): reveal the inline Answer InputCard (conversation).

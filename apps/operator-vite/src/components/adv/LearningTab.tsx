@@ -3185,6 +3185,7 @@ function learningPreview(text: string): { headline: string; preview: string } {
 function learningProvenance(
   createdBy: string | null | undefined,
   kind: string | null | undefined,
+  scoutLabel: string,
 ) {
   const source = `${createdBy ?? ""} ${kind ?? ""}`.toLowerCase();
   if (/owner|user|human/.test(source))
@@ -3192,7 +3193,7 @@ function learningProvenance(
   if (/queen|mug|brain/.test(source))
     return { Icon: Brain, tone: "brain", label: "Learning loop retained" };
   if (/scout|idea/.test(source))
-    return { Icon: Radar, tone: "scout", label: "Scout retained" };
+    return { Icon: Radar, tone: "scout", label: `${scoutLabel} retained` };
   if (/migration|system/.test(source))
     return { Icon: ShieldCheck, tone: "system", label: "System retained" };
   if (/reference|project/.test(source))
@@ -3245,7 +3246,7 @@ function LearningsView({
   const primaryIds = new Set(primaryRows.map((row) => row.id));
   const earlierRows = filtered.filter((row) => !primaryIds.has(row.id));
   const selectedProvenance = selectedRow
-    ? learningProvenance(selectedRow.createdBy, selectedRow.kind)
+    ? learningProvenance(selectedRow.createdBy, selectedRow.kind, t("scout"))
     : null;
   const SelectedProvenanceIcon = selectedProvenance?.Icon;
   useEffect(() => {
@@ -3304,7 +3305,7 @@ function LearningsView({
   const renderLearning = (r: HiveLearningRowT) => {
     const selected = selectedLearning === r.id;
     const preview = learningPreview(r.text);
-    const provenance = learningProvenance(r.createdBy, r.kind);
+    const provenance = learningProvenance(r.createdBy, r.kind, t("scout"));
     const ProvenanceIcon = provenance.Icon;
     return (
       <li

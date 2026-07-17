@@ -74,7 +74,7 @@ function ensureRegistered() {
   // adv:hive-content — cross-member browse rollup (WI-259 P-006). Registered
   // always (cheap + inert without a hive); its CATALOG availability is flag-gated
   // (FLAGS.THE_HIVE) in HarnessTopBar's allowedTypes.
-  panelRegistry.register('adv:hive-content', HiveContentPanel, { title: 'Hive content' });
+  panelRegistry.register('adv:hive-content', HiveContentPanel, { title: 'Shared content' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
   // Phase-8 Insights (P-073) — built + tested but previously had no in-shell
   // mount; register it so it's openable from the panel menu (additive — not

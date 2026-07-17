@@ -18,11 +18,12 @@
  * component already exposes.
  */
 
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Lightbulb, Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
 import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
+import { CHAT_SEED_EVENT, consumePendingChatSeed } from './inbox/chat-seed';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { Tooltip } from '../harness/Tooltip';
 
@@ -101,7 +102,19 @@ export function OperatorChat({
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
   conversationId, workspaceId,
 }: Props) {
-  const [input, setInput] = useState('');
+  // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
+  // consume a staged seed on mount (the usual path — the chat body was
+  // unmounted while the inbox view showed), and listen for the live event in
+  // case a seed arrives while mounted. Consume-once either way.
+  const [input, setInput] = useState<string>(() => consumePendingChatSeed() ?? '');
+  useEffect(() => {
+    const onSeed = () => {
+      const t = consumePendingChatSeed();
+      if (t) setInput(t);
+    };
+    window.addEventListener(CHAT_SEED_EVENT, onSeed);
+    return () => window.removeEventListener(CHAT_SEED_EVENT, onSeed);
+  }, []);
 
   const submit = useCallback(() => {
     const text = input.trim();

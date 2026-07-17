@@ -108,8 +108,8 @@ describe('GitClient', () => {
     mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
     hivesResult = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
     render(<GitClient />);
-    expect(screen.getByText(/Per-hive pipelines/)).toBeTruthy();
-    expect(screen.getByText(/No per-hive coding pipelines yet/i)).toBeTruthy();
+    expect(screen.getByText(/Per-pot pipelines/i)).toBeTruthy();
+    expect(screen.getByText(/No per-pot coding pipelines yet/i)).toBeTruthy();
   });
 
   it('per-hive section: renders a gated hive row with its green command, override badge, and gap', () => {

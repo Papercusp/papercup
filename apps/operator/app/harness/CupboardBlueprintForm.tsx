@@ -105,13 +105,13 @@ function ErrorBanner({ message }: { message: string }) {
 }
 
 /** createHiveHarness error-code → friendly copy (shared shape with the picker). */
-function friendlyCreateError(code: string | undefined, raw: string): string {
+function friendlyCreateError(code: string | undefined, raw: string, potLower: string): string {
   switch (code) {
     case 'slug_exists':
     case 'dest_exists':
-      return 'A hive with that name already exists. Choose a different slug.';
+      return `A ${potLower} with that name already exists. Choose a different slug.`;
     case 'blueprint_invalid':
-      return `That blueprint could not be used to create a hive: ${raw}`;
+      return `That blueprint could not be used to create a ${potLower}: ${raw}`;
     case 'invalid_slug':
       return 'The slug must be lowercase letters, digits, and hyphens.';
     default:
@@ -244,7 +244,7 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
-        setCreateError(friendlyCreateError(body.code, body.error ?? `HTTP ${res.status}`));
+        setCreateError(friendlyCreateError(body.code, body.error ?? `HTTP ${res.status}`, hiveLower));
         setBusy(false);
         return;
       }

@@ -74,7 +74,7 @@ export default function KnowledgePackCandidates() {
         setError(data.error ?? data.reason ?? `HTTP ${res.status}`);
       } else if (action === "adopt" && data.packId) {
         setAdoptedNote(
-          `Adopted into ${data.packId} v${data.packVersion ?? "?"} — hives with the pack installed now show an update to review; others can install it from "add a pack".`,
+          `Adopted into ${data.packId} v${data.packVersion ?? "?"} — ${t('pot', { plural: true })} with the pack installed now show an update to review; others can install it from "add a pack".`,
         );
       }
     } catch (e) {

@@ -117,7 +117,7 @@ type StripStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped';
 
 const STRIP_LABELS: Record<StripStepId, string> = {
   resolve: 'Resolving repository',
-  lookup: 'Checking for an existing hive',
+  lookup: 'Checking for an existing pot',
   clone: 'Cloning repository',
   detect: 'Detecting blueprint',
   create: 'Creating',
@@ -173,7 +173,13 @@ const OPTIMISTIC_HOLD_MS: Record<StripStepId, number> = {
   publish: 6_000,
 };
 
-function ProgressStrip({ steps }: { steps: { id: StripStepId; status: StripStatus }[] }) {
+function ProgressStrip({
+  steps,
+  potLower,
+}: {
+  steps: { id: StripStepId; status: StripStatus }[];
+  potLower: string;
+}) {
   return (
     <div
       data-testid="github-url-progress"
@@ -194,7 +200,7 @@ function ProgressStrip({ steps }: { steps: { id: StripStepId; status: StripStatu
             )}
           </span>
           <span style={{ fontSize: 13, fontWeight: s.status === 'running' ? 600 : 400 }}>
-            {STRIP_LABELS[s.id]}
+            {s.id === 'lookup' ? `Checking for an existing ${potLower}` : STRIP_LABELS[s.id]}
             {s.status === 'skipped' && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--fg-mute)' }}>skipped</span>}
           </span>
         </div>
@@ -645,7 +651,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           </p>
         )}
         {phase === 'error' && error && <ErrorBanner message={error} />}
-        <ProgressStrip steps={activeSteps.map((id) => ({ id, status: stepStatuses[id] ?? 'pending' }))} />
+        <ProgressStrip steps={activeSteps.map((id) => ({ id, status: stepStatuses[id] ?? 'pending' }))} potLower={hiveLower} />
         {phase === 'running' && (
           <p style={{ margin: '0 0 8px', fontSize: 11, color: 'var(--fg-mute)' }}>
             Cloning and verifying can take a few minutes for large repositories.
@@ -769,7 +775,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
           ✓ {intoExisting ? `Added to ${result.potSlug}` : `${hiveLabel} created`}
         </h2>
-        <ProgressStrip steps={activeSteps.map((id) => ({ id, status: stepStatuses[id] ?? 'pending' }))} />
+        <ProgressStrip steps={activeSteps.map((id) => ({ id, status: stepStatuses[id] ?? 'pending' }))} potLower={hiveLower} />
         <InfoCard>
           <div>
             {hiveLabel}: <code>{result.potSlug}</code> · member: <code>{result.memberSlug}</code>

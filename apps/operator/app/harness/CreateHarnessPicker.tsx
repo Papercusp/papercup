@@ -1238,7 +1238,7 @@ function ShareOfferStep({
         </div>
       ) : (
         <p data-testid="share-offer-standalone-note" style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--fg-dim)' }}>
-          Sharing happens at the hive level — publish this {hiveLabel.toLowerCase()} to let others collaborate.
+          Sharing happens at the {hiveLabel.toLowerCase()} level — publish it to let others collaborate.
         </p>
       )}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

@@ -374,7 +374,7 @@ export default function AdvEvalsTab() {
             The <strong>impartial</strong> benchmark suite — public third-party tasks, graded by each benchmark’s
             <em> official external grader</em>, run across four arms held to the same model, task set, and cost axis.
             This is the honest systems claim: holding the model constant, how much does the Papercusp harness add, and
-            at what cost? (The self-referential internal evals — gym, IQ-battery, hive-eval — live under{' '}
+            at what cost? (The self-referential internal evals — gym, IQ-battery, pot-eval — live under{' '}
             <a className="pc-evals__link" href="/adv?tab=learning">Learning</a>.)
           </p>
         </div>
@@ -1392,7 +1392,7 @@ function CompareRunsView() {
       <EmptyCard
         icon={<Scale size={20} aria-hidden />}
         title="Need at least two runs to compare"
-        body="Run (or import) a second arm over the same task set — e.g. the SWE-bench Pro reference harness (mini-SWE-agent) on the same 11 tasks + opus — then compare it against the hive arm here."
+        body="Run (or import) a second arm over the same task set — e.g. the SWE-bench Pro reference harness (mini-SWE-agent) on the same 11 tasks + opus — then compare it against the Pot arm here."
       />
     );
   }

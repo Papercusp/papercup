@@ -21,13 +21,18 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * commit; this file's contract with it is `useOperatorConversation()`.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
-import { ChevronLeft, ChevronRight, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Inbox as InboxIcon, Volume2, VolumeX } from 'lucide-react';
 import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { PotHealthPane } from './PotHealthPane';
+import { useInboxPendingCount } from './inbox/use-inbox-pending';
+
+// The Inbox view (EI-13037) pulls the Queue detail card chain — lazy so the
+// boot-critical chat chunk stays lean; it loads on first toggle.
+const InboxPane = lazy(() => import('./inbox/InboxPane'));
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { useShortcutAction } from '@/lib/hotkeys';
@@ -48,10 +53,12 @@ import {
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
 
-/** The 🫖 header toggle's view values (WI-4778): the chat body ⇄ the
- *  full-height Pot Health view, inside the same Papercup pane. URL state via
- *  nuqs so agents (ui:get_state / ui:dispatch) can see + drive it. */
-const CHAT_VIEW_VALUES = ['chat', 'pot'] as const;
+/** The header toggles' view values: the chat body ⇄ the full-height Pot
+ *  Health view (WI-4778) ⇄ the human Inbox (EI-13037, owner placement
+ *  correction 2026-07-16 — the inbox lives WITH the Papercup chat in this
+ *  far-left "live running stuff" sidebar). URL state via nuqs so agents
+ *  (ui:get_state / ui:dispatch) can see + drive it. */
+const CHAT_VIEW_VALUES = ['chat', 'pot', 'inbox'] as const;
 
 /**
  * Speak-responses (TTS output) mute toggle — MOVED here from the left rail's
@@ -260,6 +267,11 @@ export function OperatorChatSidebar() {
     parseAsStringEnum([...CHAT_VIEW_VALUES]).withDefault('chat'),
   );
   const potOpen = view === 'pot';
+  const inboxOpen = view === 'inbox';
+  // Live decision-tier count (shared plans.attention sync feed) — badge on
+  // the Inbox toggle + the collapsed rail, so "needs you" is visible either way.
+  const inboxPending = useInboxPendingCount();
+  const inboxBadge = inboxPending > 99 ? '99+' : String(inboxPending);
 
   return (
     <aside
@@ -280,6 +292,11 @@ export function OperatorChatSidebar() {
         <span className="op-chat-expand-orb" aria-hidden="true">
           <OperatorLogoMark className="op-chat-expand-logo" />
         </span>
+        {inboxPending > 0 ? (
+          <span className="op-chat-rail-badge" aria-label={`${inboxPending} inbox items need you`}>
+            {inboxBadge}
+          </span>
+        ) : null}
         <span className="op-chat-expand-label">Chat</span>
         <ChevronRight className="op-chat-expand-chevron" strokeWidth={1.9} aria-hidden="true" />
       </button></Tooltip>
@@ -297,12 +314,33 @@ export function OperatorChatSidebar() {
                 is lit (is-on) while the chat face shows and returns to it from
                 the pot view (the symmetric dual of the 🫖 toggle). The old
                 raised, glowing 38px orb is gone. */}
-            <Tooltip label={potOpen ? 'Back to Papercup chat' : 'Papercup chat'}>
+            {/* EI-13037 (owner ask 2026-07-16): the Inbox face sits LEFT of
+                the Papercup button — [📥 Inbox] [🥤 Papercup] [🫖 Pot Health]
+                — the pane's three peer faces. Badge = live "needs you" count. */}
+            <Tooltip label={inboxOpen ? 'Back to chat' : 'Inbox — decisions, escalations & messages that need YOU'}>
               <button
                 type="button"
-                className={`op-chat-papercup-toggle${potOpen ? '' : ' is-on'}`}
+                className={`op-chat-inbox-toggle${inboxOpen ? ' is-on' : ''}`}
+                onClick={() => void setView(inboxOpen ? 'chat' : 'inbox')}
+                aria-pressed={inboxOpen}
+                aria-label={inboxOpen ? 'Back to chat' : 'Show inbox'}
+                data-testid="op-chat-inbox-toggle"
+              >
+                <InboxIcon className="op-chat-inbox-icon" aria-hidden="true" />
+                <span className="op-chat-inbox-toggle-label">Inbox</span>
+                {inboxPending > 0 ? (
+                  <span className="op-chat-inbox-badge" data-testid="op-chat-inbox-badge">
+                    {inboxBadge}
+                  </span>
+                ) : null}
+              </button>
+            </Tooltip>
+            <Tooltip label={view === 'chat' ? 'Papercup chat' : 'Back to Papercup chat'}>
+              <button
+                type="button"
+                className={`op-chat-papercup-toggle${view === 'chat' ? ' is-on' : ''}`}
                 onClick={() => void setView('chat')}
-                aria-pressed={!potOpen}
+                aria-pressed={view === 'chat'}
                 aria-label="Papercup chat"
               >
                 <span className="op-chat-papercup-mark" aria-hidden="true">
@@ -355,6 +393,13 @@ export function OperatorChatSidebar() {
           /* WI-4778: 🫖 on — the full-height Pot Health view replaces the
              chat body (strip + messages + composer), same pane, one scroll. */
           <PotHealthPane />
+        ) : inboxOpen ? (
+          /* EI-13037: 📥 on — the human Inbox replaces the chat body. Its
+             Discuss action stages a chat seed and flips back to the chat
+             view, where the composer consumes it (chat-seed.ts). */
+          <Suspense fallback={<div className="op-chat-view-loading">Loading inbox…</div>}>
+            <InboxPane onDiscussInChat={() => void setView('chat')} />
+          </Suspense>
         ) : (
           /* WI-4789 (owner ask 2026-07-14): the ambient Mug/Kettle status
              strip that used to sit here is GONE — the 🫖 Pot Health toggle
@@ -398,6 +443,87 @@ export function OperatorChatSidebar() {
 }
 
 const OP_CHAT_SIDEBAR_CSS = `
+/* ── Inbox face (EI-13037, owner placement 2026-07-16) — the pane's third
+   toggle, LEFT of Papercup: [📥 Inbox] [🥤 Papercup] [🫖 Pot Health].
+   Pill chrome mirrors .op-chat-pot-toggle so the three read as peers. */
+.op-chat-header-main .op-chat-inbox-toggle {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 8px 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1), transparent 4%);
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.op-chat-header-main .op-chat-inbox-toggle.is-on {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 30%);
+  background: color-mix(in srgb, var(--accent), transparent 82%);
+}
+.op-chat-header-main .op-chat-inbox-toggle:hover {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+}
+.op-chat-header-main .op-chat-inbox-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-strong), transparent 18%);
+  outline-offset: 2px;
+}
+.op-chat-header-main .op-chat-inbox-icon { width: 14px; height: 14px; flex: 0 0 auto; }
+.op-chat-header-main .op-chat-inbox-toggle-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 640;
+  color: var(--fg-dim);
+}
+.op-chat-header-main .op-chat-inbox-toggle:hover .op-chat-inbox-toggle-label,
+.op-chat-header-main .op-chat-inbox-toggle.is-on .op-chat-inbox-toggle-label {
+  color: var(--fg);
+}
+.op-chat-inbox-badge {
+  flex: 0 0 auto;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: var(--bad, #f87171);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Collapsed rail: the pending count stays visible on the expand strip. */
+.op-chat-expand-rail .op-chat-rail-badge {
+  position: absolute;
+  top: 8px;
+  right: 5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--bad, #f87171);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.op-chat-view-loading { padding: 12px; font-size: 12px; color: var(--fg-mute, #8a8a91); }
+
 .op-chat-sidebar {
   position: fixed;
   /* Sit BELOW the dev env-switcher bar (WI-4729: the header orb was clipped

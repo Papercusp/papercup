@@ -207,7 +207,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
         )
       ) : visiblePlans.length === 0 ? (
         <div className="pc-advpanel__empty">
-          No federated plans in this hive yet — peer members’ plans land here live as they sync.
+          No federated plans in this {t('pot', { lower: true })} yet — peer members’ plans land here live as they sync.
         </div>
       ) : (
         <ul className="pc-hivecontent__list" role="list">

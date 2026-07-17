@@ -102,6 +102,7 @@ async function runOverwatchControl(tool: 'kettle:start' | 'kettle:pause', harnes
 
 export default function OverwatchTab({ active }: { active: boolean }) {
   const t = useLexicon();
+  const kettle = t('overwatch');
   const snap = useSyncQuery<OverwatchBrief>({ queryName: 'overwatch.snapshot', args: {}, staleTime: 15_000 });
   const ctrl = useSyncQuery<OverwatchControlState>({ queryName: 'overwatch.controlState', args: {}, staleTime: 15_000 });
   const live = useSyncQuery<OverwatchLiveness>({ queryName: 'overwatch.liveness', args: {}, staleTime: 15_000 });
@@ -141,13 +142,13 @@ export default function OverwatchTab({ active }: { active: boolean }) {
           {snap.error
             ? `Kettle unavailable — ${String(snap.error)}`
             : snap.loading || ctrl.loading
-              ? 'Loading the overwatch brief…'
-              : 'Kettle is dark. The full system health is on the Health tab.'}
+              ? `Loading the ${kettle.toLowerCase()} brief…`
+              : `${kettle} is dark. The full system health is on the Health tab.`}
         </div>
         {/* Model override is settable even while dark — it applies on the next start. */}
         {overwatchModel.error && <div className="pc-owsb__err">Model override - {overwatchModel.error}</div>}
         <ModelOverride
-          label="Kettle model"
+          label={`${kettle} model`}
           override={overwatchModel.override}
           onWrite={overwatchModel.setOverride}
           busy={overwatchModel.busy}
@@ -198,14 +199,14 @@ export default function OverwatchTab({ active }: { active: boolean }) {
               <span className="pc-owsb__hive">{slug}</span>
             </Tooltip>
           )}
-          <Tooltip label={isStarted ? 'Pause the overwatch supervisor (kettle:pause)' : 'Start the overwatch supervisor (kettle:start)'}>
+          <Tooltip label={isStarted ? `Pause the ${kettle.toLowerCase()} supervisor (kettle:pause)` : `Start the ${kettle.toLowerCase()} supervisor (kettle:start)`}>
             <button
               type="button"
               className="pc-owsb__toggle"
               data-on={isStarted}
               disabled={busy}
               onClick={() => void toggle()}
-              aria-label={isStarted ? 'Pause overwatch' : 'Start overwatch'}
+              aria-label={isStarted ? `Pause ${kettle}` : `Start ${kettle}`}
             >
               {busy ? (
                 '...'
@@ -230,7 +231,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
             tooltip="Floor cadence when the loop has no explicit next-wake. Actual wakes range 10-30min when the system reads healthy (kettle.md) — a slower average than this figure is expected, not a stall (WI-4401)."
           />
           <Metric icon={<Clock3 size={11} aria-hidden />} label="Next" value={nextWake} />
-          <Metric icon={<Clock3 size={11} aria-hidden />} label="Last" value={lastWake} tooltip="Last overwatch wake" />
+          <Metric icon={<Clock3 size={11} aria-hidden />} label="Last" value={lastWake} tooltip={`Last ${kettle} wake`} />
           <Metric
             icon={anomalyCount === 0 ? <ShieldCheck size={11} aria-hidden /> : <AlertTriangle size={11} aria-hidden />}
             label="Signals"
@@ -248,7 +249,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
 
         {overwatchModel.error && <div className="pc-owsb__err">Model override - {overwatchModel.error}</div>}
         <ModelOverride
-          label="Kettle model"
+          label={`${kettle} model`}
           override={overwatchModel.override}
           onWrite={overwatchModel.setOverride}
           busy={overwatchModel.busy}
@@ -380,4 +381,3 @@ const AnomalyRow = memo(function AnomalyRow({ anomaly }: { anomaly: Anomaly }) {
     </li>
   );
 });
-

@@ -106,7 +106,7 @@ describe('<HarnessTopBar /> RegisterSubsButton', () => {
     );
     clickRegister();
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
-    expect(toastSuccess.mock.calls[0][0]).toMatch(/Members of hive 'my-hive'\./);
+    expect(toastSuccess.mock.calls[0][0]).toMatch(/Members of pot 'my-hive'\./);
   });
 
   it('reports the up-to-date case (zero new + zero reconciled) as a quiet success', async () => {

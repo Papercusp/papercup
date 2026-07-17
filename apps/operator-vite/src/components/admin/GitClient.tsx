@@ -3,6 +3,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { StatusPill } from '../ui';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * /admin/git — the git-sync → green-checkpoint → release pipeline console.
@@ -255,6 +256,7 @@ export function bridgeLabel(r: Pick<GitPipelineHiveRow, 'hiveGitMode' | 'bridge'
  *  the green-command edit to the per-hive override (POST /api/desktop/git/pot-green-cmd).
  *  The selected hive lives in the URL (nuqs) so it's deep-linkable + agent-driveable. */
 function PerHiveSection() {
+  const t = useLexicon();
   const sync = useSyncQuery<GitPipelineHiveRow>({ queryName: 'dev.gitPipelineHives', staleTime: 30_000 });
   const rows = sync.data ?? [];
   const [selected, setSelected] = useQueryState('hive', parseAsString.withDefault(''));
@@ -296,12 +298,12 @@ function PerHiveSection() {
   return (
     <section className="pc-git__sec">
       <h3 className="pc-git__h">
-        Per-hive pipelines <span className="pc-git__muted">· other coding hives</span>
+        Per-{t('pot', { lower: true })} pipelines <span className="pc-git__muted">· other coding {t('pot', { plural: true, lower: true })}</span>
       </h3>
       {sync.error && <div className="pc-git__err">{String(sync.error.message || sync.error)}</div>}
       {rows.length === 0 ? (
         <div className="pc-git__empty">
-          No per-hive coding pipelines yet — a coding hive backed by a repo (green gate enabled) appears here. The
+          No per-{t('pot', { lower: true })} coding pipelines yet — a coding {t('pot', { lower: true })} backed by a repo (green gate enabled) appears here. The
           operator-home pipeline is shown above.
         </div>
       ) : (

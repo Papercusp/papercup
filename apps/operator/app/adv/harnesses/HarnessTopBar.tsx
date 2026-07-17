@@ -162,7 +162,7 @@ function RegisterSubsButton({ slug }: { slug: string }) {
           const fixedCount = (data.reconciled ?? []).length + (data.hiveReconciled ?? []).length;
           const errCount = (data.errors ?? []).length;
           const hiveNote =
-            data.membership?.kind === 'hive_slug' ? ` Members of hive '${data.membership.value}'.` : '';
+            data.membership?.kind === 'hive_slug' ? ` Members of ${t('pot', { lower: true })} '${data.membership.value}'.` : '';
           const msg = `Discovered ${data.discovered ?? 0} submodules — ${newCount} new, ${fixedCount} reconciled${errCount ? `, ${errCount} errors` : ''}.${hiveNote}`;
           if (errCount > 0) toast.error(msg);
           else if (newCount + fixedCount === 0) toast.success(`No new sub-${t('pot', { plural: true, lower: true })} (registry up-to-date).`, { duration: 2500 });

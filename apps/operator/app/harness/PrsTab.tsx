@@ -18,6 +18,7 @@ import { computeAutoStatus, type PrAutoStatus } from '@papercusp/operator-core/l
 import { PrRow, type PrRowData } from './PrRow';
 import { PrReviewerSettings } from './PrReviewerSettings';
 import { useHarnessClaimStatus } from '../adv/harnesses/useHarnessClaimStatus';
+import { useLexicon } from '@/lib/useLexicon';
 
 const PR_FILTERS = ['all', 'mine', 'awaiting-me', 'approved', 'merged'] as const;
 type PrFilter = (typeof PR_FILTERS)[number];
@@ -153,6 +154,7 @@ export function PrsTab({
   trustedAuthorIds,
   reviewerRoleEnabled,
 }: Props) {
+  const t = useLexicon();
   const [filter, setFilter] = useQueryState(
     'prs_filter',
     parseAsStringLiteral(PR_FILTERS).withDefault('all'),
@@ -384,7 +386,7 @@ export function PrsTab({
                 className={`pc-adv-prs__chip pc-adv-prs__chip--scope${scope === s ? ' is-active' : ''}`}
                 onClick={() => void setScope(s)}
               >
-                {s === 'harness' ? 'this harness' : 'whole hive'}
+                {s === 'harness' ? 'this harness' : `whole ${t('pot', { lower: true })}`}
               </button>
             ))}
           </div>

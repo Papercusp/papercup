@@ -8,6 +8,7 @@
  * the EI-8808 grading artifact (rating chips, evidence-forward layout).
  */
 import { Table, type TableColumn } from '../harness/Table';
+import { useLexicon } from '@/lib/useLexicon';
 
 export interface RatingEntry {
   rating: string;
@@ -80,6 +81,7 @@ export default function ScorecardDetail({
   scorecard: ScorecardRow;
   onBack?: () => void;
 }) {
+  const t = useLexicon();
   const entries = Object.entries(scorecard.ratings);
   const complete = scorecard.rubricResolved && scorecard.missingKeys.length === 0;
 
@@ -129,7 +131,7 @@ export default function ScorecardDetail({
         <dd>{scorecard.createdBy ?? 'unknown'}</dd>
         {scorecard.sourceHive && (
           <>
-            <dt style={{ opacity: 0.65 }}>Source hive</dt>
+            <dt style={{ opacity: 0.65 }}>Source {t('pot', { lower: true })}</dt>
             <dd>{scorecard.sourceHive}</dd>
           </>
         )}

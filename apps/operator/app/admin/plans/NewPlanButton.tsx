@@ -167,7 +167,7 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
             }}
 
           >
-            Workspace-level (no hive)
+            Workspace-level (no {potLabel})
           </button></Tooltip>
         </div>
     </Popover>
