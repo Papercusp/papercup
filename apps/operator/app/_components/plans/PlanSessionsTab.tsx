@@ -199,27 +199,28 @@ export default function PlanSessionsTab({
                 const label = s.active?.label ?? s.session?.label ?? owner ?? s.sessionId.slice(0, 12);
                 return (
                   <li key={`${s.sourceKind}:${s.sessionId}`}>
-                    <button
-                      type="button"
-                      className="plan-sessions__row plan-sessions__row--hit"
-                      disabled={!owner}
-                      onClick={() => owner && setOpenOwner({ id: owner, label })}
-                      title={owner ? 'Open this session' : 'No resolvable live/recorded owner for this transcript'}
-                      data-testid="plan-sessions-hit"
-                    >
-                      <span className="plan-sessions__row-title">
-                        {s.active ? <span className="plan-sessions__live-dot" aria-label="live">●</span> : null}
-                        {label}
-                      </span>
-                      {s.hits.slice(0, 2).map((h) => (
-                        <span
-                          key={h.turnIdx}
-                          className="plan-sessions__excerpt"
-                          // ts_headline <mark> markup from the search engine (trusted server output).
-                          dangerouslySetInnerHTML={{ __html: h.highlight || h.excerpt }}
-                        />
-                      ))}
-                    </button>
+                    <Tooltip label={owner ? 'Open this session' : 'No resolvable live/recorded owner for this transcript'}>
+                      <button
+                        type="button"
+                        className="plan-sessions__row plan-sessions__row--hit"
+                        disabled={!owner}
+                        onClick={() => owner && setOpenOwner({ id: owner, label })}
+                        data-testid="plan-sessions-hit"
+                      >
+                        <span className="plan-sessions__row-title">
+                          {s.active ? <span className="plan-sessions__live-dot" aria-label="live">●</span> : null}
+                          {label}
+                        </span>
+                        {s.hits.slice(0, 2).map((h) => (
+                          <span
+                            key={h.turnIdx}
+                            className="plan-sessions__excerpt"
+                            // ts_headline <mark> markup from the search engine (trusted server output).
+                            dangerouslySetInnerHTML={{ __html: h.highlight || h.excerpt }}
+                          />
+                        ))}
+                      </button>
+                    </Tooltip>
                   </li>
                 );
               })}
