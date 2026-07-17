@@ -370,7 +370,16 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
             system,
             messages: [{ role: 'user', content: user }],
             responseFormat: 'json',
-            ...(thinking ? { thinkingBudgetTokens: thinking, maxTokens: thinking + 4096 } : { maxTokens: 4096 }),
+            // ⚠ maxTokens must leave room for SERVER-SIDE thinking: claude-sonnet-5
+            // emits adaptive thinking tokens against this same budget even when no
+            // thinkingBudgetTokens is requested (client-side thinking is not even
+            // plumbed — agent-chat-stream ignores it). At 4096, thinking consumed
+            // ~2.5-4k tokens and the JSON payload was TRUNCATED MID-ARRAY (or never
+            // started) → parseIdeasPayload → [] → a silent ok:true/raw:0 outage
+            // (2026-07-16, EI-13119 textHead capture + repro: outTok exactly 4096,
+            // textLen 0-2173, tail cut mid-JSON). 16384 fits worst-case thinking +
+            // 4 full ideas with wide margin; only generated tokens are billed.
+            ...(thinking ? { thinkingBudgetTokens: thinking, maxTokens: thinking + 16384 } : { maxTokens: 16384 }),
           },
           slot,
         );

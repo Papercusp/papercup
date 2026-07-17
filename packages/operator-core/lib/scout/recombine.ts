@@ -231,7 +231,8 @@ export async function recombineProposals(
       messages: [{ role: 'user', content: user }],
       responseFormat: 'json',
       thinkingBudgetTokens,
-      maxTokens: thinkingBudgetTokens + 2048,
+      // Server-side thinking headroom (EI-13119 class — see ideators.ts).
+      maxTokens: thinkingBudgetTokens + 8192,
     });
     const parsed = parseProposal(parseLlmJson(res));
     const base: Partial<Proposal> = parsed

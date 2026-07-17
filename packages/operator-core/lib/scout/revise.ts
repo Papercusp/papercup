@@ -149,7 +149,8 @@ export async function runScoutRevisionCycle(
 ): Promise<ScoutRevisionResult> {
   const withPlanLock = deps.withPlanLock ?? realWithPlanLock;
   const model = deps.model ?? DEFAULT_REVISION_MODEL;
-  const maxTokens = deps.maxTokens ?? 8000;
+  // 16384: server-side thinking counts against this budget (EI-13119 class — see ideators.ts).
+  const maxTokens = deps.maxTokens ?? 16384;
   const lockOpts = (slug: string, what: string) => ({
     slug,
     intent: `scout:revise ${what} ${slug} (queen feedback)`,

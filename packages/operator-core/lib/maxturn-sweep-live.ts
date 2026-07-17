@@ -323,7 +323,16 @@ async function defaultSpawnSession(input: SweepSpawnInput, repoRoot: string): Pr
   await new Promise<void>((resolve) => {
     const child = nodeSpawn(
       'node',
-      [join(repoRoot, 'apps/operator/scripts/psu-launcher.mjs'), '--headless', '--yes', `--kickoff=${input.kickoff}`],
+      [
+        join(repoRoot, 'apps/operator/scripts/psu-launcher.mjs'),
+        // --agent is REQUIRED by psu-launcher (it exits immediately with a usage error
+        // otherwise) — caught by the WI-5002 live canary: the cell died in 262ms with
+        // "no transcript" because this arg was missing and stdio:'ignore' hid the message.
+        '--agent=claude',
+        '--headless',
+        '--yes',
+        `--kickoff=${input.kickoff}`,
+      ],
       {
         cwd: input.workDir,
         env: { ...process.env, PAPERCUSP_SID: input.ownerId },

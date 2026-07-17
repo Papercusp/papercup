@@ -155,7 +155,11 @@ export async function runCritic(
     messages: [{ role: 'user', content: user }],
     responseFormat: 'json',
     thinkingBudgetTokens,
-    maxTokens: thinkingBudgetTokens + 1024,
+    // Headroom for SERVER-SIDE thinking (claude-5-family models emit it against
+    // this budget even though thinkingBudgetTokens is client-side fiction — see
+    // ideators.ts): a tight cap truncates the JSON mid-object → parseLlmJson null
+    // → feasibility 0 → every idea silently REVIEWED, never kept (EI-13119 class).
+    maxTokens: thinkingBudgetTokens + 8192,
   });
   const parsed = parseLlmJson(res) as Record<string, unknown> | null;
   if (parsed == null) {

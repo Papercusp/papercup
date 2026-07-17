@@ -133,11 +133,27 @@ describe('runMaintenanceResidualSample — the gateway-boundary sampling harness
       },
       llmFn: async () => '{"findings":[]}',
       resolveAgent: async () => 'omp' as string | null,
+      // EI-13234: default the canonical resolver to a MISS so the existing cases keep
+      // exercising the legacy gateway-<agent> fallback vocabulary.
+      resolveCanonicalClass: async () => null as string | null,
       now: () => NOW,
       ...overrides,
     };
     return { appended, deps };
   }
+
+  it('EI-13234: a resolvable live host classifies the row with the CANONICAL sessionClassForHost name, not gateway-<agent>', async () => {
+    const h = harness({ resolveCanonicalClass: async () => 'claude-interactive' });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toMatchObject({ sampled: true, sessionClass: 'claude-interactive' });
+    expect(h.appended[0]).toMatchObject({ sessionClass: 'claude-interactive' });
+  });
+
+  it('EI-13234: a canonical-resolver MISS falls back to the legacy gateway-<agent> label (a boundary is never unsampled over a classifier fault)', async () => {
+    const h = harness({ resolveCanonicalClass: async () => null });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toMatchObject({ sampled: true, sessionClass: 'gateway-omp' });
+  });
 
   it('appends a parsed no-miss sample with the gateway-<agent> class + the live-boundary source stamp', async () => {
     const h = harness();

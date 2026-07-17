@@ -194,6 +194,11 @@ export interface MaintenanceResidualSampleDeps {
   llmFn: ResidualLlmFn;
   /** ownerId → agent kind ('omp' | 'claude' | ...) for the class label; null on miss. */
   resolveAgent: (ownerId: string) => Promise<string | null>;
+  /** EI-13234: ownerId → CANONICAL session class (sessionClassForHost over the live host
+   *  meta — the vocabulary the drill ledger + cold-by-default sufficientClasses key on).
+   *  null on miss/error ⇒ the row falls back to the legacy `gateway-<agent>` label, so a
+   *  corpus row is never lost to a classifier fault. */
+  resolveCanonicalClass: (ownerId: string) => Promise<string | null>;
   now: () => number;
 }
 
@@ -206,6 +211,15 @@ function sampleDeps(overrides: Partial<MaintenanceResidualSampleDeps>): Maintena
       try {
         const { resolveSessionRef } = await import('./compaction-usage');
         return (await resolveSessionRef(ownerId))?.agent ?? null;
+      } catch {
+        return null;
+      }
+    },
+    resolveCanonicalClass: async (ownerId) => {
+      try {
+        const { findLiveHost, sessionClassForHost } = await import('./events/await/psu-pty-discovery');
+        const host = findLiveHost(ownerId);
+        return host ? sessionClassForHost(host) : null;
       } catch {
         return null;
       }
@@ -241,8 +255,12 @@ export async function runMaintenanceResidualSample(
   // D-010 interactive-only gate — the pass core records the skip semantics; we
   // simply do not append (a skipped boundary is not a sample, and skip rows
   // from a drone fleet would roll real samples out of the bounded ledger).
+  // EI-13234: prefer the CANONICAL class (sessionClassForHost vocabulary — what the
+  // drill ledger + cold-by-default consumers join on); the legacy gateway-<agent>
+  // label survives only as the no-host fallback so no boundary is ever unsampled.
   const agent = await deps.resolveAgent(ownerId);
-  const sessionClass = `gateway-${agent ?? 'unknown'}`;
+  const canonical = await deps.resolveCanonicalClass(ownerId);
+  const sessionClass = canonical ?? `gateway-${agent ?? 'unknown'}`;
   if (!input.interactive) return { sampled: false, reason: 'non-interactive', sessionClass };
 
   // Per-owner cost guard: one sample per RESIDUAL_SAMPLE_MIN_INTERVAL_MS.

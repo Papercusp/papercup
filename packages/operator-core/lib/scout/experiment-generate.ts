@@ -78,7 +78,8 @@ export async function generateExperimentRequest(
       messages: [{ role: 'user', content: user }],
       responseFormat: 'json',
       thinkingBudgetTokens,
-      maxTokens: thinkingBudgetTokens + 2048,
+      // Server-side thinking headroom (EI-13119 class — see ideators.ts).
+      maxTokens: thinkingBudgetTokens + 8192,
     });
     const parsed = parseGen(parseLlmJson(res));
     if (parsed) {
