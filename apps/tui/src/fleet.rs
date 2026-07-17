@@ -729,6 +729,7 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: O
                 .clone()
                 .or_else(|| a.label.clone())
                 .unwrap_or_else(|| a.agent_id.clone());
+            let label = crate::agent_pane_kind::normalize_agent_label(&label, &app.lexicon);
             let dot = if a.alive {
                 glyph::status::DONE
             } else {

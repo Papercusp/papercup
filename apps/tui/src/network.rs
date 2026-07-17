@@ -90,6 +90,9 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let live_agents: u32 = app.network_rows.iter().filter_map(|r| r.live_agents).sum();
+    let pot = app.lexicon.lex("pot").to_lowercase();
+    let pots = app.lexicon.lex_plural("pot").to_lowercase();
+    let nodes = app.lexicon.lex_plural("node").to_lowercase();
     let pending: u32 = app
         .network_rows
         .iter()
@@ -98,7 +101,7 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
     let headline = Line::from(vec![
         Span::styled(" ⬡ Network ", Theme::title_active()),
         Span::raw(format!(
-            " {} hive-contexts · {} live agents · {} asks pending ",
+            " {} {pot} contexts · {} live agents · {} asks pending ",
             app.network_rows.len(),
             live_agents,
             pending
@@ -112,14 +115,14 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
         // hive-contexts beyond... itself, which would still be one row, so
         // an empty board usually means the endpoint is absent.
         f.render_widget(
-            Paragraph::new(
-                "no hive-contexts on the network board yet\n\n\
-                 Rows appear here per hive-context this install can see:\n\
-                 your own hives (T1/T2), shared-Hive peer swarms (T3,\n\
-                 substrate-verified), and foreign directory hives (T4,\n\
+            Paragraph::new(format!(
+                "no {pot} contexts on the network board yet\n\n\
+                 Rows appear here for each {pot} context this install can see:\n\
+                 your own {pots} (T1/T2), shared peer {nodes} (T3,\n\
+                 substrate-verified), and foreign directory {pots} (T4,\n\
                  self-reported beacon). An empty board usually means the\n\
-                 network data endpoint isn't reachable yet.",
-            )
+                 network data endpoint isn't reachable yet."
+            ))
             .wrap(Wrap { trim: false })
             .style(Theme::panel())
             .block(Theme::block(Line::from(" network board "), false)),
@@ -172,7 +175,7 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
         ),
         &format!(
             "  {:<10}{:<25}{:>4} {:>4}  {:<30}{}",
-            "tier", "hive", "agnt", "queue", "focus", "asks"
+            "tier", pot, "agnt", "queue", "focus", "asks"
         ),
     );
     let list = List::new(items)
@@ -182,7 +185,7 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, body, &mut state);
 
     if let Some(row) = app.network_rows.get(sel) {
-        draw_detail(f, split[1], row, false);
+        draw_detail(f, split[1], row, false, app);
     }
 }
 
@@ -202,7 +205,7 @@ fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
             let beacons = !app.hive_beacons.is_empty();
             let asks = !app.hive_asks.is_empty();
             if !roster && !beacons && !asks {
-                draw_detail(f, area, row, true);
+                draw_detail(f, area, row, true, app);
                 return;
             }
             // Detail header on top; the populated sections share the rest.
@@ -220,7 +223,7 @@ fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
                 .direction(Direction::Vertical)
                 .constraints(constraints)
                 .split(area);
-            draw_detail(f, split[0], row, true);
+            draw_detail(f, split[0], row, true, app);
             let mut next = 1;
             if roster {
                 draw_hive_roster(f, app, split[next], key);
@@ -239,10 +242,11 @@ fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
             // lists the hive — show the roster above the honest waiting note, so
             // a fresh per-hive tab isn't blank until the next board refetch.
             let waiting = Paragraph::new(format!(
-                "hive '{key}' is not on the network board (yet)\n\n\
+                "{} '{key}' is not on the network board (yet)\n\n\
                  Waiting for the next board refresh — if it never appears,\n\
-                 the hive left the directory/swarm or the board endpoint\n\
+                 it left the directory/network or the board endpoint\n\
                  is unreachable.",
+                app.lexicon.lex("pot")
             ))
             .wrap(Wrap { trim: false })
             .style(Theme::panel())
@@ -317,7 +321,7 @@ fn draw_hive_roster(f: &mut Frame, app: &App, area: Rect, key: &str) {
 /// present (absent field = the tier lacks that data — hidden, not zeroed).
 /// `full` is the hive-pane mode (adds the tier-2/3 status header semantics
 /// B-10's drill-in tab relies on — queen/wake/live status ride here).
-fn draw_detail(f: &mut Frame, area: Rect, row: &NetworkBoardRow, full: bool) {
+fn draw_detail(f: &mut Frame, area: Rect, row: &NetworkBoardRow, full: bool, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
 
     // Identity (always present per C-3).
@@ -402,9 +406,15 @@ fn draw_detail(f: &mut Frame, area: Rect, row: &NetworkBoardRow, full: bool) {
     let hint = if full {
         " g refresh".to_string()
     } else if row.tier <= 1 {
-        " ⏎ go to the 'this hive' tab · g refresh".to_string()
+        format!(
+            " ⏎ go to the 'this {}' tab · g refresh",
+            app.lexicon.lex("pot").to_lowercase()
+        )
     } else {
-        " ⏎ open hive tab · g refresh".to_string()
+        format!(
+            " ⏎ open {} tab · g refresh",
+            app.lexicon.lex("pot").to_lowercase()
+        )
     };
     lines.push(Line::from(Span::styled(hint, Theme::dim())));
 
@@ -638,7 +648,7 @@ mod tests {
     fn renders_the_empty_state() {
         let app = App::new();
         let text = render(&app, 100, 24);
-        assert!(text.contains("no hive-contexts on the network board yet"));
+        assert!(text.contains("no pot contexts on the network board yet"));
     }
 
     #[test]
@@ -646,7 +656,7 @@ mod tests {
         let mut app = App::new();
         app.network_rows = vec![t1(), t3(), t4()];
         let text = render(&app, 120, 30);
-        assert!(text.contains("3 hive-contexts"));
+        assert!(text.contains("3 pot contexts"));
         // 12 + 2 live agents (t4 reports none — absent ≠ 0).
         assert!(text.contains("14 live agents"));
         assert!(text.contains("2 asks pending"));

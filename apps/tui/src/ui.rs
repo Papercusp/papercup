@@ -3862,17 +3862,18 @@ mod tests {
     }
 
     /// Hive lexicon (pui-hive-lexicon-2026-06-06): with the-hive active the tab
-    /// strip shows the bee labels (Operator→Queen, Fleet→Swarm, Pots→Hives,
-    /// Cupboard→Comb); other tabs (Inbox/Plans/…) are unchanged.
+    /// strip shows the internal skin labels (Operator→Sentinel, Fleet→Colony,
+    /// Pots→Hives, Nodes→Swarm, Cupboard→Comb); other tabs are unchanged.
     #[test]
     fn tab_strip_uses_the_hive_lexicon_when_active() {
         use crate::models::{LexiconPackPayload, TermForms};
         use std::collections::HashMap;
         let mut terms = HashMap::new();
         for (k, one, other) in [
-            ("operator", "Queen", "Queens"),
-            ("fleet", "Swarm", "Swarms"),
+            ("operator", "Sentinel", "Sentinels"),
+            ("fleet", "Colony", "Colonies"),
             ("pot", "Hive", "Hives"),
+            ("node", "Swarm", "Swarms"),
             ("cupboard", "Comb", "Combs"),
         ] {
             terms.insert(
@@ -3891,9 +3892,10 @@ mod tests {
         });
         // Wide enough that the Tabs widget doesn't truncate the renamed tabs.
         let text = render(&app, 200, 8);
-        assert!(text.contains("Queen"), "Operator→Queen");
-        assert!(text.contains("Swarm"), "Fleet→Swarm");
+        assert!(text.contains("Sentinel"), "Operator→Sentinel");
+        assert!(text.contains("Colony"), "Fleet→Colony");
         assert!(text.contains("Hives"), "Pots→Hives");
+        assert!(text.contains("Swarm"), "Nodes→Swarm");
         assert!(text.contains("Comb"), "Cupboard→Comb");
         // A tab with no lexicon term keeps its classic title.
         assert!(text.contains("Inbox"));
@@ -3911,7 +3913,8 @@ mod tests {
         assert!(text.contains("Pots"));
         assert!(text.contains("Cupboard"));
         // The bee labels must NOT appear with the flag off.
-        assert!(!text.contains("Queen"));
+        assert!(!text.contains("Sentinel"));
+        assert!(!text.contains("Colony"));
         assert!(!text.contains("Swarm"));
     }
 

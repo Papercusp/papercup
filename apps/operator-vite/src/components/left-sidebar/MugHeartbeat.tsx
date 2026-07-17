@@ -50,7 +50,7 @@ const STALE_MS = 45 * 60_000;
 
 /** Derive the Mug's liveness from her control-state row. Pure (now injected). */
 export function deriveMugState(row: HiveControlState | undefined, now: number): { state: MugState; label: string } {
-  if (!row) return { state: 'stopped', label: 'No hive' };
+  if (!row) return { state: 'stopped', label: 'No pot' };
   if (!row.started) return { state: 'stopped', label: 'Paused' };
   const lastWake = row.lastWakeAt ? Date.parse(row.lastWakeAt) : NaN;
   const nextFire = row.nextFireAt ? Date.parse(row.nextFireAt) : NaN;
@@ -107,7 +107,7 @@ export default function MugHeartbeat({ homeSlug }: { homeSlug?: string }) {
   const rows = (q.data ?? []) as HiveControlState[];
   const row = (homeSlug ? rows.find((r) => r.slug === homeSlug) : undefined) ?? rows[0];
   const { state, label: derivedLabel } = deriveMugState(row, now);
-  // The only lexicon-bearing derived label is the no-row "No hive" case; the rest
+  // The only lexicon-bearing derived label is the no-row "No pot" case; the rest
   // ('Running'/'Alive'/'Paused'/'Stalled?') are noun-free. deriveMugState is a
   // pure (hook-less) helper, so route that one label here at the render site.
   const label = row ? derivedLabel : `No ${t('pot', { lower: true })}`;

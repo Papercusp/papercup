@@ -744,7 +744,7 @@ async fn run<B: Backend>(
                             });
                         }
                         Err(e) => {
-                            let _ = tx.send(Event::Error(format!("hive tab: {e}")));
+                            let _ = tx.send(Event::Error(format!("pot tab: {e}")));
                         }
                     }
                 }
@@ -825,7 +825,7 @@ async fn run<B: Backend>(
                 let opened_bees = bees.len();
                 for spec in bees {
                     if let Err(e) = Zellij.open_pane(&spec) {
-                        app.update(Event::Error(format!("bee pane: {e}")));
+                        app.update(Event::Error(format!("cup pane: {e}")));
                     }
                 }
                 // Snap focus BACK to this pane (the operator chat) after a dock
@@ -2765,7 +2765,7 @@ async fn fetch_hives(tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::Hives(rows));
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("hives: {e}")));
+            let _ = tx.send(Event::Error(format!("network nodes: {e}")));
         }
     }
 }
@@ -2903,7 +2903,7 @@ async fn join_hive(slug: String, links: Vec<String>, tx: UnboundedSender<Event>)
     let _ = tx.send(Event::Notify(models::Notif {
         level: "info".to_string(),
         message: format!(
-            "hive {slug}: joined {ok}/{} member harness(es)",
+            "pot {slug}: joined {ok}/{} member harness(es)",
             links.len()
         ),
         harness: None,
@@ -2964,7 +2964,7 @@ async fn publish_bee_selection(
         .selected_bee_set(owner_id.as_deref(), name.as_deref())
         .await
     {
-        let _ = tx.send(Event::Error(format!("select bee: {e}")));
+        let _ = tx.send(Event::Error(format!("select cup: {e}")));
     }
 }
 

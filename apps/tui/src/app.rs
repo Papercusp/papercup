@@ -976,8 +976,9 @@ impl Tab {
             Tab::Fleet => lex.lex("fleet"),
             Tab::Cupboard => lex.lex("cupboard"),
             Tab::Operator => lex.lex("operator"),
-            // "Hives" is the plural of the `hive` term (a swarm-joined install).
-            Tab::Hives => lex.lex_plural("hive"),
+            // The legacy Hives tab presents networked Papercusp installations,
+            // which are Nodes in the public vocabulary.
+            Tab::Hives => lex.lex_plural("node"),
             other => other.title().to_string(),
         }
     }
@@ -5796,17 +5797,26 @@ impl App {
                     .iter()
                     .find(|h| !h.member_links.is_empty())
                 {
-                    self.status = format!("joining hive {}…", h.title);
+                    self.status = format!(
+                        "joining {} {}…",
+                        self.lexicon.lex("pot").to_lowercase(),
+                        h.title
+                    );
                     return Action::JoinHive {
                         slug: h.hive_id.clone(),
                         links: h.member_links.clone(),
                     };
                 }
                 self.status = if self.hive_directory.is_empty() {
-                    "no hives in the directory yet".to_string()
+                    format!(
+                        "no {} in the directory yet",
+                        self.lexicon.lex_plural("pot").to_lowercase()
+                    )
                 } else {
-                    "discovered hives published topics only — a full join link is required"
-                        .to_string()
+                    format!(
+                        "discovered {} published topics only — a full join link is required",
+                        self.lexicon.lex_plural("pot").to_lowercase()
+                    )
                 };
                 Action::Render
             }
@@ -8025,8 +8035,8 @@ mod tests {
         terms.insert(
             "fleet".to_string(),
             TermForms {
-                one: "Swarm".into(),
-                other: "Swarms".into(),
+                one: "Colony".into(),
+                other: "Colonies".into(),
             },
         );
         a.update(Event::LexiconPack(LexiconPackPayload {
@@ -8034,7 +8044,7 @@ mod tests {
             label: "The Hive".into(),
             terms,
         }));
-        assert_eq!(Tab::Fleet.label(&a.lexicon), "Swarm");
+        assert_eq!(Tab::Fleet.label(&a.lexicon), "Colony");
         // title() (the stable identity) is unchanged — persistence/state safe.
         assert_eq!(Tab::Fleet.title(), "Fleet");
     }

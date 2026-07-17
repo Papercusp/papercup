@@ -136,6 +136,11 @@ impl AgentPaneKind {
         }
     }
 
+    fn from_display_alias(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        Self::from_opt(&Some(normalized))
+    }
+
     /// The dock-stack GROUP order (P-011): same-type panes stack together, in
     /// this rank order — Sentinel (owner-facing chat) leads, then Overwatch, then
     /// the Queen, then the worker Bees (colony), then Planners. Matches the static
@@ -172,6 +177,42 @@ impl AgentPaneKind {
         .into_iter()
         .find(|&k| t.starts_with(k.glyph()))
     }
+}
+
+/// Normalize backend-generated agent labels without rewriting adopted human
+/// names. Historical exact aliases and machine-shaped labels such as
+/// `queen su-123` or `overwatch · papercusp/kettle` route through the active
+/// lexicon; a free-form name such as `Queen of QA` is preserved verbatim.
+pub fn normalize_agent_label(label: &str, lex: &crate::lexicon::Lexicon) -> String {
+    fn normalize_piece(piece: &str, lex: &crate::lexicon::Lexicon) -> String {
+        if let Some((left, right)) = piece.split_once(" · ") {
+            return format!(
+                "{} · {}",
+                normalize_piece(left, lex),
+                normalize_piece(right, lex)
+            );
+        }
+        if let Some((left, right)) = piece.split_once('/') {
+            return format!(
+                "{}/{}",
+                normalize_piece(left, lex),
+                normalize_piece(right, lex)
+            );
+        }
+        if let Some(kind) = AgentPaneKind::from_display_alias(piece) {
+            return kind.display_label(lex);
+        }
+        if let Some((head, tail)) = piece.split_once(' ') {
+            if tail.starts_with("su-") {
+                if let Some(kind) = AgentPaneKind::from_display_alias(head) {
+                    return format!("{} {tail}", kind.display_label(lex));
+                }
+            }
+        }
+        piece.to_string()
+    }
+
+    normalize_piece(label.trim(), lex)
 }
 
 /// Does a roster row carrying this `role` already have a FIXED pane in the dock
@@ -343,6 +384,18 @@ mod tests {
         );
         // unknown/missing kind → unchanged
         assert_eq!(glyph_prefixed_title("x", None), "x");
+    }
+
+    #[test]
+    fn generated_agent_labels_use_the_active_lexicon_without_rewriting_names() {
+        let lex = crate::lexicon::Lexicon::default();
+        assert_eq!(normalize_agent_label("overwatch", &lex), "Kettle");
+        assert_eq!(normalize_agent_label("queen su-75cee", &lex), "Mug su-75cee");
+        assert_eq!(
+            normalize_agent_label("overwatch · papercup/kettle", &lex),
+            "Kettle · Papercup/Kettle"
+        );
+        assert_eq!(normalize_agent_label("Queen of QA", &lex), "Queen of QA");
     }
 
     #[test]

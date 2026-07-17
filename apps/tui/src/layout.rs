@@ -248,6 +248,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     let sentinel_name = glyph_name("operator", "sentinel", AgentPaneKind::Sentinel);
     let brain_name = glyph_name("brain", "brain", AgentPaneKind::Queen);
     let overwatch_name = glyph_name("overwatch", "overwatch", AgentPaneKind::Overwatch);
+    let this_pot_tab = format!("this {}", kdl_pane_name(&lex.lex("pot"), "pot"));
     // The Sentinel pane is a REAL psu/Claude TUI — the FRONT-DOOR Sentinel the
     // user talks to (sentinel-as-claude-tui-2026-06-22): the `sentinel` role
     // (Sentinel persona = sentinel.persona.md), NOT the `operator` placement
@@ -469,7 +470,7 @@ layout {{
             plugin location="zellij:status-bar"
         }}
     }}
-    tab name="this hive" focus=true {{
+    tab name="{this_pot_tab}" focus=true {{
 {dock_body}
     }}
     tab name="network" {{
@@ -886,8 +887,10 @@ mod tests {
         for (k, one, other) in [
             ("operator", "Sentinel", "Sentinels"),
             ("brain", "Queen", "Queens"),
-            ("fleet", "Swarm", "Swarms"),
+            ("fleet", "Colony", "Colonies"),
             ("contributor", "Bee", "Bees"),
+            ("pot", "Hive", "Hives"),
+            ("node", "Swarm", "Swarms"),
         ] {
             terms.insert(
                 k.to_string(),
@@ -987,26 +990,26 @@ mod tests {
             1,
             "status-bar declared once in the template"
         );
-        // All three tabs, in order: "this hive" (focus) → "network" → "plans".
+        // All three tabs, in order: "this pot" (focus) → "network" → "plans".
         assert!(
-            kdl.contains("tab name=\"this hive\" focus=true"),
-            "missing focused this-hive tab"
+            kdl.contains("tab name=\"this pot\" focus=true"),
+            "missing focused this-pot tab"
         );
         assert!(kdl.contains("tab name=\"network\""), "missing network tab");
         assert!(kdl.contains("tab name=\"plans\""), "missing plans tab");
-        let th = kdl.find("tab name=\"this hive\"").unwrap();
+        let th = kdl.find("tab name=\"this pot\"").unwrap();
         let nw = kdl.find("tab name=\"network\"").unwrap();
         let pl = kdl.find("tab name=\"plans\"").unwrap();
         assert!(
             th < nw && nw < pl,
-            "this hive must be the FIRST tab so tier-1 GoToTab(1) lands on it"
+            "this pot must be the FIRST tab so tier-1 GoToTab(1) lands on it"
         );
-        // The dock body lives inside the this-hive tab (the sentinel pane — the
+        // The dock body lives inside the this-pot tab (the sentinel pane — the
         // FIRST dock pane after the reorder — sits between the first two tab headers).
         let body = kdl.find("name=\"🥤 papercup\"").unwrap();
         assert!(
             th < body && body < nw,
-            "the dock body must live inside the this-hive tab"
+            "the dock body must live inside the this-pot tab"
         );
         // The network + plans tabs host their respective pinned pui boards.
         let net_pane = kdl.find("args \"network-pane\"").unwrap();
@@ -1027,7 +1030,7 @@ mod tests {
     fn chat_dock_plans_tab_hosts_the_plans_board_pane() {
         // pui-plans-status-board-2026-06-14: the third dock tab "plans" hosts
         // the pinned `pui plans-pane` board. It is the LAST tab (after network)
-        // so it never displaces tab-1 "this hive" (tier-1 GoToTab(1)).
+        // so it never displaces tab-1 "this pot" (tier-1 GoToTab(1)).
         let kdl = chat_dock_kdl(
             &["psu".to_string(), "--brain".to_string()],
             &Lexicon::default(),
@@ -1040,9 +1043,9 @@ mod tests {
             kdl.contains("args \"plans-pane\""),
             "plans tab must run `pui plans-pane`: {kdl}"
         );
-        // The plans tab is last (this hive < network < plans).
+        // The plans tab is last (this pot < network < plans).
         let pl = kdl.find("tab name=\"plans\"").unwrap();
-        assert!(kdl.find("tab name=\"this hive\"").unwrap() < pl);
+        assert!(kdl.find("tab name=\"this pot\"").unwrap() < pl);
         assert!(kdl.find("tab name=\"network\"").unwrap() < pl);
         // The board pane runs from inside the plans tab, lexicon-independent
         // (the args are internal identifiers — never renamed by the lexicon).

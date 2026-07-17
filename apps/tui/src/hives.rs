@@ -268,6 +268,9 @@ pub fn draw_hives(f: &mut Frame, app: &App, area: Rect) {
     let groups = group_hives(&app.hives);
     let live = groups.iter().filter(|g| !g.stale).count();
     let gossip_n = app.hive_directory.len();
+    let node = app.lexicon.lex("node").to_lowercase();
+    let nodes = app.lexicon.lex_plural("node").to_lowercase();
+    let pot = app.lexicon.lex("pot").to_lowercase();
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -278,7 +281,7 @@ pub fn draw_hives(f: &mut Frame, app: &App, area: Rect) {
     // separately, coloured by its trust palette.
     let headline = Line::from(vec![
         Span::styled(
-            format!(" {} Hives ", glyph::nav::FLEET),
+            format!(" {} Network ", glyph::nav::FLEET),
             Theme::title_active(),
         ),
         Span::raw("the p2p network · "),
@@ -297,13 +300,13 @@ pub fn draw_hives(f: &mut Frame, app: &App, area: Rect) {
     if groups.is_empty() && app.hive_directory.is_empty() {
         // The single-box reality until real peers announce: honest empty state.
         f.render_widget(
-            Paragraph::new(
-                "no remote hives on the p2p network yet — this hive flies solo\n\n\
-                 A hive appears here once another Papercusp install joins the\n\
+            Paragraph::new(format!(
+                "no remote {nodes} on the p2p network yet — this {node} runs solo\n\n\
+                 A {node} appears here once another Papercusp install joins the\n\
                  substrate (✓ federated — substrate-verified live roster), or\n\
-                 announces a public hive on the directory topic (~ gossip —\n\
-                 self-reported; browse + join with J).",
-            )
+                 announces a public {pot} on the directory topic (~ gossip —\n\
+                 self-reported; browse + join with J)."
+            ))
             .wrap(Wrap { trim: false })
             .style(Theme::panel())
             .block(Theme::block(Line::from(" p2p network "), false)),

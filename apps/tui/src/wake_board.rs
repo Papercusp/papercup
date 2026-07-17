@@ -120,12 +120,13 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
     if b.groups.is_empty() && !b.loading {
         let empty = match &app.wake_filter {
             crate::app::WakeFilter::All => {
-                " no staged wakes — every agent is in auto mode or drained"
+                " no staged wakes — every agent is in auto mode or drained".to_string()
             }
-            crate::app::WakeFilter::Hive(_) => {
-                " no staged wakes for this hive — its agents are in auto mode or drained"
-            }
-            _ => " no staged wakes for this agent — auto mode or drained",
+            crate::app::WakeFilter::Hive(_) => format!(
+                " no staged wakes for this {} — its agents are in auto mode or drained",
+                app.lexicon.lex("pot").to_lowercase()
+            ),
+            _ => " no staged wakes for this agent — auto mode or drained".to_string(),
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(empty, Theme::dim()))),
@@ -141,7 +142,13 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
                     let mut spans = vec![
                         Span::raw(" "),
                         Span::styled(
-                            format!("{glyph} {}", g.label),
+                            format!(
+                                "{glyph} {}",
+                                crate::agent_pane_kind::normalize_agent_label(
+                                    &g.label,
+                                    &app.lexicon
+                                )
+                            ),
                             kind.map_or(Theme::title(), |k| Theme::title().fg(k.color())),
                         ),
                         Span::styled(format!(" — {} staged", g.pending.len()), Theme::dim()),

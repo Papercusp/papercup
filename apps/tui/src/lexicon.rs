@@ -28,11 +28,13 @@ const CLASSIC: &[(&str, &str, &str)] = &[
     ("overwatch", "Kettle", "Kettles"),
     ("scout", "Blender", "Blenders"),
     ("contributor", "Cup", "Cups"),
+    ("human", "Human", "Humans"),
     ("chunk", "Chunk", "Chunks"),
     ("cupboard", "Cupboard", "Cupboards"),
     ("node", "Node", "Nodes"),
-    // A whole Papercusp install joined to the p2p swarm (the Hives tab).
-    ("hive", "Hive", "Hives"),
+    // Backward-compatible key for older TUI call sites. A whole Papercusp
+    // install on the p2p network is a Node in the public vocabulary.
+    ("hive", "Node", "Nodes"),
     ("substrate", "Coordination", "Coordination"),
     ("blueprint", "Blueprint", "Blueprints"),
     ("harness", "Harness", "Harnesses"),
@@ -122,7 +124,13 @@ mod tests {
         assert_eq!(lx.lex("fleet"), "Fleet");
         assert_eq!(lx.lex("pot"), "Pot");
         assert_eq!(lx.lex("operator"), "Papercup");
+        assert_eq!(lx.lex("brain"), "Mug");
+        assert_eq!(lx.lex("overwatch"), "Kettle");
+        assert_eq!(lx.lex("scout"), "Blender");
+        assert_eq!(lx.lex("contributor"), "Cup");
+        assert_eq!(lx.lex("human"), "Human");
         assert_eq!(lx.lex("cupboard"), "Cupboard");
+        assert_eq!(lx.lex("node"), "Node");
         assert_eq!(lx.lex_plural("pot"), "Pots");
     }
 
@@ -131,17 +139,29 @@ mod tests {
         let lx = Lexicon::from_payload(&payload(
             "the-hive",
             &[
-                ("fleet", "Swarm", "Swarms"),
+                ("fleet", "Colony", "Colonies"),
                 ("pot", "Hive", "Hives"),
-                ("operator", "Queen", "Queens"),
+                ("operator", "Sentinel", "Sentinels"),
+                ("brain", "Queen", "Queens"),
+                ("overwatch", "Overwatch", "Overwatches"),
+                ("scout", "Scout", "Scouts"),
+                ("contributor", "Bee", "Bees"),
+                ("human", "Keeper", "Keepers"),
                 ("cupboard", "Comb", "Combs"),
+                ("node", "Swarm", "Swarms"),
             ],
         ));
         assert_eq!(lx.pack_id, "the-hive");
-        assert_eq!(lx.lex("fleet"), "Swarm");
+        assert_eq!(lx.lex("fleet"), "Colony");
         assert_eq!(lx.lex("pot"), "Hive");
-        assert_eq!(lx.lex("operator"), "Queen");
+        assert_eq!(lx.lex("operator"), "Sentinel");
+        assert_eq!(lx.lex("brain"), "Queen");
+        assert_eq!(lx.lex("overwatch"), "Overwatch");
+        assert_eq!(lx.lex("scout"), "Scout");
+        assert_eq!(lx.lex("contributor"), "Bee");
+        assert_eq!(lx.lex("human"), "Keeper");
         assert_eq!(lx.lex("cupboard"), "Comb");
+        assert_eq!(lx.lex("node"), "Swarm");
         assert_eq!(lx.lex_plural("pot"), "Hives");
         // A key the pack omits still falls back to CLASSIC.
         assert_eq!(lx.lex("harness"), "Harness");

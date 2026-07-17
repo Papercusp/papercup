@@ -85,12 +85,14 @@ describe('modelsJsonError', () => {
 
 describe('assembleAgentConfig — happy path', () => {
   it('persists a customized tier menu and advances lastValid', () => {
+    // P-020 (autonomous-loop-prod-audit-2026-07-02) inserted a 5th default tier
+    // (`luna`, gpt-5.6-luna:high) between `deep` and `max` — `max` is now index 4.
     const rows = DEFAULT_MODEL_TIERS.map(tierToRow);
-    rows[3] = { ...rows[3], spec: 'fable:max' };
+    rows[4] = { ...rows[4], spec: 'fable:max' };
     const res = assembleAgentConfig(input({ tierRows: rows }));
     expect(res.problems).toEqual([]);
-    expect(res.persistable.tiers).toHaveLength(4);
-    expect(res.persistable.tiers[3]).toMatchObject({ name: 'max', spec: 'fable:max' });
+    expect(res.persistable.tiers).toHaveLength(5);
+    expect(res.persistable.tiers[4]).toMatchObject({ name: 'max', spec: 'fable:max' });
     expect(res.lastValid.tiers).toEqual(res.persistable.tiers);
   });
 

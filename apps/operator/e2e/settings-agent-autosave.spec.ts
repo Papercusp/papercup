@@ -41,7 +41,9 @@ const WS_HEADERS = { 'x-papercusp-workspace': 'default' };
 // was (correctly) never scheduled.
 const SAVE_WINDOW_MS = 1200;
 
-const SPEC_INPUT = 'input[aria-label="Tier 4 model spec"]';
+// P-020 (autonomous-loop-prod-audit-2026-07-02) inserted a 5th default tier
+// (`luna`, gpt-5.6-luna:high) between `deep` and `max` — `max` is now Tier 5.
+const SPEC_INPUT = 'input[aria-label="Tier 5 model spec"]';
 
 let originalConfig: Record<string, unknown> | null = null;
 
@@ -59,7 +61,7 @@ async function openPage(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-/** Fill the tier-4 model spec and blur it (blur = the commit trigger). */
+/** Fill the tier-5 (`max`) model spec and blur it (blur = the commit trigger). */
 async function editSpecAndBlur(page: Page, value: string) {
   const input = page.locator(SPEC_INPUT);
   await input.waitFor({ state: 'visible', timeout: 10_000 });
@@ -124,8 +126,8 @@ test.describe('/settings/agent auto-save validation', () => {
     await expect(page.locator(SPEC_INPUT)).toHaveValue('fable:max', { timeout: 15_000 });
     const cfg = await getStoredConfig(request);
     const tiers = cfg.tiers as Array<{ name: string; spec: string }>;
-    expect(tiers).toHaveLength(4);
-    expect(tiers[3]).toMatchObject({ name: 'max', spec: 'fable:max' });
+    expect(tiers).toHaveLength(5);
+    expect(tiers[4]).toMatchObject({ name: 'max', spec: 'fable:max' });
   });
 
   test('WIPE REGRESSION: an invalid edit holds the stored value across reload', async ({ page, request }) => {
@@ -137,8 +139,8 @@ test.describe('/settings/agent auto-save validation', () => {
     // The store kept the last valid menu — the row was NOT deleted…
     const cfg = await getStoredConfig(request);
     const tiers = cfg.tiers as Array<{ spec: string }>;
-    expect(tiers).toHaveLength(4);
-    expect(tiers[3].spec).toBe('fable:max');
+    expect(tiers).toHaveLength(5);
+    expect(tiers[4].spec).toBe('fable:max');
     // …and a reload re-hydrates the saved value, not a gutted menu.
     await page.reload({ waitUntil: 'load' });
     await expect(page.locator(SPEC_INPUT)).toHaveValue('fable:max', { timeout: 15_000 });
