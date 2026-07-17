@@ -187,3 +187,37 @@ describe('publishSpawnRequest — fail-soft gates (offer-store-publish disciplin
     expect(await publishSpawnRequest(opts(), anon.d)).toEqual({ ok: false, skipped: 'no_github_identity' });
   });
 });
+
+describe('publishSpawnRequest — multi-hive disambiguation (WI-5211 hiveOverride)', () => {
+  const manyScope = () =>
+    vi.fn(async () => ({ kind: 'many' as const, candidates: ['papercusp', 'other-hive'] }));
+
+  it('publishes into an explicitly named shared hive when the workspace has many', async () => {
+    const { d, putRecord } = deps({ resolveScope: manyScope() });
+    const res = await publishSpawnRequest(opts({ hiveOverride: 'papercusp' }), d);
+    expect(res.ok).toBe(true);
+    // The request is stored (and thus federates) in the NAMED hive's home.
+    expect(putRecord.mock.calls[0]![0].potHomeSlug).toBe('papercusp');
+  });
+
+  it('refuses a hiveOverride that is not a shared hive here (never a private/absent hive)', async () => {
+    const { d, putRecord } = deps({ resolveScope: manyScope() });
+    expect(await publishSpawnRequest(opts({ hiveOverride: 'not-a-hive' }), d)).toEqual({
+      ok: false,
+      skipped: 'hive_not_shared:not-a-hive',
+    });
+    expect(putRecord).not.toHaveBeenCalled();
+  });
+
+  it('still skips a multi-hive workspace when no hiveOverride is given (caller must disambiguate)', async () => {
+    const { d } = deps({ resolveScope: manyScope() });
+    expect(await publishSpawnRequest(opts(), d)).toEqual({ ok: false, skipped: 'no_single_shared_hive:many' });
+  });
+
+  it('accepts the sole hive slug as hiveOverride on a single-hive workspace (what the caller always passes)', async () => {
+    const { d, putRecord } = deps(); // default resolveScope = { kind:'one', homeSlug: HOME }
+    const res = await publishSpawnRequest(opts({ hiveOverride: HOME }), d);
+    expect(res.ok).toBe(true);
+    expect(putRecord.mock.calls[0]![0].potHomeSlug).toBe(HOME);
+  });
+});

@@ -1334,6 +1334,7 @@ export default defineTool({
           planSlug: args.plan,
           requesterOwnerId: ownerId,
           launchContext: remoteBriefText,
+          hiveOverride: hiveHomeSlug,
         });
         if (res.ok) {
           remotePlacements.push({

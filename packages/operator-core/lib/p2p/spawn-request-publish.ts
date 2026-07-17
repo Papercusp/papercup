@@ -109,6 +109,15 @@ export interface PublishSpawnRequestOpts {
   requesterOwnerId: string;
   /** Optional per-fleet brief text (composed under the member baseline on B). */
   launchContext?: string | null;
+  /** WI-5211 multi-hive disambiguator: the shared-hive home slug to publish the
+   *  spawn-request in when the workspace hosts MORE THAN ONE shared hive (mirror
+   *  of offer-store-publish's `hiveOverride` and the seat-offer's own `hive`).
+   *  Without it a multi-hive workspace resolves `scope.kind:'many'` and the
+   *  publish silently skips (`no_single_shared_hive:many`) — so the signed
+   *  request never federates to the target host. Validated against the
+   *  workspace's real shared-hive set; a slug that isn't a shared hive here is
+   *  refused (`hive_not_shared`). Ignored on a single-hive workspace. */
+  hiveOverride?: string;
   sql?: Sql;
 }
 
@@ -131,7 +140,21 @@ export async function publishSpawnRequest(
 
   if (!opts.workspaceId) return { ok: false, skipped: 'no_workspace' };
   const scope = await resolveScope(opts.workspaceId);
-  if (scope.kind !== 'one') {
+  // Resolve WHICH shared hive to publish the request in. Default: the sole shared
+  // hive. WI-5211: on a multi-hive workspace the caller MUST disambiguate via
+  // `hiveOverride` — validated against the workspace's real shared-hive set so a
+  // request can never be published to a private/absent hive.
+  const sharedHomeSlugs =
+    scope.kind === 'one' ? [scope.homeSlug] : scope.kind === 'many' ? scope.candidates : [];
+  let homeSlug: string;
+  if (opts.hiveOverride) {
+    if (!sharedHomeSlugs.includes(opts.hiveOverride)) {
+      return { ok: false, skipped: `hive_not_shared:${opts.hiveOverride}` };
+    }
+    homeSlug = opts.hiveOverride;
+  } else if (scope.kind === 'one') {
+    homeSlug = scope.homeSlug;
+  } else {
     return { ok: false, skipped: `no_single_shared_hive:${scope.kind}` };
   }
   const actor = await resolveActor();
@@ -140,7 +163,7 @@ export async function publishSpawnRequest(
   // Target checks against the local (verified-at-apply) copy of the seat-offer.
   const target = await getRecord(
     opts.workspaceId,
-    scope.homeSlug,
+    homeSlug,
     opts.targetPublisherGithubUserId,
     opts.targetOfferId,
     opts.sql,
@@ -198,7 +221,7 @@ export async function publishSpawnRequest(
     requestedAtMs,
     devicePubkey: signer.pubkey,
   });
-  const existing = await getRecord(opts.workspaceId, scope.homeSlug, actor.githubUserId, offerId, opts.sql);
+  const existing = await getRecord(opts.workspaceId, homeSlug, actor.githubUserId, offerId, opts.sql);
   const record: WorkOfferStoreRecord = {
     offerId,
     publisherGithubUserId: actor.githubUserId,
@@ -215,7 +238,7 @@ export async function publishSpawnRequest(
 
   const res = await putRecord({
     workspaceId: opts.workspaceId,
-    potHomeSlug: scope.homeSlug,
+    potHomeSlug: homeSlug,
     selfGithubUserId: actor.githubUserId,
     record,
     signer,

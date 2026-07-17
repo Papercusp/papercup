@@ -149,6 +149,7 @@ export default defineTool({
       planSlug: args.plan,
       requesterOwnerId: ownerId,
       launchContext: args.launchContext ?? null,
+      hiveOverride: hiveHomeSlug,
     });
     if (!res.ok) {
       return json({ ok: false, error: 'skipped' in res ? `not published: ${res.skipped}` : res.error }, true);
