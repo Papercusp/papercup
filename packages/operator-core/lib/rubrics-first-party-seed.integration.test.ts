@@ -95,4 +95,26 @@ describe('first-party rubric seed (bundled → workspace store, lazy on first re
       expect(again.filter((r) => r.rubricId === id)).toHaveLength(1);
     }
   });
+
+  it('reclaims a WEDGED seeder-owned row: NULLed template_data re-seeds on the next pass (WI-3617)', async () => {
+    // The live wedge shape (2026-07-17): a seeder-owned row whose template_data was
+    // lost (a body-only restore during DB recovery). It is invisible to reads
+    // (planRowToRubric nulls it) yet its raw slug used to block its own re-seed forever.
+    await h.sql`
+      UPDATE harness_shared.harness_plans SET template_data = NULL
+       WHERE plan_slug = 'su-agent-behavior' AND template = 'rubric'`;
+    expect(await rubrics.getRubric('su-agent-behavior')).toBeNull();
+
+    rubrics.__resetRubricSeedStateForTests();
+    await rubrics.ensureFirstPartyRubricsSeeded();
+
+    const healed = await rubrics.getRubric('su-agent-behavior');
+    expect(healed, 'the wedged seeder-owned row must be re-seeded, not block forever').not.toBeNull();
+    expect(healed!.criteria.length).toBeGreaterThan(0);
+    expect(healed!.status).toBe('active');
+    expect(healed!.createdBy).toBe(rubrics.FIRST_PARTY_RUBRIC_SEED_OWNER);
+    // Still exactly one row — reclaim is an in-place upsert, never a duplicate.
+    const all = await rubrics.listRubrics({});
+    expect(all.filter((r) => r.rubricId === 'su-agent-behavior')).toHaveLength(1);
+  });
 });

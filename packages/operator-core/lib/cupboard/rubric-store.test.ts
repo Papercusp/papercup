@@ -17,6 +17,8 @@ import {
   resolveLocalRubric,
   readLocalRubricMethod,
   rubricsNeedingSeed,
+  FIRST_PARTY_RUBRIC_SEED_OWNER,
+  type ExistingRubricRow,
   type RubricRoot,
 } from './rubric-store';
 import { rubricTemplateDataSchema } from '../agent-tools/plans/rubric-template';
@@ -135,6 +137,13 @@ describe('resolveLocalRubric + readLocalRubricMethod', () => {
 });
 
 describe('rubricsNeedingSeed (the seed decision core)', () => {
+  const row = (rubricId: string, over: Partial<ExistingRubricRow> = {}): ExistingRubricRow => ({
+    rubricId,
+    owner: 'someone@real',
+    valid: true,
+    ...over,
+  });
+
   it('no-clobber: an existing workspace rubricId always wins; idempotent on re-run', () => {
     writeRubric(bundled, 'su-agent-behavior', { manifest: manifest('su-agent-behavior') });
     writeRubric(bundled, 'pot-coordination-health', {
@@ -143,16 +152,45 @@ describe('rubricsNeedingSeed (the seed decision core)', () => {
     const all = listLocalRubrics(roots);
 
     // cold start: everything seeds
-    expect(rubricsNeedingSeed(all, new Set()).map((r) => r.rubricId)).toEqual([
+    expect(rubricsNeedingSeed(all, []).map((r) => r.rubricId)).toEqual([
       'pot-coordination-health',
       'su-agent-behavior',
     ]);
-    // an existing id (any status — even a half-authored row) blocks its seed
-    expect(rubricsNeedingSeed(all, new Set(['su-agent-behavior'])).map((r) => r.rubricId)).toEqual([
+    // an existing id blocks its seed
+    expect(rubricsNeedingSeed(all, [row('su-agent-behavior')]).map((r) => r.rubricId)).toEqual([
       'pot-coordination-health',
     ]);
     // after a full seed, a re-run is a no-op (idempotence)
-    expect(rubricsNeedingSeed(all, new Set(all.map((r) => r.rubricId)))).toEqual([]);
+    expect(rubricsNeedingSeed(all, all.map((r) => row(r.rubricId, { owner: FIRST_PARTY_RUBRIC_SEED_OWNER })))).toEqual(
+      [],
+    );
+  });
+
+  it('reclaims a WEDGED seeder-owned row (invalid template_data) but never a real author\'s', () => {
+    writeRubric(bundled, 'su-agent-behavior', { manifest: manifest('su-agent-behavior') });
+    writeRubric(bundled, 'pot-coordination-health', {
+      manifest: manifest('pot-coordination-health', { characteristic: 'hive-coordination' }),
+    });
+    const all = listLocalRubrics(roots);
+
+    // The WI-3617 wedge: a seeder-owned row whose template_data no longer parses
+    // (e.g. NULLed by a broken restore) is invisible to reads yet blocked its own
+    // re-seed forever under the raw-slug check. It now counts as needing seed.
+    expect(
+      rubricsNeedingSeed(all, [
+        row('pot-coordination-health', { owner: FIRST_PARTY_RUBRIC_SEED_OWNER, valid: false }),
+        row('su-agent-behavior', { owner: FIRST_PARTY_RUBRIC_SEED_OWNER, valid: true }),
+      ]).map((r) => r.rubricId),
+    ).toEqual(['pot-coordination-health']);
+
+    // A half-authored row under a REAL owner still blocks, invalid or not — the
+    // seed must never overwrite content a person/agent is mid-editing.
+    expect(
+      rubricsNeedingSeed(all, [
+        row('pot-coordination-health', { owner: 'su-somebody', valid: false }),
+        row('su-agent-behavior', { owner: null, valid: false }),
+      ]),
+    ).toEqual([]);
   });
 });
 

@@ -68,7 +68,7 @@ describe('migration 338 — the pot-coordination-health rubric is served from it
     expect(r).not.toBeNull();
     expect(r!.status).toBe('active'); // seeded ratified (active plan → active rubric)
     expect(r!.characteristic).toBe('hive-coordination');
-    expect(r!.title).toBe('Hive coordination health');
+    expect(r!.title).toBe('Pot coordination health');
     expect(r!.methodRef).toBe('pot-coordination-health'); // the agent-insights runbook slug
     expect(r!.ratingScale).toEqual(['healthy', 'degraded', 'broken', 'unknown']);
     expect(r!.ratifiedBy).toBe('aviynw@gmail.com'); // the plan owner (active ⇒ ratifier)
