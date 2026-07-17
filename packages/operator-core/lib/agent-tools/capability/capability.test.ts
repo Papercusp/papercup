@@ -43,8 +43,11 @@ const revokeM = vi.mocked(revokeCaps);
 const grantTool = (await import('./grant-role')).default;
 const revokeTool = (await import('./revoke-role')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
+// grant-role / revoke-role return the canonical { data } shape (definetool-token-optimization
+// P-003 migration, WI-5170) — a direct .handler() call (bypassing the wire-encoding path) gets
+// the raw { data } object, not a { content } envelope.
+type Out = { data: unknown };
+const body = (o: unknown) => (o as Out).data as Record<string, unknown>;
 
 beforeEach(() => {
   vi.clearAllMocks();

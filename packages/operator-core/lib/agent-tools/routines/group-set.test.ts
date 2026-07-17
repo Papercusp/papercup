@@ -27,8 +27,11 @@ vi.mock('../../gateway-control/control-harness', () => ({
 
 const groupSetTool = (await import('./group-set')).default;
 
-type Out = { content?: { text: string }[] };
-const body = (o: unknown) => JSON.parse((o as Out).content![0]!.text);
+// group-set returns the canonical { data } shape (definetool-token-optimization P-003
+// migration) — a direct .handler() call (bypassing the wire-encoding path) gets the raw
+// { data } object, not a { content } envelope.
+type Out = { data: unknown };
+const body = (o: unknown) => (o as Out).data as Record<string, unknown>;
 
 const GROUP_ROW = { description: 'Cleanup sweeps.', steward: null, review_cadence: '90d', last_reviewed_at: new Date('2026-01-01') };
 const MEMBER_ROWS = [

@@ -64,7 +64,7 @@ describe('autoloop:status', () => {
     mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/status');
     const result = await tool.handler({ harnessSlug: 'sheets' }, MAKE_CTX());
-    const payload = parsePayload(result as never);
+    const payload = parseEnvelope(result as never);
     expect(payload).toEqual({
       harnessSlug: 'sheets',
       rows: [{ ...rows[0], gate: { allow: true, consecutiveErrors: 0 } }],

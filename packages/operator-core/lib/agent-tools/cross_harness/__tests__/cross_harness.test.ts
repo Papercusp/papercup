@@ -26,8 +26,11 @@ afterEach(() => {
   vi.doUnmock('../../../cross-harness-data');
 });
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+// inbox/outbox/supervisor_notes/recent_activity all return the canonical { data } shape
+// (definetool-token-optimization P-003 migration, WI-5170) — a direct .handler() call
+// (bypassing the wire-encoding path) gets the raw { data } object, not a { content } envelope.
+function parseEnvelope(result: { data: unknown }): Record<string, unknown> {
+  return result.data as Record<string, unknown>;
 }
 
 describe('cross_harness:inbox', () => {
@@ -49,7 +52,7 @@ describe('cross_harness:inbox', () => {
       role: 'worker',
       limit: 50,
     });
-    const payload = parsePayload(result as never);
+    const payload = parseEnvelope(result as never);
     expect(payload.messages).toEqual([{ id: 'm1' }]);
   });
 
@@ -94,7 +97,7 @@ describe('cross_harness:supervisor_notes', () => {
     const { default: tool } = await import('../supervisor_notes');
     const result = await tool.handler({ slug: 'sheets', limit: 5 }, MAKE_CTX());
     expect(readSupervisorNotes).toHaveBeenCalledWith('sheets', 5);
-    const payload = parsePayload(result as never);
+    const payload = parseEnvelope(result as never);
     expect(payload.notes).toEqual([{ id: 1, body: 'note' }]);
   });
 });
@@ -111,7 +114,7 @@ describe('cross_harness:recent_activity', () => {
     const { default: tool } = await import('../recent_activity');
     const result = await tool.handler({ limit: 25 }, MAKE_CTX());
     expect(readRecentActivity).toHaveBeenCalledWith(25);
-    const payload = parsePayload(result as never);
+    const payload = parseEnvelope(result as never);
     expect(payload.events).toBeDefined();
   });
 
