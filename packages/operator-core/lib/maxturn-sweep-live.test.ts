@@ -186,11 +186,13 @@ describe('makeHeadlessPsuCellDriver — the seam-injected cell run', () => {
         prepareWorkDir: vi.fn(async () => {
           calls.push('prepare');
         }),
-        spawnSession: vi.fn(async (input: { ownerId: string; kickoff: string }) => {
+        spawnSession: vi.fn((input: { ownerId: string; kickoff: string }) => {
           calls.push(`spawn:${input.ownerId}`);
           expect(input.kickoff).toContain(SWEEP_TASK_DONE_MARKER);
+          return { done: Promise.resolve(), terminate: vi.fn() };
         }),
         readTranscript: vi.fn(async (): Promise<string | null> => jsonl),
+        pollIntervalMs: 1,
       },
     };
   }

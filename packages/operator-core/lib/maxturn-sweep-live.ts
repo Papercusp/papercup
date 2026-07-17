@@ -11,14 +11,22 @@
  * live sessions and spends is opt-in, never a default).
  *
  * HOW A CELL RUNS (makeHeadlessPsuCellDriver):
- *   1. mint a fresh ownerId for the cell repeat (`su-sweep-…`) — PAPERCUSP_SID
- *      lets the spawner pre-pin it, so step 2 can bind BEFORE the first API call;
+ *   1. mint a fresh ownerId for the cell repeat (`su-sweep-…`) — pre-pinned onto
+ *      the session via `psu --owner-id=…` (WI-5002/EI-13277: the launch envelope
+ *      overrides the exported PAPERCUSP_SID, so the flag — honored by
+ *      bootstrap-su — is the only binding that makes the session RUN AS the
+ *      owner the driver keyed its state to), so step 2 binds BEFORE the first
+ *      API call;
  *   2. bind the cell's DoorConstantsPatch as that owner's SESSION override
  *      (writeSessionDoorsOverride — the exact store config:doors-set-session
  *      writes, so the live door sites enforce the cell's constants);
  *   3. spawn a HEADLESS psu Claude session with the benchmark kickoff
- *      (psu-launcher --headless --yes --kickoff=…), bounded by taskTimeoutMs;
- *   4. read the owner's native transcript and extract CellRunMetrics from it —
+ *      (psu-launcher --headless --yes --owner-id=… --kickoff=…), bounded by
+ *      taskTimeoutMs;
+ *   4. poll the owner's native transcript WHILE the child runs (a headless
+ *      session's transcript store can be cleaned at host end — EI-13277 — so
+ *      the post-exit read is only a fallback), terminate early once an
+ *      assistant turn prints the done marker, and extract CellRunMetrics —
  *      stop_reason=max_tokens rate, spill-chase, hops, cache-read vs fresh input,
  *      compact_boundary count, wall clock, done-marker success;
  *   5. ALWAYS clear the override (finally) — a sweep must never leave a stray
@@ -184,6 +192,36 @@ export function extractCellMetricsFromJsonl(
   };
 }
 
+/**
+ * Whether an ASSISTANT turn in this transcript printed the task-done marker.
+ * PURE. The kickoff/user turn quotes the marker by instruction, so a raw
+ * `includes` over the whole JSONL is always true once the kickoff persists —
+ * only assistant content counts (same discipline as the extractor's
+ * taskSuccessRate). The driver polls this mid-run to terminate a finished cell
+ * early instead of idling out the full timeout (canary run 2 burned 7 of its
+ * 10 minutes on a task that finished in 3).
+ */
+export function transcriptSawAssistantDoneMarker(
+  jsonl: string,
+  marker: string = SWEEP_TASK_DONE_MARKER,
+): boolean {
+  for (const line of jsonl.split('\n')) {
+    if (!line.includes(marker)) continue;
+    let j: unknown;
+    try {
+      j = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const evt = j as { type?: string; message?: { model?: string; content?: unknown } };
+    if (evt.type !== 'assistant') continue;
+    const model = evt.message?.model;
+    if (!model || model.startsWith('<')) continue; // synthetic placeholder, not an API call
+    if (JSON.stringify(evt.message?.content ?? '').includes(marker)) return true;
+  }
+  return false;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure half 2 — the benchmark kickoff per task kind
 // ─────────────────────────────────────────────────────────────────────────────
@@ -334,37 +372,44 @@ async function defaultPrepareWorkDir(workDir: string, cell: SweepCell): Promise<
   }
 }
 
-/** The real headless spawn. Resolves on exit; kills the child at timeoutMs (the
- *  transcript written so far still extracts). Never rejects on a non-zero exit —
- *  the transcript is the verdict, not the exit code. */
-async function defaultSpawnSession(input: SweepSpawnInput, repoRoot: string): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const child = nodeSpawn(
-      'node',
-      [
-        join(repoRoot, 'apps/operator/scripts/psu-launcher.mjs'),
-        // --agent is REQUIRED by psu-launcher (it exits immediately with a usage error
-        // otherwise) — caught by the WI-5002 live canary: the cell died in 262ms with
-        // "no transcript" because this arg was missing and stdio:'ignore' hid the message.
-        '--agent=claude',
-        '--headless',
-        '--yes',
-        `--kickoff=${input.kickoff}`,
-      ],
-      {
-        cwd: input.workDir,
-        env: { ...process.env, PAPERCUSP_SID: input.ownerId },
-        stdio: 'ignore',
-        detached: false,
-      },
-    );
-    const timer = setTimeout(() => {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        /* already gone */
-      }
-    }, input.timeoutMs);
+/** The real headless spawn. `done` settles on exit; the child is SIGTERM'd at
+ *  timeoutMs or on terminate() (the transcript written so far still extracts).
+ *  Never rejects on a non-zero exit — the transcript is the verdict, not the
+ *  exit code. */
+function defaultSpawnSession(input: SweepSpawnInput, repoRoot: string): SweepSessionHandle {
+  const child = nodeSpawn(
+    'node',
+    [
+      join(repoRoot, 'apps/operator/scripts/psu-launcher.mjs'),
+      // --agent is REQUIRED by psu-launcher (it exits immediately with a usage error
+      // otherwise) — caught by the WI-5002 live canary: the cell died in 262ms with
+      // "no transcript" because this arg was missing and stdio:'ignore' hid the message.
+      '--agent=claude',
+      '--headless',
+      '--yes',
+      // Pre-pin the session's coord owner (WI-5002/EI-13277): the launch envelope
+      // overrides the inherited PAPERCUSP_SID, so canary run 2 executed as a
+      // server-minted owner — its doors override never applied and its transcript
+      // was unfindable. The flag makes bootstrap-su use OUR owner id.
+      `--owner-id=${input.ownerId}`,
+      `--kickoff=${input.kickoff}`,
+    ],
+    {
+      cwd: input.workDir,
+      env: { ...process.env, PAPERCUSP_SID: input.ownerId },
+      stdio: 'ignore',
+      detached: false,
+    },
+  );
+  const terminate = () => {
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  };
+  const done = new Promise<void>((resolve) => {
+    const timer = setTimeout(terminate, input.timeoutMs);
     child.on('exit', () => {
       clearTimeout(timer);
       resolve();
@@ -374,6 +419,7 @@ async function defaultSpawnSession(input: SweepSpawnInput, repoRoot: string): Pr
       resolve();
     });
   });
+  return { done, terminate };
 }
 
 async function defaultReadTranscript(ownerId: string): Promise<string | null> {
@@ -420,6 +466,7 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
   const prepare = deps.prepareWorkDir ?? defaultPrepareWorkDir;
   const readTranscript = deps.readTranscript ?? defaultReadTranscript;
   const timeoutMs = deps.taskTimeoutMs ?? DEFAULT_SWEEP_TASK_TIMEOUT_MS;
+  const pollIntervalMs = deps.pollIntervalMs ?? 5_000;
   const repoRoot = deps.repoRoot ?? process.cwd();
   const spawnSession = deps.spawnSession ?? ((input: SweepSpawnInput) => defaultSpawnSession(input, repoRoot));
 
@@ -433,8 +480,39 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
       try {
         await prepare(workDir, cell);
         const kickoff = buildBenchmarkKickoff(task, cell, workDir);
-        await spawnSession({ ownerId, kickoff, workDir, cellId: cell.cellId, timeoutMs });
-        const jsonl = await readTranscript(ownerId);
+        const handle = spawnSession({ ownerId, kickoff, workDir, cellId: cell.cellId, timeoutMs });
+
+        // Mid-run transcript poll (EI-13277): snapshot the transcript WHILE the
+        // child lives — a headless session's store can be cleaned at host end, so
+        // the post-exit read is a fallback, not the plan. The same poll terminates
+        // a finished cell early: the pty host keeps a settled child alive to the
+        // full timeout otherwise.
+        let lastJsonl: string | null = null;
+        let exited = false;
+        void handle.done.then(() => {
+          exited = true;
+        });
+        const poller = (async () => {
+          while (!exited) {
+            // Race the sleep against exit so a finished child never strands the
+            // poller a full interval.
+            await Promise.race([handle.done, new Promise((r) => setTimeout(r, pollIntervalMs))]);
+            if (exited) break;
+            const j = await readTranscript(ownerId).catch(() => null);
+            if (j != null) {
+              lastJsonl = j;
+              if (transcriptSawAssistantDoneMarker(j)) {
+                handle.terminate();
+                break;
+              }
+            }
+          }
+        })();
+        await handle.done;
+        await poller;
+
+        const finalJsonl = await readTranscript(ownerId).catch(() => null);
+        const jsonl = finalJsonl ?? lastJsonl;
         if (jsonl == null) throw new Error(`sweep repeat ${repeat}: no transcript under ${ownerId}`);
         perRepeat.push(extractCellMetricsFromJsonl(jsonl));
       } finally {
