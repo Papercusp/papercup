@@ -36,7 +36,7 @@ vi.mock('@papercusp/sync', () => ({
     opts.queryName === 'overwatch.snapshot' ? H.snapshotResult : H.controlResult,
 }));
 vi.mock('@/lib/useLexicon', async () => {
-  const { lexiconFor } = await vi.importActual<typeof import('@/lib/lexicon')>('@/lib/lexicon');
+  const { lexiconFor } = await vi.importActual<typeof import('@papercusp/lexicon')>('@papercusp/lexicon');
   return { useLexicon: () => lexiconFor('classic') };
 });
 

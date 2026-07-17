@@ -177,3 +177,7 @@ whisper-server-*.wav
 # check-no-identity-literals.mjs exist to prevent, just via an untracked-junk path
 # instead of authored source. Ignore the whole class so it can never recur.
 probehome.*/
+
+# Playwright MCP session snapshots — agent browser-session debris, never source.
+# Carried owner-identity UI text into the 0.0.12 cut (WI-4776 lint); keep untracked.
+.playwright-mcp/

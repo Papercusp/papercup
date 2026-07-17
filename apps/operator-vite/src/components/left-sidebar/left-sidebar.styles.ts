@@ -97,7 +97,6 @@ body.has-left-sidebar .pc-header {
 }
 .pclsb__rail-btn {
   --pclsb-tab-accent: var(--accent, #38bdf8);
-  position: relative; /* anchors the inbox pending badge */
   width: 34px;
   height: 34px;
   flex: 0 0 34px;
@@ -1246,79 +1245,4 @@ body.has-left-sidebar .pc-header {
   .pclsb-acct__statuspill { justify-self: start; grid-column: 1 / -1; max-width: 100%; }
 }
 
-/* ── Inbox tab (EI-13037) — the human inbox pane + pending badge ─────────── */
-.pclsb__rail-btn--inbox,
-.pclsb__tab--inbox {
-  --pclsb-tab-accent: #fb923c;
-}
-.pclsb__badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 999px;
-  background: var(--bad, #f87171);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 750;
-  line-height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-.pclsb__badge--tab {
-  position: static;
-  margin-left: 3px;
-  flex: 0 0 auto;
-}
-.pclsb-inbox { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.pclsb-inbox__chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.pclsb-inbox__chip {
-  display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px;
-  font-size: 10.5px; font-weight: 650; cursor: pointer;
-  color: var(--fg-mute, #c2c2c9); background: transparent;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
-}
-.pclsb-inbox__chip:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
-.pclsb-inbox__chip.is-active {
-  color: #fb923c; border-color: color-mix(in srgb, #fb923c 55%, transparent);
-  background: color-mix(in srgb, #fb923c 12%, transparent);
-}
-.pclsb-inbox__chip-count { font-variant-numeric: tabular-nums; opacity: 0.85; }
-.pclsb-inbox__error { font-size: 11px; color: var(--bad, #f87171); }
-.pclsb-inbox__empty { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--fg-mute, #8a8a91); }
-.pclsb-inbox__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.pclsb-inbox__row { min-width: 0; border-radius: 8px; border: 1px solid var(--border, rgba(255, 255, 255, 0.09)); }
-.pclsb-inbox__row.is-selected { border-color: color-mix(in srgb, #fb923c 45%, transparent); }
-.pclsb-inbox__rowbtn {
-  width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 6px 8px;
-  text-align: left; cursor: pointer; background: transparent; border: none; border-radius: inherit;
-  color: var(--fg, #e7e7ea);
-}
-.pclsb-inbox__rowbtn:hover { background: var(--bg-3, rgba(255, 255, 255, 0.05)); }
-.pclsb-inbox__rowhead { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 9.5px; }
-.pclsb-inbox__tierdot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 999px; background: var(--fg-mute, #8a8a91); }
-.pclsb-inbox__tierdot--decision { background: var(--bad, #f87171); }
-.pclsb-inbox__tierdot--alert { background: var(--warn, #fbbf24); }
-.pclsb-inbox__tierdot--handled { background: var(--good, #34d399); }
-.pclsb-inbox__kind {
-  flex: 0 0 auto; padding: 0 5px; border-radius: 999px; font-weight: 650; text-transform: uppercase;
-  font-size: 8.5px; color: var(--fg-mute, #c2c2c9);
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.12)); background: var(--bg-3, rgba(255, 255, 255, 0.05));
-}
-.pclsb-inbox__meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute, #8a8a91); }
-.pclsb-inbox__title {
-  min-width: 0; font-size: 11.5px; line-height: 1.35;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-.pclsb-inbox__detail { padding: 0 6px 6px; border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); }
-/* The Queue detail pane, compacted for a ~320px rail. */
-.pclsb-inbox__detail .pc-items__detail { min-width: 0; padding: 6px 0 0; }
-.pclsb-inbox__detail .pc-items__detail-toolbar { flex-wrap: wrap; row-gap: 3px; }
-.pclsb-inbox__foot { display: flex; justify-content: flex-end; padding-top: 2px; }
-.pclsb-inbox__queue-link { font-size: 11px; color: var(--accent, #8b5cf6); text-decoration: none; }
-.pclsb-inbox__queue-link:hover { text-decoration: underline; }
 `;
