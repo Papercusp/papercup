@@ -91,13 +91,44 @@ export function resolveSpawnBackendModel(
   overrideSpec?: string,
   overrideBackend?: string,
 ): { backend: TurnBackend; model: string } {
-  const effectiveBackend = overrideBackend || inferBackendFromModelSpec(overrideSpec) || roleBackendOverride(role);
+  // Backend inference keys off the EFFECTIVE spec (override > env map > committed
+  // default), not just the per-spawn channel — a Codex-only committed default
+  // (kettle post-P-020) must bucket against OpenAI, not Anthropic (WI-4640).
+  const effectiveBackend =
+    overrideBackend ||
+    inferBackendFromModelSpec(resolveEffectiveRoleModelSpec(role, overrideSpec)) ||
+    roleBackendOverride(role);
   const base = applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', effectiveBackend);
   const cmd = applyRoleModel(base, role, overrideSpec);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
   const m = /(?:--model(?:=|\s+)|\s-m\s+)(\S+)/.exec(cmd);
   return { backend, model: m?.[1] ?? '' };
+}
+
+/** The EFFECTIVE model spec a spawn of `role` will run — the same precedence
+ *  applyRoleModel injects into the command: per-spawn override >
+ *  AGENT_MODELS env map > committed ROLE_MODEL_DEFAULTS floor. Exported so
+ *  backend inference (buildInvokeOnce / resolveSpawnBackendModel) keys off the
+ *  spec that will ACTUALLY be injected, not just the per-spawn channel: when
+ *  P-020 moved kettle's COMMITTED default to the Codex-only `gpt-5.6-luna:high`,
+ *  the inference still only saw PAPERCUSP_SPAWN_MODEL, so every kettle fire
+ *  handed `--model gpt-5.6-luna` to the claude CLI and died at launch
+ *  (WI-4640 runtime casualty, 2026-07-17). */
+export function resolveEffectiveRoleModelSpec(role: string, overrideSpec?: string): string {
+  if (typeof overrideSpec === 'string' && overrideSpec.trim()) return overrideSpec.trim();
+  const raw = process.env.AGENT_MODELS;
+  if (raw) {
+    try {
+      const models = JSON.parse(raw) as Record<string, unknown>;
+      const v = models[role];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    } catch {
+      /* malformed AGENT_MODELS — fall through to the committed default */
+    }
+  }
+  const fallback = roleModelDefault(role);
+  return typeof fallback === 'string' ? fallback.trim() : '';
 }
 
 /** Per-role backend override from /settings/agent. Explicit per-spawn backend
@@ -146,25 +177,11 @@ const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
  */
 export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: string): string {
   if (!role && !overrideSpec?.trim()) return baseCmd;
-  const raw = process.env.AGENT_MODELS;
-  let models: Record<string, unknown> = {};
-  if (raw) {
-    try {
-      models = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      models = {}; // malformed AGENT_MODELS — fall through to the committed default
-    }
-  }
-  const envSpec = models[role];
-  // per-spawn override wins, then env, then the committed default floor.
-  const spec =
-    typeof overrideSpec === 'string' && overrideSpec.trim()
-      ? overrideSpec
-      : typeof envSpec === 'string' && envSpec.trim()
-        ? envSpec
-        : roleModelDefault(role);
-  if (typeof spec !== 'string' || !spec.trim()) return baseCmd;
-  const trimmed = spec.trim();
+  // per-spawn override wins, then env, then the committed default floor —
+  // resolveEffectiveRoleModelSpec is the one source of that precedence (the
+  // backend inference in buildInvokeOnce keys off the SAME resolution).
+  const trimmed = resolveEffectiveRoleModelSpec(role, overrideSpec);
+  if (!trimmed) return baseCmd;
   const bin = baseCmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const isCodex = /(?:^|\/)codex$/.test(bin);
   const isClaude = /(?:^|\/)claude$/.test(bin);
@@ -273,9 +290,20 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // inherited AGENT_BACKEND below: the child's resolveAgentBackend prefers the
   // explicit env over binary inference, so a swapped command with a stale
   // AGENT_BACKEND would mis-resolve every backend-keyed flag.
+  // Backend inference keys off the EFFECTIVE spec — per-spawn override >
+  // AGENT_MODELS > committed ROLE_MODEL_DEFAULTS — because applyRoleModel will
+  // bake exactly that spec into AGENT_CMD. Keying off PAPERCUSP_SPAWN_MODEL
+  // alone left a Codex-only COMMITTED default (kettle → gpt-5.6-luna:high,
+  // P-020) on the claude CLI: Anthropic 404s the id and the role is hard-down
+  // on every fire (WI-4640, 2026-07-17). A Codex-shaped effective spec also
+  // deliberately outranks roleBackendOverride: honoring an explicit claude/omp
+  // per-role backend against a Codex-only model is a guaranteed launch failure,
+  // not a preference to preserve.
   const spawnBackend =
     spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND ||
-    inferBackendFromModelSpec(spec.extraEnv?.PAPERCUSP_SPAWN_MODEL) ||
+    inferBackendFromModelSpec(
+      resolveEffectiveRoleModelSpec(spec.role, spec.extraEnv?.PAPERCUSP_SPAWN_MODEL),
+    ) ||
     roleBackendOverride(spec.role);
   const roleAgentCmd = applyRoleModel(
     applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spawnBackend),

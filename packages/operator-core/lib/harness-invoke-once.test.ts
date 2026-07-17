@@ -384,10 +384,49 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
     expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model gpt-5.6-luna --effort high');
-    // resolveSpawnBackendModel keys it to the gpt-5.6-luna bucket
+    // resolveSpawnBackendModel keys it to the gpt-5.6-luna bucket on the CODEX
+    // backend: the committed default is a Codex-only id, so the effective-spec
+    // inference (WI-4640) swaps the spawn off the claude CLI (which 404s it) —
+    // and the governor bucket must follow the backend the spawn really hits.
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'gpt-5.6-luna' });
+    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'codex', model: 'gpt-5.6-luna' });
+  });
+
+  // WI-4640 runtime casualty (2026-07-17): kettle@papercusp went hard-down when
+  // its COMMITTED default moved to the Codex-only gpt-5.6-luna:high (P-020) —
+  // backend inference keyed only off PAPERCUSP_SPAWN_MODEL, so the fallback
+  // `claude -p` carried `--model gpt-5.6-luna` and Anthropic 404'd every fire
+  // (23:54Z/00:24Z/00:55Z/01:25Z, rc=1 in ~5s). The swap must key off the
+  // EFFECTIVE spec: per-spawn override > AGENT_MODELS > committed default.
+  it('a Codex-shaped COMMITTED default swaps the backend (kettle hard-down regression)', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const { env } = buildInvokeOnce(spec({ role: 'kettle' }));
+    expect(env.AGENT_CMD).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
+    expect(env.CLAUDE).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
+    expect(env.AGENT_BACKEND).toBe('codex');
+    expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
+  });
+
+  it('a Codex-shaped AGENT_MODELS entry swaps the backend the same way', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'gpt-5.6:high' }));
+    const { env } = buildInvokeOnce(spec({ role: 'worker' }));
+    expect(env.AGENT_CMD).toBe('codex exec --model gpt-5.6 -c model_reasoning_effort="high"');
+    expect(env.AGENT_BACKEND).toBe('codex');
+  });
+
+  it('a claude-alias per-spawn override on a Codex-floored role stays on claude (pin shape)', () => {
+    // The mitigation shape while a codex path is broken: pin the role to a
+    // claude spec. The override IS the effective spec, it is not Codex-shaped,
+    // so no swap fires and the pin actually lands on the claude CLI.
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const { env } = buildInvokeOnce(
+      spec({ role: 'kettle', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'sonnet[1m]:high' } }),
+    );
+    expect(env.AGENT_CMD).toBe('claude -p --model sonnet[1m] --effort high');
   });
 });
 
@@ -547,7 +586,9 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
   it('P-012: worker buckets to its committed sonnet tier without env (no silent CLI-default bucket)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
-    // P-020: cup's committed floor is now gpt-5.6-luna:high, not haiku.
-    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'gpt-5.6-luna' });
+    // P-020: cup's committed floor is now gpt-5.6-luna:high, not haiku — a
+    // Codex-only id, so the bucket is CODEX (WI-4640 effective-spec inference):
+    // the spawn really hits OpenAI, and the governor must pace that bucket.
+    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'codex', model: 'gpt-5.6-luna' });
   });
 });
