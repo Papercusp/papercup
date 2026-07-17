@@ -97,3 +97,12 @@ creates a chat and renders `<ChatPanel slug chatId />` directly), and a
 chat needs a **harness** (`agent_chats` is per-harness-schema) — pure SU
 plans with no harness can't host one. This is the open work in
 `planning-attention-importance-2026-05-31` P-017.
+
+## Related: the unified owner Inbox (2026-07-17)
+
+`owner-inbox-single-pane-2026-07-17` widens this same `AttentionItem` feed
+with more sources (every kind's `needs_human`/blocked work-items, registered
+owner-walls, pending dark-flag ratifications, hook- and transcript-derived
+owner-gates from any client) and adds reply routing back to a live asker plus
+a session chat popup on top of the feed described above — see
+[owner-inbox-single-pane-capture-architecture](/agent-insights/owner-inbox-single-pane-capture-architecture).

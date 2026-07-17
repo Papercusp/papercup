@@ -37,18 +37,27 @@
  *     HETZNER_E2E_SERVER_TYPE=cpx31, EVICT_E2E_FRAMES, EVICT_E2E_PEERS, P2P_PERF_HETZNER_LOCATIONS).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { resolve } from 'node:path';
 import { localEvictionLauncher, sshEvictionLauncher, type SshEvictionSlotSpec } from './p2p-perf-tier3/eviction-launcher';
 import { runEvictionProof, pubkeyFor } from './p2p-perf-tier3/run-eviction-proof';
+import { findFreeBasePort } from './p2p-perf-tier3/free-port-base';
 
 const FIVE_MIN = 5 * 60_000;
 const NINETY_MIN = 90 * 60_000;
 
-// A per-process loopback port base, so concurrent test files don't collide.
-const LOCAL_BASE_PORT = 48_000 + (process.pid % 1400);
+// WI-5185: the old `48_000 + (process.pid % 1400)` formula only REDUCED collision
+// odds — it never checked. Probe-and-reserve a genuinely free block instead (see
+// free-port-base.ts; this file's own "peer(s) 2 never became ready" flake seen
+// during WI-5203 verification this same session is almost certainly this exact
+// bug). 2 scenarios below, offsets 0/10, count=3 ⇒ ports up to base+12.
+let LOCAL_BASE_PORT: number;
 
 describe('≥3-peer authority eviction — $0 local parity (no cloud, no SSH)', () => {
+  beforeAll(async () => {
+    LOCAL_BASE_PORT = await findFreeBasePort({ count: 50, rangeStart: 48_000, rangeEnd: 49_400 });
+  }, 30_000);
+
   it(
     'EVICTION ON: kill the authority → survivors evict it BEFORE the 90s floor + promote a LIVE authority; acquire lands on it (not fail-open)',
     async () => {

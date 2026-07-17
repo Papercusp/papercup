@@ -227,10 +227,8 @@ export default defineTool({
     'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (EI-9943: alive+speaking ' +
-    'but not advancing, not yet benched — nudge toward fleet:bench), and unownedCriticals ' +
-    '(WI-5213: open critical-severity work-items with no assignee, aged past the bar, that ' +
-    'this fleet\'s claim spec would admit — filing alone did not surface EI-13306 for 8h; this does). ' +
-    'Scoped to ONE fleet ' +
+    'but not advancing, not yet benched), and unownedCriticals (WI-5213: aged unassigned ' +
+    'critical work-items this fleet\'s spec would admit). Scoped to ONE fleet ' +
     '(yours by default) instead of the whole workspace roster fleet:assignments returns. ' +
     'Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats ' +
     'every monitor wake.',
@@ -245,8 +243,7 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on, instead of live-loop-polling. A nonzero ' +
-      '`unownedCriticals` → work_items:claim it (yourself or steer a member) before it recurs.',
+      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -268,11 +265,7 @@ export default defineTool({
       .positive()
       .max(168)
       .optional()
-      .describe(
-        'WI-5213: escalation bar for an unowned critical work-item (open, severity=critical, no ' +
-          'assignee) that THIS fleet\'s claim spec would admit — "filing is not fixing", so a ' +
-          'critical left orphaned this long surfaces here without anyone asking. Default 4h.',
-      ),
+      .describe('WI-5213: hours an unassigned critical must age before it surfaces here. Default 4.'),
   }),
   async handler(args, ctx) {
     let actorWorkspace: string | null = null;

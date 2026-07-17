@@ -280,7 +280,14 @@ export default function AgentDossier({
           </h4>
           <MetaRow label="source" value={nativeSession.source} />
           <MetaRow label="exact resume" value={nativeSession.exactResumeSupported ? 'supported' : 'not ready'} />
-          <MetaRow label="resume" value={nativeSessionCommand(nativeSession)} />
+          {/* WI-5226: only offer a copy-pasteable command when exactResumeSupported —
+              the server now verifies (and best-effort restores) the session's on-disk
+              transcript before setting this true, so a false here means the command
+              would ENOENT; the header's missingReason note already explains why. */}
+          <MetaRow
+            label="resume"
+            value={nativeSession.exactResumeSupported ? nativeSessionCommand(nativeSession) : null}
+          />
           {nativeSession.backend === 'claude' ? (
             <MetaRow label="session" value={nativeSession.sessionId ?? 'not recorded'} />
           ) : null}

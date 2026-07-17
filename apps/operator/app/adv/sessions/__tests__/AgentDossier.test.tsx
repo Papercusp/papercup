@@ -197,6 +197,32 @@ describe('AgentDossier', () => {
     expect(getByText('claude --resume claude-uuid-2')).toBeTruthy();
   });
 
+  it('WI-5226: hides the resume command (never just the badge) when exactResumeSupported is false', () => {
+    const { getByText, queryByText } = render(
+      <AgentDossier
+        ownerId="su-1"
+        entry={entry({
+          sessionId: 'claude-uuid-3',
+          nativeSession: {
+            backend: 'claude',
+            source: 'spawned_agents',
+            ownerId: 'su-1',
+            sessionId: 'claude-uuid-3',
+            configDir: '/home/user/.papercusp/session-claude/su-1',
+            exactResumeSupported: false,
+            missingReason: 'session transcript was cleaned up and could not be restored (not_archived)',
+          },
+        })}
+        onClose={() => {}}
+      />,
+    );
+    // the header note explains why...
+    expect(getByText(/session transcript was cleaned up/)).toBeTruthy();
+    expect(getByText('not ready')).toBeTruthy();
+    // ...but the command itself — which would ENOENT — is never offered to copy.
+    expect(queryByText(/claude --resume claude-uuid-3/)).toBeNull();
+  });
+
   it('prefers the lazy detail native session when it has a Codex rollout id', async () => {
     syncState.detail = {
       ...DETAIL,

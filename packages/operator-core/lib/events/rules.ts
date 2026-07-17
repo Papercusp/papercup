@@ -63,3 +63,48 @@ registerReactionRule({
  * the built-in `cache.bumpTags` action. Flag-gated (CACHE_TAG_ECA, default ON).
  */
 registerCacheTagEcaRule();
+
+/**
+ * WI-5271 — critical-severity work-item alert, event-driven (replaces the leaking
+ * `critical-severity-alert-2026-07-06` 15-min poll+diff scheduled plan).
+ *
+ * Owner ask (2026-07-06, verbatim): "I want to be alerted whenever a new
+ * critical-severity work item appears in this harness." The original
+ * implementation was a scheduled poll+diff PLAN because no creation event
+ * existed yet — `events/await/catalog.ts`'s `work-item-created` family was later
+ * built specifically to replace it (see that file's `replacesPoll` note) but the
+ * plan was never actually migrated off, so it kept minting a new permanent
+ * `harness_plans` row every 15 minutes forever (945+ and growing when found).
+ *
+ * This rule is the real migration: react directly to `work_items:create`
+ * (the same trigger tool `defaultPotEventSubscriptions()` reacts to for the
+ * Mug's own demand-wake — same pattern, different fire target) instead of
+ * polling, and fire `coord:escalate` at `advisory` severity (an FYI, not a
+ * blocker/question — the owner wants awareness, not a decision) so it lands on
+ * the same "open escalations" surface the owner already watches. `conditionKey`
+ * is the created item's own id, so a fan-out re-fire (a bulk create) can never
+ * double-alert on the same item.
+ */
+registerReactionRule({
+  id: 'critical-work-item-alert',
+  on: 'work_items:create',
+  when: (e) => {
+    const d = e.result.data as
+      | { ok?: boolean; workItem?: { id?: string; title?: string; severity?: string; harness?: string | null } }
+      | undefined;
+    return d?.ok === true && d?.workItem?.severity === 'critical';
+  },
+  fire: 'coord:escalate',
+  args: (e) => {
+    const d = e.result.data as { workItem: { id: string; title: string; harness?: string | null } };
+    const wi = d.workItem;
+    return {
+      severity: 'advisory',
+      summary: `New CRITICAL work item filed: ${wi.id} — ${wi.title}`,
+      body: `harness: ${wi.harness ?? '(unset)'}\nid: ${wi.id}`,
+      conditionKey: `critical-wi-alert:${wi.id}`,
+    };
+  },
+  onlyOnSuccess: true,
+  source: 'events-file',
+});

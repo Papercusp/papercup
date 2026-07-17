@@ -168,7 +168,7 @@ lives in `action-surface.ts`.
 | Triage / resolve an improvement               | ideation-intake     | rev       | system    | `improvements:triage`                         | covered  |
 | Triage / promote an issue                     | ideation-intake     | rev       | system    | `issues:promote`                              | covered  |
 | Promote a conversation → tracked work         | ideation-intake     | rev       | system    | `conversations:promote`                       | covered  |
-| Approve / dispatch auto-implement             | implementation      | rev       | system    | `work_items:create`, `improvements:resolve`   | partial  |
+| Approve / dispatch auto-implement             | implementation      | rev       | system    | `improvements:set-auto-policy`                | covered  |
 | Judge a gym candidate                         | review-merge        | rev       | system    | `gym:judge`                                   | covered  |
 | Record a design reviewer verdict              | review-merge        | rev       | system    | `design-phase:record_review`                  | covered  |
 | Approve a code review / merge                 | review-merge        | rev       | system    | `review:approve`, `merge:approve`             | covered  |
@@ -203,11 +203,25 @@ lives in `action-surface.ts`.
 For every action the audit found, a Mug-accessible verb should exist. The
 genuine **gap** (human-only, no Mug verb) and the notable **partials** are filed
 as build items so the coverage invariant can eventually go green for the whole
-surface:
+surface.
 
-* **`implementation.dispatch-auto-implement`** *(partial)* — driven by the
-  promote-policy + improvement triage rather than one owner-facing
-  "approve this implementation" verb.
+**WI-5252 (2026-07-17, EI-458 follow-up)** closed the remaining P-016 partial —
+behavior-neutral, code-only refinement (B-12 still ungates nothing new):
+
+* **`implementation.dispatch-auto-implement`** → **covered**. The open design
+  question was "what does approve mean distinct from create+triage?". Answer:
+  per-idea `work_items:create` + `improvements:triage{decision:"place"}` is
+  *not* a separate approval — it's already the decision→execution-boundary
+  pattern `plan.convert-item-to-work` covers with one verb, and the decision
+  itself is already `ideation.triage-improvement`'s job. The genuinely distinct
+  "approve auto-implement" action — the one exercised with **no per-item
+  review at all** — is `improvements:set-auto-policy` (the `autoKinds`
+  graduation dial, dispatch ceilings, tighten-only protected-path/keyword
+  additions): already Mug-accessible (mug/architect/operator roles), audited,
+  one-call-revertible. It was simply missing from this audit; the
+  capability→category map gained a specific override
+  (`improvements:set-auto-policy` → `implementation`, ahead of the generic
+  `improvements:` → `ideation-intake` rule) so it resolves consistently.
 
 **EI-458 (2026-07-17)** closed the other two P-016 partials — behavior-neutral,
 code-only refinements (B-12 still ungates nothing new):

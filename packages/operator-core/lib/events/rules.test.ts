@@ -12,6 +12,13 @@ function handoffEvent(args: Record<string, unknown>, over: Partial<UnifiedToolCo
   return { tool: 'coord:handoff', args, result: { ok: true, data: { ok: true } }, ctx: ctx(over) };
 }
 
+function createWorkItemEvent(
+  data: Record<string, unknown>,
+  over: Partial<UnifiedToolContext> = {},
+): ToolInvocationEvent {
+  return { tool: 'work_items:create', args: {}, result: { ok: true, data }, ctx: ctx(over) };
+}
+
 describe('the defer→pane rule (D-008)', () => {
   it('is registered on coord:handoff', () => {
     const rules = reactionRulesFor('coord:handoff');
@@ -41,5 +48,42 @@ describe('the defer→pane rule (D-008)', () => {
   it('does NOT fire when there is no pane to target (no uiClientId)', () => {
     const actions = matchReactions(handoffEvent({ summary: 's' }, { uiClientId: null }));
     expect(actions.find((x) => x.ruleId === 'defer-renders-on-pane')).toBeUndefined();
+  });
+});
+
+describe('the critical-work-item-alert rule (WI-5271)', () => {
+  it('is registered on work_items:create', () => {
+    const rules = reactionRulesFor('work_items:create');
+    expect(rules.map((r) => r.id)).toContain('critical-work-item-alert');
+  });
+
+  it('fires coord:escalate at advisory severity for a critical-severity create', () => {
+    const actions = matchReactions(
+      createWorkItemEvent({
+        ok: true,
+        workItem: { id: 'EI-999', title: 'Something on fire', severity: 'critical', harness: 'papercusp' },
+      }),
+    );
+    const a = actions.find((x) => x.ruleId === 'critical-work-item-alert');
+    expect(a).toBeDefined();
+    expect(a!.fire).toBe('coord:escalate');
+    expect(a!.args.severity).toBe('advisory');
+    expect(String(a!.args.summary)).toContain('EI-999');
+    expect(String(a!.args.summary)).toContain('Something on fire');
+    expect(a!.args.conditionKey).toBe('critical-wi-alert:EI-999');
+  });
+
+  it('does NOT fire for a major/minor-severity create', () => {
+    const actions = matchReactions(
+      createWorkItemEvent({ ok: true, workItem: { id: 'EI-998', title: 'Minor thing', severity: 'minor' } }),
+    );
+    expect(actions.find((x) => x.ruleId === 'critical-work-item-alert')).toBeUndefined();
+  });
+
+  it('does NOT fire on a failed create', () => {
+    const actions = matchReactions(
+      createWorkItemEvent({ ok: false, workItem: { id: 'EI-997', severity: 'critical' } }),
+    );
+    expect(actions.find((x) => x.ruleId === 'critical-work-item-alert')).toBeUndefined();
   });
 });
