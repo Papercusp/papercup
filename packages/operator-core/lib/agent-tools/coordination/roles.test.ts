@@ -73,8 +73,12 @@ describe('COORD_ROLES', () => {
     // The dynamic imports below pull the tool modules' FULL transitive graph
     // (dispatch stack, drizzle schema, …) through vitest's on-demand transform
     // — measured ~5.6s cold on the dev box (2026-07-12), which outgrew the 5s
-    // default and made this timeout-flake. Import weight, not test logic.
-    { timeout: 30_000 },
+    // default and made this timeout-flake. Import weight, not test logic. Under
+    // the fully-parallel green-checkpoint gate (candidate 0fe0b5aa, 2026-07-17)
+    // even 30s was exceeded (timed out at 36s) when the whole workspace was
+    // re-running under contention — bumped to 60s so peak gate load can't re-red
+    // an import-weight-bound assertion. Runs in ~6s in isolation.
+    { timeout: 60_000 },
     async () => {
       // Capability alone is not enough; the tool's agentRoles allowlist must include
       // the caller's role (mirrors the scanner output-contract test in
@@ -92,8 +96,9 @@ describe('COORD_ROLES', () => {
   test(
     'the fast↔deep delegation channel admits both papercup and papercup-deep (voice-release P-006)',
     // Same import-weight caveat as the test above: these pull the coord tool
-    // modules' full transitive graph through vitest's transform.
-    { timeout: 30_000 },
+    // modules' full transitive graph through vitest's transform. Same 60s
+    // gate-load headroom (see the note on the test above).
+    { timeout: 60_000 },
     async () => {
       // voice-public-release-readiness-2026-07-12 P-006 / D-003: the fast
       // front-end (papercup) delegates questions to the hidden deep brain
