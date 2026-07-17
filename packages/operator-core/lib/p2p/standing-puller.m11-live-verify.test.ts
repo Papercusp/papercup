@@ -71,6 +71,7 @@ describe('M11 Live Verify — grant-confers-no-allotment', () => {
 
     const result = evaluateClaimAuthority(offer, hostAvail);
     expect(result.claimable).toBe(false);
+    if (result.claimable) return; // narrows the union for TS (ClaimAuthorityResult)
     expect(result.refusals).toHaveLength(1);
     const refusal = result.refusals[0];
     expect(refusal.code).toBe('axis_not_served');
@@ -113,6 +114,7 @@ describe('M11 Live Verify — allotment round-trip (D-007 two-layer gate)', () =
 
     const result = evaluateClaimAuthority(offer, hostAvail);
     expect(result.claimable).toBe(true);
+    if (!result.claimable) return; // narrows the union for TS (ClaimAuthorityResult)
     expect(result.grants).toHaveLength(1);
     const grant = result.grants[0];
     expect(grant.axis).toBe('remote');
@@ -142,6 +144,7 @@ describe('M11 Live Verify — allotment round-trip (D-007 two-layer gate)', () =
 
     const result = evaluateClaimAuthority(offer, hostAvail);
     expect(result.claimable).toBe(false);
+    if (result.claimable) return; // narrows the union for TS (ClaimAuthorityResult)
     expect(result.refusals).toHaveLength(1);
     const refusal = result.refusals[0];
     expect(refusal.code).toBe('no_live_headroom');
@@ -169,6 +172,7 @@ describe('M11 Live Verify — allotment round-trip (D-007 two-layer gate)', () =
 
     const result = evaluateClaimAuthority(offer, hostAvail);
     expect(result.claimable).toBe(false);
+    if (result.claimable) return; // narrows the union for TS (ClaimAuthorityResult)
     expect(result.refusals).toHaveLength(1);
     const refusal = result.refusals[0];
     expect(refusal.code).toBe('no_allotment_remaining');
@@ -208,6 +212,7 @@ describe('M11 Live Verify — loud-refusal receipts (D-004 no-silent-drops)', ()
 
     const result = evaluateClaimAuthority(offer, hostAvail);
     expect(result.claimable).toBe(false);
+    if (result.claimable) return; // narrows the union for TS (ClaimAuthorityResult)
     const refusal = result.refusals[0];
 
     // Receipt fields that must be present:
@@ -247,11 +252,15 @@ describe('M11 Live Verify — loud-refusal receipts (D-004 no-silent-drops)', ()
     };
 
     const result1 = evaluateClaimAuthority(offer, { remote: null, local: null });
+    expect(result1.claimable).toBe(false);
+    if (result1.claimable) return; // narrows the union for TS (ClaimAuthorityResult)
     expect(result1.refusals[0].code).toBe('axis_not_served');
 
     // Same refusal code across different fleets / offers / times
     const offer2: WorkOffer = { ...offer, offerId: 'o2', fleetSlug: 'fleet-y' };
     const result2 = evaluateClaimAuthority(offer2, { remote: null, local: null });
+    expect(result2.claimable).toBe(false);
+    if (result2.claimable) return; // narrows the union for TS (ClaimAuthorityResult)
     expect(result2.refusals[0].code).toBe('axis_not_served');
 
     // Both would emit receipts with refusal_code='axis_not_served', queryable together

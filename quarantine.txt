@@ -74,7 +74,3 @@
 # WI-5205 (2026-07-17): flipRate 0.423 over 27 runs (11/26 consecutive transitions).
 # De-quarantine follow-up: WI-5256 (root-cause + fix + remove this line).
 @papercusp/operator-core::lib/provision/render-templates.integration.test.ts
-
-# WI-5207 (2026-07-17): flipRate 0.375 over 17 runs (6/16 consecutive transitions).
-# De-quarantine follow-up: WI-5257 (root-cause + fix + remove this line).
-@papercusp/db-org::src/work-items-cdc-capture.integration.test.ts

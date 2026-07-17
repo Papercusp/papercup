@@ -66,7 +66,14 @@ beforeAll(async () => {
   store = new PgConversationStore({ getSql: () => sql, ensureSchema: async () => {}, workspaceId: WS });
 });
 afterAll(async () => {
-  await db.cleanup();
+  // WI-5194: when beforeAll itself fails (observed cause: the shared dev
+  // Postgres server was mid crash-recovery, or a testcontainer connection got
+  // dropped) `db` is never assigned, so an unconditional `db.cleanup()` here
+  // threw `Cannot read properties of undefined (reading 'cleanup')` — masking
+  // the REAL beforeAll error in the test-run record with a confusing, useless
+  // secondary one. Guard so the original infra failure is what actually
+  // surfaces (there's nothing to clean up if provisioning never completed).
+  if (db) await db.cleanup();
 });
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.coord_conversations,

@@ -73,6 +73,7 @@ import {
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor } from '../../../result-door';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
+import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
@@ -644,7 +645,11 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       ctx: {
         workspaceId: workspaceId || '*',
         harnessSlug: harnessParam || '*',
-        role: (roleParam || 'operator') as AgentRole,
+        // Canonicalize old-spelling roles here too (see the matching comment on the
+        // signed role-scoped branch above) — isSuperuser bypasses the gates so this
+        // only affects the ADVERTISED tools/list catalog, but an old spelling should
+        // still narrow to the SAME catalog its canonical name would.
+        role: (roleParam ? canonicalCoordRole(roleParam) : 'operator') as AgentRole,
         featureId: null,
         chunkId: null,
         // Per-request UUID, not the 'standalone' sentinel — see
@@ -855,7 +860,18 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       ctx: {
         workspaceId: parsed.workspaceId,
         harnessSlug: parsed.harnessSlug,
-        role: parsed.role as AgentRole,
+        // Canonicalize pre-rename role spellings (bee→cup, queen→mug, sentinel→
+        // papercup, overwatch→kettle, scout→blender) here, at the one point every
+        // downstream gate (role-allowlist in dispatch-stack.ts, AND
+        // loadRoleCapabilities/synthesizeDispatchPrincipal below) reads `ctx.role`
+        // from. Without this, a caller whose spawn URL still carries an old-spelling
+        // `role=bee` gets a principal literally named `system:bee`, which has NO
+        // entry in BLUEPRINT_ROLE_CAPS (only the canonical `cup` key exists) — every
+        // capability-gated tool call 100%-fails with `missing_capability`, e.g.
+        // `capability:git` (EI-667), even though the canonical `cup` role already
+        // carries it. canonicalCoordRole is identity for an already-canonical role,
+        // so this is a no-op for every current spawn.
+        role: canonicalCoordRole(parsed.role) as AgentRole,
         featureId: parsed.featureId,
         chunkId: parsed.chunkId,
         runId: parsed.runId,
