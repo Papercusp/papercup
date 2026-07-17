@@ -89,15 +89,45 @@ export type PipelineInvokeRunner = (
   workspaceId?: string,
 ) => Promise<{ output: string; exitCode: number }>;
 
-let _runner: PipelineInvokeRunner | null = null;
+// ── Injected pipeline hooks (runner + optional seams) — globalThis-backed ──────
+// The operator injects these at boot (wireOrchestratorInvokeRunner → the setters
+// below). They MUST survive the SAME double-module-load that idempotentRegisterWorkflow
+// guards the workflow REGISTRATION against (WI-3830/WI-4015): under the tsx-direct boot
+// entrypoint two instances of THIS module coexist in one process, DBOS runs the
+// globalThis-cached `featurePipelineWorkflow` closure from instance A, but the operator
+// wires the runner/hooks on instance B — so a plain module-level `let` slot on instance A
+// stays null. The runner slot then throws "invoke runner not wired" (EI-10567 —
+// deterministic on every gym-blueprint-cycle boot, invisible under the bundled esbuild
+// entry that collapses to one instance); the fail-SOFT hooks (finalizer, debugger,
+// test-digest, settled, feature-passed, lease-heartbeat) silently no-op, a worse quiet
+// failure. Store every INJECTED slot on globalThis so both instances share ONE set — the
+// same hot-reload-safe-singleton idiom as idempotent-register-workflow.ts. (`_codingSpine`
+// below is deliberately NOT here: it is lazily DERIVED, identical per instance, so it has
+// no cross-instance split.)
+interface InjectedPipelineHooks {
+  runner?: PipelineInvokeRunner;
+  finalizer?: PipelineFinalizer;
+  debuggerHook?: PipelineDebuggerHook;
+  testDigestHook?: PipelineTestDigestHook;
+  settledHook?: PipelineSettledHook;
+  featurePassedHook?: PipelineFeaturePassedHook;
+  leaseHeartbeatHook?: PipelineLeaseHeartbeatHook;
+}
+function pipelineHooks(): InjectedPipelineHooks {
+  const g = globalThis as typeof globalThis & { __papercuspPipelineHooks__?: InjectedPipelineHooks };
+  if (!g.__papercuspPipelineHooks__) g.__papercuspPipelineHooks__ = {};
+  return g.__papercuspPipelineHooks__;
+}
+
 export function setPipelineInvokeRunner(fn: PipelineInvokeRunner): void {
-  _runner = fn;
+  pipelineHooks().runner = fn;
 }
 function runner(): PipelineInvokeRunner {
-  if (!_runner) {
+  const r = pipelineHooks().runner;
+  if (!r) {
     throw new Error('[dbos-orchestrator] invoke runner not wired — call setPipelineInvokeRunner() first');
   }
-  return _runner;
+  return r;
 }
 
 /**
@@ -114,9 +144,8 @@ export type PipelineFinalizer = (input: {
   reason?: string;
 }) => Promise<void>;
 
-let _finalizer: PipelineFinalizer | null = null;
 export function setPipelineFinalizer(fn: PipelineFinalizer): void {
-  _finalizer = fn;
+  pipelineHooks().finalizer = fn;
 }
 
 /**
@@ -138,9 +167,8 @@ export type PipelineDebuggerHook = (input: {
   workspaceId?: string;
 }) => Promise<{ fired: boolean }>;
 
-let _debuggerHook: PipelineDebuggerHook | null = null;
 export function setPipelineDebuggerHook(fn: PipelineDebuggerHook): void {
-  _debuggerHook = fn;
+  pipelineHooks().debuggerHook = fn;
 }
 
 /**
@@ -163,9 +191,8 @@ export type PipelineTestDigestHook = (input: {
   workspaceId?: string;
 }) => Promise<{ extras: string[] }>;
 
-let _testDigestHook: PipelineTestDigestHook | null = null;
 export function setPipelineTestDigestHook(fn: PipelineTestDigestHook): void {
-  _testDigestHook = fn;
+  pipelineHooks().testDigestHook = fn;
 }
 
 /**
@@ -177,9 +204,8 @@ export function setPipelineTestDigestHook(fn: PipelineTestDigestHook): void {
  * idempotent external nudge, harmless if re-fired on workflow replay.
  */
 export type PipelineSettledHook = (harnessSlug: string, workspaceId?: string) => void;
-let _settledHook: PipelineSettledHook | null = null;
 export function setPipelineSettledHook(fn: PipelineSettledHook): void {
-  _settledHook = fn;
+  pipelineHooks().settledHook = fn;
 }
 
 /**
@@ -200,9 +226,8 @@ export type PipelineFeaturePassedHook = (input: {
   featureId: string;
   workspaceId?: string;
 }) => Promise<void>;
-let _featurePassedHook: PipelineFeaturePassedHook | null = null;
 export function setPipelineFeaturePassedHook(fn: PipelineFeaturePassedHook): void {
-  _featurePassedHook = fn;
+  pipelineHooks().featurePassedHook = fn;
 }
 
 /**
@@ -227,9 +252,8 @@ export type PipelineLeaseHeartbeatHook = (input: {
   workspaceId?: string;
   claim: WorkItemClaimLeaseHandle;
 }) => Promise<{ renewed: boolean; reason?: string }>;
-let _leaseHeartbeatHook: PipelineLeaseHeartbeatHook | null = null;
 export function setPipelineLeaseHeartbeatHook(fn: PipelineLeaseHeartbeatHook): void {
-  _leaseHeartbeatHook = fn;
+  pipelineHooks().leaseHeartbeatHook = fn;
 }
 
 // The blueprint spine drives the dispatch loop: `deriveNext` replaces the legacy
@@ -330,8 +354,8 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     // long legit pipeline's lease alive past its TTL (retiring the dispatch-loop keep-alive).
     // Skipped byte-identically when the pipeline carries no lease (flag off / fail-open) or
     // the hook is unwired (tests). `action.kind === 'dispatch'` is guaranteed here.
-    if (input.claim && _leaseHeartbeatHook) {
-      const beat = _leaseHeartbeatHook;
+    const beat = pipelineHooks().leaseHeartbeatHook;
+    if (input.claim && beat) {
       const claim = input.claim;
       const hb = await DBOS.runStep(
         () =>
@@ -359,8 +383,8 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     // P-012: before a WORKER run, optionally fire the read-only debugger once
     // (attempts ≥ threshold + no debug note). The hook does the guard-check AND
     // the invoke inside this SINGLE checkpointed step — D-014 replay-safety.
-    if (action.role === 'worker' && _debuggerHook) {
-      const dh = _debuggerHook;
+    const dh = pipelineHooks().debuggerHook;
+    if (action.role === 'worker' && dh) {
       const feature = action.feature;
       await DBOS.runStep(
         () => dh({ harnessSlug: input.harnessSlug, featureId: feature, workspaceId: input.workspaceId }),
@@ -375,8 +399,8 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     // step (D-014 replay-safety, mirroring the debugger gate above). Best-effort:
     // unwired hook / no testCommand → no extra appended.
     let dispatchExtras = action.extras;
-    if (action.role === 'validator' && _testDigestHook) {
-      const th = _testDigestHook;
+    const th = pipelineHooks().testDigestHook;
+    if (action.role === 'validator' && th) {
       const feature = action.feature;
       const digest = await DBOS.runStep(
         () => th({ harnessSlug: input.harnessSlug, featureId: feature, workspaceId: input.workspaceId }),
@@ -403,8 +427,8 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
 
   // Finalize a terminal outcome (checkpointed → runs once, not re-run on replay).
   // Skipped cleanly when no finalizer is wired (tests / pre-boot).
-  if (terminal && _finalizer) {
-    const fin = _finalizer;
+  const fin = pipelineHooks().finalizer;
+  if (terminal && fin) {
     const { outcome, reason } = terminal;
     await DBOS.runStep(
       () =>
@@ -431,8 +455,8 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     // hook below. No-op in owner/integration mode and when unwired (tests). The
     // handler is best-effort (never throws), so a PR-open failure cannot fail
     // the already-successful pipeline.
-    if (_featurePassedHook) {
-      const fph = _featurePassedHook;
+    const fph = pipelineHooks().featurePassedHook;
+    if (fph) {
       await DBOS.runStep(
         () =>
           fph({
@@ -443,7 +467,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
         { name: 'feature-passed-pr' },
       );
     }
-    _settledHook?.(input.harnessSlug, input.workspaceId);
+    pipelineHooks().settledHook?.(input.harnessSlug, input.workspaceId);
   }
 
   return `pipeline-complete (last=${lastVerb})`;
