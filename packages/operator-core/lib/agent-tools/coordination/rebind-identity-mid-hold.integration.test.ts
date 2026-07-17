@@ -105,7 +105,14 @@ describe('rebindIdentity — mid-hold compaction survival (real Postgres)', () =
   });
 
   afterAll(async () => {
-    await db.cleanup();
+    // WI-5195 (same class as WI-5194's conversations-store fix): when beforeAll
+    // itself fails (dev-PG crash-recovery / a dropped testcontainer connection —
+    // this file's whole historical failure record is infra flake, zero
+    // assertion failures) `db` is never assigned, so an unconditional
+    // `db.cleanup()` here throws a confusing secondary NPE that masks the real
+    // beforeAll error in the test-run record. Guard so a future infra hiccup
+    // surfaces its actual cause cleanly.
+    if (db) await db.cleanup();
   });
 
   it('re-keys work-item claims (FEATURE + ISSUE families), plan-item claims, a loop registration, and an events:await registration in one rebind pass', async () => {

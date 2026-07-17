@@ -20,20 +20,26 @@
  * Mirrors pot-wake-pg.integration.test.ts's testcontainer setup.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getTestPg } from '@papercusp/test-config';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line))
-    .join('\n');
+const RUNNER = resolve(
+  __dirname,
+  '../../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js',
+);
+// WI-5260 (EI-540 robust fix): head-schema provisioning via the REAL migration runner
+// (same pattern as work-items-cdc-capture.integration.test.ts / _org-test-db.ts) instead
+// of a hand-curated readMigration() allowlist — a future migration adding a column/table
+// this test's chain depends on no longer needs a matching hand-edit here to keep working.
+const SKIP = (f: string) =>
+  f.includes('per-harness-template') ||
+  f === '040-plugin-configs-backfill.sql' ||
+  f === '__seed_restored__.marker';
 
 const WS = 'default'; // = DEFAULT_WORKSPACE_ID, so plans:start + the pot state share one workspace
 const SLUG = 'pot-e2e-harness';
@@ -142,135 +148,61 @@ beforeAll(async () => {
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
-  // max:1 — the migration files carry their own BEGIN/COMMIT (postgres.js only
-  // allows that on a single-connection handle), and the dispatch path is
-  // sequential anyway.
+  // max:1 — some legacy migration files carry their own BEGIN/COMMIT (postgres.js
+  // only allows that on a single-connection handle), and the dispatch path under
+  // test is sequential anyway.
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
-  await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
-  // routines (baseline shape — the one-shot wake rows live here).
+  // WI-5260: provision the FULL head schema via the real migration runner (mirrors
+  // work-items-cdc-capture.integration.test.ts's `provision`) instead of a hand-curated
+  // allowlist of ~9 migration files + hand-rolled CREATE TABLE stand-ins for
+  // routines/tool_invocations/projects/harness_registry/operator_settings — all five of
+  // those tables are created by 000-baseline.sql (confirmed via grep), so the full chain
+  // subsumes every hand-rolled table this test used to bootstrap by hand. A FUTURE
+  // migration adding a column/table this dispatch chain depends on no longer needs a
+  // matching hand-edit here to keep this test green (the EI-540 class of breakage).
   await rootSql.unsafe(`
-    CREATE TABLE harness_shared.routines (
-      id text NOT NULL PRIMARY KEY,
-      install_slug text NOT NULL,
-      name text NOT NULL,
-      trigger_kind text NOT NULL,
-      trigger_config jsonb NOT NULL,
-      target_role text NOT NULL,
-      payload_template jsonb,
-      concurrency text DEFAULT 'queue' NOT NULL,
-      catchup text DEFAULT 'skip-old' NOT NULL,
-      active boolean DEFAULT true NOT NULL,
-      last_fired_at timestamptz,
-      next_fire_at timestamptz,
-      created_at timestamptz DEFAULT now() NOT NULL,
-      updated_at timestamptz DEFAULT now() NOT NULL,
-      metadata jsonb,
-      workspace_id text NOT NULL,
-      CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name)
-    )
+    DO $pg$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='harness_app')   THEN CREATE ROLE harness_app   LOGIN PASSWORD 'harness_app_pwd'; END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='harness_admin') THEN CREATE ROLE harness_admin LOGIN SUPERUSER PASSWORD 'harness_admin_pwd'; END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='harness_zero')  THEN CREATE ROLE harness_zero  LOGIN REPLICATION SUPERUSER PASSWORD 'harness_zero_pwd'; END IF;
+    END $pg$;
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    CREATE EXTENSION IF NOT EXISTS vector;
   `);
-  // Dispatch telemetry sink — recordInvocation (projected-tool-deps) now writes
-  // here on EVERY dispatch; without the table each dispatch console.warns and
-  // vitest-fail-on-console reddens the whole file. Minimal shape matching the
-  // INSERT (incl. 205's error_code).
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.tool_invocations (
-      id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-      workspace_id text NOT NULL,
-      harness_slug text NOT NULL,
-      plugin_name text NOT NULL,
-      tool_name text NOT NULL,
-      role text NOT NULL,
-      feature_id text, chunk_id text, run_id text,
-      spawn_id text NOT NULL, parent_spawn_id text,
-      window_key text NOT NULL,
-      invoked_at timestamptz DEFAULT now() NOT NULL,
-      duration_ms integer, status text NOT NULL,
-      output_ref text, output_size bigint, error_message text,
-      args_json jsonb, transport text, event_count integer, metadata_json jsonb,
-      principal_kind text, principal_auth_method text, principal_trust text,
-      error_code text,
-      coord_owner_id text
-    )
-  `);
+  {
+    const { applyPendingMigrations } = (await import(pathToFileURL(RUNNER).href)) as {
+      applyPendingMigrations: (o: {
+        client: Sql;
+        sqlDir: string;
+        skipFile?: (f: string) => boolean;
+      }) => Promise<{ appliedCount: number; totalKnown: number }>;
+    };
+    const { appliedCount, totalKnown } = await applyPendingMigrations({
+      client: rootSql,
+      sqlDir: SQL_DIR,
+      skipFile: SKIP,
+    });
+    if (appliedCount !== totalKnown) throw new Error(`start-pot-e2e provision: ${appliedCount}/${totalKnown}`);
+  }
   // EI-7227: resolveWorkspaceForHarness -> fill_workspace_id_from_projects
   // (agent-tools/plans/source.ts) consults harness_shared.projects, then
   // resolveWorkspaceForHarnessSlugIn (harness-core.ts) additionally consults
   // harness_shared.harness_registry (a generic per-workspace JSONB blob,
-  // migration 025) — this test's minimal hand-curated schema had neither table,
-  // so plans:start failed with "relation ... does not exist". Also: this test's
-  // 'papercup' harness slug canonicalizes to 'papercusp' (RETIRED_HARNESS_SLUG_ALIASES,
-  // the 2026-06-19 rename-compat shim) before resolution, and plans are Pot-scoped
-  // (must be a Pot home or belong to one) — so the registered slug must be
-  // 'papercusp' with harness_kind:'hive'.
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.projects (
-      id text NOT NULL,
-      name text NOT NULL,
-      status text NOT NULL,
-      slug text,
-      workspace_id text NOT NULL
-    )
-  `);
+  // migration 025). Also: this test's 'papercup' harness slug canonicalizes to
+  // 'papercusp' (RETIRED_HARNESS_SLUG_ALIASES, the 2026-06-19 rename-compat shim)
+  // before resolution, and plans are Pot-scoped (must be a Pot home or belong to
+  // one) — so the registered slug must be 'papercusp' with harness_kind:'hive'.
+  // Both tables now come from the migration chain above; only the seed rows are
+  // this test's own responsibility.
+  // head schema's `projects` (baseline) requires created_ts/updated_ts NOT NULL with
+  // no default — the old hand-rolled minimal table had neither column at all.
   await rootSql.unsafe(
-    `INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id) VALUES ('papercusp', 'papercusp', 'active', 'papercusp', '${WS}')`,
+    `INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id, created_ts, updated_ts) VALUES ('papercusp', 'papercusp', 'active', 'papercusp', '${WS}', ${Date.now()}, ${Date.now()})`,
   );
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.harness_registry (
-      workspace_id text NOT NULL,
-      payload jsonb NOT NULL,
-      updated_at bigint DEFAULT 0 NOT NULL
-    )
-  `);
   await rootSql.unsafe(
     `INSERT INTO harness_shared.harness_registry (workspace_id, payload) VALUES ('${WS}', '{"projects":[{"slug":"papercusp","path":"/tmp/papercusp","harness_kind":"hive"}]}'::jsonb)`,
   );
-  // The pot started/paused KV (pot/started.ts + overwatch control-state) —
-  // the start path reads/writes it; baseline shape + workspace_id (mig 453,
-  // every write stamps activeWorkspaceId()).
-  await rootSql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.operator_settings (
-      key text NOT NULL,
-      value text NOT NULL,
-      description text,
-      updated_at bigint DEFAULT 0 NOT NULL,
-      workspace_id text NOT NULL,
-      CONSTRAINT operator_settings_pkey PRIMARY KEY (key)
-    )`);
-  // WI-3192 cluster (4): the calibration seam (calibration/store.ts) opportunistically
-  // records a "bet" at wake time; it's caught + non-fatal without this table ("bet not
-  // recorded (host call unaffected)") but real end-to-end coverage should let it
-  // actually record. Self-contained migration, no deps.
-  await rootSql.unsafe(readMigration('253-calibration-predictions.sql')).simple();
-  await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
-  // 198's own filename is historical/immutable (applied migrations are never renamed
-  // on disk): as of 2026-06-09 "pot" was the LEGACY name and "hive" was canonical, so
-  // 198 renames pot_wake -> hive_wake. The cup-lexicon rename (2026-07-09/10, mig 554)
-  // later flipped the canonical direction back — hive_wake -> pot_wake, the CURRENT
-  // name operator-state-pg.ts reads/writes — so apply 554 too (EI-9435: this test was
-  // ENOENT'ing on a corrupted filename, then, once that was fixed, red on the missing
-  // pot_wake table until 554 was added here — same fix already applied in
-  // declared-event-wake-e2e.integration.test.ts). 554 is a self-contained set of
-  // per-table to_regclass(...) IS NOT NULL guarded DO blocks, so applying the whole
-  // file is safe against this hand-curated minimal schema.
-  await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
-  await rootSql.unsafe(readMigration('554-cup-lexicon-db-rename-phase1.sql')).simple();
-  await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();
-  // Stage-3 derived-index columns (items/decisions/now_*) — the write path
-  // (with-plan-lock) and the start tool's source reads expect them at head.
-  await rootSql.unsafe(readMigration('128-harness-plans-normalize.sql')).simple();
-  // The initiative grouping column (284) — plans:start's source-derive reads/writes it.
-  await rootSql.unsafe(readMigration('284-harness-plans-initiative.sql')).simple();
-  // The decision-ledger sink (260) — recordDecisionLedger writes here from the
-  // dispatch postInvoke seam; without it every governed dispatch console.warns
-  // ("relation harness_shared.decision_ledger does not exist") and
-  // vitest-fail-on-console reddens the whole file (EI-497).
-  await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
-  // The ONE shared carry-note substrate (472) — the wake path's carry-journal
-  // reads/writes it (su-cold-auto-mode-2026-07-03 P-001).
-  await rootSql.unsafe(readMigration('472-carry-notes.sql')).simple();
   h.sql = rootSql;
 
   // WI-2012 (owner directive 2026-07-03): hives are born PAUSED and the wake
