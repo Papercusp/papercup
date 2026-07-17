@@ -936,10 +936,25 @@ export async function runLivenessAlarmTick(
   const readAutoloopFireRows = deps.readAutoloopFireRows ?? defaultReadAutoloopFireRows;
   const autoloopFireRows = await readAutoloopFireRows(ws).catch(() => [] as AutoloopFireRow[]);
 
+  // EI-15006: the cup-placeable + capacity gate for the `panel:bees` "no bees
+  // running" signal. Fetch the bee-tier capacity ONCE per tick (fail-soft to
+  // unknown), then derive the context per-snapshot so the recovery-recompute
+  // below re-evaluates the FRESH frontier under the same capacity reading.
+  // Mirror the readRoutineEngine gating: a test that injects `readLast` (the
+  // hermetic-cache seam) gets the no-I/O unknown-capacity stub unless it
+  // explicitly injects `readBeeCapacity`, so a unit tick never hits the gateway.
+  const readBeeCapacity =
+    deps.readBeeCapacity ??
+    (deps.readLast === undefined
+      ? readGatewayBeeCapacity
+      : async () => ({ dispatchBudget: null as number | null, restartRecovering: false }));
+  const beeCapacity = await readBeeCapacity().catch(() => ({ dispatchBudget: null, restartRecovering: false }));
+
   let signals = evaluateLivenessAlarm(health, snapshotAgeMs, {
     snapshotStaleMs: staleMs,
     prevPostmasterStartMs,
     autoloopFireRows,
+    beesLiveness: beesLivenessFromHealth(health, beeCapacity),
     ...(snapshotAgeMs !== null && snapshotAgeMs > staleMs
       ? { stallDiagnosis: diagnoseHealthTickStall(health, snapshotAgeMs, now, lastSuccessfulTickMs) }
       : {}),
@@ -993,6 +1008,7 @@ export async function runLivenessAlarmTick(
         snapshotStaleMs: staleMs,
         prevPostmasterStartMs,
         autoloopFireRows,
+        beesLiveness: beesLivenessFromHealth(freshHealth, beeCapacity),
       });
       currentSigs = new Set(signals.map((s) => s.key));
     }

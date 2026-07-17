@@ -46,6 +46,17 @@ import './plans-pane.css';
 /** Buckets shown by default — "not started + started", never the finished. */
 const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'running']);
 
+/** An active plan with no real activity for this long reads as "stale" — a
+ *  visibility nudge against plan sprawl (owner-plans-single-pane P-008). */
+export const STALE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** True when an active plan hasn't been touched in ≥ STALE_MS. Pure. */
+export function isStale(updated: string | null, now = Date.now()): boolean {
+  if (!updated) return false;
+  const t = Date.parse(updated);
+  return Number.isFinite(t) && now - t >= STALE_MS;
+}
+
 /** Compact relative recency — same local convention as the roster/backup panes. */
 export function agoLabel(iso: string | null): string {
   if (!iso) return '—';
@@ -251,6 +262,15 @@ export default function PlansPane() {
                         title={`${progress.done} of ${progress.total} items done`}
                       >
                         {progress.done}/{progress.total}
+                      </span>
+                    ) : null}
+                    {!showFinished && isStale(plan.updated) ? (
+                      <span
+                        className="plans-pane__badge plans-pane__badge--stale"
+                        title={`No activity since ${plan.updated} — a candidate to archive`}
+                        data-testid="plans-pane-stale-badge"
+                      >
+                        stale
                       </span>
                     ) : null}
                   </span>

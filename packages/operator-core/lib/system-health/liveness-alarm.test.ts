@@ -5,7 +5,10 @@ import {
   runLivenessAlarmTick,
   deriveSignatureFromSummary,
   livenessSignatureOf,
+  beesIdleByDesign,
+  beesLivenessFromHealth,
   _resetLivenessAlarmDebounce,
+  type BeesLivenessContext,
 } from './liveness-alarm';
 import type { SystemHealth, HealthPanel, PanelKey, PanelStatus } from './types';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
@@ -257,6 +260,115 @@ describe('evaluateLivenessAlarm (pure)', () => {
       },
     });
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).toContain('panel:bees');
+  });
+});
+
+// EI-15006: the panel:bees "no bees running" gate must distinguish idle-by-design
+// (no cup-placeable frontier + healthy capacity + other agents alive ⇒ NO
+// blocker→human page) from genuine starvation (cup work waiting, or the spawner
+// provably down). The raw `frontier === 0` gate got BOTH directions wrong: it
+// false-paged during idle (frontier carried su-domain/stuck residue) AND
+// false-SILENCED a real spawner-down when the frontier happened to read empty.
+describe('EI-15006: panel:bees idle-by-design gate', () => {
+  const healthy: BeesLivenessContext = {
+    cupPlaceableFrontier: 0,
+    dispatchBudget: 20,
+    restartRecovering: false,
+    otherAgentsAlive: true,
+  };
+  const noBeesCrit = (over: Record<string, unknown> = {}) =>
+    mkHealth({
+      panels: {
+        bees: { status: 'crit', summary: 'no bees running', data: { running: 0, alive: 0 } },
+        workFeed: { data: { frontier: 0, frontierStuck: 0, deadRoutines: 0 } },
+        ...over,
+      },
+    });
+
+  describe('beesIdleByDesign (pure)', () => {
+    it('(1) no cup work + capacity healthy + other agents alive → idle by design (no page)', () => {
+      expect(beesIdleByDesign(healthy)).toBe(true);
+    });
+    it('(2) cup-placeable frontier > 0 → NOT idle (genuine starvation, page)', () => {
+      expect(beesIdleByDesign({ ...healthy, cupPlaceableFrontier: 3 })).toBe(false);
+    });
+    it('(3a) gateway restart-recovering → NOT idle (capacity unproven, page)', () => {
+      expect(beesIdleByDesign({ ...healthy, restartRecovering: true })).toBe(false);
+    });
+    it('(3b) no other agents alive → NOT idle (spawner not provably live, page)', () => {
+      expect(beesIdleByDesign({ ...healthy, otherAgentsAlive: false })).toBe(false);
+    });
+    it('(3c) cup tier KNOWN-full (dispatchBudget 0) while 0 bees run → NOT idle (page)', () => {
+      expect(beesIdleByDesign({ ...healthy, dispatchBudget: 0 })).toBe(false);
+    });
+    it('fail-safe: unknown capacity (dispatchBudget null) does NOT force a page — other-agents-alive carries it', () => {
+      expect(beesIdleByDesign({ ...healthy, dispatchBudget: null })).toBe(true);
+    });
+  });
+
+  describe('beesLivenessFromHealth (pure derivation)', () => {
+    it('cup-placeable frontier = frontier − frontierStuck; other-agents-alive from su fleet', () => {
+      const h = mkHealth({
+        crossMonitor: { queenAlive: false },
+        panels: {
+          workFeed: { data: { frontier: 5, frontierStuck: 2, deadRoutines: 0 } },
+          suFleet: { data: { live: 9 } },
+          bees: { data: { running: 0, alive: 0 } },
+        },
+      });
+      const ctx = beesLivenessFromHealth(h, { dispatchBudget: 20, restartRecovering: false });
+      expect(ctx.cupPlaceableFrontier).toBe(3);
+      expect(ctx.otherAgentsAlive).toBe(true);
+      expect(ctx.dispatchBudget).toBe(20);
+    });
+    it('other-agents-alive false when su fleet + other bees empty AND the Mug loop is dark', () => {
+      const h = mkHealth({
+        crossMonitor: { queenAlive: false },
+        panels: {
+          workFeed: { data: { frontier: 0, deadRoutines: 0 } },
+          suFleet: { data: { live: 0 } },
+          bees: { data: { running: 0, alive: 0 } },
+        },
+      });
+      expect(beesLivenessFromHealth(h, { dispatchBudget: 20, restartRecovering: false }).otherAgentsAlive).toBe(false);
+    });
+  });
+
+  describe('evaluateLivenessAlarm with the threaded context', () => {
+    it('(1) 0 bees + no cup work + healthy capacity → does NOT open panel:bees', () => {
+      const sigs = evaluateLivenessAlarm(noBeesCrit(), null, { beesLiveness: healthy });
+      expect(sigs.map((s) => s.key)).not.toContain('panel:bees');
+    });
+    it('(2) 0 bees + ready cup-placeable work → DOES open panel:bees (blocker)', () => {
+      const sigs = evaluateLivenessAlarm(noBeesCrit(), null, {
+        beesLiveness: { ...healthy, cupPlaceableFrontier: 4 },
+      });
+      const bees = sigs.find((s) => s.key === 'panel:bees');
+      expect(bees).toBeDefined();
+      expect(bees?.severity).toBe('blocker');
+    });
+    it('(3) 0 bees + gateway restart-recovering (spawner not proven live) → DOES open panel:bees', () => {
+      const sigs = evaluateLivenessAlarm(noBeesCrit(), null, {
+        beesLiveness: { ...healthy, restartRecovering: true },
+      });
+      expect(sigs.map((s) => s.key)).toContain('panel:bees');
+    });
+    it('(3) 0 bees + no other agents alive (spawner provably down) → DOES open panel:bees', () => {
+      const sigs = evaluateLivenessAlarm(noBeesCrit(), null, {
+        beesLiveness: { ...healthy, otherAgentsAlive: false },
+      });
+      expect(sigs.map((s) => s.key)).toContain('panel:bees');
+    });
+    it('a bees crit with bees STILL running (e.g. a cursed placement) is never gated', () => {
+      const h = mkHealth({
+        panels: {
+          bees: { status: 'crit', summary: '2 bee(s), 1 cursed', data: { running: 2, alive: 2 } },
+          workFeed: { data: { frontier: 0, deadRoutines: 0 } },
+        },
+      });
+      // Even with an "idle" context, a running-bees crit still surfaces.
+      expect(evaluateLivenessAlarm(h, null, { beesLiveness: healthy }).map((s) => s.key)).toContain('panel:bees');
+    });
   });
 });
 

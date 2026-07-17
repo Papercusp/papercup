@@ -165,13 +165,16 @@ async function defaultReadInfraLivenessHealth(
   const out = new Map<string, boolean>();
   if (openInfraKeys.length === 0) return out;
   try {
-    const [{ computeSystemHealth }, { evaluateLivenessAlarm }, { activeWorkspaceId }] = await Promise.all([
-      import('./compute'),
-      import('./liveness-alarm'),
-      import('../workspace-registry'),
-    ]);
+    const [{ computeSystemHealth }, { evaluateLivenessAlarm, readBeesLivenessContext }, { activeWorkspaceId }] =
+      await Promise.all([import('./compute'), import('./liveness-alarm'), import('../workspace-registry')]);
     const health = await computeSystemHealth(activeWorkspaceId());
-    const firing = new Set(evaluateLivenessAlarm(health, null, {}).map((s) => s.key));
+    // EI-15006: thread the SAME cup-placeable + capacity gate the source alarm
+    // uses so this reconciler can never disagree with it on whether `panel:bees`
+    // is firing — otherwise it would re-derive the pre-fix raw-frontier gate and
+    // either falsely clear a genuine no-bees blocker or falsely keep a healthy
+    // idle one open.
+    const beesLiveness = await readBeesLivenessContext(health).catch(() => undefined);
+    const firing = new Set(evaluateLivenessAlarm(health, null, { beesLiveness }).map((s) => s.key));
     for (const key of openInfraKeys) {
       const sig = key.slice(INFRA_LIVENESS_PREFIX.length);
       out.set(key, !firing.has(sig));

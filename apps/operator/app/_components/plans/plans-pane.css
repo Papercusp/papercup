@@ -71,6 +71,11 @@
   background: color-mix(in srgb, var(--good, #34d399) 14%, transparent);
 }
 .plans-pane__badge--progress { opacity: 0.85; }
+.plans-pane__badge--stale {
+  color: #fcd34d; text-transform: uppercase; font-size: 9px; letter-spacing: 0.04em;
+  border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, transparent);
+  background: color-mix(in srgb, var(--warn, #fbbf24) 12%, transparent);
+}
 
 /* ── PlanPopupModal ───────────────────────────────────────────────────── */
 .plan-popup { display: flex; flex-direction: column; }
