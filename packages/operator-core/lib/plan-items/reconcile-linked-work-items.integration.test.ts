@@ -328,6 +328,10 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
     // + matching stub entries (getWorkItem/setWorkItemState are mocked).
     await insertWorkItemRow({ id: 'F-sweep', kind: 'feature', status: 'todo', planSlug: 'psweep', itemId: 'P-100' });
     await insertWorkItemRow({ id: 'WI-sweep', kind: 'bug', status: 'open', planSlug: 'psweep', itemId: 'P-100' });
+    // Real orphans also carry the `implements` edge convert.ts writes (verified in
+    // prod for WI-3488 et al) — findAllLinkedWorkItems finds them via that edge.
+    await edge({ plan: 'psweep', item: 'P-100', srcRef: 'sheets#F-sweep', srcKind: 'feature' });
+    await edge({ plan: 'psweep', item: 'P-100', srcRef: 'WI-sweep' });
     stub({ id: 'F-sweep', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     stub({ id: 'WI-sweep', harness: 'sheets', state: 'open', family: 'issue', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-100', status: 'done' }] });
@@ -343,6 +347,7 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
 
   it('maps a `dropped` plan item to deprecated/closed in the sweep too', async () => {
     await insertWorkItemRow({ id: 'F-swdrop', kind: 'feature', status: 'todo', planSlug: 'psd', itemId: 'P-1' });
+    await edge({ plan: 'psd', item: 'P-1', srcRef: 'sheets#F-swdrop', srcKind: 'feature' });
     stub({ id: 'F-swdrop', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'dropped' }] });
 
@@ -391,6 +396,7 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
 
   it('skips a candidate carrying independent in-flight progress (lastProgressAt)', async () => {
     await insertWorkItemRow({ id: 'F-active', kind: 'feature', status: 'wip', planSlug: 'pact', itemId: 'P-1' });
+    await edge({ plan: 'pact', item: 'P-1', srcRef: 'sheets#F-active', srcKind: 'feature' });
     stub({ id: 'F-active', harness: 'sheets', state: 'wip', family: 'feature', lastProgressAt: '2026-07-10T00:00:00Z' });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }] });
 

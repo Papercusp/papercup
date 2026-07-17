@@ -28,7 +28,7 @@ vi.mock('@papercusp/agent-mcp', () => ({
 }));
 // Spread the real module so pure exports (e.g. `generated`, the drizzle schema
 // namespace autoloop.ts derefs at module scope) survive the mock — a minimal
-// stub breaks at COLLECTION when any transitive import touches them (EI-14868).
+// stub breaks at COLLECTION when any transitive import touches them (EI-14928).
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),

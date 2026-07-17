@@ -160,7 +160,12 @@ const fakeSql = Object.assign(
     },
   },
 );
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
+// Spread the real module so pure exports (e.g. `generated`) survive the mock —
+// a minimal stub breaks at collection when a transitive import derefs them (EI-14928).
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: fakeSql }),
+}));
 
 // importing the action module registers `git-sync` into the system-action registry,
 // exactly as production's register-system-actions side-effect import does.

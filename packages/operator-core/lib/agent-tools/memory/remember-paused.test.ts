@@ -24,7 +24,7 @@ vi.mock('../../memory/backend', () => ({
 vi.mock('../../auth', () => ({ getSessionUserOrDefault: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (def: unknown) => def }));
 // Spread the real module so pure exports (e.g. `generated`) survive the mock —
-// a minimal stub breaks at collection when a transitive import derefs them (EI-14868).
+// a minimal stub breaks at collection when a transitive import derefs them (EI-14928).
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
