@@ -722,7 +722,20 @@ def _locks_acquire_once():
 
 
 def _grant(granted):
-    """Cache the lock_id for the matching PostToolUse release, then allow."""
+    """Cache the lock_id (+ the SPECIFIC paths this acquire covered) for the
+    matching PostToolUse release, then allow.
+
+    EI-63: when the calling owner already holds one of these paths under a
+    distinct EXPLICIT lock_id (a deliberate multi-file locks:acquire held
+    across several edits), the server's tryAcquire REUSES that existing
+    lock_id for this grant (su-lock-store.ts: "reuse that lock_id ... so the
+    entire returned set shares ONE lock_id"). If PostToolUse then releases by
+    lock_id ALONE, it deletes every path under that lock_id — silently
+    dissolving the rest of the explicit hold, not just the one path this edit
+    touched. Caching the paths here lets PostToolUse scope its release to
+    exactly this edit's path(s), which is a no-op regression for the common
+    case (a fresh, non-shared lock_id covers exactly these paths anyway) and
+    the actual fix for the shared-lock_id case."""
     lock_id = granted.get('lock_id')
     decision = {
         'ts': now_iso(),
@@ -738,6 +751,8 @@ def _grant(granted):
         try:
             with open(os.path.join(cache_dir, tool_use_id + '.lock'), 'w') as f:
                 f.write(lock_id)
+            with open(os.path.join(cache_dir, tool_use_id + '.paths'), 'w') as f:
+                json.dump(repo_relative, f)
         except Exception:
             pass
     allow()

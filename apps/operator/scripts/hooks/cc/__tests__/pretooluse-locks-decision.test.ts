@@ -128,6 +128,12 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     const cached = join(cache, 'tu-grant.lock');
     expect(fs.existsSync(cached)).toBe(true);
     expect(fs.readFileSync(cached, 'utf8')).toBe('lock-xyz');
+    // EI-63: the paths sidecar is ALSO cached, so PostToolUse can scope its
+    // release to exactly this edit's path(s) instead of every path under a
+    // (possibly REUSED, see su-lock-store.ts same-owner reuse) lock_id.
+    const pathsCache = join(cache, 'tu-grant.paths');
+    expect(fs.existsSync(pathsCache)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(pathsCache, 'utf8'))).toEqual(['sub/grant.ts']);
   });
 
   it('coordinates an absolute HOME config edit through the reserved external lock key', async () => {

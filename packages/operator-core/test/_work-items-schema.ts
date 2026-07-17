@@ -428,6 +428,26 @@ export const ENGINEER_ISSUES_MIN_DDL = `
   )`;
 
 /**
+ * The `carry_notes` substrate (migration 472), trimmed to just the shape
+ * `hasWorkItemCheckpointSql` (pot/survey.ts) reads via its `NOT EXISTS` check —
+ * no RLS/grants (test-only, admin connection). EI-13695 added that checkpoint
+ * exclusion to `fetchFrontierRows`/`countPlaceableFrontier`'s real SQL, but this
+ * fixture was never updated for it, so every integration test reaching either
+ * function failed with "relation harness_shared.carry_notes does not exist"
+ * regardless of anything else under test (found live 2026-07-17 while verifying
+ * an unrelated EI-13501 fix — a pre-existing gap, not caused by it).
+ */
+export const CARRY_NOTES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
+    workspace_id TEXT NOT NULL,
+    scope        TEXT NOT NULL,
+    note         TEXT,
+    journal      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_ts   BIGINT NOT NULL,
+    PRIMARY KEY (workspace_id, scope)
+  )`;
+
+/**
  * `substrate_outbox` federation CDC outbox (archive/102) — the bare table + drain index,
  * WITHOUT archive/102's per-table capture trigger attachments. Those attach to
  * harness_features_consolidated / harness_issues_consolidated, which are now compat VIEWS

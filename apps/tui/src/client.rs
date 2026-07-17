@@ -817,6 +817,11 @@ impl OperatorClient {
     /// every attention kind — the same overlay the desktop uses, so no
     /// per-kind branching is needed here. `note` is required by the tool on
     /// resolve; caller must not pass an empty string.
+    ///
+    /// inbox:triage is a BULK tool even for this n=1 call: its top-level `ok`
+    /// is unconditionally `true` (runBulk's envelope), so a failure surfaces
+    /// ONLY in `results[0].ok`/`.error` — checking the top-level flag alone
+    /// would silently swallow every resolve failure.
     pub async fn resolve_inbox_item(&self, item_id: &str, note: &str) -> Result<()> {
         let payload = serde_json::json!({
             "itemId": item_id,
@@ -824,10 +829,13 @@ impl OperatorClient {
             "note": note,
         });
         let v = self.post_json("/api/admin/inbox/triage", payload).await?;
-        if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
-            let err = v
-                .get("error")
+        let first = v.get("results").and_then(|r| r.as_array()).and_then(|a| a.first());
+        let item_ok = first.and_then(|it| it.get("ok")).and_then(|b| b.as_bool());
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(false) || item_ok == Some(false) {
+            let err = first
+                .and_then(|it| it.get("error"))
                 .and_then(|e| e.as_str())
+                .or_else(|| v.get("error").and_then(|e| e.as_str()))
                 .unwrap_or("triage_failed");
             return Err(anyhow!("resolve failed: {err}"));
         }

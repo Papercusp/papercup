@@ -9475,6 +9475,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_triage_resolve_palette_command() {
+        // `:resolve <note>` / `:res <note>` (EI-50) — note required; item_id is
+        // None at parse (resolved from the selected inbox item at Enter),
+        // mirroring `:message`/`:msg` above.
+        assert_eq!(
+            parse_palette_command(":resolve superseded by WI-4200"),
+            Some(PaletteCommand::TriageResolve {
+                item_id: None,
+                note: "superseded by WI-4200".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_palette_command("res dup of prior report"),
+            Some(PaletteCommand::TriageResolve {
+                item_id: None,
+                note: "dup of prior report".to_string(),
+            })
+        );
+        // Note required.
+        assert_eq!(parse_palette_command("resolve"), None);
+        assert_eq!(parse_palette_command(":res"), None);
+    }
+
+    #[test]
     fn parse_create_and_share_palette_commands() {
         // `:create <slug> <source>` — both args required (D-010).
         assert_eq!(

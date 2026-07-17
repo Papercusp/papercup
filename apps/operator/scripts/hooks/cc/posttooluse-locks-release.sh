@@ -8,6 +8,16 @@
 # already released) we no-op. Always exit 0 — surfacing release noise to
 # the agent changes nothing, and the lock's TTL covers any missed
 # release anyway.
+#
+# EI-63: ALSO reads the sidecar $PAPERCUSP_LOCKS_CACHE_DIR/<tool_use_id>.paths
+# (written by the matching PreToolUse's _grant()) and, when present, passes it
+# as `paths` alongside `lock_id` — scoping the release to exactly the path(s)
+# this edit's acquire covered, rather than every path under that lock_id. This
+# matters when the server REUSED an existing explicit multi-file lock_id for
+# this grant (the owner already held one of these paths under a separate
+# deliberate locks:acquire): a bare lock_id release would otherwise delete the
+# whole explicit hold, not just this one path. Missing/unreadable sidecar
+# falls back to the prior lock_id-only release (unchanged behavior).
 
 set -euo pipefail
 
@@ -110,9 +120,33 @@ if not lock_id:
         pass
     sys.exit(0)
 
+# EI-63: scope the release to the SPECIFIC path(s) this edit's matching
+# PreToolUse acquire covered, when cached (see _grant() in
+# pretooluse-locks-acquire.sh). Releasing by lock_id ALONE deletes every path
+# under that lock_id — harmless when the lock_id is fresh/unshared (today's
+# common case), but WRONG when the server reused an existing EXPLICIT
+# multi-file lock_id for this grant (the owner already held one of these
+# paths): a bare lock_id release would then silently drop the rest of that
+# explicit hold too. Missing/unreadable sidecar (e.g. a cache entry written
+# before this fix) falls back to the prior lock_id-only release — unchanged
+# behavior, never a regression.
+paths_cache_path = os.path.join(cache_dir, tool_use_id + '.paths')
+release_paths = None
+try:
+    with open(paths_cache_path) as f:
+        loaded = json.load(f)
+    if isinstance(loaded, list) and loaded and all(isinstance(p, str) for p in loaded):
+        release_paths = loaded
+except Exception:
+    pass
+
+release_args = {'lock_id': lock_id}
+if release_paths:
+    release_args['paths'] = release_paths
+
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-    'params': {'name': 'locks:release', 'arguments': {'lock_id': lock_id}},
+    'params': {'name': 'locks:release', 'arguments': release_args},
 }).encode()
 
 req = urllib.request.Request(
@@ -143,6 +177,10 @@ except Exception as e:
 
 try:
     os.remove(cache_path)
+except Exception:
+    pass
+try:
+    os.remove(paths_cache_path)
 except Exception:
     pass
 

@@ -705,6 +705,7 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
             }
             lines.push(Line::from(String::new()));
             lines.push(Line::from("[m] message owner".to_string()));
+            lines.push(Line::from(":resolve <note>  triage-resolve".to_string()));
             lines
         }
         None => vec![Line::from(

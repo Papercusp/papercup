@@ -10,11 +10,12 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, CARRY_NOTES_DDL } from '../../test/_work-items-schema';
 import {
   countPlaceableFrontier,
   countQuarantinedFrontier,
   fetchFrontierRows,
+  fetchEscalatedIssueFrontierRows,
   isAdmissionStarved,
 } from './survey';
 
@@ -37,14 +38,39 @@ async function seed(
     planSlug?: string | null;
     origin?: string | null;
     auditVerdict?: string | null;
+    /** EI-13501: cup-forbidden payload markers on a feature-family row. */
+    payload?: Record<string, unknown> | null;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, source_plan_slug, origin, audit_verdict)
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, source_plan_slug, origin, audit_verdict, payload)
     VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
             ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.planSlug ?? null},
-            ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
+            ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null},
+            ${opts.payload ? JSON.stringify(opts.payload) : null}::jsonb)`;
+}
+
+/** EI-13501: seed an issue-family row (bug/change/task) directly on the work_items
+ *  base table — fetchEscalatedIssueFrontierRows queries it directly, not through
+ *  the harness_features_consolidated view (which excludes these kinds). */
+async function seedIssue(
+  harness: string,
+  id: string,
+  opts: {
+    kind?: 'bug' | 'change' | 'task';
+    severity?: 'critical' | 'major' | 'minor';
+    takenBy?: string | null;
+    createdTs?: number;
+    payload?: Record<string, unknown>;
+  } = {},
+) {
+  const payload = { ...(opts.payload ?? {}), _ei: { severity: opts.severity ?? 'major' } };
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, payload)
+    VALUES (${harness}, ${id}, ${opts.kind ?? 'bug'}, 'todo',
+            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, 'local', ${JSON.stringify(payload)}::jsonb)`;
 }
 
 beforeAll(async () => {
@@ -61,6 +87,11 @@ beforeAll(async () => {
   // suite errors "relation does not exist" (D-014 read-path-completeness, mirrors the
   // datatype_registry/plan_item_claims precedent in _work-items-schema.ts).
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  // EI-13695 — fetchFrontierRows/countPlaceableFrontier's checkpoint-reconcile exclusion
+  // (hasWorkItemCheckpointSql) unconditionally queries harness_shared.carry_notes; must
+  // exist or every query in this suite errors "relation does not exist" (this fixture was
+  // never updated when that exclusion landed — found live 2026-07-17 verifying EI-13501).
+  await db.sql.unsafe(CARRY_NOTES_DDL);
 }, 90_000);
 
 /** The pot_placements table (migration 263), table + index only — see beforeAll. */
@@ -101,7 +132,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.pot_placements, harness_shared.user_trust_list`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.pot_placements, harness_shared.user_trust_list, harness_shared.carry_notes`;
 });
 
 const HOME = 'papercup-pot';
@@ -266,5 +297,42 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     // is being withheld. That distinction is the whole point of the signal.
     expect(isAdmissionStarved({ placeable, quarantined })).toBe(true);
     expect(isAdmissionStarved({ placeable: 0, quarantined: 0 })).toBe(false);
+  });
+});
+
+describe('EI-13501: cup-forbidden items are excluded from the placement frontier', () => {
+  it('fetchFrontierRows excludes a claim-held feature (payload._claimHold) — the SAME floor claimFloorsWhereSql already enforces for the scheduler claim path', async () => {
+    await seed(MEMBER_A, 'WI-CLAIM-HOLD', { createdTs: 1, payload: { _claimHold: true } });
+    await seed(MEMBER_A, 'WI-NORMAL', { createdTs: 2 });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    // Before this fix BOTH counted as "ready to place" — live-verified 2026-07-17 that
+    // the pot's real feature frontier was 100% claim-held items (WI-321/357/662/1281/1774),
+    // a pure false-positive "N ready to place" signal driving Mug-dark blocker escalations.
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-NORMAL']);
+  });
+
+  it('countPlaceableFrontier mirrors the SAME claim-hold exclusion (this count gates starvation/throughput signals)', async () => {
+    await seed(MEMBER_A, 'WI-CH-1', { createdTs: 1, payload: { _claimHold: true } });
+    await seed(MEMBER_A, 'WI-CH-2', { createdTs: 2 });
+    const placeable = await countPlaceableFrontier(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(placeable).toBe(1);
+  });
+
+  it('fetchEscalatedIssueFrontierRows excludes needsHuman, claim-held, AND rig-gated issue rows — mirroring claimNextIssueWorkItem\'s floors so the Mug\'s count never disagrees with what the claim path actually serves', async () => {
+    await seedIssue(MEMBER_A, 'EI-NEEDS-HUMAN', { createdTs: 1, payload: { needsHuman: true } });
+    await seedIssue(MEMBER_A, 'EI-CLAIM-HELD', { createdTs: 2, payload: { _claimHold: true } });
+    await seedIssue(MEMBER_A, 'EI-RIG-GATED', { createdTs: 3, payload: { needs_2_machine_rig: true } });
+    await seedIssue(MEMBER_A, 'EI-GENUINE', { createdTs: 4 });
+    const rows = await fetchEscalatedIssueFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    // Live-verified 2026-07-17: 4 of 10 sampled real escalated-issue-frontier rows carried
+    // payload.needsHuman:true and were STILL counted as "ready to place" before this fix.
+    expect(rows.map((r) => r.feature_id)).toEqual(['EI-GENUINE']);
+  });
+
+  it('fetchEscalatedIssueFrontierRows still surfaces a genuinely placeable severity-major issue (no false exclusion)', async () => {
+    await seedIssue(MEMBER_A, 'EI-PLACEABLE', { createdTs: 1, severity: 'major' });
+    await seedIssue(MEMBER_A, 'EI-MINOR', { createdTs: 2, severity: 'minor' }); // below the severity bar regardless
+    const rows = await fetchEscalatedIssueFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(rows.map((r) => r.feature_id)).toEqual(['EI-PLACEABLE']);
   });
 });

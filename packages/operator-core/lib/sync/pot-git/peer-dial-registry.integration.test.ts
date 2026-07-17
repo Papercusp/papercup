@@ -15,6 +15,7 @@ import { rm, mkdtemp } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { Duplex } from 'node:stream';
 import Protomux from 'protomux';
+import cenc, { type CompactEncodingState } from 'compact-encoding';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -412,7 +413,7 @@ describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOV
   });
 });
 
-describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a reconnect (global wired-topic sign config + reciprocal hello + heal sweep)', () => {
+describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a reconnect (global wired-topic gate + reciprocal hello + heal sweep)', () => {
   // The live incident (P-303 Leg B): connection churn left the surviving
   // muxer without its own wireHiveGitDial(topic) call — the wire had landed
   // on an earlier, since-dead connection. The pair-materialized channel could
@@ -497,35 +498,78 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
     await waitFor(() => resolvePotGitPeerSocket(TOPIC_CHURN, SERVER_DEVICE) !== undefined);
   });
 
-  it('the heal sweep completes a handshake that got stuck BEFORE the topic identity was known — no reconnect needed', async () => {
-    // c4: B wires only TOPIC_OTHER (pair notifier live); NOBODY has wired
-    // TOPIC_STUCK anywhere yet, so B's pair-materialized channel for it can
-    // receive but has no identity to answer with — the stuck state.
+  it('the heal sweep completes a handshake that got stuck BEFORE the topic was wired anywhere on this box — no reconnect needed', async () => {
+    // c4: B wires only TOPIC_OTHER (pair notifier + per-muxer identity live);
+    // TOPIC_STUCK is not yet wired ANYWHERE on "this box", so B's
+    // pair-materialized channel for it can receive but must not sign — the
+    // stuck receive-only state (the boot-skew / churn variant of fence-25).
     const c4 = await connect3();
     const b4 = serverDuplexes[2];
     wireAllCorked(b4, () => {
       wireHiveGitDial(b4, TOPIC_OTHER, SERVER_DEVICE, signAsServer);
     });
-    wireAllCorked(c4.duplex, () => {
-      wireHiveGitDial(c4.duplex, TOPIC_STUCK, CLIENT_DEVICE, signAsClient);
+    // The remote peer is HAND-ROLLED protomux, not wireHiveGitDial: in
+    // production it is another box, and driving it through this module here
+    // would fake the precondition away (its wire call would flip the shared
+    // process-global wired-topic set that gates B's signing).
+    const muxStream = c4.duplex as unknown as { userData?: unknown };
+    const rawMux = Protomux.from(muxStream as never);
+    if (!muxStream.userData) muxStream.userData = rawMux;
+    const received: string[] = [];
+    const helloWire = {
+      preencode(state: CompactEncodingState, v: { device_pubkey: string; signature: Buffer }) {
+        cenc.string.preencode(state, v.device_pubkey);
+        cenc.buffer.preencode(state, v.signature);
+      },
+      encode(state: CompactEncodingState, v: { device_pubkey: string; signature: Buffer }) {
+        cenc.string.encode(state, v.device_pubkey);
+        cenc.buffer.encode(state, v.signature);
+      },
+      decode(state: CompactEncodingState) {
+        return { device_pubkey: cenc.string.decode(state), signature: cenc.buffer.decode(state) };
+      },
+    };
+    let rawHello: { send(v: { device_pubkey: string; signature: Buffer }): void } | null = null;
+    const rawChannel = rawMux.createChannel({
+      protocol: 'papercusp/pot-git-hello',
+      id: TOPIC_STUCK,
+      onopen: () => {
+        rawHello?.send({
+          device_pubkey: CLIENT_DEVICE,
+          signature: signAsClient(Buffer.concat([Buffer.from('papercusp/pot-git-hello:v1:'), TOPIC_STUCK])),
+        });
+      },
+      onclose: () => {},
     });
+    rawHello = rawChannel!.addMessage({
+      encoding: helloWire as never,
+      onmessage: (v: { device_pubkey: string }) => {
+        received.push(v.device_pubkey);
+      },
+    }) as never;
+    rawChannel!.open();
+
+    // B pair-materializes TOPIC_STUCK, verifies + registers the remote — but
+    // stays SILENT (no identity gate passes yet): the one-sided dead state.
     await waitFor(() => resolvePotGitPeerSocket(TOPIC_STUCK, CLIENT_DEVICE) !== undefined);
     await new Promise((r) => setTimeout(r, 300));
-    expect(resolvePotGitPeerSocket(TOPIC_STUCK, SERVER_DEVICE)).toBeUndefined();
+    expect(received).toHaveLength(0);
 
-    // B now wires TOPIC_STUCK on a NEW connection (c5) — the global config
-    // learns the identity, but c4's stuck channel state is untouched by it.
+    // B now wires TOPIC_STUCK on a NEW connection (c5) — the box has joined
+    // the topic, but c4's stuck channel state is untouched by it.
     const c5 = await connect3();
     const b5 = serverDuplexes[3];
     wireAllCorked(b5, () => {
       wireHiveGitDial(b5, TOPIC_STUCK, SERVER_DEVICE, signAsServer);
     });
     await new Promise((r) => setTimeout(r, 100));
+    expect(received).toHaveLength(0);
 
-    // One sweep heals the LIVE stuck state on c4: seeds identity from the
-    // global config and sends the overdue hello over the existing channel.
+    // One sweep heals the LIVE stuck state on c4: seeds b4's own muxer
+    // identity (topic gate now passes) and sends the overdue hello over the
+    // EXISTING channel — the remote finally learns this box's device.
     _testing.healSweep();
-    await waitFor(() => resolvePotGitPeerSocket(TOPIC_STUCK, SERVER_DEVICE) !== undefined);
+    await waitFor(() => received.includes(SERVER_DEVICE));
   });
 });
 

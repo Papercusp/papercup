@@ -308,4 +308,68 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
     expect(again.ok).toBe(true);
     await callTool(OWNER_A, 'locks:release', { lock_id: again.lock_id });
   });
+
+  // EI-63: the explicit multi-file lock survives a hook-driven edit + release
+  // on ONE of its paths. Reproduces the exact reported mechanism: B holds an
+  // EXPLICIT locks:acquire over two paths; editing one of them through the
+  // normal hook flow reuses that same lock_id (su-lock-store.ts's same-owner
+  // reuse); the fix scopes PostToolUse's release to just the edited path via
+  // the cached sidecar, so the OTHER path must remain held afterward.
+  it('EI-63: an explicit multi-file lock is NOT dissolved by a hook-driven edit+release on just one of its paths', async () => {
+    const relKeep = `e2e-hook-live/${RUN_ID}/multi-keep.ts`;
+    const relEdit = `e2e-hook-live/${RUN_ID}/multi-edit.ts`;
+    const absEdit = join(repo, relEdit);
+    fs.writeFileSync(join(repo, relKeep), '// keep\n');
+    fs.writeFileSync(absEdit, '// edit\n');
+
+    // B explicitly holds BOTH paths under one deliberate multi-file lock —
+    // the documented "acquire once, edit several files, release after
+    // committing" pattern (locks:acquire's own guidance).
+    const explicit = await callTool(OWNER_B, 'locks:acquire', {
+      paths: [relKeep, relEdit],
+      intent: `EI-63 explicit multi-file hold ${RUN_ID}`,
+      ttl_sec: 600,
+    });
+    expect(explicit.ok).toBe(true);
+    const explicitLockId = explicit.lock_id as string;
+
+    const toolUseId = `tu-ei63-${RUN_ID}`;
+
+    // The normal per-edit hook flow on ONE of the two paths (B already holds
+    // it) — expect ALLOW, and the server should reuse the SAME lock_id (the
+    // condition that makes the bug possible).
+    const preRes = await runHook(PRE_HOOK, {
+      tool_name: 'Edit',
+      tool_input: { file_path: absEdit },
+      tool_use_id: toolUseId,
+      session_id: 'sess-live-b',
+      cwd: repo,
+    }, hookEnvB);
+    expect(preRes.code).toBe(0);
+    expect(preRes.stdout).toBe(''); // allow — same owner already holds it
+    const cachedLockId = fs.readFileSync(join(cache, `${toolUseId}.lock`), 'utf8').trim();
+    expect(cachedLockId).toBe(explicitLockId); // confirms the reuse this bug depends on
+
+    // The matching PostToolUse fires (as it would right after the edit).
+    const postRes = await runHook(POST_HOOK, {
+      tool_name: 'Edit',
+      tool_input: { file_path: absEdit },
+      tool_use_id: toolUseId,
+      session_id: 'sess-live-b',
+      cwd: repo,
+    }, hookEnvB);
+    expect(postRes.code).toBe(0);
+
+    // The OTHER path must STILL be held by B — a different owner (A) trying
+    // to acquire it now must be refused (busy), not silently succeed.
+    const intruder = await callTool(OWNER_A, 'locks:acquire', {
+      paths: [relKeep],
+      intent: `EI-63 intruder attempt ${RUN_ID}`,
+      ttl_sec: 60,
+    });
+    expect(intruder.ok, 'the untouched path in the explicit multi-file lock was silently released').not.toBe(true);
+
+    // Cleanup: B releases its remaining explicit hold.
+    await callTool(OWNER_B, 'locks:release', { lock_id: explicitLockId });
+  });
 });

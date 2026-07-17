@@ -2015,6 +2015,26 @@ async fn execute_workbench_command(
                 }
             }
         }
+        // `:resolve <note>` (EI-50) — triage-resolve the selected inbox item.
+        // `item_id` is always `Some` by the time it reaches here (the palette
+        // Enter handler resolves it from the selection, or errors before ever
+        // dispatching this action).
+        P::TriageResolve { item_id, note } => {
+            let Some(item_id) = item_id else {
+                let _ = tx.send(Event::Error(
+                    "resolve: no inbox item selected (Inbox tab)".to_string(),
+                ));
+                return;
+            };
+            match client.resolve_inbox_item(&item_id, &note).await {
+                Ok(()) => {
+                    let _ = tx.send(toast(format!("resolved {item_id}")));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("resolve: {e}")));
+                }
+            }
+        }
     }
 }
 
