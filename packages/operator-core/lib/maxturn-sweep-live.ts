@@ -90,7 +90,7 @@ export const DEFAULT_SWEEP_ACCOUNT_ROUTING: SweepAccountRouting = 'auto';
 
 /** Per-repeat wall-clock cap. A cell that cannot finish its benchmark inside this
  *  is captured with whatever transcript it produced (metrics still extract). */
-export const DEFAULT_SWEEP_TASK_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_SWEEP_TASK_TIMEOUT_MS = 15 * 60_000;
 
 /** Where benchmark sessions do their file work — NEVER the shared repo tree. */
 export function sweepWorkDir(cellId: string, base: string = join(homedir(), '.papercusp', 'sweep-bench')): string {
@@ -115,16 +115,39 @@ interface AssistantAgg {
   sawDoneMarker: boolean;
 }
 
+/** A large on-disk artifact the benchmark expects the session to page through
+ *  with the Read tool — the spill-chase subject for raw-file workloads, where
+ *  nothing ever flows through an MCP result-door (WI-5003: spillChase was null
+ *  on EVERY 2026-07-17 campaign cell, making the 0.95 gate unsatisfiable). */
+export interface SpillFixture {
+  /** Absolute path Read tool_use inputs are matched against (exact match). */
+  path: string;
+  /** Total line count — the denominator of the coverage fraction. */
+  lines: number;
+}
+
+/** Claude Code's Read returns up to this many lines when no `limit` is passed —
+ *  the implicit window of an offset-less/limit-less Read tool_use. */
+const READ_DEFAULT_LIMIT_LINES = 2_000;
+
 /**
  * Extract per-cell metrics from a session's native transcript JSONL. PURE.
  * One API call = one hop: assistant lines are deduped by message.id with
  * max-merged usage (a message streams as multiple lines repeating its usage)
  * and last-non-null stop_reason. All-null metrics come back for an empty/
  * unparseable transcript (never fabricated zeros).
+ *
+ * Spill-chase has two sources, in precedence order:
+ *  1. result-door pointers (MCP tool results spilled to scratch): fraction of
+ *     distinct spilled paths the session mentioned again (paged back).
+ *  2. `opts.spillFixture` (raw-file workloads): the fixture IS the spill — it
+ *     cannot fit one Read — so success = fraction of its lines covered by the
+ *     union of the session's Read tool_use windows on that path.
+ * Neither present/measured ⇒ null (the scorer treats null as not-exercised).
  */
 export function extractCellMetricsFromJsonl(
   jsonl: string,
-  opts: { taskDoneMarker?: string } = {},
+  opts: { taskDoneMarker?: string; spillFixture?: SpillFixture } = {},
 ): CellRunMetrics {
   const marker = opts.taskDoneMarker ?? SWEEP_TASK_DONE_MARKER;
   const byMsg = new Map<string, AssistantAgg>();
@@ -135,6 +158,9 @@ export function extractCellMetricsFromJsonl(
   // Spill-chase: path → number of DISTINCT lines mentioning it. The pointer line
   // itself is the first; any later mention (the agent paging it back) is a chase.
   const spillLineCounts = new Map<string, number>();
+  // Raw-file spill-chase: [start, end) line windows of Read tool_use calls on the
+  // fixture path (1-based, end exclusive) — union coverage is the chase fraction.
+  const fixtureReadWindows: Array<[number, number]> = [];
 
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
@@ -173,6 +199,16 @@ export function extractCellMetricsFromJsonl(
     if (evt.type !== 'assistant') continue;
     const model = evt.message?.model;
     if (!model || model.startsWith('<')) continue; // synthetic placeholder, not an API call
+    // Fixture Read windows (spill source 2): tool_use blocks reading the fixture.
+    if (opts.spillFixture && Array.isArray(evt.message?.content)) {
+      for (const block of evt.message.content as Array<{ type?: string; name?: string; input?: { file_path?: string; offset?: number; limit?: number } }>) {
+        if (block?.type !== 'tool_use' || block.name !== 'Read') continue;
+        if (block.input?.file_path !== opts.spillFixture.path) continue;
+        const start = Math.max(1, block.input.offset ?? 1);
+        const len = Math.max(0, block.input.limit ?? READ_DEFAULT_LIMIT_LINES);
+        if (len > 0) fixtureReadWindows.push([start, start + len]);
+      }
+    }
     const key = evt.message?.id ?? `anon-${anonSeq++}`;
     const agg =
       byMsg.get(key) ?? ({ usage: { input: 0, cacheRead: 0, output: 0 }, stopReason: null, sawDoneMarker: false } satisfies AssistantAgg);
@@ -203,10 +239,29 @@ export function extractCellMetricsFromJsonl(
 
   const spills = spillLineCounts.size;
   const chased = [...spillLineCounts.values()].filter((n) => n >= 2).length;
+  // Source 2: union line-coverage of the fixture by Read windows (0..1). Only
+  // when the caller declared a fixture; 0 (never read it) is a REAL failing
+  // score, distinct from null (not exercised).
+  let fixtureCoverage: number | null = null;
+  if (opts.spillFixture) {
+    const total = Math.max(1, opts.spillFixture.lines);
+    const sorted = [...fixtureReadWindows].sort((a, b) => a[0] - b[0]);
+    let covered = 0;
+    let cursor = 1; // 1-based lines; count coverage within [1, total]
+    for (const [s, e] of sorted) {
+      const start = Math.max(s, cursor);
+      const end = Math.min(e, total + 1);
+      if (end > start) {
+        covered += end - start;
+        cursor = end;
+      }
+    }
+    fixtureCoverage = Math.min(1, covered / total);
+  }
 
   return {
     stopReasonLengthRate: lengthStops / hops,
-    spillChaseSuccessRate: spills > 0 ? chased / spills : null,
+    spillChaseSuccessRate: spills > 0 ? chased / spills : fixtureCoverage,
     hopsPerTask: hops,
     cacheReadInputTokens: cacheRead,
     freshInputTokens: freshInput,
