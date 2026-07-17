@@ -1,0 +1,113 @@
+---
+title: "Mac VM isolated packaged-app testing: bypass `open`, exec the binary directly"
+description: "The durable fix for EI-14941-style shared-sidecar collisions when testing a packaged macOS Papercusp .app in isolation — launch the Mach-O binary directly instead of `open -a`, sidestepping the launchd env-cache race entirely."
+---
+
+# Mac VM isolated packaged-app testing: bypass `open`, exec the binary directly
+
+## The problem (EI-14941)
+
+Testing a packaged macOS Papercusp `.app` (GUI or Server) "in isolation" — its own
+`$HOME`, its own embedded PG, its own ports — normally means: `launchctl setenv
+PAPERCUSP_HOME /some/isolated/dir` (+ the other overrides), then `open -a "/path/to/App.app"`.
+
+This **silently fails to isolate** on a slow-booting VM: `launchctl setenv` populates a
+process-wide environment cache that `open`-launched apps inherit at *launch time* — but
+on this mac VM the GPU-less WKWebView boot sequence takes on the order of **minutes**
+before the sidecar process actually forks, and something in that window (another `open`,
+a shell reset, a login-item re-exec) reverts the `launchctl setenv` values well before
+then. The forked child inherits the REAL shared `$HOME` instead, and — because
+`shared_sidecar_home()==real_home()` by design — silently takes over the box-canonical
+embedded PG / `operator.json` / `superuser-token`, colliding with whatever else is
+running on the shared VM. This is exactly what happened 2026-07-17 (EI-14941): a P-021
+update-center E2E attempt collided with a live peer's federation-drill rig on the SAME
+mac VM's shared PG data dir.
+
+The instinctive "fix" — just wait longer before checking, extend the setenv-to-launch
+gap — does not actually change the failure mode: `launchctl setenv`'s scope and the
+`open`/LaunchServices handoff are simply the wrong mechanism for this, no matter the
+timing.
+
+## The actual fix: don't use `open` at all
+
+`open -a` hands the launch off to LaunchServices/launchd, which is what re-derives the
+environment from its own cache rather than your shell's. Skip that whole layer: **launch
+the app's actual Mach-O executable directly**, with the isolation env vars set inline in
+the SAME exec — normal Unix fork+exec env inheritance, no launchd cache, no race:
+
+```bash
+BIN="/path/to/e2e/priorapp/Papercusp GUI.app/Contents/MacOS/papercusp-desktop"
+ISOHOME="/path/to/e2e/home3"
+
+nohup env \
+  HOME="$ISOHOME" \
+  PAPERCUSP_HOME="$ISOHOME" \
+  PAPERCUSP_PG_PORT=19170 \
+  PAPERCUSP_HONO_PORT=19070 \
+  PAPERCUSP_PG_DATA_DIR="$ISOHOME/embedded-pg-data" \
+  PAPERCUSP_RELEASE_HOST="http://127.0.0.1:8044" \
+  "$BIN" > "$ISOHOME/../gui.log" 2>&1 &
+disown
+```
+
+Verified live (2026-07-17, mac VM, prior-version 0.0.8 GUI.app which **predates** the
+`PAPERCUSP_HOME` fix, i.e. its own JS ignores that env var entirely): the process still
+came up **fully isolated** —
+
+- its own `~/.papercusp/embedded-pg.json` written under `$ISOHOME`, not the shared one
+  (whose mtime was unchanged before/after);
+- its own embedded postgres, auto-picked port (`20836` in the observed run — the app
+  auto-selects an available port; it does NOT need to honor your requested
+  `PAPERCUSP_PG_PORT` value for isolation to hold, it just needs to pick *a* free one),
+  data dir under `$ISOHOME/.papercusp-workspaces/.shared/embedded-pg-data`;
+- its own hono/HTTP port (`17701` in the observed run), confirmed via `GET
+  /api/health` returning the correct old version/sha;
+- confirmed via `lsof -nP -iTCP -sTCP:LISTEN` (compare the full listening-port set
+  before/after) that the shared `:3070`/`:3170`/`:3270`/`:18213` owners (pids) were
+  **completely unchanged** throughout.
+
+**Why this works even on code that predates the `PAPERCUSP_HOME` fix:** Node's
+`os.homedir()` on POSIX checks `process.env.HOME` before falling back to the passwd DB —
+so a plain `HOME` override, delivered via normal env inheritance (not `launchctl
+setenv`), isolates the process's default `~/.papercusp` resolution regardless of whether
+the app's own code added explicit `PAPERCUSP_HOME` support. The EI-14941 incident was
+never really about "the app can't be told to isolate" — it was specifically about `open`
++ `launchctl setenv` being the wrong DELIVERY mechanism for that instruction on a
+slow-booting VM. Bypass the mechanism, not the timing.
+
+**Watch for a companion process spawned via a registered bundle id.** The GUI role may
+spawn a companion "Server" role process resolved via LaunchServices to whatever's
+registered at `/Applications` (not necessarily your extracted test copy) — `ps eww` on
+that child still shows YOUR env correctly (fork/exec inheritance doesn't care which path
+the exec target resolves to), so verify via `ps eww` + `lsof -p <pid>`, not by assuming
+the executable path implies which env it's running with.
+
+## What this does NOT solve: driving the GUI itself
+
+Direct-binary-launch fixes *isolation*. It does not give you a way to click through the
+actual update UI on a **packaged release build**:
+
+- The `tauri-agent-tools` dev-bridge (`dev_bridge.rs`, the eval/click/screenshot CLI
+  documented for driving the Tauri webview headlessly) only starts `if is_dev` — it is
+  compiled out of / inert in a packaged release `.app`. `npm run dev`'s Tauri shell is
+  the only surface where that CLI works.
+- OS-level UI scripting (`osascript`/`System Events`) requires Accessibility (TCC) grant
+  for whatever process runs it (ssh/Terminal) — not granted by default, and granting it
+  requires either physical GUI interaction or a system-wide TCC.db change (itself a
+  shared-VM-risk action, not something to do unilaterally for a test).
+- There is no server-side HTTP shortcut for `install_update`/`revert_to` — they are
+  Tauri commands invoked ONLY via the webview's JS `invoke()`; the operator's
+  `/api/updates/*` routes (`updates-manifest.ts`, `updates-rollback.ts`) only RESOLVE the
+  install manifest the client will fetch — they never perform the actual download/swap
+  themselves.
+
+So: isolated packaged-app testing (safe to boot, safe to leave running, verifiable via
+its own `/api/health`) is now a solved, repeatable technique. Driving an actual
+click-through install+relaunch on a packaged release build still needs either a human /
+VNC session with Accessibility granted, or a dev-mode (`npm run dev`) rebuild specifically
+for that pass (which changes what's being tested — dev mode skips the normal sidecar
+spawn/update path entirely, so it cannot substitute for testing the real packaged
+updater).
+
+Related: EI-14941 (the original collision incident), `apps/operator/bin/serve.ts`'s
+`PAPERCUSP_HOME` handling (comment tag EI-13917), `papercusp-desktop/src-tauri/src/dev_bridge.rs`.
