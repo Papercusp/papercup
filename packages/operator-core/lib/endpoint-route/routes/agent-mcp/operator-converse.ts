@@ -51,11 +51,20 @@ export default defineTool({
   // row per connect carries little signal (RFC Q7). Don't record it.
   sampleRate: 0,
   // The watchdog times only the handler's PRE-FLIGHT (json/budget/auth — the
-  // SSE Response returns before streaming starts), but under PG contention
-  // those awaits can queue past the default 30s and 408 a healthy voice turn
-  // (observed live 2026-06-07: brain route died at $0.00 spend in an op-S13
-  // run while the box was loaded). The brain's own caps govern the stream.
-  timeoutSec: 120,
+  // SSE Response returns before streaming starts; route-stack clears the timer
+  // in its `finally` the moment that Response comes back, so it never bounds
+  // the stream itself), but under PG contention those awaits can queue past a
+  // fixed budget and 408 a healthy voice turn (observed live 2026-06-07: brain
+  // route died at $0.00 spend in an op-S13 run while the box was loaded).
+  // EI-110's own residual note: bumping to a bigger fixed number (this was
+  // `120`) just moves the same false-408 to a worse PG storm — it doesn't
+  // remove it. `null` is the structural fix already used by every other
+  // pre-flight-then-stream SSE route in this tree (zero-harness/sse.ts,
+  // flags/stream.ts, coord/inbox-sse.ts, harness/clobber-stream.ts,
+  // deploy/frame-view.ts, operator/state-snapshot.ts, the agent-tools/plugins
+  // catchalls) — this route is exactly that shape and was the one left behind
+  // on a magic number. The brain's own caps govern the stream.
+  timeoutSec: null,
   async handler(req) {
     let body: ConverseRequestBody = {};
     try {

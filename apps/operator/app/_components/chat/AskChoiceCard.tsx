@@ -119,6 +119,17 @@ interface AskChoiceCardProps {
    * toolbar, #4) so the body shows just the item's content. Default false.
    */
   hideOptions?: boolean;
+  /**
+   * The question is CLOSED server-side and can no longer be answered (the run
+   * ended, the operator restarted and dropped its pending-card handle, or the
+   * card timed out). Renders a visible expired state with disabled options
+   * instead of live-looking buttons that silently do nothing when clicked.
+   *
+   * WI-5175 (owner repro 2026-07-17): a card whose answer path is dead MUST
+   * say so — "looks clickable, does nothing" is the defect. Ignored when
+   * `answered` is set: a real answer is more informative than "expired".
+   */
+  expired?: boolean;
 }
 
 
@@ -130,10 +141,15 @@ export function AskChoiceCard({
   allowDecline = true,
   disableWhenAnswered = true,
   hideOptions = false,
+  expired = false,
 }: AskChoiceCardProps): ReactNode {
   const questionId = `ask-${args.question.slice(0, 16).replace(/\s+/g, '-')}`;
   const isAnswered = !!answered;
-  const buttonsDisabled = isAnswered && disableWhenAnswered;
+  // An expired card is unanswerable: disable its options so it can't present a
+  // live-looking button that no-ops on click (WI-5175). An ANSWERED card still
+  // wins the display — showing the real pick beats showing "expired".
+  const isExpired = expired && !isAnswered;
+  const buttonsDisabled = (isAnswered && disableWhenAnswered) || isExpired;
   const multi = args.multi === true;
 
   // Partition single-select options into terminal (commit + disable) and
@@ -164,6 +180,14 @@ export function AskChoiceCard({
   const pickedIds = new Set(answered?.picks.map((p) => p.option_id) ?? []);
 
   const renderPickedSummary = (): ReactNode => {
+    if (isExpired) {
+      // role=status so screen readers hear WHY the options went dead.
+      return (
+        <p className="ask-choice-expired" role="status">
+          Expired — this question is no longer open.
+        </p>
+      );
+    }
     if (!isAnswered) return null;
     if (answered.declined) {
       return <p className="ask-choice-picked">Skipped</p>;
@@ -189,6 +213,7 @@ export function AskChoiceCard({
       data-tool="chat:ask_choice"
       data-multi={multi ? 'true' : 'false'}
       data-answered={isAnswered ? 'true' : 'false'}
+      data-expired={isExpired ? 'true' : 'false'}
     >
       <div className="ask-choice-head">
         <p id={questionId} className="ask-choice-question">
@@ -289,7 +314,7 @@ export function AskChoiceCard({
           ))}
         </div>
       )}
-      {!hideOptions && multi && !isAnswered && (
+      {!hideOptions && multi && !isAnswered && !isExpired && (
         <div className="ask-choice-submit-row">
           <span className="ask-choice-submit-hint">
             {selected.size === 0
@@ -323,7 +348,7 @@ export function AskChoiceCard({
           </div>
         </div>
       )}
-      {!hideOptions && !multi && !isAnswered && allowDecline && (
+      {!hideOptions && !multi && !isAnswered && !isExpired && allowDecline && (
         <div className="ask-choice-skip-row">
           <button
             type="button"

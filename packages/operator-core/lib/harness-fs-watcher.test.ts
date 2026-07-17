@@ -228,6 +228,59 @@ describe('harness-fs-watcher: phased fixture (Item 2)', () => {
   });
 });
 
+// EI-107 regression: phaseForPath() (private) now threads the OWNING workspaceId
+// through the match instead of relying on activeWorkspaceId() at event time. This
+// fixture mirrors that resolution — a project matches by PATH, and the match
+// carries whichever workspace registered THAT project, never a global default —
+// so a downstream PG write can stamp the correct workspace even when two live
+// workspaces (shared-operator model) each register a same-slug harness at a
+// different path.
+describe('harness-fs-watcher: workspace-tagged project resolution (EI-107)', () => {
+  interface TaggedProjectFixture {
+    project: { path: string; slug: string };
+    workspaceId: string;
+  }
+
+  function phaseForPathFixture(projects: TaggedProjectFixture[], p: string) {
+    for (const { project, workspaceId } of projects) {
+      for (const phase of ALL_PHASES) {
+        const harnessDir = join(phasePath(project, phase), '.papercusp');
+        if (p === harnessDir || p.startsWith(harnessDir + '/')) {
+          return { project, phase, workspaceId };
+        }
+      }
+    }
+    return null;
+  }
+
+  it('resolves the workspace that registered the matched project, not a global default', () => {
+    const projects: TaggedProjectFixture[] = [
+      { project: { path: '/ws-a/sheets', slug: 'sheets' }, workspaceId: 'ws-a' },
+      { project: { path: '/ws-b/sheets', slug: 'sheets' }, workspaceId: 'ws-b' },
+    ];
+    const matchA = phaseForPathFixture(projects, '/ws-a/sheets/.papercusp/proposals/p1.md');
+    const matchB = phaseForPathFixture(projects, '/ws-b/sheets/.papercusp/proposals/p1.md');
+    expect(matchA?.workspaceId).toBe('ws-a');
+    expect(matchB?.workspaceId).toBe('ws-b');
+    expect(matchA?.phase).toBe('staging');
+    // Two workspaces sharing a harness slug never cross-resolve just because
+    // the slug matches — resolution is entirely by watched PATH.
+    expect(matchA?.project.path).not.toBe(matchB?.project.path);
+  });
+
+  it('a project registered under only one workspace never falls back to another live workspace', () => {
+    const projects: TaggedProjectFixture[] = [
+      { project: { path: '/only-a/harness', slug: 'x' }, workspaceId: 'ws-a' },
+    ];
+    expect(
+      phaseForPathFixture(projects, '/only-a/harness/.papercusp/proposals/p1.md')?.workspaceId,
+    ).toBe('ws-a');
+    // An unregistered path (e.g. a since-deregistered project) matches nothing —
+    // never silently attributed to whichever workspace happens to be first/active.
+    expect(phaseForPathFixture(projects, '/not-registered/.papercusp/proposals/p1.md')).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Existence-anchored watch paths (the /tmp ancestor-watch incident, 2026-06-06)
 //

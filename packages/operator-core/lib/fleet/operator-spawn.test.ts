@@ -112,6 +112,7 @@ import {
   findBriefPlaceholder,
   selectWedgeReapCandidates,
   WEDGE_REAP_SILENT_MS,
+  applyHostSaturationShed,
 } from './operator-spawn';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
@@ -1060,5 +1061,51 @@ describe('selectWedgeReapCandidates — pure wedge-reaper filter (Gap 13 / P-010
       ['fresh', { at: NOW - WEDGE_REAP_SILENT_MS + 60_000 }],
     ]);
     expect(selectWedgeReapCandidates(output, tracked('old', 'fresh'), new Set(), NOW)).toEqual(['old']);
+  });
+});
+
+/**
+ * EI-73 Fix #1 — applyHostSaturationShed (operator-spawn.ts): the PURE host-load
+ * shed rule folded into getSpawnHeadroom. Only a definitive `crit` per-thread
+ * wedge verdict (PSI/event-loop-lag/reachability — never raw loadavg, which the
+ * 128-core-box D-002 reframe already established lies here) sheds headroom to
+ * zero; every other verdict tier is a no-op so a missing/stale/unreadable perf
+ * capture leaves admission exactly as it was before this fix (fail-soft).
+ */
+describe('applyHostSaturationShed — pure host-saturation headroom shed (EI-73 Fix #1)', () => {
+  it('sheds headroom to zero on a crit verdict (host actively wedged)', () => {
+    const out = applyHostSaturationShed(10, { status: 'crit', reasons: ['event-loop lag p95 1500ms ≥ 1000ms'] });
+    expect(out).toEqual({ headroom: 0, shed: true, reason: 'host saturation crit — event-loop lag p95 1500ms ≥ 1000ms' });
+  });
+
+  it('falls back to a generic reason when crit carries no reasons', () => {
+    const out = applyHostSaturationShed(4, { status: 'crit', reasons: [] });
+    expect(out.shed).toBe(true);
+    expect(out.headroom).toBe(0);
+    expect(out.reason).toContain('per-thread wedge signal');
+  });
+
+  it('leaves headroom untouched on warn (noisy, non-definitive) — never shed on warn alone', () => {
+    expect(applyHostSaturationShed(7, { status: 'warn', reasons: ['worker cpu 220% ≥ 200%'] })).toEqual({
+      headroom: 7,
+      shed: false,
+      reason: null,
+    });
+  });
+
+  it('leaves headroom untouched on ok', () => {
+    expect(applyHostSaturationShed(5, { status: 'ok', reasons: [] })).toEqual({ headroom: 5, shed: false, reason: null });
+  });
+
+  it('leaves headroom untouched on unknown (no/stale capture) — fail-soft, count-based only', () => {
+    expect(applyHostSaturationShed(3, { status: 'unknown', reasons: [] })).toEqual({ headroom: 3, shed: false, reason: null });
+  });
+
+  it('shedding to zero holds even when raw count-based headroom was already zero', () => {
+    expect(applyHostSaturationShed(0, { status: 'crit', reasons: ['operator :3070 unreachable'] })).toEqual({
+      headroom: 0,
+      shed: true,
+      reason: 'host saturation crit — operator :3070 unreachable',
+    });
   });
 });

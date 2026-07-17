@@ -20,7 +20,9 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Lightbulb, Wrench } from 'lucide-react';
+import { toast } from 'sonner';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
+import { CardAnswerError } from './OperatorConversationProvider';
 import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
 import { CHAT_SEED_EVENT, consumePendingChatSeed, readChatDraft, writeChatDraft } from './inbox/chat-seed';
@@ -139,11 +141,25 @@ export function OperatorChat({
         args: t.input ?? {},
         answered: t.answered,
         onAnswer: (payload) => {
-          if (typeof msg.seq !== 'number' || !onAnswerChoice) return;
           const { picks, declined } = payload as {
             picks: Array<{ option_id: string; label: string }>;
             declined?: boolean;
           };
+          // WI-5175 (owner repro 2026-07-17: "I clicked an option and nothing
+          // happened"). BOTH guards below used to `return` / `console.warn`
+          // silently, so an unanswerable card was indistinguishable from a dead
+          // button. A click ALWAYS produces feedback now.
+          if (!onAnswerChoice) {
+            toast.error("This card isn't interactive here.");
+            return;
+          }
+          if (typeof msg.seq !== 'number') {
+            // The message hasn't been assigned its persisted seq yet — the
+            // answer has nowhere to land. Transient: it resolves once the turn
+            // persists, so say "not yet", not "broken".
+            toast.error('Still saving this message — try again in a moment.');
+            return;
+          }
           // Fire-and-forget — server-side atomicity guarantees the
           // assistant-answered + user-turn rows land together. The
           // live-tail picks them up; we don't optimistically dispatch.
@@ -154,7 +170,15 @@ export function OperatorChat({
               picks,
               ...(declined ? { declined: true } : {}),
             }),
-          ).catch((err) => {
+          ).catch((err: unknown) => {
+            const reason = err instanceof CardAnswerError ? err.reason : 'failed';
+            const message =
+              err instanceof Error ? err.message : 'Could not submit your answer.';
+            // already_answered reconciles the card to the server's answer, so
+            // it's informational — the user sees the truth appear. The rest are
+            // real failures worth an error toast.
+            if (reason === 'already_answered') toast.info(message);
+            else toast.error(message);
             // eslint-disable-next-line no-console
             console.warn('[operator-chat] answerChoice failed:', err);
           });

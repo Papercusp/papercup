@@ -38,20 +38,25 @@
  *     harnesses get watched without a process restart.
  *   - SIGTERM handler stops chokidar cleanly so inotify watches release.
  *
- * Workspace switch behavior:
- *   - The project list is loaded via await loadHarnessRegistry().
- *   - On workspace switch, the registry on the operator side flips, but the
- *     watcher's `state.projects` was loaded once at start. The 60s reconcile
- *     re-reads await loadHarnessRegistry() and adds/removes watch paths, so the
- *     watcher converges within ~60s.
- *   - During that window, the previous workspace's harnesses are still
- *     watched. Live events from harnesses that no longer belong to the active
- *     workspace would still upsert PG rows stamped with the *current*
- *     activeWorkspaceId(), creating cross-workspace pollution. Mitigation:
- *     resyncing the watcher on workspace switch would close this window;
- *     untracked TODO until the workspace-aware project model lands.
- *     Item 2 expands the watcher's footprint 3× (one set per phase), so
- *     the staleness window is proportionally wider during a switch.
+ * Workspace-aware project model (EI-107 fix, per-window-workspace-context-2026-05-31
+ * P-020): the project list is loaded per-OWNING-workspace via
+ * `backgroundWorkspaceIds()` (every registered workspace under the shared-operator
+ * model; just the one active workspace otherwise) + `loadHarnessRegistry(workspaceId)`
+ * per id — see `loadAllProjects()`. Each `TaggedProject` carries the workspaceId that
+ * actually registered it, and `phaseForPath()` threads that id through to every PG
+ * write (`upsertProposal`/`deleteProposal` take it as an explicit parameter — they no
+ * longer call `activeWorkspaceId()`). This closes both pollution windows the previous
+ * revision of this comment documented as open:
+ *   1. Workspace switch: a harness that no longer belongs to the *global* active
+ *      workspace is still watched until the next 60s reconcile, but its events now
+ *      stamp the workspace that owns IT, not whatever `activeWorkspaceId()` resolves
+ *      to at event time — so a switch no longer mis-stamps stale-window events.
+ *   2. Shared-operator model (`PAPERCUSP_SHARED_OPERATOR=1`, multiple workspaces live
+ *      at once): the watcher now watches + correctly stamps EVERY registered
+ *      workspace's projects, not just the global one.
+ * The 60s reconcile sweep (`reconcileAll`) re-derives the full tagged project list
+ * the same way, so a workspace registering/deregistering a harness converges within
+ * ~60s as before — only the stamping is now correct throughout.
  */
 import { promises as fs, existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
@@ -69,7 +74,7 @@ import { and, eq, sql as dsql } from 'drizzle-orm';
 
 const hps = generated.harnessProposalsSharedInHarnessShared;
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
-import { activeWorkspaceId } from './workspace-registry';
+import { backgroundWorkspaceIds } from './workspace-registry';
 import { ALL_PHASES, phasePath, type Phase } from './harness-phases';
 import { notifySyncInvalidate } from './sync-sse';
 
@@ -121,7 +126,7 @@ interface WatcherState {
    * keeps `harness_shared.plugin_enables` canonical for read paths.
    */
   enabledPluginsWatcher: FSWatcher;
-  projects: ProjectEntry[];
+  projects: TaggedProject[];
   /**
    * Paths currently subscribed on `watcher` / `topWatcher`. Tracked
    * explicitly (rather than re-derived from `projects`) because the
@@ -139,6 +144,33 @@ interface WatcherState {
 
 type _G = { __harnessFsWatcher?: WatcherState };
 const _g = globalThis as unknown as _G;
+
+/** A registry ProjectEntry tagged with the workspace that actually registered it. */
+interface TaggedProject {
+  project: ProjectEntry;
+  workspaceId: string;
+}
+
+/**
+ * Load the full project list this watcher instance must cover, tagged with
+ * each project's OWNING workspace (EI-107 fix; P-020's `backgroundWorkspaceIds()`
+ * — under the shared-operator model that is EVERY registered workspace, else just
+ * the one active workspace, matching prior single-workspace behavior exactly).
+ * Two workspaces are never merged into one flat untagged list, so a downstream PG
+ * write can always stamp the workspace that owns the project the event came from,
+ * instead of whatever `activeWorkspaceId()` resolves to at event time.
+ */
+async function loadAllProjects(): Promise<TaggedProject[]> {
+  const wsIds = backgroundWorkspaceIds();
+  const out: TaggedProject[] = [];
+  for (const workspaceId of wsIds) {
+    const reg = await loadHarnessRegistry(workspaceId);
+    for (const project of reg.projects ?? []) {
+      out.push({ project, workspaceId });
+    }
+  }
+  return out;
+}
 
 /** All phased .papercusp/ directories that may exist for a project. */
 function harnessDirsForProject(p: ProjectEntry): Array<{ phase: Phase; harnessDir: string }> {
@@ -222,14 +254,17 @@ interface PhasedMatch {
   project: ProjectEntry;
   phase: Phase;
   harnessDir: string;
+  /** The workspace that registered `project` (EI-107) — thread this through to
+   *  every PG write instead of re-resolving `activeWorkspaceId()` at event time. */
+  workspaceId: string;
 }
 
 /** Find the (project, phase) whose .harness dir contains `p`. */
 function phaseForPath(state: WatcherState, p: string): PhasedMatch | null {
-  for (const project of state.projects) {
+  for (const { project, workspaceId } of state.projects) {
     for (const { phase, harnessDir } of harnessDirsForProject(project)) {
       if (p === harnessDir || p.startsWith(harnessDir + '/')) {
-        return { project, phase, harnessDir };
+        return { project, phase, harnessDir, workspaceId };
       }
     }
   }
@@ -253,7 +288,12 @@ function parseFooterTimestamp(body: string, key: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function upsertProposal(slug: string, phase: Phase, path: string): Promise<void> {
+async function upsertProposal(
+  slug: string,
+  phase: Phase,
+  path: string,
+  workspaceId: string,
+): Promise<void> {
   const filename = path.split('/').pop() ?? '';
   if (!filename.endsWith('.md') || filename.endsWith('.review.md')) return;
   const proposalId = filename;
@@ -296,7 +336,7 @@ async function upsertProposal(slug: string, phase: Phase, path: string): Promise
   } catch { /* no reviewer file */ }
 
   const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = workspaceId;
   const ts = Math.floor(mtimeMs);
   await db
     .insert(hps)
@@ -334,14 +374,30 @@ async function upsertProposal(slug: string, phase: Phase, path: string): Promise
     });
 }
 
-async function deleteProposal(slug: string, phase: Phase, path: string): Promise<void> {
+async function deleteProposal(
+  slug: string,
+  phase: Phase,
+  path: string,
+  workspaceId: string,
+): Promise<void> {
   const filename = path.split('/').pop() ?? '';
   if (!filename.endsWith('.md') || filename.endsWith('.review.md')) return;
   const proposalId = filename;
   const { db } = getOrgPg();
+  // Scope by workspaceId too (EI-107): the table's PK is (harnessSlug, proposalId,
+  // phase) with no workspace component, so under the shared-operator model two
+  // workspaces registering a same-named harness/proposal would otherwise let one
+  // workspace's delete remove the other's row.
   await db
     .delete(hps)
-    .where(and(eq(hps.harnessSlug, slug), eq(hps.phase, phase), eq(hps.proposalId, proposalId)));
+    .where(
+      and(
+        eq(hps.harnessSlug, slug),
+        eq(hps.phase, phase),
+        eq(hps.proposalId, proposalId),
+        eq(hps.workspaceId, workspaceId),
+      ),
+    );
 }
 
 // ── Mirror 4 retired: harness_pending_issues is now written at producer
@@ -419,7 +475,7 @@ function classifyAndDispatch(
 
   const match = phaseForPath(state, path);
   if (!match) return;
-  const { project, phase, harnessDir: hd } = match;
+  const { project, phase, harnessDir: hd, workspaceId } = match;
   const slug = project.slug;
 
   // Proposals: top-level *.md only; .review.md siblings trigger an upsert
@@ -433,13 +489,13 @@ function classifyAndDispatch(
     if (path.endsWith('.review.md')) {
       const parent = path.replace(/\.review\.md$/, '.md');
       debounce(state, `proposal:${slug}:${phase}:${parent}`, async () => {
-        await upsertProposal(slug, phase, parent);
+        await upsertProposal(slug, phase, parent, workspaceId);
       });
       return;
     }
     debounce(state, `proposal:${slug}:${phase}:${path}`, async () => {
-      if (kind === 'unlink') await deleteProposal(slug, phase, path);
-      else await upsertProposal(slug, phase, path);
+      if (kind === 'unlink') await deleteProposal(slug, phase, path, workspaceId);
+      else await upsertProposal(slug, phase, path, workspaceId);
     });
     return;
   }
@@ -513,19 +569,20 @@ function classifyAndDispatch(
 }
 
 async function reconcileAll(state: WatcherState): Promise<void> {
-  // Re-read the registry so newly-added harnesses get picked up.
-  const reg = await loadHarnessRegistry();
-  const newProjects = reg.projects ?? [];
+  // Re-read the registry so newly-added harnesses get picked up — across EVERY
+  // workspace this operator instance serves (EI-107 / P-020 backgroundWorkspaceIds()),
+  // each tagged with its owning workspace so downstream writes stamp correctly.
+  const newProjects = await loadAllProjects();
 
   // If the project list (or path existence) shifted, re-add watch paths.
   // Diff against the *recorded* subscription sets, not a re-derivation —
   // see the watchedPathSet doc comment.
-  const newPaths = new Set(newProjects.flatMap(watchedPaths));
+  const newPaths = new Set(newProjects.flatMap((tp) => watchedPaths(tp.project)));
   for (const p of newPaths) if (!state.watchedPathSet.has(p)) state.watcher.add(p);
   for (const p of state.watchedPathSet) if (!newPaths.has(p)) state.watcher.unwatch(p);
   state.watchedPathSet = newPaths;
   // Same housekeeping for the top-level (checkpoint-pattern) watcher.
-  const newTopPaths = new Set(newProjects.flatMap(topWatchPaths));
+  const newTopPaths = new Set(newProjects.flatMap((tp) => topWatchPaths(tp.project)));
   for (const p of newTopPaths) if (!state.topWatchedPathSet.has(p)) state.topWatcher.add(p);
   for (const p of state.topWatchedPathSet) if (!newTopPaths.has(p)) state.topWatcher.unwatch(p);
   state.topWatchedPathSet = newTopPaths;
@@ -558,7 +615,7 @@ async function reconcileAll(state: WatcherState): Promise<void> {
   //  step 4; harness_branch_actions mirror retired, table dropped mig 281.)
 
   // Walk each (project, phase) and replay anything with diverged mtime.
-  for (const proj of newProjects) {
+  for (const { project: proj, workspaceId } of newProjects) {
     for (const { phase, harnessDir: hd } of harnessDirsForProject(proj)) {
       if (!existsSync(hd)) continue;
 
@@ -619,24 +676,36 @@ async function reconcileAll(state: WatcherState): Promise<void> {
                 .from(hps)
                 .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
               if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
-                await upsertProposal(proj.slug, phase, path);
+                await upsertProposal(proj.slug, phase, path, workspaceId);
               }
             }
           } catch {}
         }
 
-        // Orphan delete: proposal rows in PG whose FS file is gone.
+        // Orphan delete: proposal rows in PG whose FS file is gone. Scoped by
+        // workspaceId too (EI-107) — the table's PK is (harnessSlug, proposalId,
+        // phase) with no workspace component, so an unscoped select/delete here
+        // could otherwise walk (and delete) another workspace's same-slug rows.
         try {
           const { db } = getOrgPg();
           const pgIds = await db
             .select({ id: hps.proposalId })
             .from(hps)
-            .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase)));
+            .where(
+              and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.workspaceId, workspaceId)),
+            );
           for (const { id } of pgIds) {
             if (!fsIds.has(id)) {
               await db
                 .delete(hps)
-                .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
+                .where(
+                  and(
+                    eq(hps.harnessSlug, proj.slug),
+                    eq(hps.phase, phase),
+                    eq(hps.proposalId, id),
+                    eq(hps.workspaceId, workspaceId),
+                  ),
+                );
             }
           }
         } catch {}
@@ -652,10 +721,9 @@ async function reconcileAll(state: WatcherState): Promise<void> {
 export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
   if (_g.__harnessFsWatcher) return _g.__harnessFsWatcher;
 
-  const reg = await loadHarnessRegistry();
-  const projects = reg.projects ?? [];
-  const allPaths = projects.flatMap(watchedPaths);
-  const topPaths = projects.flatMap(topWatchPaths);
+  const projects = await loadAllProjects();
+  const allPaths = projects.flatMap((tp) => watchedPaths(tp.project));
+  const topPaths = projects.flatMap((tp) => topWatchPaths(tp.project));
 
   const watcher = chokidar.watch(allPaths, {
     persistent: true,

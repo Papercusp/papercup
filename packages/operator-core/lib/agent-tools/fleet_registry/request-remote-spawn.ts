@@ -34,7 +34,7 @@ export default defineTool({
     when:
       "Your fleet holds a REMOTE seat-offer (another machine ran resource:delegate kind:'agent_slot' for your fleet) and you want those seats actually running members. Pick the target from the fleet's open seat-offers (auto-picked when there is exactly one).",
     notWhen:
-      'Spawning from seats delegated on THIS machine → fleet:launch-on-plan (it consumes local seats directly). Delegating seats in the first place → resource:delegate on the contributing machine.',
+      "Spawning from seats delegated on THIS machine → fleet:launch-on-plan (it consumes local seats directly). Spreading members across SEVERAL machines' seat-offers in one call → fleet:launch-on-plan placement:'remote' (it composes this request per target). Delegating seats in the first place → resource:delegate on the contributing machine.",
     chaining: ROUTING_LADDER,
   },
   capability: 'fleet:request_remote_spawn',

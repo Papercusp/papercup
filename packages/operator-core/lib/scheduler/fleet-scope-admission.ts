@@ -265,6 +265,79 @@ export async function reconcileFleetScopeClaims(args: {
   return { scope, quarantinedIds };
 }
 
+/**
+ * EI-13520: result of {@link diagnoseFleetScopeCooldownMiss} — non-null only when the
+ * scoped miss is (at least partly) explained by THIS bee's own release-cooldown floor,
+ * not by the claim spec being genuinely empty.
+ */
+export interface CooldownMissDiagnosis {
+  /** Rows that match spec + floors once the cooldown-assignee leg is dropped. */
+  cooldownExcluded: number;
+  /** Earliest cooldown expiry (ms since epoch) among this bee's own recently-released
+   *  matching rows, or null when none of the matching rows were released by this bee
+   *  (cooldownExcluded > 0 can still hold — e.g. another floor + cooldown both apply to
+   *  different rows — so the count and the expiry are reported independently). */
+  earliestExpiryMs: number | null;
+}
+
+/**
+ * EI-13520: best-effort tier-1 diagnosis for a fleet-scoped self-select MISS — does the
+ * spec's primary feature-family view have candidate rows that would be admissible once
+ * this bee's own release-cooldown floor (claimFloorsWhereSql's `cooldownAssignee` leg) is
+ * dropped? When yes, the miss is a COOLDOWN artifact, not a scope/spec problem — re-authoring
+ * the claim spec cannot fix it (see the fleet-livelock incident this closes: 6 agents thrashed
+ * for hours re-authoring a spec that was never the cause).
+ *
+ * Scope of the check: the spec's TIER-1 view against `harness_features_consolidated`, the
+ * SAME table + floors `getNextWorkItem`'s tier-1 attempt queries. Deliberately does not
+ * replicate tiers 2/3 (the widened-kind or adjacent-issue-family fallbacks) — this is an
+ * ANNOTATION on the already-failed claim, not a second claim attempt, so tier-1 fidelity is
+ * enough to catch the dominant livelock shape (a bee's own just-released rows sorting back
+ * to the top of a stable rank).
+ *
+ * FAILS SOFT, same philosophy as `buildMissDiagnosis` (agent-tools/scheduler/get_next.ts):
+ * any query error returns null — a diagnosis only ever annotates a miss, it must never be
+ * able to turn a clean miss response into a thrown error.
+ */
+export async function diagnoseFleetScopeCooldownMiss(args: {
+  scope: FleetScopeContext;
+  harness: string;
+  workspaceId?: string | null;
+  states?: string[];
+}): Promise<CooldownMissDiagnosis | null> {
+  try {
+    const ws = resolveClaimSpecWorkspace(args.workspaceId);
+    if (!ws) return null;
+    const spec = args.scope.record.spec;
+    if (!spec.view.filter) return null;
+    const { sql } = getOrgPg();
+    const { claimFloorsWhereSql, releaseCooldownSec } = await import('../work-items');
+    const { compileFilter } = await import('./get-next');
+    // The WITHOUT-cooldown leg: identical floors, `cooldownAssignee` simply omitted so
+    // that clause compiles to `TRUE` (see claimFloorsWhereSql) instead of excluding this
+    // bee's recently-released rows.
+    const floorsNoCooldown = claimFloorsWhereSql(sql, {
+      harness: args.harness,
+      workspaceId: ws,
+      states: args.states ?? spec.states,
+    });
+    const filter = compileFilter(sql, spec.view.filter);
+    const rows = await sql<{ cnt: number; earliest: Date | null }[]>`
+      SELECT count(*)::int AS cnt,
+             MIN(last_released_at) FILTER (WHERE last_released_by = ${args.scope.ownerId}) AS earliest
+        FROM harness_shared.harness_features_consolidated
+       WHERE ${floorsNoCooldown}
+         AND ${filter}`;
+    const cnt = rows[0]?.cnt ?? 0;
+    if (cnt === 0) return null;
+    const earliest = rows[0]?.earliest ?? null;
+    const earliestExpiryMs = earliest ? new Date(earliest).getTime() + releaseCooldownSec() * 1000 : null;
+    return { cooldownExcluded: cnt, earliestExpiryMs };
+  } catch {
+    return null;
+  }
+}
+
 export function fleetScopedMiss(
   scope: FleetScopeContext,
   quarantinedIds: string[] = [],
@@ -272,16 +345,27 @@ export function fleetScopedMiss(
   // may well match the spec — the member just must not pull. Say so honestly instead
   // of the "no item matched scope" message (which would be actively misleading during
   // a pause), and give the stand-down (not the re-steer) advice.
-  opts?: { pausedReason?: string | null },
+  //
+  // EI-13520: `cooldownDiag` (ignored while paused — the pause message already fully
+  // explains the miss) reattributes a cooldown-only miss so the caller — and the fleet
+  // leader they'd otherwise report a false spec problem to — is told the true cause.
+  opts?: { pausedReason?: string | null; cooldownDiag?: CooldownMissDiagnosis | null },
 ) {
   const paused = opts?.pausedReason !== undefined;
+  const cooldown = !paused ? (opts?.cooldownDiag ?? null) : null;
+  const cooldownExpirySec = cooldown?.earliestExpiryMs != null ? Math.max(0, Math.round((cooldown.earliestExpiryMs - Date.now()) / 1000)) : null;
   return {
     ok: false as const,
     error: paused
       ? `fleet '${scope.fleetSlug}' is winding-down (paused${opts?.pausedReason ? `: ${opts.pausedReason}` : ''}); ` +
         'do NOT pull new work from this fleet\'s lanes — stand down until a fleet:resume (control_state=active) lands'
-      : `no claimable work-item matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}; ` +
-        'the member was NOT allowed to fall through to the generic backlog',
+      : cooldown
+        ? `${cooldown.cooldownExcluded} in-spec row(s) matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision} ` +
+          `but ${cooldown.cooldownExcluded === 1 ? 'is' : 'are'} excluded ONLY by YOUR OWN release-cooldown floor` +
+          (cooldownExpirySec != null ? ` (earliest expiry in ~${cooldownExpirySec}s)` : '') +
+          '; this is NOT a scope/spec mismatch — do not re-author the claim spec for this miss.'
+        : `no claimable work-item matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}; ` +
+          'the member was NOT allowed to fall through to the generic backlog',
     fleetScope: {
       fleet: scope.fleetSlug,
       specId: scope.record.spec.specId,
@@ -291,8 +375,11 @@ export function fleetScopedMiss(
     quarantinedIds,
     windDown: true as const,
     ...(paused ? { paused: true as const } : {}),
+    ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec } : {}),
     advice: paused
       ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Resume only after a fleet:resume cue.'
-      : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Resume only after a claim-spec revision or a new claimable event.',
+      : cooldown
+        ? 'Cooldown-only miss (EI-13520): the row(s) excluding you will become claimable again once the release-cooldown window lapses (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s) — or immediately for any OTHER fleet member. Re-poll after the expiry (or park on a work-item:claimable await). Do NOT report this as a scope problem or ask your leader for a spec revision — it cannot fix a cooldown miss.'
+        : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Resume only after a claim-spec revision or a new claimable event.',
   };
 }

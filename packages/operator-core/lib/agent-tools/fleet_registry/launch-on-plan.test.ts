@@ -25,6 +25,8 @@ import launchOnPlan, {
   clampFleetTopUpToCapacity,
   composeMemberLaunchContext,
   renderMemberBaseline,
+  distributeRemotePlacement,
+  remotePlacementUnsupportedArgs,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -543,5 +545,124 @@ describe('overrideCapacityClamp arg + clamp override (EI-8807)', () => {
     expect(clamp!.openCount).toBe(4);
     expect(clamp!.clamped).toBe(false);
     expect(clamp!.overridden).toBe(false);
+  });
+});
+
+// WI-5211: placement:'remote' — one launch-on-plan call spreads members across the
+// OTHER machines' federated seat-offers (one signed spawn-request per target).
+describe("distributeRemotePlacement (WI-5211 — cross-machine max-spread round-robin)", () => {
+  const offer = (publisher: number, offerId: string, host: string | null, seats: number) => ({
+    publisher,
+    offerId,
+    host,
+    seats,
+  });
+
+  it('count 2 across 2 machines lands exactly 1 member on EACH (the drill contract)', () => {
+    const dist = distributeRemotePlacement(2, [
+      offer(1, 'seat-aaaa', 'mac-vm', 1),
+      offer(2, 'seat-bbbb', 'win-vm', 1),
+    ]);
+    expect(dist.ok).toBe(true);
+    if (!dist.ok) return;
+    expect(dist.allocations).toHaveLength(2);
+    expect(dist.allocations.map((a) => a.count)).toEqual([1, 1]);
+    expect(new Set(dist.allocations.map((a) => a.host))).toEqual(new Set(['mac-vm', 'win-vm']));
+  });
+
+  it('spreads 1-per-machine BEFORE any machine gets a second (count 3, seats 2+2)', () => {
+    const dist = distributeRemotePlacement(3, [
+      offer(1, 'seat-aaaa', 'alpha', 2),
+      offer(2, 'seat-bbbb', 'beta', 2),
+    ]);
+    expect(dist.ok).toBe(true);
+    if (!dist.ok) return;
+    const byHost = new Map(dist.allocations.map((a) => [a.host, a.count]));
+    // Round 1 gives each machine 1; round 2 gives the FIRST sorted machine (alpha) the 3rd.
+    expect(byHost.get('alpha')).toBe(2);
+    expect(byHost.get('beta')).toBe(1);
+  });
+
+  it('respects each offer\'s seat cap (count 3, seats 1+2 → 1 and 2)', () => {
+    const dist = distributeRemotePlacement(3, [
+      offer(1, 'seat-aaaa', 'alpha', 1),
+      offer(2, 'seat-bbbb', 'beta', 2),
+    ]);
+    expect(dist.ok).toBe(true);
+    if (!dist.ok) return;
+    const byHost = new Map(dist.allocations.map((a) => [a.host, a.count]));
+    expect(byHost.get('alpha')).toBe(1);
+    expect(byHost.get('beta')).toBe(2);
+  });
+
+  it('is deterministic — sorted by host label then offer id', () => {
+    const a = distributeRemotePlacement(2, [
+      offer(2, 'seat-bbbb', 'zeta', 1),
+      offer(1, 'seat-aaaa', 'alpha', 1),
+    ]);
+    const b = distributeRemotePlacement(2, [
+      offer(1, 'seat-aaaa', 'alpha', 1),
+      offer(2, 'seat-bbbb', 'zeta', 1),
+    ]);
+    expect(a).toEqual(b);
+    if (a.ok) expect(a.allocations[0]!.host).toBe('alpha');
+  });
+
+  it('refuses (never clamps) when count exceeds the total remote capacity', () => {
+    const dist = distributeRemotePlacement(4, [
+      offer(1, 'seat-aaaa', 'alpha', 1),
+      offer(2, 'seat-bbbb', 'beta', 1),
+    ]);
+    expect(dist.ok).toBe(false);
+    if (dist.ok) return;
+    expect(dist.error).toMatch(/1\.\.2/);
+    expect(dist.error).toMatch(/alpha=1/);
+  });
+
+  it('refuses with the delegate-first hint when there are no usable remote offers', () => {
+    for (const offers of [[], [offer(1, 'seat-aaaa', 'alpha', 0)]]) {
+      const dist = distributeRemotePlacement(1, offers);
+      expect(dist.ok).toBe(false);
+      if (dist.ok) return;
+      expect(dist.error).toMatch(/resource:delegate/);
+    }
+  });
+});
+
+describe("placement arg + remotePlacementUnsupportedArgs (WI-5211)", () => {
+  const parseArgs = (extra: Record<string, unknown>) =>
+    (launchOnPlan.args as { parse: (x: unknown) => Record<string, unknown> }).parse({
+      name: 'atlas',
+      plan: 'p-plan',
+      ...extra,
+    });
+
+  it("accepts placement 'local'/'remote', rejects anything else, defaults undefined", () => {
+    expect(parseArgs({ placement: 'remote' }).placement).toBe('remote');
+    expect(parseArgs({ placement: 'local' }).placement).toBe('local');
+    expect(parseArgs({}).placement).toBeUndefined();
+    expect(() => parseArgs({ placement: 'auto' })).toThrow();
+  });
+
+  it('flags every local-shape arg a remote placement cannot honor', () => {
+    expect(
+      remotePlacementUnsupportedArgs({
+        name: 'atlas',
+        plan: 'p-plan',
+        placement: 'remote',
+        count: 2,
+        launchContext: '/tmp/brief.md',
+        claimKinds: ['bug'],
+        workspace: 'ws-1',
+        harness: 'h',
+      }),
+    ).toEqual([]);
+    expect(remotePlacementUnsupportedArgs({ model: 'opus:high', headless: true, seat: 'a:b:c' })).toEqual([
+      'model',
+      'seat',
+      'headless',
+    ]);
+    // Explicitly-passed false still counts as passed — the honoring host owns the shape.
+    expect(remotePlacementUnsupportedArgs({ fromSeats: false })).toEqual(['fromSeats']);
   });
 });

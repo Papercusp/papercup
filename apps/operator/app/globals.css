@@ -22234,6 +22234,20 @@ body:has(.operator-panel) {
   text-transform: none;
 }
 
+/* WI-5175: a card the server can no longer answer states so plainly, and its
+   options read as inert rather than clickable-but-dead. */
+.ask-choice-expired {
+  margin: 0;
+  color: color-mix(in srgb, #ffb4a2, transparent 18%);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.ask-choice-card[data-expired='true'] .ask-choice-options {
+  opacity: 0.55;
+}
+
 .ask-choice-options {
   display: flex;
   flex-direction: column;

@@ -196,15 +196,53 @@ async function reclaimAndAnnounce(): Promise<void> {
 }
 
 /**
+ * Host-saturation-aware headroom shed (EI-73 Fix #1, host-load-aware ceiling —
+ * su-1d995 2026-07-17). PURE, so it's unit-testable without a live perf capture.
+ *
+ * EI-73 asked for the admission ceiling to incorporate a host-load signal
+ * (load-avg/cpu). Raw loadavg is the WRONG signal here: this box has 128 cores,
+ * so loadavg-absolute LIES (round-4 D-002 reframe, see system-health/perf-budgets.ts
+ * header) — a loadavg of 84 that alarmed EI-73's report is a ratio of ~0.66, not
+ * necessarily saturation. The box already has the CORRECT ratio-free per-thread
+ * saturation verdict (`evaluatePerfSignals` — PSI cpu `some avg60`, event-loop-lag,
+ * CLOSE_WAIT, reachability) feeding the `infra` health panel; this just extends that
+ * SAME verdict into spawn admission instead of inventing a second, worse signal.
+ *
+ * Only a DEFINITIVE crit (an active per-thread wedge) sheds headroom to zero —
+ * spawning MORE agents onto an already-wedged host makes the wedge worse (the
+ * exact EI-73 empirical finding: the route timed out under load but the spawn
+ * still landed, compounding the saturation). `warn`/`ok`/`unknown`/stale never
+ * shed — this is a narrow, fail-soft addition: no perf capture ⇒ unchanged
+ * behavior, exactly as it was before this fix.
+ */
+export function applyHostSaturationShed(
+  headroom: number,
+  verdict: { status: 'ok' | 'warn' | 'crit' | 'unknown'; reasons: readonly string[] },
+): { headroom: number; shed: boolean; reason: string | null } {
+  if (verdict.status !== 'crit') return { headroom, shed: false, reason: null };
+  return {
+    headroom: 0,
+    shed: true,
+    reason: `host saturation crit — ${verdict.reasons[0] ?? 'per-thread wedge signal'}`,
+  };
+}
+
+/**
  * The live limit/headroom the brain consults before deciding whether a spawn is
  * worth it (P-007): the unified ceiling, how many slots are in use right now, and
  * the remaining headroom. Reclaims orphaned rows first so the count reflects live
  * spawns only. This is the read the brain-as-allocator (P-005) is fed.
+ *
+ * EI-73 Fix #1: also folds in the host per-thread saturation verdict (see
+ * `applyHostSaturationShed` above) — fail-soft (an unreadable/absent/stale perf
+ * capture leaves headroom exactly as it was: count-based only).
  */
 export async function getSpawnHeadroom(workspaceId: string): Promise<{
   ceiling: number;
   running: number;
   headroom: number;
+  hostSaturated?: boolean;
+  hostSaturationReason?: string | null;
 }> {
   await reclaimAndAnnounce();
   const systemCeiling = spawnConcurrencyCeiling();
@@ -216,7 +254,28 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
   ]);
   const globalHeadroom = Math.max(0, systemCeiling - running);
   const beeHeadroom = ownerBeeCeiling == null ? globalHeadroom : Math.max(0, ownerBeeCeiling - runningBees);
-  return { ceiling, running: runningBees, headroom: Math.min(globalHeadroom, beeHeadroom) };
+  const countHeadroom = Math.min(globalHeadroom, beeHeadroom);
+
+  let shedResult: { headroom: number; shed: boolean; reason: string | null } = {
+    headroom: countHeadroom,
+    shed: false,
+    reason: null,
+  };
+  try {
+    const { readLatestPerfSignals, evaluatePerfSignals } = await import('../system-health/perf-budgets');
+    const signals = await readLatestPerfSignals();
+    const verdict = evaluatePerfSignals(signals, Date.now());
+    shedResult = applyHostSaturationShed(countHeadroom, verdict);
+  } catch {
+    /* fail-soft — perf module unreadable leaves headroom count-based only */
+  }
+
+  return {
+    ceiling,
+    running: runningBees,
+    headroom: shedResult.headroom,
+    ...(shedResult.shed ? { hostSaturated: true, hostSaturationReason: shedResult.reason } : {}),
+  };
 }
 
 /**

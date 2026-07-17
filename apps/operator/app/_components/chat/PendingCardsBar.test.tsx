@@ -339,4 +339,79 @@ describe('PendingCardsBar', () => {
       expect(screen.getByRole('alert').textContent).toMatch(/run not found/);
     });
   });
+
+  // ── WI-5175 — a card the server no longer holds must SAY SO ────────────
+  // Owner repro 2026-07-17: clicked an option "a while later", nothing
+  // happened, no feedback. The server's pending-card map is in-memory, so a
+  // restart 404s every open card; before this the 404 produced a generic
+  // error and left the options looking live and clickable.
+  describe('expired card (404 — server no longer holds it)', () => {
+    beforeEach(() => {
+      vi.mocked(useStateSnapshots).mockReturnValue({
+        cards: [makeCard()],
+        connected: true,
+        byRun: new Map(),
+      });
+      vi.mocked(postCardResponse).mockResolvedValue({
+        ok: false,
+        status: 404,
+        error: 'card not found',
+      });
+    });
+
+    it('marks the card expired and explains why, instead of failing silently', async () => {
+      const { container } = render(
+        <PendingCardsBar conversationId="c1" workspaceId="w1" />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Option A' }));
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toMatch(/expired/i);
+      });
+      // The card is still on screen (not silently vanished) and flagged.
+      expect(
+        container.querySelector('[data-tool="chat:ask_choice"]')?.getAttribute('data-expired'),
+      ).toBe('true');
+      expect(container.textContent).toMatch(/no longer open/i);
+    });
+
+    it('disables the options so a dead card cannot be clicked again', async () => {
+      render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Option A' }));
+      await waitFor(() => {
+        expect(
+          (screen.getByRole('button', { name: 'Option A' }) as HTMLButtonElement).disabled,
+        ).toBe(true);
+      });
+      expect(
+        (screen.getByRole('button', { name: 'Option B' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+
+      // A second click must not fire another doomed POST.
+      vi.mocked(postCardResponse).mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Option B' }));
+      expect(postCardResponse).not.toHaveBeenCalled();
+    });
+
+    it('keeps a non-404 failure as a plain error — only 404 means expired', async () => {
+      vi.mocked(postCardResponse).mockResolvedValue({
+        ok: false,
+        status: 500,
+        error: 'internal boom',
+      });
+      const { container } = render(
+        <PendingCardsBar conversationId="c1" workspaceId="w1" />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Option A' }));
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toMatch(/internal boom/);
+      });
+      expect(
+        container.querySelector('[data-tool="chat:ask_choice"]')?.getAttribute('data-expired'),
+      ).toBe('false');
+      // Still answerable — a transient server error is not an expiry.
+      expect(
+        (screen.getByRole('button', { name: 'Option A' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+  });
 });

@@ -48,7 +48,7 @@ async function seed(
     VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
             ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.planSlug ?? null},
             ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null},
-            ${opts.payload ? JSON.stringify(opts.payload) : null}::jsonb)`;
+            ${opts.payload ? JSON.stringify(opts.payload) : null}::text::jsonb)`;
 }
 
 /** EI-13501: seed an issue-family row (bug/change/task) directly on the work_items
@@ -70,7 +70,7 @@ async function seedIssue(
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, payload)
     VALUES (${harness}, ${id}, ${opts.kind ?? 'bug'}, 'todo',
-            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, 'local', ${JSON.stringify(payload)}::jsonb)`;
+            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, 'local', ${JSON.stringify(payload)}::text::jsonb)`;
 }
 
 beforeAll(async () => {

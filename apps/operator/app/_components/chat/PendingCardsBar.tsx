@@ -72,6 +72,13 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  // WI-5175: correlationIds the server no longer holds (404 'card not found').
+  // The card stays RENDERED but goes visibly expired — silently dismissing it
+  // would reproduce the original defect from the other side (the click appears
+  // to do nothing, the card just vanishes with no explanation). The pending-card
+  // map is in-memory server-side, so an operator restart strands every open
+  // card this way; the user must be told, not left clicking a dead button.
+  const [expired, setExpired] = useState<Set<string>>(() => new Set());
 
   // Same focused-card rule as the voice router (plan §C.7 / M4) so the
   // two surfaces never disagree on which card is "front of queue".
@@ -98,7 +105,15 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
         ...body,
       });
       if (!r.ok) {
-        setError(r.error ?? `card-response failed (${r.status})`);
+        if (r.status === 404) {
+          // The server dropped this card (restart / run ended / already
+          // resolved elsewhere). Mark it expired so the options go inert and
+          // the card says why, instead of staying live and unanswerable.
+          setExpired((prev) => new Set(prev).add(correlationId));
+          setError('This question expired — it is no longer open.');
+        } else {
+          setError(r.error ?? `card-response failed (${r.status})`);
+        }
       } else {
         setDismissed((prev) => {
           const next = new Set(prev);
@@ -169,6 +184,7 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
   const inputKinds = head.presentation?.kind;
   const isInput =
     inputKinds === 'text' || inputKinds === 'date' || inputKinds === 'slider';
+  const headExpired = expired.has(head.correlationId);
 
   let body: ReactNode;
   if (choiceArgs) {
@@ -177,6 +193,7 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
         args={choiceArgs}
         onResponse={onChoiceResponse}
         allowDecline={head.allowDecline ?? true}
+        expired={headExpired}
       />
     );
   } else if (isInput && head.presentation) {
@@ -213,7 +230,7 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
           type="button"
           className="pending-cards-bar-cancel-run"
           onClick={() => void onCancelRun()}
-          disabled={busy}
+          disabled={busy || headExpired}
           aria-label="Cancel this run"
 
         >

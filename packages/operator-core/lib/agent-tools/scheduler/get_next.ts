@@ -33,6 +33,7 @@ import {
   fleetScopedMiss,
   reconcileFleetScopeClaims,
   readFleetPauseState,
+  diagnoseFleetScopeCooldownMiss,
 } from '../../scheduler/fleet-scope-admission';
 
 /**
@@ -345,6 +346,20 @@ export default defineTool({
           states: args.states,
           rigAvailable: args.rigAvailable,
         });
+    // EI-13520: a genuine (non-paused) scoped miss may be a release-cooldown artifact,
+    // not a real scope/spec problem — check before reporting a bare fleetScopedMiss so
+    // the caller (and the leader they'd otherwise flag a false spec bug to) gets the
+    // true cause. Only reached when reconciliation.scope is set AND res is null AND we
+    // did not already return early on the paused/default-source branches above.
+    const cooldownDiag =
+      !res && reconciliation.scope
+        ? await diagnoseFleetScopeCooldownMiss({
+            scope: reconciliation.scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+            states: args.states,
+          })
+        : null;
     return {
       content: [
         {
@@ -360,7 +375,7 @@ export default defineTool({
                   ...(memory ? { memory } : {}),
                 }
               : reconciliation.scope
-                ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds)
+                ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { cooldownDiag })
                 : {
                   ok: false,
                   error: missDiagnosis.error,

@@ -49,6 +49,17 @@ beforeEach(() => {
   } as never);
 });
 
+describe('operator-converse route watchdog (EI-110)', () => {
+  it('disables the fixed-budget watchdog so a PG-contention-slowed pre-flight never false-408s the stream', () => {
+    // route-stack clears the watchdog timer the instant the (synchronous) SSE
+    // Response comes back — it never bounds the stream itself, only pre-flight
+    // (json/budget/auth). A finite timeoutSec just moves the false-408 to a
+    // worse contention storm; `null` (matching every sibling SSE route) is the
+    // structural fix. Regression guard for reverting to a magic number.
+    expect((route as { timeoutSec?: number | null }).timeoutSec).toBeNull();
+  });
+});
+
 describe('operator-converse route budget preflight', () => {
   it('keeps the owner-facing daily budget gate for normal clients', async () => {
     const res = await handler({ messages: [], uiClientId: 'desktop-client' });

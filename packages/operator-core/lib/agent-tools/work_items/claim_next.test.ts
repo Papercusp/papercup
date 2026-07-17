@@ -51,13 +51,26 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   reconcileFleetScopeClaims: vi.fn(async () => ({ scope: fleet.scope, quarantinedIds: fleet.quarantinedIds })),
   readFleetPauseState: vi.fn(async () => ({ windingDown: fleet.windingDown, reason: fleet.pauseReason })),
-  fleetScopedMiss: (scope: any, quarantinedIds: string[], opts?: { pausedReason?: string | null }) => ({
+  // EI-13520: real fn returns null (no cooldown-diagnosis signal) by default — these tests
+  // don't exercise the cooldown-attribution path, only fleetScopedMiss's existing shapes.
+  diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
+  fleetScopedMiss: (
+    scope: any,
+    quarantinedIds: string[],
+    opts?: { pausedReason?: string | null; cooldownDiag?: { cooldownExcluded: number; earliestExpiryMs: number | null } | null },
+  ) => ({
     ok: false,
-    error: opts?.pausedReason !== undefined ? `paused: ${opts.pausedReason ?? ''}` : 'scoped miss',
+    error:
+      opts?.pausedReason !== undefined
+        ? `paused: ${opts.pausedReason ?? ''}`
+        : opts?.cooldownDiag
+          ? `cooldown-only miss; ${opts.cooldownDiag.cooldownExcluded} excluded`
+          : 'scoped miss',
     fleetScope: { fleet: scope.fleetSlug, specId: scope.record.spec.specId, revision: scope.record.spec.revision },
     quarantinedIds,
     windDown: true,
     ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
+    ...(opts?.cooldownDiag ? { cooldownOnly: true } : {}),
   }),
 }));
 

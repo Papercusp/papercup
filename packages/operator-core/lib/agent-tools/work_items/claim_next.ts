@@ -30,6 +30,7 @@ import {
   fleetScopedMiss,
   reconcileFleetScopeClaims,
   readFleetPauseState,
+  diagnoseFleetScopeCooldownMiss,
 } from '../../scheduler/fleet-scope-admission';
 
 export default defineTool({
@@ -202,7 +203,16 @@ export default defineTool({
      *  floors, never a fleet member's authoritative scope boundary. */
     const missResult = async () => {
       if (reconciliation.scope) {
-        return fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds);
+        // EI-13520: distinguish a release-cooldown-only miss from a genuine scope/spec
+        // miss — see fleet-scope-admission.ts for the full rationale. Best-effort/fails
+        // soft: a diagnosis failure degrades to the original bare fleetScopedMiss.
+        const cooldownDiag = await diagnoseFleetScopeCooldownMiss({
+          scope: reconciliation.scope,
+          harness: args.harness,
+          workspaceId: ident.workspaceId,
+          states: args.states,
+        });
+        return fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { cooldownDiag });
       }
       const diag = await diagnoseClaimNextMiss({
         harness: args.harness,

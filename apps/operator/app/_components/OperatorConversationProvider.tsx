@@ -766,7 +766,13 @@ interface OperatorConversationContextValue {
    * atomically marks the assistant's tool as answered AND inserts
    * the user turn (text=joined-labels, source='card_pick'). On
    * success, the live-tail picks up both rows — no local mutation
-   * needed. Throws on already-answered (409) or validation (400).
+   * needed.
+   *
+   * WI-5175: rejects with a typed {@link CardAnswerError} so the caller can
+   * TELL THE USER what happened. A click that silently does nothing is the
+   * bug this shape exists to prevent (owner repro 2026-07-17: clicked an
+   * option, nothing happened, no feedback anywhere). On a 409 the local card
+   * is reconciled to the server's `answered` state before the throw.
    *
    * picks is always an array — length 1 for single-select cards,
    * ≥1 for multi-select (args.multi=true).
@@ -784,6 +790,48 @@ interface OperatorConversationContextValue {
    * active chat.
    */
   conversationId: string | null;
+}
+
+/** The server's persisted answer for a card (turn-answer's 409 payload). */
+export interface CardAnsweredState {
+  picks: Array<{ option_id: string; label: string }>;
+  declined?: boolean;
+  at: number;
+}
+
+/**
+ * Why a card answer did not land — WI-5175.
+ *
+ * Every one of these used to be swallowed (a silent early return, or a
+ * `console.warn` the user never sees), so a click on a card that could not be
+ * answered was indistinguishable from a dead button. The `reason` lets the UI
+ * say the right thing:
+ *   already_answered — someone/something already answered it (card reconciled)
+ *   expired          — the server no longer holds this question
+ *   no_conversation  — no active conversation to answer into
+ *   not_ready        — the card is not answerable YET (seq not yet backfilled)
+ *   failed           — anything else; `message` carries the server's reason
+ */
+export type CardAnswerFailure =
+  | "already_answered"
+  | "expired"
+  | "no_conversation"
+  | "not_ready"
+  | "failed";
+
+export class CardAnswerError extends Error {
+  readonly reason: CardAnswerFailure;
+  readonly answered: CardAnsweredState | null;
+  constructor(
+    message: string,
+    reason: CardAnswerFailure,
+    answered: CardAnsweredState | null = null,
+  ) {
+    super(message);
+    this.name = "CardAnswerError";
+    this.reason = reason;
+    this.answered = answered;
+  }
 }
 
 const OperatorConversationContext =
@@ -2567,15 +2615,60 @@ export function OperatorConversationProvider({
       declined?: boolean;
     }): Promise<void> => {
       const id = conversationIdRef.current;
-      if (!id) throw new Error("answerChoice: no active conversation");
+      if (!id) throw new CardAnswerError("no active conversation", "no_conversation");
       const r = await fetch(`/api/operator/conversations/${id}/turn-answer`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       });
       if (!r.ok) {
-        const detail = await r.text().catch(() => "");
-        throw new Error(`turn-answer ${r.status}: ${detail.slice(0, 200)}`);
+        // WI-5175: a failed answer must be RECONCILABLE, not just thrown as an
+        // opaque string. A 409 means the server already holds an answer for this
+        // card (another window, the voice router, or a duplicate click) — parse
+        // its `answered` payload so the caller can settle the card to the TRUTH
+        // instead of leaving it live and unexplained. Every other status carries
+        // the server's own message so the toast can say what actually happened.
+        const raw = await r.text().catch(() => "");
+        let parsed: { error?: string; answered?: unknown } | null = null;
+        try {
+          parsed = raw ? (JSON.parse(raw) as { error?: string; answered?: unknown }) : null;
+        } catch {
+          /* non-JSON body — fall back to the raw text below */
+        }
+        if (r.status === 409) {
+          const answered = (parsed?.answered ?? null) as CardAnsweredState | null;
+          if (answered) {
+            // Settle the local card to the server's answer so the UI stops
+            // pretending the question is still open.
+            const existingTools = stateRef.current.messages.find(
+              (m) => m.seq === input.assistantSeq,
+            )?.tools;
+            if (existingTools && existingTools[input.toolIndex]) {
+              dispatch({
+                type: "update_message_tools",
+                seq: input.assistantSeq,
+                tools: existingTools.map((tool, index) =>
+                  index === input.toolIndex ? { ...tool, answered } : tool,
+                ),
+              });
+            }
+          }
+          throw new CardAnswerError(
+            "This question was already answered.",
+            "already_answered",
+            answered,
+          );
+        }
+        if (r.status === 404) {
+          throw new CardAnswerError(
+            "This question has expired — it's no longer open.",
+            "expired",
+          );
+        }
+        throw new CardAnswerError(
+          parsed?.error ?? `turn-answer failed (${r.status})${raw ? `: ${raw.slice(0, 120)}` : ""}`,
+          "failed",
+        );
       }
 
       const answeredAt = Date.now();

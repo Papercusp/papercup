@@ -111,6 +111,39 @@ const PG_LAUNCH_RETRY_MS = resolvePgLaunchRetryMs();
 let pgRetryTimer: ManagedHandle | null = null;
 let pgRetryInFlight = false;
 
+/**
+ * EI-90 (2026-06-08 DBOS appVersion war, retriggered): arming
+ * PAPERCUSP_DBOS_ENABLE=1 on the :3170 STAGING host with the default pinned
+ * applicationVersion made staging steal green(:3070/the bg-host primary)'s
+ * queued scheduled fires (routinesTick = git-sync!, completionRefVerify) and
+ * fail them — "Cannot find workflow function" — because staging registers a
+ * different workflow subset under the SAME appVersion the primary uses. Every
+ * known-good secondary host (bg-host, gym instances, desktop env siblings —
+ * see env-operator-launcher.ts / gym/boot-spec.ts) already pins its OWN
+ * DBOS__APPVERSION explicitly; this makes that a hard REQUIREMENT on the
+ * staging port specifically, instead of a convention a future arming can
+ * silently skip. Pure predicate (env-injectable for tests); exported so
+ * `startDbos()` can refuse loudly (host-bootstrap's catch already pages via
+ * notifyAttention + broadcastSevereEvent on a thrown boot error) instead of
+ * silently sharing the primary's appVersion.
+ */
+export function assertSafeDbosAppVersionPartition(env: NodeJS.ProcessEnv = process.env): void {
+  const isStagingPort = env.PAPERCUSP_HONO_PORT === '3170';
+  const hasExplicitAppVersion = !!env.DBOS__APPVERSION;
+  if (isStagingPort && !hasExplicitAppVersion) {
+    const pinned = env.DBOS__APPVERSION || 'papercusp-jobs-v1';
+    throw new Error(
+      '[dbos] refusing to launch on PAPERCUSP_HONO_PORT=3170 (the staging host) with ' +
+        'PAPERCUSP_DBOS_ENABLE=1 and no explicit DBOS__APPVERSION override — the default ' +
+        `pinned applicationVersion ("${pinned}") is SHARED with the primary DBOS host, so this ` +
+        'process would steal + fail its queued scheduled fires (routinesTick/git-sync, ' +
+        'completionRefVerify, ...) instead of running its own (EI-90, the 2026-06-08 DBOS ' +
+        'appVersion war). Set a distinct DBOS__APPVERSION (and DBOS__VMID for recovery ' +
+        'isolation) before arming DBOS on this host — see bg-host.service for the pattern.',
+    );
+  }
+}
+
 function armPgLaunchRetry(): void {
   if (pgRetryTimer) return;
   console.warn(
@@ -148,6 +181,11 @@ function armPgLaunchRetry(): void {
 /** Idempotent single launch. Safe across Next HMR re-registers. */
 export async function startDbos(): Promise<void> {
   if (G.__papercuspDbosStarted) return;
+
+  // EI-90: cheap env-only check before any PG probe / SDK import — refuse
+  // loudly rather than silently arming a second host under the primary's
+  // appVersion.
+  assertSafeDbosAppVersionPartition();
 
   const { url, source } = getHarnessAdminUrlWithSource();
   // Probe the resolved PG before launching. The source label can't distinguish

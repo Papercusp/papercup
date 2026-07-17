@@ -106,6 +106,21 @@ export interface ClaimSpecAdmissionPreview {
   floored?: ClaimFloorAttribution[];
   effectiveStates?: readonly string[];
   reason?: string;
+  /**
+   * WI-5212: dynamic specs get a write-time POOL-EFFECT count (the fixed-cohort path has
+   * WI-4429's admission check instead): how many claimable rows the filter matches, vs the
+   * pool, vs the previously-stored spec at the same target. `previewError` = the count
+   * failed and the guard FAILED OPEN (the spec was still stored).
+   */
+  poolEffect?: {
+    matched: number;
+    pool: number;
+    states: string[];
+    harness: string | null;
+    previousMatched: number | null;
+    previousSource: 'authored' | 'default';
+  };
+  previewError?: string;
 }
 
 type ExplainIssueFloors = (
@@ -322,6 +337,12 @@ export default defineTool({
         .describe(
           'EI-12830: DELETE the target row instead of setting a spec, so the target falls back to fleet inheritance (bee spec → fleet spec → DEFAULT). Use on a `cupId` to drop a per-bee override that permanently shadows every later fleet-level `{ fleet }` re-steer, or on a `fleet` to retire the whole fleet lane back to default. Idempotent (clearing an absent row reports cleared:false); `spec` is not required (and is ignored) when clear:true. The delete tombstones any hive-federated row so remote peers drop the stale spec too.',
         ),
+      confirmCollapse: z
+        .boolean()
+        .optional()
+        .describe(
+          'WI-5212 pool-collapse override: a dynamic spec is REFUSED at write time when it matches 0 rows of a nonempty claimable pool, or a revision craters the match count vs the stored spec (the two fleet-starvation shapes, EI-13306). Pass true ONLY after reading the refusal’s reported counts and confirming the narrowing is intended (e.g. a pre-staged lane whose items are not promoted yet).',
+        ),
       spec: z
         .record(z.string(), z.unknown())
         .optional()
@@ -408,6 +429,68 @@ export default defineTool({
       const { fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
       targetBeeId = fleetSpecBeeKey(fleetSlug);
     }
+
+    // WI-5212: write-time POOL-EFFECT preview + collapse guard for DYNAMIC specs (the
+    // fixed-cohort path already has WI-4429's admission check above). Both 2026-07-16/17
+    // fleet starvations were specs that VALIDATED fine and matched (nearly) nothing —
+    // a kind scope with zero rows, and a NULL-poisoned not:{plan} fence (EI-13306) that
+    // hid 99% of the pool. Measure the effect with the SAME compiled filter get_next
+    // runs, refuse the two starvation shapes unless confirmCollapse:true, and FAIL OPEN
+    // on any preview error (the guard must never become the new way to block a write).
+    let poolEffect: ClaimSpecAdmissionPreview['poolEffect'];
+    let poolEffectError: string | undefined;
+    let poolEffectWarning: string | undefined;
+    if (admission.preview.mode === 'dynamic') {
+      try {
+        const { previewSpecPoolEffect, evaluateCollapseGuard } = await import(
+          '../../scheduler/spec-pool-preview'
+        );
+        const { getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+        const { activeWorkspaceId } = await import('../../workspace-registry');
+        const wsForCount =
+          ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : activeWorkspaceId();
+        const countScope = { workspaceId: wsForCount, harness: args.harness ?? ctxHarness ?? null };
+        const current = await previewSpecPoolEffect(validated.spec, countScope);
+        // Effective-BEFORE at the same target key (bee row → fleet inheritance → default).
+        // 'default' means nobody authored this lane — narrowing from default is normal
+        // lane-authoring and never refuses; only a cratered AUTHORED lane does.
+        let previousMatched: number | null = null;
+        let previousSource: 'authored' | 'default' = 'default';
+        try {
+          const rec = await getClaimSpecRecord({
+            cupId: targetBeeId,
+            workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+          });
+          if (rec.source !== 'default') {
+            previousSource = 'authored';
+            previousMatched = (await previewSpecPoolEffect(rec.spec, countScope)).matched;
+          }
+        } catch {
+          /* previous unmeasurable — guard degrades to fresh-spec rules */
+        }
+        poolEffect = { ...current, previousMatched, previousSource };
+        const verdict = evaluateCollapseGuard({
+          matched: current.matched,
+          pool: current.pool,
+          previousMatched,
+          previousSource,
+          confirm: args.confirmCollapse === true,
+        });
+        if (verdict.refuse) {
+          return {
+            data: {
+              ok: false,
+              errors: verdict.errors,
+              admissibilityPreview: { ...admission.preview, checked: true, poolEffect },
+            },
+          };
+        }
+        poolEffectWarning = verdict.warning;
+      } catch (err) {
+        poolEffectError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
     // P-016 (cross-machine-coord-parity): federate the spec when the queen is in a
     // single shared-hive workspace, so a bee pulling on ANOTHER machine sees it.
     // ctx harness wins (a harness-scoped queen); else the workspace's one shared
@@ -449,9 +532,20 @@ export default defineTool({
     // (Skipped for a FLEET target — the sentinel key is not a spawned agent.)
     const spawnedRole = args.fleet ? null : await lookupSpawnedRole(targetBeeId);
     const out: Record<string, unknown> = { ...res };
-    out.admissibilityPreview = admission.preview;
+    out.admissibilityPreview = {
+      ...admission.preview,
+      ...(poolEffect ? { checked: true, poolEffect } : {}),
+      ...(poolEffectError ? { previewError: poolEffectError } : {}),
+    } satisfies ClaimSpecAdmissionPreview;
     if (admission.warning) {
       out.warning = out.warning ? `${out.warning as string}\n${admission.warning}` : admission.warning;
+    }
+    if (poolEffectWarning) {
+      out.warning = out.warning ? `${out.warning as string}\n${poolEffectWarning}` : poolEffectWarning;
+    }
+    if (poolEffectError) {
+      const failOpen = `pool-effect preview failed OPEN (spec stored; collapse guard not evaluated): ${poolEffectError}`;
+      out.warning = out.warning ? `${out.warning as string}\n${failOpen}` : failOpen;
     }
     const roleWarning = args.fleet ? null : claimSpecInertWarning(targetBeeId, spawnedRole);
     if (roleWarning) {

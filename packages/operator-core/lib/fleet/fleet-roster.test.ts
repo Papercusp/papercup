@@ -9,10 +9,12 @@ import { describe, it, expect } from 'vitest';
 import {
   filterPresenceToFleet,
   foldFleetRoster,
+  foldFederatedSessionPresence,
   annotateFleetsWithCounts,
   isBeeRole,
   livePsuFleetMemberIds,
   splitFleetRosterCounts,
+  type FederatedSessionFoldRow,
   type FleetFoldPresence,
 } from './fleet-roster';
 import type { AgentAssignment, WorkListItem } from './assignments';
@@ -94,6 +96,76 @@ const tier1 = (m: Record<string, Partial<PresenceTier1Joins>>): Map<string, Pres
   }
   return out;
 };
+
+// WI-5211 (P-301 follow-through): remote fleet members reach fleet:status via the
+// federated session-presence fold — without it a cross-machine fleet rendered
+// leader-only while its remote members worked.
+describe('foldFederatedSessionPresence (WI-5211 — remote members in the fleet roster)', () => {
+  const sessionRow = (p: Partial<FederatedSessionFoldRow> & { owner_id: string }): FederatedSessionFoldRow => ({
+    kind: 'su',
+    intent: 'working the plan',
+    plan_slug: 'p-drill',
+    github_user_id: 42,
+    machine_label: 'mac-vm',
+    last_seen_ms: NOW - 5_000,
+    fleet_slug: 'atlas',
+    fleet_role: 'member',
+    ...p,
+  });
+
+  it('maps a remote session to a federated fold row carrying its fleet label', () => {
+    const out = foldFederatedSessionPresence([], [sessionRow({ owner_id: 'su-remote-1' })], NOW);
+    expect(out).toHaveLength(1);
+    const r = out[0]!;
+    expect(r.ownerId).toBe('su-remote-1');
+    expect(r.federated).toBe(true);
+    expect(r.fleetSlug).toBe('atlas');
+    expect(r.fleetRole).toBe('member');
+    expect(r.host).toBe('mac-vm');
+    expect(r.agentRole).toBe('su');
+    expect(r.userId).toBe('42');
+    expect(r.stale).toBe(false);
+    // The federated row must survive the fleet filter — that is the whole point.
+    expect(filterPresenceToFleet(out, 'atlas', false)).toHaveLength(1);
+  });
+
+  it('local rows WIN on ownerId collision (the announcer self-applies its own sessions)', () => {
+    const local = [pres({ ownerId: 'su-local-1', fleetSlug: 'atlas', host: 'tower' })];
+    const out = foldFederatedSessionPresence(
+      local,
+      [sessionRow({ owner_id: 'su-local-1', machine_label: 'tower' }), sessionRow({ owner_id: 'su-remote-1' })],
+      NOW,
+    );
+    expect(out).toHaveLength(2);
+    const localRow = out.find((r) => r.ownerId === 'su-local-1')!;
+    expect(localRow.federated).toBeUndefined(); // the local row, untouched
+    expect(localRow.host).toBe('tower');
+    expect(out.find((r) => r.ownerId === 'su-remote-1')!.federated).toBe(true);
+  });
+
+  it('a remote member folds into the fleet roster as an alive presence-only entry', () => {
+    const presence = foldFederatedSessionPresence(
+      [pres({ ownerId: 'su-leader', fleetSlug: 'atlas', fleetRole: 'leader' })],
+      [sessionRow({ owner_id: 'su-remote-1' })],
+      NOW,
+    );
+    const entries = foldFleetRoster(filterPresenceToFleet(presence, 'atlas', false), [], tier1({}), NOW);
+    const remote = entries.find((e) => e.agentId === 'su-remote-1')!;
+    expect(remote).toBeDefined();
+    expect(remote.federated).toBe(true);
+    expect(remote.alive).toBe(true); // fresh heartbeat, no wakeability row → heartbeat-derived
+    expect(remote.sessionState).toBeNull(); // state unknown at the federation boundary
+  });
+
+  it('an aged remote row folds as stale', () => {
+    const out = foldFederatedSessionPresence(
+      [],
+      [sessionRow({ owner_id: 'su-remote-1', last_seen_ms: NOW - 3 * 60 * 60_000 })],
+      NOW,
+    );
+    expect(out[0]!.stale).toBe(true);
+  });
+});
 
 describe('filterPresenceToFleet', () => {
   const rows = [

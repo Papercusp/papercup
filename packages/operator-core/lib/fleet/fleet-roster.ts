@@ -32,6 +32,10 @@ import {
   type WakeabilitySignals,
 } from '../agent-tools/coordination/presence-wakeability';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
+import {
+  listLiveSessionPresence,
+  type SessionPresenceRowOut,
+} from '../sync/hyperbee/session-presence-store';
 import { listFleets, type AgentFleetRecord } from '../agent-fleets-store';
 import { getOrgPg } from '@papercusp/db-org';
 import { withBoundedTimeout } from '../bounded-timeout';
@@ -236,12 +240,66 @@ export interface ListFleetRosterOpts {
   readPresence?: (opts: { workspaceId?: string | null }) => Promise<FleetFoldPresence[]>;
 }
 
+/** The session-presence fields foldFederatedSessionPresence needs — structural
+ *  (a Pick of SessionPresenceRowOut) so the fold unit-tests without the store. */
+export type FederatedSessionFoldRow = Pick<
+  SessionPresenceRowOut,
+  'owner_id' | 'kind' | 'intent' | 'plan_slug' | 'github_user_id' | 'machine_label' | 'last_seen_ms' | 'fleet_slug' | 'fleet_role'
+>;
+
+/**
+ * PURE (WI-5211, the P-301 follow-through): union the LOCAL fleet-fold presence with
+ * FEDERATED session-grain rows (shared_session_presence, mig 479 — they carry the
+ * fleet_slug/fleet_role labels directly). Remote fleet members announce ONLY via the
+ * session-presence gossip, never local coord_presence — without this fold fleet:status
+ * rendered a cross-machine fleet as leader-only while its remote members worked.
+ * Local rows win on ownerId collision (the announcer self-applies its own sessions
+ * into the same shared table); remote rows map with `federated: true`, so
+ * foldFleetRoster's existing federated handling (no Tier-1/wakeability join,
+ * heartbeat-derived alive, null sessionState) applies unchanged.
+ */
+export function foldFederatedSessionPresence(
+  local: FleetFoldPresence[],
+  sessionRows: readonly FederatedSessionFoldRow[],
+  nowMs = Date.now(),
+): FleetFoldPresence[] {
+  const seen = new Set(local.map((p) => p.ownerId));
+  const out = [...local];
+  for (const r of sessionRows) {
+    if (seen.has(r.owner_id)) continue;
+    seen.add(r.owner_id);
+    const iso = new Date(r.last_seen_ms).toISOString();
+    out.push({
+      ownerId: r.owner_id,
+      // Mirrors federated-presence.mapSessionPresenceRow's label shape.
+      ownerLabel: `${r.kind} · ${r.owner_id.slice(0, 8)} @ ${r.machine_label}`,
+      source: 'federated',
+      intent: r.intent ?? '',
+      currentPlanSlug: r.plan_slug ?? null,
+      host: r.machine_label,
+      startedAt: null,
+      heartbeatAt: iso,
+      lastActiveAt: iso,
+      agentRole: r.kind,
+      fleetSlug: r.fleet_slug ?? null,
+      fleetRole: r.fleet_role ?? null,
+      userId: String(r.github_user_id),
+      stale: nowMs - r.last_seen_ms > PRESENCE_STALE_MS,
+      federated: true,
+    });
+  }
+  return out;
+}
+
 /** Default presence source: list local presence and join in the fleet_slug/fleet_role
- *  label (it does not ride the PresenceRecord). */
+ *  label (it does not ride the PresenceRecord), then fold in the FEDERATED
+ *  session-grain rows (remote fleet members — see foldFederatedSessionPresence).
+ *  The federated leg is best-effort: no workspace / a query error contributes
+ *  nothing, so single-box behavior is unchanged. */
 async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): Promise<FleetFoldPresence[]> {
   const records = await listPresence(opts);
   const fleetMap = await fetchPresenceFleet(records.map((r) => r.ownerId));
-  return records.map((r) => {
+  const local = records.map((r) => {
     const f = fleetMap.get(r.ownerId);
     return {
       ownerId: r.ownerId,
@@ -260,6 +318,16 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
       stale: r.stale,
     };
   });
+  if (!opts.workspaceId) return local;
+  try {
+    const sessionRows = await listLiveSessionPresence({
+      workspaceId: opts.workspaceId,
+      staleMs: PRESENCE_STALE_MS,
+    });
+    return foldFederatedSessionPresence(local, sessionRows);
+  } catch {
+    return local; // federated roster unavailable — the local roster always renders
+  }
 }
 
 /** Which fan-out legs of a `listFleetRoster` read were degraded (timed out or

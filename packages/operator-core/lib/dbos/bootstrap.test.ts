@@ -8,7 +8,7 @@
  * DBOS.setConfig/launch).
  */
 import { describe, expect, it, afterEach } from 'vitest';
-import { withDbosIdleTxGrace, resolvePgLaunchRetryMs } from './bootstrap';
+import { withDbosIdleTxGrace, resolvePgLaunchRetryMs, assertSafeDbosAppVersionPartition } from './bootstrap';
 
 describe('withDbosIdleTxGrace', () => {
   const ENV_KEY = 'PAPERCUSP_DBOS_IDLE_IN_TX_TIMEOUT_SEC';
@@ -78,5 +78,44 @@ describe('resolvePgLaunchRetryMs (WI-3619)', () => {
       if (prior === undefined) delete process.env.PAPERCUSP_DBOS_PG_RETRY_MS;
       else process.env.PAPERCUSP_DBOS_PG_RETRY_MS = prior;
     }
+  });
+});
+
+describe('assertSafeDbosAppVersionPartition (EI-90 — 2026-06-08 DBOS appVersion war)', () => {
+  it('throws when armed on the :3170 staging port with no explicit DBOS__APPVERSION override', () => {
+    expect(() =>
+      assertSafeDbosAppVersionPartition({ PAPERCUSP_HONO_PORT: '3170' }),
+    ).toThrow(/refusing to launch/);
+  });
+
+  it('throws even when DBOS__APPVERSION is present but empty (falsy override)', () => {
+    expect(() =>
+      assertSafeDbosAppVersionPartition({ PAPERCUSP_HONO_PORT: '3170', DBOS__APPVERSION: '' }),
+    ).toThrow(/refusing to launch/);
+  });
+
+  it('does NOT throw on :3170 when DBOS__APPVERSION is explicitly overridden', () => {
+    expect(() =>
+      assertSafeDbosAppVersionPartition({
+        PAPERCUSP_HONO_PORT: '3170',
+        DBOS__APPVERSION: 'staging-canary-v1',
+      }),
+    ).not.toThrow();
+  });
+
+  it('does NOT throw on the bg-host / primary port (3270) with no override — only :3170 is guarded', () => {
+    expect(() =>
+      assertSafeDbosAppVersionPartition({ PAPERCUSP_HONO_PORT: '3270' }),
+    ).not.toThrow();
+  });
+
+  it('does NOT throw when PAPERCUSP_HONO_PORT is unset (the default green :3070 host)', () => {
+    expect(() => assertSafeDbosAppVersionPartition({})).not.toThrow();
+  });
+
+  it('the thrown message names the shared/default appVersion so the operator knows what collided', () => {
+    expect(() =>
+      assertSafeDbosAppVersionPartition({ PAPERCUSP_HONO_PORT: '3170' }),
+    ).toThrow(/papercusp-jobs-v1/);
   });
 });

@@ -56,10 +56,17 @@ import {
   setClaimSpec,
   getClaimSpec,
 } from '../../scheduler/claim-spec-store';
-import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
+import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
+import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { listWorkOffers } from '../../p2p/offer-store';
+import { publishSpawnRequest } from '../../p2p/spawn-request-publish';
+import { listFederatedFleetMembers } from '../../sync/hyperbee/session-presence-store';
+import { resolveUsageActor } from '../../harness/usage-actor';
+import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
+import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
 import type { ColorScheme } from '../../console-color-schemes';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
@@ -604,6 +611,105 @@ export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly stri
   };
 }
 
+/**
+ * WI-5211 (cross-machine placement): launch args that have NO effect on a remote
+ * placement — the honoring host owns the spawn shape (its delegated slot pins
+ * model+effort+account; window/carry/display are its machine's business). Listed so
+ * placement:'remote' refuses them loudly instead of silently dropping them.
+ */
+export const REMOTE_PLACEMENT_UNSUPPORTED_ARGS = [
+  'agent',
+  'model',
+  'account',
+  'fromSeats',
+  'seat',
+  'headless',
+  'carry',
+  'display',
+  'perMemberLaunchContext',
+  'profile',
+  'contextSize',
+  'brain',
+  'addDir',
+  'allowSubagents',
+  'extraArgs',
+  'feature',
+  'role',
+  'overrideCapacityClamp',
+] as const;
+
+/** Pure: which explicitly-passed args a placement:'remote' launch must refuse. */
+export function remotePlacementUnsupportedArgs(args: Record<string, unknown>): string[] {
+  return REMOTE_PLACEMENT_UNSUPPORTED_ARGS.filter((k) => args[k] !== undefined);
+}
+
+/** One remote machine's open seat-offer, summarized for distribution. */
+export interface RemoteSeatOfferSummary {
+  publisher: number;
+  offerId: string;
+  host: string | null;
+  seats: number;
+}
+
+export type RemotePlacementDistribution =
+  | { ok: true; allocations: Array<RemoteSeatOfferSummary & { count: number }> }
+  | { ok: false; error: string };
+
+/**
+ * PURE (WI-5211): spread `count` members across the fleet's REMOTE seat-offers.
+ * Deterministic max-spread round-robin — 1 member per machine per round (offers
+ * sorted by host label then offer id), so `count` ≤ machines lands exactly one
+ * member on each of `count` DIFFERENT machines before any machine gets a second;
+ * each offer is bounded by its delegated seat count. Refuses (never clamps) when
+ * `count` exceeds the total delegated remote capacity.
+ */
+export function distributeRemotePlacement(
+  count: number,
+  offers: readonly RemoteSeatOfferSummary[],
+): RemotePlacementDistribution {
+  const usable = offers.filter((o) => o.seats > 0);
+  if (usable.length === 0) {
+    return {
+      ok: false,
+      error:
+        "no open REMOTE seat-offer for this fleet — each contributing machine delegates first (resource:delegate kind:'agent_slot'); this machine's own delegation spawns locally (fromSeats), never via placement:'remote'",
+    };
+  }
+  const capacity = usable.reduce((s, o) => s + o.seats, 0);
+  if (!Number.isSafeInteger(count) || count < 1 || count > capacity) {
+    return {
+      ok: false,
+      error: `count must be 1..${capacity} (the seats delegated across ${usable.length} remote machine${usable.length === 1 ? '' : 's'}: ${usable
+        .map((o) => `${o.host ?? `publisher ${o.publisher}`}=${o.seats}`)
+        .join(', ')}), got ${count}`,
+    };
+  }
+  const sorted = [...usable].sort(
+    (a, b) => (a.host ?? '').localeCompare(b.host ?? '') || a.offerId.localeCompare(b.offerId),
+  );
+  const allocated = new Map<string, number>();
+  let remaining = count;
+  while (remaining > 0) {
+    let progressed = false;
+    for (const o of sorted) {
+      if (remaining === 0) break;
+      const cur = allocated.get(o.offerId) ?? 0;
+      if (cur < o.seats) {
+        allocated.set(o.offerId, cur + 1);
+        remaining -= 1;
+        progressed = true;
+      }
+    }
+    if (!progressed) break; // unreachable given the capacity check — belt and braces
+  }
+  return {
+    ok: true,
+    allocations: sorted
+      .filter((o) => (allocated.get(o.offerId) ?? 0) > 0)
+      .map((o) => ({ ...o, count: allocated.get(o.offerId)! })),
+  };
+}
+
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
@@ -611,13 +717,13 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    'Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way; use cup:spawn only for Mug-supervised cups). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. Author the plan first. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. Linux/macOS/Windows desktop.',
+    "Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. `placement:'remote'` places members on the machines that delegated seats.",
   guidance: {
-    when: 'ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan, visible by default or headless with `headless:true`. Prefer this over hand-building agent commands with capability:terminal.',
+    when: 'ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan. Prefer this over hand-building agent commands with capability:terminal.',
     notWhen:
       'Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for background cups (cup:spawn), plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
-      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional — plan items become claimable work-items only through it; skipped, the fleet launches onto an empty backlog (this tool backstops it idempotently). As leader, loop:arm a lean monitor; avoid polling full rosters every wake.',
+      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED — items become claimable only through it; skipped, the fleet launches onto an empty backlog; backstopped idempotently here) → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor; avoid polling full rosters every wake.',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
@@ -648,6 +754,12 @@ export default defineTool({
       .max(MAX_MEMBERS)
       .optional()
       .describe(`Number of member terminals to open (default 1, max ${MAX_MEMBERS}).`),
+    placement: z
+      .enum(['local', 'remote'])
+      .optional()
+      .describe(
+        "Where members run (default 'local': this machine, exactly as before). 'remote' places members on the OTHER machines that delegated agent_slot seats to this fleet (their federated seat-offers): `count` is spread round-robin across those machines — 1 per machine first, so count 2 across 2 machines lands 1 member on EACH — publishing one SIGNED spawn-request per target (the fleet:request_remote_spawn chain, which stays the single-target/explicit-pick door). ASYNC: members arrive only after each host's owner-authority accept-delegated-seats gate admits the request (a gate-off host lets it expire after 60 min); watch arrivals via fleet:status / coord:presence, refusals via p2p:trace. Each machine's delegated slot pins the member's model+effort+account and the host owns the window shape, so agent/model/account/seat/headless/carry/display/per-member-brief args are REFUSED with 'remote'; `launchContext` still applies (sent as brief text, ≤8000 chars).",
+      ),
     headless: z
       .boolean()
       .optional()
@@ -822,6 +934,20 @@ export default defineTool({
       );
     }
 
+    // WI-5211 cross-machine placement: the honoring hosts own the spawn shape, so
+    // every local-shape arg is refused loudly rather than silently dropped.
+    const remotePlacement = args.placement === 'remote';
+    if (remotePlacement) {
+      const unsupported = remotePlacementUnsupportedArgs(args as Record<string, unknown>);
+      if (unsupported.length) {
+        return err(
+          `placement:'remote' spawns on the honoring machines — each delegated slot pins model+effort+account and the host owns the window/carry shape, so these args have no effect there and are refused: ${unsupported.join(
+            ', ',
+          )}. Drop them (name/plan/count/launchContext/claimKinds still apply).`,
+        );
+      }
+    }
+
     // Harness scope: explicit arg, else the session's scope (never the '*' wildcard).
     const ctxSlug = (ctx as { harnessSlug?: string | null }).harnessSlug;
     const harness = args.harness?.trim() || (ctxSlug && ctxSlug !== '*' ? ctxSlug : null);
@@ -976,7 +1102,26 @@ export default defineTool({
     // the boot gap before they do. A read failure never blocks a launch (fail open to the window).
     let liveMembers = 0;
     try {
-      liveMembers = (await liveFleetMemberIds(fleetSlug, workspaceId)).filter((id) => id !== ownerId).length;
+      const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId)).filter((id) => id !== ownerId);
+      let live = localLive;
+      if (remotePlacement) {
+        // WI-5211: remote members never register in LOCAL coord_presence — they announce
+        // via session-presence gossip (shared_session_presence, mig 479). Without this
+        // union a remote re-call always sees liveMembers=0 and publishes a whole second
+        // wave onto the other machines. Best-effort: federated roster unavailable ⇒ the
+        // local count alone (the relaunch window still guards the double-fire case).
+        try {
+          const federated = await listFederatedFleetMembers({
+            workspaceId,
+            fleetSlug,
+            staleMs: PRESENCE_STALE_MS,
+          });
+          live = [...new Set([...localLive, ...federated.map((m) => m.ownerId)])].filter((id) => id !== ownerId);
+        } catch {
+          live = localLive;
+        }
+      }
+      liveMembers = live.length;
     } catch {
       liveMembers = 0;
     }
@@ -1013,6 +1158,224 @@ export default defineTool({
     // Only the DEFICIT opens — a leader asking for 2 with 1 alive gets 1, never a stacked 3.
     let openCount = count - liveMembers;
     const requestedOpenCount = openCount;
+
+    // ── WI-5211 REMOTE placement: distribute the deficit across the OTHER machines'
+    // federated seat-offers — one signed spawn-request per target machine (composing
+    // the fleet:request_remote_spawn chain), so ONE call places members on EVERY
+    // contributing machine. The local capacity clamp is skipped by design: the
+    // members burn the HONORING hosts' capacity, and each host's honor path re-checks
+    // its own seat caps (delegated-spawn-honor gates 4/5) before spawning.
+    if (remotePlacement) {
+      const scope = await resolveWorkspaceHiveScope(workspaceId);
+      if (scope.kind !== 'one') {
+        return err(
+          `seat-offers federate over the ONE shared hive and this workspace has ${scope.kind === 'none' ? 'none' : 'several'} — cross-machine placement needs a single shared hive`,
+        );
+      }
+      // This machine's OWN delegation must never receive a spawn-request (the honor
+      // hook fires only on REMOTE apply — a self-request would sit forever), so
+      // identify self and exclude own offers. Best-effort: identity unavailable ⇒
+      // no pre-filter; publishSpawnRequest's self-target guard still backstops.
+      let selfGithubUserId: number | null = null;
+      let selfDevicePubkey: string | null = null;
+      try {
+        const actor = await resolveUsageActor();
+        if (actor) {
+          selfGithubUserId = actor.githubUserId;
+          const keypair = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(actor.githubUserId));
+          selfDevicePubkey = keypair.pubkeyBase64;
+        }
+      } catch {
+        selfGithubUserId = null;
+        selfDevicePubkey = null;
+      }
+      let seatOffers;
+      try {
+        seatOffers = await listWorkOffers(workspaceId, scope.homeSlug, {
+          fleetSlug,
+          kind: 'seat',
+          status: 'open',
+        });
+      } catch (e: any) {
+        return err(`Failed to list the fleet's federated seat-offers: ${e?.message ?? e}`);
+      }
+      const remoteOffers: RemoteSeatOfferSummary[] = seatOffers
+        .filter((o) => !o.localDisposition)
+        .filter(
+          (o) =>
+            !(
+              selfGithubUserId != null &&
+              selfDevicePubkey != null &&
+              o.publisherGithubUserId === selfGithubUserId &&
+              o.signerDevicePubkey === selfDevicePubkey
+            ),
+        )
+        .map((o) => ({
+          publisher: o.publisherGithubUserId,
+          offerId: o.offerId,
+          host: o.record?.seat?.hostLabel ?? null,
+          seats: o.record?.seat?.count ?? 0,
+        }));
+      const dist = distributeRemotePlacement(openCount, remoteOffers);
+      if (!dist.ok) return err(dist.error);
+
+      // The remote brief travels as TEXT inside the signed request; the honoring host
+      // composes it under the member baseline itself (delegated-spawn-honor).
+      let remoteBriefText: string | null = null;
+      if (args.launchContext?.trim()) {
+        try {
+          remoteBriefText = readFileSync(args.launchContext.trim(), 'utf8');
+        } catch (e: any) {
+          return err(`Could not read launchContext \`${args.launchContext}\` for the remote brief: ${e?.message ?? e}`);
+        }
+        if (remoteBriefText.length > 8000) {
+          return err(
+            `launchContext is ${remoteBriefText.length} chars — a remote spawn-request brief is capped at 8000 (the member baseline is composed on the honoring host regardless). Trim the brief.`,
+          );
+        }
+      }
+
+      // Same atomic idempotency guard as a local wave: a re-fired call must not publish
+      // a SECOND set of signed spawn-requests — each fresh request re-spawns on its
+      // target host once honored.
+      let remoteSlot;
+      try {
+        remoteSlot = await claimFleetLaunchSlot({
+          workspaceId,
+          fleetSlug,
+          count: openCount,
+          windowMs: RELAUNCH_SUPPRESS_MS,
+        });
+      } catch (e: any) {
+        return err(`Failed to check the fleet's launch guard: ${e?.message ?? e}`);
+      }
+      if (!remoteSlot.won) {
+        const agoS = Math.max(1, Math.round((Date.now() - remoteSlot.priorAt) / 1000));
+        return json({
+          ok: true,
+          fleet: fleetSlug,
+          leaderRole,
+          plan: args.plan,
+          harness,
+          placement: 'remote',
+          requested: count,
+          liveMembers,
+          claimSpecApplied,
+          remotePlacements: [],
+          failedPlacements: [],
+          relaunchSuppressed: true,
+          message:
+            `Fleet \`${fleetSlug}\` was already launched ${agoS}s ago (possibly by this very session) — NO new spawn-requests were published. ` +
+            'Remote members arrive ASYNC (federation + the honor gate + spawn + presence can take minutes): watch fleet:status / coord:presence before re-requesting.',
+        });
+      }
+
+      const remotePlacements: Array<{
+        publisher: number;
+        offer: string;
+        host: string | null;
+        count: number;
+        requestOfferId: string;
+      }> = [];
+      const failedPlacements: Array<{
+        publisher: number;
+        offer: string;
+        host: string | null;
+        count: number;
+        error: string;
+      }> = [];
+      for (const alloc of dist.allocations) {
+        const res = await publishSpawnRequest({
+          workspaceId,
+          fleetSlug,
+          targetPublisherGithubUserId: alloc.publisher,
+          targetOfferId: alloc.offerId,
+          count: alloc.count,
+          planSlug: args.plan,
+          requesterOwnerId: ownerId,
+          launchContext: remoteBriefText,
+        });
+        if (res.ok) {
+          remotePlacements.push({
+            publisher: alloc.publisher,
+            offer: alloc.offerId,
+            host: alloc.host,
+            count: alloc.count,
+            requestOfferId: res.stored.offerId,
+          });
+        } else {
+          failedPlacements.push({
+            publisher: alloc.publisher,
+            offer: alloc.offerId,
+            host: alloc.host,
+            count: alloc.count,
+            error: 'skipped' in res ? res.skipped : res.error,
+          });
+        }
+      }
+      if (remotePlacements.length === 0) {
+        try {
+          await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: remoteSlot.at });
+        } catch {
+          /* the guard self-heals when the window elapses */
+        }
+      }
+
+      const placedTotal = remotePlacements.reduce((s, p) => s + p.count, 0);
+      const lines: string[] = [];
+      if (promotionFailsafe?.ran && promotionFailsafe.promoted > 0) {
+        lines.push(
+          `⚠ plans:start had not promoted this plan — the launch FAILSAFE auto-promoted ${promotionFailsafe.promoted} plan item${promotionFailsafe.promoted === 1 ? '' : 's'} to claimable work-items. Run plans:start yourself BEFORE launching next time.`,
+        );
+      }
+      lines.push(
+        remotePlacements.length
+          ? `Published ${placedTotal} REMOTE member placement${placedTotal === 1 ? '' : 's'} for fleet \`${fleetSlug}\` on plan \`${args.plan}\` across ${remotePlacements.length} machine${remotePlacements.length === 1 ? '' : 's'}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}:`
+          : `No remote placements were published for fleet \`${fleetSlug}\`.`,
+      );
+      for (const p of remotePlacements) {
+        lines.push(
+          `  • ${p.host ?? `publisher ${p.publisher}`}: ${p.count} member${p.count === 1 ? '' : 's'} — spawn-request ${p.requestOfferId}`,
+        );
+      }
+      if (failedPlacements.length) {
+        lines.push(`${failedPlacements.length} placement${failedPlacements.length === 1 ? '' : 's'} failed:`);
+        for (const f of failedPlacements) {
+          lines.push(`  • ${f.host ?? `publisher ${f.publisher}`} (${f.offer}): ${f.error}`);
+        }
+      }
+      if (remotePlacements.length) {
+        lines.push(
+          'ASYNC contract: each signed request federates on the next sync tick; a target spawns ONLY if its owner enabled accept-delegated-seats (otherwise the request expires after 60 min — agree with that machine\'s owner first). Watch members arrive via fleet:status / coord:presence (federated session presence carries the fleet label); a refusal federates back as a p2p receipt (p2p:trace with the requestOfferId).',
+        );
+        lines.push(
+          'NOTE: the fleet claim spec set here is MACHINE-LOCAL — remote members pull work-items under their own machine\'s spec (default order, scoped by the pot floor). The plan\'s promoted work-items federate, so they still land on this plan.',
+        );
+        lines.push(LEADER_AUTO_MODE_DIRECTIVE);
+        LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      }
+
+      return json(
+        {
+          ok: remotePlacements.length > 0,
+          fleet: fleetSlug,
+          leaderRole,
+          autoModeEntered: remotePlacements.length > 0,
+          plan: args.plan,
+          harness,
+          placement: 'remote',
+          requested: count,
+          liveMembers,
+          requestedOpenCount,
+          claimSpecApplied,
+          promotionFailsafe,
+          remotePlacements,
+          failedPlacements,
+          message: lines.join('\n'),
+        },
+        remotePlacements.length === 0,
+      );
+    }
 
     let capacityClamp: FleetLaunchCapacityClamp | null = null;
     let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
