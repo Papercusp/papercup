@@ -726,3 +726,160 @@ describe('reconcileLoopRoutines — WI-2714 quick-retry leg (recover-then-escala
     }
   });
 });
+
+describe('reconcileLoopRoutines — ARMED-loop reachability sweep (EI-11407)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+  const TERMINAL_WINDOW_MS = 2 * 3600_000; // DEFAULT_TERMINAL_UNREACHABLE_MS (60s interval floors to this)
+
+  /** An ARMED (not parked, not cron) pure loop that has already fired + settled once. */
+  function armedRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'rt-armed',
+      target_owner_id: 'su-armed-owner',
+      interval_sec: 60,
+      parked: false,
+      is_cron: false,
+      install_slug: 'papercusp',
+      name: 'loop-su-armed',
+      routine_workspace_id: 'ws-papercusp',
+      last_fired_at: pgString(T0),
+      lifecycle_completed_at: null,
+      lifecycle_started_at: null,
+      presence_last_active_at: null,
+      ...overrides,
+    };
+  }
+
+  it('an ARMED loop well within the terminal window is left alone — the guard is never even consulted', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const guard = vi.fn(async () => ({ breach: true, reason: 'should-not-be-called' }));
+    const sql = fakeSql([armedRow()], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 3600_000, // 1h — under the 2h terminal window
+      recordFire,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(guard).not.toHaveBeenCalled();
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(0); // an armed loop is never rebased — nothing to fold
+    expect(updates).toHaveLength(0);
+  });
+
+  it('an ARMED loop past the terminal window with an UNREACHABLE owner is TERMINATED (not re-armed) — full WI-2339 D+E side effects fire', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const cancelInboxWake = vi.fn(async () => 1);
+    const escalateDeadLoop = vi.fn(async () => {});
+    const guard = vi.fn(async () => ({ breach: true, reason: 'dead-owner: unreachable (armed, EI-11407)' }));
+    const sql = fakeSql([armedRow()], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + TERMINAL_WINDOW_MS + 1_000, // just past the 2h terminal window
+      recordFire,
+      checkUnreachableTerminalGuard: guard,
+      cancelInboxWake,
+      escalateDeadLoop,
+    });
+
+    expect(res.terminated).toEqual([
+      { id: 'rt-armed', targetOwnerId: 'su-armed-owner', reason: 'dead-owner: unreachable (armed, EI-11407)' },
+    ]);
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0); // no rebase UPDATE — the guard's autoPause deactivated it directly
+    // The guard's fire-count floor is pre-satisfied (no discrete fire-attempt streak exists for
+    // an armed loop) and circuitOpen is always false on this leg.
+    expect(guard).toHaveBeenCalledWith(
+      expect.objectContaining({ routineId: 'rt-armed', targetOwnerId: 'su-armed-owner', circuitOpen: false }),
+    );
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-armed', 'loop-terminal-unreachable', 'error');
+    expect(cancelInboxWake).toHaveBeenCalledWith('su-armed-owner', 'ws-papercusp');
+    expect(escalateDeadLoop).toHaveBeenCalledWith(
+      expect.objectContaining({ routineId: 'rt-armed', targetOwnerId: 'su-armed-owner' }),
+    );
+  });
+
+  it('an ARMED loop past the terminal window whose owner IS reachable is left armed (guard declines, no termination, no rearm)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const guard = vi.fn(async () => ({ breach: false }));
+    const sql = fakeSql([armedRow()], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + TERMINAL_WINDOW_MS + 1_000,
+      recordFire,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(guard).toHaveBeenCalled();
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(0); // armed loops are never rebased by this sweep regardless
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('dwell is measured from the LATEST known-alive evidence — recent presence activity after the fire resets the clock', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const guard = vi.fn(async () => ({ breach: true, reason: 'should-not-be-called-yet' }));
+    // Activity 30min after the fire — the real dwell floor is THIS, not last_fired_at.
+    const sql = fakeSql([armedRow({ presence_last_active_at: pgString(T0 + 1800_000) })], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 1800_000 + TERMINAL_WINDOW_MS - 1_000, // just under 2h since the LATEST activity
+      recordFire,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(guard).not.toHaveBeenCalled(); // still within the window measured from the later timestamp
+    expect(res.terminated).toEqual([]);
+  });
+
+  it('an armed CRON+loop is UNCHANGED by this sweep — is_cron:true skips the new branch entirely', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const guard = vi.fn(async () => ({ breach: true, reason: 'should-not-be-called-for-cron' }));
+    const sql = fakeSql([armedRow({ is_cron: true })], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + TERMINAL_WINDOW_MS + 1_000, // well past the window — would trip the armed-pure-loop leg
+      recordFire,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    // Falls through to the pre-existing cron+loop handling: no completion signal and not parked
+    // → looksDeadOrStuck is false (parked required) → skipped exactly as before this change.
+    expect(guard).not.toHaveBeenCalled();
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(0);
+  });
+
+  it('a guard failure on the armed-loop sweep is fail-soft — the loop is left armed, never throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const guard = vi.fn(async () => {
+      throw new Error('probe read failed');
+    });
+    const sql = fakeSql([armedRow()], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + TERMINAL_WINDOW_MS + 1_000,
+      recordFire,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(0);
+  });
+});

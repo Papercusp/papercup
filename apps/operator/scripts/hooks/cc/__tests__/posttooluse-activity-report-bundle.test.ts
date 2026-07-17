@@ -21,7 +21,7 @@
  *     null so the NEXT call retries a full hydrate instead of wrongly believing it is
  *     caught up.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runHookProcess } from './spawn-hook';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -43,6 +43,7 @@ beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), 'cchook-actbundle-home-'));
   fs.mkdirSync(join(home, '.papercusp'), { recursive: true });
   fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token\n');
+  cache = fs.mkdtempSync(join(os.tmpdir(), 'cchook-actbundle-cache-'));
 
   server = createServer((req, res) => {
     let body = '';
@@ -68,12 +69,15 @@ afterAll(async () => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-afterEach(() => {
+beforeEach(() => {
   nextResult = { ok: true, id: 1 };
   lastRequest = null;
   requestCount = 0;
-  if (fs.existsSync(cache)) fs.rmSync(cache, { recursive: true, force: true });
   cache = fs.mkdtempSync(join(os.tmpdir(), 'cchook-actbundle-cache-'));
+});
+
+afterEach(() => {
+  if (cache && fs.existsSync(cache)) fs.rmSync(cache, { recursive: true, force: true });
 });
 
 async function run(
