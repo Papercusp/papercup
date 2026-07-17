@@ -336,16 +336,34 @@ export async function ensureSendSideWired(
   const wireOutbox = deps.wireOutbox ?? defaultWireOutbox;
   const wirePresence = deps.wirePresence ?? defaultWirePresence;
 
+  // EI-13917: unmark-only (the pre-existing behavior) leaves a step un-wired
+  // until SOME unrelated future trigger happens to call `ensureSendSideWired`
+  // again for this exact harness — which may be arbitrarily delayed (or, for a
+  // harness with no other natural boot-all trigger, may not happen again for a
+  // long time). Immediately re-attempt wiring against a FRESH handle/client
+  // right after unmarking, mirroring the existing `onSwarmJoinRecovered`
+  // re-wire pattern in `bootSingleHarness` below. Fire-and-forget + best-effort
+  // (the caller is a failed loop's own self-stop callback — it must never
+  // throw or block on this). A no-op if `handle` was since evicted (`h` null)
+  // or already re-wired by the time this runs.
+  const rewireSoon = (step: 'outbox' | 'presence', reason?: string): void => {
+    markSendSideUnwired(k, step, reason);
+    const h = handles.get(k);
+    if (h) void ensureSendSideWired(h, deps).catch(() => {});
+  };
+
   const run = (async () => {
     // (1) Outbox drain — the critical federation send-side (EI-521). Best-effort
     //     so a failure never blocks boot, but RETRYABLE: only marked wired on
     //     success, so the next boot pass re-attempts it. WI-3684: also passed an
     //     `onSessionClosed` hook — fired by the drain loop itself if it later
-    //     self-stops on a permanently closed own-log session, so THIS successful
-    //     wiring doesn't stay marked "done" forever once its loop has died.
+    //     self-stops on a permanently closed own-log session (or, EI-13917, a
+    //     permanently CONNECTION_ENDED PG client) — `rewireSoon` un-marks AND
+    //     immediately re-attempts, so THIS successful wiring doesn't stay
+    //     silently dead until some unrelated trigger happens to reconcile it.
     if (!outboxWired.has(k)) {
       try {
-        await wireOutbox(handle, () => markSendSideUnwired(k, 'outbox'));
+        await wireOutbox(handle, () => rewireSoon('outbox'));
         outboxWired.add(k);
       } catch (e) {
 
@@ -358,11 +376,11 @@ export async function ensureSendSideWired(
     }
     // (2) Presence announce — additive (the per-Hive lock authority, P-009,
     //     elects over the live roster). Same retryable best-effort posture (+ the
-    //     same WI-3684 onSessionClosed hook); a no-op for a private/unswarmed
+    //     same WI-3684/EI-13917 rewireSoon hook); a no-op for a private/unswarmed
     //     harness (handle.swarm null).
     if (!presenceWired.has(k)) {
       try {
-        await wirePresence(handle, () => markSendSideUnwired(k, 'presence'));
+        await wirePresence(handle, () => rewireSoon('presence'));
         presenceWired.add(k);
       } catch (e) {
 

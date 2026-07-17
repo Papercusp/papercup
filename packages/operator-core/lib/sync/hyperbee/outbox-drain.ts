@@ -739,6 +739,13 @@ export interface StartDrainOptions {
    * likewise reacts to a dead session instead of retrying it. Best-effort:
    * called AFTER this drain has already stopped itself, so a throwing/slow
    * callback can't wedge the drain loop.
+   *
+   * EI-13917: ALSO fired on a `CONNECTION_ENDED` postgres.js error
+   * (`isConnectionEndedError`, this module) — the SAME "permanently dead
+   * handle, self-stop + re-wire fresh" posture, just for a killed PG client
+   * instead of a killed Hypercore session (e.g. connection.ts invalidating +
+   * rebuilding the shared client after a discovery-file URL change, while this
+   * drain's closure still held the old, now-ended one).
    */
   onSessionClosed?: () => void;
   /** Test seam: intercept ALL detector escalations (default = durable EI via
@@ -1192,6 +1199,29 @@ export function startOutboxDrain(
           `[outbox-drain] own-log session for ${wantPayload} is SESSION_CLOSED — ` +
             `stopping this drain (no further ${pollMs}ms retries against the dead session); ` +
             `signaling for a re-wire`,
+        );
+        await stopInternal();
+        try {
+          opts.onSessionClosed?.();
+        } catch {
+          // best-effort — a throwing callback must never surface from here
+        }
+      } else if (isConnectionEndedError(e)) {
+        // EI-13917: the shared PG client this closure was handed is now
+        // permanently ENDED (connection.ts rebuilt it elsewhere — e.g. a
+        // discovery-file URL change — and this drain never re-resolves its
+        // reference). Every future pass on `pg` would fail the SAME way
+        // forever (the live incident: 600x/min for 4.5min until a manual
+        // process restart). Self-stop instead of blind-retrying the dead
+        // handle, and reuse the EXACT same re-wire path WI-3684 built for a
+        // permanently-closed hypercore session: `onSessionClosed` un-marks
+        // this harness's outbox wiring so the next `ensureSendSideWired` call
+        // re-wires a FRESH drain against a freshly-resolved `getOrgPg().sql`.
+        console.error(
+          `[outbox-drain] PG client for ${wantPayload} is CONNECTION_ENDED (EI-13917 class — the ` +
+            `shared client was invalidated out from under this drain, e.g. by a discovery-file URL ` +
+            `change) — stopping this drain (no further ${pollMs}ms retries against the dead client); ` +
+            `signaling for a re-wire against the current client`,
         );
         await stopInternal();
         try {
