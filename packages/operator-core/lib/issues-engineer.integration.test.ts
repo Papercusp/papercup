@@ -24,7 +24,7 @@ import {
   PgLinkStore,
   PgTopicStore,
 } from '@papercusp/coordination/capabilities';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from './../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from './../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -137,6 +137,11 @@ beforeAll(async () => {
   process.env.PAPERCUSP_WORKSPACE_ID = PINNED_WS; // see PINNED_WS note above
   db = await createFreshPgDb('engineer-issues');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // WI-5267: mirrorWorkItemBlockingEdge (dbos/work-item-deps-store.ts) writes to
+  // harness_shared.work_item_deps on any blocking-edge test path — this file never
+  // applied the DDL for it (unlike the sibling work-items-claim-issue-scope-reread
+  // .integration.test.ts, which does), so those paths hit "relation … does not exist".
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);

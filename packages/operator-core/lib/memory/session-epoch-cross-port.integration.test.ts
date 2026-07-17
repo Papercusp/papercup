@@ -42,9 +42,22 @@ const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const SID = `sid-cross-port-${Date.now()}`;
 
-/** The stamp is fire-and-forget — poll the real table until it lands. */
+/**
+ * The stamp is fire-and-forget — poll the real table until it lands.
+ *
+ * WI-5255 (de-quarantine, flipRate 0.375): the original 40*50ms=2s budget was
+ * far too tight against the SHARED dev PG under fleet load — the quarantine
+ * history shows this class of failure is consistently a hook/poll-timeout
+ * racing concurrent writes from other agents, never a wrong assertion (see
+ * WI-5189's note on the sibling flake). The test-level budget here is the
+ * 90s integration testTimeout (vitest-config.ts); poll for up to 20s (200 *
+ * 100ms), leaving ample headroom under that ceiling instead of a tight 2s
+ * window that a load spike blows through routinely.
+ */
 async function waitForStamps(sql: (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>, n: number): Promise<void> {
-  for (let i = 0; i < 40; i++) {
+  const maxAttempts = 200;
+  const intervalMs = 100;
+  for (let i = 0; i < maxAttempts; i++) {
     const rows = (await (sql as never as (
       s: TemplateStringsArray, ...v: unknown[]
     ) => Promise<Array<{ n: number }>>)`
@@ -52,9 +65,9 @@ async function waitForStamps(sql: (s: TemplateStringsArray, ...v: unknown[]) => 
       WHERE session_id = ${SID}
     `) as Array<{ n: number }>;
     if ((rows[0]?.n ?? 0) >= n) return;
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(`stamps for ${SID} never reached ${n}`);
+  throw new Error(`stamps for ${SID} never reached ${n} after ${(maxAttempts * intervalMs) / 1000}s`);
 }
 
 describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
