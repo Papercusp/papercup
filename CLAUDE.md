@@ -197,6 +197,16 @@ work in the tree. Merge conflicts go to a `merge-resolver` agent, not you. From
 auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
+> ⚠ **`git blame` on this repo never tells you who wrote a change — never trust it
+> for attribution, especially in an escalation.** git-sync commits the whole tree
+> under one identity, so blame is a false-positive generator, not a dead end —
+> trusting it once sent a false blocker accusation to the owner ("confirmed by git
+> blame: YOUR migration") for an agent's own incomplete work (WI-5111). Recover
+> authorship from the commissioning work-item/plan-item or a timestamp-correlated
+> `sessions:search`; if neither resolves, say "not attributable" — never name a
+> person. Full runbook:
+> [attributing-a-change-despite-git-sync-squash](/internal/docs/agent-insights/attributing-a-change-despite-git-sync-squash).
+
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
 > `git clean -fd`, not `git stash`. The tree is edited CONCURRENTLY by the whole

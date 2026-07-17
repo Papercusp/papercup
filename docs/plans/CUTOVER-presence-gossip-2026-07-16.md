@@ -3,7 +3,14 @@
 **Plan:** `p2p-parity-closeout-lanes-2026-07-10` · item **P-007** (presence-gossip cutover).
 **Author:** su-18f2f (coordination lane, [owner:Avi 2026-07-16 "you are in charge of the
 coordination features only … work on this plan from start to finish"]).
-**Status: FLIPPED + MOSTLY-VERIFIED (2026-07-17 ~02:55Z, su-18f2f) — see live scoreboard below.**
+**Status: COMPLETE — GREEN (2026-07-17 04:00Z, su-18f2f). ALL 5 parity surfaces proven live
+on the tower↔VM rig; PRESENCE_GOSSIP + HRW both flipped ON in both stores AND graduated in
+code; V4 30-min no-dupe soak PASSED (VM 7/7 samples clean, tower 0 dupe groups, freshness
+≤26s both directions); GREEN verdict delivered to su-4d3eb (msg mroesq7i…); fleet hold
+released. Follow-ups filed: EI-13307 (bg-host restart coalescing — helper cup implementing),
+EI-13317 (swarm rejoin failure, critical — agent-insights doc written). Post-cutover test
+pin: hive-two-peer-federation.test.ts now pins its log-append leg via the new
+`presenceGossip` seam in WirePresenceOpts (the gate red su-05b41 reported, fixed 00:02 EDT).**
 
 ## LIVE drill scoreboard (2026-07-17 02:55Z — su-18f2f, mid-drill carry)
 
