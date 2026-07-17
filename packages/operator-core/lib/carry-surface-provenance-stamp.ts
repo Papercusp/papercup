@@ -40,6 +40,15 @@ import {
 /** IO budget for the transcript reads — a stamp is advisory; the write is not. */
 export const STAMP_IO_BUDGET_MS = 3_000;
 
+/** EI-12890: shown when a [turn:…] ref resolved to a real turn but the quote
+ *  attached to it does not appear in that turn's actual recorded text. */
+export const QUOTE_MISMATCH_NOTE =
+  'provenance_lint: a [turn:<session>@<ts>] ref resolved to a REAL recorded turn, but the quoted claim next to ' +
+  'it does NOT appear in that turn\'s actual text — a resolvable ref is necessary but not sufficient; the words ' +
+  'must match too. This is the exact fabrication shape from EI-12890 (a compaction summary fused two unrelated ' +
+  'turns into one stronger directive and re-stamped it at the wrong turn). Re-read the cited turn verbatim ' +
+  "(sessions:search { mode:'verbatim' } or dev:claude_session) before treating the claim as authorized.";
+
 export interface CarryProvenanceStamp {
   /** The pure lint result (unchanged shape) — absent when clean. */
   lint?: { flagged: true; note: string; matches: ProvenanceLintMatch[] };
@@ -50,6 +59,38 @@ export interface CarryProvenanceStamp {
   refs?: TurnRefVerdict[];
   /** The system's classification of the turn this write happened during. */
   writtenDuring?: CurrentTurnStamp;
+}
+
+/**
+ * EI-12890 guard-defeat fix: a resolvable [turn:…] ref exempts its line from
+ * the sync lint (TURN_REF_LINE_RE, carry-surface-provenance-lint.ts) on the
+ * assumption it is "mechanically verifiable" — but a ref resolving to a REAL
+ * turn whose text does not contain the quote attached to it is exactly the
+ * fabricated-citation shape that defeated the guard live (a compaction summary
+ * fused two unrelated turns into one stronger directive and re-stamped it at
+ * the wrong turn's timestamp). Fold any such mismatch into `lint` so it
+ * surfaces in the SAME flagged/matches shape a consumer already checks,
+ * instead of requiring a separate turnProvenance.refs[].quoteMatch read that
+ * nothing currently makes anyone perform. Pure — no IO — so it's unit-testable
+ * without a transcript fixture; `verified` is `[]` whenever ownerId was absent
+ * or the transcript legs were skipped/timed out.
+ */
+export function mergeQuoteMismatchesIntoLint(
+  lint: { flagged: true; note: string; matches: ProvenanceLintMatch[] } | undefined,
+  verified: TurnRefVerdict[],
+): { flagged: true; note: string; matches: ProvenanceLintMatch[] } | undefined {
+  const quoteMismatches: ProvenanceLintMatch[] = verified
+    .filter((v) => v.found && v.quote && v.quoteMatch === false)
+    .map((v) => ({
+      line: `${v.ref}: claimed "${v.quote}" — NOT found in the referenced turn's actual text (snippet: ${v.snippet ?? ''})`.slice(0, 400),
+      kind: 'quote-mismatch' as const,
+    }));
+  if (!lint && !quoteMismatches.length) return undefined;
+  return {
+    flagged: true,
+    note: quoteMismatches.length ? QUOTE_MISMATCH_NOTE : lint!.note,
+    matches: [...(lint?.matches ?? []), ...quoteMismatches],
+  };
 }
 
 /**
@@ -86,7 +127,8 @@ export async function stampCarrySurfaceProvenance(
   }
 
   const stamp: CarryProvenanceStamp = {};
-  if (lint) stamp.lint = lint;
+  const mergedLint = mergeQuoteMismatchesIntoLint(lint, verified);
+  if (mergedLint) stamp.lint = mergedLint;
   if (slotLint) stamp.slotLint = slotLint;
   if (verified.length) stamp.refs = verified;
   if (writtenDuring) stamp.writtenDuring = writtenDuring;

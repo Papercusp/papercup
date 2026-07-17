@@ -39,6 +39,10 @@ export interface TurnRef {
   ts: string;
   /** The literal matched text (for echoing back in verdicts). */
   raw: string;
+  /** EI-12890: the quoted directive text found adjacent to the ref in the
+   *  carrying prose (e.g. `[turn:…]: "now get our release out"`), if any.
+   *  Present only when a quote was actually found next to this ref. */
+  quote?: string;
 }
 
 export function formatTurnRef(sessionId: string, tsIso: string): string {
@@ -47,6 +51,28 @@ export function formatTurnRef(sessionId: string, tsIso: string): string {
 
 /** Global by design — a carry note can cite several turns. */
 const TURN_REF_RE = /\[turn:([0-9a-f]{4,36})@([0-9T:.+Z-]{10,40})\]/gi;
+
+/** How far around a `[turn:…]` ref to look for its associated quoted claim —
+ *  wide enough to span a trailing "owner-typed]: " label, narrow enough that
+ *  an unrelated quote elsewhere in a long carry note doesn't get attributed
+ *  to the wrong ref. */
+const QUOTE_WINDOW_CHARS = 200;
+
+/** The first double-quoted run found in the window around a ref. Heuristic —
+ *  this is an advisory lint, not a parser for a fixed grammar; a carry note
+ *  format that doesn't co-locate ref and quote simply yields no quote (never
+ *  a wrong one, since we only take the run immediately adjacent). */
+function findAdjacentQuote(text: string, matchStart: number, matchEnd: number): string | undefined {
+  const before = text.slice(Math.max(0, matchStart - QUOTE_WINDOW_CHARS), matchStart);
+  const after = text.slice(matchEnd, matchEnd + QUOTE_WINDOW_CHARS);
+  // Prefer a quote AFTER the ref (`[turn:…]: "…"` is the documented convention);
+  // fall back to one immediately before it (`"…" [turn:…]`).
+  const afterMatch = after.match(/^\s*[:\]]*\s*"([^"]{3,600})"/);
+  if (afterMatch) return afterMatch[1];
+  const beforeMatches = [...before.matchAll(/"([^"]{3,600})"/g)];
+  const last = beforeMatches[beforeMatches.length - 1];
+  return last ? last[1] : undefined;
+}
 
 export function parseTurnRefs(text: string | null | undefined): TurnRef[] {
   if (!text) return [];
@@ -57,9 +83,29 @@ export function parseTurnRefs(text: string | null | undefined): TurnRef[] {
     // append joining two sections) needs one verdict, not two.
     if (seen.has(m[0])) continue;
     seen.add(m[0]);
-    out.push({ sessionPrefix: m[1].toLowerCase(), ts: m[2], raw: m[0] });
+    const quote = findAdjacentQuote(text, m.index ?? 0, (m.index ?? 0) + m[0].length);
+    out.push({ sessionPrefix: m[1].toLowerCase(), ts: m[2], raw: m[0], ...(quote ? { quote } : {}) });
   }
   return out;
+}
+
+/** Loose normalization for quote-vs-turn comparison: case/whitespace only — a
+ *  carry note may re-flow the owner's line breaks without changing meaning,
+ *  but must not paraphrase or splice text the turn never contained. */
+function normalizeForQuoteCompare(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Does the turn's ACTUAL recorded text contain the claimed quote? The
+ * guard-defeat in EI-12890: a `[turn:…]` ref resolved to a REAL owner turn
+ * (found:true, verdict:'owner-typed'), which read as sufficient evidence —
+ * but the quote attached to that ref did not appear anywhere in the turn's
+ * actual text (it was fabricated by splicing two unrelated turns together).
+ * A resolvable ref is necessary but not sufficient; the quote must also match.
+ */
+export function quoteMatchesTurn(quote: string, turnText: string): boolean {
+  return normalizeForQuoteCompare(turnText).includes(normalizeForQuoteCompare(quote));
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,6 +281,15 @@ export interface TurnRefVerdict {
   origin: string | null;
   /** Head of the referenced turn's text (so the reader sees WHAT was said). */
   snippet: string | null;
+  /** EI-12890: the quoted claim the writer attached to this ref, if any was
+   *  found adjacent to it in the source text. */
+  quote: string | null;
+  /** EI-12890 guard-defeat fix: whether `quote` actually appears in the
+   *  referenced turn's FULL recorded text. null when there is no quote to
+   *  check, or the ref didn't resolve (nothing to compare against) — NOT the
+   *  same as false, which means a resolvable turn whose text does not
+   *  contain the claim: a resolvable ref is necessary but not sufficient. */
+  quoteMatch: boolean | null;
 }
 
 export interface VerifyTurnRefsOptions {
@@ -270,6 +325,8 @@ export async function verifyTurnRefs(
     verdict: null,
     origin: null,
     snippet: null,
+    quote: r.quote ?? null,
+    quoteMatch: null,
   });
   let filePath = opts.filePath;
   let sessionId = opts.sessionId;
@@ -299,6 +356,10 @@ export async function verifyTurnRefs(
       verdict: cls.verdict,
       origin: cls.origin,
       snippet: turn.text.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_CHARS),
+      quote: r.quote ?? null,
+      // Compared against the FULL turn text, not the truncated snippet above —
+      // a match sitting past SNIPPET_CHARS must still count as a match.
+      quoteMatch: r.quote ? quoteMatchesTurn(r.quote, turn.text) : null,
     };
   });
 }

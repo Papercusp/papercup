@@ -66,8 +66,16 @@ const PROVENANCE_BLOCK_MARKER_RE = /\bprovenance\b/i;
 export interface ProvenanceLintMatch {
   /** The offending line, trimmed and capped for display (never the full body). */
   line: string;
-  /** Which heuristic matched. */
-  kind: 'owner-attribution' | 'bare-gate-imperative' | 'manual-owner-tag';
+  /** Which heuristic matched. 'quote-mismatch' is added asynchronously by
+   *  carry-surface-provenance-stamp.ts (EI-12890): a `[turn:…]` ref resolves
+   *  to a real, owner-typed turn, but the QUOTE attached to it does not
+   *  appear in that turn's actual text — the exact guard-defeat where a
+   *  resolvable ref reads as sufficient evidence but the claim was fabricated
+   *  by splicing/paraphrasing. This module's own sync scan cannot detect it
+   *  (that needs the transcript read the stamp already does); it exists here
+   *  purely so the mismatch shows up in the SAME `flagged`/`matches` shape a
+   *  consumer already checks, instead of a separate field nobody reads. */
+  kind: 'owner-attribution' | 'bare-gate-imperative' | 'manual-owner-tag' | 'quote-mismatch';
 }
 
 export interface ProvenanceLintResult {

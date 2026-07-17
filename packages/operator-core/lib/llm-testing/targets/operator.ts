@@ -153,17 +153,19 @@ class OperatorSession implements ChatSession {
       ...(this.state.role && this.state.role !== 'operator' ? { role: this.state.role } : {}),
     };
 
+    // Stamp the workspace the brain should run in. WITHOUT this, the
+    // converse handler resolves activeWorkspaceId() to registry.current
+    // (this dev box: `papercusp-workspace`), which has NO operator system
+    // principal — so converse.ts gates `mcpConfig` to undefined and the
+    // brain runs TOOL-LESS (deflects on every status/tool assert). The
+    // operator/oracle principals + the scenario harnesses (sheets, …) live
+    // in `default`, so target that. Overridable via PAPERCUSP_LLM_TEST_WORKSPACE.
+    // Shared with the WI-5023 state-snapshot watcher below — same workspace.
+    const workspaceHeader = process.env.PAPERCUSP_LLM_TEST_WORKSPACE ?? 'default';
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
-      // Stamp the workspace the brain should run in. WITHOUT this, the
-      // converse handler resolves activeWorkspaceId() to registry.current
-      // (this dev box: `papercusp-workspace`), which has NO operator system
-      // principal — so converse.ts gates `mcpConfig` to undefined and the
-      // brain runs TOOL-LESS (deflects on every status/tool assert). The
-      // operator/oracle principals + the scenario harnesses (sheets, …) live
-      // in `default`, so target that. Overridable via PAPERCUSP_LLM_TEST_WORKSPACE.
-      'x-papercusp-workspace': process.env.PAPERCUSP_LLM_TEST_WORKSPACE ?? 'default',
+      'x-papercusp-workspace': workspaceHeader,
     };
     if (this.state.hasOverride) {
       headers['X-Tool-Dispatch-Override-Id'] = this.state.runId;
@@ -214,6 +216,28 @@ class OperatorSession implements ChatSession {
       rawSseTape: [],
     };
 
+    // WI-5023: production (agent-mcp/operator-converse.ts) only forwards
+    // chat:ask_choice's state-snapshot card onto THIS stream when
+    // modality==='voice' — a deliberate cross-conversation-isolation choice
+    // (a text turn is meant to watch the SEPARATE, workspace-wide
+    // GET /operator/state-snapshot channel the real desktop text UI uses,
+    // same as production). Without watching that channel, a text-mode
+    // scenario whose brain calls chat:ask_choice never observes a card at
+    // all: the tool blocks inside ctx.askUser until its own timeout, the SSE
+    // stream just goes quiet, and the turn eventually finishes with an empty
+    // `cards` array — a false "card was never emitted" failure (op-S10).
+    //
+    // Fix: for a text turn, race a SECOND subscription to that same
+    // production channel, scoped to THIS turn's own runId (learned from the
+    // `run-meta` event below), and as soon as it sees this run's card,
+    // (a) record it into `result.cards` and (b) auto-resolve it via the same
+    // POST /card-response endpoint the real UI's click handler uses — so the
+    // brain's tool call returns immediately instead of riding out its
+    // handler timeout. Voice mode already gets cards on the primary stream,
+    // so it skips this path entirely.
+    const modality = body.modality;
+    let cardWatcher: CardWatcher | null = null;
+
     try {
       for await (const ev of readSse(resp.body, startMs)) {
         // Reset idle timer on each event; enforce total cap.
@@ -223,6 +247,16 @@ class OperatorSession implements ChatSession {
           break;
         }
         killer = setTimeout(() => ctrl.abort(), IDLE_TIMEOUT_MS);
+
+        if (ev.name === 'run-meta') {
+          if (modality !== 'voice' && !cardWatcher) {
+            const runId = (ev.data as { runId?: string } | undefined)?.runId;
+            if (runId) {
+              cardWatcher = startCardWatcher({ baseUrl: this.state.baseUrl, workspaceHeader, runId });
+            }
+          }
+          continue;
+        }
 
         result.rawSseTape.push(ev);
         applyEvent(ev, result);
@@ -235,11 +269,125 @@ class OperatorSession implements ChatSession {
       clearTimeout(killer);
     }
 
+    if (cardWatcher) {
+      const observed = await cardWatcher.stop();
+      const alreadyHave = (c: CardEvent) =>
+        observed &&
+        c.payload &&
+        typeof c.payload === 'object' &&
+        (c.payload as { correlationId?: unknown }).correlationId ===
+          (observed.payload as { correlationId?: unknown } | undefined)?.correlationId;
+      if (observed && !result.cards.some(alreadyHave)) {
+        result.cards.push(observed);
+      }
+    }
+
     result.latencyMs = Date.now() - startMs;
     // Parse control tags after the fact from the accumulated assistant text.
     result.controlTags = extractControlTags(result.assistantText);
     return result;
   }
+}
+
+// =============================================================================
+// WI-5023 — text-mode card watcher
+// =============================================================================
+
+interface CardWatcher {
+  /** Stop watching (aborts the subscription) and return the first card
+   *  observed + auto-resolved, or null if none arrived before stopping. */
+  stop(): Promise<CardEvent | null>;
+}
+
+/**
+ * Watch GET /operator/state-snapshot (the SAME channel the production text
+ * UI subscribes to) for `runId`'s first non-empty openCards, then submit a
+ * default pick via POST /card-response so the blocked ctx.askUser call
+ * returns immediately. Scoped to one runId — this channel is workspace-wide,
+ * so a card belonging to any OTHER concurrent conversation in the same
+ * workspace is ignored, not merely unobserved (no cross-conversation bleed
+ * into this scenario's result).
+ *
+ * Best-effort throughout: any fetch/parse/POST failure here just means the
+ * card goes unobserved (today's behavior) — it must never throw into the
+ * scenario's own turn.
+ */
+function startCardWatcher(opts: { baseUrl: string; workspaceHeader: string; runId: string }): CardWatcher {
+  const ctrl = new AbortController();
+  let resolveSettled!: (card: CardEvent | null) => void;
+  const settled = new Promise<CardEvent | null>((res) => {
+    resolveSettled = res;
+  });
+  let settledFlag = false;
+  const settleOnce = (card: CardEvent | null) => {
+    if (settledFlag) return;
+    settledFlag = true;
+    resolveSettled(card);
+  };
+
+  (async () => {
+    try {
+      const res = await fetch(`${opts.baseUrl}/api/operator/state-snapshot`, {
+        headers: { accept: 'text/event-stream', 'x-papercusp-workspace': opts.workspaceHeader },
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) return settleOnce(null);
+      for await (const ev of readSse(res.body, Date.now())) {
+        if (ev.name !== 'snapshot') continue;
+        const vs = ev.data as {
+          runId?: string;
+          workspaceId?: string;
+          snapshot?: { openCards?: Array<Record<string, unknown>> };
+        };
+        if (vs.runId !== opts.runId) continue;
+        const rawCard = vs.snapshot?.openCards?.[0];
+        if (!rawCard) continue;
+        const card = cardFromObj(rawCard);
+        if (!card) continue;
+
+        const correlationId = rawCard.correlationId as string | undefined;
+        const firstOptionId = card.options?.[0]?.id;
+        if (correlationId && firstOptionId) {
+          // Best-effort auto-resolve — mirrors the real UI's click handler
+          // (POST /card-response), so the brain's blocked tool call returns
+          // now instead of riding out its own timeout. `:id` in the path is
+          // not read by the handler; the correlationId is what resolves it.
+          fetch(`${opts.baseUrl}/api/operator/conversations/llm-testing/card-response`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              correlationId,
+              action: 'submit',
+              workspaceId: vs.workspaceId ?? opts.workspaceHeader,
+              payload: { picks: [firstOptionId] },
+            }),
+          }).catch(() => {
+            /* best-effort — the card was still OBSERVED even if the
+             * auto-resolve POST fails; the scenario's own timeout is the
+             * fallback unblock path. */
+          });
+        }
+        settleOnce(card);
+        break;
+      }
+    } catch {
+      /* aborted, or the channel errored — settle with whatever we have */
+    } finally {
+      settleOnce(null);
+    }
+  })();
+
+  return {
+    async stop() {
+      // Abort FIRST: if no card ever arrived, the watcher's read loop is
+      // parked on the still-open GET stream and `settled` will not resolve
+      // until that read is interrupted. Aborting unblocks it (the abort
+      // throws into the watcher's try/catch, whose `finally` settles with
+      // null), THEN we await the (now-guaranteed-to-resolve) promise.
+      ctrl.abort();
+      return settled;
+    },
+  };
 }
 
 // =============================================================================
