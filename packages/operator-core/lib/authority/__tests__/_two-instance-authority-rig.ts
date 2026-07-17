@@ -245,6 +245,9 @@ export class TwoInstanceAuthorityRig {
       staleMs: this.staleMs,
       resolveSelf: async () => ({ githubUserId: 3, devicePubkey: this.requesterPubkey }),
       fetchPresenceRows: async () => this.presenceRows(),
+      // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; the
+      // rig's failover fixtures assume argmin election — pin the rollback path.
+      useHrwRendezvous: false,
     };
   }
 

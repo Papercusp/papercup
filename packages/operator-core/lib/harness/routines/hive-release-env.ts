@@ -51,8 +51,18 @@ export interface HiveReleaseGate {
  * Resolve a hive's effective `releaseGate` knob (+ `testCommand`) by reading its
  * `.papercusp/blueprint.yaml` and resolving the blueprint `extends` chain. Returns null
  * when the hive has no blueprint file or it fails to resolve.
+ *
+ * `registryDefaultBranch` (WI-5164) — the registry entry's `github_default_branch`, when
+ * known — is used to resolve `integrationBranch` ONLY when the blueprint does not specify
+ * one explicitly. A `create_from_repo` pot (e.g. a GitHub repo whose default branch is
+ * `master`/`main`) carries this from its registry entry; a fresh-init `self_repo` hive's
+ * initial commit is made on `staging` (see hive-repo-init.ts), so its own recorded
+ * `github_default_branch` (when a remote is published) is `staging` too — passing it
+ * through here is a no-op for that case and changes nothing for the papercusp-style
+ * monorepo blueprints that rely on the `staging` convention. Omitted ⇒ the old hardcoded
+ * `'staging'` fallback (unknown-branch / no registry entry available to the caller).
  */
-export function resolveHiveReleaseGate(hivePath: string): HiveReleaseGate | null {
+export function resolveHiveReleaseGate(hivePath: string, registryDefaultBranch?: string): HiveReleaseGate | null {
   const bpFile = join(hivePath, '.papercusp', 'blueprint.yaml');
   if (!existsSync(bpFile)) return null;
   let childObj: Record<string, unknown>;
@@ -98,7 +108,10 @@ export function resolveHiveReleaseGate(hivePath: string): HiveReleaseGate | null
         : '';
   return {
     enabled,
-    integrationBranch: typeof gate.integrationBranch === 'string' ? gate.integrationBranch : 'staging',
+    integrationBranch:
+      typeof gate.integrationBranch === 'string'
+        ? gate.integrationBranch
+        : registryDefaultBranch || 'staging',
     releaseRef: typeof gate.releaseRef === 'string' ? gate.releaseRef : 'main',
     greenCmd: typeof gate.greenCmd === 'string' ? gate.greenCmd : null,
     spaBuildWorkspace,
@@ -140,7 +153,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   const entry = reg.projects.find((p) => p.slug === slug);
   if (!entry) return disabled('not_found');
 
-  const gate = resolveHiveReleaseGate(entry.path);
+  const gate = resolveHiveReleaseGate(entry.path, entry.github_default_branch);
   if (!gate) return disabled('no_blueprint');
   if (!gate.enabled) return disabled('gate_disabled');
 

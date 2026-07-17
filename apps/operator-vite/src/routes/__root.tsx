@@ -48,7 +48,7 @@ import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverPr
 import { RecorderHost } from '@papercusp/testing-shell';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
-import ChromeShell from '@/app/_components/ChromeShell';
+import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
@@ -253,7 +253,11 @@ function RootComponent() {
                           mirroring the Next operator's layout.tsx.
                           (Deferred in A3 because it imports next/navigation;
                           the alias shim now resolves that.) */}
-                      {!chromeless && <ChromeShell />}
+                      {/* WI-5162: ChromeShell + the Fleet/Peers chat-sidebar
+                          faces. Those panes live in THIS tree and the sidebar
+                          cannot import up-layer to reach them, so the wrapper
+                          composes them here and passes them down. */}
+                      {!chromeless && <ChromeShellWithChatFaces />}
                       <main data-route-transition-page="true">
                         {/* Route-content error boundary: keeps ChromeShell
                             mounted on a route crash (so the user can navigate

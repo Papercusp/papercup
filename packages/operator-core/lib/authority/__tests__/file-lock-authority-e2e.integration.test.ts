@@ -93,6 +93,9 @@ describe('file-lock authority leg over the real HTTP transport', async () => {
         { device_pubkey: AUTHORITY_PUBKEY, github_user_id: 1, machine_label: 'authority-box', last_seen_ms: NOW - 1000 },
         { device_pubkey: REQUESTER_PUBKEY, github_user_id: 2, machine_label: 'requester-box', last_seen_ms: NOW - 1000 },
       ],
+      // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; this
+      // fixture's premise is argmin electing AUTHORITY_PUBKEY — pin the rollback path.
+      useHrwRendezvous: false,
       ...over,
     };
   }

@@ -1,8 +1,15 @@
 /**
  * Left sidebar (left-sidebar-tauri-2026-06-07) — the desktop twin of the pui
- * dock's retired main pane: **Swarm / Voice / Hives** as tabs in a docked,
- * collapsible, drag-resizable LEFT rail. The zellij dock is now consoles-only
- * (operator chat ⇄ brain ⇄ live bees); the tab-style surfaces live HERE.
+ * dock's retired main pane: tabs in a docked, collapsible, drag-resizable
+ * MIDDLE rail (it docks after the op-chat sidebar, which is the leftmost
+ * surface). The zellij dock is now consoles-only (operator chat ⇄ brain ⇄ live
+ * bees); the tab-style surfaces live HERE.
+ *
+ * SCOPE (owner placement corrections, 2026-07-16 → 2026-07-17): this rail is
+ * the SETTINGS / steering surface — Accounts, Mug, Kettle, Papercup, Pots. The
+ * LIVE surfaces moved out to the leftmost op-chat sidebar one by one: Inbox
+ * (EI-13037), then Fleet + Peers (WI-5162). Their panes still live in this
+ * directory; only their host changed — see components/chat-faces/ChatFacesHost.
  *
  * Architecture mirrors the proven DevAdminRail (dev-admin-sidebar-2026-06-05):
  *   - DOCKED, not floating — reserves layout space (body.has-left-sidebar
@@ -30,7 +37,7 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -41,8 +48,9 @@ import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 // collapse control — the one genuinely rail-specific button — stays, in the
 // slim row above the tabs.
 
-const SwarmTab = lazy(() => import('./SwarmTab'));
-const VoiceTab = lazy(() => import('./VoiceTab'));
+// SwarmTab / VoiceTab are no longer mounted here — they render as op-chat
+// sidebar faces now (WI-5162); components/chat-faces/ChatFacesHost lazy-loads
+// them. The files stay where they are: only their HOST moved.
 const PotsTab = lazy(() => import('./PotsTab'));
 // 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
 // may use right now), beside Mug as a sibling owner-steering lever (accounts-pool-tab
@@ -81,8 +89,12 @@ const TABS = [
   { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
   { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
-  { id: 'swarm', label: (t: BoundLexicon) => t('fleet'), icon: Users, tip: (t: BoundLexicon) => `The ${t('fleet', { lower: true })} — live roster of SU agents & ${t('contributor', { plural: true, lower: true })} and what each is doing`, render: (a: boolean) => <SwarmTab active={a} /> },
-  { id: 'voice', label: (_t: BoundLexicon) => 'Peers', icon: AudioLines, tip: (_t: BoundLexicon) => 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
+  // (The Fleet + Peers tabs MOVED to the op-chat sidebar — owner ask 2026-07-17
+  // (WI-5162): they now sit right of the 🫖 Pot Health "kettle" button as faces
+  // of the far-left live surface, alongside the Inbox that moved there the day
+  // before (EI-13037). Same panes (SwarmTab / VoiceTab), composed for the
+  // sidebar in components/chat-faces/ChatFacesHost. This middle rail keeps the
+  // SETTINGS/steering surfaces.)
   { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <PotsTab active={a} /> },
 ] as const;
 

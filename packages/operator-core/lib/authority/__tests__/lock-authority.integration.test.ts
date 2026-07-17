@@ -73,6 +73,9 @@ describe('lock authority — real shared_presence query (integration)', () => {
     const r = await lockAuthorityFor(HARNESS, {
       fetchPresenceRows: (h) => queryPresenceRows(db.sql as never, h),
       resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }),
+      // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; the
+      // argmin assertions here pin the rollback path explicitly.
+      useHrwRendezvous: false,
     });
     expect(r.isSelf).toBe(true);
     expect(r.liveCount).toBe(2);
@@ -86,6 +89,7 @@ describe('lock authority — real shared_presence query (integration)', () => {
     const r = await lockAuthorityFor(HARNESS, {
       fetchPresenceRows: (h) => queryPresenceRows(db.sql as never, h),
       resolveSelf: async () => ({ githubUserId: 2, devicePubkey: 'mmm' }),
+      useHrwRendezvous: false, // argmin-winner assertion — pin the rollback path
     });
     expect(r.isSelf).toBe(false);
     expect(r.peer?.devicePubkey).toBe('aaa');

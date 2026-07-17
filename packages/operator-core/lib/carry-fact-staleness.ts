@@ -48,11 +48,14 @@ import { parseRefToken, type HydratableRef } from './agent-tools/coordination/re
 import type { FactSourceProvenance } from './agent-facts/store';
 
 /** The subset of a carried fact this check needs — callers with only some of
- *  {@link CarryBrief}'s `facts` (or a narrower read) can still run the check. */
+ *  {@link CarryBrief}'s `facts` (or a narrower read) can still run the check.
+ *  `sourceRef`/`sourceProvenance` are OPTIONAL (not just nullable) so a
+ *  `CarryBrief.facts` entry — where they're optional for back-compat with
+ *  every pre-existing `{ key, body }` literal — is assignable as-is. */
 export interface FactStalenessInput {
   key: string;
-  sourceRef: string | null;
-  sourceProvenance: FactSourceProvenance | null;
+  sourceRef?: string | null;
+  sourceProvenance?: FactSourceProvenance | null;
 }
 
 export type FactStalenessVerdict = 'fresh' | 'possibly-stale' | 'unknown';

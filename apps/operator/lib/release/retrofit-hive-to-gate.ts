@@ -61,7 +61,7 @@ async function buildPlan(slug: string): Promise<RetrofitPlan> {
   if (!entry) throw new Error(`no registry entry for slug '${slug}'`);
   const path = entry.path;
   const hasGit = existsSync(join(path, '.git'));
-  const gate = resolveHiveReleaseGate(path);
+  const gate = resolveHiveReleaseGate(path, (entry as { github_default_branch?: string }).github_default_branch);
   const { sql } = getOrgPg();
   const routines = (await sql`
     SELECT name FROM harness_shared.routines WHERE install_slug = ${slug}

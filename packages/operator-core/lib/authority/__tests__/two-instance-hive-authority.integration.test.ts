@@ -86,6 +86,9 @@ function hiveDeps(selfPubkey: string): LockAuthorityDeps {
     // The HIVE-scoped seam (vs the harness test's fetchPresenceRows) — proves the
     // routing consumes lockAuthorityForHive, not lockAuthorityFor.
     fetchHivePresenceRows: async () => HIVE_ROSTER,
+    // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; this
+    // file's fixtures depend on argmin electing 'auth-aaa' — pin the rollback path.
+    useHrwRendezvous: false,
   };
 }
 
@@ -199,6 +202,7 @@ describe('two-instance HIVE authority serialization over loopback', () => {
       staleMs: 90_000,
       resolveSelf: async () => ({ githubUserId: 9, devicePubkey: self }),
       fetchHivePresenceRows: async () => staleRoster,
+      useHrwRendezvous: false, // next-lowest failover assertion = argmin semantics
     });
     const localStore = new FakeLockStore();
     // swarm-mmm is now the Hive authority → its op runs locally.

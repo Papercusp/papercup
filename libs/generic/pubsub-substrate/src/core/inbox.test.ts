@@ -47,3 +47,35 @@ describe('filterInbox — notify de-noise', () => {
     expect(filterInbox(lines, 'me')).toHaveLength(1); // only the broadcast
   });
 });
+
+describe('filterInbox — EI-28: coord:ask ask/answer notify escapes the default de-noise', () => {
+  it('surfaces a routed question (notify_kind:question_opened) in the default read', () => {
+    const lines = [env('notify', { notify_kind: 'question_opened', subject: 'topic:x' } as never)];
+    const out = filterInbox(lines, 'me');
+    expect(out).toHaveLength(1);
+    expect((out[0] as never as { notify_kind: string }).notify_kind).toBe('question_opened');
+  });
+
+  it('surfaces an answer to your question (notify_kind:answer_posted) in the default read', () => {
+    const lines = [env('notify', { notify_kind: 'answer_posted' } as never)];
+    expect(filterInbox(lines, 'me')).toHaveLength(1);
+  });
+
+  it('still drops ordinary ambient notify (e.g. a topic-subscription update) by default', () => {
+    const lines = [
+      env('notify', { notify_kind: 'topic_created' } as never),
+      env('notify', { notify_kind: 'work_item_commented' } as never),
+      env('notify', { notify_kind: 'fleet_broadcast' } as never),
+      env('notify', {} as never), // no notify_kind at all
+    ];
+    expect(filterInbox(lines, 'me')).toHaveLength(0);
+  });
+
+  it('an explicit kinds:["notify"] read still returns EVERY notify (directed and ambient alike)', () => {
+    const lines = [
+      env('notify', { notify_kind: 'question_opened' } as never),
+      env('notify', { notify_kind: 'topic_created' } as never),
+    ];
+    expect(filterInbox(lines, 'me', { kinds: ['notify'] })).toHaveLength(2);
+  });
+});

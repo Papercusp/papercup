@@ -56,6 +56,9 @@ function clientDeps(selfPubkey: string): LockAuthorityDeps {
     now: () => NOW,
     resolveSelf: async () => ({ githubUserId: 9, devicePubkey: selfPubkey }),
     fetchPresenceRows: async () => ROSTER,
+    // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; this
+    // file's fixtures depend on argmin electing 'auth-aaa' — pin the rollback path.
+    useHrwRendezvous: false,
   };
 }
 

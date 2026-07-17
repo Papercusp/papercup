@@ -29,6 +29,7 @@ import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { PotHealthPane } from './PotHealthPane';
 import { useInboxPendingCount } from './inbox/use-inbox-pending';
+import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
 
 // The Inbox view (EI-13037) pulls the Queue detail card chain — lazy so the
 // boot-critical chat chunk stays lean; it loads on first toggle.
@@ -57,8 +58,12 @@ const STORAGE_KEY = 'papercusp.operatorChat.width';
  *  Health view (WI-4778) ⇄ the human Inbox (EI-13037, owner placement
  *  correction 2026-07-16 — the inbox lives WITH the Papercup chat in this
  *  far-left "live running stuff" sidebar). URL state via nuqs so agents
- *  (ui:get_state / ui:dispatch) can see + drive it. */
-const CHAT_VIEW_VALUES = ['chat', 'pot', 'inbox'] as const;
+ *  (ui:get_state / ui:dispatch) can see + drive it.
+ *
+ *  EXTRA faces (WI-5162: [👥 Fleet] [🎧 Peers], mounted right of 🫖) widen this
+ *  enum at runtime — their panes live in operator-vite and arrive as `faces`
+ *  descriptors, see op-chat-faces.ts. */
+const CHAT_VIEW_VALUES = BUILT_IN_CHAT_VIEWS;
 
 /**
  * Speak-responses (TTS output) mute toggle — MOVED here from the left rail's
@@ -115,7 +120,16 @@ function readStoredWidth(): number {
   }
 }
 
-export function OperatorChatSidebar() {
+/**
+ * @param faces EXTRA header faces mounted to the RIGHT of 🫖 Pot Health
+ *   (WI-5162, owner ask 2026-07-17: "put them to the right of the kettle
+ *   button"). The Vite SPA root (apps/operator-vite/src/routes/__root.tsx)
+ *   injects the Fleet + Peers panes here — those components live under
+ *   operator-vite/src and cannot be imported up-layer from this tree, so the
+ *   route composes them and passes them down (op-chat-faces.ts; same shape as
+ *   quick-panel's headerSlot, D-001). Omitted ⇒ the three built-in faces only.
+ */
+export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFace[] } = {}) {
   // WI-4478 D-001: OperatorWordmarkLockup's classic-pack default now reads
   // "Papercusp" (product identity, matching the Tauri window title). This
   // toggle is the ASSISTANT identity ("Papercup chat" tooltip/aria-label,
@@ -262,12 +276,20 @@ export function OperatorChatSidebar() {
   // there is no Mug/Kettle chat to switch to. The 🫖 toggle below swaps the
   // BODY between the chat and the full-height Pot Health view (what the Mug +
   // Kettle decide from), inside this same pane.
-  const [view, setView] = useQueryState(
-    'opcv',
-    parseAsStringEnum([...CHAT_VIEW_VALUES]).withDefault('chat'),
+  // WI-5162: extra faces widen the enum, so ?opcv=fleet survives a reload
+  // instead of being rejected back to 'chat'. Memoised on the ids alone — a new
+  // parser identity each render would make nuqs re-parse on every tick.
+  const extraFaces = useMemo(() => dedupeChatFaces(faces), [faces]);
+  const extraFaceIds = extraFaces.map((f) => f.id).join(',');
+  const viewParser = useMemo(
+    () => parseAsStringEnum([...CHAT_VIEW_VALUES, ...extraFaceIds.split(',').filter(Boolean)]).withDefault('chat'),
+    [extraFaceIds],
   );
+  const [view, setView] = useQueryState('opcv', viewParser);
   const potOpen = view === 'pot';
   const inboxOpen = view === 'inbox';
+  // The lit extra face, if any — drives both the pill state and the body swap.
+  const activeFace = extraFaces.find((f) => f.id === view) ?? null;
   // Live decision-tier count (shared plans.attention sync feed) — badge on
   // the Inbox toggle + the collapsed rail, so "needs you" is visible either way.
   const inboxPending = useInboxPendingCount();
@@ -373,6 +395,31 @@ export function OperatorChatSidebar() {
                 <span className="op-chat-pot-toggle-label">Pot Health</span>
               </button>
             </Tooltip>
+            {/* WI-5162 (owner ask 2026-07-17 "move the fleet and peers panes
+                from the middle section to the leftmost section and put them to
+                the right of the kettle button"): the Fleet + Peers faces, which
+                used to be tabs in the MIDDLE rail (LeftSidebar), now sit here as
+                peers of 🫖 — [📥 Inbox] [🥤 Papercup] [🫖 Pot Health] [👥 Fleet]
+                [🎧 Peers]. They share the 🫖 pill chrome and the same body-swap
+                contract; their panes arrive from operator-vite (op-chat-faces). */}
+            {extraFaces.map((face) => {
+              const isOn = view === face.id;
+              return (
+                <Tooltip key={face.id} label={isOn ? 'Back to chat' : face.tip}>
+                  <button
+                    type="button"
+                    className={`op-chat-pot-toggle op-chat-face-toggle op-chat-face-toggle--${face.id}${isOn ? ' is-on' : ''}`}
+                    onClick={() => void setView(isOn ? 'chat' : face.id)}
+                    aria-pressed={isOn}
+                    aria-label={isOn ? 'Back to chat' : `Show ${face.label}`}
+                    data-testid={`op-chat-face-${face.id}`}
+                  >
+                    <span className="op-chat-face-icon" aria-hidden="true">{face.icon}</span>
+                    <span className="op-chat-pot-toggle-label">{face.label}</span>
+                  </button>
+                </Tooltip>
+              );
+            })}
             <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
               <AudienceModeSelector />
               <OperatorActiveToggle />
@@ -389,7 +436,14 @@ export function OperatorChatSidebar() {
             </button></Tooltip>
           </div>
         </div>
-        {potOpen ? (
+        {activeFace ? (
+          /* WI-5162: a Fleet/Peers face is lit — its pane replaces the chat
+             body, same as 🫖/📥 do. The pane is rendered lazily by the
+             provider (operator-vite), so nothing mounts until it is picked. */
+          <Suspense fallback={<div className="op-chat-view-loading">Loading {activeFace.label.toLowerCase()}…</div>}>
+            {activeFace.render()}
+          </Suspense>
+        ) : potOpen ? (
           /* WI-4778: 🫖 on — the full-height Pot Health view replaces the
              chat body (strip + messages + composer), same pane, one scroll. */
           <PotHealthPane />
@@ -553,6 +607,11 @@ const OP_CHAT_SIDEBAR_CSS = `
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  /* WI-5162: the query container the header's face labels respond to. The
+     sidebar is drag-resized independently of the viewport, so its own inline
+     size — not the screen's — is what decides whether the labels fit. */
+  container-type: inline-size;
+  container-name: op-chat;
 }
 
 .op-chat-expand-rail {
@@ -781,6 +840,36 @@ const OP_CHAT_SIDEBAR_CSS = `
 .op-chat-header-main .op-chat-pot-toggle:hover .op-chat-pot-toggle-label,
 .op-chat-header-main .op-chat-pot-toggle.is-on .op-chat-pot-toggle-label {
   color: var(--fg);
+}
+
+/* WI-5162: the Fleet + Peers faces — same flat pill chrome as 🫖 (they share
+   .op-chat-pot-toggle), but their glyph is a lucide icon rather than an emoji,
+   so it needs explicit sizing to sit at the 🫖/🥤 peers' scale. */
+.op-chat-header-main .op-chat-face-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+}
+.op-chat-header-main .op-chat-face-toggle:hover .op-chat-face-icon,
+.op-chat-header-main .op-chat-face-toggle.is-on .op-chat-face-icon {
+  color: var(--fg);
+}
+
+/* Five faces + the voice controls do not fit the 360px default width. The
+   labels on the two ADDED faces are what yields first (they are the newest and
+   the most tooltip-explained); the three original faces keep theirs, so the
+   header the owner already knows is unchanged at every width. Drag the sidebar
+   wider and the labels come back. Container query, not a media query: the
+   sidebar is drag-resized independently of the viewport. */
+@container op-chat (max-width: 460px) {
+  .op-chat-header-main .op-chat-face-toggle .op-chat-pot-toggle-label {
+    display: none;
+  }
+  .op-chat-header-main .op-chat-face-toggle {
+    padding: 0 6px;
+  }
 }
 
 .op-chat-header-main .op-chat-papercup-toggle.is-on,

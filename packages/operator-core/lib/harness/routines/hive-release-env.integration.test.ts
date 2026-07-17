@@ -102,6 +102,27 @@ describe('resolveHiveReleaseGate', () => {
     // output) — the derived rule enables it; the member is what create_from_repo clones run.
     expect(resolveHiveReleaseGate(makeHiveDir('coding-factory'))?.enabled).toBe(true);
   });
+
+  it('WI-5164: no explicit integrationBranch knob → falls back to the passed registryDefaultBranch, not a hardcoded staging', async () => {
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const gate = resolveHiveReleaseGate(makeHiveDir('coding'), 'master');
+    expect(gate?.integrationBranch).toBe('master');
+  });
+
+  it('WI-5164: an EXPLICIT blueprint integrationBranch knob still wins over registryDefaultBranch', async () => {
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const gate = resolveHiveReleaseGate(
+      makeHiveDir('coding', { extraKnobs: '  releaseGate:\n    integrationBranch: custom-branch' }),
+      'master',
+    );
+    expect(gate?.integrationBranch).toBe('custom-branch');
+  });
+
+  it('WI-5164: no registryDefaultBranch passed → keeps the old staging fallback (back-compat)', async () => {
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const gate = resolveHiveReleaseGate(makeHiveDir('coding'));
+    expect(gate?.integrationBranch).toBe('staging');
+  });
 });
 
 describe('resolveHiveReleaseEnv', () => {
@@ -209,6 +230,35 @@ describe('resolveHiveReleaseEnv', () => {
     const res = await resolveHiveReleaseEnv('oddsmith-hive', 'default');
     expect(res.env.PAPERCUSP_GREEN_CMD).toBe('npm test');
     expect(res.env.PAPERCUSP_SPA_BUILD_WORKSPACE).toBe('');
+  });
+
+  it('WI-5164: a from-repo pot on a master-default repo seeds PAPERCUSP_INTEGRATION_BRANCH=master, not staging', async () => {
+    // The exact bug: /api/harness/pots/from-repo records github_default_branch from the
+    // clone's actual default branch (e.g. GitHub's octocat/Hello-World → 'master'). The
+    // blueprint carries no explicit releaseGate.integrationBranch knob, so before this fix
+    // the green-checkpoint routine hardcoded 'staging' and rev-parsed a branch the clone
+    // never has — exiting 1 on EVERY tick, forever.
+    const dir = makeHiveDir('coding-factory', { git: true });
+    registryProjects = [
+      { slug: 'hello-world-3', path: dir, self_repo: false, github_default_branch: 'master' } as {
+        slug: string;
+        path: string;
+        self_repo?: boolean;
+        github_default_branch?: string;
+      },
+    ];
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('hello-world-3', 'default');
+    expect(res.enabled).toBe(true);
+    expect(res.env.PAPERCUSP_INTEGRATION_BRANCH).toBe('master');
+  });
+
+  it('WI-5164: a self_repo hive with no github_default_branch recorded still defaults to staging', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'fresh-init-hive', path: dir, self_repo: true }];
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('fresh-init-hive', 'default');
+    expect(res.env.PAPERCUSP_INTEGRATION_BRANCH).toBe('staging');
   });
 
   it('a per-hive owner override beats the knob/testCommand/build and sets greenCmdOverridden (P-014)', async () => {

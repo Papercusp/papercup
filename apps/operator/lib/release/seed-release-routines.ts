@@ -45,12 +45,21 @@ async function main(): Promise<void> {
   for (const r of ROUTINES) {
     const active = forceActive ? true : forceInactive ? false : r.activeDefault;
     const id = `rt_${SLUG}_${r.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+    // WI-5018 routines grouping: seed group_slug='release' + auto-create the group row
+    // (blank metadata; a steward fills it in via routines:group-set) so a FRESH seed
+    // lands pre-grouped. group_slug is deliberately NOT in the ON CONFLICT SET list — a
+    // re-seed must never clobber a manual routines:set{group} reassignment.
+    await sql`
+      INSERT INTO harness_shared.routine_groups (workspace_id, slug)
+      VALUES (${ws}, 'release')
+      ON CONFLICT (workspace_id, slug) DO NOTHING
+    `;
     await sql`
       INSERT INTO harness_shared.routines
         (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-         concurrency, catchup, active, next_fire_at)
+         concurrency, catchup, active, next_fire_at, group_slug)
       VALUES (${id}, ${SLUG}, ${ws}, ${r.name}, 'cron', ${JSON.stringify({ cron: r.cron })}::text::jsonb, ${r.target},
-              'skip', 'skip-old', ${active}, now())
+              'skip', 'skip-old', ${active}, now(), 'release')
       ON CONFLICT (install_slug, name) DO UPDATE SET
         target_role = EXCLUDED.target_role,
         trigger_config = EXCLUDED.trigger_config,

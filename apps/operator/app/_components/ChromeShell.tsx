@@ -38,6 +38,7 @@ import { isChromeShellNavActive } from './chrome-shell-nav';
 // dev shell, an on-demand compile of that chunk) is exactly what caused the
 // visible delay before. The docks below stay lazy/idle-deferred.
 import { OperatorChatSidebar } from './OperatorChatSidebar';
+import type { OpChatFace } from './op-chat-faces';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
@@ -125,7 +126,13 @@ function AnimatedHeaderQuote({ animateQuote }: { animateQuote: boolean }) {
   );
 }
 
-export default function ChromeShell() {
+/**
+ * @param chatFaces EXTRA faces for the Papercup chat sidebar's header row —
+ *   the Fleet + Peers panes (WI-5162), which live under operator-vite/src and
+ *   cannot be imported up-layer from this tree. The Vite SPA root composes them
+ *   and passes them through here to OperatorChatSidebar; see op-chat-faces.ts.
+ */
+export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChatFace[] } = {}) {
   const headerRef = useRef<HTMLElement | null>(null);
   const pathname = usePathname() ?? '';
   const reducedMotion = useReducedMotion() ?? false;
@@ -325,7 +332,7 @@ export default function ChromeShell() {
           prefixes) skip ChromeShell entirely so the sidebar is absent
           there too — desired, those routes are embedded inside other
           pages that already host the sidebar. */}
-      {operatorChatSidebarFlag && <OperatorChatSidebar />}
+      {operatorChatSidebarFlag && <OperatorChatSidebar faces={chatFaces} />}
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );
