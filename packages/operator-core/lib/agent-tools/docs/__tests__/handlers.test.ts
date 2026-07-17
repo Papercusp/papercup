@@ -22,11 +22,23 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import type { OutlinePayload } from '@papercusp/docs-engine';
 
 // --- Mock the docs-engine so no real fs/content tree is read. ----------------
 // Each engine fn returns a recognizable payload; adapter factories return an
 // opaque sentinel (handlers only pass it through to the engine fn).
-const buildOutline = vi.fn(async () => ({ pages: [{ slug: 'p1', title: 'P1', headings: [] }] }));
+// WI-5217: typed against the real OutlinePayload (generatedAt/sectionCount/
+// pageCount/sections) so later `mockResolvedValueOnce(bigPayload)` overrides
+// below (the EI-400 tests) typecheck — the untyped default previously
+// inferred a narrower `{ pages: [...] }` shape from this literal alone.
+const buildOutline = vi.fn(
+  async (): Promise<OutlinePayload> => ({
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    sectionCount: 1,
+    pageCount: 1,
+    sections: [{ slug: 's1', title: 'S1', pages: [{ slug: 'p1', title: 'P1', headings: [] }] }],
+  }),
+);
 const getDocs = vi.fn(async () => ({ pages: [{ slug: 'p1', body: 'BODY' }] }));
 const searchDocs = vi.fn(async () => ({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] }));
 

@@ -33,6 +33,7 @@ const {
   resolveUsageActorMock,
   unsafeMock,
   getBootedHarnessMock,
+  bootSingleHarnessMock,
   openHiveGitDuplexToDeviceMock,
 } = vi.hoisted(() => ({
   loadHarnessRegistryMock: vi.fn<() => Promise<{ projects: RegistryProject[] }>>(async () => ({
@@ -57,6 +58,10 @@ const {
   // happy-path assertions below (any Duplex, selfDevicePubkey passed through)
   // stay valid without a real swarm.
   getBootedHarnessMock: vi.fn((_ws: string, _hive: string) => null as { swarm?: { topicHex?: string } } | null),
+  // WI-5247: resolveHiveGitTopicHex demand-boots when getBootedHarness misses
+  // (a harness never booted this process, not just an evicted one) — mocked
+  // as a resolved no-op so the existing fail-soft-stub assertions stay valid.
+  bootSingleHarnessMock: vi.fn(async (_ws: string, _hive: string) => ({ state: 'booted' as const })),
   openHiveGitDuplexToDeviceMock: vi.fn(async (_topic: Buffer, _device: string, _req: unknown) => {
     const d = { on: (_ev: string, _cb: () => void) => {} };
     return d;
@@ -102,7 +107,10 @@ vi.mock('../../sync/pot-git/storage', () => ({
 }));
 vi.mock('../../sync/pot-git/bootstrap', () => ({ bootstrapFromPeer: bootstrapFromPeerMock }));
 vi.mock('../usage-actor', () => ({ resolveUsageActor: resolveUsageActorMock }));
-vi.mock('../../sync/hyperbee/boot-all', () => ({ getBootedHarness: getBootedHarnessMock }));
+vi.mock('../../sync/hyperbee/boot-all', () => ({
+  getBootedHarness: getBootedHarnessMock,
+  bootSingleHarness: bootSingleHarnessMock,
+}));
 vi.mock('../../sync/pot-git/peer-dial-registry', () => ({ openHiveGitDuplexToDevice: openHiveGitDuplexToDeviceMock }));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -141,6 +149,7 @@ beforeEach(() => {
   resolveUsageActorMock.mockClear();
   unsafeMock.mockClear();
   getBootedHarnessMock.mockClear();
+  bootSingleHarnessMock.mockClear();
   openHiveGitDuplexToDeviceMock.mockClear();
   loadHarnessRegistryMock.mockResolvedValue({
     projects: [{ slug: SLUG, hive_slug: SLUG, self_repo: true }],
@@ -273,6 +282,22 @@ describe('runBootstrapLeg', () => {
     await runBootstrapLeg(SLUG, WS);
     expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled();
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-5247: demand-boots the substrate when getBootedHarness misses (never-booted-this-process, not just evicted)', async () => {
+    // Before the fix, a harness that was simply never booted this process
+    // (as opposed to evicted-then-reboot-on-access) got a permanent null
+    // from getBootedHarness with NOTHING registering demand for it — this
+    // tick is exactly that demand signal and must fire a background boot.
+    getBootedHarnessMock.mockReturnValue(null);
+    await runBootstrapLeg(SLUG, WS);
+    expect(bootSingleHarnessMock).toHaveBeenCalledWith(WS, SLUG);
+  });
+
+  it('WI-5247: does NOT demand-boot when getBootedHarness already returns a live handle', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    await runBootstrapLeg(SLUG, WS);
+    expect(bootSingleHarnessMock).not.toHaveBeenCalled();
   });
 
   it('never throws and skips the DB patch when bootstrapFromPeer reports ok:false', async () => {
