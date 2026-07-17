@@ -26,7 +26,7 @@
  * invalidation already wired off the change stream.
  */
 
-import type { CacheOutcome } from "@papercusp/cache";
+import { getOrSetBounded, type CacheOutcome } from "@papercusp/cache";
 import { getOperatorCache } from "./instance";
 import { activeWorkspaceId } from "../workspace-registry";
 
@@ -60,7 +60,7 @@ function defaultHardTtlMs(): number | undefined {
   return DEFAULT_CACHED_READ_HARD_TTL_MS;
 }
 
-export interface CachedReadOptions {
+export interface CachedReadOptions<V = unknown> {
   /** Tool name — the key namespace AND the telemetry bucket (e.g. 'plans:list'). */
   tool: string;
   /**
@@ -83,6 +83,27 @@ export interface CachedReadOptions {
   hardTtlMs?: number;
   /** Also cache null/undefined factory results (negative caching). Default false. */
   cacheEmpty?: boolean;
+  /**
+   * Cap the CALLER's wait at this many ms when the read would actually run the
+   * factory (a cold miss, or a forced blocking rebuild past `hardTtlMs`/an
+   * invalidation) — EI-184 (plans:attention occasionally exceeding its 60s tool-call
+   * ceiling on a post-restart cold L1: `getOrSet`'s 'dead' path blocks on the FULL
+   * factory duration with no bound). A fresh hit or an SWR stale-serve resolves
+   * immediately regardless — this only bounds the genuinely-blocking path, via the
+   * existing {@link getOrSetBounded} (built for exactly this "prompt-build" shape:
+   * the underlying build keeps running in the background and lands in cache for the
+   * NEXT caller even after this caller's wait times out). Requires `onDeadline`.
+   * Omitted (default) ⇒ today's unbounded behavior, byte-identical for every
+   * existing consumer.
+   */
+  deadlineMs?: number;
+  /**
+   * Required alongside `deadlineMs`: the degraded value to return when the wait
+   * hits the deadline — the caller's degrade policy (cachedRead never invents a
+   * fallback). Mirror the factory's own best-effort philosophy (e.g. an empty/
+   * partial result), not an error — a deadline is a graceful degrade, not a failure.
+   */
+  onDeadline?: () => V | Promise<V>;
 }
 
 /**
@@ -148,6 +169,9 @@ export interface CachedReadToolStats {
   misses: number;
   stale: number;
   bypass: number;
+  /** `deadlineMs` was set AND the wait hit it — the factory kept building in the
+   *  background; this caller got `onDeadline()`'s degraded value instead (EI-184). */
+  deadline: number;
 }
 
 const TOOL_STATS = new Map<string, CachedReadToolStats>();
@@ -155,13 +179,22 @@ const TOOL_STATS = new Map<string, CachedReadToolStats>();
 function recordOutcome(tool: string, outcome: CacheOutcome): void {
   let s = TOOL_STATS.get(tool);
   if (!s) {
-    s = { hits: 0, misses: 0, stale: 0, bypass: 0 };
+    s = { hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0 };
     TOOL_STATS.set(tool, s);
   }
   if (outcome === "hit") s.hits++;
   else if (outcome === "miss") s.misses++;
   else if (outcome === "stale") s.stale++;
   else s.bypass++;
+}
+
+function recordDeadline(tool: string): void {
+  let s = TOOL_STATS.get(tool);
+  if (!s) {
+    s = { hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0 };
+    TOOL_STATS.set(tool, s);
+  }
+  s.deadline++;
 }
 
 /** Snapshot per-tool cache telemetry (a copy — callers can't mutate the live counters). */

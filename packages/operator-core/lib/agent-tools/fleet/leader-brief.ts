@@ -47,6 +47,7 @@ import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
 import type { AgentAssignment } from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
 import {
   reconcileWakeability,
   decorateParkedOn,
@@ -175,15 +176,10 @@ export function reconcilePsuHostLiveness<T extends DecoratedAgent>(
   agentRoles: ReadonlyMap<string, string | null>,
   findHost: (ownerId: string) => unknown | null = findLiveHost,
 ): T[] {
-  for (const agent of agents) {
-    const role = agentRoles.get(agent.agentId);
-    if (role == null || role === 'cup') continue;
-    if (agent.sessionState === 'parked' && findHost(agent.agentId) == null) {
-      agent.sessionState = 'ended';
-      agent.alive = false;
-    }
-  }
-  return agents;
+  // Unification P-005: the rule itself now lives in the shared liveness
+  // oracle (applyPsuHostAuthority) so it is no longer leader-brief-private —
+  // any surface whose cohort is known-psu-hosted applies the SAME authority.
+  return applyPsuHostAuthority(agents, agentRoles, findHost);
 }
 
 /** PURE: exported for direct unit-testing (no PG/DI ceremony needed). */

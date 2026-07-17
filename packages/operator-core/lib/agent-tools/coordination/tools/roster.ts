@@ -24,6 +24,7 @@ import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { readIdentity } from '../../locks/identity';
 import { COORD_ROLES } from '../roles';
 import { listFleetAssignments, groupByAgent, orphanedClaims, stalledClaims } from '../../../fleet/assignments';
+import { reconcileWakeability } from '../../fleet/assignments';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
 
@@ -169,7 +170,15 @@ export default defineTool({
         activeOnly: !args.include_stale,
       });
 
-      const agents = groupByAgent(rows).filter(
+      // Unification F1/P-003: the claims lens used to serve the fleet_assignment
+      // view's heartbeat-only `alive` while view=live served the full oracle
+      // model — ONE tool, two truths (a dead-but-warm session read alive here).
+      // Reconcile through the same oracle-backed path fleet:assignments uses
+      // (best-effort, like that tool), BEFORE the alive-filter so a dead-warm
+      // claimless agent is excluded rather than shown as alive.
+      const grouped = groupByAgent(rows);
+      await reconcileWakeability(grouped).catch(() => {});
+      const agents = grouped.filter(
         (g) => args.include_stale || g.claims.length > 0 || g.alive,
       );
 

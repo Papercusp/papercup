@@ -17,7 +17,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: h.identity }));
-vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'], QUEEN_PLACEMENT_ROLES: ['operator'] }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
 vi.mock('../../fleet/operator-spawn', () => ({ spawnAgentInHarness: h.spawnAgentInHarness }));
 vi.mock('../../work-items', () => ({

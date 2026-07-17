@@ -290,7 +290,7 @@ export async function assemblePresenceSnapshot(
   const localAllIds = scoped.filter((r) => !isFederated(r)).map((r) => r.ownerId);
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
-  let recordedLive = new Set<string>();
+  let recordedLiveOwners = new Set<string>();
   let onDesktopOwners = new Set<string>();
   let viewerAttachedOwners = new Set<string>();
   // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
@@ -315,7 +315,7 @@ export async function assemblePresenceSnapshot(
     // uniform here via the oracle's deriveVerdict. Best-effort like every join.
     recordedLiveOwnerIds(localAllIds)
       .then((s) => {
-        recordedLive = s;
+        recordedLiveOwners = s;
       })
       .catch(() => {}),
     // On-desktop (live OS window) owners — best-effort, box-local (empty on a
@@ -369,7 +369,7 @@ export async function assemblePresenceSnapshot(
         claimsHeld,
       },
       w,
-      recordedLive,
+      recordedLiveOwners,
       nowMs,
     );
     return {

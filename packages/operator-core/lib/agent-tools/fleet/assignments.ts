@@ -17,12 +17,10 @@ import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   fetchWakeability,
-  deriveSessionState,
-  isHardStale,
-  needsLivenessConfirmation,
   type SessionState,
   type WakeabilitySignals,
 } from '../coordination/presence-wakeability';
+import { deriveVerdict } from '../coordination/liveness-oracle';
 import { recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
@@ -133,26 +131,27 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
     if (!w) continue; // no signal (e.g. a federated peer) — leave heartbeat-only alive, sessionState unset.
-    // fleet-liveness-zombie-await-2026-07-07: force an hour-cold holder to `ended`
-    // even if its wake-await outlived an abrupt death (reboot/SIGKILL skips
-    // cancelInboxWakeAwaits) — else it stays `parked` and reads as a live member.
-    const hardStale = isHardStale(a.heartbeatAt ? Date.parse(a.heartbeatAt) : null, nowMs);
-    const sessionState =
-      !w.wakeable && recordedLive.has(a.agentId)
-        ? 'recorded'
-        : deriveSessionState({
-            stale: !a.alive,
-            wakeable: w.wakeable,
-            liveTurn: w.liveTurn,
-            hardStale,
-            claimsHeld: a.load > 0,
-          });
-    a.sessionState = sessionState;
+    // Unification P-003: ONE derivation via the shared liveness oracle — the
+    // recorded rescue, the zombie-await hardStale ceiling and the claims-held
+    // suspect classification are all inside deriveVerdict now, identical to
+    // coord:presence / fleet:status / the send-miss path.
+    const v = deriveVerdict(
+      {
+        ownerId: a.agentId,
+        heartbeatAt: a.heartbeatAt,
+        stale: !a.alive,
+        claimsHeld: a.load > 0,
+      },
+      w,
+      recordedLive,
+      nowMs,
+    );
+    a.sessionState = v.sessionState;
     // WI-4400: the read is stale-ish when draining/suspect; expose the explicit
     // confirmation nudge through fleet:assignments (and coord:orient's me fold).
-    a.confirmLiveness = needsLivenessConfirmation(sessionState);
-    if (sessionState === 'recorded') a.alive = true;
-    if (sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining') a.alive = false;
+    a.confirmLiveness = v.confirmLiveness;
+    if (v.sessionState === 'recorded') a.alive = true;
+    if (v.sessionState === 'ended' || v.sessionState === 'suspect' || v.sessionState === 'draining') a.alive = false;
   }
   return agents;
 }

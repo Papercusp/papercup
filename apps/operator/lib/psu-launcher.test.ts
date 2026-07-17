@@ -1221,6 +1221,36 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs(['--agent=claude']).profile).toBeNull();
   });
 
+  it('EI-181: accepts the space-separated form of --role/--agent/--workspace/--feature/--harness/--plan (repro: `psu --role operator` used to silently resolve to null)', () => {
+    expect(parseArgs(['--role', 'operator']).role).toBe('operator');
+    expect(parseArgs(['--agent', 'claude']).agent).toBe('claude');
+    expect(parseArgs(['--workspace', 'ws1']).workspace).toBe('ws1');
+    expect(parseArgs(['--feature', 'F-123']).feature).toBe('F-123');
+    expect(parseArgs(['--harness', 'papercusp']).harness).toBe('papercusp');
+    expect(parseArgs(['--plan', 'my-plan']).plan).toBe('my-plan');
+    // The exact repro from the item body — the space form must be equivalent to `=`.
+    const spaceForm = parseArgs(['--no-picker', '--role', 'operator', '--agent=claude']);
+    const eqForm = parseArgs(['--no-picker', '--role=operator', '--agent=claude']);
+    expect(spaceForm.role).toBe(eqForm.role);
+    expect(spaceForm.role).toBe('operator');
+    // Composes with the `--` passthrough — the value is consumed, not treated as a flag.
+    const withPassthrough = parseArgs(['--role', 'operator', '--', '--verbose']);
+    expect(withPassthrough.role).toBe('operator');
+    expect(withPassthrough.passthrough).toEqual(['--verbose']);
+  });
+
+  it('EI-181: warns (never throws) on a genuinely unrecognized `--` flag instead of silently dropping it', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const a = parseArgs(['--no-picker', '--agent=claude', '--totally-not-a-real-flag']);
+      expect(a.agent).toBe('claude'); // the rest of the parse is unaffected
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][0]).toContain('--totally-not-a-real-flag');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('parses --context-size (WI-1282 su-context-size-variants); defaults to null', () => {
     expect(parseArgs(['--context-size=trimmed']).contextSize).toBe('trimmed');
     expect(parseArgs(['--context-size=full']).contextSize).toBe('full');

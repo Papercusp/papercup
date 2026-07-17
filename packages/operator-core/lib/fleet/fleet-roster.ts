@@ -421,7 +421,14 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   // (assignmentFromPresence) when no assignment row is found — so entries
   // still exist with identity/intent/liveness, just without doing/queued/load.
   const assignments = groupByAgent(rowsResult.value).filter((a) => inFleet.has(a.agentId));
-  const entries = foldFleetRoster(presence, assignments, tier1Result.value, Date.now(), wakeabilityResult.value);
+  const entries = foldFleetRoster(
+    presence,
+    assignments,
+    tier1Result.value,
+    Date.now(),
+    wakeabilityResult.value,
+    recordedResult.value,
+  );
   return { entries, degradedLegs };
 }
 

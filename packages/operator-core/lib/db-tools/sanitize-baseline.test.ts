@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { splitStatements, transformStatement, sanitizeBaselineVerbose } from './sanitize-baseline';
+import {
+  splitStatements,
+  transformStatement,
+  sanitizeBaselineVerbose,
+  stripTopLevelNotNull,
+  parseCreateTable,
+} from './sanitize-baseline';
 
 describe('splitStatements', () => {
   it('splits simple statements on top-level semicolons', () => {
@@ -53,9 +59,13 @@ describe('transformStatement — idempotency rewrites', () => {
     );
   });
 
-  it('is a no-op when IF NOT EXISTS is already present', () => {
+  it('does not double up IF NOT EXISTS when it is already present', () => {
+    // The CREATE itself is passed through verbatim; a per-column ADD COLUMN
+    // repair pass is appended (WI-5216 — see the column-drift describe below).
     const s = 'CREATE TABLE IF NOT EXISTS harness_shared.t (id int)';
-    expect(transformStatement(s)).toBe(s);
+    const out = transformStatement(s)!;
+    expect(out.startsWith(s)).toBe(true);
+    expect(out).not.toMatch(/IF NOT EXISTS\s+IF NOT EXISTS/i);
   });
 
   it('converts CREATE FUNCTION/TRIGGER to OR REPLACE', () => {
@@ -192,5 +202,100 @@ describe('sanitizeBaselineVerbose — whole-dump invariants', () => {
     const { sql } = sanitizeBaselineVerbose(RAW);
     const bareCreate = sql.match(/CREATE (TABLE|SEQUENCE|(?:UNIQUE )?INDEX) (?!IF NOT EXISTS)/g);
     expect(bareCreate).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// COLUMN DRIFT (WI-5216) — the baseline's headline promise: re-applying against
+// an ALREADY-POPULATED DB whose tables carry an OLDER shape must CONVERGE them,
+// not silently skip and then explode on the first index that wants the missing
+// column. These tests encode the live failure that killed the desktop Server's
+// operator for ~7h.
+// ---------------------------------------------------------------------------
+describe('column drift repair — CREATE TABLE emits per-column ADD COLUMN IF NOT EXISTS', () => {
+  /** The REAL adv_sessions shape from 000-baseline.sql that reproduced WI-5216. */
+  const ADV_SESSIONS = `CREATE TABLE harness_shared.adv_sessions (
+    id bigint NOT NULL,
+    workspace_id text NOT NULL,
+    mode text NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    ended_at timestamp with time zone,
+    coord_owner_id text,
+    CONSTRAINT adv_sessions_mode_check CHECK ((mode = ANY (ARRAY['omp'::text, 'console'::text])))
+)`;
+
+  it('THE WI-5216 REGRESSION: adds the column an older table is missing, so the index that follows resolves', () => {
+    const out = transformStatement(ADV_SESSIONS)!;
+    // This exact statement is what a drifted DB needs and never got — the
+    // column exists ONLY in the baseline; no migration in sql/ adds it.
+    expect(out).toContain('ALTER TABLE harness_shared.adv_sessions ADD COLUMN IF NOT EXISTS coord_owner_id text');
+    // …and it must still create the table on a fresh DB.
+    expect(out).toContain('CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions');
+  });
+
+  it('emits one ADD COLUMN per column and never for a table constraint', () => {
+    const out = transformStatement(ADV_SESSIONS)!;
+    const added = [...out.matchAll(/ADD COLUMN IF NOT EXISTS (\w+)/g)].map((m) => m[1]);
+    expect(added).toEqual(['id', 'workspace_id', 'mode', 'started_at', 'ended_at', 'coord_owner_id']);
+    expect(out).not.toMatch(/ADD COLUMN IF NOT EXISTS adv_sessions_mode_check/);
+    expect(out).not.toMatch(/ADD COLUMN IF NOT EXISTS CONSTRAINT/i);
+  });
+
+  it('strips NOT NULL from the repair (an un-defaulted NOT NULL add is a hard error on a populated table) but keeps it on the CREATE', () => {
+    const out = transformStatement(ADV_SESSIONS)!;
+    // The CREATE TABLE keeps the real constraint…
+    expect(out).toMatch(/CREATE TABLE IF NOT EXISTS[\s\S]*workspace_id text NOT NULL/);
+    // …while the repair adds it nullable rather than failing the boot.
+    expect(out).toContain('ADD COLUMN IF NOT EXISTS workspace_id text;');
+    const addLines = out.split('\n').filter((l) => l.includes('ADD COLUMN'));
+    expect(addLines.every((l) => !/NOT NULL/i.test(l))).toBe(true);
+  });
+
+  it('preserves DEFAULT so a defaulted column lands fully-formed', () => {
+    const out = transformStatement(ADV_SESSIONS)!;
+    expect(out).toContain('ADD COLUMN IF NOT EXISTS started_at timestamp with time zone DEFAULT now();');
+  });
+
+  it('keeps commas inside types and CHECK expressions out of the column split', () => {
+    const t = `CREATE TABLE s.t (
+    amount numeric(10,2),
+    kind text,
+    CONSTRAINT k CHECK ((kind = ANY (ARRAY['a'::text, 'b'::text])))
+)`;
+    const added = [...transformStatement(t)!.matchAll(/ADD COLUMN IF NOT EXISTS (\w+)/g)].map((m) => m[1]);
+    expect(added).toEqual(['amount', 'kind']);
+    expect(transformStatement(t)!).toContain('ADD COLUMN IF NOT EXISTS amount numeric(10,2)');
+  });
+
+  it('does not strip a NOT NULL nested inside an inline CHECK expression', () => {
+    expect(stripTopLevelNotNull("text CHECK (x IS NOT NULL) NOT NULL")).toBe('text CHECK (x IS NOT NULL)');
+  });
+
+  it('leaves an IF-NOT-EXISTS CREATE TABLE alone but still backfills it', () => {
+    const out = transformStatement('CREATE TABLE IF NOT EXISTS s.t (a int, b text)')!;
+    expect(out).not.toMatch(/IF NOT EXISTS\s+IF NOT EXISTS/i);
+    expect(out).toContain('ADD COLUMN IF NOT EXISTS a int');
+    expect(out).toContain('ADD COLUMN IF NOT EXISTS b text');
+  });
+
+  it('every column of every table in a whole dump gets a repair statement', () => {
+    const dump = [
+      'CREATE TABLE harness_shared.a (id bigint NOT NULL, name text);',
+      'CREATE TABLE harness_shared.b (id bigint NOT NULL, ts timestamp with time zone DEFAULT now());',
+      'CREATE INDEX b_ts_idx ON harness_shared.b USING btree (ts);',
+    ].join('\n');
+    const { sql } = sanitizeBaselineVerbose(dump);
+    const tables = [...sql.matchAll(/CREATE TABLE IF NOT EXISTS ([\w."]+)/g)].map((m) => m[1]);
+    expect(tables).toEqual(['harness_shared.a', 'harness_shared.b']);
+    for (const t of tables) {
+      expect(sql).toContain(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS`);
+    }
+    // The repair must precede the index that depends on the drifted column —
+    // that ordering IS the WI-5216 fix.
+    expect(sql.indexOf('ADD COLUMN IF NOT EXISTS ts')).toBeLessThan(sql.indexOf('CREATE INDEX IF NOT EXISTS b_ts_idx'));
+  });
+
+  it('parseCreateTable returns null for a shape with no plain column list', () => {
+    expect(parseCreateTable('CREATE TABLE s.t_2026 PARTITION OF s.t FOR VALUES FROM (1) TO (2)')).toBeNull();
   });
 });

@@ -20,9 +20,9 @@
 import { NON_WAKEABLE } from './inbox-wake';
 import { isSelectorOrWildcard } from './recipient-resolve';
 // TYPE-ONLY import (erased): keep this module import-SAFE. The value side
-// (fetchWakeability / deriveSessionState) pulls the presence→DB chain, so it is
-// lazy-imported inside the function — a consumer (or its unit test) can import this
-// module without loading PG at module-init.
+// (resolveSessionStates) pulls the presence→DB chain, so it is lazy-imported
+// inside the function — a consumer (or its unit test) can import this module
+// without loading PG at module-init.
 import type { SessionState } from './presence-wakeability';
 
 export interface MissedRecipientLiveness {
@@ -41,9 +41,14 @@ export interface MissedRecipientLiveness {
  * wake/handoff just FAILED to wake. Returns one row per concrete addressee with its
  * CURRENT `sessionState` + `wakeable`, freshly read (never a cached snapshot).
  *
- * `deriveSessionState` is fed `stale:false` because `wakeable` is the authoritative
- * gate it already short-circuits on (not wakeable ⇒ `ended` regardless of heartbeat
- * warmth) — exactly the signal that matters for "is this transfer a dead drop?".
+ * Unification P-004: derives via the shared liveness oracle with
+ * `hydratePerId` — each missed addressee's own coord_presence row supplies the
+ * heartbeat / pid / recorded legs, so a dead-drop verdict here is at least as
+ * strict as the roster's. (The old hand-rolled derivation fed `stale:false`
+ * with NO hardStale/pid, so a zombie-await session killed by a reboot read
+ * `parked` — a false "the transfer will be picked up" — exactly where the
+ * caller was deciding whether the send black-holed.) The miss set is small
+ * (the addressees of ONE send), so the per-id hydration point-reads are cheap.
  */
 export async function describeMissedRecipients(
   ownerIds: readonly string[],
@@ -54,17 +59,15 @@ export async function describeMissedRecipients(
   if (ids.length === 0) return [];
   try {
     // Lazy value-import (keeps this module import-safe — see the type-only import above).
-    const { fetchWakeability, deriveSessionState } = await import('./presence-wakeability');
-    const wake = await fetchWakeability(ids);
+    const { resolveSessionStates } = await import('./liveness-oracle');
+    const verdicts = await resolveSessionStates(
+      ids.map((ownerId) => ({ ownerId })),
+      { hydratePerId: true },
+    );
     return ids.map((ownerId) => {
-      const w = wake.get(ownerId);
-      if (!w) return { ownerId, sessionState: 'unknown' as const, wakeable: false };
-      const sessionState = deriveSessionState({
-        stale: false,
-        wakeable: w.wakeable,
-        liveTurn: w.liveTurn,
-      });
-      return { ownerId, sessionState, wakeable: w.wakeable };
+      const v = verdicts.get(ownerId);
+      if (!v) return { ownerId, sessionState: 'unknown' as const, wakeable: false };
+      return { ownerId, sessionState: v.sessionState, wakeable: v.wakeable };
     });
   } catch {
     // Fail-soft: a liveness-probe hiccup must never fail the (already-durable) send.

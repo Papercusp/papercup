@@ -265,11 +265,32 @@ export function parseArgs(argv) {
   let pendingAddDir = false;
   let pendingAccount = false;
   let pendingFleet = false;
+  // EI-181: the space-separated form of the six most-scripted value flags
+  // (`psu --role operator` etc.) used to be SILENTLY DROPPED — `--role` matched
+  // no `--role=` prefix (ignored) and the bare value `operator` matched no
+  // positional case either (ignored), so role/agent/etc. resolved to null and
+  // psu fell through to the interactive picker with zero error or warning (cost
+  // a multi-round debugging session when a dock pane launched exactly this
+  // form). Mirrors the pre-existing --add-dir/--account/--fleet space-form
+  // pattern below: the flag token arms a `pending*` latch, the NEXT token
+  // (verbatim, even if it happens to start with `--`) is taken as the value.
+  let pendingRole = false;
+  let pendingAgent = false;
+  let pendingWorkspace = false;
+  let pendingFeature = false;
+  let pendingHarness = false;
+  let pendingPlan = false;
   for (const a of argv) {
     if (rest) { out.passthrough.push(a); continue; }
     // `--add-dir <dir>` (space form) — the previous token armed this; take the
     // value verbatim (even if it looks like a flag, it's the dir the user meant).
     if (pendingAddDir) { pendingAddDir = false; out.addDir.push(a); continue; }
+    if (pendingRole) { pendingRole = false; out.role = a; continue; }
+    if (pendingAgent) { pendingAgent = false; out.agent = a; continue; }
+    if (pendingWorkspace) { pendingWorkspace = false; out.workspace = a; continue; }
+    if (pendingFeature) { pendingFeature = false; out.feature = a; continue; }
+    if (pendingHarness) { pendingHarness = false; out.harness = a; continue; }
+    if (pendingPlan) { pendingPlan = false; out.plan = a; continue; }
     // `--account <id>` (space form) — the previous token armed this; take the
     // value verbatim (an account id never starts with `--`).
     if (pendingAccount) { pendingAccount = false; out.account = a; continue; }
@@ -330,11 +351,17 @@ export function parseArgs(argv) {
     // Default ON for scripted plan launches; this flag restores the old open-at-an-
     // empty-prompt behavior. (Interactive picker launches never auto-kickoff.)
     else if (a === '--no-kickoff') out.kickoff = false;
+    else if (a === '--agent') pendingAgent = true;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
+    else if (a === '--role') pendingRole = true;
     else if (a.startsWith('--role=')) out.role = a.slice('--role='.length);
+    else if (a === '--feature') pendingFeature = true;
     else if (a.startsWith('--feature=')) out.feature = a.slice('--feature='.length);
+    else if (a === '--workspace') pendingWorkspace = true;
     else if (a.startsWith('--workspace=')) out.workspace = a.slice('--workspace='.length);
+    else if (a === '--harness') pendingHarness = true;
     else if (a.startsWith('--harness=')) out.harness = a.slice('--harness='.length);
+    else if (a === '--plan') pendingPlan = true;
     else if (a.startsWith('--plan=')) out.plan = a.slice('--plan='.length);
     // P-032 omp-convergence passthroughs: a model fuzzy-match, resume of a
     // specific recorded session, and a kickoff/launch-context file the server
@@ -440,6 +467,16 @@ export function parseArgs(argv) {
     else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
     else if (!a.startsWith('--') && out.resume && !out.resumeId) out.resumeId = a;
+    // EI-181 defense-in-depth: any OTHER `--`-prefixed token that reached here
+    // matched none of the branches above — a typo'd/unknown flag, or a value
+    // flag's space-form we haven't special-cased. Before this, such a token was
+    // silently swallowed with zero signal (the same silent-drop this item's
+    // repro hit for --role); now the caller gets a one-line stderr note instead
+    // of a mysteriously-unscoped session. Never throws — a genuinely-unknown
+    // flag shouldn't hard-fail the launch, just be visible.
+    else if (a.startsWith('--')) {
+      console.error(`psu: warning — unrecognized flag \`${a}\` was ignored (did you mean \`${a}=<value>\`? psu --help lists supported flags).`);
+    }
   }
   // Model-family/backend coupling: a supplied native cloud model selects its
   // backend when --agent is omitted, and an explicit mismatch fails before any
