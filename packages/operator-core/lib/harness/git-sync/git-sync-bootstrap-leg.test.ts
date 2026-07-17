@@ -35,6 +35,7 @@ const {
   getBootedHarnessMock,
   bootSingleHarnessMock,
   openHiveGitDuplexToDeviceMock,
+  loadCachedLocalAnnounceIdentityMock,
 } = vi.hoisted(() => ({
   loadHarnessRegistryMock: vi.fn<() => Promise<{ projects: RegistryProject[] }>>(async () => ({
     projects: [{ slug: 'shop-hive', hive_slug: 'shop-hive', self_repo: true }],
@@ -92,6 +93,11 @@ const {
     };
   }),
   resolveUsageActorMock: vi.fn(async () => ({ githubUserId: 1, devicePubkey: 'c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=' })),
+  // gh-INDEPENDENT self-identity: resolveUsageActor returns null whenever `gh`
+  // is unauthenticated / rate-limited, so the leg falls back to the persisted,
+  // keychain-verified announce-identity cache (no network). Default null — the
+  // happy path uses the actor's devicePubkey and never reaches this `??` arm.
+  loadCachedLocalAnnounceIdentityMock: vi.fn(async () => null as { devicePubkeyBase64?: string } | null),
   unsafeMock: vi.fn(async (_text: string, _params: unknown[]) => []),
 }));
 
@@ -112,6 +118,7 @@ vi.mock('../../sync/hyperbee/boot-all', () => ({
   bootSingleHarness: bootSingleHarnessMock,
 }));
 vi.mock('../../sync/pot-git/peer-dial-registry', () => ({ openHiveGitDuplexToDevice: openHiveGitDuplexToDeviceMock }));
+vi.mock('../../sync/hyperbee/local-announce-identity', () => ({ loadCachedLocalAnnounceIdentity: loadCachedLocalAnnounceIdentityMock }));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getOrgPg: () => ({ sql: { unsafe: unsafeMock } }) };
@@ -139,6 +146,16 @@ const bootstrapRejection = (err: Error) => async (_repoPath: string, duplex: Fak
 
 const SELF_DEVICE = 'c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=';
 const PEER_DEVICE = 'cGVlci1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISE=';
+// Distinct-prefixed peers for the multi-candidate iteration / cap tests below
+// (the leg logs device.slice(0,8) into the dialLog, so the prefixes differ).
+const PEER_DEVICE_2 = 'ZGV2LXR3by1wdWJrZXktYmFzZTY0LTMyYnl0ZXMtISEhIQ==';
+const PEER_DEVICE_3 = 'dGhyZWUtZGV2LXB1YmtleS1iYXNlNjQtMzJieXRlcy0hIQ==';
+const PEER_DEVICE_4 = 'Zm91ci1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzIQ==';
+
+/** A fake dial-registry duplex: `destroyed:true` models a registry miss (the
+ *  pre-destroyed decoy — "no live dial path"); `destroyed:false` a live socket
+ *  the leg then hands to bootstrapFromPeer. */
+const dialDuplex = (destroyed: boolean) => ({ on: (_ev: string, _cb: () => void) => {}, destroyed });
 
 beforeEach(() => {
   loadHarnessRegistryMock.mockClear();
@@ -151,6 +168,9 @@ beforeEach(() => {
   getBootedHarnessMock.mockClear();
   bootSingleHarnessMock.mockClear();
   openHiveGitDuplexToDeviceMock.mockClear();
+  loadCachedLocalAnnounceIdentityMock.mockClear();
+  loadCachedLocalAnnounceIdentityMock.mockResolvedValue(null); // default: cache empty (actor path is used)
+  resolveUsageActorMock.mockResolvedValue({ githubUserId: 1, devicePubkey: SELF_DEVICE });
   loadHarnessRegistryMock.mockResolvedValue({
     projects: [{ slug: SLUG, hive_slug: SLUG, self_repo: true }],
   });
@@ -316,5 +336,117 @@ describe('runBootstrapLeg', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  // ── Multi-candidate iteration + gh-free self-fallback (P-303 reverse-leg fix) ──
+  // Before this fix a single `.find()` pick wedged G-8 permanently whenever its
+  // one chosen candidate was offline/stale (a live registered peer sat unused),
+  // and self-identification rode on `gh` reachability — an undefined self let
+  // `find(d => d !== undefined)` pick THIS device's own attestation, so every
+  // tick decoyed itself. Live-caught on the P-303 reverse-leg drill 2026-07-17.
+
+  it('iterates to the next candidate when the first has no live dial path (destroyed decoy duplex)', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    listHiveMembersMock.mockResolvedValue([
+      { deviceAttestations: [{ device_pubkey: PEER_DEVICE }, { device_pubkey: PEER_DEVICE_2 }] },
+    ]);
+    // First device: registry miss (pre-destroyed decoy); second: a live socket.
+    openHiveGitDuplexToDeviceMock.mockImplementation(async (_t: Buffer, device: string) =>
+      dialDuplex(device === PEER_DEVICE),
+    );
+    await runBootstrapLeg(SLUG, WS);
+    // Dialed both, in order; only the live (second) one reached bootstrapFromPeer.
+    expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(2);
+    expect(openHiveGitDuplexToDeviceMock.mock.calls[0][1]).toBe(PEER_DEVICE);
+    expect(openHiveGitDuplexToDeviceMock.mock.calls[1][1]).toBe(PEER_DEVICE_2);
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+    const patch = JSON.parse(unsafeMock.mock.calls[0][1] as string);
+    expect(patch.bootstrap.ok).toBe(true);
+  });
+
+  it('iterates past a LIVE candidate whose fetch fails (ok:false) to a later one that succeeds', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    listHiveMembersMock.mockResolvedValue([
+      { deviceAttestations: [{ device_pubkey: PEER_DEVICE }, { device_pubkey: PEER_DEVICE_2 }] },
+    ]);
+    openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false)); // both live
+    bootstrapFromPeerMock
+      .mockImplementationOnce(bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'fetch-failed: half-dead channel' }))
+      .mockImplementationOnce(bootstrapOutcome({ ok: true, namespaces: ['abcd1234'], skippedExisting: [], skippedSelf: null, stderr: '' }));
+    await runBootstrapLeg(SLUG, WS);
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(2); // first failed → tried the second
+    const patch = JSON.parse(unsafeMock.mock.calls[0][1] as string);
+    expect(patch.bootstrap.ok).toBe(true); // the final (successful) outcome wins
+  });
+
+  it('caps live fetch attempts at MAX_LIVE_ATTEMPTS (3) even with more failing candidates', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([
+        { deviceAttestations: [PEER_DEVICE, PEER_DEVICE_2, PEER_DEVICE_3, PEER_DEVICE_4].map((d) => ({ device_pubkey: d })) },
+      ]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false)); // all live
+      bootstrapFromPeerMock.mockImplementation(
+        bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'fetch-failed: no upload-pack' }),
+      );
+      await runBootstrapLeg(SLUG, WS);
+      // 4 live+failing candidates → only 3 attempts (the 4th short-circuits at
+      // the loop top), and no 4th dial is even opened.
+      expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(3);
+      expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(3);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('bootstrap-tick reported errors'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('warns "no live dial path" listing EVERY candidate when all are registry misses (dialLog signature)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([
+        { deviceAttestations: [{ device_pubkey: PEER_DEVICE }, { device_pubkey: PEER_DEVICE_2 }] },
+      ]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(true)); // all no-path
+      await runBootstrapLeg(SLUG, WS);
+      expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+      const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('no live dial path'));
+      expect(warnMsg).toBeTruthy();
+      expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:no-path`);
+      expect(warnMsg).toContain(`${PEER_DEVICE_2.slice(0, 8)}:no-path`);
+      const patch = JSON.parse(unsafeMock.mock.calls[0][1] as string);
+      expect(patch.bootstrap.ok).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('gh-free self-fallback: resolveUsageActor null → self identity from the announce-identity cache; self is excluded from candidates', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    resolveUsageActorMock.mockResolvedValue(null); // gh unauthenticated / rate-limited
+    loadCachedLocalAnnounceIdentityMock.mockResolvedValue({ devicePubkeyBase64: SELF_DEVICE });
+    listHiveMembersMock.mockResolvedValue([
+      { deviceAttestations: [{ device_pubkey: SELF_DEVICE }, { device_pubkey: PEER_DEVICE }] },
+    ]);
+    openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
+    await runBootstrapLeg(SLUG, WS);
+    expect(loadCachedLocalAnnounceIdentityMock).toHaveBeenCalled(); // the `??` fallback arm was taken
+    // self filtered out → only the peer is dialed, carrying the cache-derived
+    // selfDevicePubkey (not undefined, which used to let find() pick self).
+    expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
+    expect(openHiveGitDuplexToDeviceMock.mock.calls[0][1]).toBe(PEER_DEVICE);
+    expect((bootstrapFromPeerMock.mock.calls[0][2] as Record<string, unknown>).selfDevicePubkey).toBe(SELF_DEVICE);
+  });
+
+  it('gh-free self-fallback: actor null AND cache miss → selfDevicePubkey undefined, still bootstraps (no crash)', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    resolveUsageActorMock.mockResolvedValue(null);
+    loadCachedLocalAnnounceIdentityMock.mockResolvedValue(null); // nothing cached either
+    listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+    openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
+    await expect(runBootstrapLeg(SLUG, WS)).resolves.toBeUndefined();
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+    expect((bootstrapFromPeerMock.mock.calls[0][2] as Record<string, unknown>).selfDevicePubkey).toBeUndefined();
   });
 });
