@@ -42,22 +42,18 @@ const holderJson = (h: ResourceHolder) => ({
 export default defineTool({
   name: 'db:migrate',
   description:
-    'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true. With confirm, acquires exclusive(db-schema) and drains schema-dependent work (wait:{max_drain_sec}) before running psql -f <file>, then releases. The real apply also requires PAPERCUSP_ALLOW_DB_MIGRATE=1 (host-only — no agent can set it). When withheld, pass escalate:true to raise a coord:escalate to a human with the exact ready-to-run command — the sanctioned fast path when you (esp. a cup with no shell/PG access) are stuck on an urgent, already-committed migration and the normal deploy pipeline is blocked (EI-13299). Prefer this over a raw psql -f.',
+    'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true; with confirm, acquires exclusive(db-schema), drains, then applies. Real apply also requires host-only PAPERCUSP_ALLOW_DB_MIGRATE=1. When withheld, escalate:true raises a coord:escalate carrying the ready-to-run command — the fast path for a cup with no PG access stuck on an urgent migration while the deploy gate is red (EI-13299). Prefer this over a raw psql -f.',
   guidance: {
     when: 'Applying a migration / destructive DDL that could disrupt in-flight queries. Dry-run to see holders; confirm to drain + apply.',
     notWhen: 'Read-only SQL needs no lock. Never apply migrations casually on a shared box.',
     chaining:
       'db:migrate { file } (dry) → review → db:migrate { file, confirm: true }. ' +
-      'EI-6955: `file` is an arbitrary absolute path — pass it a migration you JUST wrote in the STAGING tree ' +
-      "(don't wait for db:check_drift, whose sql_dir is the release checkout and won't see it). On a dev box the " +
-      'real apply is normally WITHHELD (PAPERCUSP_ALLOW_DB_MIGRATE is host-only), but confirm:true still hands you ' +
-      'the exact psql + schema_migrations INSERT command to run by hand — use that instead of hand-deriving it from ' +
-      "CLAUDE.md's escape hatch. " +
-      'EI-13299: withheld + no shell/PG access of your own (a cup) + the migration is genuinely urgent (already ' +
-      'committed, validated, and the deploy gate is red so the normal boot-apply path is blocked)? Re-call with ' +
-      'escalate:true — it opens a blocker-severity coord:escalate carrying the ready command so a human/su can ' +
-      'apply it within moments, instead of you having to improvise a hand-off. Omit escalate for routine confirm ' +
-      'attempts (it does not spam an escalation on every ordinary withheld call).',
+      'EI-6955: `file` is an arbitrary absolute path — pass a migration you JUST wrote in STAGING (don\'t wait ' +
+      'for db:check_drift, which reads the release checkout). Real apply is normally WITHHELD ' +
+      '(PAPERCUSP_ALLOW_DB_MIGRATE is host-only); confirm:true still returns the exact psql + schema_migrations ' +
+      'INSERT command to run by hand. EI-13299: no shell/PG access (a cup) + genuinely urgent + deploy gate red? ' +
+      'Re-call with escalate:true instead — opens a blocker coord:escalate carrying that same ready command for ' +
+      'a human/su to run. Omit escalate for routine attempts (no spam).',
     seeAlso: [
       'db:check_drift (verify schema drift first)',
       'db:next-migration (scaffold a new migration)',
