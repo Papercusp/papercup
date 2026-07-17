@@ -188,8 +188,25 @@ export function emitWorkItemClaimableEvent(
  * AND the stale-claim reaper route through — so a reaper-freed item wakes waiters too.
  * Awaiter-only (no `to` push): the audience is whoever registered interest in this id.
  * Fire-and-forget; never throws.
+ *
+ * `announceClaimable` (EI-15019, default true — unchanged for every existing caller):
+ * pass `false` for an INTERNAL claim-then-immediate-release round-trip that never
+ * exposed any observable state change (the item was pool-claimable before the claim
+ * AND after the release — e.g. claim-spec-store.ts's tier-3 issue-family fallback
+ * claiming a row its OWN spec then rejects via the mandatory post-claim
+ * matchesWorkItemClaimSpec recheck). Firing the broad `work-item:claimable` key for
+ * that case carries zero new information (the item's real return-to-pool moment —
+ * create/genuine-release/unblock/requeue — already announced it, or will), yet wakes
+ * EVERY live awaiter on the canonical key for nothing. Live incident: EI-128
+ * (harness:null, title matches a common `*p2p*` title-glob exclusion) got claimed +
+ * quarantine-released by tier-3 every ~3-4min, broadcasting to all 7 live awaiters
+ * each time. `claim:released:<id>` (the id-scoped, targeted key) still always fires —
+ * suppressing only the broad pool-wide co-fire never drops a targeted waiter.
  */
-export function emitClaimReleasedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
+export function emitClaimReleasedEvent(
+  wi: WorkItem,
+  deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
+): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   void Promise.resolve()
     .then(() =>
@@ -203,7 +220,8 @@ export function emitClaimReleasedEvent(wi: WorkItem, deps: Pick<SettledEventsDep
     .catch((e: unknown) => failSoft(`claim-released-event for ${wi.id}`, e));
   // P-007: a released item is back in the pool — co-fire the canonical claimable
   // key (the guard drops rows that released into a non-claimable end state).
-  emitWorkItemClaimableEvent(wi, 'released', deps);
+  // EI-15019: skip the co-fire when the caller says this round-trip is internal-only.
+  if (deps.announceClaimable !== false) emitWorkItemClaimableEvent(wi, 'released', deps);
 }
 
 /**

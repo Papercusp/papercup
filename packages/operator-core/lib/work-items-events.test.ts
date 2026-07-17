@@ -314,6 +314,35 @@ describe('emitClaimReleasedEvent (P-105)', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('claim-released-event'));
     warn.mockRestore();
   });
+
+  // EI-15019: EI-128 (a harness:null, `*p2p*`-title-glob-excluded bug) was getting
+  // claimed and quarantine-released by claim-spec-store.ts's tier-3 issue fallback
+  // every ~3-4min, and EACH release re-fired the broad `work-item:claimable` key —
+  // waking all 7 live awaiters for a round-trip that never changed the item's
+  // observable claimability (it was pool-claimable before the claim AND after the
+  // release). `announceClaimable:false` is the caller's signal that this specific
+  // release is exactly that internal, information-free round-trip.
+  it('announceClaimable:false suppresses the work-item:claimable co-fire but still fires claim:released:<id>', async () => {
+    const emit = typedEmit();
+    const { emitClaimReleasedEvent } = await import('./work-items-events');
+    emitClaimReleasedEvent(wi({ id: 'WI-36', state: 'todo', assignee: null, harness: null }), {
+      emit,
+      announceClaimable: false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const keys = emit.mock.calls.map((c) => c[0].key);
+    expect(keys).toEqual(['claim:released:WI-36']);
+    expect(keys).not.toContain('work-item:claimable');
+  });
+
+  it('announceClaimable omitted (default) still co-fires work-item:claimable — unchanged for every other caller', async () => {
+    const emit = typedEmit();
+    const { emitClaimReleasedEvent } = await import('./work-items-events');
+    emitClaimReleasedEvent(wi({ id: 'WI-37', state: 'todo', assignee: null }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    const keys = emit.mock.calls.map((c) => c[0].key).sort();
+    expect(keys).toEqual(['claim:released:WI-37', 'work-item:claimable']);
+  });
 });
 
 describe('emitWorkItemBlockedEvent', () => {

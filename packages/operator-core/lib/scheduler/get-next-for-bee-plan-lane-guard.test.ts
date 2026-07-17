@@ -215,9 +215,15 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
 
     expect(res?.workItem.id).toBe('F-in');
     expect(matchesWorkItemClaimSpecMock).toHaveBeenCalledOnce();
+    // EI-15019: the quarantine release is an INTERNAL claim-then-release round-trip
+    // (the row was claimable before and after — nothing observable changed), so it
+    // must suppress the broad work-item:claimable co-fire (announceClaimable:false)
+    // to stop spamming every live awaiter for a doomed-from-the-start tier-3 pick
+    // (e.g. a harness:null item whose title a spec's WI-3268 glob excludes).
     expect(releaseWorkItemMock).toHaveBeenCalledWith('EI-out', {
       harness: 'papercusp',
       expectedAssignee: 'me',
+      announceClaimable: false,
     });
     expect(planItemLaneBlockReasonMock).toHaveBeenCalledOnce();
   });

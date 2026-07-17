@@ -23618,6 +23618,30 @@ body:has(.operator-panel) {
   color: var(--fg);
 }
 
+/* deterministic-status-cards-2026-07-17 P-003: the curator card's actionable
+   drill-in button (turns the old dead `drill in: <ref>` monospace into a real
+   Open action) + the chat wrapper that hosts a status card in place of text. */
+.report-block-item-drill {
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--accent, #3b82f6);
+  background: transparent;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.report-block-item-drill:hover {
+  background: var(--accent-soft, rgba(59, 130, 246, 0.12));
+  border-color: var(--accent, #3b82f6);
+}
+.oracle-msg-report {
+  margin-top: 2px;
+}
+
 /* --- Dev env-switcher bar: shift viewport-anchored side rails below the bar ---
    The left sidebar (.pclsb) and dev-admin rail (.pcdar) are
    position:fixed; top:0; bottom:0 with INLINE styles, so a normal rule can't

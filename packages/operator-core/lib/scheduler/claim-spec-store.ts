@@ -396,7 +396,18 @@ export async function getNextForBee(args: {
     // mismatch before it reaches the member. The release cooldown prevents the
     // bounded retry from selecting the same row immediately.
     if (result.workItem.family === 'issue' && !matchesWorkItemClaimSpec(result.workItem, record.spec)) {
-      await releaseWorkItem(result.workItem.id, { harness: args.harness, expectedAssignee: args.cupId });
+      // EI-15019: this claim+release round-trip is INTERNAL — the row was
+      // pool-claimable before the claim and stays pool-claimable after the release
+      // (tier 3's SQL narrows only by kind/id, never by title/tags/paths, so a spec
+      // with e.g. a WI-3268 title-glob exclusion can only be enforced here, AFTER the
+      // atomic claim). No observer outside this call ever saw the row as unavailable,
+      // so re-announcing it on the broad `work-item:claimable` key adds no information
+      // — it only wakes every live awaiter for nothing. Live incident: a harness:null
+      // operator-scope bug (EI-128, oldest-open + a `*p2p*`-glob-excluded title) got
+      // claimed and quarantine-released here every ~3-4min by different fleet members
+      // whose spec excludes p2p work, broadcasting to all 7 live awaiters each time.
+      // `claim:released:<id>` (the targeted, id-scoped key) still always fires.
+      await releaseWorkItem(result.workItem.id, { harness: args.harness, expectedAssignee: args.cupId, announceClaimable: false });
       continue;
     }
     const blocked = await planItemLaneBlockReason(result.workItem);

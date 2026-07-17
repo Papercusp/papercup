@@ -5,6 +5,9 @@ import {
   formatSignalLine,
   formatSurfaceMessage,
   formatBatchDigest,
+  signalToReportItem,
+  buildSurfaceReport,
+  buildDigestReport,
   nextInterval,
   shouldRunTick,
   canEmitDigestNow,
@@ -34,6 +37,7 @@ function harness(
   openRecoverable: OpenRecoverableEntry[] = [],
 ) {
   const surfaced: string[] = [];
+  const surfacedReports: Array<import('@papercusp/chat-protocol').ReportBlock | undefined> = [];
   const recorded: SurfacedEntry[] = [];
   const deps: CurationDeps = {
     readers: { ...EMPTY_READERS, ...over },
@@ -41,12 +45,27 @@ function harness(
     recordSurfaced: async (entries) => {
       recorded.push(...entries);
     },
-    surface: async (text) => {
+    surface: async (text, report) => {
       surfaced.push(text);
+      surfacedReports.push(report);
     },
     loadOpenRecoverable: async () => openRecoverable,
   };
-  return { deps, surfaced, recorded };
+  return { deps, surfaced, surfacedReports, recorded };
+}
+
+/** Minimal ClassifiedSignal for the pure card-builder tests (the builders read
+ *  only `.signal`; `verdict` is irrelevant here). */
+function cs(signal: {
+  id: string;
+  kind: import('./salience-policy').FleetSignalKind;
+  title: string;
+  detail?: string;
+  harness?: string;
+  ref?: string;
+  userRequested?: boolean;
+}): ClassifiedSignal {
+  return { signal, verdict: {} } as unknown as ClassifiedSignal;
 }
 
 describe('runCurationTick — surfacing', () => {
@@ -420,5 +439,80 @@ describe('backoff / cadence helpers', () => {
     expect(canEmitDigestNow(now - 10_000, 1, now)).toBe(false); // within gap, small batch
     expect(canEmitDigestNow(now - 10_000, DIGEST_BURST_THRESHOLD, now)).toBe(true); // burst overrides gap
     expect(canEmitDigestNow(now - (DIGEST_MIN_GAP_SECONDS + 1) * 1000, 1, now)).toBe(true); // gap elapsed
+  });
+});
+
+describe('status cards — deterministic-status-cards P-002/P-003', () => {
+  const FIXED = Date.UTC(2026, 6, 17, 12, 0, 0);
+  const now = () => FIXED;
+
+  it('signalToReportItem maps kind→status token, keeps the label in text, carries the ref', () => {
+    const item = signalToReportItem(
+      cs({ id: 'escalation:e1', kind: 'blocker', title: 'Cups / fleet: no bees running', harness: 'infra-liveness', ref: 'escalation:e1' }),
+      now,
+    );
+    expect(item.status).toBe('blocked'); // ■ tone
+    expect(item.ref).toBe('escalation:e1'); // the drill-in
+    expect(item.text).toContain('**Blocked**'); // label preserved (information-preservation)
+    expect(item.text).toContain('[infra-liveness]'); // source chip
+    expect(item.text).toContain('Cups / fleet: no bees running');
+    expect(item.text).not.toContain('drill in'); // the ref is structured, not in the text
+  });
+
+  it('a cleared signal → resolved (● good), a completion → done, a decision → needs-human', () => {
+    expect(signalToReportItem(cs({ id: 'cleared:e1', kind: 'cleared', title: 'x', ref: 'e1' }), now).status).toBe('resolved');
+    expect(signalToReportItem(cs({ id: 'c1', kind: 'completion', title: 'x' }), now).status).toBe('done');
+    expect(signalToReportItem(cs({ id: 'd1', kind: 'decision', title: 'x' }), now).status).toBe('needs-human');
+  });
+
+  it('a signal with no ref yields an item with no ref key (no dead drill-in)', () => {
+    const item = signalToReportItem(cs({ id: 'p1', kind: 'progress', title: 'moved' }), now);
+    expect('ref' in item).toBe(false);
+  });
+
+  it('buildSurfaceReport → one Fleet status plan, one item per signal, refs preserved', () => {
+    const report = buildSurfaceReport(
+      [
+        cs({ id: 'escalation:e1', kind: 'blocker', title: 'blocked thing', ref: 'escalation:e1' }),
+        cs({ id: 'cleared:e2', kind: 'cleared', title: 'cleared thing', ref: 'e2' }),
+      ],
+      now,
+    );
+    expect(report.plans).toHaveLength(1);
+    expect(report.plans[0]?.title).toBe('Fleet status');
+    expect(report.plans[0]?.items).toHaveLength(2);
+    expect(report.plans[0]?.items?.[0]?.ref).toBe('escalation:e1');
+    expect(report.plans[0]?.items?.[1]?.status).toBe('resolved');
+  });
+
+  it('buildDigestReport → the count header as the card title, rows capped', () => {
+    const batch = Array.from({ length: 25 }, (_, i) => cs({ id: `p${i}`, kind: 'progress', title: `item ${i}` }));
+    const report = buildDigestReport(batch, now);
+    expect(report.title).toMatch(/Fleet update/);
+    expect(report.plans[0]?.items?.length).toBeLessThanOrEqual(20); // DIGEST_CARD_MAX_ROWS
+  });
+
+  it('REGRESSION: formatSignalLine text output is byte-identical after the card refactor', () => {
+    // The card must not change the text-only rendition (voice/search/fallback).
+    const line = formatSignalLine(
+      cs({ id: 'escalation:e1', kind: 'blocker', title: 'build wedged', detail: 'lock held', harness: 'papercup', ref: 'escalation:e1' }),
+      now,
+    );
+    expect(line).toBe('🚧 **Blocked** [papercup] — build wedged · lock held · drill in: `escalation:e1`');
+  });
+
+  it('runCurationTick passes a status-card report to surface alongside the text', async () => {
+    const { deps, surfaced, surfacedReports } = harness({
+      escalations: async () => [
+        { msgId: 'e1', severity: 'blocker', summary: 'build wedged', from: 'agent', planSlug: null, ts: new Date(FIXED).toISOString() },
+      ],
+    });
+    const result = await runCurationTick(deps);
+    expect(result.surfacedCount).toBe(1);
+    expect(surfaced[0]).toMatch(/drill in/); // text fallback unchanged
+    const report = surfacedReports[0];
+    expect(report).toBeDefined();
+    expect(report?.plans[0]?.items?.[0]?.ref).toBe('escalation:e1'); // the card carries the actionable ref
+    expect(report?.plans[0]?.items?.[0]?.status).toBe('blocked');
   });
 });

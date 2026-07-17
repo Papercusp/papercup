@@ -205,10 +205,31 @@ export function OperatorChat({
     [onAnswerChoice],
   );
 
-  // NOTE: no structured-report rendering here — the operator's `<report>`
-  // payload routes to the tiered Inbox (rendered there via ReportBlockCard);
-  // the chat stream (and the docked pane that reuses this path) shows
-  // conversation only. report-cards-inbox-reconciliation-2026-06-05 D-002.
+  // deterministic-status-cards-2026-07-17 P-003: the CURATOR's deterministic
+  // status turns (ChatMessage.report, mapped only for source:'system') render
+  // as a structured card here — in place of their flattened markdown lines —
+  // with each row's drill-in ref as a real action. The operator's OWN <report>
+  // still routes to the Inbox (its turns never set ChatMessage.report). Flag-
+  // gated: OFF → renderReport returns null → the plain-text content renders
+  // byte-identically (the clean kill-switch).
+  const curatorCardsOn = useFlag(FLAGS.CURATOR_STATUS_CARDS);
+  const [, setView] = useQueryState('opcv', parseAsString);
+  const [, setInboxSel] = useQueryState('opcis', parseAsString);
+  const handleDrillIn = useCallback(
+    (ref: string) => {
+      const sel = drillInRefToInbox(ref);
+      void setView('inbox');
+      void setInboxSel(sel);
+    },
+    [setView, setInboxSel],
+  );
+  const renderReport = useCallback(
+    (msg: ChatMessage): ReactNode | null => {
+      if (!curatorCardsOn || !msg.report) return null;
+      return <ReportBlockCard report={msg.report} onDrillIn={handleDrillIn} />;
+    },
+    [curatorCardsOn, handleDrillIn],
+  );
 
   return (
     <ChatConversation
@@ -286,6 +307,7 @@ export function OperatorChat({
       }
       renderToolChip={renderOperatorToolChip}
       renderToolCard={renderToolCard}
+      renderReport={renderReport}
       onLoadEarlier={onLoadEarlier}
       hasMoreEarlier={hasMoreEarlier}
       loadingEarlier={loadingEarlier}

@@ -3425,7 +3425,17 @@ export async function observeWorkItem(
 
 export async function releaseWorkItem(
   id: string,
-  opts: { harness?: string; expectedAssignee?: string } = {},
+  opts: {
+    harness?: string;
+    expectedAssignee?: string;
+    /** EI-15019 (default true — unchanged for every existing caller): pass false for
+     *  an INTERNAL claim-then-immediate-release round-trip (e.g. claim-spec-store.ts's
+     *  tier-3 quarantine of a spec-mismatched issue) that never exposed any observable
+     *  claimability change, so the broad `work-item:claimable` pool-wide wake is
+     *  suppressed — see emitClaimReleasedEvent's doc comment. `claim:released:<id>`
+     *  (the targeted, id-scoped key) still always fires. */
+    announceClaimable?: boolean;
+  } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
@@ -3444,8 +3454,12 @@ export async function releaseWorkItem(
   const emitReleased = (released: WorkItem | null): void => {
     if (released && wasClaimed) {
       // P-007: emitClaimReleasedEvent internally co-fires `work-item:claimable`
-      // for a row that returned to a claimable state — one hook here.
-      void import('./work-items-events').then((m) => m.emitClaimReleasedEvent(released)).catch(() => {});
+      // for a row that returned to a claimable state — one hook here. EI-15019:
+      // thread announceClaimable through so an internal quarantine release can
+      // suppress that broad co-fire.
+      void import('./work-items-events')
+        .then((m) => m.emitClaimReleasedEvent(released, { announceClaimable: opts.announceClaimable }))
+        .catch(() => {});
     }
   };
   if (wi.family === 'issue') {
