@@ -208,6 +208,51 @@ describe('reconcileLoopRoutines — robustness layers', () => {
   });
 });
 
+describe('reconcileLoopRoutines — ARMED-loop reachability sweep (EI-11407)', () => {
+  it('an ARMED pure loop (settled once, no in-flight turn) past the terminal window with an unreachable owner is auto-paused', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { id, ownerId } = await seedLoop({
+      ownerId: 'o-armed-dead', intervalSec: 60, lastFiredAtMs: T0, parked: false, nextFireAtMs: T0 + 3_660_000,
+    });
+    const cancelInboxWake = vi.fn(async () => 0);
+    const escalateDeadLoop = vi.fn(async () => {});
+    const checkUnreachableTerminalGuard = vi.fn(async () => ({
+      breach: true,
+      reason: 'dead-owner: unreachable (EI-11407 armed sweep)',
+    }));
+    const res = await reconcile({
+      sql,
+      nowMs: T0 + 2 * 3_600_000 + 1_000, // past the 2h terminal window (60s interval floors there)
+      checkUnreachableTerminalGuard,
+      cancelInboxWake,
+      escalateDeadLoop,
+    });
+    expect(res.terminated).toEqual([
+      { id, targetOwnerId: ownerId, reason: 'dead-owner: unreachable (EI-11407 armed sweep)' },
+    ]);
+    expect(res.rearmed).toBe(0);
+    expect(cancelInboxWake).toHaveBeenCalledWith(ownerId, WS);
+    expect(escalateDeadLoop).toHaveBeenCalledWith(expect.objectContaining({ routineId: id, targetOwnerId: ownerId }));
+    // The reconcile itself never re-arms next_fire_at on breach (the guard's own autoPause —
+    // exercised for real in loop-unreachable-guard.test.ts — owns deactivating the row).
+    const fire = await readFire(id);
+    expect(fire.nextFireMs).toBe(T0 + 3_660_000); // untouched by THIS sweep
+    warn.mockRestore();
+  });
+
+  it('an ARMED pure loop still within the terminal window is left untouched — guard never consulted', async () => {
+    const { id } = await seedLoop({
+      ownerId: 'o-armed-fresh', intervalSec: 60, lastFiredAtMs: T0, parked: false, nextFireAtMs: T0 + 3_660_000,
+    });
+    const checkUnreachableTerminalGuard = vi.fn(async () => ({ breach: true, reason: 'should-not-fire' }));
+    const res = await reconcile({ sql, nowMs: T0 + 3_600_000, checkUnreachableTerminalGuard }); // 1h < 2h window
+    expect(checkUnreachableTerminalGuard).not.toHaveBeenCalled();
+    expect(res.terminated).toEqual([]);
+    const fire = await readFire(id);
+    expect(fire.nextFireMs).toBe(T0 + 3_660_000); // untouched
+  });
+});
+
 describe('reconcileLoopRoutines — cron+loop composition (take the sooner)', () => {
   it('lowers a cron+loop next_fire_at to completed+interval when the loop fires sooner', async () => {
     const cronNext = T0 + 3_600_000; // cron-next an hour out

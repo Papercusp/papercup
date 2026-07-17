@@ -3,7 +3,48 @@
 **Plan:** `p2p-parity-closeout-lanes-2026-07-10` · item **P-007** (presence-gossip cutover).
 **Author:** su-18f2f (coordination lane, [owner:Avi 2026-07-16 "you are in charge of the
 coordination features only … work on this plan from start to finish"]).
-**Status: STAGED — one owned step, gated on LIVE-1 surface #4 GREEN.**
+**Status: FLIPPED + MOSTLY-VERIFIED (2026-07-17 ~02:55Z, su-18f2f) — see live scoreboard below.**
+
+## LIVE drill scoreboard (2026-07-17 02:55Z — su-18f2f, mid-drill carry)
+
+- **PRESENCE_GOSSIP flipped ON everywhere**: types.ts DARK_FLAGS entry removed (default now
+  true, production-defaults.test.ts green), pg-override ON in BOTH stores (tower + VM own
+  embedded store via `/tmp/vmcall.sh flags:set`). Presence loops rebooted (VM sidecar
+  22:35+22:51 EDT via /tmp/boot-headless-current.sh; tower bg-host 22:36 via dev:restart).
+- **V1 ✓** VM writer broadcasting (`[topic-gossip:papercusp/hive-presence] broadcast` in
+  /tmp/serve-current.log). **V2 ✓ BOTH directions** (~100s after flip): tower shared_presence
+  has `Avis-iMac_local-aviweiss` (user 1567022, pk Lm1ABoMRKV…); VM has the tower rows
+  (papercusp + hive-canary harnesses — NOT dupes, per-harness keying). Session leg: VM
+  carries 8+ tower session rows incl. su- ownerIds (su-4d3eb…); tower side vacuous (headless
+  VM has no sessions). Steady-state refresh confirmed (remote rows re-stamp within seconds).
+- **V3 addressability ✓ at resolve layer**: VM→tower `coord:send` to su-18f2f resolved via
+  the gossip roster (federated:true, recipient_remote, receiptEvent declared,
+  msg mrobxkzz-0000-abbcac12b5c24713909f7a868ed570b9). Message DELIVERY pending the
+  v2t peer-log rail (below); receipt assert pending same.
+- **Surface 3 (federated events) ✓ both directions** (t2v 20s post-flip; v2t proven pre-flip
+  gen4 6s + full backlog catch-up — NO DATA LOSS across restart freezes, availability-only).
+- **Surface 5 (claim-spec) ✓** 6s: drill-cup-18f2f landed VM origin='remote' fed_hlc+fed_ts.
+- **H1/H2/H3+M5/M6 in-process suites ✓** re-run this drill: presence-gossip.test.ts +
+  __tests__/coord-message-federation.integration.test.ts — 2/2 files green.
+- **OPEN WEDGE (blocks surfaces 1+2 completion + V4 soak)**: v2t PEER-LOG rail down since the
+  22:36 tower bg-host restart (gossip rails unaffected — different transport). Fresh VM
+  re-dial at 22:51 did NOT clear it; tower journal shows NO papercusp peer_connected since
+  22:48 — the VM's dial is not reaching the current bg-host gen (suspect: sibling tower
+  process wins the connection, or stale isolated-DHT announces on fixture :49838).
+  Prior gens recovered in ~15 min. KNOWN LEVER: another `dev:restart {target:'bg-host'}`
+  re-rolls it (recovery observed gen 22:14). Peer restart storm is held off by my fleet
+  broadcast (msg mrobhb9z…, ~60 min hold from 22:26 EDT).
+- **HRW next**: `resolveUseHrwRendezvous` reads getFlag PER-CALL (lock-authority.ts:163) —
+  flip needs NO reboot. Same-inputs verify done: both machines' fresh pot_slug='papercusp'
+  candidate sets = {IXfGu216EI…(tower), Lm1ABoMRKV…(VM)}, same code (VM runs tower-built
+  current serve.mjs), stores confirmed writable. REMAINING: flip both stores + types.ts
+  default (count 29→28 in production-defaults.test.ts:483) + compute winner once via real
+  `lockAuthorityForHive('papercusp')` (tsx, tower) + record.
+- **Remaining after wedge clears**: V3 delivery+receipt assert (backlog will deliver msg
+  mrobxkzz… automatically), V4 ~30-min no-dupe soak, HRW flip+verify, release fleet hold,
+  GREEN verdict → su-4d3eb (P-405/P-301), file EIs: bg-host dev:restart no-coalescing +
+  post-restart peer-log rejoin freeze (P-102 class, forensics in su-18f2f session
+  2026-07-17 01:4x-02:5xZ).
 This doc exists so the flip is a single verified action the instant the 2-machine rig
 (WI-4070, git lane) heals — no re-derivation, no ambiguity. Nothing here authorizes touching
 tower `bg-host` or the Mac VM lifecycle; **TOWER MUST NOT BE RESTARTED** [peer:63834].

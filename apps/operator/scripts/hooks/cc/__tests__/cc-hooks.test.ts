@@ -188,86 +188,17 @@ describe("cc PreToolUse hook — operator-independent paths", () => {
   });
 });
 
-// ── PostToolUse coord-inbox hook ───────────────────────────────────────
-// Operator-independent paths only: the psu-session + install gates, the
-// first-run cursor seed, and the fail-open contract (a coord blip must
-// NEVER block a turn / emit a deny). The live inbox→inject path needs a
-// running operator and is exercised by the live functional smoke.
-const COORD_HOOK = join(__dirname, "..", "posttooluse-coord-inbox.sh");
-const postPayload = {
-  tool_name: "Read",
-  tool_input: { file_path: "/x" },
-  tool_use_id: "t",
-  session_id: "s",
-  cwd: "/tmp",
-};
-
-function runCoord(extraEnv: Record<string, string> = {}, homeDir = home) {
-  const r = spawnSync("bash", [COORD_HOOK], {
-    input: payload(postPayload),
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: homeDir,
-      PAPERCUSP_LOCKS_CACHE_DIR: cache,
-      PAPERCUSP_SID: "", // cleared unless a test opts in (parent psu session sets it)
-      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1", // never reach a real operator
-      ...extraEnv,
-    },
-  });
-  return { status: r.status, stdout: (r.stdout ?? "").trim() };
-}
-
-describe("cc PostToolUse coord-inbox hook — operator-independent paths", () => {
-  it("no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)", () => {
-    const r = runCoord();
-    expect(r.status).toBe(0);
-    expect(r.stdout).toBe("");
-  });
-
-  it("psu session but not installed (no token) → no-op", () => {
-    const bareHome = fs.mkdtempSync(join(os.tmpdir(), "coordhook-bare-"));
-    const r = runCoord({ PAPERCUSP_SID: "sid-notok" }, bareHome);
-    fs.rmSync(bareHome, { recursive: true, force: true });
-    expect(r.status).toBe(0);
-    expect(r.stdout).toBe("");
-  });
-
-  it("first run seeds the cursor (no fetch, no inject) — even with operator unreachable", () => {
-    const sid = "sid-first";
-    const cur = join(cache, `coord-cursor-${sid}.json`);
-    if (fs.existsSync(cur)) fs.rmSync(cur);
-    const r = runCoord({ PAPERCUSP_SID: sid });
-    expect(r.status).toBe(0);
-    expect(r.stdout).toBe(""); // seeds only; never injects on first run
-    expect(fs.existsSync(cur)).toBe(true);
-    expect(typeof JSON.parse(fs.readFileSync(cur, "utf8")).since_ts).toBe(
-      "string",
-    );
-  });
-
-  it("subsequent run + operator unreachable → FAIL-OPEN (exit 0, no stdout)", () => {
-    const sid = "sid-second";
-    const cur = join(cache, `coord-cursor-${sid}.json`);
-    fs.writeFileSync(cur, JSON.stringify({ since_ts: "2020-01-01T00:00:00Z" }));
-    const r = runCoord({ PAPERCUSP_SID: sid });
-    expect(r.status).toBe(0); // a coord/operator blip never blocks the turn
-    expect(r.stdout).toBe(""); // and never injects junk
-  });
-
-  // NOTE: the P-015 gauge-on-empty-inbox path (operator returns entries:[] + a
-  // server-rendered `context_gauge` → the hook injects it) needs a live operator, which
-  // this box only permits on the real operator port — a mock server on a random loopback
-  // port is firewalled. So it is verified by the LIVE functional smoke, alongside the rest
-  // of this hook's inbox→inject path. The gauge STRING itself is unit-tested via
-  // renderBandedContextGauge (inbox-context-usage.test.ts).
-});
-
 // ── PostToolUse activity-report hook ───────────────────────────────────
 // Operator-independent paths only: the psu-session + install gates, the
-// fail-open contract, and the non-blocking (detached) guarantee. The live
-// report→agent_activity path needs a running operator and is exercised by
-// the activity-tool integration test + the live smoke recorded in the plan.
+// fail-open contract, and the first-run cursor seed. Since EI-11405
+// (coordination-hook-rpc-fanout-collapse-2026-07-16) this hook ALSO carries
+// the delta-aware coord fold that used to be the separate posttooluse-coord-
+// inbox.sh hook (now deleted) — it is therefore SYNCHRONOUS (it must read the
+// response to fold), not detached. The live report→agent_activity path AND
+// the live hook_bundle inbox→inject fold are exercised by
+// posttooluse-activity-report-bundle.test.ts (a stub operator, so the O(1)
+// unchanged-generation guard is regression-tested without a live operator)
+// plus the live functional smoke recorded in the plan.
 const ACTIVITY_HOOK = join(__dirname, "..", "posttooluse-activity-report.sh");
 const editPayload = {
   tool_name: "Edit",
@@ -288,6 +219,7 @@ function runActivity(
     env: {
       ...process.env,
       HOME: homeDir,
+      PAPERCUSP_LOCKS_CACHE_DIR: cache,
       PAPERCUSP_SID: "", // cleared unless a test opts in
       PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1", // never reach a real operator
       ...extraEnv,
@@ -315,37 +247,57 @@ describe("cc PostToolUse activity-report hook — operator-independent paths", (
     expect(r.stdout).toBe("");
   });
 
-  it("SID + token, SYNC mode, operator unreachable → FAIL-OPEN (exit 0, no stdout)", () => {
-    const r = runActivity({
-      PAPERCUSP_SID: "sid-sync",
-      PAPERCUSP_ACTIVITY_SYNC: "1",
-    });
-    expect(r.status).toBe(0); // a reporting blip never blocks the tool
+  it("operator unreachable → FAIL-OPEN (exit 0, no stdout)", () => {
+    const r = runActivity({ PAPERCUSP_SID: "sid-sync" });
+    expect(r.status).toBe(0); // a reporting/coord blip never blocks the tool
     expect(r.stdout).toBe(""); // and never emits anything onto the tool result
   });
 
-  it("malformed JSON in SYNC mode → fail-open (exit 0, no stdout)", () => {
+  it("malformed JSON → fail-open (exit 0, no stdout)", () => {
     const r = runActivity(
-      { PAPERCUSP_SID: "sid-junk", PAPERCUSP_ACTIVITY_SYNC: "1" },
+      { PAPERCUSP_SID: "sid-junk" },
       "not valid json {",
     );
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("");
   });
 
-  it("detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang", () => {
-    const t0 = Date.now();
-    // An unroutable host would hang a synchronous POST for the full timeout; the
-    // detached path must return near-instantly (it reparents the POST to init).
-    const r = runActivity({
-      PAPERCUSP_SID: "sid-detach",
-      PAPERCUSP_OPERATOR_URL: "http://10.255.255.1:81",
-    });
-    const elapsed = Date.now() - t0;
+  it("first run seeds the hook_bundle cursor BEFORE the request — even with operator unreachable", () => {
+    const sid = "sid-first";
+    const cur = join(cache, `activity-hook-bundle-${sid}.json`);
+    if (fs.existsSync(cur)) fs.rmSync(cur);
+    const r = runActivity({ PAPERCUSP_SID: sid });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe("");
-    expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 3s POST timeout
+    expect(r.stdout).toBe(""); // seeds only; never injects on first run
+    expect(fs.existsSync(cur)).toBe(true);
+    const seeded = JSON.parse(fs.readFileSync(cur, "utf8"));
+    expect(seeded.generation).toBeNull();
+    expect(typeof seeded.since_ts).toBe("string");
   });
+
+  it("subsequent run + operator unreachable → FAIL-OPEN, cursor left untouched", () => {
+    const sid = "sid-second";
+    const cur = join(cache, `activity-hook-bundle-${sid}.json`);
+    fs.writeFileSync(
+      cur,
+      JSON.stringify({ generation: "host-a:9", since_ts: "2020-01-01T00:00:00Z" }),
+    );
+    const r = runActivity({ PAPERCUSP_SID: sid });
+    expect(r.status).toBe(0); // a coord/operator blip never blocks the turn
+    expect(r.stdout).toBe(""); // and never injects junk
+    expect(JSON.parse(fs.readFileSync(cur, "utf8"))).toEqual({
+      generation: "host-a:9",
+      since_ts: "2020-01-01T00:00:00Z",
+    });
+  });
+
+  // NOTE: the O(1) unchanged-generation guard, the changed→inject fold, the P-015
+  // gauge-on-empty-inbox fallback, and the incomplete-hydrate retry reset are all
+  // regression-tested against a STUB operator in
+  // posttooluse-activity-report-bundle.test.ts (async spawn — spawnSync here would
+  // block the stub's own event loop, so those live outside this file). The server-
+  // side O(1) skip itself (unchanged generation ⇒ no inbox/glance query at all) is
+  // unit-tested in packages/operator-core/lib/agent-tools/activity/hook-bundle.test.ts.
 });
 
 // ── PreToolUse activity-report hook (EI-8997) ──────────────────────────
