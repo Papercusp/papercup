@@ -108,13 +108,22 @@ export async function listUnplacedPotFrontier(
 ): Promise<string[]> {
   const rows = await sql<{ feature_id: string }[]>`
     SELECT feature_id
-      FROM harness_shared.harness_features_consolidated
+      FROM harness_shared.harness_features_consolidated f
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       -- EI-13695: a row carrying a surviving work-item checkpoint is RECONCILE
+       -- work, not fresh placeable frontier — mirroring survey.ts's
+       -- fetchFrontierRows so this guard never demands "PLACE it this turn" for
+       -- an item the survey (correctly) withholds from placement.
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.carry_notes cn
+          WHERE cn.workspace_id = f.workspace_id
+            AND cn.scope IN ('workitem:' || f.harness_slug || ':' || f.feature_id, 'workitem:*:' || f.feature_id)
+            AND btrim(cn.note) <> '')
      ORDER BY created_ts ASC
      LIMIT ${limit}`;
   return rows.map((r) => r.feature_id);

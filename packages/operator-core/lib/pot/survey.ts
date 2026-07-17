@@ -486,6 +486,10 @@ export async function fetchFrontierRows(
             -- home pot's frontier. Unscoped only in the workspace-wide fallback (surveySlugs empty).
             ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
        )
+       -- EI-13695: a row carrying a surviving work-item checkpoint was already
+       -- attempted (a cup died before converging state) — it is RECONCILE work
+       -- (fetchReconcileFrontier), never fresh placeable frontier.
+       AND NOT ${hasWorkItemCheckpointSql(sql)}
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
        AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}
      ORDER BY created_ts ASC
@@ -599,6 +603,9 @@ export async function countPlaceableFrontier(
             -- home pot's frontier. Unscoped only in the workspace-wide fallback (surveySlugs empty).
             ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
        )
+       -- EI-13695: checkpoint-carrying rows are RECONCILE, not placeable — MUST
+       -- mirror fetchFrontierRows (this count gates starvation/throughput signals).
+       AND NOT ${hasWorkItemCheckpointSql(sql)}
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
        AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}`;
   return Number(rows[0]?.n ?? 0);
@@ -663,6 +670,102 @@ export async function countQuarantinedFrontier(
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
        AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}`;
   return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * EI-13695 — the FALSE-FRESH guard: does frontier row `f` carry a non-empty
+ * work-item CHECKPOINT (harness_shared.carry_notes, workitem scope)? A cup that
+ * finishes work and dies before `work_items:complete` leaves the item `todo` with
+ * its surviving checkpoint asserting COMPLETE/BLOCKED — indistinguishable from
+ * never-touched work everywhere the frontier is read. Re-placing it re-does
+ * finished work, and the repeated true-at-the-data-layer / wrong-as-an-action
+ * "fresh item" nudges train the Mug to distrust genuinely-fresh signals. So a
+ * checkpoint-carrying row is a RECONCILE row, never a fresh placeable one: the
+ * Mug converges it (checkpoint says done → verify + complete; says blocked →
+ * set_blocker; genuinely mid-flight → deliberately re-place, the checkpoint is
+ * the successor's continuity) via {@link fetchReconcileFrontier}. The scope
+ * matches work-item-checkpoint.ts's workItemScope + its EI-8805 wildcard
+ * canonicalization (a harness-null item keys under 'workitem:*:<id>').
+ */
+function hasWorkItemCheckpointSql(sql: postgres.Sql) {
+  return sql`EXISTS (
+    SELECT 1 FROM harness_shared.carry_notes cn
+     WHERE cn.workspace_id = f.workspace_id
+       AND cn.scope IN ('workitem:' || f.harness_slug || ':' || f.feature_id, 'workitem:*:' || f.feature_id)
+       AND btrim(cn.note) <> '')`;
+}
+
+/** A placeable-SHAPED frontier row withheld as RECONCILE (EI-13695): a prior cup
+ *  attempted it and died before converging item state — its checkpoint survives.
+ *  Carries the checkpoint head + write instant so the Mug routes it (complete /
+ *  set_blocker / deliberate re-place) without a per-item read. */
+export interface ReconcileFrontierRow {
+  feature_id: string;
+  harness_slug: string;
+  title: string;
+  item_kind: string;
+  /** First chars of the surviving checkpoint — enough to route the convergence. */
+  checkpoint_head: string;
+  /** Epoch ms of the checkpoint's last write (staleness signal, EI-8885). */
+  checkpoint_updated_ts: number | null;
+}
+
+/** The reconcile slice of the frontier: rows + the un-capped total. */
+export interface ReconcileFrontier {
+  rows: ReconcileFrontierRow[];
+  total: number;
+}
+
+/**
+ * Fetch the RECONCILE frontier (EI-13695): rows matching {@link fetchFrontierRows}'
+ * placeable shape (feature-family, `todo`, unassigned, admissible, not cursed,
+ * in-scope) that carry a non-empty work-item checkpoint — the set the fresh
+ * frontier now EXCLUDES. Newest-checkpoint first (the most recently attempted item
+ * is the most likely to have a decisive checkpoint), capped, with the un-capped
+ * total alongside.
+ */
+export async function fetchReconcileFrontier(
+  sql: postgres.Sql,
+  workspaceId: string,
+  surveySlugs: readonly string[],
+  limit = 10,
+): Promise<ReconcileFrontier> {
+  const breakerThreshold = placementConfig().breakerThreshold;
+  const rows = await sql<(ReconcileFrontierRow & { total: number })[]>`
+    SELECT f.feature_id, f.harness_slug, f.title, f.item_kind,
+           left(btrim(cn.note), 240) AS checkpoint_head,
+           cn.updated_ts AS checkpoint_updated_ts,
+           count(*) OVER ()::int AS total
+      FROM harness_shared.harness_features_consolidated f
+      JOIN LATERAL (
+        SELECT note, updated_ts FROM harness_shared.carry_notes cn
+         WHERE cn.workspace_id = f.workspace_id
+           AND cn.scope IN ('workitem:' || f.harness_slug || ':' || f.feature_id, 'workitem:*:' || f.feature_id)
+           AND btrim(cn.note) <> ''
+         ORDER BY cn.updated_ts DESC NULLS LAST
+         LIMIT 1
+      ) cn ON true
+     WHERE workspace_id = ${workspaceId}
+       AND ${frontierPlacementKindClause(sql, workspaceId)}
+       AND status = 'todo'
+       AND (taken_by IS NULL OR taken_by = '')
+       AND ${autoPickableWhereSql(sql, workspaceId)}
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.pot_placements p
+          WHERE p.workspace_id = f.workspace_id
+            AND p.work_item_id = f.feature_id
+            AND p.status = 'cursed'
+            AND p.fail_count >= ${breakerThreshold}
+            ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
+       )
+       ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
+       AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}
+     ORDER BY cn.updated_ts DESC NULLS LAST
+     LIMIT ${limit}`;
+  return {
+    rows: rows.map(({ total: _total, ...r }) => r),
+    total: Number(rows[0]?.total ?? 0),
+  };
 }
 
 /**
@@ -875,6 +978,18 @@ export interface PotSurvey {
    * ({@link countQuarantinedFrontier}); the survey just never wired one in.
    */
   frontierQuarantined: number;
+  /**
+   * EI-13695: placeable-SHAPED rows carrying a surviving work-item CHECKPOINT — a
+   * prior cup attempted them and died before converging item state (the false-fresh
+   * class). EXCLUDED from `frontier`: re-placing one invites re-doing finished work.
+   * The Mug RECONCILES these instead: checkpoint says done → verify + complete;
+   * says blocked → set_blocker; genuinely mid-flight → deliberately re-place (the
+   * checkpoint is the successor's continuity).
+   */
+  frontierReconcile: number;
+  /** The reconcile rows themselves (capped), with checkpoint heads — enough for the
+   *  Mug to route each convergence without a per-item read. */
+  reconcileRows: ReconcileFrontierRow[];
 }
 
 export interface SurveyDeps {
@@ -892,6 +1007,10 @@ export interface SurveyDeps {
    *  silent-starvation signal (EI-8498 / WI-4563). Injectable so the survey
    *  unit-tests with no DB, mirroring {@link fetchFrontier}. */
   fetchQuarantinedCount: (surveySlugs: readonly string[]) => Promise<number>;
+  /** The RECONCILE slice (EI-13695) — placeable-shaped rows a fresh frontier now
+   *  excludes because a dead cup's checkpoint survives on them. Injectable,
+   *  mirroring {@link fetchFrontier}; defaults to {@link fetchReconcileFrontier}. */
+  fetchReconcile: (surveySlugs: readonly string[], limit: number) => Promise<ReconcileFrontier>;
   now: () => number;
 }
 
@@ -933,6 +1052,23 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
           err instanceof Error ? err.message : err,
         );
         return 0;
+      }
+    },
+    fetchReconcile: async (surveySlugs, limit) => {
+      // EI-13695 legibility slice — FAIL-OPEN like the quarantined count: a broken
+      // reconcile read must never blank the Mug's placement survey; worst case the
+      // reconcile lane under-reports (→ empty) for one wake.
+      try {
+        const { sql } = getOrgPg();
+        return await withPgRetry(() => fetchReconcileFrontier(sql, workspaceId, surveySlugs, limit), {
+          label: 'pot-survey.fetchReconcileFrontier',
+        });
+      } catch (err) {
+        console.warn(
+          '[pot-survey] reconcile-frontier read failed — reporting none:',
+          err instanceof Error ? err.message : err,
+        );
+        return { rows: [], total: 0 };
       }
     },
     now: () => Date.now(),
@@ -988,7 +1124,7 @@ export async function surveyPot(
     );
   }
 
-  const [planRowsPerHarness, featureFrontierRows, escalatedIssueRows, frontierQuarantined] = await Promise.all([
+  const [planRowsPerHarness, featureFrontierRows, escalatedIssueRows, frontierQuarantined, reconcile] = await Promise.all([
     Promise.all(
       planSlugs.map(async (slug) => {
         try {
@@ -1023,6 +1159,9 @@ export async function surveyPot(
     // same surveySlugs) so `frontier: []` is diagnosable as deadlock-vs-idle
     // (EI-8498 / WI-4563). Fail-open in the default dep → never blanks the survey.
     deps.fetchQuarantinedCount(surveySlugs),
+    // The reconcile slice (EI-13695) — what the fresh frontier now excludes.
+    // Fail-open in the default dep → never blanks the survey.
+    deps.fetchReconcile(surveySlugs, 10),
   ]);
   // One combined row set flows through readiness/scope filtering below (EI-12275)
   // so an escalated issue is excluded by the same blocked_by/pause/eligible-plan
@@ -1117,6 +1256,8 @@ export async function surveyPot(
     frontier,
     frontierBlocked: blockedCount,
     frontierQuarantined,
+    frontierReconcile: reconcile.total,
+    reconcileRows: reconcile.rows,
   };
 }
 
@@ -1144,6 +1285,10 @@ export interface WorkspaceSurvey {
     /** Admission-withheld frontier summed across every surveyed pot (EI-8498 /
      *  WI-4563) — so the cross-pot view is deadlock-vs-idle legible too. */
     frontierQuarantined: number;
+    /** Reconcile frontier summed across every surveyed pot (EI-13695) — attempted
+     *  items whose dead cup's checkpoint survives; excluded from `frontier`. The
+     *  per-pot rows (with checkpoint heads) live on each perPot survey. */
+    frontierReconcile: number;
   };
   /** The pot home slugs surveyed (registry order). */
   hives: string[];
@@ -1225,11 +1370,13 @@ export async function surveyWorkspace(
   const frontierCandidates = new Map<string, { candidate: PlacementCandidate; scope: SurveyScope }>();
   let frontierBlocked = 0;
   let frontierQuarantined = 0;
+  let frontierReconcile = 0;
   for (const { pot, survey } of perPot) {
     for (const c of survey.plans) addCrossPotCandidate(planCandidates, { ...c, pot }, survey.scope);
     for (const c of survey.frontier) addCrossPotCandidate(frontierCandidates, { ...c, pot }, survey.scope);
     frontierBlocked += survey.frontierBlocked;
     frontierQuarantined += survey.frontierQuarantined;
+    frontierReconcile += survey.frontierReconcile;
   }
   const [plans, frontier] = await Promise.all([
     rankPlacements([...planCandidates.values()].map((v) => v.candidate)),
@@ -1238,7 +1385,7 @@ export async function surveyWorkspace(
 
   return {
     perPot,
-    crossPot: { plans, frontier, frontierBlocked, frontierQuarantined },
+    crossPot: { plans, frontier, frontierBlocked, frontierQuarantined, frontierReconcile },
     hives: potSlugs,
   };
 }

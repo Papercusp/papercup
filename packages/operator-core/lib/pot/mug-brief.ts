@@ -27,7 +27,7 @@
  */
 import type { Ranked } from '../queue-ranker';
 import type { PlacementCandidate } from './placement-ranker';
-import type { PotSurvey } from './survey';
+import type { PotSurvey, ReconcileFrontierRow } from './survey';
 import type { OpenPlacementSummary } from './placement-watchdog';
 import { IDLE_ACTIVITY_KINDS, steeringLooksInconsistent, type OwnerSteering } from '../owner-steering';
 
@@ -111,6 +111,13 @@ export interface MugBriefFloor {
    *  "no ready work" line, so an empty frontier never reads as a mysterious blind
    *  spot wake after wake. */
   frontierQuarantined?: number;
+  /** RECONCILE frontier (EI-13695 / PotSurvey.frontierReconcile): attempted items a
+   *  dead cup left un-converged (its checkpoint survives) — EXCLUDED from `frontier`.
+   *  These need convergence, not placement. */
+  frontierReconcile?: number;
+  /** The reconcile rows with checkpoint heads (PotSurvey.reconcileRows) — enough to
+   *  route each one (complete / set_blocker / deliberate re-place) without a read. */
+  reconcileRows?: readonly ReconcileFrontierRow[];
   /** Started plans with momentum, already ranked (PotSurvey.plans). */
   plans?: readonly Ranked<PlacementCandidate>[];
   /** Live cups: load + liveness (fleet:assignments). */
@@ -522,6 +529,20 @@ export function renderMugBrief(input: MugBriefInput): string {
   if (f.frontierBlocked && f.frontierBlocked > 0) {
     out.push(`(+${f.frontierBlocked} lane(s) held back by unsatisfied blocked_by — not yet placeable)`);
   }
+  // RECONCILE lane (EI-13695): attempted items a dead cup left un-converged — the
+  // false-fresh class. These are deliberately NOT in the frontier above: converge
+  // each one (its checkpoint head says how), never blind-place a cup on it.
+  if (f.frontierReconcile && f.frontierReconcile > 0) {
+    out.push('');
+    out.push(`### Reconcile — ${f.frontierReconcile} attempted item(s) left un-converged (dead cup, surviving checkpoint)`);
+    out.push(
+      '_NOT fresh work — converge state instead of placing: checkpoint says done → verify + `work_items:complete`; says blocked → `work_items:set_blocker`; genuinely mid-flight → re-place deliberately (the checkpoint is the successor\'s continuity)._',
+    );
+    for (const r of f.reconcileRows ?? []) {
+      const age = r.checkpoint_updated_ts != null ? `${Math.round((Date.now() - r.checkpoint_updated_ts) / 60000)}m ago` : 'age unknown';
+      out.push(`- **${r.feature_id}** (${r.harness_slug}) ${r.title} — checkpoint (${age}): ${r.checkpoint_head.replace(/\s+/g, ' ')}`);
+    }
+  }
 
   section(
     out,
@@ -622,14 +643,22 @@ export function renderMugBrief(input: MugBriefInput): string {
  * escalation/headroom/woke-by signals it gathered for the wake decision (D-004).
  */
 export function floorFromSurvey(
-  survey: Pick<PotSurvey, 'frontier' | 'plans' | 'frontierBlocked' | 'frontierQuarantined'>,
-  signals: Omit<MugBriefFloor, 'frontier' | 'plans' | 'frontierBlocked' | 'frontierQuarantined'> = {},
+  survey: Pick<
+    PotSurvey,
+    'frontier' | 'plans' | 'frontierBlocked' | 'frontierQuarantined' | 'frontierReconcile' | 'reconcileRows'
+  >,
+  signals: Omit<
+    MugBriefFloor,
+    'frontier' | 'plans' | 'frontierBlocked' | 'frontierQuarantined' | 'frontierReconcile' | 'reconcileRows'
+  > = {},
 ): MugBriefFloor {
   return {
     frontier: survey.frontier,
     plans: survey.plans,
     frontierBlocked: survey.frontierBlocked,
     frontierQuarantined: survey.frontierQuarantined,
+    frontierReconcile: survey.frontierReconcile,
+    reconcileRows: survey.reconcileRows,
     ...signals,
   };
 }

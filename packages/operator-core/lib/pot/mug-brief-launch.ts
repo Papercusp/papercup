@@ -462,6 +462,9 @@ export interface MugBriefFloorView {
   frontierTotal: number;
   frontierBlocked: number;
   frontierQuarantined: number;
+  /** RECONCILE frontier (EI-13695): attempted items a dead cup left un-converged —
+   *  excluded from `frontier`; they need convergence, not placement. */
+  frontierReconcile: number;
   /** Placement watchdog counts — the "why is nothing moving" footer. */
   openPlacements: { recovering: number; stranded: number; workingTracked: number };
   /** Open escalations needing the owner (BriefEscalation, verbatim). */
@@ -512,7 +515,7 @@ export async function computeMugBriefFloorView(
     workspaceId,
     installSlug,
   );
-  const empty = { frontier: [], plans: [], frontierBlocked: 0, frontierQuarantined: 0 };
+  const empty = { frontier: [], plans: [], frontierBlocked: 0, frontierQuarantined: 0, frontierReconcile: 0, reconcileRows: [] };
   const [survey, cups, escalations, openPlacements, capacity, carryJournal] = await Promise.all([
     surveyPot(workspaceId, installSlug, {
       ...(scopeFilter ? { scopeFilter } : {}),
@@ -540,6 +543,7 @@ export async function computeMugBriefFloorView(
     frontierTotal: survey.frontier.length,
     frontierBlocked: survey.frontierBlocked ?? 0,
     frontierQuarantined: survey.frontierQuarantined ?? 0,
+    frontierReconcile: survey.frontierReconcile ?? 0,
     openPlacements: {
       recovering: openPlacements.recovering,
       stranded: openPlacements.stranded,

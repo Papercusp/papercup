@@ -169,9 +169,14 @@ export async function main(deps: MaxTurnSweepCliDeps = {}): Promise<number> {
   const driver = makeDriver();
   // --out <file>: append each DRIVEN cell as one JSONL row the moment it resolves, so a
   // killed multi-hour campaign keeps every completed cell (score later from the file).
+  // Re-create the parent dir on EVERY append: scratch pruners can delete it mid-campaign,
+  // and the onCell observer's throws are swallowed by design — without this, every row
+  // after the prune is lost silently (bit the 2026-07-17 P-025 campaign).
   const onCell = outFile
     ? async (r: unknown) => {
-        const { appendFile } = await import('node:fs/promises');
+        const { appendFile, mkdir } = await import('node:fs/promises');
+        const { dirname } = await import('node:path');
+        await mkdir(dirname(outFile), { recursive: true });
         await appendFile(outFile, `${JSON.stringify(r)}\n`);
       }
     : undefined;
