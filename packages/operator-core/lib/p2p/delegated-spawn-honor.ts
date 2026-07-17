@@ -193,6 +193,14 @@ export interface DelegatedSpawnHonorDeps {
   setDisposition?: typeof setLocalOfferDispositionForOffer;
   spawnMembers?: (req: SpawnMembersRequest) => Promise<SpawnMembersResult>;
   emitReceipt?: typeof emitP2pReceipt;
+  /**
+   * WI-5306: preflight whether THIS host can actually RUN a delegated member for
+   * the seat's agent CLI, BEFORE claiming/spawning. Default resolves the CLI
+   * (`claude`/`omp`) via a login-shell `command -v` ({@link defaultProbeAgentRuntime}).
+   * A refusal here federates a receipt so the requester learns the host lacks
+   * the runtime, instead of the member phantom-"opening" and never joining.
+   */
+  probeAgentRuntime?: (model: string | undefined) => Promise<{ resolved: boolean; detail: string }>;
   nowMs?: () => number;
   honorWindowMs?: number;
 }
@@ -200,6 +208,84 @@ export interface DelegatedSpawnHonorDeps {
 async function defaultResolveDevicePubkey(githubUserId: number): Promise<string> {
   const keypair = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(githubUserId));
   return keypair.pubkeyBase64;
+}
+
+// ─── WI-5306: agent-runtime preflight ────────────────────────────────
+//
+// spawnConsole (and spawnMacConsole) report status:'ok' when the terminal
+// WINDOW launches — NOT when the agent process booted. buildConsoleOneliner
+// execs a login shell AFTER the greeting, so a member whose `claude`/`omp` CLI
+// is absent hits `command not found`, the window stays open, and the spawner
+// counts it opened anyway — honored "N opened", zero live members, no receipt,
+// the requesting leader waits forever (proven on the mac rig, which has no
+// `claude` CLI). Preflight the seat's agent CLI on THIS host and refuse LOUDLY
+// (federated receipt) BEFORE claiming the request, so a missing runtime is
+// visible instead of a phantom success.
+
+export type RuntimeProbeError = {
+  code?: number | string | null;
+  killed?: boolean;
+  signal?: string | null;
+  message?: string;
+} | null;
+
+/**
+ * Classify a `command -v <bin>` probe outcome. PURE (no I/O) + exported for
+ * unit tests. `err === null` ⇒ the probe exited 0 (binary resolved).
+ *
+ * Only a DEFINITIVE non-zero EXIT (a numeric code, not killed/signalled) proves
+ * the binary is absent. ENOENT (no bash on the host), a timeout kill, or a
+ * signal death cannot prove absence — those FAIL OPEN (resolved:true) so a
+ * flaky probe never blocks a host that can actually run the member (the spawn's
+ * own failure path still catches a genuinely broken launch).
+ */
+export function classifyRuntimeProbe(
+  agentBin: string,
+  err: RuntimeProbeError,
+): { resolved: boolean; detail: string } {
+  if (!err) return { resolved: true, detail: `'${agentBin}' is resolvable on the honoring host's login PATH` };
+  if (typeof err.code === 'number' && err.code !== 0 && !err.killed && !err.signal) {
+    const runtime = agentBin === 'omp' ? 'the omp local-model runner' : `the ${agentBin} CLI`;
+    return {
+      resolved: false,
+      detail:
+        `this host cannot run a '${agentBin}' member: '${agentBin}' is not on the member's login PATH ` +
+        `(command not found). Install ${runtime} on this machine, or delegate a seat whose model this host can run.`,
+    };
+  }
+  return {
+    resolved: true,
+    detail: `agent-runtime probe for '${agentBin}' was inconclusive (${err.message ?? String(err.code)}); assuming present`,
+  };
+}
+
+/**
+ * Probe whether the member's agent CLI (`claude`/`omp`/`codex`) is runnable on
+ * THIS honoring host, resolving it the way the member's OWN login shell will —
+ * `bash -lc 'command -v <bin>'`. The member launches under `bash -lc` and
+ * buildConsoleOneliner exports PATH from the LOGIN shell, so a background
+ * operator's own (narrower) PATH is NOT a faithful model — a login-shell probe
+ * is. Bounded (5s) + best-effort (see {@link classifyRuntimeProbe} for the
+ * fail-open policy). `agentBin` is a controlled literal, never user input.
+ */
+export async function probeAgentBinResolvable(agentBin: string): Promise<{ resolved: boolean; detail: string }> {
+  const { execFile } = await import('node:child_process');
+  return await new Promise((resolvePromise) => {
+    execFile('bash', ['-lc', `command -v ${agentBin}`], { timeout: 5000 }, (err) => {
+      resolvePromise(classifyRuntimeProbe(agentBin, err as RuntimeProbeError));
+    });
+  });
+}
+
+/**
+ * Default runtime preflight: pick the member's agent CLI from the seat model
+ * (isOmpLocalModel ⇒ omp, else claude) and probe it. The launch-on-plan import
+ * is DYNAMIC so this module — imported by the sync projection layer — never
+ * drags the agent-tools graph in until a request is actually being honored.
+ */
+async function defaultProbeAgentRuntime(model: string | undefined): Promise<{ resolved: boolean; detail: string }> {
+  const { isOmpLocalModel } = await import('../agent-tools/fleet_registry/launch-on-plan');
+  return probeAgentBinResolvable(isOmpLocalModel(model) ? 'omp' : 'claude');
 }
 
 /**
@@ -332,6 +418,7 @@ export async function honorSpawnRequestFromProjection(
   const setDisposition = deps.setDisposition ?? setLocalOfferDispositionForOffer;
   const spawnMembers = deps.spawnMembers ?? defaultSpawnMembers;
   const emitReceipt = deps.emitReceipt ?? emitP2pReceipt;
+  const probeAgentRuntime = deps.probeAgentRuntime ?? defaultProbeAgentRuntime;
   const nowMs = deps.nowMs ?? Date.now;
 
   const record = parseWorkOfferRecordJson(args.row.record_json);
@@ -409,6 +496,18 @@ export async function honorSpawnRequestFromProjection(
   const resolution = resolveSeatLaunch({ availability, count: payload.count, seatRef: slot.ref });
   if (!resolution.ok) {
     return refuse(resolution.refusal.code, resolution.refusal.detail, `refused:${resolution.refusal.code}`);
+  }
+
+  // Gate 4.5 (WI-5306): can this host actually RUN the member? spawnConsole
+  // 'ok' means a terminal WINDOW opened, not that the agent booted — a host
+  // missing the seat's agent CLI (`claude`/`omp`) silently reports it opened
+  // while zero members run. Preflight the runtime and refuse LOUDLY (a
+  // federated receipt) instead of claiming + phantom-spawning. Refused straight
+  // from the null disposition, so no 'honoring' claim is left dangling. Model
+  // resolved from the matched slot, so it targets the RIGHT CLI (claude vs omp).
+  const runtime = await probeAgentRuntime(resolution.launch.model);
+  if (!runtime.resolved) {
+    return refuse('agent_runtime_missing', runtime.detail, 'refused:agent_runtime_missing');
   }
 
   // Gate 5: the atomic claim — exactly one hook invocation spawns.

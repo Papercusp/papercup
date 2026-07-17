@@ -15,8 +15,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   SPAWN_REQUEST_HONOR_WINDOW_MS,
+  classifyRuntimeProbe,
   evaluateSpawnRequestTarget,
   honorSpawnRequestFromProjection,
+  probeAgentBinResolvable,
   type DelegatedSpawnHonorDeps,
 } from './delegated-spawn-honor';
 import { seatOfferId } from './offer-store-publish';
@@ -146,6 +148,10 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
   const setDisposition = vi.fn(async () => true);
   const spawnMembers = vi.fn(async () => ({ opened: 2, failed: 0, firstError: null }));
   const emitReceipt = vi.fn(async () => ({ ok: true }) as any);
+  // Passing runtime probe by default so honor tests never depend on whether the
+  // TEST host has `claude`/`omp` on its login PATH (WI-5306). The absent-runtime
+  // path is covered by its own test that injects a failing probe.
+  const probeAgentRuntime = vi.fn(async () => ({ resolved: true, detail: 'ok' }));
   const d: DelegatedSpawnHonorDeps = {
     hostAccepts: vi.fn(async () => true),
     resolveActor: vi.fn(async () => ({ githubUserId: UID_B })) as any,
@@ -155,10 +161,11 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     setDisposition,
     spawnMembers,
     emitReceipt,
+    probeAgentRuntime,
     nowMs: () => NOW,
     ...over,
   };
-  return { d, setDisposition, spawnMembers, emitReceipt };
+  return { d, setDisposition, spawnMembers, emitReceipt, probeAgentRuntime };
 }
 
 const ARGS = { workspaceId: WS, potHomeSlug: HOME, row: row() };
@@ -244,4 +251,72 @@ describe('honorSpawnRequestFromProjection', () => {
     expect(setDisposition).not.toHaveBeenCalled();
     expect(emitReceipt).not.toHaveBeenCalled();
   });
+
+  it('a host missing the seat agent CLI ⇒ refused:agent_runtime_missing + receipt, never claimed or spawned (WI-5306)', async () => {
+    const probeAgentRuntime = vi.fn(async () => ({ resolved: false, detail: "this host cannot run a 'claude' member" }));
+    const { d, setDisposition, spawnMembers, emitReceipt } = deps({ probeAgentRuntime });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+      outcome: 'refused',
+      code: 'agent_runtime_missing',
+    });
+    // Probed with the model resolved from the matched slot (haiku:low here).
+    expect(probeAgentRuntime).toHaveBeenCalledWith('haiku:low');
+    // Refused straight from the null disposition — the 'honoring' claim never runs,
+    // so a phantom spawn can never happen.
+    expect(spawnMembers).not.toHaveBeenCalled();
+    expect(setDisposition).toHaveBeenCalledTimes(1);
+    expect(setDisposition).toHaveBeenCalledWith(
+      WS,
+      HOME,
+      UID_A,
+      'spawnreq-0123456789abcdef',
+      'refused:agent_runtime_missing',
+      undefined,
+      undefined,
+    );
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'refusal',
+        action: 'delegated-seat:spawn',
+        offerId: 'spawnreq-0123456789abcdef',
+        refusal: expect.objectContaining({ code: 'agent_runtime_missing' }),
+      }),
+    );
+  });
+});
+
+// ── WI-5306: the agent-runtime preflight itself ──────────────────────────────
+
+describe('classifyRuntimeProbe (WI-5306, pure)', () => {
+  it('exit 0 (err null) ⇒ resolved', () => {
+    expect(classifyRuntimeProbe('claude', null)).toEqual({
+      resolved: true,
+      detail: expect.stringContaining('resolvable'),
+    });
+  });
+
+  it('a numeric non-zero exit ⇒ NOT resolved — a definitive command-not-found', () => {
+    const r = classifyRuntimeProbe('claude', { code: 1 });
+    expect(r.resolved).toBe(false);
+    expect(r.detail).toContain("cannot run a 'claude' member");
+    expect(r.detail).toContain('command not found');
+  });
+
+  it('names the omp local-model runner for an omp member', () => {
+    expect(classifyRuntimeProbe('omp', { code: 127 }).detail).toContain('omp local-model runner');
+  });
+
+  it('ENOENT (no bash) / timeout / signal death ⇒ FAIL OPEN (resolved, inconclusive)', () => {
+    expect(classifyRuntimeProbe('claude', { code: 'ENOENT', message: 'spawn bash ENOENT' }).resolved).toBe(true);
+    expect(classifyRuntimeProbe('claude', { code: null, killed: true, signal: 'SIGTERM' }).resolved).toBe(true);
+  });
+});
+
+describe('probeAgentBinResolvable (WI-5306, real login-shell probe)', () => {
+  it('resolves a binary that IS on the login PATH (sh) and refuses one that is not', async () => {
+    expect((await probeAgentBinResolvable('sh')).resolved).toBe(true);
+    const missing = await probeAgentBinResolvable('papercusp-nonexistent-agent-9f8a7b');
+    expect(missing.resolved).toBe(false);
+    expect(missing.detail).toContain('command not found');
+  }, 15_000);
 });
