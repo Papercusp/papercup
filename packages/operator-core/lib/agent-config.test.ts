@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseRoleBackends, parseTiers, parseTierCeilings, type AgentConfig } from './agent-config';
+import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseRoleBackends, parseTiers, parseTierCeilings, agentCmdBootWarning, type AgentConfig } from './agent-config';
 
 // Mock the PG-backed operator-state read so readAgentConfig exercises the
 // no-row fallback without touching a database.
@@ -175,5 +175,26 @@ describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () =
     expect(parseTiers([{ name: 'std', spec: 'haiku', compactionLimit: 5 }])).toEqual([
       { name: 'std', spec: 'haiku', compactionLimit: 20_000 },
     ]);
+  });
+});
+
+describe('agentCmdBootWarning (EI-727)', () => {
+  it('warns when both AGENT_CMD and CLAUDE are unset (the silent omp -p fallback)', () => {
+    const msg = agentCmdBootWarning({});
+    expect(msg).toBeTruthy();
+    expect(msg).toMatch(/omp -p/);
+    expect(msg).toMatch(/EI-727/);
+  });
+
+  it('stays silent once AGENT_CMD is set', () => {
+    expect(agentCmdBootWarning({ AGENT_CMD: 'claude -p' })).toBeNull();
+  });
+
+  it('stays silent once CLAUDE is set (legacy var)', () => {
+    expect(agentCmdBootWarning({ CLAUDE: 'claude -p' })).toBeNull();
+  });
+
+  it('an empty-string override still counts as unset (falsy, same as env-var semantics)', () => {
+    expect(agentCmdBootWarning({ AGENT_CMD: '', CLAUDE: '' })).toBeTruthy();
   });
 });

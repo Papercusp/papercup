@@ -38,7 +38,7 @@ import { registerHostPlatform } from '@papercusp/host-platform';
 import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
 import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFreshInstallGap } from '@papercusp/operator-core/lib/startup/validate-home-harness';
-import { applyToProcessEnv, readAgentConfig } from '@papercusp/operator-core/lib/agent-config';
+import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
 import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
 
@@ -147,6 +147,13 @@ export function runBootstrap(): void {
     } catch (e) {
       console.warn('[agent-config] boot env hydration failed:', (e as Error)?.message ?? e);
     }
+    // [EI-727] Fail loud BEFORE the first wake burns a turn silently discovering
+    // this live — see agentCmdBootWarning's docstring. The agentProducedTurn
+    // empty-output check (fleet/invoke-outcome.ts) already classifies the
+    // resulting no-turn fire as failed/infra_loss rather than a silent `done`;
+    // this is the earlier, cheaper signal.
+    const warning = agentCmdBootWarning(process.env);
+    if (warning) console.warn(`[agent-config] ${warning}`);
   })();
 
   // [A2 infra-fail-fast-build-integrity-2026-06-19] Boot native-addon self-check.

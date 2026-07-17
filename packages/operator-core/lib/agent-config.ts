@@ -340,6 +340,30 @@ function validBackend(v: unknown): AgentConfig['backend'] | undefined {
 }
 
 /**
+ * [EI-727] Every autonomous fire path builds its child-process command as
+ * `AGENT_CMD ?? CLAUDE ?? 'omp -p'` (harness-invoke-once.ts, harness-launch.ts,
+ * scoper/supervisor-actions.ts). When NEITHER env var is set, every Queen/bee/worker
+ * turn silently falls back to that hardcoded last-resort default — which has been
+ * OBSERVED to hang indefinitely / exit 0 with completely empty output on a host with
+ * no reachable provider credentials (the worst failure mode for autonomy: it looks
+ * alive, rc=0 in run.log, while doing nothing). Pure predicate (env map in, message
+ * or null out) called once at boot, right after config hydration, so a
+ * misconfigured host fails LOUD before the first wake burns a turn discovering it.
+ */
+export function agentCmdBootWarning(
+  env: Pick<NodeJS.ProcessEnv, 'AGENT_CMD' | 'CLAUDE'>,
+): string | null {
+  if (env.AGENT_CMD || env.CLAUDE) return null;
+  return (
+    "AGENT_CMD/CLAUDE are BOTH unset — autonomous agent turns on this host will fall " +
+    "back to the hardcoded default 'omp -p', which is UNVERIFIED here and has been " +
+    'observed to hang / produce completely empty rc=0 output when unconfigured (EI-727). ' +
+    "Set AGENT_CMD (e.g. 'claude -p') via .env.local or the agent-config settings page " +
+    'before relying on autonomous Queen/bee/worker turns on this host.'
+  );
+}
+
+/**
  * Resolve the backend that would actually be driven right now, collapsing
  * `'auto'` to a concrete `'claude-code' | 'omp'` the same way the harness's
  * `resolveAgentBackend` does: explicit config wins; otherwise infer from the

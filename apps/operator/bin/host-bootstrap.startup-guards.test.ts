@@ -58,4 +58,13 @@ describe('host-bootstrap wires every startup guard', () => {
     const catches = bootSrc.match(/catch\s*\(/g) ?? [];
     expect(catches.length).toBeGreaterThanOrEqual(STARTUP_GUARDS.length);
   });
+
+  // [EI-727] Not a STARTUP_GUARDS entry (it doesn't live in its own startup/validate-*
+  // module — it's a one-line pure predicate on agent-config.ts) but the same
+  // called-not-just-imported wiring risk applies: a silently-orphaned boot warning is as
+  // useless as an orphaned guard.
+  it('calls agentCmdBootWarning() at boot — else a host with no AGENT_CMD/CLAUDE silently falls back to the broken omp -p default', () => {
+    expect(bootSrc).toContain('agentCmdBootWarning');
+    expect(bootSrc).toMatch(/agentCmdBootWarning\s*\(/);
+  });
 });
