@@ -31,6 +31,9 @@ import {
 } from '@papercusp/facets';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { LivenessDot } from '@/app/coord/presence-ui';
+import { useLexicon } from '@/lib/useLexicon';
+import type { BoundLexicon } from '@papercusp/lexicon';
+import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import {
   agentGlyph,
   canForkSession,
@@ -150,9 +153,10 @@ export function headlineToSafeHtml(headline: string): string {
  *  Pure — exported for tests. */
 export function endedDisplayName(
   r: Pick<EndedSessionRow, 'id' | 'agent' | 'label' | 'coordOwnerId'>,
+  lex?: BoundLexicon,
 ): string {
   const label = r.label?.trim();
-  if (label) return label;
+  if (label) return lex ? agentDisplayLabel(label, lex) : label;
   if (r.coordOwnerId) return shortOwner(r.coordOwnerId);
   return `${r.agent ?? 'session'} #${r.id}`;
 }
@@ -369,6 +373,7 @@ function FacetBar({
   windowToken: string | null;
   onWindow: (token: string | null) => void;
 }) {
+  const lex = useLexicon();
   const selCount = facetSelectionSize(selection);
   const showClear = selCount > 0 || windowToken != null;
   return (
@@ -420,7 +425,9 @@ function FacetBar({
                     {v.meta?.color ? (
                       <span className="pc-agents-facets__dot" style={{ background: v.meta.color }} aria-hidden />
                     ) : null}
-                    <span className="pc-agents-facets__pill-text">{v.value}</span>
+                    <span className="pc-agents-facets__pill-text">
+                      {g.key === 'role' ? agentRoleLabel(v.value, lex) : v.value}
+                    </span>
                     <span className="pc-agents-facets__count">{v.count}</span>
                   </button>
                 );
@@ -441,6 +448,7 @@ function FacetBar({
  * ordering + coloring as the running roster), then the INACTIVE section.
  */
 export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: number }) {
+  const lex = useLexicon();
   const [sessions, setSessions] = useState<SearchSessionResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -612,7 +620,7 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
                 return (
                   <SearchResultRow
                     key={a.ownerId}
-                    title={displayName(a)}
+                    title={displayName(a, lex)}
                     glyph={agentGlyph(a)}
                     color={g.color}
                     meta={a.intent || a.currentPlanSlug || '—'}
@@ -635,7 +643,7 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           <div className="pc-agents-sessions__scroll">
             {inactiveResults.map((s) => {
               const row = s.session;
-              const title = row ? endedDisplayName(row) : `${s.sourceKind} · ${s.sessionId.slice(0, 8)}…`;
+              const title = row ? endedDisplayName(row, lex) : `${s.sourceKind} · ${s.sessionId.slice(0, 8)}…`;
               const endedAgo = row?.endedAt ? `ended ${fmtCompactAge(row.endedAt, nowMs)} ago` : '';
               const meta = [row?.feature, row?.planSlug, endedAgo].filter(Boolean).join(' · ') || '—';
               return (
@@ -694,6 +702,7 @@ export function InactiveSessionsSection({
   activeOwnerIds: ReadonlySet<string>;
   nowMs: number;
 }) {
+  const lex = useLexicon();
   // User-meaningful expand/collapse state goes in the URL (nuqs), never
   // useState (repo convention) — this ALSO fixes WI-3881: AgentsRunningPill
   // returns null (unmounting this whole subtree) whenever the live-roster
@@ -807,7 +816,7 @@ export function InactiveSessionsSection({
                   {agentGlyph({ agentPaneKind: null, role: r.role })}
                 </span>
                 <span className="pc-agents-roster__name" title={`${r.coordOwnerId ?? ''}${r.agent ? ` · ${r.agent}` : ''}`}>
-                  {endedDisplayName(r)}
+                  {endedDisplayName(r, lex)}
                 </span>
                 <span className="pc-agents-roster__doing">
                   {r.feature ? <span className="pc-agents-roster__feat">{r.feature}</span> : null}
@@ -830,7 +839,7 @@ export function InactiveSessionsSection({
           slug=""
           phase="staging"
           runId={inspecting.sessionId ?? inspecting.ompThreadId ?? String(inspecting.id)}
-          role={endedDisplayName(inspecting)}
+          role={endedDisplayName(inspecting, lex)}
           streamUrl={endedSessionStreamUrl(inspecting) ?? undefined}
           resumeTarget={resumableSessionId(inspecting)
             ? { sessionId: resumableSessionId(inspecting)!, live: false, canFork: canForkSession(inspecting) }

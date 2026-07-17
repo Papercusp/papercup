@@ -22,6 +22,8 @@ import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
 import { InactiveSessionsSection, SessionSearchResults, SessionsSearchInput } from './AgentsPillSessions';
 import { useLexicon } from '@/lib/useLexicon';
+import type { BoundLexicon } from '@papercusp/lexicon';
+import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 // Portable pill styles (the `.pc-advshell__action` button base) — shared with
 // AdvShell so this pill renders styled in the Quick Panel popup too, which does
 // not mount AdvShell (quick-panel-status-pills D-001). This pill's own wrapper +
@@ -327,9 +329,14 @@ export function shortOwner(id: string): string {
 /** The row's display NAME: the human owner-label, else a short owner id. NEVER the
  *  agent TYPE (claude/codex/omp) — that's the backend, not a name (it's shown as a
  *  chip in the detail instead). Pure — exported for tests. */
-export function displayName(a: Pick<RosterAgent, 'label' | 'ownerId'>): string {
+export function displayName(
+  a: Pick<RosterAgent, 'label' | 'ownerId'>,
+  lex?: BoundLexicon,
+): string {
   const label = a.label?.trim();
-  return label && label.length > 0 ? label : shortOwner(a.ownerId);
+  return label && label.length > 0
+    ? (lex ? agentDisplayLabel(label, lex) : label)
+    : shortOwner(a.ownerId);
 }
 
 /**
@@ -876,14 +883,14 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                   className="pc-agents-roster__check"
                   data-testid={`agent-select-${a.ownerId}`}
                   checked={selected.has(a.ownerId)}
-                  aria-label={`Select ${displayName(a)}`}
+                  aria-label={`Select ${displayName(a, lex)}`}
                   onChange={() => toggleSelected(a.ownerId)}
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => e.stopPropagation()}
                 />
                 <span className="pc-agents-roster__live">
                   {a.thinking ? (
-                    <ThinkingDot size={7} title={`${displayName(a)} — thinking`} />
+                    <ThinkingDot size={7} title={`${displayName(a, lex)} — thinking`} />
                   ) : (
                     <LivenessDot
                       liveness={isLiveByActivity(a, nowMs) ? 'live' : 'idle'}
@@ -910,7 +917,7 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                   {agentGlyph(a)}
                 </span>
                 <span className="pc-agents-roster__name" style={g.color ? { color: g.color } : undefined} title={`${a.ownerId}${a.agent ? ` · ${a.agent}` : ''}`}>
-                  {displayName(a)}
+                  {displayName(a, lex)}
                 </span>
                 <span className="pc-agents-roster__doing" title={a.intent || undefined}>
                   {a.feature ? <span className="pc-agents-roster__feat">{a.feature}</span> : null}
@@ -927,6 +934,7 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
           color={active.color}
           pinned={active.agent.ownerId === pinned}
           nowMs={nowMs}
+          lex={lex}
           onInspect={setInspecting}
         />
       ) : null}
@@ -969,18 +977,20 @@ function AgentDetailStrip({
   color,
   pinned,
   nowMs,
+  lex,
   onInspect,
 }: {
   agent: RosterAgent;
   color: string | null;
   pinned: boolean;
   nowMs: number;
+  lex: BoundLexicon;
   onInspect: (a: RosterAgent) => void;
 }) {
   return (
     <div className="pc-agents-roster__detail" data-testid="agent-detail">
       <div className="pc-agents-roster__detail-head" style={color ? { color } : undefined}>
-        {agentGlyph(agent)} <strong>{displayName(agent)}</strong>
+        {agentGlyph(agent)} <strong>{displayName(agent, lex)}</strong>
         {agent.fleetSlug ? <span className="pc-agents-roster__detail-fleet"> · {agent.fleetSlug}</span> : null}
         <span className="pc-agents-roster__detail-live"> · {isLiveByActivity(agent, nowMs) ? (agent.loopArmed ? 'live (loop armed)' : 'live') : 'idle'}</span>
         {agent.thinking ? (
@@ -991,7 +1001,7 @@ function AgentDetailStrip({
         {pinned ? <span className="pc-agents-roster__detail-pin"> · pinned</span> : null}
       </div>
       <dl className="pc-agents-roster__detail-grid">
-        <dt>Agent</dt><dd>{agent.agent ?? agent.role ?? '—'} · <code>{shortOwner(agent.ownerId)}</code></dd>
+        <dt>Agent</dt><dd>{agent.agent ?? (agentRoleLabel(agent.role, lex) || '—')} · <code>{shortOwner(agent.ownerId)}</code></dd>
         <dt>Plan</dt><dd>{agent.currentPlanSlug ?? '—'}</dd>
         <dt>Work item</dt><dd>{agent.feature ?? '—'}</dd>
         <dt>Doing</dt><dd>{agent.intent || '(no declared intent)'}</dd>

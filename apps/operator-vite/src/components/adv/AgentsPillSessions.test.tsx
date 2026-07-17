@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useSyncExternalStore } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
+import { lexiconFor } from '@papercusp/lexicon';
 import {
   appendEndedPage,
   endedDisplayName,
@@ -219,6 +220,13 @@ describe('endedDisplayName', () => {
     expect(endedDisplayName(endedRow({ coordOwnerId: 'su-ba914b41-b03b-4fdd' }))).toBe('su-ba914b41');
     expect(endedDisplayName(endedRow({ id: 12, agent: 'omp' }))).toBe('omp #12');
     expect(endedDisplayName(endedRow({ id: 12 }))).toBe('session #12');
+  });
+
+  it('normalizes generated legacy labels for display', () => {
+    expect(endedDisplayName(
+      endedRow({ label: 'overwatch · papercusp/kettle' }),
+      lexiconFor('classic'),
+    )).toBe('Kettle · papercusp/Kettle');
   });
 });
 

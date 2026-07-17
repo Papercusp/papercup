@@ -858,7 +858,12 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
-    expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();
+    // P-020's account-steering fix (operator-spawn.ts) now threads cup's OWN committed
+    // floor (gpt-5.6-luna:high, a codex-family spec) through PAPERCUSP_SPAWN_MODEL even
+    // with no bench flag — required so `inferBackendFromModelSpec` swaps the child to the
+    // codex binary instead of applying the OpenAI model text to a Claude command. "keeps
+    // its floor" now means exactly that value, not an absent pin.
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBe('gpt-5.6-luna:high');
   });
 
   it('does NOT pin a non-bee role even under the bench flag (only bench bees are pinned)', async () => {

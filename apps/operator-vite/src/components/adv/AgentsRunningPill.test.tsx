@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
+import { lexiconFor } from '@papercusp/lexicon';
 
 const H = vi.hoisted(() => ({
   active: [] as unknown[],
@@ -121,6 +122,13 @@ describe('displayName / shortOwner (pure — the name fix)', () => {
     expect(displayName({ label: 'su · su-5577c', ownerId: 'su-5577c5df-e2a2' })).toBe('su · su-5577c');
     // No label → a short owner id, NOT the raw long id and NOT "claude".
     expect(displayName({ label: '', ownerId: 'su-5577c5df-e2a2-49d2' })).toMatch(/^su-5577/);
+  });
+
+  it('normalizes a generated legacy label when a display lexicon is supplied', () => {
+    expect(displayName(
+      { label: 'overwatch · papercusp/kettle', ownerId: 'overwatch-1' },
+      lexiconFor('classic'),
+    )).toBe('Kettle · papercusp/Kettle');
   });
 });
 

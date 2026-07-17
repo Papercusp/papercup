@@ -5,6 +5,8 @@ import { ArrowLeft } from 'lucide-react';
 import { Modal } from './Modal';
 import { TONE } from './theme';
 import { Tooltip } from './Tooltip';
+import { useLexicon } from '../../lib/useLexicon';
+import { agentDisplayLabel } from './agent-display';
 import {
   useAgentThinkingStream,
   Entry,
@@ -98,6 +100,8 @@ export default function AgentInspectorModal({
    *  matched backfill entry and the pane auto-scrolls to it. */
   highlightTerm?: string;
 }) {
+  const lex = useLexicon();
+  const displayRole = agentDisplayLabel(role, lex);
   const { events, status, thinking, anchor } = useAgentThinkingStream(slug, phase, runId, streamUrl);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Elapsed baseline: the run start when known, else when this inspector opened
@@ -205,7 +209,7 @@ export default function AgentInspectorModal({
           // resume-in-place of a still-LIVE session opens a second CLI on the
           // same transcript (the collision the Resume tooltip warns about).
           fork,
-          label: resumeTarget.label ?? `${fork ? 'fork' : 'resume'} · ${role}`,
+          label: resumeTarget.label ?? `${fork ? 'fork' : 'resume'} · ${displayRole}`,
         }),
       });
       const data = await res.json().catch(() => null);
@@ -219,7 +223,7 @@ export default function AgentInspectorModal({
       setLaunchErr((e2) => ({ ...e2, [key]: e instanceof Error ? e.message : 'request failed' }));
       setLaunchState((s) => ({ ...s, [key]: 'err' }));
     }
-  }, [resumeTarget, role]);
+  }, [resumeTarget, displayRole]);
 
   const elapsedMs = Math.max(0, now - (startedAtMs ?? openedAtRef.current));
   const waiting = waitingMessage(status, elapsedMs);
@@ -236,7 +240,7 @@ export default function AgentInspectorModal({
     <Modal
       open={open}
       onOpenChange={(o) => { if (!o) onClose(); }}
-      title={`Agent inspector — ${role}`}
+      title={`Agent inspector — ${displayRole}`}
       srOnlyTitle
       contentStyle={{
         width: 'min(880px, 94vw)',
@@ -285,7 +289,7 @@ export default function AgentInspectorModal({
             </button>
           </Tooltip>
           <span>
-            <strong style={{ color: 'var(--fg)' }}>{role}</strong>
+            <strong style={{ color: 'var(--fg)' }}>{displayRole}</strong>
             {' · '}<code style={{ fontSize: 11 }}>{runId}</code>
           </span>
         </span>
