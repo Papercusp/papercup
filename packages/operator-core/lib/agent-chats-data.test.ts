@@ -19,6 +19,13 @@ vi.mock('./known-roles', () => ({
   getKnownRoles: () => ['worker', 'scoper', 'validator', 'orchestrator'],
 }));
 
+// The live workspace the data layer must stamp on writes / filter reads by
+// (WI-5125). Deliberately NOT 'default': the bug it guards was every chat
+// silently landing in 'default' regardless of the active workspace, so a test
+// asserting against 'default' would pass on the broken code.
+const TEST_WS = 'papercusp-workspace';
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => TEST_WS }));
+
 // Capture the SQL + bound args that the data layer hands to the legacy client.
 // The same fake client backs listChats (.all), getChat/createChat (.get +
 // .run) and archiveChat (.run) — every prepare() records its SQL + bound
@@ -162,8 +169,8 @@ describe('listChats — bounded query (F-C1)', () => {
     const r = await listChats({ slug: 'foo' });
     expect(r.ok).toBe(true);
     expect(lastSql).toContain('LIMIT ? OFFSET ?');
-    expect(lastSql).toContain('WHERE archived_at IS NULL'); // active-only by default
-    expect(allMock).toHaveBeenCalledWith(LIST_CHATS_DEFAULT_LIMIT, 0);
+    expect(lastSql).toContain('archived_at IS NULL'); // active-only by default
+    expect(allMock).toHaveBeenCalledWith(TEST_WS, LIST_CHATS_DEFAULT_LIMIT, 0);
   });
 
   it('projects columns (no SELECT *, no transcript body — turn_count instead)', async () => {
@@ -205,32 +212,49 @@ describe('listChats — bounded query (F-C1)', () => {
 
   it('clamps limit above 100 down to 100', async () => {
     await listChats({ slug: 'foo', limit: 5000 });
-    expect(allMock).toHaveBeenCalledWith(100, 0);
+    expect(allMock).toHaveBeenCalledWith(TEST_WS, 100, 0);
   });
 
   it('clamps limit at/below 0 up to 1', async () => {
     await listChats({ slug: 'foo', limit: 0 });
-    expect(allMock).toHaveBeenCalledWith(1, 0);
+    expect(allMock).toHaveBeenCalledWith(TEST_WS, 1, 0);
     allMock.mockClear();
     await listChats({ slug: 'foo', limit: -10 });
-    expect(allMock).toHaveBeenCalledWith(1, 0);
+    expect(allMock).toHaveBeenCalledWith(TEST_WS, 1, 0);
   });
 
   it('threads a custom limit + offset (keyset paging)', async () => {
     await listChats({ slug: 'foo', limit: 25, offset: 50 });
-    expect(allMock).toHaveBeenCalledWith(25, 50);
+    expect(allMock).toHaveBeenCalledWith(TEST_WS, 25, 50);
   });
 
   it('floors a negative offset to 0 and truncates fractional values', async () => {
     await listChats({ slug: 'foo', limit: 10.9, offset: -3 });
-    expect(allMock).toHaveBeenCalledWith(10, 0);
+    expect(allMock).toHaveBeenCalledWith(TEST_WS, 10, 0);
   });
 
   it('includeArchived drops the archived_at filter but stays bounded', async () => {
     await listChats({ slug: 'foo', includeArchived: true, limit: 30 });
     expect(lastSql).toContain('LIMIT ? OFFSET ?');
-    expect(lastSql).not.toContain('WHERE archived_at IS NULL');
-    expect(allMock).toHaveBeenCalledWith(30, 0);
+    expect(lastSql).not.toContain('archived_at IS NULL');
+    expect(allMock).toHaveBeenCalledWith(TEST_WS, 30, 0);
+  });
+
+  // WI-5125 — the list MUST be workspace-scoped, archived or not.
+  //
+  // The per-harness `agent_chats` view filters on harness_slug ALONE, so an
+  // unscoped list returns rows from every workspace sharing the slug.
+  // openFeatureChat's reuse-before-create picks an existing chat off this list:
+  // an unscoped hit hands ChatPanel a foreign chat id whose workspace-scoped
+  // detail read then matches nothing — the "loading chat…" spinner, reproduced
+  // even with a correct create path. This is the guard for that second path.
+  it.each([
+    ['active-only', { slug: 'foo' }],
+    ['includeArchived', { slug: 'foo', includeArchived: true }],
+  ])('scopes the list to the active workspace (%s) (WI-5125)', async (_label, args) => {
+    await listChats(args);
+    expect(lastSql).toContain('workspace_id = ?');
+    expect(allMock.mock.calls[0]?.[0]).toBe(TEST_WS);
   });
 });
 
@@ -342,8 +366,8 @@ describe('createChat', () => {
     // one INSERT + one SELECT, no harness_features probe
     const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
     expect(insert).toBeDefined();
-    // INSERT bound args: (id, role, feature_id, title, transcript)
-    expect(insert?.args.slice(1)).toEqual(['worker', null, 'worker', '[]']);
+    // INSERT bound args: (id, workspace_id, role, feature_id, title, transcript)
+    expect(insert?.args.slice(1)).toEqual([TEST_WS, 'worker', null, 'worker', '[]']);
     expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(false);
   });
 
@@ -361,7 +385,7 @@ describe('createChat', () => {
       active: false, // taken_by null → not active
     });
     const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
-    expect(insert?.args.slice(1)).toEqual(['worker', 'F-9', 'worker · F-9', '[]']);
+    expect(insert?.args.slice(1)).toEqual([TEST_WS, 'worker', 'F-9', 'worker · F-9', '[]']);
     expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(true);
   });
 
@@ -369,7 +393,25 @@ describe('createChat', () => {
     getMock.mockResolvedValueOnce(ROW({ role: 'scoper', title: 'Custom' }));
     await createChat({ slug: 'foo', role: 'scoper', title: 'Custom' });
     const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
-    expect(insert?.args[3]).toBe('Custom');
+    // (id, workspace_id, role, feature_id, title, …) — title is arg 4.
+    expect(insert?.args[4]).toBe('Custom');
+  });
+
+  // WI-5125 — the owner-reported "loading chat… forever" bug.
+  //
+  // The per-harness `agent_chats` view carried
+  // `ALTER COLUMN workspace_id SET DEFAULT 'default'` (migration 116), so a
+  // create that OMITTED workspace_id silently succeeded with the wrong tenant:
+  // every chat filed under 'default' while the UI reads the row scoped to the
+  // ACTIVE workspace → zero rows → an eternal spinner. The column must be
+  // stamped EXPLICITLY from the live registry; the view default cannot know it.
+  it('stamps the ACTIVE workspace on the insert — never the view default (WI-5125)', async () => {
+    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
+    await createChat({ slug: 'foo', role: 'worker' });
+    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    expect(insert?.sql).toMatch(/workspace_id/);
+    expect(insert?.args[1]).toBe(TEST_WS);
+    expect(insert?.args[1]).not.toBe('default');
   });
 
   it('wraps an insert failure as a 500 envelope', async () => {

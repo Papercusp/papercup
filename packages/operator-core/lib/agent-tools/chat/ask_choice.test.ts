@@ -423,7 +423,7 @@ describe('argsSchema — stringified options coercion (operator_turns seq 11831,
   });
 
   it('ADVERTISES the string form too — the calling harness validates raw input against the advertised JSON schema before zod runs (seq 12076)', async () => {
-    const { toArgsJsonSchema } = await import('@papercusp/tooldef');
+    const { toArgsJsonSchema } = await import('@papercusp/agent-mcp');
     const js = toArgsJsonSchema('chat:ask_choice', (askChoiceTool as { args: never }).args) as {
       properties?: { options?: { anyOf?: Array<{ type?: string }> } };
     };

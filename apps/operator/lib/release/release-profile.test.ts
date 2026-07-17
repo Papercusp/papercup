@@ -373,7 +373,7 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
       evaluateOpts: { now: NOW },
       rubricOpts: {
         deps: {
-          listScorecards: async (opts: { rubricRef: string }) =>
+          listScorecards: async (opts: { rubricRef?: string } = {}) =>
             opts.rubricRef === 'blender-release-readiness'
               ? [scorecardRow({ ratings: { c1: { rating: 'broken', evidence: 'e' }, c2: { rating: 'pass', evidence: 'e' } }, gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } })]
               : [healthyScorecard],

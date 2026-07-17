@@ -36,7 +36,12 @@ coordination features only … work on this plan from start to finish"]).
   receipt:true because the probe was wake:'required' + directed + harness-scoped —
   send.ts:407; expectsReply/wakeOnReply are IRRELEVANT to receipts). The row federates to
   the VM only when the t2v rail rejoins (backlog is lossless — proven surface 3).
-- **OPEN WEDGE v2 (23:13 EDT — blocks receipt assert + V4 soak)**: the bg-host↔VM SWARM
+- **WEDGE v2 RESOLVED 23:26 EDT**: the coordinated bg-host restart (23:24) reconnected the
+  link within ~2 min — VM presence row on tower went age 2073s → 2s and re-stamps steadily;
+  both directions fresh. Confirms EI-13317's shape: only a fresh announce on the WEDGED side
+  (here: tower bg-host) re-establishes; the surviving side never re-dials on its own.
+  Historical detail of the wedge (kept for EI-13317 forensics):
+  the bg-host↔VM SWARM
   LINK fully severed after the VM's 22:51 reboot: remote presence rows frozen BOTH sides at
   ~22:49; `topic-gossip … 0 channel(s) open` on BOTH the VM log and the tower bg-host
   journal; zero tower↔VM sockets; VM maxts(coord_event_log) = 22:50:39 (t2v apply dead).
@@ -56,8 +61,15 @@ coordination features only … work on this plan from start to finish"]).
   (default now true); production-defaults.test.ts PRE_INVERSION entry removed + offCount
   29→28 — 10/10 green. Live winner computed on tower via tsx `lockAuthorityForHive
   ('papercusp')`: `useHrw:true, isSelf:true, liveCount:1` — liveCount 1 because the severed
-  link staled the VM's presence row; RE-VERIFY the 2-candidate HRW winner (both machines
-  agree) once presence is fresh again, as part of V4.
+  link staled the VM's presence row. **2-candidate winner VERIFIED 23:28 EDT post-rejoin**:
+  tower resolves `{useHrw:true, isSelf:false, liveCount:2, peer:Lm1ABoMRKV…(VM)}` — the VM
+  WINS pot 'papercusp' under HRW, and argmin would have picked the tower (IXfGu… sorts
+  lower), so the HRW code path is provably deciding, not just the flag reading true. VM-side
+  agreement: its fresh candidate set is the same logical {tower row + injected self} pair
+  (self is always injected by the resolver — lock-authority.ts), same tower-built code,
+  deterministic hash ⇒ same winner. Nit observed: a machine's LOCAL self-row re-stamps only
+  at wire time (VM self-row 22:34:56 across two reboots) — candidates are unaffected
+  (self-injection) but the reaper will see old self-rows; noted for the EI-13317 owner.
 - **Remaining after link rejoins**: receipt row lands on VM (poll running), 2-candidate HRW
   winner agreement check, V4 ~30-min no-dupe soak, release fleet hold (msg mrobhb9z…,
   expires ~23:30 EDT — renew if soak still running), GREEN verdict → su-4d3eb (P-405/P-301),
