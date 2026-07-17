@@ -125,12 +125,10 @@ function stub(over: Partial<StubWorkItem> & { id: string }): StubWorkItem {
 
 /**
  * Insert a REAL base-table work-item row carrying a `payload.plan_item` stamp — the
- * source the periodic sweep's candidate query AND findAllLinkedWorkItems's stamp
- * backstop both read (getWorkItem is still the mock, so pair each with a `stub`).
- * `scalarShape` reproduces production's jsonb-STRING-scalar payload binding (the
- * `to_jsonb(text)` shape createWorkItem writes); `false` stores a plain jsonb object
- * — the normalized-payload CASE must handle BOTH (this is what the pre-existing
- * "stamp path not covered" NOTE left unproven).
+ * source the periodic sweep's candidate query (harness_shared.work_items) AND
+ * findAllLinkedWorkItems's stamp backstop both read. getWorkItem is still the mock,
+ * so pair each row with a `stub` of the same id. Payload is a plain jsonb object,
+ * matching production (verified: every live stamped payload is object-shaped).
  */
 async function insertWorkItemRow(o: {
   id: string;
@@ -139,14 +137,12 @@ async function insertWorkItemRow(o: {
   planSlug: string;
   itemId: string;
   harness?: string;
-  scalarShape?: boolean;
 }) {
   const inner = JSON.stringify({ plan_item: { plan_slug: o.planSlug, item_id: o.itemId } });
-  const payload = o.scalarShape ? rootSql`to_jsonb(${inner}::text)` : rootSql`${inner}::jsonb`;
   await rootSql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
-    VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status}, ${payload}, 0, 0)`;
+    VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status}, ${inner}::jsonb, 0, 0)`;
 }
 
 describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
@@ -327,11 +323,11 @@ describe('reconcileLinkedWorkItemsForPlanItem — dropped plan item (EI-14693)',
 });
 
 describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)', () => {
-  it('heals BOTH a feature and an issue orphan of an already-`done` plan item (both jsonb payload shapes)', async () => {
+  it('heals BOTH a feature and an issue orphan of an already-`done` plan item', async () => {
     // Real base-table rows carrying the stamp (the candidate + stamp-backstop source)
     // + matching stub entries (getWorkItem/setWorkItemState are mocked).
-    await insertWorkItemRow({ id: 'F-sweep', kind: 'feature', status: 'todo', planSlug: 'psweep', itemId: 'P-100', scalarShape: true });
-    await insertWorkItemRow({ id: 'WI-sweep', kind: 'bug', status: 'open', planSlug: 'psweep', itemId: 'P-100', scalarShape: false });
+    await insertWorkItemRow({ id: 'F-sweep', kind: 'feature', status: 'todo', planSlug: 'psweep', itemId: 'P-100' });
+    await insertWorkItemRow({ id: 'WI-sweep', kind: 'bug', status: 'open', planSlug: 'psweep', itemId: 'P-100' });
     stub({ id: 'F-sweep', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     stub({ id: 'WI-sweep', harness: 'sheets', state: 'open', family: 'issue', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-100', status: 'done' }] });
@@ -346,7 +342,7 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   });
 
   it('maps a `dropped` plan item to deprecated/closed in the sweep too', async () => {
-    await insertWorkItemRow({ id: 'F-swdrop', kind: 'feature', status: 'todo', planSlug: 'psd', itemId: 'P-1', scalarShape: false });
+    await insertWorkItemRow({ id: 'F-swdrop', kind: 'feature', status: 'todo', planSlug: 'psd', itemId: 'P-1' });
     stub({ id: 'F-swdrop', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'dropped' }] });
 
@@ -357,7 +353,7 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   });
 
   it('is FAIL-CLOSED: a candidate whose plan item is still `wip` is left untouched', async () => {
-    await insertWorkItemRow({ id: 'F-open', kind: 'feature', status: 'todo', planSlug: 'popen', itemId: 'P-1', scalarShape: false });
+    await insertWorkItemRow({ id: 'F-open', kind: 'feature', status: 'todo', planSlug: 'popen', itemId: 'P-1' });
     stub({ id: 'F-open', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'wip' }] });
 
@@ -370,7 +366,7 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   });
 
   it('is FAIL-CLOSED: a candidate whose plan cannot be resolved (getPlanRow → null) is left untouched', async () => {
-    await insertWorkItemRow({ id: 'F-noplan', kind: 'feature', status: 'todo', planSlug: 'pnull', itemId: 'P-1', scalarShape: false });
+    await insertWorkItemRow({ id: 'F-noplan', kind: 'feature', status: 'todo', planSlug: 'pnull', itemId: 'P-1' });
     stub({ id: 'F-noplan', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue(null);
 
@@ -382,8 +378,8 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   });
 
   it('does NOT enumerate an already-terminal work-item as a candidate (non-terminal predicate)', async () => {
-    await insertWorkItemRow({ id: 'F-term', kind: 'feature', status: 'passed', planSlug: 'pterm', itemId: 'P-1', scalarShape: false });
-    await insertWorkItemRow({ id: 'WI-term', kind: 'bug', status: 'resolved', planSlug: 'pterm', itemId: 'P-2', scalarShape: false });
+    await insertWorkItemRow({ id: 'F-term', kind: 'feature', status: 'passed', planSlug: 'pterm', itemId: 'P-1' });
+    await insertWorkItemRow({ id: 'WI-term', kind: 'bug', status: 'resolved', planSlug: 'pterm', itemId: 'P-2' });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }, { id: 'P-2', status: 'done' }] });
 
     const result = await reconcileOrphanedPlanItemWorkItems();
@@ -394,7 +390,7 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   });
 
   it('skips a candidate carrying independent in-flight progress (lastProgressAt)', async () => {
-    await insertWorkItemRow({ id: 'F-active', kind: 'feature', status: 'wip', planSlug: 'pact', itemId: 'P-1', scalarShape: false });
+    await insertWorkItemRow({ id: 'F-active', kind: 'feature', status: 'wip', planSlug: 'pact', itemId: 'P-1' });
     stub({ id: 'F-active', harness: 'sheets', state: 'wip', family: 'feature', lastProgressAt: '2026-07-10T00:00:00Z' });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }] });
 

@@ -302,46 +302,34 @@ export async function reconcileOrphanedPlanItemWorkItems(
 
   const { sql } = getOrgPg();
   // 1. Enumerate candidate plan-items from NON-terminal work-items carrying a
-  //    plan_item stamp. Workspace-agnostic on the stamp exactly like
-  //    findAllLinkedWorkItems above — the plan-item ref is the join key; the
-  //    per-item reconciler re-resolves the plan properly. `harness_slug` (feature)
-  //    / `scope` (issue) give a best-effort harness hint for that re-read.
+  //    plan_item stamp, in ONE query over the unified base table
+  //    (harness_shared.work_items, mig 374) rather than the harness_features_-
+  //    consolidated / engineer_issues VIEWS. The issues view projects
+  //    `(payload - '_ei')`, which throws `cannot delete from scalar` when the
+  //    planner evaluates it over a string-scalar payload during inlining; the base
+  //    table exposes the raw `payload` (the normalized-payload CASE handles either
+  //    jsonb shape). `status` is family-agnostic here: a feature settles at
+  //    passed/deprecated and an issue at resolved/closed, so one NOT IN the union of
+  //    both excludes every terminal item across families. Workspace-agnostic on the
+  //    stamp exactly like findAllLinkedWorkItems; `harness_slug` is the getPlanRow
+  //    hint; the per-item reconciler re-resolves the plan.
   const cands = new Map<string, OrphanCandidate>();
   const npF = normalizedPayloadExpr(sql, 'payload');
   const key = (planSlug: string, itemId: string) => `${planSlug} ${itemId}`;
 
-  const featureRows = await sql<{ plan_slug: string; item_id: string; harness_slug: string | null }[]>`
+  const rows = await sql<{ plan_slug: string; item_id: string; harness_slug: string | null }[]>`
     SELECT DISTINCT ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
                     ${npF}->'plan_item'->>'item_id'  AS item_id,
                     harness_slug
-      FROM harness_shared.harness_features_consolidated
-     WHERE status NOT IN ('passed', 'deprecated')
-       AND payload IS NOT NULL
+      FROM harness_shared.work_items
+     WHERE payload IS NOT NULL
+       AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')
        AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
        AND ${npF}->'plan_item'->>'item_id' IS NOT NULL
      LIMIT ${cap}`;
-  for (const r of featureRows) {
+  for (const r of rows) {
     const k = key(r.plan_slug, r.item_id);
     if (!cands.has(k)) cands.set(k, { planSlug: r.plan_slug, itemId: r.item_id, harnessSlug: r.harness_slug ?? null });
-  }
-
-  const issueRows = await sql<{ plan_slug: string; item_id: string; scope: string | null }[]>`
-    SELECT DISTINCT ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
-                    ${npF}->'plan_item'->>'item_id'  AS item_id,
-                    scope
-      FROM harness_shared.engineer_issues
-     WHERE state NOT IN ('resolved', 'closed')
-       AND payload IS NOT NULL
-       AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
-       AND ${npF}->'plan_item'->>'item_id' IS NOT NULL
-     LIMIT ${cap}`;
-  for (const r of issueRows) {
-    const k = key(r.plan_slug, r.item_id);
-    if (!cands.has(k)) {
-      const harnessSlug =
-        typeof r.scope === 'string' && r.scope.startsWith('harness:') ? r.scope.slice('harness:'.length) : null;
-      cands.set(k, { planSlug: r.plan_slug, itemId: r.item_id, harnessSlug });
-    }
   }
   out.candidatePlanItems = cands.size;
 
