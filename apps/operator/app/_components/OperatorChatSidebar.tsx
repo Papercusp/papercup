@@ -294,16 +294,23 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const inboxOpen = view === 'inbox';
   const plansOpen = view === 'plans';
   // deterministic-status-cards-2026-07-17 P-003: a curator status card's
-  // drill-in opens the inbox (opcv=inbox) and selects the referenced item
-  // (opcis). Owned here (this component holds the nuqs view state) and passed
-  // into OperatorChat, which stays provider-free.
+  // drill-in opens the inbox (opcv=inbox), switches to the 'all' filter, and
+  // selects the referenced item (opcis). The 'all' filter is REQUIRED: the
+  // inbox defaults to 'needs' (decision-tier only), so an operational/alert
+  // escalation — the dominant curator signal — has the right id but is filtered
+  // OUT of the visible list, leaving the selection with no row to land on (the
+  // owner's "just opens the inbox page" bug). Owned here (this component holds
+  // the nuqs view state) and passed into OperatorChat, which stays provider-free.
   const [, setInboxSel] = useQueryState('opcis', parseAsString);
+  const [, setInboxFilter] = useQueryState('opci', parseAsString);
   const handleCardDrillIn = useCallback(
     (ref: string) => {
+      const sel = drillInRefToInbox(ref);
       void setView('inbox');
-      void setInboxSel(drillInRefToInbox(ref));
+      if (sel) void setInboxFilter('all');
+      void setInboxSel(sel);
     },
-    [setView, setInboxSel],
+    [setView, setInboxFilter, setInboxSel],
   );
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;
