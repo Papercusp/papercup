@@ -30,13 +30,13 @@ const PLAN = [
   '### D-002 — Second decision',
   'Date: 2026-06-20',
   'Already ratified.',
-  'Ratified: Avi on 2026-06-21',
+  'Ratified: Alice on 2026-06-21',
   '',
 ].join('\n');
 
 describe('ratifyDecisionInBody', () => {
   it('appends a Ratified line, preserving head + Date + existing body content', () => {
-    const { newBody, found, alreadyRatified } = ratifyDecisionInBody(PLAN, 'D-001', 'Avi', '2026-07-17');
+    const { newBody, found, alreadyRatified } = ratifyDecisionInBody(PLAN, 'D-001', 'Alice', '2026-07-17');
     expect(found).toBe(true);
     expect(alreadyRatified).toBe(false);
 
@@ -46,7 +46,7 @@ describe('ratifyDecisionInBody', () => {
     expect(d1?.date).toBe('2026-06-19'); // Date preserved
     expect(d1?.body).toContain('Original body text.');
     expect(d1?.body).toContain('Related: P-001');
-    expect(d1?.body).toContain('Ratified: Avi on 2026-07-17');
+    expect(d1?.body).toContain('Ratified: Alice on 2026-07-17');
 
     // sibling untouched
     const d2 = parsed.decisions.find((d) => d.id === 'D-002');
@@ -59,18 +59,18 @@ describe('ratifyDecisionInBody', () => {
     expect(alreadyRatified).toBe(true);
     expect(newBody).toBe(PLAN); // unchanged
     const d2 = parsePlan(newBody).decisions.find((d) => d.id === 'D-002');
-    expect(d2?.body).toContain('Ratified: Avi on 2026-06-21'); // original stamp, not overwritten
+    expect(d2?.body).toContain('Ratified: Alice on 2026-06-21'); // original stamp, not overwritten
   });
 
   it('defaults `ratifiedOn` to today when omitted', () => {
     const today = new Date().toISOString().slice(0, 10);
-    const { newBody } = ratifyDecisionInBody(PLAN, 'D-001', 'Avi');
+    const { newBody } = ratifyDecisionInBody(PLAN, 'D-001', 'Alice');
     const d1 = parsePlan(newBody).decisions.find((d) => d.id === 'D-001');
-    expect(d1?.body).toContain(`Ratified: Avi on ${today}`);
+    expect(d1?.body).toContain(`Ratified: Alice on ${today}`);
   });
 
   it('returns found:false for an unknown decision id (body unchanged)', () => {
-    const { newBody, found, alreadyRatified } = ratifyDecisionInBody(PLAN, 'D-099', 'Avi', '2026-07-17');
+    const { newBody, found, alreadyRatified } = ratifyDecisionInBody(PLAN, 'D-099', 'Alice', '2026-07-17');
     expect(found).toBe(false);
     expect(alreadyRatified).toBe(false);
     expect(newBody).toBe(PLAN);

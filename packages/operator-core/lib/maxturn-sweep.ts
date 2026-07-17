@@ -433,7 +433,11 @@ export interface SweepScoreParams {
   minTaskSuccessRate: number;
   /** …and ≤ this length-stop rate (hops hitting the output door; default 0.05). */
   maxStopReasonLengthRate: number;
-  /** …and ≥ this spill-chase success rate (agent actually read the spilled pointers; default 0.95). */
+  /** …and ≥ this spill-chase success rate WHEN MEASURED (default 0.95). A point whose
+   *  cells never exercised spill-chase (mean null — e.g. a drain-only canary) is NOT
+   *  failed by this gate: null is "not exercised", not "failed" (WI-5003 — treating
+   *  null as failing made the gate structurally unsatisfiable for raw-file workloads
+   *  before the fixture-coverage metric existed, and would still veto narrowed runs). */
   minSpillChaseSuccessRate: number;
   /** Minimum ok cells behind a (class, target) point before it is trusted (default 1). */
   minCellsPerPoint: number;
@@ -517,8 +521,9 @@ export function scoreMaxTurnSweep(results: CellResult[], params: SweepScoreParam
       meanTaskSuccessRate >= params.minTaskSuccessRate &&
       meanStopReasonLengthRate !== null &&
       meanStopReasonLengthRate <= params.maxStopReasonLengthRate &&
-      meanSpillChaseSuccessRate !== null &&
-      meanSpillChaseSuccessRate >= params.minSpillChaseSuccessRate;
+      // Spill-chase gates only when MEASURED: null = no cell at this point
+      // exercised it (not a failure — see minSpillChaseSuccessRate's doc).
+      (meanSpillChaseSuccessRate === null || meanSpillChaseSuccessRate >= params.minSpillChaseSuccessRate);
     points.push({
       sessionClass,
       maxTurnTargetTokens: target,

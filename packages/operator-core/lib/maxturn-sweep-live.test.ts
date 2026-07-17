@@ -122,6 +122,63 @@ describe('extractCellMetricsFromJsonl — the pure transcript grader', () => {
     });
     expect(extractCellMetricsFromJsonl(synthetic)).toEqual(emptyCellMetrics());
   });
+
+  // WI-5003: raw-file workloads never spill through a result-door, so spill-chase
+  // was null on EVERY campaign cell and the 0.95 gate could never pass. For those,
+  // the declared fixture IS the spill: success = union Read-window coverage.
+  describe('spillFixture coverage (raw-file spill-chase)', () => {
+    const FIXTURE = '/bench/wd/fixture.log';
+    const readLine = (i: number, id: string, input: Record<string, unknown>) =>
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: ts(i),
+        message: {
+          id,
+          model: 'claude-opus-4-8',
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 1 },
+          content: [{ type: 'tool_use', name: 'Read', input }],
+        },
+      });
+    const opts = { spillFixture: { path: FIXTURE, lines: 4_000 } };
+
+    it('full paged coverage ⇒ 1; overlap never double-counts', () => {
+      const jsonl = [
+        readLine(0, 'm1', { file_path: FIXTURE, offset: 1, limit: 2000 }),
+        readLine(1, 'm2', { file_path: FIXTURE, offset: 1500, limit: 2500 }), // overlaps + finishes
+      ].join('\n');
+      expect(extractCellMetricsFromJsonl(jsonl, opts).spillChaseSuccessRate).toBe(1);
+    });
+
+    it('half coverage ⇒ 0.5; an offset-less/limit-less Read counts as the default 2000-line window', () => {
+      const jsonl = readLine(0, 'm1', { file_path: FIXTURE });
+      expect(extractCellMetricsFromJsonl(jsonl, opts).spillChaseSuccessRate).toBe(0.5);
+    });
+
+    it('a session that NEVER read the fixture scores 0 — a real failure, distinct from null/not-exercised', () => {
+      const jsonl = [
+        assistantLine({ id: 'm1', i: 0 }),
+        readLine(1, 'm2', { file_path: '/bench/wd/other.md', offset: 1, limit: 4000 }), // different path
+      ].join('\n');
+      expect(extractCellMetricsFromJsonl(jsonl, opts).spillChaseSuccessRate).toBe(0);
+    });
+
+    it('without a declared fixture the metric stays null (unchanged not-exercised semantics)', () => {
+      const jsonl = readLine(0, 'm1', { file_path: FIXTURE, offset: 1, limit: 4000 });
+      expect(extractCellMetricsFromJsonl(jsonl).spillChaseSuccessRate).toBeNull();
+    });
+
+    it('result-door pointers take precedence over fixture coverage when both are present', () => {
+      const spillLine = JSON.stringify({
+        type: 'user',
+        timestamp: ts(1),
+        message: { content: [{ type: 'tool_result', content: '[result-door: full result at /scratch/t/result-door-9.md]' }] },
+      });
+      // Fixture fully covered, but the result-door spill was never chased ⇒ 0/1.
+      const jsonl = [readLine(0, 'm1', { file_path: FIXTURE, offset: 1, limit: 4000 }), spillLine].join('\n');
+      expect(extractCellMetricsFromJsonl(jsonl, opts).spillChaseSuccessRate).toBe(0);
+    });
+  });
 });
 
 describe('buildBenchmarkKickoff / buildLogFixture', () => {

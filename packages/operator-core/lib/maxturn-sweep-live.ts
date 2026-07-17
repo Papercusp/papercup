@@ -85,11 +85,18 @@ export type SweepAccountRouting = 'auto' | 'default' | (string & {});
  *  spawn but land zero API turns, yielding all-null-but-`'ok'` rows while the
  *  7-account gateway pool sits idle (root-caused 2026-07-17, WI-5003; the fleet
  *  runs on `--account=auto` for exactly this reason). Owner directive
- *  [owner:Avi 2026-07-17 "pin them to the gateway"]. */
+ *  [owner 2026-07-17 "pin them to the gateway"]. */
 export const DEFAULT_SWEEP_ACCOUNT_ROUTING: SweepAccountRouting = 'auto';
 
 /** Per-repeat wall-clock cap. A cell that cannot finish its benchmark inside this
- *  is captured with whatever transcript it produced (metrics still extract). */
+ *  is captured with whatever transcript it produced (metrics still extract).
+ *  15min (was 10): every benchmark task must be COMPLETABLE well inside the cap or
+ *  taskSuccessRate measures the timeout, not the config — the 2026-07-17 campaign's
+ *  file-writes cells (then 8 docs ≈ 23min of writing) ALL timed out at 0/…-done,
+ *  capping mean task success at ~0.67 and making the 0.95 gate unsatisfiable
+ *  (WI-5003). Sized so the largest task (3×~400-line docs ≈ 9min observed) keeps
+ *  ~40% headroom; completed cells early-terminate on the done marker, so a bigger
+ *  cap never slows a good cell. */
 export const DEFAULT_SWEEP_TASK_TIMEOUT_MS = 15 * 60_000;
 
 /** Where benchmark sessions do their file work — NEVER the shared repo tree. */
@@ -334,18 +341,26 @@ export function buildBenchmarkKickoff(task: BenchmarkTask, cell: SweepCell, work
       );
       break;
     case 'file-heavy-writes':
+      // 3 docs, not more: the task must be COMPLETABLE well inside
+      // DEFAULT_SWEEP_TASK_TIMEOUT_MS or taskSuccessRate measures the timeout,
+      // not the config (8 docs ≈ 23min vs a 10min cap zeroed the metric on every
+      // 2026-07-17 campaign cell — WI-5003).
       body.push(
-        `Author 8 substantial files ${workDir}/doc-1.md … doc-8.md. Each must be a coherent ~400-line technical`,
-        'design document on a distinct invented subsystem (architecture, data model, failure modes, test plan).',
-        'Write each file in full — large outputs are the point of this workload.',
+        `Author 3 substantial files ${workDir}/doc-1.md, doc-2.md, doc-3.md. Each must be a coherent ~400-line`,
+        'technical design document on a distinct invented subsystem (architecture, data model, failure modes,',
+        'test plan). Write each file in full — large outputs are the point of this workload.',
       );
       break;
     case 'long-log-analysis':
+      // The Read-tool mandate makes spill-chase MEASURABLE: the extractor scores
+      // union line-coverage of the fixture from Read tool_use windows (a shell
+      // pipeline reads invisibly and would under-credit the chase — WI-5003).
       body.push(
         `Read ${workDir}/fixture.log (a long service log). Produce ${workDir}/analysis.md with: the distinct`,
         'error classes and their counts, the time window of the worst error burst, the three noisiest components,',
-        'and a root-cause hypothesis per error class citing line numbers. Page through the whole log — large tool',
-        'results are the point of this workload.',
+        'and a root-cause hypothesis per error class citing line numbers. Page through the WHOLE log using the',
+        'Read tool with offset/limit (never shell commands like grep/awk/sed — reading every line via the Read',
+        'tool is the point of this workload: its large results are what is being measured).',
       );
       break;
     default:
@@ -354,9 +369,15 @@ export function buildBenchmarkKickoff(task: BenchmarkTask, cell: SweepCell, work
   return [...header, ...body, ...footer].join('\n');
 }
 
+/** The long-log fixture's line count — shared by the generator (prepareWorkDir)
+ *  and the extractor's spill-fixture coverage denominator, so the two can never
+ *  drift. >READ_DEFAULT_LIMIT_LINES by design: the fixture must not fit in one
+ *  Read or there is no spill to chase. */
+export const SWEEP_LOG_FIXTURE_LINES = 4_000;
+
 /** Generate the long-log fixture the 'long-log-analysis' task reads (~lines lines,
  *  a few recurring error classes with one burst window). Deterministic. */
-export function buildLogFixture(lines = 4_000): string {
+export function buildLogFixture(lines = SWEEP_LOG_FIXTURE_LINES): string {
   const components = ['sync-gateway', 'pg-pool', 'wake-executor', 'vite-dev', 'embedder'];
   const errors = ['ETIMEDOUT upstream', 'pool exhausted', 'schema drift detected', 'socket hang up'];
   const out: string[] = [];
@@ -634,7 +655,23 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
         const finalJsonl = await readTranscript(ownerId).catch(() => null);
         const jsonl = finalJsonl ?? lastJsonl;
         if (jsonl == null) throw new Error(`sweep repeat ${repeat}: no transcript under ${ownerId}`);
-        perRepeat.push(extractCellMetricsFromJsonl(jsonl));
+        const metrics = extractCellMetricsFromJsonl(
+          jsonl,
+          cell.taskKind === 'long-log-analysis'
+            ? { spillFixture: { path: join(workDir, 'fixture.log'), lines: SWEEP_LOG_FIXTURE_LINES } }
+            : {},
+        );
+        // A zero-hop transcript means the session never completed ONE API call —
+        // a routing/capacity/auth failure, not a benchmark result. It must be the
+        // cell's ERROR, never an all-null row stamped 'ok': the 2026-07-17
+        // campaign silently recorded 10+ such rows (WI-5003) and the dataset
+        // read as present-but-empty exactly where load peaked.
+        if (metrics.hopsPerTask == null) {
+          throw new Error(
+            `sweep repeat ${repeat}: zero-hop transcript under ${ownerId} — the session made no API calls (routing/capacity/auth failure)`,
+          );
+        }
+        perRepeat.push(metrics);
       } finally {
         await clear(ownerId).catch(() => {
           /* best-effort — never mask the run error, but never leave silently either */
