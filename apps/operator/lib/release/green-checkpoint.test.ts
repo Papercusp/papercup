@@ -587,6 +587,29 @@ describe('runGreenCheckpoint', () => {
       vi.unstubAllEnvs();
     });
 
+    it('a tip re-run that fails to EXECUTE is unknown — never a false "REPRODUCE at tip"', async () => {
+      // A tree-setup/exec failure is ABSENCE of evidence, not evidence the failures
+      // reproduce. realCheckpointDeps.runTestsAtRef used to swallow a setupTree throw
+      // and return {pass:false}, which classifyRedAgainstTip reads as tipRetest.ran ⇒
+      // "failures REPRODUCE at tip <sha> — genuine red, holding the gate" — a confident
+      // claim about a tip that was never run. It must reach the 'unknown' branch instead:
+      // same held gate, honest reason. (WI-5110.)
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      await commit('src/failing.test.ts', 'fixed', 'c3 — the fix, landed after the cut');
+      const { deps } = bothPathsWired({ passesAtTip: true });
+      deps.runTestsAtRef = async () => {
+        throw new Error('tip tree setup failed');
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(r.retriage).toMatchObject({ classification: 'unknown', autoRefire: false });
+      expect(r.retriage?.detail ?? '').not.toMatch(/REPRODUCE/i);
+      expect(r.advanced).toBe(false); // still holds the gate — only the REASON changes
+    });
+
     it('a STALE red REFIRES on the tip and can advance — the rescue that seven gate runs never reached', async () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);

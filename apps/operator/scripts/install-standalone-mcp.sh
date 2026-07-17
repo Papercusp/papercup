@@ -214,14 +214,13 @@ CC_HOOK_SRC_DIR="${SCRIPT_DIR}/hooks/cc"
 CC_HOOK_DEST_DIR="${HOME}/.papercusp/hooks/cc"
 CC_PRE_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-locks-acquire.sh"
 CC_POST_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-locks-release.sh"
-# Separate PostToolUse hook: surface NEW coord:inbox messages mid-turn
-# (psu sessions only). Independent of the lock hooks, wired under its own
-# settings.json entry so the two never collide.
-CC_COORD_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-coord-inbox.sh"
 # Separate PostToolUse hook: mirror every native tool call into the cross-CLI
 # ACTIVITY BRIDGE (papercusp-worker-integration-2026-06-04) → the pui fleet view
-# + curator. psu sessions only (scopes itself via PAPERCUSP_SID). Fire-and-forget
-# + detached, so it adds no latency; its own settings.json entry, matcher "*".
+# + curator, AND (EI-11405 / coordination-hook-rpc-fanout-collapse-2026-07-16)
+# fold in NEW coord:inbox messages mid-turn on the SAME round trip — the
+# separate posttooluse-coord-inbox.sh hook this used to be paired with is
+# retired. psu sessions only (scopes itself via PAPERCUSP_SID). Its own
+# settings.json entry, matcher "*"; synchronous (it reads the folded response).
 CC_ACTIVITY_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-activity-report.sh"
 # PreToolUse counterpart (EI-8997): the SAME activity bridge, reported at
 # dispatch time instead of completion — closes the D-003 claim-renewal gap a
@@ -322,52 +321,6 @@ for event, cmd in (('PreToolUse', pre_cmd), ('PostToolUse', post_cmd)):
 # only key; skip codex homes.
 if path.rstrip('/').endswith('.claude/settings.json'):
     cfg['enableAllProjectMcpServers'] = True
-
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, 'w') as f:
-    json.dump(cfg, f, indent=2)
-PYEOF
-}
-
-# Merge the coord-inbox PostToolUse hook into a settings.json as its OWN
-# entry (matcher "*" — every tool, so new coord messages reach the agent
-# mid-turn). Idempotent: drops any prior entry pointing at our script,
-# preserves all other hooks (incl. the lock entries), then appends fresh.
-#   $1 = settings.json path
-merge_coord_hook() {
-  python3 - "$1" "$CC_COORD_HOOK" "$WORKSPACE_ROOT" <<'PYEOF'
-import json, os, sys, time
-path, coord, workspace_root = sys.argv[1:4]
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError
-except FileNotFoundError:
-    cfg = {}
-except (json.JSONDecodeError, ValueError):
-    os.rename(path, path + '.bak.' + str(int(time.time())))
-    cfg = {}
-
-ours = {coord, os.path.basename(coord)}
-
-def drop_ours(entry):
-    # Filter OUT just OUR command(s) from one hook entry (command-level, not whole-
-    # entry): keeps a co-located FOREIGN command, e.g. a live settings.json's Bash
-    # entry carrying both our gate hook and a third-party `rtk hook claude` — a
-    # whole-entry drop silently destroyed that foreign command (EI-8997 follow-up).
-    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
-    return {**entry, 'hooks': kept} if kept else None
-
-# The hook scopes itself to psu sessions via PAPERCUSP_SID, but pass the
-# workspace root through too for parity with the lock hooks.
-cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {coord}"
-
-hooks = cfg.setdefault('hooks', {})
-arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
-arr.append({'matcher': '*',
-            'hooks': [{'type': 'command', 'command': cmd}]})
-hooks['PostToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
@@ -1116,10 +1069,6 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
   cp "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" "$CC_PRE_HOOK"
   cp "${CC_HOOK_SRC_DIR}/posttooluse-locks-release.sh" "$CC_POST_HOOK"
   chmod 755 "$CC_PRE_HOOK" "$CC_POST_HOOK"
-  if [ -f "${CC_HOOK_SRC_DIR}/posttooluse-coord-inbox.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/posttooluse-coord-inbox.sh" "$CC_COORD_HOOK"
-    chmod 755 "$CC_COORD_HOOK"
-  fi
   if [ -f "${CC_HOOK_SRC_DIR}/posttooluse-activity-report.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/posttooluse-activity-report.sh" "$CC_ACTIVITY_HOOK"
     chmod 755 "$CC_ACTIVITY_HOOK"
@@ -1183,7 +1132,6 @@ fi
 if [ -x "$CC_PRE_HOOK" ]; then
   CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
   merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit"
-  [ -x "$CC_COORD_HOOK" ] && merge_coord_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_ACTIVITY_HOOK" ] && merge_activity_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_PRE_ACTIVITY_HOOK" ] && merge_activity_pre_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_LIFECYCLE_HOOK" ] && merge_lifecycle_hooks "$CLAUDE_SETTINGS"
@@ -1309,9 +1257,9 @@ Done.  Profile: ${PROFILE}
       upstream openai/codex #20204), so codex coordinates LOCKS by calling
       \`locks:*\` itself, per its playbook; the lock hooks.json is ready and
       activates once codex fixes PreToolUse emission. BUT codex's PostToolUse
-      DOES fire (Bash / apply_patch / MCP), so the per-session SU CODEX_HOME
-      now also ships a coord-inbox PostToolUse hook — new coord:inbox messages
-      are injected mid-turn, same as Claude.
+      DOES fire (Bash / apply_patch / MCP), so the per-session SU CODEX_HOME's
+      activity-report PostToolUse hook also folds in new coord:inbox messages
+      mid-turn (EI-11405), same as Claude.
   Enforcement scopes to the papercup workspace + fails open when the
   operator is down. /coord surfaces "enforcement offline".
 

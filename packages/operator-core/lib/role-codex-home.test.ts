@@ -57,7 +57,6 @@ async function installFakeHooks() {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'pretooluse-locks-acquire.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
-  writeFileSync(join(dir, 'posttooluse-coord-inbox.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
@@ -226,17 +225,15 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
-    // Role sessions get NO coord push hook — they coordinate via
-    // messages:feature_*, not the SU coord bus. And with NO sid given, no
-    // activity hook either (it needs an identity to report under).
+    // With NO sid given, no activity (+ merged coord-fold) hook — it needs an
+    // identity to report/fold under.
     expect(hooks.hooks.PostToolUse).toHaveLength(1);
-    expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
     // No sid → no objective-title hook either (it keys the glance read off the sid).
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-objective-title.sh');
   });
 
-  it('a role session WITH a sid gets the activity-bridge + objective-title hooks (worker activity → fleet view), still no coord', async () => {
+  it('a role session WITH a sid gets the activity-bridge hook (worker activity → fleet view) with the coord fold OFF', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({
@@ -246,9 +243,9 @@ describe('writeRoleCodexHome', () => {
       sid: 'role-abc-9',
     });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // Three PostToolUse entries: lock-release + activity + objective-title (NO coord — roles don't ride the SU bus).
+    // Three PostToolUse entries: lock-release + activity + objective-title. No
+    // separate coord entry any more (EI-11405 merged it into the activity hook).
     expect(hooks.hooks.PostToolUse).toHaveLength(3);
-    expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
     const activity = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('posttooluse-activity-report.sh'),
     );
@@ -257,6 +254,10 @@ describe('writeRoleCodexHome', () => {
     // SID + agent baked (codex hands hooks a minimal env, can't env-expand).
     expect(activity.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(activity.hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+    // No coordSid ⇒ the merged hook's coord fold is explicitly OFF (roles don't
+    // ride the SU coord bus; this also preserves the original zero-added-latency
+    // detached report path for role sessions).
+    expect(activity.hooks[0].command).toContain('PAPERCUSP_COORD_FOLD=0');
     const preLock = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
     );
@@ -578,7 +579,7 @@ describe('writeSuCodexHome', () => {
     expect(JSON.stringify(hooks)).not.toContain('PAPERCUSP_AGENT_SESSION');
   });
 
-  it('adds the coord-inbox PUSH + activity hooks (PostToolUse, matcher .*, baked PAPERCUSP_SID = the session id)', async () => {
+  it('adds the coord-folding activity hook (PostToolUse, matcher .*, baked PAPERCUSP_SID = the session id)', async () => {
     await installFakeHooks();
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({
@@ -588,16 +589,9 @@ describe('writeSuCodexHome', () => {
       sid: 'su-abc-123',
     });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // Four PostToolUse entries: lock-release + coord push + activity report + objective-title.
-    expect(hooks.hooks.PostToolUse).toHaveLength(4);
-    const coord = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
-      e.hooks[0].command.includes('posttooluse-coord-inbox.sh'),
-    );
-    expect(coord).toBeTruthy();
-    expect(coord.matcher).toBe('.*');
-    // SID baked (codex doesn't env-expand) so the hook's coord identity == &client=.
-    expect(coord.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
-    expect(coord.hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+    // Three PostToolUse entries: lock-release + activity report (coord-folding) +
+    // objective-title. No separate coord entry any more (EI-11405 merge).
+    expect(hooks.hooks.PostToolUse).toHaveLength(3);
     const preLock = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
     );
@@ -609,14 +603,20 @@ describe('writeSuCodexHome', () => {
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
 
-    // The activity-bridge hook — an SU/engineer session is a worker too.
+    // The activity-bridge hook — an SU/engineer session is a worker too — now ALSO
+    // carries the coord:inbox PUSH (new messages folded into the same round trip,
+    // mid-turn delivery parity with the Claude global-settings coord entry).
     const activity = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('posttooluse-activity-report.sh'),
     );
     expect(activity).toBeTruthy();
     expect(activity.matcher).toBe('.*');
+    // SID baked (codex doesn't env-expand) so the hook's coord identity == &client=.
     expect(activity.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(activity.hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+    expect(activity.hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+    // coordSid WAS given ⇒ the fold stays ON (no PAPERCUSP_COORD_FOLD=0 override).
+    expect(activity.hooks[0].command).not.toContain('PAPERCUSP_COORD_FOLD=0');
 
     // The objective-title hook (session-objective-display-2026-06-22): terminal
     // title ← coord:glance self.objective, matcher .*, baked SID = the session id.
@@ -638,7 +638,6 @@ describe('writeSuCodexHome', () => {
     const out = writeSuCodexHome({ sessionKey: 13, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     expect(hooks.hooks.PostToolUse).toHaveLength(1); // lock-release only
-    expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
   });
 });

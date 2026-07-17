@@ -669,42 +669,6 @@ export async function planSlugExistsInWorkspace(
   return rows.length > 0;
 }
 
-/**
- * Has every authored item on every stored copy of this plan reached a terminal
- * item status? This is deliberately an affirmative-only read: a missing plan,
- * an itemless plan, or any non-terminal item returns false.
- *
- * The claim-discipline watcher uses this after a work-item completion releases
- * the final plan-item claim. Presence can retain the just-finished plan slug
- * until the agent's next turn; that short, healthy convergence window must not
- * be diagnosed as abandoned unclaimed work (EI-13286).
- */
-export async function planSlugAllItemsTerminalInWorkspace(
-  workspaceId: string,
-  slug: string,
-): Promise<boolean> {
-  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return false;
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<Array<{ content: string; items: unknown }>>`
-      SELECT content, items FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND plan_slug = ${slug}
-    `;
-  });
-  if (rows.length === 0) return false;
-
-  let sawItem = false;
-  for (const row of rows) {
-    const indexed = Array.isArray(row.items) ? (row.items as Array<{ status?: unknown }>) : [];
-    const statuses = indexed.length > 0
-      ? indexed.map((item) => String(item.status ?? ''))
-      : parsePlan(row.content).items.map((item) => item.storedStatus);
-    if (statuses.length === 0) return false;
-    sawItem = true;
-    if (statuses.some((status) => status !== 'done' && status !== 'dropped')) return false;
-  }
-  return sawItem;
-}
-
 /** All plan rows for a harness (PG), live + optionally archived. The archived
  *  filter runs in SQL — excluded rows' content blobs never leave PG (P-042). */
 export async function listPlanRows(

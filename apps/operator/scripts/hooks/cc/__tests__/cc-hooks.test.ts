@@ -298,6 +298,39 @@ describe("cc PostToolUse activity-report hook — operator-independent paths", (
   // block the stub's own event loop, so those live outside this file). The server-
   // side O(1) skip itself (unchanged generation ⇒ no inbox/glance query at all) is
   // unit-tested in packages/operator-core/lib/agent-tools/activity/hook-bundle.test.ts.
+
+  describe("PAPERCUSP_COORD_FOLD=0 (role-only Codex sessions, role-codex-home.ts)", () => {
+    it("never writes a hook_bundle cursor and is detached (NON-BLOCKING) by default", () => {
+      const sid = "sid-nofold-detached";
+      const cur = join(cache, `activity-hook-bundle-${sid}.json`);
+      const t0 = Date.now();
+      const r = runActivity({
+        PAPERCUSP_SID: sid,
+        PAPERCUSP_COORD_FOLD: "0",
+        // An unroutable host would hang a synchronous POST for the full timeout;
+        // the detached path must return near-instantly (it reparents to init).
+        PAPERCUSP_OPERATOR_URL: "http://10.255.255.1:81",
+      });
+      const elapsed = Date.now() - t0;
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+      expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 4s POST timeout
+      expect(fs.existsSync(cur)).toBe(false); // no coord fold ⇒ no cursor at all
+    });
+
+    it("SYNC mode (test-only), operator unreachable → fail-open, no cursor, no stdout", () => {
+      const sid = "sid-nofold-sync";
+      const cur = join(cache, `activity-hook-bundle-${sid}.json`);
+      const r = runActivity({
+        PAPERCUSP_SID: sid,
+        PAPERCUSP_COORD_FOLD: "0",
+        PAPERCUSP_ACTIVITY_SYNC: "1",
+      });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+      expect(fs.existsSync(cur)).toBe(false);
+    });
+  });
 });
 
 // ── PreToolUse activity-report hook (EI-8997) ──────────────────────────

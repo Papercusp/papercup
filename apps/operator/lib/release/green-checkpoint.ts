@@ -2228,12 +2228,14 @@ export function realCheckpointDeps(
       // Reuse the checkpoint tree the gate already prepared: point it at `ref`, then run
       // each failing file in its own workspace at single concurrency (the same isolation
       // the flake path uses, so a load-flake doesn't masquerade as a real red at tip).
-      try {
-        await this.setupTree(ref);
-      } catch (e) {
-        log(`re-triage: could not set up tree at ${ref.slice(0, 8)} (${e instanceof Error ? e.message : e})`);
-        return { pass: false, summary: 'tip tree setup failed' };
-      }
+      // A tree-setup failure is ABSENCE of evidence, not evidence the failures
+      // reproduce. Returning {pass:false} here would reach classifyRedAgainstTip as
+      // tipRetest={ran:true,pass:false} and render "failures REPRODUCE at tip <sha> —
+      // genuine red" for a tip we never actually ran. Let it propagate: the caller's
+      // .catch(() => null) maps it to tipRetest=null → the classifier's own
+      // 'tip re-run unavailable' branch, which holds the gate just the same but says
+      // the true thing. Same verdict, honest reason.
+      await this.setupTree(ref);
       const byWorkspace = new Map<string, string[]>();
       for (const f of files) byWorkspace.set(f.workspace, [...(byWorkspace.get(f.workspace) ?? []), f.file]);
       const env = buildGreenCheckpointEnv(null);

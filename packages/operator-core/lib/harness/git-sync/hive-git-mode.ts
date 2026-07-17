@@ -35,7 +35,9 @@
  * legacy hive's pushes is the worse failure.
  */
 import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';
+import { upsertHiveGitGcRoutine, setHiveGitGcRoutineActive } from './hive-git-gc-routine';
 
 /** Who pushes the GitHub remote for this hive (S-5 decision table input). */
 export type PotGitMode = 'legacy' | 'bridged' | 'p2p-only';
@@ -83,10 +85,40 @@ export async function setPotGitMode(
 ): Promise<void> {
   if (mode === null) {
     await deleteHiveSetting(workspaceId, potHomeSlug, POT_GIT_MODE_SETTING_KEY, sql);
+    await syncHiveGitGcRoutine(workspaceId, potHomeSlug, 'legacy', sql);
     return;
   }
   if (!POT_GIT_MODES.includes(mode)) {
     throw new Error(`setPotGitMode: unknown mode '${String(mode)}' (expected ${POT_GIT_MODES.join(' | ')})`);
   }
   await setHiveSetting({ workspaceId, potHomeSlug, settingKey: POT_GIT_MODE_SETTING_KEY, value: mode }, sql);
+  await syncHiveGitGcRoutine(workspaceId, potHomeSlug, mode, sql);
+}
+
+/**
+ * G-9 (P-205): THE mode-flip call site hive-git-gc-routine.ts names as the
+ * owner of gc activation — off-legacy arms the hive-home's `system:hive-git-gc`
+ * ephemeral routine; back-to-legacy (or a cleared setting) disarms it in place
+ * (row + cadence config kept for re-activation; the action's own mode
+ * self-gate stays as defense-in-depth, not the primary gate). Arms against the
+ * hive-home's PRIMARY bare store (`repoKey = potHomeSlug` — the same
+ * `hiveGitRepoPath(potHomeSlug, slug)` key git-sync-action's legs use for the
+ * home harness); a hive binding additional repos edits the routine's
+ * trigger_config rather than growing this seam. Failures propagate: this runs
+ * on the explicit admin flip path, where a silent skip would re-create the
+ * unbounded-ref-growth gap this call exists to close (the mode setting itself
+ * has already committed; the upsert/disarm is idempotent on retry).
+ */
+async function syncHiveGitGcRoutine(
+  workspaceId: string,
+  potHomeSlug: string,
+  mode: PotGitMode,
+  sql?: Sql,
+): Promise<void> {
+  const s = sql ?? getOrgPg().sql;
+  if (mode === 'legacy') {
+    await setHiveGitGcRoutineActive(s, potHomeSlug, false);
+    return;
+  }
+  await upsertHiveGitGcRoutine(s, { workspaceId, potHomeSlug, repoKey: potHomeSlug, active: true });
 }

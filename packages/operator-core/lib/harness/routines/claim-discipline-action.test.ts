@@ -5,11 +5,12 @@ import {
   nudgeSummary,
   nudgeBody,
   NUDGE_PREFIX,
-  filterCompletedPlanTargets,
+  filterRecentlyCompletedTargets,
   filterStoreBackedTargets,
   filterParkedTargets,
   filterHealthyLoopTargets,
   filterDrainedTargets,
+  recentCompletionKey,
   storeExistsKey,
 } from './claim-discipline-action';
 import type { PresenceRecord } from '@papercusp/coordination/presence';
@@ -169,8 +170,10 @@ describe('filterStoreBackedTargets — EI-7402', () => {
   });
 });
 
-describe('filterCompletedPlanTargets — EI-13286', () => {
-  it('suppresses a freshly completed plan after its final claim is released', () => {
+describe('filterRecentlyCompletedTargets — EI-13286', () => {
+  const now = Date.parse('2026-07-17T02:00:00.000Z');
+
+  it('suppresses a fresh same-owner completion after its plan-item claim is released', () => {
     const targets = [
       declaredPresence({ agentId: 'finished', declaredPlanSlug: 'finished-plan' }),
       declaredPresence({ agentId: 'working', declaredPlanSlug: 'active-plan' }),
@@ -179,21 +182,58 @@ describe('filterCompletedPlanTargets — EI-13286', () => {
       ['finished', 'ws1'],
       ['working', 'ws1'],
     ]);
-    const completedByKey = new Map([
-      [storeExistsKey('ws1', 'finished-plan'), true],
-      [storeExistsKey('ws1', 'active-plan'), false],
+    const completedAtByKey = new Map([
+      [recentCompletionKey('ws1', 'finished', 'finished-plan'), now - 60_000],
+    ]);
+    const declaredAt = new Map([
+      ['finished', '2026-07-17T01:30:00.000Z'],
+      ['working', '2026-07-17T01:30:00.000Z'],
     ]);
 
-    const result = filterCompletedPlanTargets(targets, workspaceByAgent, completedByKey);
+    const result = filterRecentlyCompletedTargets(
+      targets,
+      workspaceByAgent,
+      completedAtByKey,
+      declaredAt,
+      now,
+    );
     expect(result.keep.map((target) => target.agentId)).toEqual(['working']);
-    expect(result.skippedCompletedPlan).toBe(1);
+    expect(result.skippedRecentlyCompleted).toBe(1);
   });
 
-  it('fails open when completion state is missing or the read failed', () => {
-    const targets = [declaredPresence({ agentId: 'unknown', declaredPlanSlug: 'plan-a' })];
-    const result = filterCompletedPlanTargets(targets, new Map([['unknown', 'ws1']]), new Map());
+  it('does not let an older completion suppress a newly declared lane', () => {
+    const targets = [declaredPresence({ agentId: 'same', declaredPlanSlug: 'plan-a' })];
+    const result = filterRecentlyCompletedTargets(
+      targets,
+      new Map([['same', 'ws1']]),
+      new Map([[recentCompletionKey('ws1', 'same', 'plan-a'), now - 2 * 60_000]]),
+      new Map([['same', '2026-07-17T01:59:00.000Z']]),
+      now,
+    );
     expect(result.keep).toEqual(targets);
-    expect(result.skippedCompletedPlan).toBe(0);
+    expect(result.skippedRecentlyCompleted).toBe(0);
+  });
+
+  it('fails open when completion evidence or declaration time is missing', () => {
+    const missingCompletion = [declaredPresence({ agentId: 'unknown', declaredPlanSlug: 'plan-a' })];
+    const noCompletion = filterRecentlyCompletedTargets(
+      missingCompletion,
+      new Map([['unknown', 'ws1']]),
+      new Map(),
+      new Map([['unknown', '2026-07-17T01:30:00.000Z']]),
+      now,
+    );
+    expect(noCompletion.keep).toEqual(missingCompletion);
+
+    const missingDeclaration = [declaredPresence({ agentId: 'no-intent-ts', declaredPlanSlug: 'plan-a' })];
+    const noDeclaration = filterRecentlyCompletedTargets(
+      missingDeclaration,
+      new Map([['no-intent-ts', 'ws1']]),
+      new Map([[recentCompletionKey('ws1', 'no-intent-ts', 'plan-a'), now - 60_000]]),
+      new Map(),
+      now,
+    );
+    expect(noDeclaration.keep).toEqual(missingDeclaration);
   });
 });
 

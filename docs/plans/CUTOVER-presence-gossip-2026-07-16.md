@@ -17,10 +17,14 @@ coordination features only … work on this plan from start to finish"]).
   (papercusp + hive-canary harnesses — NOT dupes, per-harness keying). Session leg: VM
   carries 8+ tower session rows incl. su- ownerIds (su-4d3eb…); tower side vacuous (headless
   VM has no sessions). Steady-state refresh confirmed (remote rows re-stamp within seconds).
-- **V3 addressability ✓ at resolve layer**: VM→tower `coord:send` to su-18f2f resolved via
-  the gossip roster (federated:true, recipient_remote, receiptEvent declared,
-  msg mrobxkzz-0000-abbcac12b5c24713909f7a868ed570b9). Message DELIVERY pending the
-  v2t peer-log rail (below); receipt assert pending same.
+- **V3 addressability ✓✓ DELIVERED (surface 1 wake-bridge PROVEN LIVE 22:59 EDT)**: VM→tower
+  `coord:send` to su-18f2f resolved via the gossip roster (federated:true, recipient_remote,
+  msg mrobxkzz-0000-abbcac12b5c24713909f7a868ed570b9) AND the wake FIRED su-18f2f's real
+  tower session (event-wake delivery #20449) after the rail self-healed — end-to-end remote
+  addressability confirmed by the woken session itself. LAST PENDING (surface 2): the
+  `coord:receipt:mrobxkzz…` row on the VM read 0|none at 23:00 EDT seconds after the wake —
+  re-poll (rides t2v, ~20s; if still absent after minutes, check whether receipts require
+  expectsReply/wakeOnReply — the probe sent both false — before calling it a defect).
 - **Surface 3 (federated events) ✓ both directions** (t2v 20s post-flip; v2t proven pre-flip
   gen4 6s + full backlog catch-up — NO DATA LOSS across restart freezes, availability-only).
 - **Surface 5 (claim-spec) ✓** 6s: drill-cup-18f2f landed VM origin='remote' fed_hlc+fed_ts.

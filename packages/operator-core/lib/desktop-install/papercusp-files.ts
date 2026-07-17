@@ -489,7 +489,9 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
 const CC_HOOK_FILES = [
   'pretooluse-locks-acquire.sh',
   'posttooluse-locks-release.sh',
-  'posttooluse-coord-inbox.sh',
+  // EI-11405 / coordination-hook-rpc-fanout-collapse-2026-07-16: this hook now
+  // ALSO carries the delta-aware coord:inbox PUSH that used to be a separate
+  // posttooluse-coord-inbox.sh entry (deleted) — one round trip instead of two.
   'posttooluse-activity-report.sh',
   'pretooluse-activity-report.sh',
   'lifecycle-report.sh',
@@ -1348,13 +1350,9 @@ export function mergeClaudeHookSettings(
     // Claude-only: auto-approve project-scoped .mcp.json servers (operator-signed papercusp MCP).
     if (opts.isClaudeSettings) cfg.enableAllProjectMcpServers = true;
   }
-  // merge_coord_hook — PostToolUse, matcher '*'.
-  if (has('posttooluse-coord-inbox.sh'))
-    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-coord-inbox.sh'), {
-      matcher: '*',
-      hooks: cmd('posttooluse-coord-inbox.sh'),
-    });
-  // merge_activity_hook — PostToolUse, matcher '*'.
+  // merge_activity_hook — PostToolUse, matcher '*'. Since EI-11405 this ALSO
+  // carries the coord:inbox PUSH fold (the separate merge_coord_hook entry is
+  // retired).
   if (has('posttooluse-activity-report.sh'))
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-activity-report.sh'), {
       matcher: '*',

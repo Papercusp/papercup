@@ -24,15 +24,14 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
     expect(cfg.hooks.PreToolUse[2].matcher).toBe('Bash');
 
-    // PostToolUse: lock-release + coord + activity + workitem-nudge (in install order).
+    // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge
+    // (in install order). The separate coord-inbox entry is retired — merged into activity.
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
       `${DEST}/posttooluse-locks-release.sh`,
-      `${DEST}/posttooluse-coord-inbox.sh`,
       `${DEST}/posttooluse-activity-report.sh`,
       `${DEST}/workitem-verify-nudge.sh`,
     ]);
-    expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // coord
-    expect(cfg.hooks.PostToolUse[2].matcher).toBe('*'); // activity
+    expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);

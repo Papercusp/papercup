@@ -22,15 +22,13 @@
  * non-plan work has nothing to claim.
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { getOrgPg } from '@papercusp/db-org';
 import { listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
 import { STALE_MS } from '../../liveness';
 import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import {
-  planSlugAllItemsTerminalInWorkspace,
-  planSlugExistsInWorkspace,
-} from '../../agent-tools/plans/source';
+import { planSlugExistsInWorkspace } from '../../agent-tools/plans/source';
 import { inspectEventKey, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { getLoopStatuses } from './loop';
 
@@ -48,6 +46,9 @@ export const DEFAULT_THROTTLE_MS = 60 * 60 * 1000; // 1h between nudges per agen
  * declaration is stale. Keep the suppression bounded to the liveness window;
  * a later plan wave with the same slug must be eligible for a real nudge. */
 export const DRAIN_SIGNAL_FRESH_MS = STALE_MS;
+/** A terminal completion is a bounded convergence signal: the claim is released
+ * synchronously, while the session clears or replaces its plan intent next turn. */
+export const RECENT_COMPLETION_GRACE_MS = STALE_MS;
 
 /**
  * Select live presence rows that are ALIVE and have a DECLARED PLAN.
@@ -142,25 +143,92 @@ export function filterStoreBackedTargets<T extends { agentId: string; declaredPl
  * a missing/failed lookup stays eligible so detector failures cannot hide real
  * claim-discipline misses.
  */
-export function filterCompletedPlanTargets<T extends { agentId: string; declaredPlanSlug: string | null }>(
+export function recentCompletionKey(workspaceId: string, agentId: string, planSlug: string): string {
+  return `${workspaceId}::${agentId}::${planSlug}`;
+}
+
+/**
+ * Read the latest genuine terminal completion per (workspace, owner, linked
+ * plan). Both work-item families stamp the same terminal_owner/ref pair and the
+ * same payload.plan_item.plan_slug; this is the cross-family read equivalent of
+ * work_items:complete's shared finish contract.
+ */
+export async function loadRecentTerminalPlanCompletionTimes(
+  workspaceIds: readonly string[],
+  sinceMs: number,
+): Promise<Map<string, number>> {
+  if (workspaceIds.length === 0) return new Map();
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{
+    workspace_id: string;
+    agent_id: string;
+    plan_slug: string;
+    completed_ms: string | number;
+  }>>`
+    WITH completions AS (
+      SELECT workspace_id,
+             terminal_owner AS agent_id,
+             payload #>> '{plan_item,plan_slug}' AS plan_slug,
+             (extract(epoch FROM updated_at) * 1000)::bigint AS completed_ms
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ANY(${workspaceIds as string[]}::text[])
+         AND terminal_owner IS NOT NULL AND terminal_owner <> ''
+         AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+         AND payload #>> '{plan_item,plan_slug}' IS NOT NULL
+         AND updated_at >= to_timestamp(${sinceMs}::double precision / 1000)
+      UNION ALL
+      SELECT workspace_id,
+             terminal_owner AS agent_id,
+             payload #>> '{plan_item,plan_slug}' AS plan_slug,
+             updated_ts::bigint AS completed_ms
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ANY(${workspaceIds as string[]}::text[])
+         AND terminal_owner IS NOT NULL AND terminal_owner <> ''
+         AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+         AND payload #>> '{plan_item,plan_slug}' IS NOT NULL
+         AND updated_ts >= ${sinceMs}
+    )
+    SELECT workspace_id, agent_id, plan_slug, max(completed_ms)::bigint AS completed_ms
+      FROM completions
+     GROUP BY workspace_id, agent_id, plan_slug
+  `;
+  return new Map(
+    rows.flatMap((row) => {
+      const completedMs = Number(row.completed_ms);
+      return row.workspace_id && row.agent_id && row.plan_slug && Number.isFinite(completedMs)
+        ? [[recentCompletionKey(row.workspace_id, row.agent_id, row.plan_slug), completedMs] as const]
+        : [];
+    }),
+  );
+}
+
+export function filterRecentlyCompletedTargets<T extends { agentId: string; declaredPlanSlug: string | null }>(
   targets: readonly T[],
   workspaceByAgent: ReadonlyMap<string, string>,
-  completedByKey: ReadonlyMap<string, boolean>,
-): { keep: T[]; skippedCompletedPlan: number } {
+  completedAtByKey: ReadonlyMap<string, number>,
+  intentDeclaredAtByAgent: ReadonlyMap<string, string | null>,
+  nowMs: number = Date.now(),
+): { keep: T[]; skippedRecentlyCompleted: number } {
   const keep: T[] = [];
-  let skippedCompletedPlan = 0;
+  let skippedRecentlyCompleted = 0;
   for (const target of targets) {
     const plan = target.declaredPlanSlug;
-    const completed = plan
-      ? completedByKey.get(storeExistsKey(workspaceByAgent.get(target.agentId) ?? 'default', plan))
-      : false;
-    if (completed === true) {
-      skippedCompletedPlan += 1;
+    const completedMs = plan
+      ? completedAtByKey.get(
+          recentCompletionKey(workspaceByAgent.get(target.agentId) ?? 'default', target.agentId, plan),
+        )
+      : undefined;
+    const declaredAt = intentDeclaredAtByAgent.get(target.agentId);
+    const declaredMs = declaredAt ? Date.parse(declaredAt) : NaN;
+    const isRecent = completedMs !== undefined && nowMs >= completedMs && nowMs - completedMs <= RECENT_COMPLETION_GRACE_MS;
+    const completionFollowsDeclaration = Number.isFinite(declaredMs) && completedMs !== undefined && completedMs >= declaredMs;
+    if (isRecent && completionFollowsDeclaration) {
+      skippedRecentlyCompleted += 1;
       continue;
     }
     keep.push(target);
   }
-  return { keep, skippedCompletedPlan };
+  return { keep, skippedRecentlyCompleted };
 }
 
 /**
@@ -346,30 +414,27 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     existsByKey,
   );
 
-  // EI-13286: work_items:complete atomically closes the linked plan item and
-  // releases its claim, while presence is intentionally session-owned and can
-  // retain the completed plan slug until the next turn. Resolve the distinct
-  // plan keys once and suppress only confirmed all-terminal plans. Read errors
-  // fail open (false), preserving real nudges.
-  const completedByKey = new Map<string, boolean>();
-  const storeBackedKeys = new Set(
-    storeBacked
-      .filter((target): target is typeof target & { declaredPlanSlug: string } => !!target.declaredPlanSlug)
-      .map((target) =>
-        storeExistsKey(workspaceByAgent.get(target.agentId) ?? 'default', target.declaredPlanSlug),
-      ),
+  // EI-13286: work_items:complete closes the linked item and releases its claim
+  // synchronously, while presence can retain that plan slug until the next
+  // turn. A same-owner completion AFTER the current declaration is therefore a
+  // bounded convergence signal even when OTHER plan items remain open. A new
+  // declaration after an old completion is not suppressed. Read failures fail
+  // open to preserving real nudges.
+  const completionNowMs = Date.now();
+  const completionWorkspaces = [...new Set(storeBacked.map((target) => workspaceByAgent.get(target.agentId) ?? 'default'))];
+  const completedAtByKey = await loadRecentTerminalPlanCompletionTimes(
+    completionWorkspaces,
+    completionNowMs - RECENT_COMPLETION_GRACE_MS,
+  ).catch(() => new Map<string, number>());
+  const intentDeclaredAtByAgent = new Map(
+    presenceRows.map((row) => [row.ownerId, row.intentDeclaredAt] as const),
   );
-  await Promise.all(
-    Array.from(storeBackedKeys).map(async (key) => {
-      const [workspaceId, plan] = key.split('::');
-      const completed = await planSlugAllItemsTerminalInWorkspace(workspaceId, plan).catch(() => false);
-      completedByKey.set(key, completed);
-    }),
-  );
-  const { keep: activePlans, skippedCompletedPlan } = filterCompletedPlanTargets(
+  const { keep: activePlans, skippedRecentlyCompleted } = filterRecentlyCompletedTargets(
     storeBacked,
     workspaceByAgent,
-    completedByKey,
+    completedAtByKey,
+    intentDeclaredAtByAgent,
+    completionNowMs,
   );
 
   // EI-11881: scheduler:get_next emits fleet:drained:<slug> after a scoped
@@ -405,9 +470,6 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     const drainedAt = fleet ? drainedAtByFleet.get(fleet) : undefined;
     if (drainedAt) drainedAtByAgent.set(target.agentId, drainedAt);
   }
-  const intentDeclaredAtByAgent = new Map(
-    presenceRows.map((row) => [row.ownerId, row.intentDeclaredAt] as const),
-  );
   const { keep: notDrained, skippedDrained } = filterDrainedTargets(
     activePlans,
     drainedAtByAgent,
@@ -460,7 +522,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   console.log(
     `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${targets.length} nudged` +
       (skippedStoreAbsent ? `, ${skippedStoreAbsent} skipped (declared plan not in store — undischargeable remedy)` : '') +
-      (skippedCompletedPlan ? `, ${skippedCompletedPlan} skipped (all plan items terminal)` : '') +
+      (skippedRecentlyCompleted ? `, ${skippedRecentlyCompleted} skipped (recent same-owner plan completion)` : '') +
       (skippedParked.length
         ? `, ${skippedParked.length} skipped (parked on events:await: ${skippedParked
             .map((s) => `${s.agentId.slice(0, 8)}→${s.parkedOn}`)
