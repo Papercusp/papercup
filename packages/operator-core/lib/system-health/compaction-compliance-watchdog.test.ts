@@ -1034,7 +1034,10 @@ describe('WI-5075 carry-respawn kill-loop breaker (rapid-refire guard)', () => {
       expect(out4.forceCompacted).toEqual([]);
       expect(injectMock).toHaveBeenCalledTimes(3);
       expect(openEscalationMock).toHaveBeenCalledTimes(1);
-      const escPayload = openEscalationMock.mock.calls[0]?.[1] as
+      // WI-5217: openEscalationMock is declared as a 0-arg vi.fn() (see line ~41), so
+      // `.mock.calls[0]` is a `[]` tuple with no index 1 — cast through `unknown` first,
+      // matching the pattern already used elsewhere in this file (e.g. line ~786).
+      const escPayload = (openEscalationMock.mock.calls[0] as unknown as [unknown, { severity?: string; summary?: string }])?.[1] as
         | { severity?: string; summary?: string }
         | undefined;
       expect(escPayload?.severity).toBe('blocker');

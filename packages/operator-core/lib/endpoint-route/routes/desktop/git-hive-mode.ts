@@ -12,10 +12,18 @@
  * contract). Needed for the Phase-3 Leg E drill (P-306) today and the Phase-4 canary
  * activation (P-401) next — both need a lever, not a raw SQL runbook step.
  *
- * GET  /api/desktop/git/hive-mode?slug=<hive-home-slug>            -> { ok, slug, mode }
- * POST /api/desktop/git/hive-mode  { slug, mode: 'legacy'|'bridged'|'p2p-only'|null }
+ * GET  /api/desktop/git/hive-mode?slug=<hive-home-slug>&workspace=<workspace-id>
+ *      -> { ok, slug, workspaceId, mode }
+ * POST /api/desktop/git/hive-mode  { slug, workspace, mode: 'legacy'|'bridged'|'p2p-only'|null }
  *      mode: null (or omitted) clears the row -> hive reads as 'legacy' again
  *      (the documented instant fail-open rollback lever).
+ *
+ * `workspace` is REQUIRED on both verbs (400 `missing_workspace` otherwise) — EI-14076:
+ * this is a multi-tenant table keyed on (workspace_id, slug), and a silent default to
+ * `DEFAULT_WORKSPACE_ID` reads/writes the WRONG tenant's row while returning a confident
+ * `{ ok: true, ... }`, both on GET (masks the real diagnosis) and on POST (the documented
+ * rollback lever appears to succeed against a no-op row). A loud 400 during an incident
+ * beats a well-formed wrong answer.
  *
  * SECURITY (CSRF): `auth:'loopback'` is source-IP based, so — like its sibling
  * git-pot-green-cmd — the POST also REJECTS cross-site browser requests
@@ -24,7 +32,6 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { getPotGitMode, setPotGitMode, POT_GIT_MODES, type PotGitMode } from '../../../harness/git-sync/hive-git-mode';
-import { DEFAULT_WORKSPACE_ID } from '../../../workspace-id-constant';
 
 const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json' };
 
@@ -41,7 +48,8 @@ export default [
       const url = new URL(req?.url ?? 'http://localhost/desktop/git/hive-mode');
       const slug = (url.searchParams.get('slug') ?? '').trim();
       if (!slug) return json({ ok: false, error: 'missing_slug' }, 400);
-      const ws = url.searchParams.get('workspace')?.trim() || DEFAULT_WORKSPACE_ID;
+      const ws = (url.searchParams.get('workspace') ?? '').trim();
+      if (!ws) return json({ ok: false, error: 'missing_workspace' }, 400);
       const mode = await getPotGitMode(ws, slug);
       return json({ ok: true, slug, workspaceId: ws, mode }, 200);
     },
@@ -63,7 +71,8 @@ export default [
       }
       const slug = typeof body.slug === 'string' ? body.slug.trim() : '';
       if (!slug) return json({ ok: false, error: 'missing_slug' }, 400);
-      const ws = typeof body.workspace === 'string' && body.workspace.trim() ? body.workspace.trim() : DEFAULT_WORKSPACE_ID;
+      const ws = typeof body.workspace === 'string' ? body.workspace.trim() : '';
+      if (!ws) return json({ ok: false, error: 'missing_workspace' }, 400);
 
       const rawMode = body.mode;
       const clearing = rawMode == null || rawMode === '';

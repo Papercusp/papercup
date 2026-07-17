@@ -345,7 +345,10 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
     // WI-5124: force:true still skips checkActiveCheckpointRun (no systemctl probe), but
     // execFn IS now called for the willJudge resolution (currentCheckpointCandidate) — a
     // real git response, not a bare vi.fn(), so that resolution doesn't blow up on undefined.
-    const execFn = vi.fn(() => ({ status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' }));
+    // WI-5217: typed as ExecSyncLike (cmd, args) — the untyped 0-arg version below made
+    // `.mock.calls.every((c) => c[0] === 'git')` at line ~355 index into an empty `[]`
+    // tuple type (no recorded args), even though real calls always pass (cmd, args).
+    const execFn = vi.fn((_cmd: string, _args: string[]) => ({ status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' }));
 
     const p = launchDetachedCheckpoint({ root: '/tree', force: true }, spawnFn, execFn);
     child.emit('close', 0);

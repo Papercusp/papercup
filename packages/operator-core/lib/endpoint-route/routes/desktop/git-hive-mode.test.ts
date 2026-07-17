@@ -50,18 +50,19 @@ describe('GET /desktop/git/hive-mode', () => {
     expect(getModeMock).not.toHaveBeenCalled();
   });
 
-  it('reads the mode for the default workspace', async () => {
-    getModeMock.mockResolvedValue('bridged');
+  it('400 on a missing workspace (EI-14076: no silent default-tenant fallback)', async () => {
     const res = await get.handler(getReq('?slug=shared-hive-test-hive-2'));
-    expect(res.status).toBe(200);
-    expect(getModeMock).toHaveBeenCalledWith('default', 'shared-hive-test-hive-2');
-    expect(await res.json()).toMatchObject({ ok: true, slug: 'shared-hive-test-hive-2', mode: 'bridged' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ ok: false, error: 'missing_workspace' });
+    expect(getModeMock).not.toHaveBeenCalled();
   });
 
-  it('honors an explicit ?workspace=', async () => {
+  it('reads the mode for an explicit ?workspace=', async () => {
     getModeMock.mockResolvedValue('legacy');
-    await get.handler(getReq('?slug=h&workspace=papercusp-workspace'));
+    const res = await get.handler(getReq('?slug=h&workspace=papercusp-workspace'));
+    expect(res.status).toBe(200);
     expect(getModeMock).toHaveBeenCalledWith('papercusp-workspace', 'h');
+    expect(await res.json()).toMatchObject({ ok: true, slug: 'h', workspaceId: 'papercusp-workspace', mode: 'legacy' });
   });
 });
 
@@ -73,12 +74,19 @@ describe('POST /desktop/git/hive-mode', () => {
   });
 
   it('400 on a missing slug', async () => {
-    expect((await post.handler(jsonReq({ mode: 'bridged' }))).status).toBe(400);
+    expect((await post.handler(jsonReq({ mode: 'bridged', workspace: 'papercusp-workspace' }))).status).toBe(400);
+    expect(setModeMock).not.toHaveBeenCalled();
+  });
+
+  it('400 on a missing workspace (EI-14076: no silent default-tenant fallback)', async () => {
+    const res = await post.handler(jsonReq({ slug: 'h', mode: 'bridged' }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ ok: false, error: 'missing_workspace' });
     expect(setModeMock).not.toHaveBeenCalled();
   });
 
   it('400 on an invalid mode', async () => {
-    const res = await post.handler(jsonReq({ slug: 'h', mode: 'yolo' }));
+    const res = await post.handler(jsonReq({ slug: 'h', mode: 'yolo', workspace: 'papercusp-workspace' }));
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ ok: false, error: 'invalid_mode' });
     expect(setModeMock).not.toHaveBeenCalled();
@@ -96,15 +104,15 @@ describe('POST /desktop/git/hive-mode', () => {
 
   it('a null/omitted mode CLEARS the row (rollback to legacy)', async () => {
     getModeMock.mockResolvedValue('legacy');
-    const res = await post.handler(jsonReq({ slug: 'h', mode: null }));
+    const res = await post.handler(jsonReq({ slug: 'h', mode: null, workspace: 'papercusp-workspace' }));
     expect(res.status).toBe(200);
-    expect(setModeMock).toHaveBeenCalledWith('default', 'h', null);
+    expect(setModeMock).toHaveBeenCalledWith('papercusp-workspace', 'h', null);
     expect(await res.json()).toMatchObject({ ok: true, mode: 'legacy', cleared: true });
   });
 
   it('409 when the write fails (e.g. no such Hive)', async () => {
     setModeMock.mockRejectedValue(new Error('no Hive'));
-    const res = await post.handler(jsonReq({ slug: 'nope', mode: 'bridged' }));
+    const res = await post.handler(jsonReq({ slug: 'nope', mode: 'bridged', workspace: 'papercusp-workspace' }));
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ ok: false, error: 'mode_write_failed' });
   });

@@ -434,7 +434,10 @@ describe('argsSchema — stringified options coercion (operator_turns seq 11831,
 
   it('ADVERTISES the string form too — the calling harness validates raw input against the advertised JSON schema before zod runs (seq 12076)', async () => {
     const { toArgsJsonSchema } = await import('@papercusp/agent-mcp');
-    const js = toArgsJsonSchema('chat:ask_choice', (askChoiceTool as { args: never }).args) as {
+    // WI-5217: RoleToolDefinition now carries enough required fields that TS no longer
+    // considers it "sufficiently overlapping" with the narrow `{ args: never }` shape for
+    // a direct `as` — go through `unknown` first, per the compiler's own suggestion.
+    const js = toArgsJsonSchema('chat:ask_choice', (askChoiceTool as unknown as { args: never }).args) as {
       properties?: { options?: { anyOf?: Array<{ type?: string }> } };
     };
     const branches = js.properties?.options?.anyOf ?? [];
