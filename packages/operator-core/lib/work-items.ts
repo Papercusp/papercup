@@ -2169,6 +2169,15 @@ export interface ClaimFloorsOpts {
    * claimant here, so the two paths share one cooldown.
    */
   cooldownAssignee?: string;
+  /**
+   * EI-14806 / WI-2796: the caller has/coordinates a live ≥2-machine rig. When omitted/false
+   * (the single-box default), a feature-family row tagged `payload.needs_2_machine_rig:true`
+   * is excluded from self-select (see {@link crossMachineRigExclusionSql}); true makes the
+   * floor a no-op so rig work surfaces. Threaded from every feature-family claim entry point
+   * (getNextWorkItem, claimNextWorkItem) + the READY leg of diagnoseClaimNextMiss, so the
+   * feature-family floor matches the long-standing issue-family one and the two never drift.
+   */
+  rigAvailable?: boolean;
 }
 
 /** Release-cooldown window (seconds). Env-overridable; small on purpose — the floor only
@@ -2211,6 +2220,13 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- read the tag. Same COALESCE-for-NULL-safety shape, unaliased (this fragment
     -- runs in harness_features_consolidated context).
     AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+    -- EI-14806: the cross-machine-rig floor, extended to the FEATURE family. The issue-family
+    -- claim has honored payload.needs_2_machine_rig since WI-2796, but a FEATURE-family item can
+    -- ALSO carry the tag (WI-3487, a p2p rig-readiness feature) and this path — getNextWorkItem
+    -- tiers 1/2 + claimNextWorkItem — never read it, so a no-rig caller (DEFAULT_CLAIM_SPEC or any
+    -- feature-view spec) self-selected un-runnable rig work. Same predicate as the issue family,
+    -- unaliased (runs in harness_features_consolidated context). Omitted rigAvailable ⇒ excluded.
+    AND ${crossMachineRigExclusionSql(sql, opts.rigAvailable, 'payload')}
     AND ${opts.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${opts.swarmId})` : sql`TRUE`}
     -- P-014: under the redundancy flag, high-stakes (redundancy > 1) items fan out via
     -- claim_replica to N Swarms, so an exactly-once claim must NOT grab them. Flag OFF ⇒
@@ -2355,13 +2371,12 @@ export function reservedPlanLaneExclusionSql(sql: OrgSql, assignee: string) {
 }
 
 /**
- * WI-2796: the "cross-machine rig required" self-select EXCLUSION floor for issue-family
- * claims. Some issue-family work-items (mostly task-kind shared-hive-p2p Briefs/scenarios)
- * carry `payload.needs_2_machine_rig: true` because their actual execution needs a LIVE
- * ≥2-machine / Hetzner federation rig a single-box fleet member cannot provide. Without
- * this floor a single-box drain member self-selects one via claim_next, discovers it is
- * un-doable solo, and releases it — pure recycle churn (WI-2796 observed 19 such items
- * cycling this way during the 2026-07-04 backlog-clearance drain).
+ * WI-2796: the "cross-machine rig required" self-select EXCLUSION floor. Some work-items carry
+ * `payload.needs_2_machine_rig: true` because their actual execution needs a LIVE ≥2-machine /
+ * Hetzner federation rig a single-box fleet member cannot provide. Without this floor a
+ * single-box drain member self-selects one via claim_next / scheduler:get_next, discovers it is
+ * un-doable solo, and releases it — pure recycle churn (WI-2796 observed 19 such items cycling
+ * this way during the 2026-07-04 backlog-clearance drain).
  *
  * `rigAvailable` is the caller-declared bypass: a fleet that DOES have/coordinate a real
  * multi-machine rig passes `rigAvailable:true` and the floor becomes a no-op (`TRUE`) so
@@ -2370,9 +2385,17 @@ export function reservedPlanLaneExclusionSql(sql: OrgSql, assignee: string) {
  * such an item DIRECTLY BY ID (the named-claim floor bypass, same shape as the reserved-
  * plan-lane floor above) when it legitimately has rig access.
  *
- * ONE source of truth, shared by {@link claimNextIssueWorkItem} (the claim) and
- * {@link diagnoseClaimNextMiss} (the READY count) so the miss diagnosis can never
- * disagree with what the claim actually serves.
+ * EI-14806: originally scoped to the ISSUE family only, on the assumption the tag rode only
+ * task-kind p2p Briefs. But a FEATURE-family item can carry it too (WI-3487, a p2p rig-readiness
+ * feature), and the feature-family claim path (getNextWorkItem tiers 1/2 + claimNextWorkItem, via
+ * {@link claimFloorsWhereSql}) never read the tag — so a no-rig caller drawing DEFAULT_CLAIM_SPEC
+ * (or any feature-view spec) self-selected un-runnable rig work. It is now a GLOBAL admission
+ * floor across BOTH families: {@link claimFloorsWhereSql} applies it (unaliased `payload`) for
+ * the feature family, and the issue-family callers below keep applying it (aliased `wi.payload`).
+ *
+ * ONE source of truth, shared by {@link claimFloorsWhereSql} (feature family) +
+ * {@link claimNextIssueWorkItem} (the issue claim) and {@link diagnoseClaimNextMiss} (the READY
+ * count) so the miss diagnosis can never disagree with what the claim actually serves.
  */
 export function crossMachineRigExclusionSql(
   sql: OrgSql,
@@ -2713,6 +2736,8 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             excludeRedundant: filter.excludeRedundant,
             useMaintainedReady,
             cooldownAssignee: filter.assignee,
+            // EI-14806: feature-family rig floor — same rigAvailable the issue tier already honors.
+            rigAvailable: filter.rigAvailable,
           })}
             -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
             AND ${kind ? sql`item_kind = ${kind}` : sql`TRUE`}
@@ -2828,6 +2853,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        swarmId: filter.swarmId,
        excludeRedundant: filter.excludeRedundant,
        useMaintainedReady,
+       // EI-14806: mirror the claim's feature-family rig floor so READY never over-counts a
+       // rig-gated feature the claim would skip for a no-rig caller (same as the issue leg below).
+       rigAvailable: filter.rigAvailable,
      })}`;
   let pendingUnclaimed = poolRows[0]?.n ?? 0;
   let readyUnclaimed = readyRows[0]?.n ?? 0;

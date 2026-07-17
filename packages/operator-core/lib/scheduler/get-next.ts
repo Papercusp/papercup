@@ -658,6 +658,10 @@ export async function getNextWorkItem(
     // excluded for it (and only it) for the cooldown window — no claim/release
     // ping-pong under a stable rank.
     cooldownAssignee: bee.assignee,
+    // EI-14806: the cross-machine-rig floor now applies to the FEATURE family too (tiers 1/2
+    // query this fragment). Omitted/false ⇒ a payload.needs_2_machine_rig feature is excluded
+    // for a single-box caller, matching the issue-family tier-3 floor (claimNextIssueWorkItem).
+    rigAvailable: opts.rigAvailable,
   });
   const order = compileRank(sql, spec, bee);
 
