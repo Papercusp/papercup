@@ -1,8 +1,9 @@
 ---
 title: "Attributing a change despite git-sync squash: git blame lies here — search sessions instead"
-description: "git-sync squashes every agent's commits under one bot identity, so git blame/log/show never name the agent who wrote a change. This doc gives the channels that actually work — timestamp-correlated sessions:search — versus the ones that look plausible but dead-end (git blame, change_ledger, audit:list), using a real hunt for the green-checkpoint quiet-cut feature as the worked example."
+description: "git-sync squashes every agent's commits under the OWNER'S OWN git identity, so git blame/log/show don't just fail to name the authoring agent — they actively name Avi, on every line, always. An agent that trusts blame gets a confident false 'the owner wrote this' (it has already produced a blocker escalation accusing Avi of an agent's own broken migration — WI-5111). This doc gives the channels that actually work — timestamp-correlated sessions:search — versus the ones that look plausible but dead-end (git blame, change_ledger, audit:list), using a real hunt for the green-checkpoint quiet-cut feature as the worked example."
 discovered: 2026-07-05
-tags: [git-sync, attribution, sessions, search, audit, forensics, coord]
+updated: 2026-07-17
+tags: [git-sync, attribution, sessions, search, audit, forensics, coord, owner-attribution, footgun]
 status: active
 documents:
   - packages/operator-core/lib/agent-tools/sessions/search.ts
@@ -16,10 +17,40 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="tip" title="The one line to remember">
 `git blame` on this repo tells you the change happened, never who wrote it.
-Every commit lands under one bot identity. To find the agent, correlate the
-commit's **timestamp** against session transcripts with
-`sessions:search { mode:'hybrid', include_coord:true }` — search by what the
-change *is*, not by who touched the file.
+Every commit lands under one identity — **the owner's own**
+(`Avi <avi@storewolf.com>`), because that's the box's configured git user.
+To find the agent, correlate the commit's **timestamp** against session
+transcripts with `sessions:search { mode:'hybrid', include_coord:true }` —
+search by what the change *is*, not by who touched the file.
+</Aside>
+
+<Aside type="danger" title="Blame doesn't return 'unknown' — it returns the OWNER's name, and it is lying">
+This is the part that bites, and it is worse than a dead end. A dead end
+returns nothing and you move on. **This returns `Avi` — on every line of every
+file, always** — so an agent that trusts blame doesn't get *no* answer, it
+gets a confident **wrong** one: "the owner wrote this." That reads as strong
+evidence precisely because blame *is* real evidence in every other repo.
+
+It has already caused real harm. On 2026-07-17 a release-fixer triaging a
+green-checkpoint red ran blame, concluded the owner had made the P-020
+`gpt-5.6-luna` role-model migration, and sent Avi a **blocker** escalation
+opening *"ROOT CAUSE (single, confirmed by git blame): **your** 2026-07-16
+migration ... **you** updated the orchestrator's OWN tests"* — then asked him
+to adjudicate a model-ranking decision an agent had already made and landed.
+Every clause was false: an agent session executing WI-4640 / plan item P-020
+made the change, and simply hadn't run the operator-core consumers of
+`roleModelDefault`. An agent's own incomplete work was escalated to the owner
+**as the owner's mistake**, with blame cited as proof. (WI-5111.)
+
+So: never write *"your change"* / *"you updated X"* / *"the owner's migration"*
+on the strength of git metadata. "Confirmed by git blame" is not a phrase that
+can be true in this repo. If you cannot name the author from a session
+transcript or the commissioning work-item, say **"not attributable from the
+available record"** — never name a person. Naming the owner is the *default*
+wrong answer here, not a neutral one, and it is one re-summarization away from
+becoming "the owner *directed* X" (the WI-3532 manufactured-owner-directive
+rot class — the turn-provenance stamps police what the owner *said*, but
+nothing polices what git claims the owner *wrote*).
 </Aside>
 
 ## Why git blame is a dead end here
@@ -29,8 +60,13 @@ routine on a schedule (superproject + every submodule) — see
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 No agent ever runs `git commit` themselves. The practical consequence:
 
-- Every commit's author is the same bot identity (the box's configured
-  `git user.name` / `user.email`), regardless of which agent wrote the diff.
+- Every commit's author is the same identity — **the owner's**
+  (`Avi <avi@storewolf.com>`), since git-sync just uses the box's configured
+  `git user.name` / `user.email` — regardless of which agent wrote the diff.
+  Despite the name "bot identity", nothing about the author field looks
+  bot-shaped; it is indistinguishable from Avi having typed the change
+  himself, which is what makes it a false positive rather than a dead end
+  (see the danger callout above).
 - Every commit message is the fixed string `chore(git-sync): auto-commit
   papercusp [skip ci]` — no per-change summary, no agent id, no work-item
   reference.
