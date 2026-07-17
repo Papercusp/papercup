@@ -18,9 +18,16 @@
  */
 
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { requireAllowedOriginOr403 } from '../../cors';
 import { deliverInboxOwnerReply } from '../../../agent-tools/coordination/inbox-reply';
 
 async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
+  // The VTL posture below relies on this CSRF backstop (auth-posture.test.ts):
+  // a browser cross-origin POST is refused; the desktop webview's allowed
+  // origins and no-Origin native/IPC-bridge fetches pass through.
+  const csrf = requireAllowedOriginOr403(req);
+  if (csrf) return csrf;
+
   let body: Record<string, unknown> = {};
   try {
     const txt = await req.text();

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   buildGymOperatorBootSpec,
   scrubLauncherClaudeSessionEnv,
@@ -147,13 +147,19 @@ describe('gymWorkerInvokeTimeoutMs (EI-481)', () => {
     expect(gymWorkerInvokeTimeoutMs()).toBe(600_000);
   });
 
-  it('fails soft to the default on a non-numeric / non-positive value', () => {
-    process.env[ENV_KEY] = 'not-a-number';
-    expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
-    process.env[ENV_KEY] = '-5';
-    expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
-    process.env[ENV_KEY] = '0';
-    expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
+  it('fails soft (with a warning) to the default on a non-numeric / non-positive value', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      process.env[ENV_KEY] = 'not-a-number';
+      expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
+      process.env[ENV_KEY] = '-5';
+      expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
+      process.env[ENV_KEY] = '0';
+      expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

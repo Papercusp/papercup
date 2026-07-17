@@ -146,6 +146,13 @@ const RULES: ReadonlyArray<{
       // desktop-callable admin routes so a future auth sweep does not regress
       // the owner-local Send/Wake actions back to 403.
       { method: 'POST', path: '/admin/coord/:verb', auth: VTL },
+      // Owner-Inbox reply delivery (owner-inbox-single-pane-2026-07-17 P-006):
+      // invoked from the same cookie-less loopback webview as its
+      // /admin/coord/:verb sibling above, so the same VTL posture. Because the
+      // reply mints the `coord-inject:owner` turn-provenance origin, the
+      // handler additionally carries the requireAllowedOriginOr403 CSRF
+      // backstop (see the route file's own comments).
+      { method: 'POST', path: '/admin/coord-inbox-reply', auth: VTL },
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).

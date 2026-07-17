@@ -49,6 +49,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');
 
+/**
+ * The tsc invocation used for EVERY measurement (bare check, --mine, --update).
+ * `--incremental false` is EI-487's regression guard, not a stylistic choice:
+ * operator-core's tsconfig has `incremental: true`, and a warm/stale
+ * tsconfig.tsbuildinfo makes `tsc --noEmit` UNDER-REPORT errors in files that
+ * are affected-but-not-yet-reindexed by the incremental cache (WI-4488 first
+ * caught this masking +29 real errors as green for days). Worse under THIS
+ * script specifically: an incomplete incremental count read as "clean" would
+ * silently ratchet a file's baseline DOWN on `--update`, so a later fully-fresh
+ * run (CI, or the same file once its cache catches up) trips the gate on code
+ * that already passed its author's own `lint:tsc` — the exact fleet-wide false
+ * red EI-487 traced back to this flag being absent. Exported (not inlined in
+ * main()) so lint-tsc.test.ts can assert it directly instead of only trusting
+ * that nobody deletes it later.
+ */
+export const TSC_COMMAND =
+  'npx tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false';
+
 /** Parse tsc output into { file, code } entries (file null when unattributable). */
 export function parseTscErrors(tscOutput) {
   const errors = [];
@@ -196,11 +214,8 @@ function main() {
   let tscOutput = '';
   let tscThrew = false;
   try {
-    // `--incremental false` (WI-4488): operator-core's tsconfig has `incremental: true`, and a
-    // warm/stale tsconfig.tsbuildinfo makes `tsc --noEmit` UNDER-REPORT errors in files affected-
-    // but-not-edited — on the shared dev tree this masked +29 real errors as green for days. A gate
-    // count must not depend on cache warmth: always measure fresh, so a hand-run and CI agree.
-    tscOutput = execSync('npx tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false 2>&1', {
+    // See TSC_COMMAND's doc comment above for why `--incremental false` is non-negotiable here.
+    tscOutput = execSync(`${TSC_COMMAND} 2>&1`, {
       cwd: ROOT,
       encoding: 'utf-8',
       maxBuffer: 64 * 1024 * 1024,
