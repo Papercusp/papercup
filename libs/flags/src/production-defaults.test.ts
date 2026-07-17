@@ -480,7 +480,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // box). Watermark raised 27→29. Count 27 → 29.
     // 2026-07-15 — papercusp-gateway-maintenance-carry graduated default-ON by
     // explicit owner direction. Count 31 → 30.
-    expect(offCount).toBe(30);
+    // 2026-07-16 — papercusp-presence-gossip graduated default-ON: LIVE-1 P-059
+    // tower↔VM 2-machine verify met the cutover dark-entry gate. Count 30 → 29.
+    expect(offCount).toBe(29);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
