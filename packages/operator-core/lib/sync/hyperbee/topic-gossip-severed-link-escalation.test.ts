@@ -146,7 +146,7 @@ afterEach(() => {
 });
 
 describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
-  it('never escalates a topic that has NOT yet paired (no peer online yet)', async () => {
+  it('escalates a topic that has NEVER paired at 2× the threshold (fresh-join stale-DHT limbo, WI-5211)', async () => {
     const f = fakeSwarm();
     const onSeveredLink = vi.fn();
     const g = createTopicGossip<Frame>({
@@ -161,10 +161,27 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
       onSeveredLink,
     });
     g.joinTopic(TOPIC);
+    expect(f.joined).toHaveLength(1);
 
-    await vi.advanceTimersByTimeAsync(5000);
+    // Under 2× the severed threshold — the initial join keeps its honest chance.
+    await vi.advanceTimersByTimeAsync(1900);
     expect(onSeveredLink).not.toHaveBeenCalled();
     expect(f.left).toHaveLength(0);
+
+    // Past 2× — the never-paired escalation kicks a fresh leave+rejoin (the
+    // win-rig hive-presence limbo: joined while the only counterpart was
+    // unwired, then sat at zero channels forever with no kick).
+    await vi.advanceTimersByTimeAsync(300);
+    expect(onSeveredLink).toHaveBeenCalledTimes(1);
+    const info = onSeveredLink.mock.calls[0]![0] as GossipSeveredLinkInfo;
+    expect(info.topicHex).toBe(HEX);
+    expect(info.neverPaired).toBe(true);
+    expect(f.left).toHaveLength(1);
+    expect(f.joined).toHaveLength(2);
+
+    // Rate-limited at the same 2× window — no immediate re-fire.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onSeveredLink).toHaveBeenCalledTimes(1);
     await g.close();
   });
 

@@ -85,6 +85,10 @@ export interface GossipSeveredLinkInfo {
   topicHex: string;
   /** How long (ms) the topic had zero paired channels before escalating. */
   severedMs: number;
+  /** WI-5211: true when the topic has NEVER paired — a fresh join stuck in
+   *  stale-DHT limbo (escalated at 2× the severed threshold), not a formed
+   *  link that broke. */
+  neverPaired?: boolean;
 }
 
 /**
@@ -365,22 +369,35 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           if (severedEscalationMs > 0) {
             const severedMs = now - st.fastWindowStartMs;
             const genuinelySevered = st.everPaired && st.channels.size === 0;
+            // WI-5211 (fresh-joiner limbo): a topic that has NEVER paired can sit
+            // in the same stale-DHT state the severed case escapes — the win-rig's
+            // hive-presence topic joined while the only counterpart was unwired,
+            // then never paired and never re-joined, while the counterpart's own
+            // escalation stayed silent (it HAD a channel to a third peer). Give the
+            // never-paired case the same leave+rejoin at 2× the threshold (an
+            // honest chance for the initial join; a genuinely-lonely topic pays
+            // one cheap local rejoin per window).
+            const neverPairedStuck = !st.everPaired && st.channels.size === 0;
+            const threshold = st.everPaired ? severedEscalationMs : severedEscalationMs * 2;
             if (
-              genuinelySevered &&
-              severedMs >= severedEscalationMs &&
-              now - st.lastEscalationMs >= severedEscalationMs
+              (genuinelySevered || neverPairedStuck) &&
+              severedMs >= threshold &&
+              now - st.lastEscalationMs >= threshold
             ) {
               st.lastEscalationMs = now;
               const topicHex = st.topic.toString('hex');
-              const info: GossipSeveredLinkInfo = { topicHex, severedMs };
+              const info: GossipSeveredLinkInfo = { topicHex, severedMs, neverPaired: !st.everPaired };
               // Diagnostic-only — never let a throwing/misbehaving console
               // transport block the actual recovery action below.
               try {
                 if (!process.env.VITEST) {
+                  const phrase = st.everPaired
+                    ? `severed for ${Math.round(severedMs / 1000)}s`
+                    : `NEVER paired ${Math.round(severedMs / 1000)}s after join`;
                   console.error(
-                    `[topic-gossip:${opts.protocol}] ⚠ topic ${topicHex.slice(0, 16)}… severed for ` +
-                      `${Math.round(severedMs / 1000)}s despite refresh() ticking — forcing a fresh ` +
-                      'topic leave+rejoin (the discovery session likely holds stale DHT state).',
+                    `[topic-gossip:${opts.protocol}] ⚠ topic ${topicHex.slice(0, 16)}… ${phrase} ` +
+                      'despite refresh() ticking — forcing a fresh topic leave+rejoin (the ' +
+                      'discovery session likely holds stale DHT state).',
                   );
                 }
               } catch {

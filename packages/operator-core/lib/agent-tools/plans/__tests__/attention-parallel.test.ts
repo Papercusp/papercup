@@ -45,6 +45,11 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, getOrgPg: () => ({ sql: async () => [] }) };
 });
 vi.mock('../../../attention/operator-report-source', () => ({ readRecentOperatorReports: vi.fn(async () => []) }));
+vi.mock('../../../attention/needs-human-work-items-source', () => ({ readNeedsHumanWorkItems: vi.fn(async () => []) }));
+// P-005b's owner-walls source reads live session briefs via coord — empty it out
+// like every other not-under-test source (it would leak whatever walls agents
+// happen to hold when the suite runs).
+vi.mock('../../coordination/tools/walls', () => ({ listOwnerWalls: vi.fn(async () => ({ walls: [] })) }));
 vi.mock('../../../harness/improvements/read-items', () => ({ readImprovementItems: vi.fn(async () => []) }));
 vi.mock('../../../operator-standing-candidates', () => ({ readCandidates: vi.fn(async () => []) }));
 vi.mock('../../../scout/routed-ledger', () => ({ readRoutedIdeas: vi.fn(async () => []) }));

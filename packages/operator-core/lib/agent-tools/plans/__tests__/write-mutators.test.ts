@@ -73,7 +73,9 @@ describe('flipStatusInBody', () => {
 
   it('appends an optional note', () => {
     const { newBody } = flipStatusInBody(BASE, 'P-002', 'done', 'verified');
-    expect(newBody).toMatch(/- \*\*P-002\*\* `done`.*\(verified\)/);
+    // EI-384: notes are injected with the distinctive " — note: " marker (replace-
+    // not-stack semantics), no longer as a parenthetical.
+    expect(newBody).toMatch(/- \*\*P-002\*\* `done`.*— note: verified/);
   });
 
   it('does not stomp other items with similar prefixes', () => {

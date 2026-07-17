@@ -61,6 +61,17 @@ writeFileSync(
 );
 afterAll(() => rmSync(typecheckTree, { recursive: true, force: true }));
 
+// EI-485: a candidate tree that provides `lint:migrations` but not `lint:tsc` — isolates
+// the migrations-lint leg's wiring (position in the sequence, env, failure signature)
+// from the typecheck leg's, the same way typecheckTree isolates typecheck from cpTree's
+// no-optional-legs baseline.
+const migrationsLintTree = mkdtempSync(join(tmpdir(), 'green-cp-migrations-lint-tree-'));
+writeFileSync(
+  join(migrationsLintTree, 'package.json'),
+  JSON.stringify({ name: 'cp-migrations-lint-fixture', scripts: { 'lint:migrations': 'node scripts/lint-migrations.mjs' } }),
+);
+afterAll(() => rmSync(migrationsLintTree, { recursive: true, force: true }));
+
 const cfg: ReleaseConfig = releaseConfig({
   integrationRoot: '/int',
   releaseRoot: '/int',
@@ -104,6 +115,44 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(r.failingTests).toContain('lint:tsc');
     expect(r.summary).toContain('TYPECHECK FAILED');
     expect(calls).toHaveLength(2);
+  });
+
+  // EI-485: lint:migrations' PG-backed unreserved-number check was never wired into any
+  // automated gate (its 3 pure-fs checks got wired into the vitest suite itself,
+  // lint-migrations.test.ts, EI-6843, so they already rode test:affected — only the
+  // PG-backed leg was still manual-only). Mirrors the lint:tsc wiring tests above.
+  it('detects the optional lint:migrations script without requiring it from subject hives', () => {
+    expect(hasNpmScript(cpTree, 'lint:migrations')).toBe(false);
+    expect(hasNpmScript(migrationsLintTree, 'lint:migrations')).toBe(true);
+  });
+
+  it('runs lint:migrations after a green suite, before the SPA build, when the candidate provides it', async () => {
+    // suite green → lint:migrations green → marker grep clean → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(migrationsLintTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls[1].cmd).toBe('npm');
+    expect(calls[1].args).toEqual(['run', 'lint:migrations']);
+    expect(calls[1].opts?.cwd).toBe(migrationsLintTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[1].opts?.env?.AFFECTED_BASE).toBe('base-sha');
+    expect(calls[2].cmd).toBe('git');
+    expect(calls[3].args).toContain('build');
+  });
+
+  it('holds the candidate when lint:migrations reports a violation and skips the SPA build', async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: '✗ migration number(s) ≥494 on disk without a reservation row (use db:next-migration): 620' },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(migrationsLintTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('lint:migrations');
+    expect(r.summary).toContain('MIGRATION LINT FAILED');
+    expect(calls).toHaveLength(2); // build NOT attempted — held before the SPA build leg
   });
 
   it('green suite + clean tree + green build → green, with the stripped checkpoint env on the green command', async () => {

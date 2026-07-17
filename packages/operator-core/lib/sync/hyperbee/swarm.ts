@@ -56,6 +56,29 @@ export interface SwarmHandle {
    * and "connected-but-dead replication" (the zombie-connection class).
    */
   liveConnectionCount: number;
+  /**
+   * EI-13317 rung (b): force a fresh topic leave()+join() NOW (a new discovery
+   * session/DHT announce), bypassing the severed-link timer. Extracted from
+   * the escalation ladder's own leave+rejoin action (below) so an EXTERNAL
+   * repair escalation can invoke the identical recovery lever.
+   *
+   * Motivating case (gate run 050615, forensics on EI-13317): a "live-socket,
+   * dead-replication" failure — the swarm topic re-pairs repeatedly
+   * (`connection` keeps firing, `liveConnectionCount` never sits at 0) while a
+   * specific admitted log's content replication never (re-)attaches. Rung
+   * (a)'s `severedEscalationMs` trigger is `connectionCount > 0 &&
+   * liveConnectionCount === 0` — structurally blind to this case. Wired as
+   * the escalation boot.ts's WI-3684 repair-on-detect reaches for once its
+   * per-log SESSION re-attach budget (`REPAIR_MAX_ATTEMPTS_PER_LOG`) is
+   * exhausted and the log has re-stalled anyway: a session-level re-attach
+   * alone didn't fix it, so force the heavier topic-level rejoin.
+   *
+   * Best-effort + idempotent-safe: concurrent/rapid calls just re-run
+   * leave+join (Hyperswarm treats a re-leave/re-join of the same topic as
+   * safe); the caller is expected to rate-limit its OWN triggering (this
+   * method applies none itself — it is a raw lever, not a policy).
+   */
+  forceRejoin(): Promise<void>;
 }
 
 /** EI-13317: one topic's severed-link escalation event, carried by
@@ -1113,8 +1136,23 @@ export async function joinHarnessSwarm(
   // setMaxListeners(0) hiding the count. Undo the listener (+ any timer) on any
   // setup failure so a failed join leaks nothing.
   let refreshTimer: ManagedHandle | null = null;
+  // Hoisted above the try block (was `let discovery = ...` scoped to the try
+  // block) so `forceRejoinNow` — defined once, below, and called both by the
+  // escalation ladder tick and by `handle.forceRejoin()` — can reassign it.
+  let discovery: ReturnType<HyperswarmLike['join']> | undefined;
+  /**
+   * The actual leave+rejoin action, shared by the severed-link escalation
+   * tick (rung (a)) and the external `forceRejoin()` lever on the handle
+   * (rung (b) callers — see the SwarmHandle.forceRejoin doc). A fresh join
+   * re-arms the fast self-heal window too, same as a cold boot would.
+   */
+  async function forceRejoinNow(): Promise<void> {
+    await Promise.resolve(opts.swarm.leave(opts.topic)).catch(() => {});
+    discovery = opts.swarm.join(opts.topic, { server: true, client: true });
+    fastWindowStartMs = Date.now();
+  }
   try {
-    let discovery = opts.swarm.join(opts.topic, { server: true, client: true });
+    discovery = opts.swarm.join(opts.topic, { server: true, client: true });
     // Best-effort flush — some Hyperswarm builds expose this, some
     // don't. Either way, returning before flush is fine because peers
     // can connect any time after the join call returns.
@@ -1185,20 +1223,11 @@ export async function joinHarnessSwarm(
               /* diagnostic-only; swallow */
             }
             fireSeveredLinkSafely(opts.onSeveredLink, info);
-            void Promise.resolve(opts.swarm.leave(opts.topic))
-              .then(() => {
-                discovery = opts.swarm.join(opts.topic, { server: true, client: true });
-                // A fresh join re-arms the fast window too — the rejoin gets
-                // the same aggressive post-join re-announce cadence a cold
-                // boot would, instead of falling straight back to the slow
-                // keepalive.
-                fastWindowStartMs = Date.now();
-              })
-              .catch(() => {
-                // best-effort — a failed rejoin attempt is retried at the
-                // next escalation tick (lastEscalationMs already advanced,
-                // so this waits a full severedEscalationMs before retrying).
-              });
+            void forceRejoinNow().catch(() => {
+              // best-effort — a failed rejoin attempt is retried at the
+              // next escalation tick (lastEscalationMs already advanced,
+              // so this waits a full severedEscalationMs before retrying).
+            });
           }
         }
 
@@ -1270,6 +1299,9 @@ export async function joinHarnessSwarm(
         return n;
       }
       return liveConnectionCount;
+    },
+    async forceRejoin() {
+      await forceRejoinNow();
     },
     async close() {
       // WI-752: stop the self-heal loop FIRST so no refresh fires after leave.

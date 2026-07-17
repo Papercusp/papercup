@@ -46,6 +46,7 @@ import { productionSpawnHydrationDeps } from './spawn-hydration-deps';
 import type { Db } from './pg-stores';
 import {
   heartbeatSpawns,
+  isSpawnProcessAlive,
   reclaimOrphanedSpawns,
   recordSpawnPid,
   removeSpawnResultArtifact,
@@ -291,6 +292,20 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
 const localSpawnAborts = new Map<string, AbortController>();
 
 /**
+ * Per-spawn CHILD pid (liveness-hardening, EI-493), set once `onChildPid`
+ * fires — i.e. only once the real invoke-once child exists (before that, the
+ * `childStartTimer` admission window already guards a wedged/slow launch).
+ * The heartbeat tick /proc-liveness-checks this before bumping `heartbeat_at`
+ * (see `ensureSpawnHeartbeatLoop`): a same-host row whose child process is
+ * confirmed dead must NOT keep reading "falsely fresh" forever — that was the
+ * leak class EI-493 reports ("bees exit without releasing nursery slots"),
+ * because `reclaimOrphanedSpawns`'s candidate query only selects rows whose
+ * `heartbeat_at` has actually gone stale. Entries die with the spawn (cleared
+ * beside localSpawnAborts).
+ */
+const localSpawnPids = new Map<string, number>();
+
+/**
  * Per-spawn stream activity (liveness-hardening P-008): epoch-ms of the
  * latest stdout/stderr chunk each LOCAL spawn emitted (set by the runner's
  * onOutputActivity callback — in-process, no tee files) and the value last
@@ -378,12 +393,52 @@ async function reapWedgedLocalSpawns(now: number): Promise<void> {
 }
 
 /**
+ * Pure filter (liveness-hardening, EI-493 — exported for tests): split the
+ * ids this host is CURRENTLY tracking into 'alive' (heartbeat as normal —
+ * includes an id with no recorded pid yet, since the admission-time
+ * `childStartTimer` already guards that narrow pre-onChildPid window) and
+ * 'dead' (a same-host /proc check confirms the recorded child process is
+ * gone). A leaked local-tracking entry — the child died but
+ * `spawnInvokeOnceWithFallback`'s completion promise never settled, e.g. an
+ * external SIGKILL/cgroup-reap that bypasses a normal Node child-process exit
+ * event — must stop being heartbeated, or its row reads "falsely fresh"
+ * forever and `reclaimOrphanedSpawns`'s candidate query (`WHERE heartbeat_at
+ * < now() - staleMs`) never selects it: a ceiling slot occupied until a
+ * manual `fleet:cancel`, every wave (the exact EI-493 symptom).
+ */
+export function partitionHeartbeatCandidatesByLiveness(
+  ids: readonly string[],
+  pids: ReadonlyMap<string, number>,
+  isAlive: (pid: number, kind?: 'spawn' | 'launch') => boolean = isSpawnProcessAlive,
+): { alive: string[]; dead: string[] } {
+  const alive: string[] = [];
+  const dead: string[] = [];
+  for (const id of ids) {
+    const pid = pids.get(id);
+    if (pid == null) {
+      alive.push(id); // no child pid recorded yet — child-start window, guarded elsewhere
+      continue;
+    }
+    if (isAlive(pid, 'spawn')) alive.push(id);
+    else dead.push(id);
+  }
+  return { alive, dead };
+}
+
+/**
  * Heartbeat loop (P-011): while this host has live spawns, bump their
  * `heartbeat_at` every SPAWN_HEARTBEAT_INTERVAL_MS so the reclaim sweep can tell
  * a live spawn from one whose host died. Lazily started on the first spawn and
  * self-stopping when the last local spawn finishes. `unref`'d so it never holds
  * the process open. The same tick stamps `last_output_at` for spawns whose
  * stream moved since the last persist (P-008 — zero extra write cadence).
+ *
+ * EI-493: before bumping, each id with a known child pid is /proc-liveness
+ * checked (`partitionHeartbeatCandidatesByLiveness`) — a confirmed-dead child
+ * drops out of local tracking (never heartbeated again) instead of being kept
+ * falsely fresh forever, so its row goes heartbeat-stale and the EXISTING
+ * `reclaimOrphanedSpawns` sweep frees the ceiling slot on its own within
+ * RECLAIM_STALE_MS, with no manual `fleet:cancel` required.
  */
 let heartbeatTimer: ManagedHandle | null = null;
 function ensureSpawnHeartbeatLoop(): void {
@@ -392,7 +447,26 @@ function ensureSpawnHeartbeatLoop(): void {
     'operator-spawn-heartbeat',
     SPAWN_HEARTBEAT_INTERVAL_MS,
     () => {
-      const ids = [...localSpawnAborts.keys()];
+      const trackedIds = [...localSpawnAborts.keys()];
+      if (trackedIds.length === 0) {
+        if (heartbeatTimer) heartbeatTimer.stop();
+        heartbeatTimer = null;
+        return;
+      }
+      const { alive: ids, dead } = partitionHeartbeatCandidatesByLiveness(trackedIds, localSpawnPids);
+      for (const id of dead) {
+        console.warn(
+          `[operator-spawn] heartbeat loop: ${id}'s recorded child process is confirmed dead — dropping ` +
+            'leaked local tracking (EI-493) so the row goes heartbeat-stale and reclaimOrphanedSpawns frees the ceiling slot',
+        );
+        // Best-effort nudge: if anything is still listening on the abort signal
+        // (e.g. the completion promise is merely slow, not truly stuck), give it
+        // one more chance to settle normally and run its own durable cleanup.
+        localSpawnAborts.get(id)?.abort();
+        localSpawnAborts.delete(id);
+        localSpawnOutput.delete(id);
+        localSpawnPids.delete(id);
+      }
       if (ids.length === 0) {
         if (heartbeatTimer) heartbeatTimer.stop();
         heartbeatTimer = null;
@@ -1508,6 +1582,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     } finally {
       localSpawnAborts.delete(spawnId);
       localSpawnOutput.delete(spawnId);
+      localSpawnPids.delete(spawnId);
     }
     // The terminal flip above freed a ceiling slot — wake any over-ceiling
     // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
@@ -1550,6 +1625,10 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
         clearTimeout(childStartTimer);
         childStartTimer = null;
       }
+      // EI-493: track the child pid locally too (not just durably) so the
+      // heartbeat loop can /proc-liveness-check it every tick without a DB
+      // round trip — see partitionHeartbeatCandidatesByLiveness.
+      localSpawnPids.set(spawnId, pid);
       void recordSpawnPid(getOrgPg().sql, spawnId, pid).catch(() => {});
     },
     // P-008: per-chunk stream signal, persisted by the heartbeat tick.

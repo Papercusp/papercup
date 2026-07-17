@@ -277,15 +277,14 @@ export default defineTool({
         // best-effort in its own try/catch, so one slow/failing source can neither block
         // nor fail the others.
         //
-        // Two of the sources below (the smoke-fail read and P-005a's needs-human
-        // work-items read) both need `@papercusp/db-org`'s `getOrgPg`. Hoist ONE
-        // shared dynamic import instead of each firing its own `await
-        // import("@papercusp/db-org")` — two concurrent first-time dynamic imports
-        // of the SAME specifier inside this Promise.all fan-out race Vitest's mock
-        // interception (attention-parallel-db-org-mock-race-2026-07-17): only the
-        // import that wins the race gets the vi.mock'd module, the other silently
-        // falls through to the real implementation. A single shared import promise
-        // makes it structurally impossible to race.
+        // The smoke-fail read below needs `@papercusp/db-org`'s `getOrgPg`. Keep
+        // this a SINGLE hoisted dynamic import: two concurrent first-time dynamic
+        // imports of the SAME specifier inside this Promise.all fan-out race
+        // Vitest's mock interception (attention-parallel-db-org-mock-race-2026-07-17)
+        // — only the import that wins the race gets the vi.mock'd module, the other
+        // silently falls through to the real implementation. If you add a source
+        // that needs PG, prefer a dedicated helper module the test can mock by
+        // path (see needs-human-work-items-source.ts) over another getOrgPg call.
         const dbOrgImportP = import("@papercusp/db-org");
         await Promise.all([
           // 2. Open coord escalations (workspace-level).
@@ -549,37 +548,15 @@ export default defineTool({
           //     rather than either per-kind reader, so neither family's
           //     dialect is missed. Overlaps sources 7/12 by construction;
           //     resolved post-fan-out by `dropDuplicateNeedsHumanWorkItems` (D-008).
+          //     The read lives in its own module (needs-human-work-items-source)
+          //     so tests mock it by path like every other source.
           (async () => {
             try {
-              const { getOrgPg } = await dbOrgImportP;
-              const { activeWorkspaceId } =
-                await import("../../workspace-registry");
-              const { sql } = getOrgPg();
-              const wid = activeWorkspaceId();
-              const hf = harnessFilter;
-              const rows = await sql<
-                {
-                  feature_id: string;
-                  title: string | null;
-                  summary: string | null;
-                  harness_slug: string | null;
-                  item_kind: string | null;
-                  taken_by: string | null;
-                }[]
-              >`
-                SELECT feature_id, title, summary, harness_slug, item_kind, taken_by
-                  FROM harness_shared.work_items
-                 WHERE (workspace_id = ${wid} OR workspace_id = 'default')
-                   AND (${hf}::text IS NULL OR harness_slug = ${hf})
-                   AND (
-                     status = 'needs-human'
-                     OR (
-                       item_kind IN ('bug', 'change', 'task')
-                       AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' = 'true'
-                     )
-                   )
-                 LIMIT 300
-              `;
+              const { readNeedsHumanWorkItems } =
+                await import("../../attention/needs-human-work-items-source");
+              const rows = await readNeedsHumanWorkItems({
+                harness: harnessFilter,
+              });
               for (const r of rows) {
                 items.push(
                   workItemNeedsHumanToAttention({

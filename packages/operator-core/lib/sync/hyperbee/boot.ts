@@ -93,6 +93,7 @@ import {
   joinHarnessSwarm,
   getSharedSwarm,
   getDhtUniverseAssertion,
+  DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS,
   type AnnounceConnectionContext,
   type HyperswarmLike,
   type SwarmHandle,
@@ -1661,10 +1662,56 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const repairAttempts = new Map<string, number>();
   const REPAIR_MAX_ATTEMPTS_PER_LOG = 3;
   const REPAIRABLE_EPISODE_KINDS = new Set(['connected_never_replicated', 'frozen']);
+  // EI-13317 rung (b): harness-level cooldown for the repair-exhaustion →
+  // forced-rejoin escalation below (NOT per-log — several admitted logs on
+  // the same topic can stall together, and a topic-level rejoin already
+  // covers all of them at once, so only ONE rejoin should fire per cooldown
+  // window regardless of how many logs are exhausted). Reuses swarm.ts's
+  // severed-link cadence rather than inventing a new constant.
+  const REJOIN_ESCALATION_COOLDOWN_MS = DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS;
+  let lastRejoinEscalationMs = 0;
   setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
     if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
     const attempts = repairAttempts.get(episode.logKeyHex) ?? 0;
-    if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) return;
+    if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) {
+      // Session-level re-attach is exhausted for this log and it has STILL
+      // re-stalled (the gate-run-050615 shape: swarm re-pairs repeatedly,
+      // content replication never re-attaches — a per-log Corestore session
+      // swap alone didn't fix it). Escalate to the heavier topic-level forced
+      // rejoin (swarm.ts's SwarmHandle.forceRejoin — the same lever rung (a)'s
+      // severed-link escalation uses, triggered here off REPLICATION liveness
+      // repair-exhaustion instead of zero-live-peers, which this failure shape
+      // never trips). `swarmHandle` is declared later in this function scope
+      // (assigned once the join resolves) but by the time an episode can fire
+      // — mid a merge pass, which requires the join to have already happened —
+      // it is always set; same forward-reference pattern already used for
+      // `swarmHandle?.liveConnectionCount` in the replication-liveness sampler
+      // below.
+      const now = Date.now();
+      if (now - lastRejoinEscalationMs < REJOIN_ESCALATION_COOLDOWN_MS) return;
+      lastRejoinEscalationMs = now;
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'replication_repair_exhausted',
+        `${peerLabel(episode.logKeyHex)} repair budget exhausted ` +
+          `(${REPAIR_MAX_ATTEMPTS_PER_LOG}/${REPAIR_MAX_ATTEMPTS_PER_LOG}) and re-stalled ` +
+          `(${episode.kind}) — forcing topic rejoin`,
+      );
+      console.error(
+        `[replication-liveness] repair-exhausted: forcing topic rejoin ` +
+          `log=${episode.logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${episode.kind}`,
+      );
+      void swarmHandle?.forceRejoin().catch((e) => {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'replication_repair_rejoin_failed',
+          `${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+      return;
+    }
     repairAttempts.set(episode.logKeyHex, attempts + 1);
     if (!repairQueue.includes(episode.logKeyHex)) repairQueue.push(episode.logKeyHex);
   });

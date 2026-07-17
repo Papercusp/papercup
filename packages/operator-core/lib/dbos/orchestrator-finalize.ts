@@ -90,8 +90,8 @@ export interface FinalizeRecipe {
  * DONE = curator → postCuratorOutputs → documenter → [archive]; ESCALATE = curator.
  */
 export const DEFAULT_FINALIZE_RECIPE: FinalizeRecipe = {
-  onDone: ['curator', 'postCuratorOutputs', 'documenter', 'archive'] as FinalizeEntry[],
-  onEscalate: ['curator'] as FinalizeEntry[],
+  onDone: ['curator', 'postCuratorOutputs', 'documenter', 'archive'],
+  onEscalate: ['curator'],
 };
 
 const FINALIZE_STEP_NAMES = new Set(['archive', 'postCuratorOutputs']);

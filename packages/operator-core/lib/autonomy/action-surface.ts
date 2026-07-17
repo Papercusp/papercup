@@ -284,7 +284,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['work_items:create', 'improvements:resolve'],
     humanSurface: 'Improvement → implement-lane dispatch (consume-edges)',
     coverage: 'partial',
-    notes: 'The implement-lane dispatch is driven by the orchestrator promote-policy + improvement triage, not a single owner-facing "approve this implementation" verb. work_items:create(feature) + triage approve the work; a build item (EI-458) could add an explicit implement-approval verb for finer owner control.',
+    notes: 'The implement-lane dispatch is driven by the orchestrator promote-policy + improvement triage, not a single owner-facing "approve this implementation" verb. work_items:create(feature) + triage approve the work; this needs an actual design decision (what does "approve" mean distinct from create+triage?), scoped out of EI-458 (whose other two P-016 partials are now covered) into its own follow-up: WI-5252.',
   },
 
   // ── review & merge ───────────────────────────────────────────────────────────────

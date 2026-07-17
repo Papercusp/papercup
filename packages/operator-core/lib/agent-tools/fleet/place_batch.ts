@@ -69,6 +69,21 @@ export interface ExecuteBatchDeps {
   // combined helper) so a test can assert each call's args precisely.
   ensureGroupTopic: (typeof import('../coordination/topics'))['createTopic'];
   subscribeGroupTopic: (typeof import('../coordination/topics'))['subscribeTopic'];
+  /**
+   * EI-490: a warm-inject target whose wake came back undelivered (`woken:0`) is a
+   * DEFINITIVE "this nursery row isn't actually a live bee" signal — the exact
+   * discovery the Queen otherwise only made by hand (`fleet:tree` → `woken:0` →
+   * `fleet:cancel`, repeated per zombie). Cancel that row's subtree immediately so
+   * its concurrency slot frees NOW instead of staying wedged until someone notices.
+   * Best-effort: a cancel failure never blocks the woken:0 ladder that rides on it.
+   * Returns whether anything was actually cancelled (false ⇒ no bonus slot granted).
+   */
+  cancelDeadBee: (opts: {
+    workspaceId: string;
+    spawnId: string;
+    reason: string;
+    actor: AgentIdentity;
+  }) => Promise<boolean>;
 }
 
 async function loadExecuteBatchDeps(): Promise<ExecuteBatchDeps> {
@@ -88,6 +103,19 @@ async function loadExecuteBatchDeps(): Promise<ExecuteBatchDeps> {
     wakeRecipients: wake.wakeRecipients,
     ensureGroupTopic: topics.createTopic,
     subscribeGroupTopic: topics.subscribeTopic,
+    cancelDeadBee: async ({ workspaceId, spawnId, reason, actor }) => {
+      try {
+        const [{ getOrgPg }, { cancelSubtree }] = await Promise.all([
+          import('@papercusp/db-org'),
+          import('../../fleet/nursery'),
+        ]);
+        const res = await cancelSubtree(getOrgPg().sql, { workspaceId, rootSpawnId: spawnId, reason, actor });
+        return res.cancelled.length > 0;
+      } catch (err) {
+        console.warn(`[fleet:place_batch] EI-490 auto-reap of dead bee ${spawnId} failed (best-effort):`, err instanceof Error ? err.message : err);
+        return false;
+      }
+    },
   };
 }
 
@@ -476,6 +504,7 @@ export async function executeBatch(opts: {
     wakeRecipients,
     ensureGroupTopic,
     subscribeGroupTopic,
+    cancelDeadBee,
   } = opts.deps ?? (await loadExecuteBatchDeps());
 
   const ownerId = actor.ownerId ?? '';
@@ -488,6 +517,10 @@ export async function executeBatch(opts: {
   let extraSpawnBudget = Math.max(0, headroom - plan.spawnCount);
   let awaitEvent: string | null = null;
   const placements: PlacementResult[] = [];
+  // EI-490: dedupe auto-reap per bee — several tasks in one batch can target the
+  // SAME dead warm-inject bee; cancel its nursery row (and grant the freed slot)
+  // only once, not once per task.
+  const reapedBees = new Set<string>();
 
   const doSpawn = async (task: PlacementTask, reason: string, climbedFrom?: string): Promise<PlacementResult> => {
     if (awaitEvent) {
@@ -585,11 +618,32 @@ export async function executeBatch(opts: {
         // No armed wake — don't strand the item on a dead/asleep bee. Release it
         // and climb the ladder: a fresh spawn if a slot is free, else queue back.
         await releaseWorkItem(d.task.id, { harness }).catch(() => {});
+        // EI-490: woken:0 is a DEFINITIVE "this nursery row is a zombie" signal —
+        // auto-reap it (once per bee per batch) instead of leaving it to keep
+        // consuming a concurrency slot until the Queen manually discovers +
+        // fleet:cancels it. A successful reap frees a real slot, so grant one
+        // bonus spawn-budget unit — the exact slot this zombie was squatting on.
+        let reaped = false;
+        if (!reapedBees.has(bee)) {
+          reapedBees.add(bee);
+          reaped = await cancelDeadBee({
+            workspaceId,
+            spawnId: bee,
+            reason: 'EI-490: auto-reaped by fleet:place_batch — warm-inject wake undelivered (woken:0), zombie nursery row',
+            actor,
+          }).catch(() => false);
+          if (reaped) extraSpawnBudget++;
+        }
         if (extraSpawnBudget > 0 && !awaitEvent) {
           extraSpawnBudget--;
           placements.push(await doSpawn(d.task, 'warm-inject undelivered (woken:0) → fresh spawn', bee));
         } else {
-          placements.push({ task: d.task.id, action: 'unplaced', bee, reason: 'warm-inject undelivered (woken:0); no spawn headroom — released to the frontier' });
+          placements.push({
+            task: d.task.id,
+            action: 'unplaced',
+            bee,
+            reason: `warm-inject undelivered (woken:0); no spawn headroom — released to the frontier${reaped ? ' (zombie bee auto-reaped; retry next batch)' : ''}`,
+          });
         }
         continue;
       }

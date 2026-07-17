@@ -1557,8 +1557,13 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       },
     });
     if (!outcome) {
+      // topicHex is in the message deliberately: a registry miss with a peer
+      // PROVABLY registered means the handle's topic and the hello channel's
+      // topic diverged — the one distinction the decoy stub otherwise erases
+      // (live-caught P-303: every tick decoyed while a verified hello for the
+      // exact requested device key sat registered).
       console.warn(
-        `[git-sync] ${slug}: bootstrap-tick: no live dial path to any candidate member device (dialed: ${dialLog.join(', ')})`,
+        `[git-sync] ${slug}: bootstrap-tick: no live dial path to any candidate member device (topic ${topicHex.slice(0, 12)}…, dialed: ${dialLog.join(', ')})`,
       );
     } else if (!outcome.ok) {
       console.warn(

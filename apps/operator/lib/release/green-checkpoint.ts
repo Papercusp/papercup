@@ -2105,6 +2105,36 @@ export function realCheckpointDeps(
         }
       }
 
+      // EI-485: lint:migrations' PG-backed "unreserved migration number" check (a
+      // hand-picked NNN that skipped db:next-migration) was never wired into any
+      // automated gate — its 3 pure-filesystem checks (dup-NNN, raw transaction
+      // control, unguarded RENAME CONSTRAINT) got wired into the vitest suite itself
+      // (lint-migrations.test.ts, EI-6843) and so already ran on every `test:affected`,
+      // but the PG-backed leg only ever ran on a manual `npm run lint:migrations` —
+      // which nobody ran, so real drift (16 already-applied numbers >= ENFORCED_FROM
+      // lacking a reservation row, backfilled in 620-backfill-migration-reservations-
+      // ei485.sql) reached green `main` undetected. Cheap (one fs scan + one PG query;
+      // gracefully skips the PG leg when unreachable, never a false red) and the
+      // checkpoint tree has a reachable PG, so gate it here like lint:tsc. A subject
+      // hive without the script (hasNpmScript false — no migrations dir) skips this
+      // leg entirely, same fallback as the typecheck leg above.
+      let lintMigrationsOut = '';
+      let lintMigrationsOk = true;
+      if (r.code === 0 && typecheckOk && hasNpmScript(treeDir, 'lint:migrations')) {
+        const migrations = await exec('npm', ['run', 'lint:migrations'], {
+          cwd: treeDir,
+          env,
+          allowNonZero: true,
+        });
+        lintMigrationsOk = migrations.code === 0;
+        if (!lintMigrationsOk) {
+          lintMigrationsOut =
+            '\n\n=== MIGRATION LINT FAILED (npm run lint:migrations) — committed migration-file discipline / unreserved migration number ===\n' +
+            migrations.stdout +
+            migrations.stderr;
+        }
+      }
+
       // P-005: the SPA build is PART of "green". A build break (a bad import, a type
       // error in a bundled module) passes the Vitest suite, then fails at the deploy's
       // swap step (`--build-spa`) and rolls back — needlessly draining + restarting the
@@ -2158,8 +2188,8 @@ export function realCheckpointDeps(
           }
         }
       }
-      let green = r.code === 0 && typecheckOk && buildOk;
-      const fullOutput = r.stdout + r.stderr + typecheckOut + buildOut;
+      let green = r.code === 0 && typecheckOk && lintMigrationsOk && buildOk;
+      const fullOutput = r.stdout + r.stderr + typecheckOut + lintMigrationsOut + buildOut;
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
       // SUITE is what failed (r.code !== 0; the build only runs on a green suite, so
@@ -2215,6 +2245,7 @@ export function realCheckpointDeps(
       // sha. The de-noised 2000-char tail rides the held-gate broadcast/escalation.
       let failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
       if (!typecheckOk && !failingTests.includes('lint:tsc')) failingTests.push('lint:tsc');
+      if (!lintMigrationsOk && !failingTests.includes('lint:migrations')) failingTests.push('lint:migrations');
       let summary = summarizeSuiteOutput(fullOutput);
       if (!green && buildOk && failingTests.length) {
         try {

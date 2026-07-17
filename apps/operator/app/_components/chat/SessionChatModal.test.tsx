@@ -260,4 +260,68 @@ describe('SessionChatModal', () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
+
+  describe('P-008 cards in the popup', () => {
+    it('renders this owner\'s pending coord-escalation-with-options inline via the shared OtherDetail card', async () => {
+      seedAttention([mkEscalation('esc-1')]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      const card = screen.getByTestId('other-detail');
+      expect(card.getAttribute('data-item')).toBe('esc-1');
+    });
+
+    it('answering the inline card (onResolved) refreshes the shared attention feed', async () => {
+      seedAttention([mkEscalation('esc-1')]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('other-detail')).toBeTruthy());
+      fireEvent.click(screen.getByTestId('stub-resolve'));
+      expect(attentionInvalidate).toHaveBeenCalled();
+    });
+
+    it('ignores an escalation belonging to a DIFFERENT agent', async () => {
+      seedAttention([mkEscalation('esc-other', { ownerAgentId: 'su-someone-else' })]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
+    });
+
+    it('ignores an already-handled escalation', async () => {
+      seedAttention([mkEscalation('esc-handled', { tier: 'handled' })]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
+    });
+
+    it('ignores a coord-escalation with no named options (nothing to pick)', async () => {
+      seedAttention([mkEscalation('esc-no-opts', { ref: { kind: 'coord-escalation', options: [] } })]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
+    });
+
+    it('ignores a non-escalation attention item (e.g. a coord-message) for the same owner', async () => {
+      seedAttention([mkEscalation('msg-1', { kind: 'coord-message', ref: { kind: 'coord-message', msgId: 'm1' } })]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
+    });
+
+    it('renders no pending-escalations section while closed (sessionOwnerId null)', () => {
+      seedAttention([mkEscalation('esc-1')]);
+      render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
+      expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
+    });
+  });
 });

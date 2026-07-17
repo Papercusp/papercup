@@ -13,6 +13,40 @@
  * Only network errors are retried: HTTP responses (incl. 4xx/5xx) are
  * returned/thrown to the caller unchanged — a 500 won't get better by waiting,
  * and the caller owns status handling.
+ *
+ * ## Verifying this fix in the LIVE system (EI-489)
+ *
+ * `isTransientNetworkError` + `describeFetchError`'s unit tests
+ * (loopback-fetch.test.ts) prove the retry/classification LOGIC in isolation,
+ * but they cannot prove the live watchdog signal this was built to resolve
+ * (EI-446 / F-FIX-006: `failed-spawns:network`, harness/improvements/watchdog.ts
+ * `classifySpawnError` + `collectFailedSpawnSignals`) has actually gone quiet —
+ * that needs a real operator restart under real spawn traffic. A live-restart
+ * integration test would be flaky-by-construction (timing-dependent on the
+ * host's actual boot window) and not worth the maintenance cost; the concrete,
+ * cheap verification path instead is a DB query, since every classified spawn
+ * failure is persisted with its class-determining message:
+ *
+ * ```sql
+ * -- Any 'network'-classified spawn failures since <the fix's deploy timestamp>?
+ * -- (mirrors classifySpawnError's /econnrefused|econnreset|enotfound|socket|
+ * --  network|fetch failed/i match against harness_shared.spawned_agents.error_message)
+ * SELECT started_at, harness_slug, error_message
+ *   FROM harness_shared.spawned_agents
+ *  WHERE status = 'failed'
+ *    AND started_at > '<deploy timestamp>'
+ *    AND error_message ~* 'econnrefused|econnreset|enotfound|socket|network|fetch failed'
+ *  ORDER BY started_at DESC;
+ * ```
+ *
+ * Zero rows (or only isolated, non-clustering ones — `collectFailedSpawnSignals`
+ * fires a signal only once ≥5 land in a 6h window) = the fix is holding. Any row
+ * whose `error_message` does NOT carry a `(UND_ERR_*: ...)` / `(ECONNRESET: ...)`
+ * suffix predates this fix (describeFetchError started appending it) or bypassed
+ * loopback-fetch entirely — worth tracing which caller. `dev:pg_query` (su) or
+ * the operator's own `getOrgPg().sql` (in-process) both work; see
+ * storage-policy's "reading PG-canonical state" note before hand-rolling a
+ * fetch-and-jq over `failed-spawns` signals instead.
  */
 const DEFAULT_BACKOFFS_MS = [400, 800, 1200];
 
