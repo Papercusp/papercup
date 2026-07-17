@@ -945,6 +945,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // planSessions.list — every agent session attributed to ONE plan, for the
+  // plan popup's Sessions tab (owner-plans-single-pane-2026-07-17 P-004).
+  // Two legs (adv_sessions.plan_slug primary + a plan-item-claim supplement),
+  // deduped to one row per agent identity. Invalidated by any adv_sessions
+  // write (table-to-query-names) so a new/ended session refreshes it live.
+  'planSessions.list': {
+    argsSchema: z.object({
+      planSlug: z.string().min(1),
+      workspaceId: z.string().nullable().optional(),
+      limit: clampedLimit(500, 200).optional(),
+    }),
+    resolve: async (args) => {
+      const { planSlug, workspaceId = null, limit = 200 } = args as {
+        planSlug: string;
+        workspaceId?: string | null;
+        limit?: number;
+      };
+      const { listPlanSessions } = await import('../adv-sessions');
+      return (await listPlanSessions(planSlug, { workspaceId, limit })) as unknown[];
+    },
+  },
+
   // hiveFromRepo.progress — REAL step transitions for the long create-from-URL
   // (hive-from-repo-hardening P-008). The composition records to the in-process
   // store + invalidates this name per step; the form subscribes with its

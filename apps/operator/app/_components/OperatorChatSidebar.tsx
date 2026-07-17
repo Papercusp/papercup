@@ -363,6 +363,27 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 ) : null}
               </button>
             </Tooltip>
+            {/* owner-plans-single-pane-2026-07-17: the Plans face sits beside
+                the Inbox face — [📥 Inbox] [📋 Plans] [🥤 Papercup] [🫖 Pot
+                Health]. Simplified plan tracking; badge = plans that need YOU. */}
+            <Tooltip label={plansOpen ? 'Back to chat' : 'Plans — track active plans, open one in a popup, view its agent sessions'}>
+              <button
+                type="button"
+                className={`op-chat-inbox-toggle op-chat-plans-toggle${plansOpen ? ' is-on' : ''}`}
+                onClick={() => void setView(plansOpen ? 'chat' : 'plans')}
+                aria-pressed={plansOpen}
+                aria-label={plansOpen ? 'Back to chat' : 'Show plans'}
+                data-testid="op-chat-plans-toggle"
+              >
+                <ClipboardList className="op-chat-inbox-icon" aria-hidden="true" />
+                <span className="op-chat-inbox-toggle-label">Plans</span>
+                {plansNeedingYou > 0 ? (
+                  <span className="op-chat-inbox-badge" data-testid="op-chat-plans-badge">
+                    {plansBadge}
+                  </span>
+                ) : null}
+              </button>
+            </Tooltip>
             <Tooltip label={view === 'chat' ? 'Papercup chat' : 'Back to Papercup chat'}>
               <button
                 type="button"
@@ -459,6 +480,13 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
              view, where the composer consumes it (chat-seed.ts). */
           <Suspense fallback={<div className="op-chat-view-loading">Loading inbox…</div>}>
             <InboxPane onDiscussInChat={() => void setView('chat')} />
+          </Suspense>
+        ) : plansOpen ? (
+          /* owner-plans-single-pane-2026-07-17: 📋 on — the simplified Plans
+             tracker replaces the chat body. Rows open the plan in a popup
+             (PlanDetail read-first) with a per-plan Sessions tab. */
+          <Suspense fallback={<div className="op-chat-view-loading">Loading plans…</div>}>
+            <PlansPane />
           </Suspense>
         ) : (
           /* WI-4789 (owner ask 2026-07-14): the ambient Mug/Kettle status

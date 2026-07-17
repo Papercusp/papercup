@@ -90,7 +90,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // most of this map; low write rate keeps that cheap.
   'harness_shared.pr_reviewer_settings': ['prReviewerSettings.byHarness'],
   'harness_shared.trusted_authors': ['prReviewerSettings.byHarness'],
-  'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list'],
+  // planSessions.list (owner-plans-single-pane P-004): the plan popup's
+  // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
+  // session recorded for a plan (or one ending) live-refreshes the tab. Low
+  // write rate + a small per-plan payload keep the broad bust cheap.
+  'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list', 'planSessions.list'],
   // saved_prompts backs the Quick Panel prompts outline (savedPrompts.byScope).
   // Trigger attached in migration 598 (quick-panel-saved-prompts-2026-07-13):
   // full-bust — the query is keyed by scope (harness), not the row PK.

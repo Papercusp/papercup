@@ -1577,7 +1577,24 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       }
       liveAttempts++;
       outcome = await bootstrapFromPeer(repoPath, duplex, { selfDevicePubkey });
-      dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:${outcome.ok ? 'ok' : 'failed'}`);
+      // Surface WHY a LIVE dial then failed — otherwise the tick log only ever
+      // shows the generic ":failed" + fetch-transport's "duplex already
+      // destroyed before fetch began", and the ACTUAL cause (the peer's serve
+      // decision) is invisible on THIS machine, forcing a cross-machine
+      // serve.log read to learn it (P-303 reverse-leg drill 2026-07-17: five
+      // diagnosis wakes stalled on a reason the dialing box already received
+      // over the wire). The peer's `refuse` frame destroys our client duplex
+      // with `pot-git serve refused: <reason>` (serve-wiring.ts handleRefuse) —
+      // no-such-repo / mode-legacy / scope-repo:* / not-serving — and a
+      // transport drop destroys it with `serve channel closed`; node retains
+      // whichever on `duplex.errored` (set synchronously by .destroy(err), so
+      // no event-timing race). Fail-soft: absent/undefined ⇒ bare ":failed".
+      const dialErr = (duplex as { errored?: Error | null }).errored;
+      dialLog.push(
+        `${peerDevicePubkeyBase64.slice(0, 8)}:${
+          outcome.ok ? 'ok' : `failed${dialErr?.message ? `(${dialErr.message})` : ''}`
+        }`,
+      );
       if (outcome.ok) break;
     }
     await patchRoutineMetadata(slug, {

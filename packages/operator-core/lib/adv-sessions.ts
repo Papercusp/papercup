@@ -1021,6 +1021,122 @@ export async function listEndedAdvSessions(
   }
 }
 
+/** One agent session attributed to a plan, display-shaped for the plan popup's
+ *  Sessions tab (owner-plans-single-pane-2026-07-17 P-004). One row per distinct
+ *  agent identity (coord_owner_id) — the addressable unit SessionChatModal
+ *  resolves owner → live/recent transcript from. */
+export interface PlanSessionRow {
+  coordOwnerId: string;
+  sessionId: string | null;
+  ompThreadId: string | null;
+  agent: string | null;
+  mode: 'omp' | 'console';
+  role: string | null;
+  label: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  /** ended_at IS NULL — the process has not cleanly exited (a live/recent
+   *  session). The client still ages very old NULLs out visually. */
+  live: boolean;
+  /** How this session was attributed: 'plan' = launched bound to this plan
+   *  (adv_sessions.plan_slug); 'claim' = a plan-UNBOUND session of an agent that
+   *  claimed/completed one of the plan's work-items (D-005 supplement leg). */
+  via: 'plan' | 'claim';
+}
+
+/**
+ * Every agent session that touched a plan (owner-plans-single-pane-2026-07-17
+ * P-004) — the plan popup's Sessions tab. Two legs (D-005):
+ *   A. PRIMARY — adv_sessions whose plan_slug binds them to this plan (the
+ *      launch binding; the reliable backbone).
+ *   B. SUPPLEMENT — plan-UNBOUND sessions (plan_slug IS NULL) of agents that
+ *      are terminal_owner / taken_by on a feature-family work-item created from
+ *      this plan (source_plan_slug). Catches an agent that claimed plan work but
+ *      was launched without a plan binding. Deliberately excludes a session
+ *      bound to a DIFFERENT plan, so it never misattributes.
+ * DISTINCT ON (coord_owner_id) — one row per agent identity, preferring its
+ * plan-bound session then its most recent. Best-effort → [] on any DB error.
+ */
+export async function listPlanSessions(
+  planSlug: string,
+  opts: { workspaceId?: string | null; limit?: number } = {},
+): Promise<PlanSessionRow[]> {
+  const ws = opts.workspaceId ?? null;
+  const limit = Math.min(500, Math.max(1, opts.limit ?? 200));
+  if (!planSlug) return [];
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      Array<{
+        coord_owner_id: string;
+        session_id: string | null;
+        omp_thread_id: string | null;
+        agent: string | null;
+        mode: 'omp' | 'console';
+        role: string | null;
+        label: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        via: 'plan' | 'claim';
+      }>
+    >`
+      WITH claim_owners AS (
+        SELECT DISTINCT owner FROM (
+          SELECT terminal_owner AS owner
+            FROM harness_shared.work_items
+           WHERE source_plan_slug = ${planSlug} AND terminal_owner IS NOT NULL
+          UNION
+          SELECT taken_by AS owner
+            FROM harness_shared.work_items
+           WHERE source_plan_slug = ${planSlug} AND taken_by IS NOT NULL
+        ) o
+      ),
+      candidate AS (
+        SELECT s.coord_owner_id, s.session_id, s.omp_thread_id, s.agent, s.mode,
+               s.role, s.label, s.started_at, s.ended_at, 'plan'::text AS via
+          FROM harness_shared.adv_sessions s
+         WHERE s.plan_slug = ${planSlug}
+           AND s.coord_owner_id IS NOT NULL
+           AND (${ws}::text IS NULL OR s.workspace_id = ${ws})
+        UNION ALL
+        SELECT s.coord_owner_id, s.session_id, s.omp_thread_id, s.agent, s.mode,
+               s.role, s.label, s.started_at, s.ended_at, 'claim'::text AS via
+          FROM harness_shared.adv_sessions s
+          JOIN claim_owners c ON c.owner = s.coord_owner_id
+         WHERE s.plan_slug IS NULL
+           AND s.coord_owner_id IS NOT NULL
+           AND (${ws}::text IS NULL OR s.workspace_id = ${ws})
+      ),
+      deduped AS (
+        SELECT DISTINCT ON (coord_owner_id)
+               coord_owner_id, session_id, omp_thread_id, agent, mode, role,
+               label, started_at, ended_at, via
+          FROM candidate
+         ORDER BY coord_owner_id, (via = 'plan') DESC, started_at DESC
+      )
+      SELECT * FROM deduped
+       ORDER BY (ended_at IS NULL) DESC, started_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      coordOwnerId: r.coord_owner_id,
+      sessionId: r.session_id,
+      ompThreadId: r.omp_thread_id,
+      agent: r.agent,
+      mode: r.mode,
+      role: r.role,
+      label: r.label,
+      startedAt: toIsoTimestamp(r.started_at) ?? new Date(0).toISOString(),
+      endedAt: toIsoTimestamp(r.ended_at),
+      live: r.ended_at == null,
+      via: r.via,
+    }));
+  } catch (e) {
+    warnUnlessMissingTable(e, 'listPlanSessions');
+    return [];
+  }
+}
+
 /**
  * adv_sessions rows matched by their transcript handles — `session_id` (a
  * claude transcript uuid) or `omp_thread_id`. Used by the transcript-search
