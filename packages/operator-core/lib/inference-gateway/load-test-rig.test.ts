@@ -34,29 +34,46 @@ test('OFF (no smoothing) — a fleet-concurrency burst REPRODUCES the upstream b
   expect(Object.keys(r.perAccount429).length).toBeGreaterThanOrEqual(2);
 }, 45_000);
 
-test('WI-673 — cross-account bare-burst cluster suppresses rotate-retry during ramp (no retry fan-out)', async () => {
-  // Residual production storm: requests were far below the 45/min/account floor, but one bare-burst
-  // rotated 400ms later onto a fresh account, making a rapid A→B→C cross-account cluster. The fix
-  // treats a short-window cluster across distinct accounts as fleet-wide *before* half the pool is
-  // already exhausted, so only the first ramp request may rotate; the rest wait/retry on their own
-  // account instead of multiplying upstream calls across the pool.
-  const r = await runGatewayBurstRig({
-    accounts: 8,
-    n: 16,
-    burstCap: 1,
-    burstWindowMs: 100,
-    smoothRpm: false,
-    concurrency: 16,
-    maxQueueWaitMs: 2000,
-    requestAbsorbMs: 1500,
-    bare429FailoverBackoffMs: 250,
-  });
-  expect(r.ok).toBe(16);
-  expect(r.upstream429).toBe(8);
-  expect(r.failovers).toBeLessThanOrEqual(1);
-  expect(r.bareBurstRotateSuppressed).toBeGreaterThanOrEqual(7);
-  expect(r.upstreamCallsPerRequest).toBeLessThanOrEqual(1.5);
-}, 15_000);
+test(
+  'WI-673 — cross-account bare-burst cluster suppresses rotate-retry during ramp (no retry fan-out)',
+  // EI-14172: this rig runs REAL setTimeout pacing (burstWindowMs:100,
+  // bare429FailoverBackoffMs:250) and asserts an EXACT upstream429 tally that
+  // encodes the storm-mechanism proof (P-001) — confirmed flake under a loaded
+  // gate host (6 vs 8, passed on the gate's own single flake-absorption retry;
+  // green-checkpoint 2026-07-17T10:36, candidate fdf135de), not a regression.
+  // Deliberately NOT loosening the assertion (toBe(8)->gte(6)) per this item's
+  // own guidance — that would mask the real bare-burst storm the rig exists to
+  // catch. Mirroring the gate's own tolerance (one retry) here instead keeps
+  // the exact-count proof intact while absorbing the same real-timer race the
+  // gate already absorbs, so it stops flapping the flakyWorkspaces signal.
+  // Durable fix (inject a controlled/fake clock so burst pacing is not
+  // wall-clock-dependent) stays owned by inference-gateway-stability-ownership
+  // P-001 — out of scope here; this is the retry-tolerance mitigation only.
+  { timeout: 15_000, retry: 1 },
+  async () => {
+    // Residual production storm: requests were far below the 45/min/account floor, but one bare-burst
+    // rotated 400ms later onto a fresh account, making a rapid A→B→C cross-account cluster. The fix
+    // treats a short-window cluster across distinct accounts as fleet-wide *before* half the pool is
+    // already exhausted, so only the first ramp request may rotate; the rest wait/retry on their own
+    // account instead of multiplying upstream calls across the pool.
+    const r = await runGatewayBurstRig({
+      accounts: 8,
+      n: 16,
+      burstCap: 1,
+      burstWindowMs: 100,
+      smoothRpm: false,
+      concurrency: 16,
+      maxQueueWaitMs: 2000,
+      requestAbsorbMs: 1500,
+      bare429FailoverBackoffMs: 250,
+    });
+    expect(r.ok).toBe(16);
+    expect(r.upstream429).toBe(8);
+    expect(r.failovers).toBeLessThanOrEqual(1);
+    expect(r.bareBurstRotateSuppressed).toBeGreaterThanOrEqual(7);
+    expect(r.upstreamCallsPerRequest).toBeLessThanOrEqual(1.5);
+  },
+);
 
 
 test('ON (smoothRpm) — smoothing ELIMINATES the sub-minute burst and is throughput-neutral', async () => {

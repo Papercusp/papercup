@@ -33,6 +33,17 @@ let captured: { handlers: Handlers; onError?: (e: Error) => void; url: string } 
 const closeSpy = vi.fn();
 vi.mock('@papercusp/sse', () => ({
   createResilientEventSource: (opts: { url: string; handlers: Handlers; onError?: (e: Error) => void }) => {
+    // EI-14216: OperatorChat transitively imports OperatorConversationProvider
+    // (for CardAnswerError), which imports voice-mode.ts, which — on some
+    // renders — async-inits a cross-tab "leader bridge" that ALSO calls
+    // createResilientEventSource, for an unrelated
+    // /api/agent-mcp/run-command/sse?workspace=default&sessionId=tab-... URL.
+    // That call has nothing to do with this component's own live-session
+    // stream and must never clobber `captured` — only the session/thinking
+    // stream this file actually asserts on should be captured.
+    if (!opts.url.startsWith('/api/adv/session/thinking')) {
+      return { close: vi.fn() };
+    }
     captured = { handlers: opts.handlers, onError: opts.onError, url: opts.url };
     return { close: closeSpy };
   },
