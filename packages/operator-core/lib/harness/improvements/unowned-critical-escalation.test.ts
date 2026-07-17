@@ -96,7 +96,7 @@ describe('unownedAgedCriticals (pure)', () => {
 
 describe('unownedCriticalsMatchingFleetSpec (WI-5213 routing rule)', () => {
   const defaultSpec: ClaimSpec = {
-    specVersion: 1,
+    specVersion: '1.0',
     specId: 'default-fixed-ordering',
     revision: 0,
     view: {},
