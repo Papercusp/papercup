@@ -1,0 +1,268 @@
+/**
+ * bundle-app-install-io — the REAL (git + network + PG) wiring for installing a
+ * Cupboard bundle-app (cupboard-app-distribution-2026-07-14 P-008, "REMAINING
+ * for done" item 2).
+ *
+ * Composes the SAME per-kind installers every other Cupboard kind already
+ * uses (D-002 no-second-install-runtime) behind the pure `installBundleApp`
+ * core (bundle-app-manifest.ts):
+ *   - packs/plugins → `resolveAndInstallDeps` (resolve-and-install.ts) with
+ *     `installUnit: installCupboardUnitFromListing` (install-io.ts) — the exact
+ *     loop `cupboard:install-plugin`'s dep-closure and `harness:create` use.
+ *   - datatypes → `installPublishedDatatype` (datatype-registry-store.ts) —
+ *     the same core `datatypes:install` calls.
+ *   - blueprint → `installBlueprintFromCupboardCore` (install-blueprint-core.ts)
+ *     — the same core `cupboard:install-blueprint` calls. Its result carries no
+ *     durable "installed FROM this bundle" provenance on its own (a copied
+ *     blueprint dir has no `.git`), so this module stamps a small sidecar file
+ *     (`.papercusp-bundle-source.json`) after a successful install and reads it
+ *     back for `installedBlueprintSource` — the ONLY way a later bundle-app
+ *     conflict review can tell "already installed from THIS bundle" (duplicate,
+ *     safe to skip) apart from "something else occupies this blueprint id"
+ *     (conflict, never silently overwritten). A blueprint dir that exists
+ *     without the sidecar (installed some other way — built-in, a direct
+ *     cupboard:install-blueprint, hand-placed) is conservatively a conflict,
+ *     never assumed same-source.
+ *
+ * Shared by the loopback POST /cupboard/install-app route AND the
+ * agent-callable `cupboard:install-app` tool — no fork.
+ */
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
+import { getDatatype, installPublishedDatatype } from '../datatype-registry-store';
+import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
+import { resolveCupboardBaseUrl } from './base-url';
+import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
+import { gitCloneShallow, installCupboardUnitFromListing } from './install-io';
+import { installBlueprintFromCupboardCore, InstallBlueprintError } from './install-blueprint-core';
+import { fetchBundleManifest, BundleManifestError } from './bundle-manifest-io';
+import {
+  planBundleAppInstall,
+  installBundleApp,
+  type BundleAppManifest,
+  type BundleHostState,
+  type BundleAppInstallResult,
+} from './bundle-app-manifest';
+import { resolveAndInstallDeps, type DepSet } from './resolve-and-install';
+
+export interface InstallBundleAppInput {
+  /** Resolve the repo URL + listing_ref from the Cupboard 'app' listing (delivery_type must be 'bundle'). */
+  listingId?: string;
+  /** OR install a repo directly (listingRef = the bundle subdir). */
+  githubUrl?: string;
+  listingRef?: string;
+  /** Proceed even when the review finds unresolved conflicts (mirrors installBundleApp's opt-in). */
+  allowConflicts?: boolean;
+}
+
+export type InstallBundleAppOutcome =
+  | { ok: true; manifest: BundleAppManifest; result: BundleAppInstallResult }
+  | { ok: false; status: number; error: string; detail?: string };
+
+/** Resolve a Cupboard 'app'/bundle listing id → { githubUrl, listingRef }. */
+async function resolveBundleAppListing(
+  id: string,
+): Promise<{ githubUrl: string; listingRef?: string } | { error: string; status: number }> {
+  const base = resolveCupboardBaseUrl();
+  let row: Record<string, unknown> | null = null;
+  try {
+    const res = await fetch(`${base}/listings/${encodeURIComponent(id)}`, {
+      headers: { 'User-Agent': 'papercusp-operator/1' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { error: 'listing_not_found_or_unreachable', status: 404 };
+    const data = (await res.json()) as Record<string, unknown> | null;
+    row =
+      (data?.harness as Record<string, unknown> | undefined) ??
+      (data?.listing as Record<string, unknown> | undefined) ??
+      (data as Record<string, unknown>);
+  } catch {
+    return { error: 'listing_not_found_or_unreachable', status: 404 };
+  }
+  if (row?.listing_kind !== 'app' || row?.delivery_type !== 'bundle') {
+    return {
+      error: `listing is kind=${String(row?.listing_kind ?? 'unknown')}/delivery_type=${String(row?.delivery_type ?? 'none')}, not a bundle app`,
+      status: 422,
+    };
+  }
+  const githubUrl = typeof row.github_url === 'string' ? row.github_url : '';
+  if (!githubUrl) return { error: 'listing has no github_url', status: 422 };
+  const listingRef = typeof row.listing_ref === 'string' ? row.listing_ref : undefined;
+  return { githubUrl, listingRef };
+}
+
+const BUNDLE_SOURCE_SIDECAR = '.papercusp-bundle-source.json';
+
+/** Read the bundle-install provenance sidecar for an installed blueprint id.
+ *  `null` = the blueprint isn't installed, OR is installed with no sidecar
+ *  (unknown provenance — the caller treats that as a conflict, never a
+ *  same-source duplicate). */
+async function readBlueprintBundleSource(id: string): Promise<string | null> {
+  const dir = join(INSTALLED_BLUEPRINTS_DIR(), id);
+  try {
+    const raw = await fs.readFile(join(dir, BUNDLE_SOURCE_SIDECAR), 'utf8');
+    const parsed = JSON.parse(raw) as { source?: unknown };
+    return typeof parsed.source === 'string' && parsed.source ? parsed.source : null;
+  } catch {
+    // Sidecar absent — but the blueprint dir itself may still exist (installed
+    // some other way). Distinguish "not installed at all" (→ clean, per
+    // BundleHostState's contract) from "installed, unknown provenance" (→ must
+    // read as a real, non-matching source string so planBundleAppInstall calls
+    // it a conflict rather than silently treating it as absent/clean).
+    try {
+      await fs.access(join(dir, 'blueprint.yaml'));
+      return 'unknown (not installed via a bundle app)';
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function writeBlueprintBundleSource(id: string, source: string): Promise<void> {
+  const dir = join(INSTALLED_BLUEPRINTS_DIR(), id);
+  await fs.writeFile(
+    join(dir, BUNDLE_SOURCE_SIDECAR),
+    JSON.stringify({ source, installedAt: new Date().toISOString() }),
+    'utf8',
+  ).catch(() => {
+    /* best-effort provenance — a write failure must not fail an otherwise-successful install */
+  });
+}
+
+/** Real `BundleHostState` — the live workspace's datatype registry + pack
+ *  catalog + installed-blueprint provenance. */
+function makeHostState(workspaceId: string): BundleHostState {
+  const sql = getOrgPg().sql;
+  return {
+    hasDatatype: async (id) => (await getDatatype(sql, workspaceId, id)) != null,
+    deriveCatalog: () => derivePackCatalog({}),
+    installedBlueprintSource: readBlueprintBundleSource,
+  };
+}
+
+/** Real `BundleAppInstallers` — reuses `resolveAndInstallDeps` verbatim for
+ *  packs/plugins (D-002: no second install runtime), `installPublishedDatatype`
+ *  for datatypes, and `installBlueprintFromCupboardCore` (+ the provenance
+ *  sidecar) for the optional blueprint leg. */
+function makeInstallers(workspaceId: string) {
+  const sql = getOrgPg().sql;
+  return {
+    resolveAndInstallDeps: (declared: { packs?: string[]; plugins?: string[] }) =>
+      resolveAndInstallDeps(
+        { packs: declared.packs ?? [], plugins: declared.plugins ?? [] },
+        { deriveCatalog: () => derivePackCatalog({}), installUnit: (u) => installCupboardUnitFromListing(u) },
+      ),
+    installDatatype: async (id: string) => {
+      const res = await installPublishedDatatype(sql, id, workspaceId);
+      return res.ok ? { ok: true as const } : { ok: false as const, error: res.reason };
+    },
+    installBlueprint: async (blueprint: NonNullable<BundleAppManifest['blueprint']>) => {
+      try {
+        const res = await installBlueprintFromCupboardCore(
+          { githubUrl: blueprint.githubUrl, listingRef: blueprint.listingRef },
+          {
+            cloneRepo: gitCloneShallow,
+            installedBlueprintsDir: INSTALLED_BLUEPRINTS_DIR,
+            tmpDir: tmpdir,
+            resolveExtends: operatorResolveExtends(),
+            resolveHostSets: async () => {
+              const catalog = await derivePackCatalog({});
+              return { ...depHostSetsFromCatalog(catalog), cupboardBlueprints: new Set<string>(), cupboardReachable: catalog.cupboardReachable };
+            },
+          },
+        );
+        if (res.id !== blueprint.id) {
+          return {
+            ok: false as const,
+            error: `bundle declared blueprint id "${blueprint.id}" but the repo's blueprint.yaml declares "${res.id}"`,
+          };
+        }
+        await writeBlueprintBundleSource(res.id, blueprint.githubUrl);
+        return { ok: true as const };
+      } catch (e) {
+        if (e instanceof InstallBlueprintError) return { ok: false as const, error: e.message };
+        return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  };
+}
+
+/**
+ * The ONE orchestrated path that installs a bundle-app from the Cupboard by
+ * listing id OR direct github url: resolve coords → fetch + parse bundle.yaml
+ * → review + install through the pure core (real host state + installers).
+ * Never throws for an expected failure; the caller maps status+error.
+ */
+export async function installBundleAppFromCupboard(
+  input: InstallBundleAppInput,
+  opts: { workspaceId: string },
+): Promise<InstallBundleAppOutcome> {
+  let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
+  let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
+
+  if (!githubUrl && input.listingId) {
+    const resolved = await resolveBundleAppListing(String(input.listingId));
+    if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
+    githubUrl = resolved.githubUrl;
+    listingRef = listingRef ?? resolved.listingRef;
+  }
+  if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
+
+  let manifest: BundleAppManifest;
+  try {
+    manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir });
+  } catch (e) {
+    if (e instanceof BundleManifestError) return { ok: false, status: e.status, error: e.message };
+    return { ok: false, status: 500, error: 'manifest fetch failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+  }
+
+  try {
+    const host = makeHostState(opts.workspaceId);
+    const installers = makeInstallers(opts.workspaceId);
+    const result = await installBundleApp(manifest, host, installers, { allowConflicts: input.allowConflicts === true });
+    return { ok: true, manifest, result };
+  } catch (e) {
+    return { ok: false, status: 500, error: 'install failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+  }
+}
+
+/**
+ * Review-only: resolve + fetch the manifest and run the conflict classification
+ * WITHOUT installing anything — the UI's "what would this do" preview before
+ * the user commits (mirrors knowledge_packs:install's dry review step).
+ */
+export async function reviewBundleAppFromCupboard(
+  input: Omit<InstallBundleAppInput, 'allowConflicts'>,
+  opts: { workspaceId: string },
+): Promise<
+  | { ok: true; manifest: BundleAppManifest; review: Awaited<ReturnType<typeof planBundleAppInstall>> }
+  | { ok: false; status: number; error: string; detail?: string }
+> {
+  let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
+  let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
+
+  if (!githubUrl && input.listingId) {
+    const resolved = await resolveBundleAppListing(String(input.listingId));
+    if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
+    githubUrl = resolved.githubUrl;
+    listingRef = listingRef ?? resolved.listingRef;
+  }
+  if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
+
+  let manifest: BundleAppManifest;
+  try {
+    manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir });
+  } catch (e) {
+    if (e instanceof BundleManifestError) return { ok: false, status: e.status, error: e.message };
+    return { ok: false, status: 500, error: 'manifest fetch failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+  }
+
+  try {
+    const review = await planBundleAppInstall(manifest, makeHostState(opts.workspaceId));
+    return { ok: true, manifest, review };
+  } catch (e) {
+    return { ok: false, status: 500, error: 'review failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+  }
+}
