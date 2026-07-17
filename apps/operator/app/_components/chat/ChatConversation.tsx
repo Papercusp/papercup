@@ -114,6 +114,17 @@ export interface ChatConversationProps {
     toolIndex: number,
   ) => ReactNode | null | undefined;
 
+  /**
+   * Optional structured-CARD renderer for a message that carries a `report`
+   * (deterministic-status-cards-2026-07-17 P-003). When it returns a node, that
+   * card renders IN PLACE OF the message's plain-text `content` (the card is the
+   * structured form of the same content — the curator's status card replacing
+   * its flattened markdown lines). Returns null/undefined ⇒ the text renders as
+   * normal (the flag-off / no-report path). msg is passed so the renderer can
+   * read `msg.report` + route the drill-in.
+   */
+  renderReport?: (msg: ChatMessage) => ReactNode | null | undefined;
+
   /** Input form (controlled). */
   inputValue: string;
   onInputChange: (v: string) => void;
@@ -173,6 +184,7 @@ export function ChatConversation(props: ChatConversationProps) {
     labelForRole,
     renderToolChip,
     renderToolCard,
+    renderReport,
     inputValue,
     onInputChange,
     onSubmit,
@@ -486,12 +498,18 @@ export function ChatConversation(props: ChatConversationProps) {
                         if (card) cardSlots.push({ index: ti, node: card });
                         else if (renderToolChip) chipTools.push({ tool: t, index: ti });
                       });
+                      // deterministic-status-cards P-003: a status CARD (curator's
+                      // report) renders IN PLACE OF the plain-text content — the card
+                      // is the structured form of the same lines. Null ⇒ text as normal.
+                      const reportCard = renderReport?.(m);
                       return (
                         <>
                           {chipTools.map(({ tool, index }) =>
                             renderToolChip ? renderToolChip(tool, index) : null,
                           )}
-                          {m.content && <div className="oracle-msg-content">{m.content}</div>}
+                          {reportCard
+                            ? <div className="oracle-msg-report">{reportCard}</div>
+                            : m.content && <div className="oracle-msg-content">{m.content}</div>}
                           {cardSlots.map(({ index, node }) => (
                             <div key={`tool-card-${index}`}>{node}</div>
                           ))}

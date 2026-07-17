@@ -32,6 +32,8 @@ export interface ChatToolCall {
   };
 }
 
+import type { ReportBlock } from '@papercusp/chat-protocol';
+
 export interface ChatMessage {
   /** Who spoke. Surfaces tint by role. */
   role: 'user' | 'assistant' | 'system';
@@ -49,10 +51,18 @@ export interface ChatMessage {
   content: string;
   /** Optional tool calls to render above the content (chat:ask_choice uses this). */
   tools?: ChatToolCall[];
-  // NOTE: there is deliberately NO structured-report field here. The chat
-  // stream is conversation only — the operator's `<report>` payload routes
-  // to the tiered Inbox as an attention item and renders there via
-  // ReportBlockCard (report-cards-inbox-reconciliation-2026-06-05 D-002).
+  /**
+   * Structured status CARD for this message (deterministic-status-cards-2026-07-17
+   * P-003). Set ONLY for the curator-operator's `source:'system'` status turns —
+   * the provider maps `operator_turns.report` onto this field exclusively for
+   * system turns, so `report` present ⟺ a curator status card. Rendered in the
+   * chat via ReportBlockCard in place of the flattened `content` (gated on
+   * FLAGS.CURATOR_STATUS_CARDS). The operator's OWN `<report>` turns (text_typed/
+   * voice_tts) still route to the tiered Inbox and do NOT set this field — chat
+   * conversation stays conversation (report-cards-inbox-reconciliation D-002); the
+   * curator's fleet-status digest is the one deterministic exception, by design.
+   */
+  report?: ReportBlock;
   /**
    * Stable id for optimistic-write dedup. Set client-side to a uuid
    * when an optimistic local turn is dispatched; once the POST returns,
