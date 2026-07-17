@@ -281,7 +281,7 @@ export interface HeadlessCellDriverDeps {
    *  the long-log-analysis kind). */
   prepareWorkDir?: (workDir: string, cell: SweepCell) => Promise<void>;
   /** Run the session to completion (resolve when it exits / times out). Default:
-   *  `node apps/operator/scripts/psu-launcher.mjs --headless --yes --kickoff=…`
+   *  `node apps/operator/scripts/psu-launcher.mjs --agent=claude --headless --yes --kickoff=…`
    *  with PAPERCUSP_SID=<ownerId>, killed at timeoutMs. */
   spawnSession?: (input: SweepSpawnInput) => Promise<void>;
   /** Read the owner's native transcript JSONL (default: newestTranscriptUnderOwner + read). */
