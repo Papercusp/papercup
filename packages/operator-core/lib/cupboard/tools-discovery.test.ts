@@ -243,4 +243,44 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(schemaToText(null)).toBeNull();
     expect(schemaToText('nope')).toBeNull();
   });
+
+  it('EI-13190: names a nested object property\'s own fields, marking its required ones', () => {
+    // Mirrors locks:acquire's `wait: z.object({ max_sec }).optional()` — the
+    // exact shape that used to render as bare `wait?:object`, hiding that
+    // `max_sec` (not e.g. `timeout_ms`) is the field to pass.
+    const txt = schemaToText({
+      type: 'object',
+      properties: {
+        wait: {
+          type: 'object',
+          properties: { max_sec: { type: 'number', description: 'seconds to block' } },
+          required: ['max_sec'],
+        },
+      },
+    });
+    expect(txt).toBe('wait?:object{max_sec}');
+  });
+
+  it('marks a nested optional field with ? and renders multiple nested fields in order', () => {
+    const txt = schemaToText({
+      type: 'object',
+      required: ['pending_edit'],
+      properties: {
+        pending_edit: {
+          type: 'object',
+          properties: {
+            file: { type: 'string' },
+            old_string: { type: 'string' },
+            new_string: { type: 'string' },
+          },
+          required: ['file', 'old_string'],
+        },
+      },
+    });
+    expect(txt).toBe('pending_edit:object{file,old_string,new_string?}');
+  });
+
+  it('renders a bare object type with no nested braces when it has no properties', () => {
+    expect(schemaToText({ properties: { anything: { type: 'object' } } })).toBe('anything?:object');
+  });
 });

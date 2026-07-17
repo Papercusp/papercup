@@ -105,12 +105,35 @@ export type ToolMetaIndex = Map<
 >;
 
 /**
+ * One level of a nested `object`-typed property's own `properties` — just the
+ * field names (marking required-if-present ones), e.g. `{max_sec}` or
+ * `{file,old_string,new_string?}`. Not recursive (one level is enough to name
+ * the fields a caller needs; a deeper nest still falls back to bare `object`).
+ * Empty/non-object nested schemas render nothing.
+ */
+function nestedObjectFieldsText(p: { type?: unknown; properties?: unknown; required?: unknown }): string {
+  if (p.type !== 'object' || !p.properties || typeof p.properties !== 'object') return '';
+  const nestedRequired = new Set<string>(Array.isArray(p.required) ? (p.required as string[]) : []);
+  const names = Object.keys(p.properties as Record<string, unknown>).map(
+    (n) => `${n}${nestedRequired.has(n) ? '' : '?'}`,
+  );
+  return names.length > 0 ? `{${names.join(',')}}` : '';
+}
+
+/**
  * Render a tool's JSON inputSchema into one compact searchable/embeddable line:
  * `key:type description; otherKey?:enum …` (a `?` marks an optional property).
  * Pulls only the model-facing surface — property names, their `type` (or `enum`),
  * and their `description` — so the arg vocabulary feeds both search legs without
  * dragging the raw JSON Schema into the corpus. Null for a no-arg / absent /
  * non-object schema.
+ *
+ * EI-13190: an `object`-typed property (e.g. `wait: { max_sec }`) used to render
+ * as bare `wait?:object` — the nested REQUIRED field name (`max_sec`) was
+ * invisible until a call guessing a different name (`timeout_ms`) was rejected,
+ * and only the rejection error revealed the real name. Every such property now
+ * also gets its one-level nested field-name list appended, e.g. `wait?:object{max_sec}`,
+ * so the required nested shape is visible at discovery time, not just on retry.
  */
 export function schemaToText(inputSchema: unknown): string | null {
   if (!inputSchema || typeof inputSchema !== 'object') return null;
@@ -124,11 +147,14 @@ export function schemaToText(inputSchema: unknown): string | null {
       description?: unknown;
       type?: unknown;
       enum?: unknown;
+      properties?: unknown;
+      required?: unknown;
     };
     const type =
       typeof p.type === 'string' ? p.type : Array.isArray(p.enum) ? 'enum' : '';
+    const nested = nestedObjectFieldsText(p);
     const desc = typeof p.description === 'string' ? p.description.trim() : '';
-    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}` : ''}`;
+    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${nested}` : ''}`;
     parts.push(desc ? `${head} ${desc}` : head);
   }
   return parts.length > 0 ? parts.join('; ') : null;

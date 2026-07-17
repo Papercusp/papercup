@@ -30,6 +30,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { enrichBusy } from './enrich-busy';
 import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
+import { acquireWithContentionRetry } from './contention-retry';
 import {
   expireWaiter,
   getTxPool,
@@ -237,28 +238,38 @@ export default defineTool({
     // an unmanaged domain, where there's no federated stream to append to anyway).
     let emitScope: string | undefined;
     try {
-      const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant }>(
-        coordinationDomain,
-        {
-          local: localAcquire,
-          remote: {
-            kind: FILE_LOCK_OP_KINDS.acquire,
-            payload: {
-              owner: ownerId,
-              ownerLabel,
-              paths,
-              intent: args.intent,
-              ttlSec,
-              coordinationDomain,
-            } satisfies FileLockAcquireParams,
-            decode: (raw) => decodeRemoteAcquire(raw, paths, ttlSec),
+      // EI-13189: retry a TRANSIENT per-workspace advisory-lock timeout (pg
+      // 57014/55P03 — WorkspaceContendedError) before surfacing it to the caller.
+      // This is the SAME `acquireWithContentionRetry` backoff the PreToolUse
+      // per-edit hook (file-lock-guard.ts) and git-sync already ride out under
+      // load; the explicit `locks:acquire` MCP tool never had it wired in, so a
+      // background-sync contention dip on a busy workspace produced a
+      // user-visible `workspace_contended` failure with NO holder to blame —
+      // exactly the routine-background-sync symptom this item reported.
+      const routed = await acquireWithContentionRetry(() =>
+        routeFileLockOp<Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant }>(
+          coordinationDomain,
+          {
+            local: localAcquire,
+            remote: {
+              kind: FILE_LOCK_OP_KINDS.acquire,
+              payload: {
+                owner: ownerId,
+                ownerLabel,
+                paths,
+                intent: args.intent,
+                ttlSec,
+                coordinationDomain,
+              } satisfies FileLockAcquireParams,
+              decode: (raw) => decodeRemoteAcquire(raw, paths, ttlSec),
+            },
           },
-        },
+        ),
       );
       first = routed.value;
       if (routed.via !== 'remote-authority') emitScope = routed.scope;
     } catch (err) {
-      // Same-workspace contention timed out the advisory lock (P-015): surface a
+      // Same-workspace contention outlasted the retries above (P-015): surface a
       // structured result rather than leaking a raw PG error to the agent.
       // EI-9478: this is NOT "held by another agent" — no holder is enumerable
       // because we never got the per-workspace serialization lock (often the
@@ -267,11 +278,12 @@ export default defineTool({
       // transient reason instead so callers retry rather than queue a wake.
       if (err instanceof WorkspaceContendedError) return workspaceContended();
       // Defensive fallback: a fault in the authority-routing layer must never break the
-      // live per-edit lock path — degrade to the raw local acquire (pre-cutover behavior).
+      // live per-edit lock path — degrade to the raw local acquire (pre-cutover behavior),
+      // itself contention-retried for the same reason as the primary path above.
       // (The routing layer faulted before resolving a scope, so this rare recovery path
       // doesn't emit a lock-event — best-effort capture, never worth failing the acquire.)
       try {
-        first = await localAcquire();
+        first = await acquireWithContentionRetry(localAcquire);
       } catch (err2) {
         if (err2 instanceof WorkspaceContendedError) return workspaceContended();
         throw err2;
