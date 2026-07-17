@@ -177,6 +177,13 @@ export function isOrphanedFromParent(
  */
 export function startParentDeathWatch(onOrphaned: () => void): void {
   if (process.env.PAPERCUSP_DESKTOP !== "1") return;
+  // Headless rig frames (deb-hetzner-matrix / local-matrix) run the packaged
+  // sidecar with PAPERCUSP_DESKTOP=1 for production parity but launch it from a
+  // shell that exits right after spawn — there IS no desktop parent, so this
+  // watch would kill the instance seconds after boot (2026-07-16 local-matrix
+  // gate RED: frame A self-terminated mid-initdb on the launcher bash exiting).
+  // Those launchers opt out explicitly; a real desktop never sets this.
+  if (process.env.PAPERCUSP_PARENT_DEATH_WATCH === "0") return;
   const originalPpid = process.ppid;
   managedSetInterval(
     "serve-desktop-parent-death-watch",
