@@ -63,11 +63,11 @@
 @papercusp/p2p-voice::src/**
 @papercusp/pubsub-substrate::src/**
 
-# WI-5189 (2026-07-17): flipRate 0.455 over 12 runs (5/11 consecutive transitions).
-# All 4 recent failures are infra/load flakes (2x hook timeout under load, 1x shared
-# dev PG "not yet accepting connections" during recovery, 1x testcontainers
-# startup-lock contention with a concurrent process) -- no assertion failures
-# observed. De-quarantine follow-up: WI-5263 (confirm stable under normal load,
-# harden if needed, remove this line).
-@papercusp/db-org::src/engineer-issues-view-dml.integration.test.ts
+# WI-5182 (2026-07-17): flipRate 0.556 over 9 runs (5/9 consecutive transitions).
+# 3 immediate manual re-runs were all green (569/430/587ms, 11/11 tests, no
+# assertion failures) -- consistent with the infra/load-flake pattern (isolated
+# per-file testcontainers PG, likely container-startup/host contention under
+# the parallel fleet). De-quarantine follow-up: WI-5269 (confirm stable under
+# normal load, harden if needed, remove this line).
+@papercusp/operator-core::lib/agent-tools/coordination/coord-authority-hardening.integration.test.ts
 

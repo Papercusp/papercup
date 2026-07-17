@@ -192,7 +192,19 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
   // scenarios (or with anything else on the public DHT).
   const hivePubkey = randomBytes(32).toString('base64');
 
-  const readyTimeoutMs = opts.readyTimeoutMs ?? 60_000;
+  // WI-5185: 5 chaos scenarios in this file each cold-spawn 3 fresh `tsx`
+  // processes sequentially — under real shared-fleet CPU contention, one of
+  // those ~15 per-file spawns occasionally needed noticeably longer than 60s
+  // to reach 'ready' (confirmed via 2 reproductions: a DIFFERENT scenario/
+  // Swarm index missed the deadline each time, never the same one — a boot-
+  // time-variance signature, not a stuck/deterministic failure; every
+  // scenario that DID become ready in time then passed its assertions
+  // cleanly, ruling out a logic regression). 60s was tight relative to this
+  // file's own sibling budgets (meshTimeoutMs 90s, convergenceTimeoutMs 90s)
+  // for a step with zero application work yet (spawn + DHT bootstrap only) —
+  // widen to match them rather than tolerate a bound that's already tighter
+  // than its neighbors for no documented reason.
+  const readyTimeoutMs = opts.readyTimeoutMs ?? 90_000;
   const meshTimeoutMs = opts.meshTimeoutMs ?? 90_000;
   const steerTimeoutMs = opts.steerTimeoutMs ?? 60_000;
   const resultTimeoutMs = opts.resultTimeoutMs ?? 180_000;
