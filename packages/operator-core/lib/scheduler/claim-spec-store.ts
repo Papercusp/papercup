@@ -323,6 +323,8 @@ export async function getNextForBee(args: {
   // inherited sentinel while the leader rebinds the intended lane. Keep that
   // window fail-closed even when the scheduler kill-switch asks us to ignore
   // stored specs; only an explicit per-bee or valid fleet spec may pull.
+  // (An explicitly-LEFT agent carries no fleetSlug marker — getClaimSpecRecord
+  // treats a settled leave as solo, so DEFAULT_CLAIM_SPEC pulls resume there.)
   if (resolvedRecord.source === 'default' && resolvedRecord.fleetSlug) return null;
   const record = args.ignoreStoredSpec
     ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
@@ -426,9 +428,11 @@ export interface ClaimSpecRecord {
   harnessSlug?: string | null;
   /**
    * Set when `source === 'fleet'`: the fleet slug whose spec this bee inherited.
-   * Also set on a default record when the bee is in (or is transitioning out of)
-   * a fleet whose sentinel is missing. That marker is a fail-closed transition
-   * guard; it is not permission to use DEFAULT_CLAIM_SPEC.
+   * Also set on a default record while the bee's latest membership fact still
+   * NAMES a fleet whose sentinel is missing/invalid (mid-transition). That marker
+   * is a fail-closed transition guard; it is not permission to use
+   * DEFAULT_CLAIM_SPEC. An explicit leave (latest fact: no fleet) settles the
+   * transition — no marker, and ordinary solo DEFAULT_CLAIM_SPEC pulls resume.
    */
   fleetSlug?: string;
 }
@@ -468,8 +472,17 @@ export async function getClaimSpecRecord(
     };
   }
   // No per-bee row — try the fleet the bee belongs to (same inheritance getClaimSpec applies).
-  // Keep the membership slug even when its sentinel is absent/invalid: a caller
-  // must not turn that transition window into a generic-backlog claim.
+  // Keep the membership slug when the latest fact NAMES a fleet whose sentinel is
+  // absent/invalid: a caller must not turn that mid-rebind window into a
+  // generic-backlog claim (WI-4770). An explicit leave (latest fact fleet_slug=null)
+  // is NOT that window: the membership store's contract reads it as "explicitly in
+  // no fleet", and the admission seams (resolveFleetScopeContext) already treat the
+  // agent as unscoped — so no marker is set and ordinary solo DEFAULT_CLAIM_SPEC
+  // pulls resume. (This branch used to resurrect the prior fleet from event history
+  // on a leave, which permanently fail-closed every ex-member's self-select while
+  // their by-id claims stayed wide open — observed live 2026-07-17: a wound-down
+  // scratch fleet's leader could never pull again, with a miss diagnosis reporting
+  // hundreds of ready items.)
   let transitionFleetSlug: string | undefined;
   try {
     const { latestFleetMembership } = await import('../fleet-membership-store');
@@ -501,19 +514,6 @@ export async function getClaimSpecRecord(
           };
         }
       }
-    } else if (membership) {
-      // A leave event still represents a membership transition. Preserve the
-      // last named fleet as provenance until the caller explicitly rebinds a
-      // per-bee spec; otherwise the next pull could fall through to DEFAULT.
-      const prior = (await sql`
-        SELECT fleet_slug
-          FROM harness_shared.fleet_membership_events
-         WHERE workspace_id = ${ws}
-           AND owner_id = ${args.cupId}
-           AND fleet_slug IS NOT NULL
-         ORDER BY id DESC
-         LIMIT 1`) as Array<{ fleet_slug: string }>;
-      transitionFleetSlug = prior[0]?.fleet_slug;
     }
   } catch {
     /* fall through to the default */

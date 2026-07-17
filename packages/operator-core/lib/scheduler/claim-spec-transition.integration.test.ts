@@ -136,18 +136,29 @@ describe('WI-4770 fleet membership transition guard', () => {
     expect(reboundRecord.fleetSlug).toBeUndefined();
   });
 
-  it('fails closed after an explicit leave until the old lane is rebound', async () => {
-    const outside = 'WI-4770-leave-outside';
+  it('an explicit leave settles the transition: solo default pulls resume', async () => {
+    // The membership store's contract: a latest fact with fleet_slug=null means
+    // "explicitly in no fleet" — a settled state, not a transition window. The
+    // admission seams (resolveFleetScopeContext) already treat a left agent as
+    // unscoped (by-id claims are open), so the self-select path must agree:
+    // resurrecting the prior fleet as a transition marker permanently fail-closed
+    // every ex-member's get_next (observed live 2026-07-17 after a scratch-fleet
+    // wind-down) while protecting nothing the by-id path didn't already allow.
+    const generic = 'WI-4770-leave-generic';
     await setClaimSpec({ cupId: fleetSpecBeeKey(PARENT), spec: DEFAULT_CLAIM_SPEC }, db.sql);
     await membership(LEAVE_BEE, PARENT, 'member');
     await membership(LEAVE_BEE, null, null);
-    await seedFeature(outside, 'generic backlog item');
+    await seedFeature(generic, 'generic backlog item');
 
-    expect(await getNextForBee({ cupId: LEAVE_BEE, workspaceId: WS, harness: H })).toBeNull();
-    expect(await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id=${outside}`).toEqual([{ taken_by: null }]);
-    expect(await getClaimSpecRecord({ cupId: LEAVE_BEE, workspaceId: WS }, db.sql)).toMatchObject({
-      source: 'default',
-      fleetSlug: PARENT,
-    });
+    const record = await getClaimSpecRecord({ cupId: LEAVE_BEE, workspaceId: WS }, db.sql);
+    expect(record).toMatchObject({ source: 'default' });
+    expect(record.fleetSlug).toBeUndefined();
+
+    const claimed = await getNextForBee({ cupId: LEAVE_BEE, workspaceId: WS, harness: H });
+    expect(claimed?.workItem.id).toBe(generic);
+    expect(claimed?.specSource).toBe('default');
+    expect(await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id=${generic}`).toEqual([
+      { taken_by: LEAVE_BEE },
+    ]);
   });
 });
