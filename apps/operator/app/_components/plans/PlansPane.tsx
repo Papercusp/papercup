@@ -51,7 +51,7 @@ export function agoLabel(iso: string | null): string {
   if (!iso) return '—';
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms) || ms < 0) return '—';
-  const m = Math.round(ms / 60_000);
+  const m = Math.floor(ms / 60_000);
   if (m < 1) return 'now';
   if (m < 60) return `${m}m`;
   const h = Math.round(m / 60);

@@ -40,7 +40,11 @@ edge that cost an hour:
   build); the minisign updater `.sig` is still minted host-side (the private
   key never leaves this box), though the Windows auto-updater itself is PENDING
   REWORK post-Inno-cutover — it expected the NSIS artifact (WI-3172).
-- **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList /S -Wait`.
+- **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList
+  "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait`. **NOT `/S`** — see
+  sharp edge §23 (`/S` is the NSIS convention; this is now Inno Setup, and
+  Inno silently ignores the unrecognized switch, launching the full
+  interactive wizard instead of installing headlessly).
 - **Launch with logs**: `schtasks /run /tn papercusp-e2e` — an
   *Interactive-only* scheduled task running `papercusp-launch.cmd`, which
   redirects the app's stdout+stderr to `C:\Users\user\papercusp-bk.log`.
@@ -258,6 +262,30 @@ edge that cost an hour:
     papercup-runtime --exec bash /mnt/c/Users/User/<script>.sh` (or
     `node ... .mjs`) — note this is where §1's `--exec` (not `--`) still
     applies, one layer downstream of the fix this item is about.
+
+23. **`/S` is a false-silent flag post-Inno-cutover — the installer looks
+    perfectly "hung" instead of erroring** (found live 2026-07-17, WI-5013
+    Windows P-031/032 E2E). `/S` is the **NSIS** silent switch; this repo's
+    installer has been **Inno Setup** since WI-3172 (§5/§22 context above),
+    and Inno Setup silently *ignores* any command-line switch it doesn't
+    recognize — it does not error, it just launches the full interactive
+    setup wizard. Over `Start-Process -Wait` (headless, no one to click
+    "Next"), this looks EXACTLY like a hung/deadlocked installer: the
+    process stays alive and Responding:True, CPU/IO deltas go to zero within
+    seconds, the extraction temp dir (`is-XXXXXX.tmp\…setup.tmp` +
+    `_isetup\_setup64.tmp`) freezes at its fixed SFX-stub overhead size
+    (~4.3 MB) forever, and the real destination dir (`{app}`) never gets
+    created — because the wizard is sitting on its welcome page, not
+    extracting. Diagnostic tell: a proper Session-1 `EnumWindows` check
+    (§18 pattern) shows a **visible** window titled
+    `Setup - <ProductName> version <x.y.z>` owned by the `…-setup.tmp`
+    child pid. **Fix**: use Inno's real unattended switches —
+    `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` (`/SILENT` still shows a
+    progress bar with no wizard pages if you want *some* visual signal).
+    Don't spend 20+ minutes sampling I/O/Defender/disk-queue looking for a
+    resource-contention cause before checking for a live wizard window —
+    check the window FIRST, it's a 10-second Session-1 EnumWindows call and
+    rules this whole class out immediately.
 
 ## Where the artifacts live
 
