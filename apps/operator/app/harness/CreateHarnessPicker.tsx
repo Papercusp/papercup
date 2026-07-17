@@ -893,6 +893,7 @@ function ForkToggle({
 
 function PickerStep({
   onSelect,
+  onClose,
   mode,
   onMode,
   hiveScope,
@@ -901,6 +902,11 @@ function PickerStep({
   githubUrlEnabled,
 }: {
   onSelect: (step: Step) => void;
+  /** EI-544: the top-level grid step has no inner Cancel/Back button (those only
+   *  exist on the entry FORM steps), so it needs its own explicit dismiss
+   *  affordance — a visible Close (X) alongside the existing Escape/backdrop
+   *  dismissal, per the WCAG 2.1.2 dialog pattern. */
+  onClose: () => void;
   mode: CreateMode;
   onMode: (m: CreateMode) => void;
   hiveScope: string | null;
@@ -922,8 +928,33 @@ function PickerStep({
     <ForkToggle mode={mode} onMode={onMode} hiveScope={hiveScope} hiveLabel={hiveLabel} />
   );
   return (
-    <div>
-      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a {hiveLabel}</h2>
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close"
+        className="pc-create-harness-close"
+        style={{
+          position: 'absolute',
+          top: -4,
+          right: -4,
+          width: 28,
+          height: 28,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'none',
+          border: 'none',
+          borderRadius: 6,
+          color: 'var(--fg-dim)',
+          cursor: 'pointer',
+          fontSize: 16,
+          lineHeight: 1,
+        }}
+      >
+        ✕
+      </button>
+      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600, paddingRight: 24 }}>Add a {hiveLabel}</h2>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--fg-dim)' }}>
         {intoHive
           ? <>New {hiveLabel}s will be added into <code>{hiveScope}</code>.</>
@@ -1149,7 +1180,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
         {/* A deep-linked `?picker=share-offer` has no created slug (transient
             result state is useState) — fall back to the grid. */}
         {(step === 'picker' || (step === 'share-offer' && createdSlug === null)) && (
-          <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} combLabel={combLabel} githubUrlEnabled={githubUrlEnabled} />
+          <PickerStep onSelect={setStep} onClose={handleClose} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} combLabel={combLabel} githubUrlEnabled={githubUrlEnabled} />
         )}
         {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} hiveLabel={hiveLabel} />}
         {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} hiveLabel={hiveLabel} />}

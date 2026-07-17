@@ -1023,6 +1023,13 @@ export interface GatewayStats {
     >;
   };
   pausedUntil: number;
+  /** Self-describing companion to `pausedUntil` (EI-535, gateway-healthz-stale-latch fix): whether that
+   *  deadline is STILL in the future as of this read (`pausedUntil > now`). `/healthz`'s HTTP status code
+   *  already reflects this live at the top-level handler, but any OTHER reader of this payload (`/stats`,
+   *  `/admin/stats`, a direct curl during an incident) got only the raw epoch-ms `pausedUntil` with no
+   *  hint whether it's a live deadline or a long-lapsed one from an idle account — this makes that
+   *  unambiguous without the reader doing its own clock math. */
+  pausedActuallyEnforced: boolean;
   /** Prompt-cache instrumentation (#0, 2026-06-21): per-account + total cache read/write tokens with
    *  hit/miss counts, failover-induced misses tagged. `hitRate` = read/(read+create+input) — how much of
    *  the input context was a cache HIT vs a cold (re)write. Surfaces the cost of routing a bee off its
@@ -2186,9 +2193,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
       codexHealthyAccounts: (deps.codexPool?.healthyCount ? deps.codexPool.healthyCount() : 0) + codexCliAccounts().length,
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
-      unified: snap.unified,
+      // EI-535 (gateway-healthz-stale-latch fix): `snap.unified` freezes at its last-observed value once
+      // traffic goes idle — no new upstream response means recordHeaders never runs again to update it.
+      // Attach the self-describing companions HERE (the one place every consumer — /healthz, /stats,
+      // /admin/stats, a direct incident curl — reads through) so nobody has to re-derive them: `staleAsOfMs`
+      // (age of the reading, when observedAt is known) and `rejectedActuallyEnforced` (the trustworthy
+      // verdict — `rejected` alone can't distinguish "genuinely still rejected" from "last seen hours ago,
+      // that window has long since reset").
+      unified: snap.unified
+        ? {
+            ...snap.unified,
+            staleAsOfMs: snap.unified.observedAt !== undefined ? Math.max(0, now - snap.unified.observedAt) : undefined,
+            rejectedActuallyEnforced: snap.unified.rejected && snap.unified.resetAt > now,
+          }
+        : undefined,
       ...(smoothing ? { smoothing } : {}),
       pausedUntil: snap.pausedUntil,
+      pausedActuallyEnforced: snap.pausedUntil > now,
       cache: cacheSnapshot(),
     };
   }

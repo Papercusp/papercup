@@ -177,17 +177,37 @@ describe('P-006 — domain-first hive-native picker layout (flag on)', () => {
   });
 });
 
-// ── EI-544 — the picker-step modal must be dismissible (Escape / backdrop) ──
-// Repro: the top-level picker grid has no Cancel/Close button by design (the
-// inner form steps DO have Back/Cancel) — it relies entirely on Radix's
-// built-in Escape + click-outside dismissal reaching Modal's onOpenChange(false)
-// → handleClose()'s atomic `setNav({ create: false, picker: null })`. A live
-// E2E repro found BOTH paths silently no-op in the packaged app.
-describe('EI-544 — picker-step dismissal (Escape / backdrop click)', () => {
+// ── EI-544 — the picker-step modal must be dismissible (Escape / backdrop / X) ──
+// Original repro (v0.0.2): the top-level picker grid had no Cancel/Close button
+// (the inner form steps only have Back/Cancel), and a live E2E test found
+// Escape + backdrop-click BOTH silently no-op'd in the packaged app — a
+// dead-end trap on the primary "create" action, and a WCAG 2.1.2 violation.
+// Investigation on the current tree (v0.0.11): Escape/backdrop already close
+// correctly via the atomic `setNav({ create: false, picker: null })` write
+// (the documented fix for the unrelated "stuck-modal" nuqs two-write race,
+// which happened to close this exact class of bug too) — see the passing
+// grid-step Escape/backdrop tests below. The one gap that genuinely remained
+// was the missing VISIBLE close affordance, fixed by adding an explicit ✕
+// Close button to PickerStep (onClose={handleClose}, same atomic write).
+describe('EI-544 — picker-step dismissal (Escape / backdrop click / Close button)', () => {
+  it('renders a visible Close (X) button on the top-level grid step', () => {
+    renderPicker();
+    screen.getByRole('button', { name: 'Close' });
+  });
+
+  it('clicking the Close (X) button closes the picker (fires the atomic close write)', async () => {
+    const user = userEvent.setup();
+    const { urlUpdates } = renderPicker();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(urlUpdates.length).toBeGreaterThan(0));
+    const last = urlUpdates[urlUpdates.length - 1];
+    expect(last.get('create')).not.toBe('true');
+    expect(last.get('picker')).toBeNull();
+  });
+
   it('Escape closes the picker (fires the atomic create:false+picker:null write)', async () => {
     const user = userEvent.setup();
     const { urlUpdates } = renderPicker();
-    // Sanity: we are on the top-level grid step (no Cancel/Close button here).
     screen.getByRole('heading', { name: 'Add a Hive' });
     await user.keyboard('{Escape}');
     await waitFor(() => expect(urlUpdates.length).toBeGreaterThan(0));
