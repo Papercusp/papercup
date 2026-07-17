@@ -160,6 +160,18 @@ export interface CheckpointDeps {
    *  opposite outcome is retired the instant this candidate resolves, instead of
    *  living until its own timeout. */
   emitEvent?(input: { key: string; summary: string; payload: unknown; cancelSiblingKeysFor?: string[] }): Promise<void>;
+  /** EI-13992: apply any pending `libs/papercusp/libs/db/sql/*.sql` migrations to the
+   *  live dev PG the suite is about to run against, BEFORE runGreen — breaks the
+   *  self-sustaining deadlock "gate red → main frozen → boot-only migration apply
+   *  never re-fires → dev PG drifts behind → tests asserting new columns fail →
+   *  gate stays red" (this gate run happens on its own schedule regardless of
+   *  whether main is frozen, so the dev PG can no longer drift far enough to
+   *  red-pin the gate on a missing-column failure). Idempotent + never throws
+   *  (schema_migrations tracker makes a no-op re-run cheap; a failed migration is
+   *  logged and left pending, same as the boot-time apply). Optional so existing
+   *  test stubs need not provide it; realCheckpointDeps wires it to the real
+   *  applyPendingMigrationsNow(). */
+  ensureMigrationsCurrent?(): Promise<{ applied: number; failed: { file: string; error: string }[] } | null>;
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -1590,6 +1602,24 @@ export async function runGreenCheckpoint(
 
   deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
   await deps.setupTree(candidate);
+  // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
+  // judging, so a run of this gate can never red-pin itself on schema drift caused
+  // by main sitting frozen (see CheckpointDeps.ensureMigrationsCurrent doc). Never
+  // blocks the run: a failure here just means migrations stay pending, same as
+  // today; the suite still runs and reports its own real verdict.
+  if (deps.ensureMigrationsCurrent) {
+    try {
+      const migrated = await deps.ensureMigrationsCurrent();
+      if (migrated && migrated.applied > 0) {
+        deps.log(`migration preflight: applied ${migrated.applied} pending migration(s) to the dev PG before judging`);
+      }
+      if (migrated && migrated.failed.length > 0) {
+        deps.log(`migration preflight: ${migrated.failed.length} migration(s) failed to apply (left pending): ${migrated.failed.map((f) => f.file).join(', ')}`);
+      }
+    } catch (e) {
+      deps.log(`migration preflight skipped (${e instanceof Error ? e.message : e})`);
+    }
+  }
   const { green, summary, failingTests, flakeSuspects, failingFiles = [], logPath } = await deps.runGreen(
     cfg.checkpointRoot,
     lastReady,
@@ -2048,6 +2078,14 @@ export function realCheckpointDeps(
     async emitEvent({ key, summary, payload, cancelSiblingKeysFor }) {
       const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
       await emitAwaitedEvent({ key, summary, payload, source: 'green-checkpoint', cancelSiblingKeysFor });
+    },
+    // EI-13992: real wiring for the migration-currency preflight (see
+    // CheckpointDeps.ensureMigrationsCurrent doc) — applies to the SAME dev PG
+    // db-boot-migrate targets at operator boot, just without its once-per-process
+    // `_ran` guard (a gate run is its own per-invocation caller).
+    async ensureMigrationsCurrent() {
+      const { applyPendingMigrationsNow } = await import('@papercusp/operator-core/lib/db-boot-migrate');
+      return applyPendingMigrationsNow();
     },
     async setupTree(ref) {
       // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot

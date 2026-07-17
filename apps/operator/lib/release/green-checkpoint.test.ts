@@ -408,6 +408,50 @@ describe('runGreenCheckpoint', () => {
     ]);
   });
 
+  it('EI-13992: an absent ensureMigrationsCurrent (existing stub) never blocks the run — unaffected call order', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    expect(deps.ensureMigrationsCurrent).toBeUndefined();
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true });
+    expect(calls).not.toContain('ensureMigrationsCurrent');
+  });
+
+  it('EI-13992: ensureMigrationsCurrent runs AFTER setupTree and BEFORE runGreen when provided', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.ensureMigrationsCurrent = async () => {
+      calls.push('ensureMigrationsCurrent');
+      return { applied: 2, failed: [] };
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true });
+    const setupIdx = calls.indexOf('setup:' + c2.slice(0, 7));
+    const migrateIdx = calls.indexOf('ensureMigrationsCurrent');
+    const runGreenIdx = calls.indexOf('runGreen');
+    expect(setupIdx).toBeGreaterThanOrEqual(0);
+    expect(migrateIdx).toBeGreaterThan(setupIdx);
+    expect(runGreenIdx).toBeGreaterThan(migrateIdx);
+  });
+
+  it('EI-13992: a THROWING ensureMigrationsCurrent is swallowed — the gate still runs + judges normally (never blocks on the preflight)', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.ensureMigrationsCurrent = async () => {
+      throw new Error('dev PG unreachable');
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, candidate: c2, green: true, reason: 'advanced' });
+    expect(calls).toContain('runGreen');
+    expect(calls).toContain('advance');
+  });
+
   it('EI-10800: AWAITS the release:green verdict emit on a green advance (global + pipeline-scoped)', async () => {
     // The bug: the green full-advance emit was a fire-and-forget `void import(...).then(emit)`
     // followed by an immediate return, so the short-lived checkpoint process tore down before

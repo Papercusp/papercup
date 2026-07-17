@@ -72,8 +72,15 @@ const POT = 'my-pot'; // THIS Pot's home slug (the asking side)
 const PEER = 'peer-pot-B-directory-pubkey';
 const ROOT_CTX = { isSuperuser: true, uiClientId: 'su-test', workspaceId: WS } as never;
 
-type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };
-const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> => JSON.parse(r.content[0]!.text);
+// WI-5198: the four handlers under test are called DIRECTLY (`.handler(args, ctx)`),
+// bypassing defineTool's `projectedFn` wrapper — the layer that serializes a
+// `{ data }` ToolResponse envelope into the MCP `{ content: [{ type:'text', text }] }`
+// wire shape. Called raw, each handler returns its own `json(result)` = `{ data: result }`
+// (see ask.ts/request_work.ts/asks.ts/cross_grant.ts) — never `{ content }`. This mirrors
+// the sibling cross-pot-ask-tools.test.ts's Tool/parse contract for the same direct-call
+// pattern.
+type Tool = { handler: (a: unknown, c: unknown) => Promise<{ data: unknown }> };
+const parse = (r: { data: unknown }): Record<string, unknown> => r.data as Record<string, unknown>;
 
 /** A fake boundary recording every send; `delivered` toggles the sent/queued path. The only
  *  substituted seam — there is no swarm transport in-process. */

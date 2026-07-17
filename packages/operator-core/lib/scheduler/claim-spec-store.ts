@@ -367,6 +367,13 @@ export async function getNextForBee(args: {
   for (let attempt = 0; attempt < MAX_PLAN_LANE_ATTEMPTS; attempt += 1) {
     const result = await getNextWorkItem(record.spec, { assignee: args.cupId, heldPaths: args.heldPaths }, {
       harness: args.harness,
+      // WI-5261: thread the caller's already-resolved workspace through explicitly —
+      // getNextWorkItem's tiers otherwise re-derive it via activeWorkspaceId(), which
+      // depends on the AsyncLocalStorage request-scope still being intact this deep into
+      // the call chain (a dropped scope silently falls to 'default' and the claim query
+      // matches nothing, deterministically). args.workspaceId is already resolved above
+      // via resolveClaimSpecWorkspace by every caller (scheduler:get_next's tool handler).
+      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
       ...(args.swarmId ? { swarmId: args.swarmId } : {}),
       ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
       ...(args.states ? { states: args.states } : {}),

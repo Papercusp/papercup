@@ -102,6 +102,7 @@ import {
   semanticSearchIssues,
   promoteIssue,
   issuesScopeWorkspace,
+  resolveIssuesScopeWorkspace,
   mergeIssuePayload,
   markIssueProgress,
   type EngineerIssue,
@@ -3083,7 +3084,7 @@ export async function explainIssueClaimFloors(
  */
 export async function claimNextIssueWorkItem(
   filter: ClaimNextFilter,
-  _ws: string,
+  explicitActiveWorkspaceId: string,
   opts: {
     issueKinds?: readonly IssueStoreKind[];
     ids?: readonly string[];
@@ -3097,11 +3098,22 @@ export async function claimNextIssueWorkItem(
   } = {},
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
-  // Scope the issue-claim to the canonical ISSUE workspace (issuesScopeWorkspace — honors the
-  // ISSUES_PER_WORKSPACE flag), NOT the feature activeWorkspaceId(), so the UPDATE and the
-  // getIssue() re-read below agree on the same partition (they'd diverge when ISSUES_PER_WORKSPACE
-  // is OFF: issues live in 'default' while the feature scope is the active workspace).
-  const issueWs = issuesScopeWorkspace();
+  // Scope the issue-claim to the canonical ISSUE workspace (resolveIssuesScopeWorkspace —
+  // honors the ISSUES_PER_WORKSPACE flag), NOT the feature activeWorkspaceId(), so the
+  // UPDATE and the getIssue() re-read below agree on the same partition (they'd diverge
+  // when ISSUES_PER_WORKSPACE is OFF: issues live in 'default' while the feature scope is
+  // the active workspace).
+  //
+  // WI-5261: the 2nd positional param (`explicitActiveWorkspaceId`, née the dead `_ws`)
+  // is now ACTUALLY USED — as the "active workspace" leg's override, not a blind swap for
+  // issueWs itself (the ISSUES_PER_WORKSPACE gate must still apply). The caller
+  // (get-next.ts's getNextWorkItem) already resolved its own workspace via
+  // opts.workspaceId when the fleet-scoped caller passed one; threading it here avoids
+  // re-deriving via activeWorkspaceId(), which silently falls to 'default' if the
+  // AsyncLocalStorage request-scope was lost anywhere in the awaits between the tool
+  // handler and this call — a hard, deterministic, restart-immune false miss (confirmed
+  // live 2026-07-17, WI-5261).
+  const issueWs = resolveIssuesScopeWorkspace(explicitActiveWorkspaceId || undefined);
   // Issue-family rows carry harness_slug = 'harness:<slug>' → <slug> (harness-scoped) or
   // 'operator:<workspace_id>' (operator scope, migration 382 — the harness_slug='' sentinel
   // it replaced is gone in current data). EI-5919 / WI-1406: this query used to match ONLY
