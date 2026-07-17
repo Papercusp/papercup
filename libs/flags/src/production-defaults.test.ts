@@ -63,10 +63,8 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // (done-without-test watchdog signalCount:0 since activation) — removed from this
   // snapshot; the count assertion below dropped to match.
   // Added AFTER the snapshot (deliberate new dark flags, not inversion drift):
-  // 2026-07-01 — presence-off-log gossip cutover (cross-machine-coord-parity
-  // P-004 D-008): every hive peer must carry the gossip READER before a writer
-  // flips, so it ships dark until the 2-machine verify.
-  'papercusp-presence-gossip',
+  // (papercusp-presence-gossip graduated 2026-07-16 — LIVE-1 P-059 tower↔VM
+  // 2-machine verify met the dark-entry gate; see types.ts DARK_FLAGS note.)
   // 2026-07-03 — per-host "accept delegated seats" trust gate (agent-allocation-
   // framework P-008 / D-006, owner-authority): letting a REMOTE fleet owner spawn on
   // this host is opt-in, so it ships fail-closed (default-OFF) permanently — each
@@ -405,11 +403,12 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
   it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
-    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover) + papercusp-accept-
-    // delegated-seats (2026-07-03, agent-allocation-framework P-008 owner-authority trust gate)
+    // 9 pre-inversion + papercusp-accept-delegated-seats (2026-07-03,
+    // agent-allocation-framework P-008 owner-authority trust gate)
     // + papercusp-codex-gateway-oauth-proxy (2026-07-04, WI-2198 Option B — dark until the canary).
     // Graduated to default-ON and removed from the snapshot: papercusp-queen-warm-session
-    // (2026-07-02, owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 met).
+    // (2026-07-02, owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 met),
+    // papercusp-presence-gossip (2026-07-16, LIVE-1 P-059 2-machine verify met the cutover gate).
     // 2026-07-04 — papercusp-onboarding-preview-features (deterministic-onboarding-tutorial
     // P-001, owner-directed): gates not-ready tutorial items. Count 11 → 12.
     // 2026-07-04 — papercusp-the-hive flips default-OFF (restore-pot-lexicon-public-release,

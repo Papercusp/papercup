@@ -1838,8 +1838,12 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
     // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
     // enabled AND a repo is configured, so hives without per-hive git stay byte-identical.
-    // cutover — the flip needs every peer on the new wire first
-    [FLAGS.PRESENCE_GOSSIP, { case: 'cutover', reason: 'presence moves off the peer-log onto ephemeral gossip (P-004, cross-machine-coord-parity). A gossip-only announcer is INVISIBLE to a log-only reader, so every hive peer must carry the reader before a writer flips. Owner flips after both dogfood machines update + a 2-machine presence-federation verify.' }],
+    // PRESENCE_GOSSIP graduated 2026-07-16 (LIVE-1 P-059 drill, coordination lane):
+    // the dark-entry gate was met — both dogfood machines (tower + mac VM) on
+    // reader-carrying builds (G3 verified static + live) and the 2-machine
+    // presence-federation verify ran on the tower↔VM rig per
+    // docs/plans/CUTOVER-presence-gossip-2026-07-16.md. Default ON; OFF + a
+    // presence-loop reboot is the tested rollback (reader stays wired either way).
     // GATEWAY_MAINTENANCE_CARRY graduated 2026-07-15 by explicit owner release
     // direction: behavioral cutover defaults ON; one clean post-deploy smoke per
     // affected class replaces the former ten-drill pre-cutover campaign. OFF remains
