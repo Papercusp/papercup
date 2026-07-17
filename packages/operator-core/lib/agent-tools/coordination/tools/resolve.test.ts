@@ -57,4 +57,36 @@ describe('coord:resolve handler (bulk keyed-array)', () => {
     const b = await body({ msg_id: 'E-1', choice: 'go' });
     expect(b.results[0]).toMatchObject({ ok: false, msg_id: 'E-1', error: 'already_resolved' });
   });
+
+  // EI-843: the Mug wake brief renders open escalations as `escalation:<msg_id>`
+  // digest ids (mug-brief-launch.ts gatherEscalations) — passing that digest
+  // straight back used to 404 as not_found. Strip the prefix at the tool
+  // boundary so both forms resolve identically, across all three call shapes.
+  describe('EI-843: escalation: digest-id prefix from the wake brief', () => {
+    it('single { msg_id: "escalation:E-1", choice } strips the prefix before resolving', async () => {
+      const b = await body({ msg_id: 'escalation:E-1', choice: 'go' });
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      expect(b.results[0]).toMatchObject({ ok: true, msg_id: 'E-1' });
+      expect(resolveM).toHaveBeenCalledWith(expect.objectContaining({ msg_id: 'E-1', choice: 'go' }));
+    });
+
+    it('msg_ids:[…] strips the prefix on every id in the batch', async () => {
+      const b = await body({ msg_ids: ['escalation:E-1', 'escalation:E-2'], choice: 'go' });
+      expect(b.counts).toEqual({ ok: 2, failed: 0 });
+      expect(resolveM).toHaveBeenCalledWith(expect.objectContaining({ msg_id: 'E-1', choice: 'go' }));
+      expect(resolveM).toHaveBeenCalledWith(expect.objectContaining({ msg_id: 'E-2', choice: 'go' }));
+    });
+
+    it('items:[…] strips the prefix per heterogeneous item', async () => {
+      const b = await body({ items: [{ msg_id: 'escalation:E-1', choice: 'go' }, { id: 'escalation:E-2', choice: 'no' }] });
+      expect(b.counts).toEqual({ ok: 2, failed: 0 });
+      expect(b.results[0]).toMatchObject({ ok: true, msg_id: 'E-1' });
+      expect(b.results[1]).toMatchObject({ ok: true, msg_id: 'E-2' });
+    });
+
+    it('a bare msg_id that happens to have no prefix is unaffected', async () => {
+      const b = await body({ msg_id: 'E-1', choice: 'go' });
+      expect(resolveM).toHaveBeenCalledWith(expect.objectContaining({ msg_id: 'E-1' }));
+    });
+  });
 });

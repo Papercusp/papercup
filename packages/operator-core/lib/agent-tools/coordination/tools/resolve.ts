@@ -21,6 +21,19 @@ import { unblockLinkedCard } from '../card-link';
 import { COORD_ROLES } from '../roles';
 import { runBulk, bulkContent } from '../../_bulk';
 
+/**
+ * EI-843: the Mug wake brief renders open escalations as AttentionItem-style
+ * `escalation:<msg_id>` digest ids (mug-brief-launch.ts's `gatherEscalations`,
+ * reusing the same prefixed-id format the triage-store "handled" overlay keys
+ * on) — NOT a bare coord msg_id. Passing that digest id straight back into
+ * coord:resolve used to 404 as not_found for every escalation surfaced by the
+ * brief. Strip the prefix here (once, at the tool boundary every caller goes
+ * through) so both forms resolve identically; a bare msg_id is unaffected.
+ */
+function normalizeEscalationMsgId(id: string): string {
+  return id.startsWith('escalation:') ? id.slice('escalation:'.length) : id;
+}
+
 const itemSpec = z.object({
   msg_id: z.string().min(1).describe('the escalation msg_id (alias: id)'),
   id: z.string().min(1).optional().describe('alias for msg_id'),
@@ -31,7 +44,7 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'coord:resolve',
   description:
-    'Resolve one OR many escalations by msg_id. Records the chosen option id (or arbitrary string) and optional note as an append-only escalation_resolved event. Single: { msg_id, choice, note? }. Many same choice: { msg_ids:[…], choice, note? }. Many heterogeneous: items:[{ msg_id, choice, note? }]. Returns { ok, results:[{ ok, msg_id, escalation? | error }], counts } — correlate by msg_id; a not_found / already_resolved on one item never fails the rest.',
+    'Resolve one OR many escalations by msg_id. Records the chosen option id (or arbitrary string) and optional note as an append-only escalation_resolved event. Single: { msg_id, choice, note? }. Many same choice: { msg_ids:[…], choice, note? }. Many heterogeneous: items:[{ msg_id, choice, note? }]. Accepts either a bare msg_id or the `escalation:<msg_id>` digest id the Mug wake brief renders — both resolve the same escalation. Returns { ok, results:[{ ok, msg_id, escalation? | error }], counts } — correlate by msg_id; a not_found / already_resolved on one item never fails the rest.',
   guidance: {
     when: 'The human (or an authorised agent acting on their behalf) has decided how to proceed on open escalation(s). Resolve several at once via msg_ids:[…]+choice or items:[…].',
     notWhen: 'Acknowledging without deciding — use coord:ack. The escalation file is the human-resolution surface.',
@@ -57,10 +70,10 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const list = args.items?.length
-      ? args.items.map((it) => ({ msg_id: it.msg_id ?? (it.id as string), choice: it.choice, note: it.note }))
+      ? args.items.map((it) => ({ msg_id: normalizeEscalationMsgId(it.msg_id ?? (it.id as string)), choice: it.choice, note: it.note }))
       : args.msg_ids?.length
-        ? args.msg_ids.map((msg_id) => ({ msg_id, choice: args.choice as string, note: args.note }))
-        : [{ msg_id: (args.msg_id ?? args.id) as string, choice: args.choice as string, note: args.note }];
+        ? args.msg_ids.map((msg_id) => ({ msg_id: normalizeEscalationMsgId(msg_id), choice: args.choice as string, note: args.note }))
+        : [{ msg_id: normalizeEscalationMsgId((args.msg_id ?? args.id) as string), choice: args.choice as string, note: args.note }];
     const env = await runBulk(
       list,
       async (it) => {
