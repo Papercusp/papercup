@@ -14,7 +14,10 @@ function fakeGit(opts: {
   const runGit: RunGit = async (args) => {
     calls.push(args);
     if (args[0] === 'status') return { code: 0, stdout: opts.porcelain ?? '', stderr: '' };
-    if (args[0] === 'commit') {
+    // WI-5111: commitAttributedGroups now prepends `-c user.name=... -c
+    // user.email=...` (GIT_SYNC_IDENTITY_ARGS) before `commit` — match on
+    // inclusion, not args[0].
+    if (args.includes('commit')) {
       const r = opts.commitResults?.[commitIdx++] ?? { code: 0 };
       return { code: r.code ?? 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     }
@@ -49,18 +52,18 @@ describe('commitAttributedGroups (P-004)', () => {
     const add = calls.find((c) => c[0] === 'add');
     expect(add).toEqual(['add', '--', 'a.ts', 'b.ts']);
     // the per-agent commit: intent subject WITH the [skip ci] marker preserved + a Co-Authored-By trailer
-    const commit = calls.find((c) => c[0] === 'commit')!;
+    const commit = calls.find((c) => c.includes('commit'))!;
     expect(commit).toContain('fix a [skip ci]');
     expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
     // exactly ONE attributed commit (c.ts is the catch-all, left for the caller's add -A)
-    expect(calls.filter((c) => c[0] === 'commit')).toHaveLength(1);
+    expect(calls.filter((c) => c.includes('commit'))).toHaveLength(1);
   });
 
   it('is a no-op when nothing is attributed (flag-OFF degradation): no add, no commit', async () => {
     const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0 M b.ts\0' });
     const res = await commitAttributedGroups(runGit, '/repo', new Map(), [], MSG);
     expect(res).toEqual({ committedAny: false });
-    expect(calls.some((c) => c[0] === 'add' || c[0] === 'commit')).toBe(false);
+    expect(calls.some((c) => c[0] === 'add' || c.includes('commit'))).toBe(false);
   });
 
   it('skips excluded (oversized/content) files even when attributed', async () => {
@@ -94,7 +97,7 @@ describe('commitAttributedGroups (P-004)', () => {
       ['a.ts', { agent: 'ag1', intent: 'fix a', workItems: ['WI-1', 'WI-2'], sessionId: 'sess-9', planSlug: 'plan-x' }],
     ]);
     await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
-    const commit = calls.find((c) => c[0] === 'commit')!;
+    const commit = calls.find((c) => c.includes('commit'))!;
     expect(commit).toContain('Papercusp-Agent: ag1');
     expect(commit).toContain('Papercusp-Work-Item: WI-1, WI-2');
     expect(commit).toContain('Papercusp-Session: sess-9');
@@ -108,7 +111,7 @@ describe('commitAttributedGroups (P-004)', () => {
     const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0' });
     const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'x' }]]);
     await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
-    const commit = calls.find((c) => c[0] === 'commit')!;
+    const commit = calls.find((c) => c.includes('commit'))!;
     expect(commit).toContain('Papercusp-Agent: ag1');
     expect(commit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
     expect(commit.some((a) => a.startsWith('Papercusp-Session:'))).toBe(false);

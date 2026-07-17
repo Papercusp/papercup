@@ -25042,6 +25042,63 @@ Concretely, with the rtk token-filter hook active (it rewrites `git <sub>` → `
 * The composition order on the dev box: guard hook first (deny wins), rtk second (rewrite) — `~/.claude/settings.json`.
 * `invoke.ts` already documents command-string matching as evadable (`git -C … push`, aliases, `&& git push`); the repo pre-push hook remains the primary no-push enforcement for `main`. This insight adds the hook-rewrite variant to that list.
 
+# production-soak-health — grading runbook
+
+> How to grade the production-soak-health auto-loop component rubric: per-criterion instruments, evidence queries, and the typed emission path.
+
+`production-soak-health` (5 criteria, ratingScale `healthy / degraded / broken / unknown`) is one of the 6 auto-loop component rubrics ratified under `rubric-system-and-auto-loop-release-profile-2026-07-15` P-007, composed into the `papercusp-autoloop-public-release-readiness` profile (`apps/operator/lib/release/release-profile.ts`, `AUTOLOOP_COMPONENT_RUBRIC_REFS`). It is the newest of the 6 — unlike `kettle-supervision-health` / `mug-pot-coordination-health` / `autonomy-owner-controls` / `release-integrity-health` (which reuse instruments already documented in [autoloop-release-readiness-grading-runbook](/internal/docs/agent-insights/autoloop-release-readiness-grading-runbook)), this rubric measures a genuinely new characteristic — does a release stay healthy *through* a soak window after deploy, not just at the health-check moment — and most of its instruments do not exist yet (flagged as a completeness gap at proposal time, WI-4960 checkpoint).
+
+## The one main procedure
+
+[Section titled “The one main procedure”](#the-one-main-procedure)
+
+1. **Generation stamp first.** Same discipline as the sibling rubrics: record the generation you are grading BEFORE gathering evidence (`blender:success-metrics { watermarkRef: 'bg-host-restart' }` + `dev:pipeline_position`). Evidence gathered across a host-restart boundary is invalid — re-gather.
+2. **Gather instrument snapshots per criterion** (see below — most are `unknown` by construction today; that is the honest, correct rating until the instrument exists, not a grading failure).
+3. **Emit via the typed path** — never prose: `scorecards:evaluate { rubricRef: 'production-soak-health' }` → fill the returned skeleton → `scorecards:evaluate { rubricRef, ratings, instrumentSnapshots }` (validates + fingerprints) → `scorecards:emit` the canonical result.
+4. **Rate honestly.** `unknown` beats invented — a criterion with no instrument yet is `unknown`, never guessed at `healthy`.
+
+## Per-criterion instruments
+
+[Section titled “Per-criterion instruments”](#per-criterion-instruments)
+
+### sustained-post-deploy-health · `soak-health-samples`
+
+[Section titled “sustained-post-deploy-health · soak-health-samples”](#sustained-post-deploy-health--soak-health-samples)
+
+**No instrument exists yet.** Intent: sample `dev:service_health` (or the equivalent live health probe) on a fixed cadence (e.g. every 15 min) for a fixed window after each deploy (e.g. 2h), and require every sample in the window to be healthy — a single health-check pass at deploy time is NOT sufficient evidence for this criterion. Until a `soak-health-samples` table/routine exists, rate `unknown` with the gap stated in evidence.
+
+### incident-rate-trend · `incident-rate-trend`
+
+[Section titled “incident-rate-trend · incident-rate-trend”](#incident-rate-trend--incident-rate-trend)
+
+**No instrument exists yet.** Intent: a rolling comparison of `engineer_issues`/`improvements` bug-severity filings (or an equivalent incident ledger) release-over-release — does the rate drift upward? Until wired, rate `unknown`.
+
+### canary-liveness-continuous · `mug-wake-trace`
+
+[Section titled “canary-liveness-continuous · mug-wake-trace”](#canary-liveness-continuous--mug-wake-trace)
+
+Partially measurable TODAY by reusing an existing signal: `harness_shared.autoloop_state` role `director`/`kettle`/`mug` rows already carry a `last_fired_at` watermark (the same table `kettle-supervision-health`’s `kettle-wake-cadence` criterion reads — see that runbook for the exact query). A live, cycling watermark on the current generation is real (if partial) evidence of continuous liveness; it does not by itself prove *release-scoped* canary behavior across a soak window, so treat a “watermark is fresh” reading as supporting evidence toward `healthy`, not sufficient on its own — state the gap in evidence rather than rounding up.
+
+### real-usage-validates-release · (no instrument bound)
+
+[Section titled “real-usage-validates-release · (no instrument bound)”](#real-usage-validates-release--no-instrument-bound)
+
+Deliberately `instrumentKey: none` — this criterion is meant to be graded from judgment against real usage signals (feature-adoption telemetry, live traffic through the changed surface), not a single mechanical query. Rate `unknown` when no such signal was actually reviewed this pass; never default it to `healthy` for lack of a contrary signal.
+
+### soak-duration-sufficient · `soak-health-samples`
+
+[Section titled “soak-duration-sufficient · soak-health-samples”](#soak-duration-sufficient--soak-health-samples)
+
+Shares its instrument with `sustained-post-deploy-health` — same “no instrument yet” status. Intent: refuse to call a release “durable” before a real, elapsed soak window (not merely “no complaints since deploy 10 minutes ago”).
+
+## Known standing reds — status as of 2026-07-17
+
+[Section titled “Known standing reds — status as of 2026-07-17”](#known-standing-reds--status-as-of-2026-07-17)
+
+* **sustained-post-deploy-health**, **incident-rate-trend**, **soak-duration-sufficient**: `unknown` by construction — the `soak-health-samples` / `incident-rate-trend` instruments do not exist yet. This is the rubric’s honest starting state, not a regression; building these instruments is follow-up work (file as a `change` work item referencing this doc + WI-4960’s checkpoint gap note if picking it up).
+* **canary-liveness-continuous**: partially gradeable today via the shared kettle watermark query (see above) — first live dogfood grading landed 2026-07-17 (see `rubric-system-and-auto-loop-release-profile-2026-07-15` P-010 completion evidence, scorecard EI-13372 on the sibling `kettle-supervision-health` rubric, which shares the same underlying `autoloop_state` instrument).
+* **real-usage-validates-release**: `unknown` — not yet graded against a real usage review.
+
 # Prompt-declared column schemas — token-efficient agent I/O (both directions)
 
 > When both ends know a tool's columns, declare them once in the prompt and put only values on the wire. The pre-prompt registry drives a Tier-3 headerless-CSV read path and a positional-arg write shim, with a misalignment guard. Read these before touching the registry or adding a positional tool.
@@ -75155,6 +75212,30 @@ Scorecards are only useful if they keep arriving, complete:
 * **`rubrics:trend`’s staleness signal** — criteria the grader persistently rates `unknown` mean the rubric’s model has drifted from reality; it should re-enter the propose↔ratify loop.
 
 A stale scorecard is itself a finding — ideation passes treat it as a prompt (“why did we stop being able to measure this?”).
+
+## The typed authoring/evaluation/release workflow (2026-07-15)
+
+[Section titled “The typed authoring/evaluation/release workflow (2026-07-15)”](#the-typed-authoringevaluationrelease-workflow-2026-07-15)
+
+`rubric-system-and-auto-loop-release-profile-2026-07-15` hardened the lifecycle above into a typed contract, so a rubric’s criteria and a release gate’s evidence requirements can never silently drift apart:
+
+* **`scorecards:evaluate`** is the ONE typed path into a grade — never construct a scorecard from prose. Call it with just `rubricRef` to get the skeleton (every criterion’s key/title/`instrumentKey`/allowed ratings, all `null`); call it again with `ratings` (and/or `instrumentSnapshots`) filled in to get back **canonical ratings** (normalized), an **evidence fingerprint** (dedup — an unchanged grade doesn’t spam a new scorecard row), and an **instrument contract report** (`missingBindings` / `duplicateBindings` / `missingSnapshots` / `staleSnapshots` / `windowMismatches` / `verdictMismatches` — a criterion whose `instrumentKey` doesn’t have a matching, fresh, consistent snapshot fails loudly here instead of silently grading on stale/absent instrumentation).
+* **`scorecards:emit`** takes that canonical result and writes the actual scorecard (an `improvements:capture`-backed row with a stable `issueId`, e.g. `EI-13372`). `changed:false` short-circuits a re-emit that would be identical to the latest scorecard on record (the evidence-fingerprint dedup).
+* **`instrumentKey: 'none'`** is a legitimate binding — some criteria (e.g. “real usage validates the release”) are meant to be graded from reviewed judgment, not a single mechanical query; `unknown` is still the honest rating when no such review actually happened this pass.
+* **Rate honestly — `unknown` beats invented.** A criterion with no instrument yet, or one you didn’t actually check this pass, is `unknown`. A composite gate (below) treats `unknown` as a NOT-pass, so this is a real, load-bearing signal, not a hedge.
+
+### The composite release-profile evaluator
+
+[Section titled “The composite release-profile evaluator”](#the-composite-release-profile-evaluator)
+
+`@papercusp/release-profile`’s generic `evaluateReleaseProfile` combines a list of typed `ComponentSpec`s (each: `check()` → `pass` / `fail` / `unknown`, `mandatory`, `maxAgeMs`, optional `lineage`) into ONE `GO`/`NO-GO` — refusing GO when any mandatory component is `fail`, `unknown`, stale (older than `maxAgeMs`), or lineage-mismatched (graded against a different candidate than the one being evaluated). `apps/operator/lib/release/release-profile.ts` supplies the papercusp wiring: a **rubric component** (the latest complete scorecard for an active, `releaseGating` rubric, reduced to a worst-case verdict — one failing criterion sinks the whole component, never averaged away) and a **deploy-staleness hard gate** (pin age + commits-behind vs the candidate).
+
+Two assembled profiles compose these:
+
+* **`evaluatePapercuspReleaseProfile`** (`papercusp-public-release-readiness`) — auto-discovers EVERY active `releaseGating` rubric in the workspace. Broad by design; as more per-product rubrics are ratified (voice, chat, mobile, …) this profile mixes them all into one monolithic verdict.
+* **`evaluateAutoloopReleaseProfile`** (`papercusp-autoloop-public-release-readiness`) — a FIXED 7-rubric set scoped to exactly the Mug→Cup→Kettle→Blender product (`AUTOLOOP_COMPONENT_RUBRIC_REFS`: `blender-release-readiness` plus the 6 component rubrics — `mug-pot-coordination-health`, `cup-lifecycle-durability`, `kettle-supervision-health`, `autonomy-owner-controls`, `release-integrity-health`, `production-soak-health`) plus the same deploy-staleness gate. Nothing else auto-discovered in — one product’s GO/NO-GO, not the whole workspace’s.
+
+Both are plain async functions with real default deps (DB reads, git reads) — call them directly (`evaluateAutoloopReleaseProfile()`, no args) for a live run; every arg is dependency-injectable only for tests. A live dogfood run 2026-07-17 (P-010) returned a real, honest `go:false` with 6/7 rubric components `unknown` (freshly ratified, not yet graded) and one `lineage-mismatch` (graded against an older candidate) — correct, fail-closed behavior, not a bug: an ungraded or stale-evidence component must never round up to a passing GO.
 
 ## How this feeds the loop
 

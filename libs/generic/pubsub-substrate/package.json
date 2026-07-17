@@ -62,7 +62,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@papercusp/linkable-edges": "file:../linkable-edges"
+    "@papercusp/linkable-edges": "*"
   },
   "devDependencies": {
     "vitest": "^4.1.4"

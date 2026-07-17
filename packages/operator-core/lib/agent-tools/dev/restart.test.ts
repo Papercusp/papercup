@@ -103,6 +103,28 @@ describe('dev:restart dry run', () => {
     const b = body(await call({ target: 'staging' }));
     expect(b).toMatchObject({ ok: true, dry_run: true, target: 'staging', would_run: 'systemctl --user restart papercup-staging-api.service' });
     expect(b.note).toMatch(/coalesced/);
+    expect(b.note).toMatch(/~2min/);
+  });
+
+  // EI-13307: bg-host's coalesce window is tuned to its REAL cost (the ~13min
+  // cross-machine peer-log rejoin freeze, EI-13317) — NOT the generic ~2min
+  // window shared by gateway/embed-sidecar. The dry-run note must say so.
+  it('target:bg-host advertises its OWN wider ~13min coalescing window (EI-13307), not the generic ~2min one', async () => {
+    const b = body(await call({ target: 'bg-host' }));
+    expect(b).toMatchObject({ ok: true, dry_run: true, target: 'bg-host', would_run: 'systemctl --user restart papercup-bg-host.service' });
+    expect(b.note).toMatch(/coalesced/);
+    expect(b.note).toMatch(/~13min/);
+    expect(b.note).toMatch(/EI-13307/);
+    expect(b.note).toMatch(/EI-13317/);
+    expect(b.note).not.toMatch(/~2min/);
+  });
+
+  it('target:gateway and target:embed-sidecar keep the generic ~2min window (unaffected by the bg-host widening)', async () => {
+    for (const target of ['gateway', 'embed-sidecar'] as const) {
+      const b = body(await call({ target }));
+      expect(b.note).toMatch(/~2min/);
+      expect(b.note).not.toMatch(/~13min/);
+    }
   });
 
   it('takes no lock and drains nobody on a dry run', async () => {
@@ -206,7 +228,8 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
 
     expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: true, restartedFromPid: 909 });
     expect(b.coalesced).toBeUndefined();
-    expect(b.phantomCoalesceBroken).toMatchObject({ staleMarkerHolder: 'stale-one', serviceSecondsSinceStart: 6 * 3600, cooldownSec: 120 });
+    // EI-13307: bg-host's cooldown is now the widened ~13min (780s) window, not the generic 120s one.
+    expect(b.phantomCoalesceBroken).toMatchObject({ staleMarkerHolder: 'stale-one', serviceSecondsSinceStart: 6 * 3600, cooldownSec: 13 * 60 });
     expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-bg-host.service')], expect.anything());
   });
 
@@ -260,6 +283,63 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
 
     expect(b).toMatchObject({ ok: false, target: 'staging', reason: 'resource_drain_timeout', resource: 'staging-server' });
     expect(releaseM).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockId: 'COOL3' }));
+  });
+});
+
+describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host (EI-13307 widened cooldown)', () => {
+  beforeEach(() => {
+    process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
+  });
+
+  it('claims the bg-host cooldown marker with the WIDENED ~13min TTL (780s), not the generic 120s one', async () => {
+    acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL-BG', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
+    guardM.mockImplementation(runGuard(fenceOk(11)) as never);
+    probeM.mockResolvedValue({ ok: true, mainPid: 7777, secondsSinceStart: 99999 } as never);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(acquireM).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ resource: 'bg-host-cooldown', mode: 'exclusive', ttlSec: 13 * 60 }),
+    );
+    expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: true, drained: true, restartedFromPid: 7777 });
+    // (b): the result states the rail-freeze cost explicitly, referencing EI-13317.
+    expect(b.note).toMatch(/~13min/);
+    expect(b.note).toMatch(/EI-13317/);
+  });
+
+  it('a restart request ~10min (600s) after a peer\'s real bg-host restart COALESCES under the widened window — the exact storm from EI-13307 (old 120s window would have fired a fresh restart here)', async () => {
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-2', owner_label: 'peer-two', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+    } as never);
+    // 600s ago: outside the OLD 120s window (would have been a phantom / real
+    // restart under the pre-fix code) but well inside the NEW 780s window.
+    probeM.mockResolvedValue({ ok: true, mainPid: 8888, secondsSinceStart: 600 } as never);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: false, coalesced: true, verified: true, restartedSecondsAgo: 600, mainPid: 8888 });
+    expect(b.note).toMatch(/peer-two/);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('a restart request >13min (900s) after a peer\'s real bg-host restart is OUTSIDE even the widened window — fires a genuine restart', async () => {
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-3', owner_label: 'peer-three', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+    } as never);
+    probeM.mockResolvedValue({ ok: true, mainPid: 4321, secondsSinceStart: 900 } as never);
+    guardM.mockImplementation(runGuard(fenceOk(12)) as never);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: true, restartedFromPid: 4321 });
+    expect(b.coalesced).toBeUndefined();
+    expect(b.phantomCoalesceBroken).toMatchObject({ staleMarkerHolder: 'peer-three', serviceSecondsSinceStart: 900, cooldownSec: 13 * 60 });
   });
 });
 

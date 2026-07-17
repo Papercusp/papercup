@@ -39,6 +39,20 @@
  * the service genuinely restarted within the window; a phantom marker is
  * refused and a real restart fires. Every real-restart result also surfaces
  * `restartedFromPid` + `verifyWith` so the caller can confirm the PID cycled.
+ *
+ * EI-13307 (bg-host's REAL cost is ~13min, not ~2min): bg-host was sharing the
+ * generic 2-minute GATEWAY_COOLDOWN_SEC used by gateway/embed-sidecar, but its
+ * actual restart cost is the ~13-minute cross-machine peer-log/swarm rejoin
+ * freeze (EI-13317) — a restart storm from several agents each independently
+ * "fixing their own thing" a few minutes apart kept the federation rails down
+ * almost continuously for over an hour (LIVE-1 drill, 2026-07-17). bg-host now
+ * gets its OWN, much wider cooldown window (BG_HOST_COOLDOWN_SEC, ~13min) —
+ * cooldown windows are per-target, not global — and a real (non-coalesced)
+ * bg-host restart's result states the rail-freeze cost explicitly so callers
+ * understand what they just did. Detecting "peer-log reader still catching
+ * up" and refusing/queuing a restart during that window is NOT implemented
+ * here — it depends on a health signal EI-13317 doesn't yet expose; that is
+ * EI-13317's job, not this tool's.
  */
 
 import { z } from 'zod';
@@ -76,6 +90,20 @@ const STAGING_COOLDOWN_SEC = 120;
  */
 const GATEWAY_COOLDOWN_SEC = 120;
 
+/**
+ * EI-13307: bg-host's REAL restart cost is not the ~10s process bounce that
+ * the generic GATEWAY_COOLDOWN_SEC window was tuned for — it's the
+ * ~13-minute cross-machine peer-log/swarm rejoin freeze documented in
+ * EI-13317 (peer-log gossip does not reliably self-heal after a restart). A
+ * 2-minute window let a restart storm from several agents, each ~10min
+ * apart, keep re-triggering that freeze for over an hour (LIVE-1 drill,
+ * 2026-07-17) because each new restart looked "outside the cooldown" under
+ * the old window even though the prior rejoin hadn't finished. Widened to
+ * the observed cost so a whole storm across that window coalesces into ONE
+ * outage instead of a fresh one per restart.
+ */
+const BG_HOST_COOLDOWN_SEC = 13 * 60; // 780s
+
 type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
 
 /**
@@ -111,11 +139,15 @@ export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: st
   },
 };
 
-/** Per-target cooldown window (EI-10896). Only targets with a cooldownResource coalesce. */
+/**
+ * Per-target cooldown window (EI-10896). Only targets with a cooldownResource
+ * coalesce. Windows are per-target, NOT global (EI-13307) — bg-host's is
+ * ~13min (its real rejoin cost), everyone else's is the generic ~2min.
+ */
 const COOLDOWN_SEC: Partial<Record<RestartTarget, number>> = {
   staging: STAGING_COOLDOWN_SEC,
   gateway: GATEWAY_COOLDOWN_SEC,
-  'bg-host': GATEWAY_COOLDOWN_SEC,
+  'bg-host': BG_HOST_COOLDOWN_SEC,
   'embed-sidecar': GATEWAY_COOLDOWN_SEC,
 };
 
@@ -130,7 +162,7 @@ const holderJson = (h: ResourceHolder) => ({
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit) — the sanctioned alternative to a raw `systemctl restart`. Targets: "dev" (:3070 operator, default) · "staging" (:3170 operator) · "gateway" (inference gateway :8788 — every agent\'s LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true; the real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1. Every target but "dev" DEBOUNCES: a restart within ~2min of a peer\'s real one is coalesced (coalesced:true), not re-run.',
+    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit) — the sanctioned alternative to a raw `systemctl restart`. Targets: "dev" (:3070 operator, default) · "staging" (:3170 operator) · "gateway" (inference gateway :8788 — every agent\'s LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true; the real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1. Every target but "dev" DEBOUNCES (per-target window): ~2min for staging/gateway/embed-sidecar, ~13min for bg-host (its real rejoin cost, EI-13307).',
   guidance: {
     when: 'To LOAD a code edit into a long-running host. KEY: gateway / bg-host / embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build, no deploy) — a RESTART, not the release pipeline, loads your edit; never wait on a deploy for those. Pick by what you edited: inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; operator server-side → "staging" (then probe :3170). Run dry first, then confirm.',
     notWhen: 'Just probing a service — no restart needed. A gateway restart drops in-flight LLM requests for the WHOLE fleet (read gateway:status first). NEVER raw `systemctl --user restart` these units — it bypasses the drain AND the debounce (WI-4221).',
@@ -155,19 +187,25 @@ export default defineTool({
     const target: RestartTarget = args.target ?? 'dev';
     const cfg = RESTART_TARGETS[target];
     const restartCmd = `systemctl --user restart ${cfg.unit}`;
+    // EI-13307: per-target, not global — computed up front so both the
+    // dry-run note and the real debounce path below quote the SAME window.
+    const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
 
     // Dry run — ctx-free, takes no lock, drains nobody.
     if (!args.confirm) {
+      const cooldownNote = cfg.cooldownResource
+        ? ` If a peer restarted this target within the last ~${Math.round(cooldownSec / 60)}min, the restart is coalesced (skipped) instead of re-run.${
+            target === 'bg-host'
+              ? " bg-host's window is wider than the others: a restart freezes the cross-machine peer-log rails for ~13min while the substrate rejoins (EI-13307/EI-13317), so a fresh restart mid-rejoin would just restart the outage."
+              : ''
+          }`
+        : '';
       return json({
         ok: true,
         dry_run: true,
         target,
         would_run: restartCmd,
-        note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${
-          cfg.cooldownResource
-            ? ' If a peer restarted this target within the last ~2min, the restart is coalesced (skipped) instead of re-run.'
-            : ''
-        } The real restart also requires PAPERCUSP_ALLOW_DEV_RESTART=1.`,
+        note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} The real restart also requires PAPERCUSP_ALLOW_DEV_RESTART=1.`,
       });
     }
 
@@ -190,7 +228,6 @@ export default defineTool({
       serviceSecondsSinceStart: number | null;
       cooldownSec: number;
     } | null = null;
-    const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
     if (enabled && cfg.cooldownResource) {
       const cd = cfg.cooldownResource;
       const cooldown = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
@@ -337,7 +374,11 @@ export default defineTool({
             phantomCoalesceBroken
               ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
               : ''
-          } — this connection will drop as the operator restarts.`,
+          } — this connection will drop as the operator restarts.${
+            target === 'bg-host'
+              ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
+              : ''
+          }`,
         });
       },
     );

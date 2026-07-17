@@ -44,6 +44,70 @@ Scorecards are only useful if they keep arriving, complete:
 A stale scorecard is itself a finding — ideation passes treat it as a prompt
 ("why did we stop being able to measure this?").
 
+## The typed authoring/evaluation/release workflow (2026-07-15)
+
+`rubric-system-and-auto-loop-release-profile-2026-07-15` hardened the lifecycle
+above into a typed contract, so a rubric's criteria and a release gate's evidence
+requirements can never silently drift apart:
+
+* **`scorecards:evaluate`** is the ONE typed path into a grade — never construct a
+  scorecard from prose. Call it with just `rubricRef` to get the skeleton (every
+  criterion's key/title/`instrumentKey`/allowed ratings, all `null`); call it again
+  with `ratings` (and/or `instrumentSnapshots`) filled in to get back
+  **canonical ratings** (normalized), an **evidence fingerprint** (dedup — an
+  unchanged grade doesn't spam a new scorecard row), and an **instrument contract
+  report** (`missingBindings` / `duplicateBindings` / `missingSnapshots` /
+  `staleSnapshots` / `windowMismatches` / `verdictMismatches` — a criterion whose
+  `instrumentKey` doesn't have a matching, fresh, consistent snapshot fails loudly
+  here instead of silently grading on stale/absent instrumentation).
+* **`scorecards:emit`** takes that canonical result and writes the actual scorecard
+  (an `improvements:capture`-backed row with a stable `issueId`, e.g. `EI-13372`).
+  `changed:false` short-circuits a re-emit that would be identical to the latest
+  scorecard on record (the evidence-fingerprint dedup).
+* **`instrumentKey: 'none'`** is a legitimate binding — some criteria (e.g.
+  "real usage validates the release") are meant to be graded from reviewed judgment,
+  not a single mechanical query; `unknown` is still the honest rating when no such
+  review actually happened this pass.
+* **Rate honestly — `unknown` beats invented.** A criterion with no instrument yet,
+  or one you didn't actually check this pass, is `unknown`. A composite gate (below)
+  treats `unknown` as a NOT-pass, so this is a real, load-bearing signal, not a
+  hedge.
+
+### The composite release-profile evaluator
+
+`@papercusp/release-profile`'s generic `evaluateReleaseProfile` combines a list of
+typed `ComponentSpec`s (each: `check()` → `pass` / `fail` / `unknown`, `mandatory`,
+`maxAgeMs`, optional `lineage`) into ONE `GO`/`NO-GO` — refusing GO when any
+mandatory component is `fail`, `unknown`, stale (older than `maxAgeMs`), or
+lineage-mismatched (graded against a different candidate than the one being
+evaluated). `apps/operator/lib/release/release-profile.ts` supplies the papercusp
+wiring: a **rubric component** (the latest complete scorecard for an active,
+`releaseGating` rubric, reduced to a worst-case verdict — one failing criterion
+sinks the whole component, never averaged away) and a **deploy-staleness hard
+gate** (pin age + commits-behind vs the candidate).
+
+Two assembled profiles compose these:
+
+* **`evaluatePapercuspReleaseProfile`** (`papercusp-public-release-readiness`) —
+  auto-discovers EVERY active `releaseGating` rubric in the workspace. Broad by
+  design; as more per-product rubrics are ratified (voice, chat, mobile, …) this
+  profile mixes them all into one monolithic verdict.
+* **`evaluateAutoloopReleaseProfile`** (`papercusp-autoloop-public-release-readiness`)
+  — a FIXED 7-rubric set scoped to exactly the Mug→Cup→Kettle→Blender product
+  (`AUTOLOOP_COMPONENT_RUBRIC_REFS`: `blender-release-readiness` plus the 6
+  component rubrics — `mug-pot-coordination-health`, `cup-lifecycle-durability`,
+  `kettle-supervision-health`, `autonomy-owner-controls`, `release-integrity-health`,
+  `production-soak-health`) plus the same deploy-staleness gate. Nothing else
+  auto-discovered in — one product's GO/NO-GO, not the whole workspace's.
+
+Both are plain async functions with real default deps (DB reads, git reads) — call
+them directly (`evaluateAutoloopReleaseProfile()`, no args) for a live run; every
+arg is dependency-injectable only for tests. A live dogfood run 2026-07-17 (P-010)
+returned a real, honest `go:false` with 6/7 rubric components `unknown` (freshly
+ratified, not yet graded) and one `lineage-mismatch` (graded against an older
+candidate) — correct, fail-closed behavior, not a bug: an ungraded or stale-evidence
+component must never round up to a passing GO.
+
 ## How this feeds the loop
 
 Rubric-graded signal is the quantitative backbone of the

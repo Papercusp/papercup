@@ -69,6 +69,13 @@ export interface WirePresenceOpts {
    *  `ensureSendSideWired` (boot-all.ts) can un-mark this harness as wired and
    *  re-wire on the next boot pass. */
   onSessionClosed?: () => void;
+  /** Flag seam (the lock-authority `useHrwRendezvous` idiom): short-circuits the
+   *  PRESENCE_GOSSIP read at wire time. Tests MUST pin the path they assert —
+   *  `false` = the log-append ROLLBACK path, `true` = the gossip writer —
+   *  instead of riding the live default, which flipped ON at the 2026-07-17
+   *  cutover (a default-riding log-path assertion reds the moment the flag
+   *  graduates). Production callers omit it. */
+  presenceGossip?: boolean;
 }
 
 const DEFAULT_PRESENCE_INTERVAL_MS = 5_000;
@@ -117,7 +124,8 @@ export async function wirePresenceAnnounceForHarness(
   const gossipTopicHex = typeof topicHex === 'string' && topicHex ? topicHex : null;
   let gossipWriterOn = false;
   if (gossipTopicHex && potSlug) {
-    gossipWriterOn = await getFlag(FLAGS.PRESENCE_GOSSIP, 'system').catch(() => false);
+    gossipWriterOn =
+      opts.presenceGossip ?? (await getFlag(FLAGS.PRESENCE_GOSSIP, 'system').catch(() => false));
     let writer: PresenceGossipWriter | undefined;
     if (gossipWriterOn) {
       writer = await buildGossipWriter(handle, getState, potSlug, opts);

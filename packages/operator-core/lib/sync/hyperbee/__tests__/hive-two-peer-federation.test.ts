@@ -348,6 +348,11 @@ describe('Shared Hive federation — Track B presence federates over the Hive to
         }),
         resolveHiveSlug: async () => potSlug,
         setIntervalFn: () => 0 as unknown as ReturnType<typeof setInterval>,
+        // This leg pins the LOG-APPEND path (the PRESENCE_GOSSIP rollback path):
+        // the assertion below reads applyB's log-merge calls, which gossip frames
+        // never reach. Pin the seam OFF — the live default is gossip-ON since the
+        // 2026-07-17 cutover; the gossip path is covered by presence-gossip.test.ts.
+        presenceGossip: false,
       });
       expect(loopA, 'publisher should start for a swarmed harness').not.toBeNull();
       await loopA!.tickOnce();
