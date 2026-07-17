@@ -30,27 +30,35 @@ coordination features only … work on this plan from start to finish"]).
 - **Surface 5 (claim-spec) ✓** 6s: drill-cup-18f2f landed VM origin='remote' fed_hlc+fed_ts.
 - **H1/H2/H3+M5/M6 in-process suites ✓** re-run this drill: presence-gossip.test.ts +
   __tests__/coord-message-federation.integration.test.ts — 2/2 files green.
-- **OPEN WEDGE (blocks surfaces 1+2 completion + V4 soak)**: v2t PEER-LOG rail down since the
-  22:36 tower bg-host restart (gossip rails unaffected — different transport). Fresh VM
-  re-dial at 22:51 did NOT clear it; tower journal shows NO papercusp peer_connected since
-  22:48 — the VM's dial is not reaching the current bg-host gen (suspect: sibling tower
-  process wins the connection, or stale isolated-DHT announces on fixture :49838).
-  Prior gens recovered in ~15 min. **RESOLVED 22:57 EDT: SELF-CLEARED — rail-watch reported
-  BOTH-RAILS-UP after 780s (t2v=1 v2t=1). Do NOT restart bg-host now (a restart re-opens a
-  ~13-min freeze); the ~13-min self-recovery matches a swarm/DHT refresh cycle. Next: verify
-  V3 msg mrobxkzz… delivered via backlog + receipt row, then proceed.** Peer restart storm
-  held off by my fleet broadcast (msg mrobhb9z…, ~60 min hold from 22:26 EDT).
-- **HRW next**: `resolveUseHrwRendezvous` reads getFlag PER-CALL (lock-authority.ts:163) —
-  flip needs NO reboot. Same-inputs verify done: both machines' fresh pot_slug='papercusp'
-  candidate sets = {IXfGu216EI…(tower), Lm1ABoMRKV…(VM)}, same code (VM runs tower-built
-  current serve.mjs), stores confirmed writable. REMAINING: flip both stores + types.ts
-  default (count 29→28 in production-defaults.test.ts:483) + compute winner once via real
-  `lockAuthorityForHive('papercusp')` (tsx, tower) + record.
-- **Remaining after wedge clears**: V3 delivery+receipt assert (backlog will deliver msg
-  mrobxkzz… automatically), V4 ~30-min no-dupe soak, HRW flip+verify, release fleet hold,
-  GREEN verdict → su-4d3eb (P-405/P-301), file EIs: bg-host dev:restart no-coalescing +
-  post-restart peer-log rejoin freeze (P-102 class, forensics in su-18f2f session
-  2026-07-17 01:4x-02:5xZ).
+- **Surface 2 receipt — EMIT CONTRACT PROVEN, transport pending**: the tower AUTHORED the
+  delivery receipt for msg mrobxkzz… at 22:56:54 EDT — exactly ONE row, payload
+  `{delivered:true, woken:1, machine:tower}` (M5a honest shape ✓; envelope carried
+  receipt:true because the probe was wake:'required' + directed + harness-scoped —
+  send.ts:407; expectsReply/wakeOnReply are IRRELEVANT to receipts). The row federates to
+  the VM only when the t2v rail rejoins (backlog is lossless — proven surface 3).
+- **OPEN WEDGE v2 (23:13 EDT — blocks receipt assert + V4 soak)**: the bg-host↔VM SWARM
+  LINK fully severed after the VM's 22:51 reboot: remote presence rows frozen BOTH sides at
+  ~22:49; `topic-gossip … 0 channel(s) open` on BOTH the VM log and the tower bg-host
+  journal; zero tower↔VM sockets; VM maxts(coord_event_log) = 22:50:39 (t2v apply dead).
+  A TRANSIENT connection existed ~22:57 (long enough for v2t backlog → tower, the
+  "self-clear") then dropped. NOT the DHT fixture (up since 20:11, survived all restarts);
+  NOT a sibling process (dev/staging APIs hold no gossip topics — checked journals). The
+  ~13-min "self-heal" window is exceeded (>20 min). Recovery lever fired: VM sidecar
+  re-booted 23:13 EDT (pid 55147) — the 22:35 pattern (fresh announce both sides) is the
+  one configuration that connected cleanly. bg-host still NOT restarted [peer:63834 custody].
+- **HRW FLIPPED + GRADUATED ✓ (23:05–23:08 EDT)**: pg-override ON in BOTH stores (tower
+  MCP flags:set + VM vmcall, both `backend:pg-override`); types.ts DARK_FLAGS entry removed
+  (default now true); production-defaults.test.ts PRE_INVERSION entry removed + offCount
+  29→28 — 10/10 green. Live winner computed on tower via tsx `lockAuthorityForHive
+  ('papercusp')`: `useHrw:true, isSelf:true, liveCount:1` — liveCount 1 because the severed
+  link staled the VM's presence row; RE-VERIFY the 2-candidate HRW winner (both machines
+  agree) once presence is fresh again, as part of V4.
+- **Remaining after link rejoins**: receipt row lands on VM (poll running), 2-candidate HRW
+  winner agreement check, V4 ~30-min no-dupe soak, release fleet hold (msg mrobhb9z…,
+  expires ~23:30 EDT — renew if soak still running), GREEN verdict → su-4d3eb (P-405/P-301),
+  file EIs: bg-host dev:restart no-coalescing + post-restart swarm rejoin failure (P-102
+  class — now with the severed-link forensics above; session su-18f2f 2026-07-17
+  01:4x–03:1xZ).
 This doc exists so the flip is a single verified action the instant the 2-machine rig
 (WI-4070, git lane) heals — no re-derivation, no ambiguity. Nothing here authorizes touching
 tower `bg-host` or the Mac VM lifecycle; **TOWER MUST NOT BE RESTARTED** [peer:63834].
