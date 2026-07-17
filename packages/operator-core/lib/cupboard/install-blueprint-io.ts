@@ -79,8 +79,10 @@ async function resolveBlueprintListing(
 
 /** Fetch the set of Cupboard blueprint listing refs — the dep-validator's
  *  `cupboardBlueprints` host set + the spawned-blueprint install closure. Empty
- *  set on any error (offline → conservative). */
-async function fetchCupboardBlueprintIds(): Promise<Set<string>> {
+ *  set on any error (offline → conservative). Exported for reuse by other
+ *  installers that also drive `installBlueprintFromCupboardCore` (bundle-app
+ *  install-io.ts's blueprint leg, D-001 reuse-first). */
+export async function fetchCupboardBlueprintIds(): Promise<Set<string>> {
   try {
     const base = resolveCupboardBaseUrl();
     const res = await fetch(`${base}/listings?kind=blueprint&limit=100`, {

@@ -36,6 +36,7 @@ import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/i
 import { resolveCupboardBaseUrl } from './base-url';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import { gitCloneShallow, installCupboardUnitFromListing } from './install-io';
+import { fetchCupboardBlueprintIds } from './install-blueprint-io';
 import { installBlueprintFromCupboardCore, InstallBlueprintError } from './install-blueprint-core';
 import { fetchBundleManifest, BundleManifestError } from './bundle-manifest-io';
 import {
@@ -149,7 +150,7 @@ function makeHostState(workspaceId: string): BundleHostState {
 function makeInstallers(workspaceId: string) {
   const sql = getOrgPg().sql;
   return {
-    resolveAndInstallDeps: (declared: { packs?: string[]; plugins?: string[] }) =>
+    resolveAndInstallDeps: (declared: Partial<DepSet>) =>
       resolveAndInstallDeps(
         { packs: declared.packs ?? [], plugins: declared.plugins ?? [] },
         { deriveCatalog: () => derivePackCatalog({}), installUnit: (u) => installCupboardUnitFromListing(u) },
@@ -169,7 +170,8 @@ function makeInstallers(workspaceId: string) {
             resolveExtends: operatorResolveExtends(),
             resolveHostSets: async () => {
               const catalog = await derivePackCatalog({});
-              return { ...depHostSetsFromCatalog(catalog), cupboardBlueprints: new Set<string>(), cupboardReachable: catalog.cupboardReachable };
+              const cupboardBlueprints = await fetchCupboardBlueprintIds();
+              return { ...depHostSetsFromCatalog(catalog), cupboardBlueprints, cupboardReachable: catalog.cupboardReachable };
             },
           },
         );
