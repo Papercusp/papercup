@@ -16,6 +16,9 @@
  *   - decision refs resolve to known decision IDs
  *   - status tokens in vocabulary
  *   - ASCII-only IDs
+ *   - item-line-like text (bold **P-NNN**, checkbox, or under a ## Phase
+ *     heading) that did NOT parse as an item — most commonly a missing
+ *     `status` backtick token (EI-480)
  *   - supersession recorded (`superseded-by:` frontmatter / a "superseded by
  *     [[X]]" Now note) but status not `superseded` → warn (EI-154)
  *
@@ -33,6 +36,7 @@ import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
 import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { detectUnparsedItemLines } from './item-parse-feedback';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
@@ -317,6 +321,37 @@ export async function lintParsed(
         `${ghostIds.length} checkbox-style item line(s) (${sample}${suffix}) are INVISIBLE to the plan parser — ` +
         'plans:set-status fails item_not_found on them and they never appear in plans:items. ' +
         'Rewrite as the canonical form `- **P-NNN** `status` text` (spec/plan-format).',
+    });
+  }
+
+  // EI-480: a line that LOOKS like an attempted item (bold **P-NNN**, or a
+  // bullet under a ## Phase heading) but did not parse — most commonly because
+  // it is missing the required `status` backtick token entirely, e.g.
+  // `- **P-001** some text` with no `` `todo` `` — is invisible to the parser
+  // exactly like the checkbox case above, yet was previously invisible to lint
+  // too: a plan authored via plans:set-content without the status token linted
+  // clean while shipping ZERO claimable items. Reuse the same detector the
+  // write-time tools (plans:new / plans:set-content / plans:set-content-chunk,
+  // item-parse-feedback.ts) already use, so a plan lints the same signal
+  // whenever/however it was written. Skip lines already reported by the
+  // checkbox-specific warning above (same root cause — one warning is enough).
+  const unparsedItemLines = detectUnparsedItemLines(
+    parsed.raw,
+    new Set(parsed.items.map((i) => i.rawLine)),
+  ).filter((u) => !/^[ \t]*-\s*\[(?: |x|X)\]\s*\*{0,2}[A-Z]-\d{3,}\b/.test(u.text));
+  if (unparsedItemLines.length > 0) {
+    const sample = unparsedItemLines
+      .slice(0, 5)
+      .map((u) => `L${u.line}: ${u.text}`)
+      .join('; ');
+    const suffix = unparsedItemLines.length > 5 ? `, … +${unparsedItemLines.length - 5} more` : '';
+    report.warnings.push({
+      level: 'warning',
+      code: 'unparsed_item_line',
+      message:
+        `${unparsedItemLines.length} line(s) look like plan items but did NOT parse (${sample}${suffix}) — ` +
+        'most commonly a missing `status` backtick token. An item MUST be `- **P-NNN** `status` text`. ' +
+        'Rewrite with plans:set-content, or append correctly with plans:add-item.',
     });
   }
   for (const it of parsed.items) {

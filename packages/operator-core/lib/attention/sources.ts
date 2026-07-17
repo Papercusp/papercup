@@ -74,6 +74,41 @@ export function dropConvertedPlanItems(
 }
 
 /**
+ * D-008 dedupe canonicalization (owner-inbox-single-pane-2026-07-17 P-005e):
+ * `work-item-needs-human` (P-005a) is a DELIBERATELY topic-agnostic catch-all
+ * across every work-item kind — it necessarily overlaps two more specific,
+ * richer-presented sources reading the SAME underlying row:
+ *   - `improvement` (source #7): an issue-family row tagged the
+ *     `papercusp-improvement` topic AND needsHuman-flagged.
+ *   - `owner-wall` (source #P-005b, the `coord:walls` union's work-item leg):
+ *     a feature-family row parked in `needs-human` status.
+ * Same convention as `dropConvertedPlanItems` above: the generic item is
+ * dropped whenever a more specific one already covers its id — the human
+ * sees ONE card per real-world ask, never two. PURE.
+ */
+export function dropDuplicateNeedsHumanWorkItems(items: readonly AttentionItem[]): AttentionItem[] {
+  const coveredIds = new Set<string>();
+  for (const it of items) {
+    if (it.kind === 'improvement' && it.ref.kind === 'improvement') {
+      coveredIds.add(it.ref.issueId);
+    }
+    if (
+      it.kind === 'owner-wall' &&
+      it.ref.kind === 'owner-wall' &&
+      it.ref.wallSource === 'work-item' &&
+      it.ref.wallRef
+    ) {
+      coveredIds.add(it.ref.wallRef);
+    }
+  }
+  if (coveredIds.size === 0) return [...items];
+  return items.filter((it) => {
+    if (it.kind !== 'work-item-needs-human' || it.ref.kind !== 'work-item-needs-human') return true;
+    return !coveredIds.has(it.ref.workItemId);
+  });
+}
+
+/**
  * Map recent report-carrying operator turns to AttentionItems — the
  * operator-report source (report-cards-inbox-reconciliation-2026-06-05,
  * P-003 / D-003). The stored jsonb is re-validated through the shared

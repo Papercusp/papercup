@@ -90,8 +90,8 @@ export interface FinalizeRecipe {
  * DONE = curator → postCuratorOutputs → documenter → [archive]; ESCALATE = curator.
  */
 export const DEFAULT_FINALIZE_RECIPE: FinalizeRecipe = {
-  onDone: ['curator', 'postCuratorOutputs', 'documenter', 'archive'],
-  onEscalate: ['curator'],
+  onDone: ['curator', 'postCuratorOutputs', 'documenter', 'archive'] as FinalizeEntry[],
+  onEscalate: ['curator'] as FinalizeEntry[],
 };
 
 const FINALIZE_STEP_NAMES = new Set(['archive', 'postCuratorOutputs']);
@@ -159,19 +159,26 @@ function finalizeRoleExtras(
   return extras;
 }
 
-/** Map one recipe entry → a finalization step (or null to skip, e.g. archive when off). */
+/** Map one recipe entry → a finalization step (or null to skip, e.g. archive when off).
+ *  EI-421: entry may be the plain-string role/step name, or `{ role, extras }` — the
+ *  object form's `extras` are appended after the outcome-derived extras so a fork can
+ *  parameterize a role's launch (e.g. `documenter` with a custom env var) without code. */
 function recipeEntryToStep(
-  entry: string,
+  entry: FinalizeEntry,
   outcome: 'done' | 'escalate',
   input: FinalizationPlanInput,
 ): FinalizationStep | null {
-  if (entry === 'archive') return input.archiveOnDone ? { kind: 'archive' } : null;
-  if (entry === 'postCuratorOutputs') return { kind: 'postCuratorOutputs' };
-  if (FINALIZE_STEP_NAMES.has(entry)) return null; // unknown finalize-step name → skip
+  const role = finalizeEntryRole(entry);
+  if (role === 'archive') return input.archiveOnDone ? { kind: 'archive' } : null;
+  if (role === 'postCuratorOutputs') return { kind: 'postCuratorOutputs' };
+  if (FINALIZE_STEP_NAMES.has(role)) return null; // unknown finalize-step name → skip
   return {
     kind: 'invoke',
-    role: entry,
-    extras: finalizeRoleExtras(entry, outcome, input.featureId, input.reason, input.outputKind),
+    role,
+    extras: [
+      ...finalizeRoleExtras(role, outcome, input.featureId, input.reason, input.outputKind),
+      ...finalizeEntryDeclaredExtras(entry),
+    ],
   };
 }
 

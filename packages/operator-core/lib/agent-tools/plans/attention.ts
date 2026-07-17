@@ -44,11 +44,16 @@ import {
   standingApprovalToAttention,
   conversationToAttention,
   scoutGradeToAttention,
+  workItemNeedsHumanToAttention,
+  ownerWallToAttention,
+  darkFlagRatificationToAttention,
+  blockedSessionToAttention,
 } from "../../attention/adapters";
 import {
   planItemsToAttention,
   reportTurnsToAttention,
   dropConvertedPlanItems,
+  dropDuplicateNeedsHumanWorkItems,
 } from "../../attention/sources";
 import { buildAttentionGroups } from "../../attention/group";
 import {
@@ -521,7 +526,175 @@ export default defineTool({
               /* best-effort */
             }
           })(),
+
+          // ── owner-inbox-single-pane-2026-07-17 P-005: the folded owner-gate
+          //    channels — each a DISTINCT wall a working agent explicitly
+          //    raised (D-001: never a bare turn-ending prose question).
+
+          // 11. Needs-human work-items of EVERY kind (P-005a) — feature/chunk
+          //     (`needs_human_review`) and bug/change/task
+          //     (`payload.needsHuman`), read off the single cross-kind
+          //     `harness_shared.work_items` VIEW (unify-work-items D-010(b))
+          //     rather than either per-kind reader, so neither family's
+          //     dialect is missed. Overlaps sources 7/12 by construction;
+          //     resolved post-fan-out by `dropDuplicateNeedsHumanWorkItems` (D-008).
+          (async () => {
+            try {
+              const { getOrgPg } = await import("@papercusp/db-org");
+              const { activeWorkspaceId } =
+                await import("../../workspace-registry");
+              const { sql } = getOrgPg();
+              const wid = activeWorkspaceId();
+              const hf = harnessFilter;
+              const rows = await sql<
+                {
+                  feature_id: string;
+                  title: string | null;
+                  summary: string | null;
+                  harness_slug: string | null;
+                  item_kind: string | null;
+                  taken_by: string | null;
+                }[]
+              >`
+                SELECT feature_id, title, summary, harness_slug, item_kind, taken_by
+                  FROM harness_shared.work_items
+                 WHERE (workspace_id = ${wid} OR workspace_id = 'default')
+                   AND (${hf}::text IS NULL OR harness_slug = ${hf})
+                   AND (
+                     status = 'needs-human'
+                     OR (
+                       item_kind IN ('bug', 'change', 'task')
+                       AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' = 'true'
+                     )
+                   )
+                 LIMIT 300
+              `;
+              for (const r of rows) {
+                items.push(
+                  workItemNeedsHumanToAttention({
+                    workItemId: r.feature_id,
+                    itemKind: r.item_kind ?? "unknown",
+                    title: r.title ?? r.feature_id,
+                    body: r.summary,
+                    harnessSlug: resolveHarness(r.harness_slug, null),
+                    ownerAgentId: r.taken_by,
+                  }),
+                );
+              }
+            } catch {
+              /* best-effort */
+            }
+          })(),
+
+          // 12. Registered owner-walls (P-005b) — the `coord:walls` union
+          //     (loop:checkpoint carry-note walls + needs-human work-items),
+          //     reused verbatim (reuse-first) so the SAME rows an owner would
+          //     see via `coord:walls` also surface in the unified inbox.
+          (async () => {
+            try {
+              const { listOwnerWalls } =
+                await import("../coordination/tools/walls");
+              const { activeWorkspaceId } =
+                await import("../../workspace-registry");
+              const { walls } = await listOwnerWalls({
+                workspaceId: activeWorkspaceId(),
+                harness: harnessFilter ?? undefined,
+              });
+              for (const w of walls) {
+                items.push(
+                  ownerWallToAttention({
+                    source: w.source,
+                    ownerId: w.ownerId,
+                    harnessSlug: resolveHarness(w.harness, null),
+                    claim: w.claim,
+                    recheck: w.recheck ?? null,
+                    ref: w.ref ?? null,
+                    waitingHours: w.waitingHours,
+                    status: w.status,
+                  }),
+                );
+              }
+            } catch {
+              /* best-effort */
+            }
+          })(),
+
+          // 13. Pending dark-flag ratifications (P-005c) — the KNOWN_DARK_FLAGS
+          //     allowlist entries whose case genuinely awaits an owner action
+          //     ('owner-authority' / 'cutover' — NOT 'parked'/'incomplete',
+          //     which are deliberately-not-ready regardless of owner input).
+          //     A pure in-process read of the static map — no I/O, no per-key
+          //     PostHog round-trip (bounding this leg's cost).
+          (async () => {
+            try {
+              const { DARK_FLAGS } = await import("@papercusp/flags");
+              for (const [key, entry] of DARK_FLAGS) {
+                if (entry.case !== "owner-authority" && entry.case !== "cutover")
+                  continue;
+                items.push(
+                  darkFlagRatificationToAttention({
+                    flagKey: key,
+                    justification: entry.reason,
+                  }),
+                );
+              }
+            } catch {
+              /* best-effort */
+            }
+          })(),
+
+          // 14. Watcher blocked-session + mirrored-ask (P-005d) — open
+          //     `session_pending_gates` rows (owner-inbox-single-pane P-002):
+          //     the client-agnostic backstop for a client whose hook can't
+          //     mirror an unstructured ask as a structured envelope (D-002 —
+          //     Codex has no turn-end hook at all; this is its only path in).
+          (async () => {
+            try {
+              const { listPendingGates } =
+                await import("../../attention/gate-store");
+              const { activeWorkspaceId } =
+                await import("../../workspace-registry");
+              const gates = await listPendingGates({
+                workspaceId: activeWorkspaceId(),
+                order: "oldest",
+                limit: 100,
+              });
+              const now = Date.now();
+              for (const g of gates) {
+                if (harnessFilter && g.harness_slug && g.harness_slug !== harnessFilter)
+                  continue;
+                const openedMs = g.opened_at
+                  ? new Date(g.opened_at).getTime()
+                  : null;
+                const waitingHours =
+                  openedMs != null ? (now - openedMs) / 3_600_000 : null;
+                items.push(
+                  blockedSessionToAttention({
+                    sessionId: g.session_id,
+                    client: g.client,
+                    refId: g.ref_id,
+                    gateKind: g.kind,
+                    question: g.question,
+                    ownerAgentId: g.owner_id,
+                    harnessSlug: resolveHarness(g.harness_slug, null),
+                    waitingHours,
+                  }),
+                );
+              }
+            } catch {
+              /* best-effort */
+            }
+          })(),
         ]);
+
+        // 11a. D-008 dedupe: a `work-item-needs-human` (P-005a) row that a more
+        //      specific source (improvement / owner-wall) already surfaces for
+        //      the SAME underlying id is dropped — one card per real ask.
+        {
+          const kept = dropDuplicateNeedsHumanWorkItems(items);
+          items.length = 0;
+          items.push(...kept);
+        }
 
         // 11. Decision↔execution dedup guard (B-14 / P-104 · D-013): drop any
         //     plan-item that has been CONVERTED to a work_item (an `implements`

@@ -131,6 +131,8 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // ── review & merge ──
   { id: 'cat:gym', on: TRIGGER, when: { action: { matches: '^gym:' } }, fire: 'review-merge', meta: { reason: 'judges a gym candidate (a quality verdict)' } },
   { id: 'cat:design-review', on: TRIGGER, when: { action: { matches: '^design-phase[.:]record_review' } }, fire: 'review-merge', meta: { reason: 'records a design reviewer verdict' } },
+  { id: 'cat:review-approve', on: TRIGGER, when: { action: { matches: '^review:approve' } }, fire: 'review-merge', meta: { reason: 'approves a pending code review' } },
+  { id: 'cat:merge-approve', on: TRIGGER, when: { action: { matches: '^merge:approve' } }, fire: 'review-merge', meta: { reason: 'confirms a promotion / merge to a later phase' } },
 
   // ── escalations & agent-questions ──
   { id: 'cat:coord-escalate', on: TRIGGER, when: { action: { matches: '^coord:(escalate|escalations|resolve|ack|deliberate|vote)' } }, fire: 'escalations', meta: { reason: 'raises / resolves an escalation' } },

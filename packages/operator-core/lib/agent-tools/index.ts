@@ -1132,6 +1132,13 @@ import './harness/configure';
 import './gym/judge';
 import './gym/signals';
 
+// queen-autonomy-policy-2026-06-13 B-04/P-016 coverage-gap fix (EI-457): the
+// review-merge autonomy category had NO Queen-accessible verb — review:approve
+// (resolve a pending review) + merge:approve (confirm a promotion) wrap the
+// loopback-only HTTP routes so the category is governable.
+import './review/approve';
+import './merge/approve';
+
 // experiment-registry-invocation-api-2026-06-14 P-030/P-031 — the universal experiment
 // surface over the eval-battery registry: catalog (discover) + run (offline replay,
 // riding frontier:replay-harness). experiment:status is the P-032 sibling.

@@ -314,10 +314,10 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     category: 'review-merge',
     reversibility: 'reversible',
     authority: 'system',
-    queenVerbs: [],
-    humanSurface: 'Pipeline reviewer role / git-sync merge (no owner-facing approve verb)',
-    coverage: 'gap',
-    notes: 'COVERAGE GAP (P-016, filed EI-457): code-review approval + merge-to-staging is handled by pipeline roles + the git-sync routine + merge-resolver; there is no Mug-accessible "approve review / approve merge" verb. Build item adds one so review&merge is a governable category.',
+    queenVerbs: ['review:approve', 'merge:approve'],
+    humanSurface: 'Pipeline reviewer role / git-sync merge; now also review:approve / merge:approve',
+    coverage: 'covered',
+    notes: 'EI-457: review:approve wraps POST /harness/:slug/reviews/:id/resolve (approve/answer a pending review, unblocking its feature); merge:approve wraps POST /harness/:slug/promote/:id/confirm (confirm a promotion, merging a phase forward). Together they make review&merge a governable category.',
   },
 
   // ── release & deploy (PROTECTED) ──────────────────────────────────────────────────

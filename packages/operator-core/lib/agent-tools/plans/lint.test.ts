@@ -353,6 +353,55 @@ describe('plans:lint — checkbox-style item lines (EI-251)', () => {
 });
 
 /**
+ * EI-480: a bold `- **P-NNN**` item line that is missing the required
+ * `status` backtick token (e.g. `- **P-001** some text` with no `` `todo` ``)
+ * parses as ZERO items — same silent-invisibility class as the checkbox form
+ * (EI-251) — but `plans:lint` previously had NO warning for it at all: the
+ * plan linted clean while every "item" silently vanished. `unparsed_item_line`
+ * reuses the write-time detector (item-parse-feedback.ts) so lint catches it
+ * too, however the plan was written.
+ */
+describe('plans:lint — item lines missing the status token (EI-480)', () => {
+  const phasePlan = (phaseBody: string) =>
+    `---\n` +
+    `title: T\n` +
+    `slug: spawn-lint-test\n` +
+    `status: active\n` +
+    `created: 2026-06-10\n` +
+    `---\n\n` +
+    `# T\n\n` +
+    `## Now\n\n**State:** x\n\n**Next:** y\n\n` +
+    `## Phase 1\n\n${phaseBody}\n\n` +
+    `## Decisions\n\n### D-001 — a decision\nBody.\n`;
+
+  it('warns on a bold P-NNN item line with no status token', async () => {
+    const report = await lint(phasePlan('- **P-001** some text importance: normal'));
+    const w = report.warnings.find((f) => f.code === 'unparsed_item_line');
+    expect(w).toBeTruthy();
+    expect(w!.message).toMatch(/P-001/);
+    expect(w!.message).toMatch(/1 line/);
+    // Advisory only — never an error.
+    expect(codes(report.errors)).not.toContain('unparsed_item_line');
+  });
+
+  it('does NOT warn on canonical item lines', async () => {
+    const report = await lint(phasePlan('- **P-001** `todo` do a thing'));
+    expect(codes(report.warnings)).not.toContain('unparsed_item_line');
+  });
+
+  it('does NOT double-report a checkbox-style line already covered by checkbox_item_syntax', async () => {
+    const report = await lint(phasePlan('- [ ] P-058 — migrate the pollers'));
+    expect(codes(report.warnings)).toContain('checkbox_item_syntax');
+    expect(codes(report.warnings)).not.toContain('unparsed_item_line');
+  });
+
+  it('does NOT fire on a plain prose mention of an item id', async () => {
+    const report = await lint(phasePlan('- **P-001** `todo` see P-002 of the other plan for context'));
+    expect(codes(report.warnings)).not.toContain('unparsed_item_line');
+  });
+});
+
+/**
  * EI-44: owner-gated asks written as `## Now` PROSE ("Owner: decide D-002",
  * "human greenlights a phase", "Owner: provide creds") are invisible to every
  * inbox surface — only a `needs-human` ITEM is queryable. `owner_ask_not_needs_human`
