@@ -229,6 +229,15 @@ import './session-dir-gc-action';
 // infra-perf-robustness-audit-2026-06-18 P-006). Seeded INACTIVE
 // (seed-telemetry-retention-routine.ts --active).
 import './telemetry-retention-action';
+// `system:gc-plan-runs` — WI-5273: wires the already-built-and-tested
+// gcScheduledPlanRuns (gc-plan-runs.ts) to an actual cadence — it had NEVER
+// been invoked outside its own test since scheduled-recurring-plans-2026-06-16,
+// so terminal scheduled-plan runs' instance plans accumulated unbounded (946
+// dead rows from ONE 15-min plan over ~10.5 days, live-caught 2026-07-17).
+// Seeded ACTIVE by default (seed-gc-plan-runs-routine.ts) — pure retention
+// housekeeping over the routine's OWN already-terminal runs, no owner-authority
+// surface.
+import './gc-plan-runs-action';
 // `system:doc-anchor-reconcile` — periodic FULL doc-anchor reconcile (#5 PART B): the safety net for
 // the git-sync re-anchor-on-change path. Re-derives anchors from CURRENT frontmatter for all
 // anchor-derived docs so a stale anchor cache that slipped past re-anchor-on-change is caught. Pure

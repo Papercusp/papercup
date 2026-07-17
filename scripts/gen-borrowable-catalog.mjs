@@ -44,6 +44,7 @@ const BORROWABLE = [
   ['libs/generic/seed-bundle',                'Pure utilities & infra'],
   ['libs/generic/pot-app-seam',              'Pure utilities & infra'],
   ['libs/generic/rate-limit',                 'Pure utilities & infra'],
+  ['libs/generic/model-pricing',               'Pure utilities & infra'],
   ['libs/generic/artifact-registry',          'Pure utilities & infra'],
   ['libs/generic/release-profile',            'Pure utilities & infra'],
   ['libs/generic/papergrid/kv-persist',           'Pure utilities & infra'],

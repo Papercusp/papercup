@@ -109,3 +109,6 @@
 [submodule "libs/generic/resumable-download"]
 	path = libs/generic/resumable-download
 	url = https://github.com/Papercusp/resumable-download.git
+[submodule "libs/generic/model-pricing"]
+	path = libs/generic/model-pricing
+	url = https://github.com/Papercusp/model-pricing.git
