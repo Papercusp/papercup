@@ -125,9 +125,22 @@ export async function reapEndedPresenceRows(
      WHERE owner_id = ANY(${toReap}::text[])
     RETURNING owner_id
   `;
+  const reapedIds = deleted.map((r) => r.owner_id);
+  // WI-5317: free any delegated seats the reaped (confirmed-dead) members held, so
+  // their consumption row goes the moment we reap their presence instead of
+  // lingering to the next lazy purge. Best-effort — seat-accounting's liveness
+  // predicate is still the load-bearing floor.
+  if (reapedIds.length > 0) {
+    try {
+      const { releaseSeatConsumptions } = await import('../../fleet/seat-accounting');
+      await releaseSeatConsumptions(reapedIds);
+    } catch {
+      /* seat cleanup is hygiene, never load-bearing */
+    }
+  }
   return {
     reaped: deleted.length,
-    ownerIds: deleted.map((r) => r.owner_id),
+    ownerIds: reapedIds,
     skipped: rows.length - deleted.length,
   };
 }

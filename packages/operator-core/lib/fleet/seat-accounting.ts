@@ -203,13 +203,26 @@ export function resolveSeatLaunch(opts: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The liveness predicate shared by the count + the conditional insert: a
- *  consumption row counts while its owner's presence is fresh OR the row is
- *  still inside the boot-grace window. */
+ *  consumption row counts while its owner's presence is FRESH, OR — only until
+ *  the owner's FIRST presence write — while the row is still inside the boot-grace
+ *  window.
+ *
+ *  WI-5317: the boot grace exists solely to bridge the gap between "seat consumed
+ *  at boot" and "member's first heartbeat" (mig 487: "a booting member has a
+ *  consumption row before its first presence write"). Once a presence row EXISTS,
+ *  liveness must be judged by heartbeat freshness alone — otherwise a member that
+ *  booted, registered presence, and then EXITED still counts against the cap for
+ *  the full 10-min grace, leaking its seat (a wound-down member blocked re-spawn
+ *  with seats_exhausted on the WI-5211 rig). So the grace clause is now gated on
+ *  NOT-yet-having-a-presence-row; a member with a stale presence row frees its
+ *  seat immediately, grace or no grace. */
 const LIVE_PREDICATE = (sql: OrgSql, graceSecs: number, staleSecs: number) => sql`
-  (c.created_at > now() - ${`${graceSecs} seconds`}::interval
-   OR EXISTS (SELECT 1 FROM harness_shared.coord_presence p
-               WHERE p.owner_id = c.owner_id
-                 AND p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval))`;
+  (EXISTS (SELECT 1 FROM harness_shared.coord_presence p
+            WHERE p.owner_id = c.owner_id
+              AND p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval)
+   OR (c.created_at > now() - ${`${graceSecs} seconds`}::interval
+       AND NOT EXISTS (SELECT 1 FROM harness_shared.coord_presence p
+                        WHERE p.owner_id = c.owner_id)))`;
 
 function graceStale() {
   return {
@@ -332,4 +345,15 @@ export async function consumeSeatAtBoot(
 export async function releaseSeatConsumption(ownerId: string, sqlOverride?: OrgSql): Promise<void> {
   const sql = sqlOverride ?? (getOrgPg().sql as unknown as OrgSql);
   await sql`DELETE FROM harness_shared.agent_seat_consumptions WHERE owner_id = ${ownerId}`;
+}
+
+/** Bulk explicit release (WI-5317): free the seats of many owners in one DELETE —
+ *  the presence reaper calls this for the batch of confirmed-dead owners it reaps,
+ *  so their seat rows go the moment they are reaped instead of lingering to the
+ *  next lazy purge. No-op on an empty list. Liveness (LIVE_PREDICATE) remains the
+ *  load-bearing floor; this is prompt hygiene on top of it. */
+export async function releaseSeatConsumptions(ownerIds: string[], sqlOverride?: OrgSql): Promise<void> {
+  if (ownerIds.length === 0) return;
+  const sql = sqlOverride ?? (getOrgPg().sql as unknown as OrgSql);
+  await sql`DELETE FROM harness_shared.agent_seat_consumptions WHERE owner_id = ANY(${ownerIds}::text[])`;
 }

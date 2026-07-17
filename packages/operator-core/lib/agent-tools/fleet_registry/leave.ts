@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet, setFleetLeader } from '../../agent-fleets-store';
+import { releaseSeatConsumption } from '../../fleet/seat-accounting';
 import { setPresenceFleet } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { json, resetCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
@@ -34,6 +35,16 @@ export default defineTool({
     const currentFleet = membership?.fleetSlug ?? null;
 
     await setPresenceFleet(workspaceId, ownerId, null, null);
+    // WI-5317: a clean leave frees the caller's delegated seat IMMEDIATELY rather
+    // than holding it through the boot-grace / presence-stale window — a wound-down
+    // member's seat blocked re-spawn (seats_exhausted) on the WI-5211 rig. The
+    // seat-accounting liveness floor still frees a crashed member later; this is the
+    // instant path for a graceful exit. Best-effort — never fail the leave.
+    try {
+      await releaseSeatConsumption(ownerId);
+    } catch {
+      /* seat release is hygiene, never load-bearing */
+    }
     // Drop the ex-fleet color from the caller's live window — revert to the
     // terminal's profile default (the inverse of join's recolor). Best-effort:
     // a no-op for non-psu-hosted callers, and never fails the leave.

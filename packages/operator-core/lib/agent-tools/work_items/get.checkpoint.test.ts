@@ -30,6 +30,14 @@ vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...a: unknown[]) => getWorkItemCheckpointWithMeta(...a),
 }));
 
+// EI-15184: stub only getPresence (spread the real module so its other exports —
+// PRESENCE_STALE_MS, writePresence, … some transitive importer may need — stay live).
+const getPresence = vi.fn();
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/presence')>()),
+  getPresence: (...a: unknown[]) => getPresence(...a),
+}));
+
 import get from './get';
 
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
@@ -45,6 +53,8 @@ beforeEach(() => {
   getWorkItem.mockReset();
   getWorkItemDetail.mockReset();
   getWorkItemCheckpointWithMeta.mockReset();
+  getPresence.mockReset();
+  getPresence.mockResolvedValue(null);
 });
 
 describe('work_items:get — checkpoint field', () => {
@@ -97,5 +107,56 @@ describe('work_items:get — checkpoint field', () => {
     const r = await one({ id: 'WI-404' });
     expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
     expect(r).toMatchObject({ ok: false, id: 'WI-404' });
+  });
+});
+
+describe('work_items:get — checkpointStale (EI-15184 relative staleness)', () => {
+  const cpMs = Date.now() - 60 * 60_000; // checkpoint written an hour ago
+
+  it('flags checkpointStale when the assignee stayed active AFTER the checkpoint (the WI-5013 case)', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-20', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: 'su-peer' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'snapshot phase only', updatedAtMs: cpMs });
+    // assignee kept working ~25m past the checkpoint (invisible later work)
+    getPresence.mockResolvedValue({ ownerId: 'su-peer', lastActiveAt: new Date(cpMs + 25 * 60_000).toISOString() });
+    const r = await one({ id: 'WI-20' });
+    expect(getPresence).toHaveBeenCalledWith('su-peer');
+    expect(r.checkpointStale).toBeDefined();
+    expect(r.checkpointStale.stale).toBe(true);
+    expect(r.checkpointStale.lagMs).toBe(25 * 60_000);
+    expect(r.checkpointStale.reason).toMatch(/after this checkpoint/i);
+  });
+
+  it('omits checkpointStale when the assignee last acted before the checkpoint (checkpoint is the latest state)', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-21', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: 'su-peer' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'up to date', updatedAtMs: cpMs });
+    getPresence.mockResolvedValue({ ownerId: 'su-peer', lastActiveAt: new Date(cpMs - 5 * 60_000).toISOString() });
+    const r = await one({ id: 'WI-21' });
+    expect(r.checkpointStale).toBeUndefined();
+  });
+
+  it('does not read presence (nor flag) when the item has no assignee', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-22', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: null });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'x', updatedAtMs: cpMs });
+    const r = await one({ id: 'WI-22' });
+    expect(getPresence).not.toHaveBeenCalled();
+    expect(r.checkpointStale).toBeUndefined();
+  });
+
+  it('fail-soft: a presence read failure omits the signal (never fails the read)', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-23', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: 'su-peer' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'x', updatedAtMs: cpMs });
+    getPresence.mockRejectedValue(new Error('presence pg down'));
+    const r = await one({ id: 'WI-23' });
+    expect(r).toMatchObject({ ok: true, id: 'WI-23', checkpoint: 'x' });
+    expect(r.checkpointStale).toBeUndefined();
+  });
+
+  it('does not flag when there is no checkpoint even if the assignee is active', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-24', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: 'su-peer' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+    getPresence.mockResolvedValue({ ownerId: 'su-peer', lastActiveAt: new Date().toISOString() });
+    const r = await one({ id: 'WI-24' });
+    expect(getPresence).not.toHaveBeenCalled();
+    expect(r.checkpointStale).toBeUndefined();
   });
 });
