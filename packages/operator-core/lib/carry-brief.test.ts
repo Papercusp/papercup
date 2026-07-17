@@ -15,9 +15,13 @@ import {
   renderCarryBriefFocus,
   renderCarryBriefColdExtras,
   renderCarryBriefText,
+  deriveCarryQueryHandles,
+  renderCarryQueryHandlesBlock,
   CARRY_BRIEF_FOCUS_MAX,
   CARRY_BRIEF_MAX_FACTS,
   CARRY_BRIEF_MAX_AWAITS,
+  CARRY_QUERY_HANDLES_MAX,
+  CARRY_QUERY_HANDLES_HEADING,
   type CarryBrief,
   type BuildCarryBriefOpts,
 } from './carry-brief';
@@ -499,5 +503,132 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
       if (prior === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
       else process.env.PAPERCUSP_WORKSPACE_ID = prior;
     }
+  });
+});
+
+describe('deriveCarryQueryHandles — pull-precise handles, no recall (P-026 leg (a), WI-5001)', () => {
+  it('emits a work-item handle per held item, titled by the item title', () => {
+    const handles = deriveCarryQueryHandles({
+      heldItems: [{ id: 'WI-42', title: 'wire the prelude' }],
+      awaits: [],
+      facts: [],
+    });
+    expect(handles).toEqual([{ kind: 'work-item', ref: 'WI-42', query: ['wire the prelude'] }]);
+  });
+
+  it('falls back to the id itself when a held item has no title', () => {
+    const handles = deriveCarryQueryHandles({
+      heldItems: [{ id: 'WI-42', title: null }],
+      awaits: [],
+      facts: [],
+    });
+    expect(handles).toEqual([{ kind: 'work-item', ref: 'WI-42', query: ['WI-42'] }]);
+  });
+
+  it('emits a topic handle per open await ("open thread"), titled by its note or else the event key', () => {
+    const handles = deriveCarryQueryHandles({
+      heldItems: [],
+      awaits: [
+        { eventKey: 'work-item:claimable', note: 'lane drained, waiting for new work' },
+        { eventKey: 'deploy:done', note: null },
+      ],
+      facts: [],
+    });
+    expect(handles).toEqual([
+      { kind: 'topic', ref: 'work-item:claimable', query: ['lane drained, waiting for new work'] },
+      { kind: 'topic', ref: 'deploy:done', query: ['deploy:done'] },
+    ]);
+  });
+
+  it('emits a fact handle ONLY for dead-end-keyed facts (dead-end:%), skipping ordinary standing facts', () => {
+    const handles = deriveCarryQueryHandles({
+      heldItems: [],
+      awaits: [],
+      facts: [
+        { key: 'dead-end:tried-raw-sql-migration', body: '⛔ DEAD END: raw psql -f skips schema_migrations' },
+        { key: 'wi-5003-blocked-not-a-bug', body: 'genuinely DAG-blocked, not a scheduler bug' },
+      ],
+    });
+    expect(handles).toEqual([
+      {
+        kind: 'fact',
+        ref: 'dead-end:tried-raw-sql-migration',
+        query: ['⛔ DEAD END: raw psql -f skips schema_migrations'],
+      },
+    ]);
+  });
+
+  it('mixes all three classes in order: held-WI, then open threads, then dead-ends', () => {
+    const handles = deriveCarryQueryHandles({
+      heldItems: [{ id: 'WI-1', title: 'a' }],
+      awaits: [{ eventKey: 'ev-1', note: 'b' }],
+      facts: [{ key: 'dead-end:x', body: 'c' }],
+    });
+    expect(handles.map((h) => h.kind)).toEqual(['work-item', 'topic', 'fact']);
+  });
+
+  it('caps the OVERALL handle count at `max`, stopping mid-class rather than dropping a whole class', () => {
+    const handles = deriveCarryQueryHandles(
+      {
+        heldItems: [
+          { id: 'WI-1', title: 'a' },
+          { id: 'WI-2', title: 'b' },
+        ],
+        awaits: [{ eventKey: 'ev-1', note: 'c' }],
+        facts: [{ key: 'dead-end:x', body: 'd' }],
+      },
+      2,
+    );
+    expect(handles).toHaveLength(2);
+    expect(handles.map((h) => h.ref)).toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('defaults to CARRY_QUERY_HANDLES_MAX when no cap is passed', () => {
+    const heldItems = Array.from({ length: CARRY_QUERY_HANDLES_MAX + 5 }, (_, i) => ({
+      id: `WI-${i}`,
+      title: `item ${i}`,
+    }));
+    const handles = deriveCarryQueryHandles({ heldItems, awaits: [], facts: [] });
+    expect(handles).toHaveLength(CARRY_QUERY_HANDLES_MAX);
+  });
+
+  it('clamps an overlong query to 200 chars with an ellipsis', () => {
+    const long = 'x'.repeat(300);
+    const handles = deriveCarryQueryHandles({
+      heldItems: [{ id: 'WI-1', title: long }],
+      awaits: [],
+      facts: [],
+    });
+    expect(handles[0]!.query[0]!.length).toBe(200);
+    expect(handles[0]!.query[0]!.endsWith('…')).toBe(true);
+  });
+
+  it('empty input → empty handles', () => {
+    expect(deriveCarryQueryHandles({ heldItems: [], awaits: [], facts: [] })).toEqual([]);
+  });
+});
+
+describe('renderCarryQueryHandlesBlock — the deterministic pointer-list render', () => {
+  it('null on an empty handles list (nothing to inject)', () => {
+    expect(renderCarryQueryHandlesBlock([])).toBeNull();
+  });
+
+  it('renders one bracketed [kind:ref] line per handle under the fixed heading', () => {
+    const out = renderCarryQueryHandlesBlock([
+      { kind: 'work-item', ref: 'WI-42', query: ['wire the prelude'] },
+      { kind: 'fact', ref: 'dead-end:x', query: ['tried raw SQL, broke migrations'] },
+    ]);
+    expect(out).toBe(
+      `${CARRY_QUERY_HANDLES_HEADING}\n` +
+        '- [work-item:WI-42] pull: wire the prelude\n' +
+        '- [fact:dead-end:x] pull: tried raw SQL, broke migrations',
+    );
+  });
+
+  it('joins a multi-term query with " | "', () => {
+    const out = renderCarryQueryHandlesBlock([
+      { kind: 'topic', ref: 'ev-1', query: ['term one', 'term two'] },
+    ]);
+    expect(out).toBe(`${CARRY_QUERY_HANDLES_HEADING}\n- [topic:ev-1] pull: term one | term two`);
   });
 });

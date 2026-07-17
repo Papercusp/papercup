@@ -36,6 +36,8 @@ import {
 } from './carry-note';
 import { harnessOfScope } from './work-item-scope';
 import { renderOwnerDirectivesBlock, type OwnerDirectiveRow } from './owner-directives';
+import type { QueryHandle } from './ambient-push';
+import { DEAD_END_KEY_PREFIX } from './agent-facts/store';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -367,6 +369,85 @@ function humanAge(ms: number): string {
   if (min < 60) return `${Math.max(min, 1)}m`;
   const h = Math.floor(min / 60);
   return h < 48 ? `${h}h${min % 60 ? ` ${min % 60}m` : ''}` : `${Math.round(h / 24)}d`;
+}
+
+// ── Pull-precise query handles (P-026, WI-5001 leg (a)) ───────────────────────
+//
+// deterministic-context-carry-2026-07-14 P-026 retires the speculative embedding
+// hole-patch re-prime for session classes whose cold-boot drills PROVE the
+// deterministic carry sufficient (see memory/compact-reprime.ts). Retiring the
+// FOLD must not mean retiring the ABILITY to pull — a genuinely needed recall is
+// a BUILDER gap, not a reason to keep folding noise. This is the growth leg: a
+// PURE, no-recall deriver that turns typed carry state directly into resolvable
+// {@link QueryHandle}s (never full content — D-002's teaser+handle discipline),
+// covering exactly the three classes the item text names: a held work-item, an
+// armed await ("open thread" — an unresolved rendezvous the successor is a party
+// to), and a recorded dead-end (a tried-and-failed approach, P-015 slot).
+
+/** Input shape for {@link deriveCarryQueryHandles} — a subset of {@link CarryBrief}
+ *  (not the whole brief) so callers with only some of it (e.g. compact-reprime's
+ *  narrower CompactReprimeInput) can still derive handles from what they have. */
+export interface CarryQueryHandleInputs {
+  heldItems: ReadonlyArray<{ id: string; title: string | null }>;
+  awaits: ReadonlyArray<{ eventKey: string; note: string | null }>;
+  facts: ReadonlyArray<{ key: string; body: string }>;
+}
+
+/** Hard cap on emitted handles — a handles block is a pointer list, not a dump. */
+export const CARRY_QUERY_HANDLES_MAX = 8;
+
+const HANDLE_QUERY_CLAMP_CHARS = 200;
+
+function clampHandleQuery(text: string): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return t.length > HANDLE_QUERY_CLAMP_CHARS ? `${t.slice(0, HANDLE_QUERY_CLAMP_CHARS - 1)}…` : t;
+}
+
+/**
+ * Derive deterministic pull-precise handles from typed carry state — PURE, no
+ * embedding call, no recall. Order: held work-items first (the most concrete),
+ * then open awaits, then dead-ends; each class stops contributing once `max` is
+ * reached (a partial mix, never one class crowding out the others entirely, is
+ * avoided by capping the OVERALL list — same reasoning as CARRY_BRIEF's per-
+ * section caps upstream of this call).
+ */
+export function deriveCarryQueryHandles(
+  inputs: CarryQueryHandleInputs,
+  max: number = CARRY_QUERY_HANDLES_MAX,
+): QueryHandle[] {
+  const handles: QueryHandle[] = [];
+  for (const item of inputs.heldItems) {
+    if (handles.length >= max) return handles;
+    const label = item.title?.trim() || item.id;
+    handles.push({ kind: 'work-item', ref: item.id, query: [clampHandleQuery(label)] });
+  }
+  for (const a of inputs.awaits) {
+    if (handles.length >= max) return handles;
+    const label = a.note?.trim() || a.eventKey;
+    handles.push({ kind: 'topic', ref: a.eventKey, query: [clampHandleQuery(label)] });
+  }
+  for (const f of inputs.facts) {
+    if (handles.length >= max) return handles;
+    if (!f.key.startsWith(DEAD_END_KEY_PREFIX)) continue; // dead-ends only (P-015 slot)
+    handles.push({ kind: 'fact', ref: f.key, query: [clampHandleQuery(f.body)] });
+  }
+  return handles;
+}
+
+/** The heading compact-reprime's retired branch renders the handles block under. */
+export const CARRY_QUERY_HANDLES_HEADING = 'Pull-precise carry handles (no recall)';
+
+/**
+ * Render handles as a compact, resolvable-pointer block — one line per handle,
+ * NEVER folded content (mirrors ambient-push's teaser-not-content discipline:
+ * this is the "pull" side of the same D-002 handle, resolved by the reader
+ * explicitly, not injected as if it were a hit). Empty input renders null (the
+ * caller's existing "nothing to inject" contract).
+ */
+export function renderCarryQueryHandlesBlock(handles: readonly QueryHandle[]): string | null {
+  if (handles.length === 0) return null;
+  const lines = handles.map((h) => `- [${h.kind}:${h.ref}] pull: ${h.query.join(' | ')}`);
+  return `${CARRY_QUERY_HANDLES_HEADING}\n${lines.join('\n')}`;
 }
 
 /**

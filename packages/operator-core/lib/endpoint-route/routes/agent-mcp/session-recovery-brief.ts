@@ -42,8 +42,13 @@ const recoveryBrief = defineTool({
           buildCompactReprimeBlock({
             ownerId: owner,
             workspaceId: workspace,
-            heldItems: brief.heldItems.map((i) => ({ title: i.title, harness: i.harness })),
+            heldItems: brief.heldItems.map((i) => ({ id: i.id, title: i.title, harness: i.harness })),
             fleetSlug: brief.fleet?.slug ?? null,
+            // P-026 (WI-5001) leg (a): threaded through ONLY so the retired-recall
+            // branch can derive deterministic query handles from them — never
+            // folded into the resolver's speculative query profile.
+            awaits: brief.awaits,
+            facts: brief.facts,
           }),
           new Promise<null>((resolve) => {
             const t = setTimeout(() => resolve(null), REPRIME_DEADLINE_MS);

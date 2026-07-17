@@ -30,9 +30,20 @@ import { getSessionUserOrDefault } from '../auth';
 export interface CompactReprimeInput {
   ownerId: string;
   workspaceId?: string;
-  /** Held work-item titles + harness slugs (from the carry brief). */
-  heldItems: ReadonlyArray<{ title: string | null; harness: string | null }>;
+  /** Held work-item titles + harness slugs (from the carry brief). `id` is
+   *  optional for back-compat with older callers; an item without one is
+   *  skipped by the P-026 query-handle deriver below (it needs a resolvable
+   *  ref) but still participates in the resolver's title-driven queries. */
+  heldItems: ReadonlyArray<{ id?: string; title: string | null; harness: string | null }>;
   fleetSlug?: string | null;
+  /** P-026 (WI-5001) leg (a): the carry brief's armed awaits ("open threads")
+   *  and standing facts (dead-ends are the `dead-end:%`-keyed subset) — used
+   *  ONLY to derive deterministic query handles for the retired-recall branch
+   *  below, never folded into the resolver's query profile. Omitted callers
+   *  simply get an empty handles set (today's null-return behavior for those
+   *  classes is preserved). */
+  awaits?: ReadonlyArray<{ eventKey: string; note: string | null }>;
+  facts?: ReadonlyArray<{ key: string; body: string }>;
 }
 
 /** Test seams for the P-026 retirement gate below. */
@@ -98,11 +109,29 @@ export async function buildCompactReprimeBlock(
     // pulls (the pull-precise path) still work against the fresh epoch. Fail-soft:
     // any resolution failure keeps the enrichment (today's behavior). Kill-switch:
     // FLAGS.ENRICHMENT_RETIRE_PROVEN_CLASSES off.
+    //
+    // Leg (a) growth: "retired" no longer means "nothing". Instead of a bare null,
+    // emit deterministic, resolvable QUERY HANDLES (carry-brief.ts's
+    // deriveCarryQueryHandles) for held work-items / open awaits / dead-ends — a
+    // genuinely needed pull is still one lookup away, without folding a single
+    // speculative embedding hit. Still fail-soft: a handles-derivation error keeps
+    // the enrichment (falls through to the resolver below), same as any other leg.
     try {
       const retireOn = await (deps.retireFlagFn ?? defaultRetireFlag)();
       if (retireOn) {
         const provenClass = await (deps.provenClassFn ?? defaultProvenClass)(input.ownerId);
-        if (provenClass) return null; // carry proven for this class — no speculative fold
+        if (provenClass) {
+          const { deriveCarryQueryHandles, renderCarryQueryHandlesBlock } = await import('../carry-brief');
+          const handles = deriveCarryQueryHandles({
+            heldItems: input.heldItems.filter(
+              (i): i is { id: string; title: string | null; harness: string | null } =>
+                typeof i.id === 'string' && i.id.length > 0,
+            ),
+            awaits: input.awaits ?? [],
+            facts: input.facts ?? [],
+          });
+          return renderCarryQueryHandlesBlock(handles); // null when nothing to point at
+        }
       }
     } catch {
       /* fail-soft: keep the enrichment */
