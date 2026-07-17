@@ -16,6 +16,8 @@ import { getWorkItem, getWorkItemDetail } from "../../work-items";
 import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta } from "../../work-item-checkpoint";
+import { computeCheckpointStaleness } from "../../checkpoint-staleness";
+import { getPresence } from "../coordination/presence";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -141,7 +143,37 @@ export default defineTool({
           workItemId: workItem.id,
         }).catch(() => ({ checkpoint: null, updatedAtMs: null }));
         const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
-        return { ok: true as const, id, workItem, checkpoint, checkpointAgeMs, checkpointUpdatedAtMs };
+        // EI-15184: RELATIVE checkpoint staleness. `checkpointAgeMs` above is
+        // ABSOLUTE age ("how old is this snapshot"); it does NOT tell a reader —
+        // typically a fleet leader reconciling a peer's status — that the ASSIGNEE
+        // kept working PAST this checkpoint. On WI-5013 a leader concluded a peer's
+        // shared "MUST-NOT-TOUCH" rig was "intact" from a checkpoint that already
+        // lagged the peer's own later (invisible) destructive action; the rig sat
+        // degraded 3h+. Compare the checkpoint's write time to the assignee's last
+        // GENUINE-activity time (presence.lastActiveAt): a material positive lag ⇒
+        // "the checkpoint may not reflect their latest state; don't conclude safety
+        // from it." Warn-only, bounded (only for a fetched item that HAS a checkpoint
+        // + assignee — never a hot per-tick loop), fail-soft (a presence read miss
+        // just omits the signal). Returned only when actually stale, to stay lean.
+        let checkpointStale: ReturnType<typeof computeCheckpointStaleness> | undefined;
+        if (checkpoint && checkpointUpdatedAtMs != null && workItem.assignee) {
+          const assigneePresence = await getPresence(workItem.assignee).catch(() => null);
+          const activeAt = assigneePresence?.lastActiveAt ? Date.parse(assigneePresence.lastActiveAt) : null;
+          const staleness = computeCheckpointStaleness({
+            checkpointUpdatedAtMs,
+            assigneeActiveAtMs: activeAt != null && Number.isFinite(activeAt) ? activeAt : null,
+          });
+          if (staleness.stale) checkpointStale = staleness;
+        }
+        return {
+          ok: true as const,
+          id,
+          workItem,
+          checkpoint,
+          checkpointAgeMs,
+          checkpointUpdatedAtMs,
+          ...(checkpointStale ? { checkpointStale } : {}),
+        };
       },
       { keyOf: (id) => ({ id }) },
     );
