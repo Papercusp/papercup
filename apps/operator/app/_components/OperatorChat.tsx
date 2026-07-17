@@ -28,6 +28,11 @@ import { renderCard } from '@/lib/chat-cards';
 import { CHAT_SEED_EVENT, consumePendingChatSeed, readChatDraft, writeChatDraft } from './inbox/chat-seed';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { Tooltip } from '../harness/Tooltip';
+import { useQueryState, parseAsString } from 'nuqs';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
+import { ReportBlockCard } from './chat/ReportBlockCard';
+import { drillInRefToInbox } from './chat/curator-card-drill-in';
 
 interface Props {
   /** Conversation messages, oldest first. */

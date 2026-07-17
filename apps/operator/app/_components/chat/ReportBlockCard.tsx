@@ -71,7 +71,13 @@ function statusGlyph(status: string | undefined): { glyph: string; tone: Tone; l
   }
 }
 
-function ReportItemRow({ item }: { item: ReportItem }): ReactNode {
+function ReportItemRow({
+  item,
+  onDrillIn,
+}: {
+  item: ReportItem;
+  onDrillIn?: (ref: string) => void;
+}): ReactNode {
   const { glyph, tone, label } = statusGlyph(item.status);
   return (
     <li className="report-block-item" data-tone={tone}>
@@ -85,11 +91,25 @@ function ReportItemRow({ item }: { item: ReportItem }): ReactNode {
       </span>
       {item.id && <span className="report-block-item-id">{item.id}</span>}
       <span className="report-block-item-text">{item.text}</span>
+      {/* deterministic-status-cards-2026-07-17 P-003/D-004: the actionable
+          drill-in — a real button that opens the referenced thing, replacing
+          the curator's old dead `drill in: `<ref>`` monospace. Only when a
+          handler is wired (the chat); the inbox/report uses pass no ref. */}
+      {item.ref && onDrillIn && (
+        <button
+          type="button"
+          className="report-block-item-drill"
+          onClick={() => onDrillIn(item.ref!)}
+          title={`Open ${item.ref}`}
+        >
+          Open ↗
+        </button>
+      )}
     </li>
   );
 }
 
-function ReportPlanBlock({ plan }: { plan: ReportPlan }): ReactNode {
+function ReportPlanBlock({ plan, onDrillIn }: { plan: ReportPlan; onDrillIn?: (ref: string) => void }): ReactNode {
   const { glyph, tone, label } = statusGlyph(plan.status);
   return (
     <div className="report-block-plan" data-tone={tone}>
@@ -109,7 +129,7 @@ function ReportPlanBlock({ plan }: { plan: ReportPlan }): ReactNode {
       {plan.items && plan.items.length > 0 && (
         <ul className="report-block-items">
           {plan.items.map((it, i) => (
-            <ReportItemRow key={it.id ?? `${plan.title}-${i}`} item={it} />
+            <ReportItemRow key={it.id ?? `${plan.title}-${i}`} item={it} onDrillIn={onDrillIn} />
           ))}
         </ul>
       )}
@@ -119,16 +139,24 @@ function ReportPlanBlock({ plan }: { plan: ReportPlan }): ReactNode {
 
 interface ReportBlockCardProps {
   report: ReportBlock;
+  /**
+   * Optional drill-in handler (deterministic-status-cards-2026-07-17 P-003).
+   * When provided, an item's `ref` renders as an actionable button that calls
+   * this with the ref (the chat wires it to open the inbox / work-item / plan).
+   * Omitted (inbox detail pane, AskChoiceCard bodies) ⇒ refs are inert, matching
+   * today's behavior.
+   */
+  onDrillIn?: (ref: string) => void;
 }
 
-export function ReportBlockCard({ report }: ReportBlockCardProps): ReactNode {
+export function ReportBlockCard({ report, onDrillIn }: ReportBlockCardProps): ReactNode {
   if (!report.plans || report.plans.length === 0) return null;
   return (
     <div className="report-block-card" data-component="report-block" role="group" aria-label={report.title ?? 'Report'}>
       {report.title && <div className="report-block-title">{report.title}</div>}
       <div className="report-block-plans">
         {report.plans.map((plan, i) => (
-          <ReportPlanBlock key={plan.slug ?? `${plan.title}-${i}`} plan={plan} />
+          <ReportPlanBlock key={plan.slug ?? `${plan.title}-${i}`} plan={plan} onDrillIn={onDrillIn} />
         ))}
       </div>
     </div>
