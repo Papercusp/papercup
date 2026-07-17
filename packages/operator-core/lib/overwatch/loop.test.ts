@@ -55,6 +55,8 @@ vi.mock('../autoloop', async () => ({
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 const resolvePotHomeSlug = vi.fn();
 vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: (...a: unknown[]) => resolvePotHomeSlug(...a) }));
+const getPotStarted = vi.fn();
+vi.mock('../pot/started', () => ({ getPotStarted: (...a: unknown[]) => getPotStarted(...a) }));
 const operatorHomeHarnessSlug = vi.fn();
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: (...a: unknown[]) => operatorHomeHarnessSlug(...a) }));
 
@@ -77,6 +79,7 @@ beforeEach(() => {
   setOverwatchLaunchFire(null);
   overwatchEnabled.mockResolvedValue(true);
   getOverwatchStarted.mockResolvedValue(true);
+  getPotStarted.mockResolvedValue(true);
   computeOverwatchBrief.mockResolvedValue({ potSlug: SLUG, anomalies: [] });
   renderOverwatchBrief.mockReturnValue('RENDERED-BRIEF');
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
@@ -103,6 +106,24 @@ describe('handleOverwatchLaunch — gating (the load-bearing flag, B-10/D-009/D-
     setOverwatchLaunchFire(fire);
     await handleOverwatchLaunch(ctx);
     expect(fire).not.toHaveBeenCalled();
+  });
+
+  it('pot not started ⇒ no launch even with the overwatch bit on (kettle only supervises STARTED pots — owner invariant 2026-07-16)', async () => {
+    getOverwatchStarted.mockResolvedValue(true);
+    getPotStarted.mockResolvedValue(false);
+    const fire = vi.fn();
+    setOverwatchLaunchFire(fire);
+    await handleOverwatchLaunch(ctx);
+    expect(computeOverwatchBrief).not.toHaveBeenCalled();
+    expect(fire).not.toHaveBeenCalled();
+  });
+
+  it('pot started + overwatch started ⇒ launches (the gate does not over-block)', async () => {
+    getPotStarted.mockResolvedValue(true);
+    const fire = vi.fn();
+    setOverwatchLaunchFire(fire);
+    await handleOverwatchLaunch(ctx);
+    expect(fire).toHaveBeenCalledTimes(1);
   });
 });
 

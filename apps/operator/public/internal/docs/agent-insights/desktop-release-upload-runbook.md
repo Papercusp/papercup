@@ -163,12 +163,56 @@ the shared beta link does not.
   sentinel (which *looks* like a hang). `PAPERCUSP_BUILD_ROLES=gui` builds only the
   auto-updatable/download GUI artifact and fits. `mac-vm-build.sh` now has a disk
   preflight that fails LOUD (`DONE:28`) instead of dying silently; the durable fix is
-  growing the VM disk (WI-5027).
+  growing the VM disk — **WI-5027 did this 2026-07-16 (120→180 GiB, 68 GB free), so
+  both roles' target dirs now fit and stay warm** (see "Keep cargo caches warm" below).
 * **Pull artifacts whose filenames contain spaces with a tar-over-ssh pipe, not `scp`.**
   Modern (SFTP-mode) `scp` mangles the space in `Papercusp GUI.app.tar.gz`, and the
   mac's ancient `rsync` 2.6.9 lacks `--protect-args`. Use
   `ssh … "cd '<dir>' && tar -cf - 'Papercusp GUI.app.tar.gz'" | tar -C <local> -xf -`
   (and delete the stray `._<name>` AppleDouble sidecar `tar` leaves behind).
+
+## Keep cargo caches warm — the build-speed fast path
+
+The dominant cost of a desktop cut is the cold Rust recompile (hundreds of dependency
+crates, two roles). The single biggest lever is simply **not building cold** — and the
+build scripts are already set up for it, so the discipline is "don't break the warm
+path," not "add one." (Plan: `desktop-build-speed-2026-07-16`.)
+
+* **Warm caches are already the design — do not regress them.** All three legs keep the
+  cargo target dir warm: the mac + windows VM rsyncs both `--exclude 'target'` (so the
+  persistent per-role `role-gui`/`role-server` target survives each new snapshot), and
+  the linux-local build compiles into an external `~/.cargo-target` that is never
+  cleaned. **Never add a `cargo clean`, never drop the `--exclude 'target'` from a VM
+  rsync, and never "helpfully" wipe a role target dir to free space** — each forces the
+  next build cold. The only cache-clean in the whole rail is the ENOSPC-gated emergency
+  reclaim in `release-local.sh` (fires only below `PAPERCUSP_MAC_MIN_FREE_GB`, and
+  prunes `debug` dirs a `--release` build never creates — which is why it freed \~0
+  bytes every time).
+* **ENOSPC was the real cause of cold builds, and WI-5027 fixed it.** Builds ran cold
+  because the disk-tight mac VM kept hitting ENOSPC and agents cleaned the target dirs
+  to make room. WI-5027 grew the mac VM disk 120→180 GiB (68 GB free, 2026-07-16), so
+  both roles' target dirs now fit and stay warm.
+* **Re-cuts are incremental.** `[profile.release]` in `src-tauri/Cargo.toml` now sets
+  `incremental = true` (+ `strip = "symbols"`), so a cut after a small source change
+  recompiles only the changed crates instead of the world. The FIRST cut after that
+  profile landed is a one-time cold rebuild (the profile change busts the cache once);
+  every cut after is incremental. **Measured (linux, `cargo build --release` Rust
+  compile only, 2026-07-16):** a full 428-crate recompile was **143 s**; a warm rebuild
+  after a one-line change was **4 s**. So the linux Rust compile is already fast — the
+  build-time that matters lives in the slower mac/windows VM legs (keep *their* target
+  dirs warm, per the first bullet), not linux micro-optimizations.
+* **Fast iteration build: one role, not two.** `PAPERCUSP_BUILD_ROLES=gui
+  bin/release-local.sh` (or `bin/mac-vm-build.sh`) skips the \~12 GB Server-role compile
+  — roughly halving the build — and produces only the auto-updatable/download GUI
+  artifact. Use this for iteration. It is **not** the release default: the linux Server
+  `.deb`/`.appimage` is still a published product (record-release-cli emits
+  `product: 'server'`), and WI-5028 wants Server *completed* on mac/win now that the
+  disk is grown — so a full release keeps both roles (plan
+  `desktop-build-speed-2026-07-16` D-004).
+* **Measure before claiming a speedup (profile-before-assume).** A build-speed change
+  that isn't measured can silently do nothing — the same discipline that found the
+  record-release page-regen was a 40 s regex, not the hashing. Record the before/after
+  wall-clock on the plan, not a vibe.
 
 ## record-release-cli is fast now — keep it that way
 

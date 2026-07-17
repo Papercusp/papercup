@@ -63,6 +63,7 @@ import {
   clearOverwatchTimeWake,
 } from "./liveness";
 import { getOverwatchStarted } from "./control-state";
+import { getPotStarted } from "../pot/started";
 import { overwatchEnabled } from "./watchdog";
 import { computeOverwatchBrief } from "./compute-brief";
 import { renderOverwatchBrief } from "./brief-types";
@@ -498,6 +499,18 @@ export async function handleOverwatchLaunch(
     if (!(await getOverwatchStarted(workspaceId, installSlug))) {
       console.log(
         `[overwatch-loop] ${installSlug}: launch skipped — overwatch not started`,
+      );
+      return;
+    }
+    // Owner invariant [owner:Avi 2026-07-16]: the Kettle supervises a RUNNING pot —
+    // only STARTED pots receive kettle (and mug) work. The overwatch-started bit
+    // above is the LOOP's own switch (kettle:start/kettle:pause) and survives a pot
+    // stop, so without this check a stale overwatch-wake routine keeps launching
+    // kettle turns on a pot nobody is running (live: kettle · sb-devboard-hive
+    // firing every ~3min on 2026-07-16 while papercusp was the only started pot).
+    if (!(await getPotStarted(workspaceId, installSlug))) {
+      console.log(
+        `[overwatch-loop] ${installSlug}: launch skipped — pot not started (kettle only supervises started pots)`,
       );
       return;
     }

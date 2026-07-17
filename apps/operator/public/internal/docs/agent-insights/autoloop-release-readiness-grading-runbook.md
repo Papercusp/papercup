@@ -9,7 +9,8 @@ full autonomous loop product. It COMPOSES the leg rubrics instead of duplicating
 them: `blender-release-readiness` grades the blender/scout self-learning leg
 (separate grader lane), `pot-coordination-health` is the Kettle's own per-wake
 scorecard. Origin: EI-12461 / EI-12455; owner directive
-`[owner:Avi turn f362a778@2026-07-16T20:31:59Z]`.
+`[owner turn f362a778@2026-07-16T20:31:59Z]` (name elided — release-bundle
+identity rule, WI-4419: owner-name tags must use the nameless `[owner …]` form).
 
 ## The one main procedure
 
@@ -69,6 +70,20 @@ ORDER BY tick_at;
 excluding ticks where the pool is genuinely walled (see capacity-admission).
 `fail` = sustained stuck runs, or zero placements all window with a nonempty frontier.
 
+Two measurement caveats (2026-07-16):
+
+* **Instrument history starts 2026-07-16 \~22:42Z.** Every tick before that recorded
+  placements/completed/mttc/stuck as 0/null unconditionally — the feeding query threw on
+  every tick and was silently caught (EI-13076: drizzle mutated the shared client's date
+  serializers). Do NOT read pre-fix ticks as evidence of anything; the first honest window
+  opens at the fix's bg-host activation.
+* **Ticks fire \~every 30s but placements are sparse by design** — the Mug paces placement
+  by ranking/backpressure, so consecutive `placements=0` ticks with free capacity are
+  normal cadence, not automatically starvation. Judge the stuck-run predicate over
+  30-60min windows (does the frontier DRAIN? do placements appear at all?), and check
+  bg-host journal `pool-shed` lines first: a tick GAP is the load-shed guardrail pausing
+  the ticker (EI-13108), not a dead Mug.
+
 ### cup-execution-health · `cup-keeper-runs`
 
 Rolling 24h run success + restart durability.
@@ -123,10 +138,17 @@ WHERE tick_at > now()-interval '48 hours' GROUP BY 1,2;
 
 ### e2e-loop-closure · `e2e-traversal-trace`
 
-Trace ≥1 full traversal in 48h: `pot_placements` row → matching `cup_keeper_runs`
-execution → subsequent Kettle scorecard covering the window → blender routed-ledger /
-outcome update. Drill traversals count only when marked `origin='drill'` and run on
-the current generation.
+Trace ≥1 full traversal in 48h: `pot_placements` row → matching **execution evidence**
+→ subsequent Kettle scorecard covering the window → blender routed-ledger
+(`harness_shared.scout_routed_ideas`; `routed_at` is epoch ms) / outcome update.
+
+Execution evidence (amended 2026-07-16): `cup_keeper_runs` rows exist ONLY for IQ-battery
+executions — ORGANIC cup executions live in `harness_shared.spawned_agents`
+(`child_role='cup'`; a completed run = `status='done'` with `duration_ms`). Accept either
+for the execution hop; requiring a matching `cup_keeper_runs` row for an organic placement
+makes the criterion unpassable by construction.
+
+Drill traversals count only when marked `origin='drill'` and run on the current generation.
 
 ### owner-controls · `owner-controls-probe`
 
@@ -142,12 +164,20 @@ matches bg-host `ActiveEnterTimestamp` + release sha; green gate. Note bg-host r
 loop-critical routines **from the staging tree** — a staging fix can be live on the
 loop while `:3070` is still behind; state which host serves each graded path.
 
-## Known standing reds (first-pass expectations, 2026-07-16)
+## Known standing reds — status as of 2026-07-16 late
 
-* **kettle-supervision-health**: kettle autoloop `last_fired_at` frozen since
-  2026-06-25 — expect `fail` until the watermark moves.
-* **capacity-admission**: pool was hard-walled on 7-day budgets 2026-07-13
-  (4 accounts util7d=1.0); re-probe live before rating.
+* **kettle-supervision-health**: ~~frozen since 2026-06-25~~ RESOLVED as a grading
+  concern — the frozen rows belong to RETIRED pot slugs (`papercup`, `*`,
+  `papercusp-workspace` residue); the live `papercusp` kettle chain cycles \~10min and
+  survived two bg-host restarts unaided on 2026-07-16. Scope kettle reads to the live
+  pot slug; the stale retired-slug rows are cleanup, not signal (flagged in EI-13081
+  evidence).
+* **capacity-admission**: the 2026-07-13 hard wall has partially cleared (aviynw3
+  0.06 on 7d-util, was 1.0); passed on 2026-07-16 with 2 healthy accounts + clean
+  gated classification. Still re-probe live every pass.
+* **placement-throughput**: instrument DEAD until 2026-07-16 22:42Z (EI-13076, fixed);
+  honest measurement window starts there. First-ever non-zero reading landed 22:44:47Z
+  (completed=1, mttc≈40.6min).
 * **blender-leg-health**: EI-12940 (OAuth SPOF → gateway-pool) + WI-5041 (lens
   rotation) fixes live since the 2026-07-16 18:40:43Z watermark; leg rubric's rolling
-  windows clear \~07-18.
+  windows clear \~07-18. Owned by the blender-lane grader (su-f8714d25).

@@ -32,6 +32,21 @@ extending it — add read-only tiles and attention producers, not action buttons
    editing that local file does **nothing** (and SIGHUP-ing cloudflared after a
    bad local edit can kill the tunnel → both domains 530). If the public API is
    down, check the systemd unit is `active` first; don't touch the local yml.
+
+   ⚠ **This dev box's resolver LIES about `papercuspai.com` — never probe prod
+   reachability with a from-box `curl` (2026-07-16, EI-12998).** The machine is on
+   Tailscale; its resolver (`Current DNS 100.100.100.100`, search `*.ts.net`)
+   returns a **stale split-DNS override** for `papercuspai.com` → `18.204.152.241`
+   (a dead old AWS EC2) with a **max-uint TTL (4294967295)** — the signature of a
+   static override. So every `curl https://api.papercuspai.com/...` from this box
+   hits the dead IP and looks like a total prod outage when prod is fine. Two
+   agents burned hours "fixing" a non-existent DNS outage this way. **Verify prod
+   from an EXTERNAL vantage instead:** DNS via DoH (`curl
+   https://dns.google/resolve?name=api.papercuspai.com&type=A` →
+   Cloudflare-proxy IPs when healthy), HTTP via an external fetcher (`curl
+   https://r.jina.ai/https://api.papercuspai.com/api/device/attention` → `200`
+   with the operator's `{"error":{"code":"unauthorized",...}}` device-auth JSON
+   when healthy). A real phone is not on this tailnet and reaches prod normally.
 2. **`/api/health` 404 on the public domain is a red herring** — it routes to a
    different internal port (`:3057`), not `:3070`. The phone never calls it. Test
    reachability with a real device route (`/api/device/attention` with a device JWT).
