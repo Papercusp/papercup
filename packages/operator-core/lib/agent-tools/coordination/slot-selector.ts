@@ -22,6 +22,14 @@
  * independent presence/inbox-read hook, NOT the spawn path). One store, one parser,
  * two drain triggers (su-fc2fd's "build ONE seam" directive).
  *
+ * EI-13620: a `role` slot is the ONE exception to "parked, never delivered to
+ * live ownerIds" above — sendMessage (./messages.ts, via
+ * ./role-slot-live-resolve) ALSO resolves it against the live roster and
+ * delivers to any session CURRENTLY holding that role, in addition to the
+ * unconditional park. Deliver-on-spawn alone only drains at a role's next
+ * LAUNCH, which never fires for an already-running-but-idle session — see
+ * role-slot-live-resolve.ts for the incident this fixed.
+ *
  * Pure + dependency-free so it unit-tests without PG — the same core/host split as
  * audience.ts / audience-host.ts. NB the `@user:` ref may itself contain a colon
  * (`@user:gh:12345`) — the prefix split keeps everything after `@user:` as the ref.

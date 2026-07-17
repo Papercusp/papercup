@@ -24,6 +24,7 @@ import { hostAudienceResolvers, audienceMode, deriveAudienceKey } from './audien
 import { deliverFleetDigests } from './fleet-delivery';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
 import { parkSlotMessage, drainUserMailbox } from './slot-parked-store';
+import { resolveLiveRoleHolders, resolveRoleSlotPotSlug } from './role-slot-live-resolve';
 import type { AgentIdentity } from './identity';
 import { resolveBestEffortAgainstRoster } from './recipient-resolve';
 import { resolveWorkspaceHiveScope } from './federation-scope';
@@ -129,8 +130,30 @@ export async function sendMessage(
   // retained by default. (fleet-broadcast-audience-history-integration-2026-06-30 D-003)
   const audienceKey = deriveAudienceKey(opts.to);
   const slots = slotSelectorsIn(opts.to);
+  // EI-13620: a `role` slot may ALREADY have a live holder RIGHT NOW, not just
+  // a future spawn — resolve it against the live roster so a stable,
+  // currently-idle role (e.g. the Mug) is delivered to (and can be woken) like
+  // an ordinary ownerId, instead of silently parking a nudge that only a FRESH
+  // relaunch would ever drain (mug-brief-launch's gatherInbox runs at LAUNCH,
+  // never on an existing session's plain wake — see role-slot-live-resolve.ts
+  // for the full incident writeup). The slot is STILL parked below
+  // unconditionally (unchanged) so a future relaunch keeps draining it too —
+  // this is purely ADDITIVE to the legacy park-only behavior.
+  const roleSlots = slots.filter((s) => s.kind === 'role');
+  let liveRoleOwners: string[] = [];
+  if (roleSlots.length) {
+    const potSlug = await resolveRoleSlotPotSlug(identity.workspaceId, opts.harnessSlug ?? null);
+    const found = await Promise.all(
+      roleSlots.map((s) =>
+        resolveLiveRoleHolders(s.ref, { workspaceId: identity.workspaceId, potSlug }).catch(
+          () => [] as string[],
+        ),
+      ),
+    );
+    liveRoleOwners = Array.from(new Set(found.flat()));
+  }
   const liveAddrs = slots.length
-    ? opts.to.filter((t) => parseSlotSelector(t) === null)
+    ? [...opts.to.filter((t) => parseSlotSelector(t) === null), ...liveRoleOwners]
     : opts.to;
   const toExpanded = hasAudienceSelector(liveAddrs)
     ? await expandAudience(liveAddrs, hostAudienceResolvers, audienceMode())
