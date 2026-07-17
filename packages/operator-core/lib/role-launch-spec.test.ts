@@ -201,6 +201,83 @@ describe('buildRoleLaunchSpec', () => {
   });
 });
 
+describe('buildRoleLaunchSpec — WI-4608 contextSize role-based default (the mug/kettle "Prompt is too long" fix)', () => {
+  it('role=mug, contextSize omitted ⇒ auto-selects trimmed and seeds ?tools=CORE_MCP_TOOL_NAMES', async () => {
+    const spec = await buildRoleLaunchSpec({
+      role: 'mug',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    expect(spec.contextSize).toBe('trimmed');
+    const u = new URL(spec.mcpUrl);
+    expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES]);
+  });
+
+  it('role=kettle, contextSize omitted ⇒ auto-selects trimmed too (not just mug)', async () => {
+    const spec = await buildRoleLaunchSpec({
+      role: 'kettle',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    expect(spec.contextSize).toBe('trimmed');
+    expect(new URL(spec.mcpUrl).searchParams.has('tools')).toBe(true);
+  });
+
+  it('role=queen / role=overwatch (pre-rename spellings) also auto-select trimmed via canonicalCoordRole', async () => {
+    const queenSpec = await buildRoleLaunchSpec({
+      role: 'queen',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    expect(queenSpec.contextSize).toBe('trimmed');
+    const overwatchSpec = await buildRoleLaunchSpec({
+      role: 'overwatch',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    expect(overwatchSpec.contextSize).toBe('trimmed');
+  });
+
+  it('role=worker, contextSize omitted ⇒ stays full (byte-identical default for every non-mug/kettle role)', async () => {
+    const spec = await buildRoleLaunchSpec({
+      role: 'worker',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    expect(spec.contextSize).toBe('full');
+    expect(new URL(spec.mcpUrl).searchParams.has('tools')).toBe(false);
+  });
+
+  it('role=mug, explicit contextSize:"full" OVERRIDES the role-based default', async () => {
+    const spec = await buildRoleLaunchSpec({
+      role: 'mug',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+      contextSize: 'full',
+    });
+    expect(spec.contextSize).toBe('full');
+    expect(new URL(spec.mcpUrl).searchParams.has('tools')).toBe(false);
+  });
+
+  it('role=worker, explicit contextSize:"trimmed" OVERRIDES the (full) role-based default', async () => {
+    const spec = await buildRoleLaunchSpec({
+      role: 'worker',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+      contextSize: 'trimmed',
+    });
+    expect(spec.contextSize).toBe('trimmed');
+    expect(new URL(spec.mcpUrl).searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES]);
+  });
+});
+
 describe('buildRoleLaunchSpec — WORKSPACE-LEVEL (harness-less) role session (hive-agent-tabs P-003)', () => {
   it('operator: chat persona (+tools.md) prompt, workspace-root cwd, MCP URL signed WITHOUT a harness param', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rls-prompts-'));

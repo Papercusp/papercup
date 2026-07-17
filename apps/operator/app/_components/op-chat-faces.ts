@@ -26,7 +26,7 @@ export type OpChatFace = {
   /**
    * The `?opcv` view value this face selects — must be URL-safe, stable
    * (it is deep-linkable + agent-driveable via ui:get_state / ui:dispatch)
-   * and must not collide with a built-in view ('chat' | 'pot' | 'inbox').
+   * and must not collide with a built-in view (BUILT_IN_CHAT_VIEWS below).
    */
   id: string;
   /** The pill's visible label, e.g. "Fleet". Already lexicon-resolved by the provider. */
@@ -43,8 +43,9 @@ export type OpChatFace = {
   render: () => ReactNode;
 };
 
-/** Built-in view values the host owns; an extra face may not shadow one. */
-export const BUILT_IN_CHAT_VIEWS = ['chat', 'pot', 'inbox'] as const;
+/** Built-in view values the host owns; an extra face may not shadow one.
+ *  'plans' — the simplified plan-tracking face (owner-plans-single-pane-2026-07-17 P-001). */
+export const BUILT_IN_CHAT_VIEWS = ['chat', 'pot', 'inbox', 'plans'] as const;
 
 /**
  * Drop faces whose id collides with a built-in view or with an earlier face.

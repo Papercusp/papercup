@@ -125,6 +125,11 @@ export interface BootstrapRoleResult {
    *  hard error instead. */
   fleetSlug?: string | null;
   fleetRole?: string | null;
+  /** WI-4608: the RESOLVED initial MCP tool-surface size — the explicit
+   *  `context_size` request, or buildRoleLaunchSpec's per-role auto-select
+   *  (trimmed for mug/kettle, full otherwise). Mirrors bootstrap-su surfacing
+   *  its resolved `personaTier`. */
+  contextSize: 'full' | 'trimmed';
   /** Non-secret env the launcher exports into the child. */
   envelopeEnv: Record<string, string>;
 }
@@ -166,6 +171,12 @@ const post = defineTool({
        *  derives its slug + creates the agent_fleets row with this session as
        *  leader (D-002). */
       fleet_name?: string | null;
+      /** WI-4608: initial MCP tool-surface size — 'full' | 'trimmed'. Mirrors
+       *  bootstrap-su's `context_size` body field (same snake_case wire name, same
+       *  `psu --context-size=<value>` CLI flag now meaningful for a `--role` launch
+       *  too, not just `su`). Omitted → buildRoleLaunchSpec auto-selects per role
+       *  (trimmed for mug/kettle, full otherwise). */
+      context_size?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -198,6 +209,16 @@ const post = defineTool({
     const harnessSlug = body.harness_slug?.trim() || null;
     const feature = body.feature?.trim() || null;
     const plan = body.plan?.trim() || null;
+    // WI-4608: same validation shape as bootstrap-su's context_size — an explicit
+    // bad value 400s loudly rather than silently falling through to the auto-select.
+    const contextSizeRaw = body.context_size?.trim() || null;
+    if (contextSizeRaw && contextSizeRaw !== 'full' && contextSizeRaw !== 'trimmed') {
+      return jsonRes(
+        { status: 'error', error: `context_size must be full|trimmed (got ${contextSizeRaw.slice(0, 24)})` },
+        400,
+      );
+    }
+    const contextSize = contextSizeRaw as 'full' | 'trimmed' | null;
     const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, undefined, false, body.model);
     if (accountPin.error) {
       return jsonRes({ status: 'error', error: accountPin.error }, 409);
@@ -269,6 +290,7 @@ const post = defineTool({
         ...(handoff ? { handoff } : {}),
         operatorBaseUrl: new URL(req.url).origin,
         featureId: feature,
+        contextSize,
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'role launch spec build failed' }, 400);
@@ -537,6 +559,7 @@ const post = defineTool({
       fleetNotice: fleetPin.notice,
       fleetSlug: fleetPin.fleetSlug,
       fleetRole: fleetPin.fleetRole,
+      contextSize: spec.contextSize,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
         PAPERCUSP_ROLE: role,

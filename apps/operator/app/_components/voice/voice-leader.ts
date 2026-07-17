@@ -27,7 +27,10 @@ type Message =
   | { kind: 'announce'; tabId: string; ts: number }
   | { kind: 'heartbeat'; tabId: string; ts: number }
   | { kind: 'request-lead'; tabId: string; reason: string }
-  | { kind: 'yield'; toTabId: string };
+  | { kind: 'yield'; toTabId: string }
+  // EI-14611: the leader's parting shot on pagehide/beforeunload — followers
+  // re-elect IMMEDIATELY instead of waiting out the 12s heartbeat-loss timeout.
+  | { kind: 'leaving'; tabId: string };
 
 interface LeaderState {
   isLeader: boolean;
@@ -47,6 +50,10 @@ let channel: BroadcastChannel | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let lastLeaderHeartbeatAt = 0;
 let bootPromise: Promise<LeaderState> | null = null;
+/** EI-14611: the visibility/pagehide DOM hooks are installed once per module
+ *  lifetime (re-armed after a test reset) — election re-boots must not stack
+ *  duplicate listeners. */
+let domHooksInstalled = false;
 
 function makeTabId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -140,8 +147,22 @@ export function bootVoiceLeader(): Promise<LeaderState> {
         if (msg.toTabId === state.myTabId && !state.isLeader) {
           becomeLeader();
         }
+      } else if (msg.kind === 'leaving') {
+        // EI-14611: the leader is unloading (pagehide/beforeunload) — re-elect
+        // NOW instead of waiting out the 12s heartbeat-loss timeout. A closed
+        // leader tab used to leave every follower silently no-op'ing speak()
+        // for up to 12s. Only a follower whose CURRENT leader is the one
+        // leaving re-boots; a stray 'leaving' from a non-leader changes nothing.
+        if (!state.isLeader && msg.tabId === state.leaderTabId) {
+          if (heartbeatTimer) clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+          bootPromise = null;
+          void bootVoiceLeader();
+        }
       }
     });
+
+    installDomHooks();
 
     // Announce ourselves.
     channel.postMessage({ kind: 'announce', tabId: state.myTabId, ts: Date.now() } satisfies Message);
@@ -178,6 +199,45 @@ export function bootVoiceLeader(): Promise<LeaderState> {
     return state;
   })();
   return bootPromise;
+}
+
+/**
+ * EI-14611: align leadership with USER ATTENTION — the deferred v4 §2i v1.5
+ * focus-transfer, landed as the fix for the hidden-leader starvation bug.
+ *
+ * The failure shape this closes: with two same-origin windows, a HIDDEN
+ * window could win (or keep) the election while the user's conversation runs
+ * in the visible one — whose speak() calls silently no-op as a follower, so a
+ * correct reply renders in text with zero audio, indefinitely (a hidden tab
+ * heartbeats forever; only a CLOSED one is reclaimed, after 12s).
+ *
+ * Mechanism (deliberately built on the existing request-lead → yield path):
+ *   - a FOLLOWER whose document becomes VISIBLE requests the voice lead —
+ *     voice follows the window the user is looking at. A hidden leader never
+ *     blindly steps down (if EVERY window is hidden — user minimized the only
+ *     window mid-utterance — playback must continue, not orphan itself).
+ *   - a LEADER broadcasts 'leaving' on pagehide/beforeunload, so followers
+ *     re-elect instantly instead of waiting out LEADER_LOSS_TIMEOUT_MS.
+ */
+function installDomHooks(): void {
+  if (domHooksInstalled) return;
+  if (typeof document === 'undefined' || typeof window === 'undefined') return;
+  domHooksInstalled = true;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (state.isLeader || !state.available) return;
+    requestVoiceLead('visibility');
+  });
+  const announceLeaving = (): void => {
+    if (!state.isLeader || !channel) return;
+    try {
+      channel.postMessage({ kind: 'leaving', tabId: state.myTabId } satisfies Message);
+    } catch {
+      /* channel already closed — the heartbeat-loss timeout still covers this */
+    }
+  };
+  window.addEventListener('pagehide', announceLeaving);
+  window.addEventListener('beforeunload', announceLeaving);
 }
 
 function startLeaderHeartbeats(): void {
@@ -232,6 +292,9 @@ export function _resetVoiceLeaderForTests(): void {
   channel = null;
   heartbeatTimer = null;
   bootPromise = null;
+  // EI-14611: let the next boot re-install the DOM hooks on whatever (fake)
+  // document/window the test has swapped in.
+  domHooksInstalled = false;
   state = {
     isLeader: false,
     leaderTabId: null,

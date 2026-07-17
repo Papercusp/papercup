@@ -114,6 +114,7 @@ beforeEach(() => {
     sid: 'role-abc', nativeSessionId: 'nsid-abc',
     claudeConfigDir: join(LC_DIR, 'session-claude', 'role-abc'),
     sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-abc'),
+    contextSize: 'full',
   });
 });
 
@@ -330,6 +331,47 @@ describe('bootstrap-role', () => {
   it('rejects an invalid role id', async () => {
     const res = await callPost({ role: 'Bad Role!', agent: 'claude', harness_slug: 'papercup' });
     expect(res.status).toBe(400);
+  });
+});
+
+// WI-4608: bootstrap-role threads an explicit `context_size` body field through to
+// buildRoleLaunchSpec (mirrors bootstrap-su's context_size) and surfaces the spec's
+// RESOLVED contextSize on the response — the wire half of the mug/kettle
+// "Prompt is too long" fix (the auto-select default itself lives in
+// buildRoleLaunchSpec, covered by role-launch-spec.test.ts).
+describe('bootstrap-role — WI-4608 context_size threading', () => {
+  it('omitted context_size ⇒ buildRoleLaunchSpec receives contextSize:null (its own auto-select applies)', async () => {
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(res.status).toBe(200);
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ contextSize: null }));
+    const json = await res.json();
+    expect(json.contextSize).toBe('full'); // mock spec's resolved value, surfaced verbatim
+  });
+
+  it('explicit context_size:"trimmed" is forwarded to buildRoleLaunchSpec and surfaced on the response', async () => {
+    buildRoleLaunchSpecMock.mockResolvedValueOnce({
+      role: 'mug', runId: 'mug-1', spawnId: 'sp-mug', harnessSlug: 'papercup', featureId: null,
+      cwd: LC_DIR, promptText: 'MUG PROMPT', promptFile: '/h/prompts/mug.md',
+      mcpUrl: 'http://localhost:3070/api/mcp?role=mug&tools=a%2Cb&sig=x', mcpJsonContents: '{}',
+      sid: 'role-mug', nativeSessionId: 'nsid-mug',
+      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-mug'),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-mug'),
+      contextSize: 'trimmed',
+    });
+    roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
+    const res = await callPost({ role: 'mug', agent: 'claude', harness_slug: 'papercup', context_size: 'trimmed' });
+    expect(res.status).toBe(200);
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ contextSize: 'trimmed' }));
+    const json = await res.json();
+    expect(json.contextSize).toBe('trimmed');
+  });
+
+  it('rejects an invalid context_size value before building the role launch spec', async () => {
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', context_size: 'huge' });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toMatch(/context_size must be full\|trimmed/);
+    expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
   });
 });
 
