@@ -74,6 +74,47 @@ export function modelForLlmCall(model: string | undefined, backend: AgentBackend
   return trimmed;
 }
 
+const KNOWN_EFFORT_SUFFIXES = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+/**
+ * EI-13118: the `anthropic-direct` backend forwards `model` VERBATIM to
+ * api.anthropic.com's `model` param (chat-stream.ts's anthropic-direct branch) —
+ * unlike the `claude-code`/`omp` SUBPROCESS backends, it never goes through the
+ * fleet CLI's own spec parsing (`[1m]` window marker, a trailing `:<effort>`
+ * suffix, a `provider:` tier-menu prefix). A fleet-style spec that reaches here
+ * (e.g. copy-pasted from a spawn command into a role's model config) 404s at the
+ * raw API with no local signal — that silently killed organic scout ideation for
+ * 2.3 days (07-14→07-16 2026) because the 404 got folded into an ordinary
+ * "ran/no-ideas" cycle several layers up, invisible until a signal-score audit
+ * caught it. Strip what's safely strippable (the `[1m]` marker; a trailing
+ * RECOGNIZED effort suffix — `:effort` is consumed by the CLI as a separate
+ * flag, never part of the raw API model id, and every anthropic-direct caller
+ * already threads its own explicit `thinkingBudgetTokens`, so the suffix carries
+ * no information once stripped) and THROW LOUDLY for anything that still doesn't
+ * look like a raw Anthropic model id afterward — never forward an unresolvable
+ * spec silently. A thrown Error here propagates through this module's per-call
+ * try/catch chain (scout's runIdeators et al.) as a normal, VISIBLE call failure
+ * — never swallowed as a benign empty result.
+ */
+export function canonicalizeAnthropicModel(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return trimmed;
+  let base = trimmed.replace(/\[1m\]/gi, '');
+  const lastColon = base.lastIndexOf(':');
+  if (lastColon > 0 && KNOWN_EFFORT_SUFFIXES.has(base.slice(lastColon + 1).toLowerCase())) {
+    base = base.slice(0, lastColon);
+  }
+  if (!/^claude-/i.test(base)) {
+    throw new Error(
+      `unresolvable model spec for the anthropic-direct backend: ${JSON.stringify(trimmed)} → ` +
+        `${JSON.stringify(base)} is not a raw Anthropic model id. Fleet-spec syntax ([1m], :effort, ` +
+        "provider: prefixes) belongs to fleet/model-tiers resolution, not this raw API call — pass a " +
+        "bare id like 'claude-sonnet-5' instead (EI-13118).",
+    );
+  }
+  return base;
+}
+
 function codexGatewayUrl(): string {
   const port = Number(process.env.PAPERCUSP_GATEWAY_PORT);
   const p = Number.isFinite(port) && port > 0 ? port : 8788;
@@ -192,7 +233,12 @@ async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefin
  */
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   const backend = backendForLlmCall(opts.model);
-  const model = modelForLlmCall(opts.model, backend);
+  let model = modelForLlmCall(opts.model, backend);
+  // EI-13118: canonicalize / loudly reject fleet-spec syntax BEFORE it reaches the raw
+  // anthropic-direct API call — see canonicalizeAnthropicModel's doc comment.
+  if (backend === 'anthropic-direct' && model) {
+    model = canonicalizeAnthropicModel(model);
+  }
   let finalText = '';
   let inputTokens = 0;
   let outputTokens = 0;

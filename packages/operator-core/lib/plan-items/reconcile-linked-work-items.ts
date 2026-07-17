@@ -42,8 +42,9 @@ import { getPlanRow } from '../agent-tools/plans/source';
  *   - `done`    → the work SHIPPED   → feature `passed`     / issue `resolved`
  *   - `dropped` → the work ABANDONED → feature `deprecated` / issue `closed`
  *  The `dropped` half is EI-14693's extension: the transition reaction only ever
- *  fired on `done` (reconcile-rule.ts), so a WI linked to a `dropped` plan item
- *  was NEVER reconciled — the periodic sweep below closes that gap too. */
+ *  fired on `done` (reconcile-rule.ts's `newlyDonePlanItem`), so a WI linked to a
+ *  `dropped` plan item was NEVER reconciled — the periodic sweep below closes that
+ *  gap too. */
 const TERMINAL_PLAN_ITEM_TARGET = {
   done: { feature: 'passed', issue: 'resolved' },
   dropped: { feature: 'deprecated', issue: 'closed' },
@@ -81,9 +82,13 @@ export interface ReconcileLinkedWorkItemsResult {
  *  JSON-stringified scalar under a `::jsonb` cast (postgres-js-jsonb-binding) —
  *  so `payload->'plan_item'` is null unless the string-scalar shape is first
  *  unwrapped. Mirrors findConvertedWorkItemByStamp's identical normalization. */
-function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], col: string, planSlug: string, itemId: string) {
-  const pj = sql`(CASE WHEN jsonb_typeof(${sql.unsafe(col)}) = 'string'
+function normalizedPayloadExpr(sql: ReturnType<typeof getOrgPg>['sql'], col: string) {
+  return sql`(CASE WHEN jsonb_typeof(${sql.unsafe(col)}) = 'string'
             THEN (${sql.unsafe(col)} #>> '{}')::jsonb ELSE ${sql.unsafe(col)} END)`;
+}
+
+function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], col: string, planSlug: string, itemId: string) {
+  const pj = normalizedPayloadExpr(sql, col);
   return sql`${pj}->'plan_item'->>'plan_slug' = ${planSlug} AND ${pj}->'plan_item'->>'item_id' = ${itemId}`;
 }
 

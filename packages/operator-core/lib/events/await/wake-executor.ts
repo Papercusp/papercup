@@ -408,6 +408,66 @@ export function wakeTurnText(d: DeliveryWork): string {
   return d.ambientPushBlock ? `${base}\n\n${d.ambientPushBlock}` : base;
 }
 
+/**
+ * EI-10935: a loop wake's `d.summary` (built by {@link wakeTurnText}, which embeds
+ * loop-fire.ts's rendered checkpoint + walls block) is a SNAPSHOT taken at FIRE
+ * time. If ACTUAL delivery is delayed — staged behind the manual wake-mode gate,
+ * queued behind another delivery, retried after a missed inject, coalesced with a
+ * later event — the agent may have written a NEWER `loop:checkpoint` (clearing an
+ * owner-gated wall, updating its next-action) in the gap between fire and
+ * delivery. The stale snapshot then RE-SERVES a CLEARED wall as still-open: a
+ * live incident (2026-07-13) resurrected an irreversible-action wall the owner
+ * had already cleared, risking either a re-run of the irreversible action or a
+ * manufactured re-ask of consent already given. This is CRITICAL, not cosmetic —
+ * walls exist precisely to survive context loss, and a wall surface that can't be
+ * cleared is worse than none.
+ *
+ * Fix: at ACTUAL delivery time (inside `executeWake`, right before injection —
+ * every channel: live psu-socket inject, plan-run resume, adv-session inject),
+ * for a LOOP wake ONLY (`readColdLoopMarker` finds a `harness` on the payload —
+ * stamped for BOTH warm and cold loops per loop-fire.ts), re-read the carry-note
+ * FRESH and append a live re-check block. The block is appended EVEN WHEN walls
+ * are now empty — silence there would NOT override a stale walls block rendered
+ * above it, so "no open walls" must be stated explicitly, not omitted.
+ *
+ * A non-loop wake (marker null — the overwhelming majority of deliveries) is
+ * BYTE-IDENTICAL: this returns `baseText` unchanged without ever reading the
+ * carry-note store. Fail-soft end to end: any read/render error falls back to
+ * the original text unmodified — a rehydration hiccup must never block or alter
+ * a delivery that would otherwise have succeeded.
+ */
+export async function rehydrateLoopWakeText(
+  d: DeliveryWork,
+  baseText: string,
+  deps: { getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta } = {},
+): Promise<string> {
+  try {
+    const marker = readColdLoopMarker(d.payload);
+    if (!marker?.harness) return baseText; // not a loop wake — untouched, no DB read
+    const getNoteMeta = deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
+    const meta = await getNoteMeta({
+      harness: marker.harness,
+      ownerId: d.subscriberId,
+      workspaceId: d.workspaceId,
+    });
+    const { walls } = splitCarryNoteWalls(meta.note);
+    const wallsNow = renderLoopWallsBlock(walls) ?? '  (none open — any wall shown OPEN above has been CLEARED since)';
+    const ageMs = meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
+    const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
+    return (
+      `${baseText}\n\n` +
+      `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 — this delivery may have been queued/staged, so the ` +
+      `checkpoint/walls text ABOVE can be a stale snapshot from when the wake FIRED, not from now). Freshest ` +
+      `carry-note is ${ageStr} old. Current open walls:\n${wallsNow}\n` +
+      `If this disagrees with the text above (esp. a wall shown open above that is NOT listed here), TRUST THIS ` +
+      `BLOCK — it is the live re-read: do not re-execute an irreversible action or re-ask the owner about a wall ` +
+      `not listed here.`
+    );
+  } catch {
+    return baseText; // fail-soft — never let a rehydration hiccup block delivery
+  }
+}
+
 /** Injections door (deterministic-context-carry P-006 enforcement leg (b), plan D-007):
  *  the per-hop budget for machine-composed injected text. The FLOOR door — /26 lands
  *  virtually every fleet model AT the 8K floor (the brief's own observation), and the spill
@@ -1146,7 +1206,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // because the socket inject below sat under this early-return).
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        tagWakeText(d, applyInjectionDoor(d, wakeTurnText(d)), tagTurn),
+        tagWakeText(d, applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deps)), tagTurn),
         findPsuHost,
         injectPsuHost,
         deps,
@@ -1166,7 +1226,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // static plans-tool dependency.
       const resumePlanRun =
         deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
-      const r = await resumePlanRun({ runId: handle.runId, wakeText: tagWakeText(d, applyInjectionDoor(d, wakeTurnText(d)), tagTurn) });
+      const planRunText = tagWakeText(
+        d,
+        applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deps)),
+        tagTurn,
+      );
+      const r = await resumePlanRun({ runId: handle.runId, wakeText: planRunText });
       if (r.ok) return { kind: 'delivered', channel: 'plan-run-resume' };
       return { kind: 'error', error: r.error };
     }
@@ -1191,7 +1256,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       isAlive = Boolean(p && !p.stale && !p.revoked);
     }
 
-    const text = tagWakeText(d, applyInjectionDoor(d, wakeTurnText(d)), tagTurn);
+    const text = tagWakeText(d, applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deps)), tagTurn);
 
     // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
     // session hosts its pty + control socket in the psu PROCESS (D-006), so our
