@@ -1077,6 +1077,7 @@ describe('psu-launcher arg parsing', () => {
       resumeSession: null,
       launchContext: null,
       launchedBy: null,
+      ownerId: null,
       profile: null,
       // drain-mode P-003: named operating mode, default none.
       mode: null,
@@ -1155,6 +1156,7 @@ describe('psu-launcher arg parsing', () => {
       resumeSession: null,
       launchContext: null,
       launchedBy: null,
+      ownerId: null,
       profile: null,
       mode: null,
       seat: null,
@@ -1458,6 +1460,17 @@ describe('psu-launcher arg parsing', () => {
     // omitted when not passed (no null noise on the wire)
     const noLabel = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, {});
     expect('label' in noLabel).toBe(false);
+  });
+
+  it('freshSuBootstrapBody forwards --owner-id so bootstrap-su pre-pins the coord owner (WI-5002/EI-13277 programmatic-spawner contract)', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--no-plan', '--headless', '--yes', '--owner-id=su-sweep-cell-r1-abc123']);
+    expect(args.ownerId).toBe('su-sweep-cell-r1-abc123');
+    const body = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, args);
+    expect(body.owner_id).toBe('su-sweep-cell-r1-abc123');
+    expect(body.launch_argv).toContain('--owner-id=su-sweep-cell-r1-abc123');
+    // omitted when not passed (no null noise on the wire; server mints as today)
+    const noOwner = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, parseArgs(['--no-picker', '--agent=claude', '--no-plan']));
+    expect('owner_id' in noOwner).toBe(false);
   });
 
   it('freshSuBootstrapBody records the reconstructed psu launch_argv (WI-1343)', () => {

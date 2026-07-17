@@ -12,6 +12,7 @@ import {
   extractCellMetricsFromJsonl,
   makeHeadlessPsuCellDriver,
   sweepWorkDir,
+  transcriptSawAssistantDoneMarker,
 } from './maxturn-sweep-live';
 import { emptyCellMetrics, expandSweepCells, resolveCellConfig, type SweepCell } from './maxturn-sweep';
 
@@ -242,5 +243,68 @@ describe('makeHeadlessPsuCellDriver — the seam-injected cell run', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('terminates a finished cell EARLY: the poll spots the assistant done marker and calls terminate (canary run 2 idled 7 of 10 minutes otherwise)', async () => {
+    const { deps } = stubDeps();
+    const terminate = vi.fn();
+    let resolveDone!: () => void;
+    // A child that NEVER exits on its own — only terminate() releases it (the
+    // pty host keeps a settled headless child alive to the timeout).
+    deps.spawnSession = vi.fn(() => ({
+      done: new Promise<void>((r) => {
+        resolveDone = r;
+      }),
+      terminate: vi.fn(() => {
+        terminate();
+        resolveDone();
+      }),
+    }));
+    const driver = makeHeadlessPsuCellDriver(deps);
+    const metrics = await driver(cell, config, { repeats: 1, now: Date.now });
+    expect(terminate).toHaveBeenCalled();
+    expect(metrics.taskSuccessRate).toBe(1);
+  });
+
+  it('a transcript readable only MID-RUN still extracts (EI-13277: the store can be cleaned at host end — the post-exit read is a fallback, not the plan)', async () => {
+    const { deps } = stubDeps();
+    const jsonl = [assistantLine({ id: 'm1', i: 0, text: SWEEP_TASK_DONE_MARKER })].join('\n');
+    let alive = false;
+    let resolveDone!: () => void;
+    deps.spawnSession = vi.fn(() => {
+      alive = true;
+      return {
+        done: new Promise<void>((r) => {
+          resolveDone = r;
+        }),
+        terminate: vi.fn(() => {
+          alive = false;
+          resolveDone();
+        }),
+      };
+    });
+    // Alive ⇒ the transcript exists; after exit the host cleaned it.
+    deps.readTranscript = vi.fn(async () => (alive ? jsonl : null));
+    const driver = makeHeadlessPsuCellDriver(deps);
+    const metrics = await driver(cell, config, { repeats: 1, now: Date.now });
+    expect(metrics.hopsPerTask).toBe(1);
+    expect(metrics.taskSuccessRate).toBe(1);
+  });
+});
+
+describe('transcriptSawAssistantDoneMarker — the early-stop signal', () => {
+  it('an ASSISTANT turn printing the marker fires; a user/kickoff line quoting it never does', () => {
+    const userQuoting = JSON.stringify({ type: 'user', message: { content: `print ${SWEEP_TASK_DONE_MARKER}` } });
+    expect(transcriptSawAssistantDoneMarker(userQuoting)).toBe(false);
+    const assistant = assistantLine({ id: 'm1', i: 0, text: SWEEP_TASK_DONE_MARKER });
+    expect(transcriptSawAssistantDoneMarker([userQuoting, assistant].join('\n'))).toBe(true);
+  });
+
+  it('a synthetic (<synthetic>) assistant row never fires', () => {
+    const synthetic = JSON.stringify({
+      type: 'assistant',
+      message: { id: 's1', model: '<synthetic>', content: [{ type: 'text', text: SWEEP_TASK_DONE_MARKER }] },
+    });
+    expect(transcriptSawAssistantDoneMarker(synthetic)).toBe(false);
   });
 });
