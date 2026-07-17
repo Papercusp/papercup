@@ -256,7 +256,7 @@ function fmtAgo(ms) {
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null, headless: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, ownerId: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null, headless: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -372,6 +372,12 @@ export function parseArgs(argv) {
     // (capability:terminal auto-injects it into psu commands). Forwarded to
     // bootstrap-su, which bakes it into the system prompt + env + a standing fact.
     else if (a.startsWith('--launched-by=')) out.launchedBy = a.slice('--launched-by='.length);
+    // WI-5002/EI-13277 programmatic-spawner contract: PRE-PIN this fresh session's
+    // coord owner id (bootstrap-su validates + uses it instead of minting). Exists
+    // because the spawner's exported PAPERCUSP_SID is overridden by the launch
+    // envelope — state a spawner keys pre-spawn (doors overrides, transcript reads)
+    // otherwise binds to an owner the session never runs as.
+    else if (a.startsWith('--owner-id=')) out.ownerId = a.slice('--owner-id='.length);
     // su-context-size-variants: 'full' | 'trimmed' — the initial-context size variant
     // (orthogonal to --agent). Forwarded to bootstrap-su; applied per-client at launch.
     else if (a.startsWith('--context-size=')) out.contextSize = a.slice('--context-size='.length);
@@ -5306,6 +5312,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   if (effectiveAutoMode(args)) argv.push('--auto');
   if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
   if (args.launchedBy) argv.push(`--launched-by=${args.launchedBy}`);
+  if (args.ownerId) argv.push(`--owner-id=${args.ownerId}`);
   for (const d of args.addDir || []) argv.push(`--add-dir=${d}`);
   // Subagent-launch deny is DEFAULT-ON; only the non-default opt-IN needs recording.
   if (args.allowSubagents) argv.push('--allow-subagents');
@@ -5357,6 +5364,9 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     // solo-launch-provenance: who launched this session — bootstrap-su bakes it
     // into the system prompt + PAPERCUSP_LAUNCHED_BY + an owner-scoped standing fact.
     ...(args.launchedBy ? { launched_by: args.launchedBy } : {}),
+    // WI-5002/EI-13277: pre-pinned coord owner id — bootstrap-su validates it and
+    // uses it as the session's sid instead of minting (programmatic-spawner contract).
+    ...(args.ownerId ? { owner_id: args.ownerId } : {}),
     // A port's fresh target starts in the source's exact recorded cwd. This is
     // data provenance, not a harness-derived relocation, and is included in the
     // inspected source hash/contract.

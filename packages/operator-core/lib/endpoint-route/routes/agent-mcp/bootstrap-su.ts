@@ -32,6 +32,7 @@ import {
   reanchorAdvSessionNativeId,
   recordAdvSession,
 } from '../../../adv-sessions';
+import { getOrgPg } from '@papercusp/db-org';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -1025,6 +1026,14 @@ const post = defineTool({
       session_port_protocol?: number;
       session_port_transform_version?: number;
       session_port_token?: string | null;
+      /** Pre-pinned coord owner id (`psu --owner-id=<su-…>`) — the programmatic-spawner
+       *  contract (WI-5002/EI-13277): a spawner that must key per-session state to the
+       *  session it launches (doors overrides, transcript reads) supplies the owner id
+       *  up front instead of discovering the server-minted one after the fact (the env
+       *  PAPERCUSP_SID it exports is overridden by this envelope, so pre-pinning is the
+       *  only reliable binding). Validated + live-collision-checked below; omitted ⇒
+       *  server mints (today's behavior). */
+      owner_id?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -1278,7 +1287,34 @@ const post = defineTool({
     // distinct owners (the collapse the per-session id fixes). Minted BEFORE the
     // adv_sessions row so it's recorded as coord_owner_id — the live-roster join
     // key to coord_presence.owner_id (adv-sessions-live-roster P-001).
-    const sid = `su-${randomUUID()}`;
+    // WI-5002/EI-13277: a programmatic spawner may PRE-PIN the owner (`psu
+    // --owner-id=…`) so state it keyed pre-spawn (a session doors override, a
+    // transcript read) binds to the session that actually runs. Malformed ids
+    // and ids already live on an un-ended session are refused loudly — a
+    // silent fallback to minting would re-create exactly the split-identity
+    // bug the flag exists to fix.
+    const requestedSid = body.owner_id?.trim() || null;
+    if (requestedSid != null) {
+      if (!/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(requestedSid)) {
+        return jsonRes(
+          { status: 'error', error: `owner_id must match su-<slug> (6-119 chars of [A-Za-z0-9._-]); got ${requestedSid.slice(0, 40)}` },
+          400,
+        );
+      }
+      const { sql } = getOrgPg();
+      const live = await sql<Array<{ id: string }>>`
+        SELECT id::text FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
+         LIMIT 1
+      `;
+      if (live.length > 0) {
+        return jsonRes(
+          { status: 'error', error: `owner_id ${requestedSid} is already bound to live adv session ${live[0].id} — pre-pinned owners must be fresh` },
+          409,
+        );
+      }
+    }
+    const sid = requestedSid ?? `su-${randomUUID()}`;
 
     // The agent's NATIVE session id. claude lets us FORCE it (`--session-id`),
     // so we mint it here, record it, and the launcher passes it through — that's

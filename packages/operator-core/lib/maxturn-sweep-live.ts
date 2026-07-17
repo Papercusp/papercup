@@ -269,6 +269,15 @@ export interface SweepSpawnInput {
   timeoutMs: number;
 }
 
+/** A running cell session: `done` settles when the child exits (or times out);
+ *  `terminate` requests an early stop (the WI-5002 canary showed a settled
+ *  headless child idles under the pty host until the full timeout — the driver
+ *  terminates as soon as the transcript shows the done marker instead). */
+export interface SweepSessionHandle {
+  done: Promise<void>;
+  terminate: () => void;
+}
+
 export interface HeadlessCellDriverDeps {
   /** Mint the repeat's fresh ownerId (default `su-sweep-<cell>-<nonce>`). */
   mintOwnerId?: (cell: SweepCell, repeat: number) => string;
@@ -280,14 +289,23 @@ export interface HeadlessCellDriverDeps {
   /** Prepare the cell's scratch dir (default: mkdir -p + the long-log fixture for
    *  the long-log-analysis kind). */
   prepareWorkDir?: (workDir: string, cell: SweepCell) => Promise<void>;
-  /** Run the session to completion (resolve when it exits / times out). Default:
-   *  `node apps/operator/scripts/psu-launcher.mjs --agent=claude --headless --yes --kickoff=…`
-   *  with PAPERCUSP_SID=<ownerId>, killed at timeoutMs. */
-  spawnSession?: (input: SweepSpawnInput) => Promise<void>;
+  /** Start the session, returning its handle. Default:
+   *  `node apps/operator/scripts/psu-launcher.mjs --agent=claude --headless --yes
+   *  --owner-id=<ownerId> --kickoff=…`, SIGTERM'd at timeoutMs. `--owner-id`
+   *  (WI-5002/EI-13277) is what actually binds the session to the minted owner —
+   *  the exported PAPERCUSP_SID env is overridden by the launch envelope, so
+   *  without the flag the doors override AND the transcript read key to an owner
+   *  the session never runs as. */
+  spawnSession?: (input: SweepSpawnInput) => SweepSessionHandle;
   /** Read the owner's native transcript JSONL (default: newestTranscriptUnderOwner + read). */
   readTranscript?: (ownerId: string) => Promise<string | null>;
   /** Per-repeat wall-clock cap (default DEFAULT_SWEEP_TASK_TIMEOUT_MS). */
   taskTimeoutMs?: number;
+  /** Mid-run transcript poll cadence (default 5s). The poll serves two ends: it
+   *  snapshots the transcript WHILE THE CHILD LIVES (EI-13277 — a headless
+   *  session's transcript can be cleaned at host end, so a post-exit read may
+   *  find nothing), and it spots the done marker to terminate early. */
+  pollIntervalMs?: number;
   /** Repo root for the default spawner (default: process.cwd()). */
   repoRoot?: string;
 }
