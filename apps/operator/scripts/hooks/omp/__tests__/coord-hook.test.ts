@@ -125,6 +125,11 @@ import {
   _resetToolCallCacheForTests,
   _resetDegradedNotifiedForTests,
   _resetActivityReportDedupeForTests,
+  extractOmpMessageText,
+  readLastOmpAssistantText,
+  looksLikeUnstructuredOwnerAsk,
+  reportTurnAskIngest,
+  _resetOpenAskGatesForTests,
   type InboxEntry,
 } from '../coord-hook';
 
@@ -4856,5 +4861,238 @@ describe('formatToolFindRedirect', () => {
     const reason = formatToolFindRedirect('q', [{ description: 'no name' }, { tool: 'coord:send' }]);
     expect(reason).toContain('• coord:send');
     expect(reason).not.toContain('no name');
+  });
+});
+
+// ── unstructured owner-ask detection + ingest (owner-inbox-single-pane-2026-07-17 P-004) ──
+
+describe('extractOmpMessageText', () => {
+  it('returns a plain string content unchanged', () => {
+    expect(extractOmpMessageText('hello')).toBe('hello');
+  });
+  it('joins text/input_text/output_text blocks, skipping other block types', () => {
+    expect(
+      extractOmpMessageText([
+        { type: 'text', text: 'line one' },
+        { type: 'tool_use', id: 'x' },
+        { type: 'output_text', text: 'line two' },
+      ]),
+    ).toBe('line one\nline two');
+  });
+  it('returns empty string for null/undefined/non-array/non-string content', () => {
+    expect(extractOmpMessageText(null)).toBe('');
+    expect(extractOmpMessageText(undefined)).toBe('');
+    expect(extractOmpMessageText(42)).toBe('');
+    expect(extractOmpMessageText([{ type: 'tool_use' }])).toBe('');
+  });
+});
+
+describe('looksLikeUnstructuredOwnerAsk', () => {
+  it('trips on a short standalone last-line question', () => {
+    expect(looksLikeUnstructuredOwnerAsk('So, should I ship the migration now or wait?')).toBe(true);
+    expect(
+      looksLikeUnstructuredOwnerAsk(
+        'I finished the audit.\n\nWant me to proceed with the breaking change or hold off?',
+      ),
+    ).toBe(true);
+  });
+  it('does not trip when an <ask> block is already present', () => {
+    expect(looksLikeUnstructuredOwnerAsk('<ask question="proceed?" />')).toBe(false);
+  });
+  it('does not trip when a <report> block is present', () => {
+    expect(looksLikeUnstructuredOwnerAsk('<report>done</report>\nAll good?')).toBe(false);
+  });
+  it('does not trip when the text already routes via coord:escalate / coord:ask-owner', () => {
+    expect(looksLikeUnstructuredOwnerAsk('Filed via coord:escalate with two options.')).toBe(false);
+    expect(looksLikeUnstructuredOwnerAsk('Asked the owner via coord:ask-owner.')).toBe(false);
+  });
+  it('does not trip on empty text', () => {
+    expect(looksLikeUnstructuredOwnerAsk('')).toBe(false);
+    expect(looksLikeUnstructuredOwnerAsk('   ')).toBe(false);
+  });
+  it('does not trip on a long multi-clause sentence ending in "?" (conservative)', () => {
+    const longLine = `${'x'.repeat(310)}?`;
+    expect(looksLikeUnstructuredOwnerAsk(longLine)).toBe(false);
+  });
+  it('does not trip on prose with no trailing question', () => {
+    expect(looksLikeUnstructuredOwnerAsk('Deployed the fix and verified it in staging.')).toBe(false);
+  });
+  it('does not trip on a code-fence or comment line ending in "?"', () => {
+    expect(looksLikeUnstructuredOwnerAsk('```\nregex.test(x)?\n```')).toBe(false);
+  });
+});
+
+describe('readLastOmpAssistantText (bounded tail read over an OMP-shaped transcript)', () => {
+  let dir = '';
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'omp-ask-transcript-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns the LAST assistant message text, skipping a trailing user line', async () => {
+    const file = join(dir, 't1.jsonl');
+    writeFileSync(
+      file,
+      [
+        { type: 'message', message: { role: 'user', content: 'hi' }, timestamp: '2026-07-17T00:00:00Z' },
+        {
+          type: 'message',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Should I proceed?' }] },
+          timestamp: '2026-07-17T00:00:01Z',
+        },
+        { type: 'message', message: { role: 'user', content: 'not yet' }, timestamp: '2026-07-17T00:00:02Z' },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join('\n') + '\n',
+    );
+    // The trailing line is a USER turn; the reader must walk back to the last ASSISTANT one.
+    expect(await readLastOmpAssistantText(file)).toBe('Should I proceed?');
+  });
+
+  it('returns "" for a missing file (no throw)', async () => {
+    expect(await readLastOmpAssistantText(join(dir, 'does-not-exist.jsonl'))).toBe('');
+  });
+
+  it('returns "" when no assistant message line is present', async () => {
+    const file = join(dir, 'no-assistant.jsonl');
+    writeFileSync(file, `${JSON.stringify({ type: 'message', message: { role: 'user', content: 'hi' } })}\n`);
+    expect(await readLastOmpAssistantText(file)).toBe('');
+  });
+
+  it('skips malformed / non-JSON lines without throwing', async () => {
+    const file = join(dir, 'malformed.jsonl');
+    writeFileSync(
+      file,
+      [
+        'not json at all',
+        JSON.stringify({ type: 'message', message: { role: 'assistant', content: 'ok?' } }),
+      ].join('\n') + '\n',
+    );
+    expect(await readLastOmpAssistantText(file)).toBe('ok?');
+  });
+});
+
+describe('reportTurnAskIngest (OMP turn_end ask ingest + followUp nudge)', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevToken = process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
+  let dir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'omp-ask-ingest-'));
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
+    _resetOpenAskGatesForTests();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    rmSync(dir, { recursive: true, force: true });
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevToken === undefined) delete process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
+    else process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = prevToken;
+    _resetOpenAskGatesForTests();
+  });
+
+  function fakeCtx(sessionId: string, filePath?: string) {
+    return {
+      sessionManager: {
+        getSessionId: () => sessionId,
+        getSessionFile: () => filePath,
+      },
+    };
+  }
+
+  function writeAssistantTurn(file: string, text: string) {
+    writeFileSync(
+      file,
+      `${JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text }] } })}\n`,
+    );
+  }
+
+  it('returns no nudge and calls nothing when there is no session id / transcript path', async () => {
+    const calls: string[] = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      calls.push((JSON.parse(init.body) as { params: { name: string } }).params.name);
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }) };
+    }) as unknown as typeof fetch;
+    expect(await reportTurnAskIngest(fakeCtx('', undefined))).toEqual({ nudge: '' });
+    expect(await reportTurnAskIngest({})).toEqual({ nudge: '' });
+    expect(calls).toEqual([]);
+  });
+
+  it('posts kind:"ask" + returns a nudge when the turn ends in an unstructured question', async () => {
+    const file = join(dir, 'ask.jsonl');
+    writeAssistantTurn(file, 'Should I ship the breaking migration now, or wait for review?');
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { params: { name: string; arguments: Record<string, unknown> } };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }) };
+    }) as unknown as typeof fetch;
+
+    const { nudge } = await reportTurnAskIngest(fakeCtx('sess-1', file));
+    expect(nudge).toMatch(/coord:escalate/);
+    const ingestCall = calls.find((c) => c.name === 'sessions:ingest-gate-event');
+    expect(ingestCall).toBeDefined();
+    expect(ingestCall?.args).toMatchObject({ sessionId: 'sess-1', client: 'omp', kind: 'ask' });
+    expect(typeof ingestCall?.args.refId).toBe('string');
+    expect((ingestCall?.args.refId as string).length).toBeGreaterThan(0);
+  });
+
+  it('reuses the SAME refId across consecutive turns that keep ending in an unstructured ask', async () => {
+    const file = join(dir, 'ask2.jsonl');
+    writeAssistantTurn(file, 'Ship now or wait?');
+    const refIds: string[] = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { params: { name: string; arguments: Record<string, unknown> } };
+      if (body.params.name === 'sessions:ingest-gate-event') refIds.push(body.params.arguments.refId as string);
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }) };
+    }) as unknown as typeof fetch;
+
+    await reportTurnAskIngest(fakeCtx('sess-2', file));
+    await reportTurnAskIngest(fakeCtx('sess-2', file));
+    expect(refIds).toHaveLength(2);
+    expect(refIds[0]).toBe(refIds[1]);
+  });
+
+  it('closes the gate (kind:"cleared", same refId) once a later turn no longer looks like an unstructured ask', async () => {
+    const file = join(dir, 'ask3.jsonl');
+    writeAssistantTurn(file, 'Ship now or wait?');
+    const events: Array<{ kind: string; refId: string }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { params: { name: string; arguments: Record<string, unknown> } };
+      if (body.params.name === 'sessions:ingest-gate-event') {
+        events.push({ kind: body.params.arguments.kind as string, refId: body.params.arguments.refId as string });
+      }
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }) };
+    }) as unknown as typeof fetch;
+
+    await reportTurnAskIngest(fakeCtx('sess-3', file));
+    writeAssistantTurn(file, 'Filed via coord:escalate with two options.');
+    await reportTurnAskIngest(fakeCtx('sess-3', file));
+    // let the fire-and-forget "cleared" call settle
+    await new Promise((res) => setTimeout(res, 20));
+
+    expect(events[0]).toMatchObject({ kind: 'ask' });
+    const cleared = events.find((e) => e.kind === 'cleared');
+    expect(cleared).toBeDefined();
+    expect(cleared?.refId).toBe(events[0].refId);
+  });
+
+  it('returns no nudge and calls nothing (no gate to close) when the turn never looked like an ask', async () => {
+    const file = join(dir, 'noask.jsonl');
+    writeAssistantTurn(file, 'Deployed and verified in staging.');
+    const calls: string[] = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      calls.push((JSON.parse(init.body) as { params: { name: string } }).params.name);
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }) };
+    }) as unknown as typeof fetch;
+
+    const { nudge } = await reportTurnAskIngest(fakeCtx('sess-4', file));
+    expect(nudge).toBe('');
+    expect(calls).not.toContain('sessions:ingest-gate-event');
   });
 });

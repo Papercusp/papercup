@@ -334,11 +334,20 @@ async function saveAction(opts: {
   if (opts.callerSlug.startsWith('system:')) return;
   const { sql } = getOrgPg();
   const schema = slugToSchema(opts.callerSlug);
+  // workspace_id stamped EXPLICITLY (WI-5243, the WI-5125 class). These
+  // per-harness views used to carry `ALTER COLUMN workspace_id SET DEFAULT
+  // 'default'`, so omitting the column filed the row under the WRONG tenant and
+  // still reported success. Migration 616 dropped that literal and left a
+  // derive-trigger as the net, but the net reads harness_shared.projects (a
+  // near-empty legacy registry), so the active workspace must come from the
+  // process — exactly as this file already does for its harness_shared.projects
+  // and token_index writes below.
   await sql.unsafe(
-    `INSERT INTO ${schema}.executed_actions (action_id, op, caller_slug, target_slug, reason, request, response)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+    `INSERT INTO ${schema}.executed_actions (workspace_id, action_id, op, caller_slug, target_slug, reason, request, response)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
      ON CONFLICT (harness_slug, action_id) DO NOTHING`,
     [
+      activeWorkspaceId(),
       opts.actionId,
       opts.op,
       opts.callerSlug,
@@ -450,19 +459,26 @@ async function doSendMessage(
   for (const recipient of action.to) {
     const schema = slugToSchema(recipient);
     // INSERT one message into the recipient's inbox. to_role optional.
+    // workspace_id explicit (WI-5243) — see the executed_actions note above.
+    // The active workspace is correct for the RECIPIENT's row too: cross-workspace
+    // dispatch is not supported in v1 (see the projects insert below), so caller
+    // and recipient are always in the same workspace.
     const rows = await sql.unsafe(
-      `INSERT INTO ${schema}.messages (from_slug, to_slug, to_role, from_feature_id, to_feature_id, kind, subject, body, parent_message_id, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+      `INSERT INTO ${schema}.messages (workspace_id, from_slug, to_slug, to_role, from_feature_id, to_feature_id, kind, subject, body, parent_message_id, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
        RETURNING id`,
-      [callerSlug, recipient, toRole, fromFeatureId, toFeatureId, action.kind, action.subject, action.body ?? null, action.parentMessageId ?? null],
+      [activeWorkspaceId(), callerSlug, recipient, toRole, fromFeatureId, toFeatureId, action.kind, action.subject, action.body ?? null, action.parentMessageId ?? null],
     );
     const messageId = (rows as any)[0].id as string;
 
     // If it's a Directive, also append to supervisor_notes for prompt-build.
     if (action.kind === 'Directive') {
       await sql.unsafe(
-        `INSERT INTO ${schema}.supervisor_notes (body, source) VALUES ($1, 'message')`,
-        [`[Directive from ${callerSlug}] ${action.subject}\n\n${action.body ?? ''}`.slice(0, 4000)],
+        `INSERT INTO ${schema}.supervisor_notes (workspace_id, body, source) VALUES ($1, $2, 'message')`,
+        [
+          activeWorkspaceId(), // explicit (WI-5243) — see the executed_actions note above
+          `[Directive from ${callerSlug}] ${action.subject}\n\n${action.body ?? ''}`.slice(0, 4000),
+        ],
       );
     }
 
@@ -543,10 +559,10 @@ async function doSpinupProject(
               kind === 'Priority' ? `Treat ${projectId} as priority work; coordinate with siblings on shared subprojects.` :
               `${action.projectBudgetCents} cents allocated to ${projectId}.`;
             const rows = await tx.unsafe(
-              `INSERT INTO ${schema}.messages (from_slug, to_slug, kind, subject, body, status)
-               VALUES ($1, $2, $3, $4, $5, 'pending')
+              `INSERT INTO ${schema}.messages (workspace_id, from_slug, to_slug, kind, subject, body, status)
+               VALUES ($1, $2, $3, $4, $5, $6, 'pending')
                RETURNING id`,
-              [callerSlug, dept, kind, subj, body],
+              [activeWorkspaceId(), callerSlug, dept, kind, subj, body], // ws explicit (WI-5243)
             );
             subActions.push({ op: 'send_message', ok: true, recipient: dept, messageId: (rows as any)[0].id });
           } catch (e) {
@@ -842,10 +858,10 @@ async function doAddDirectiveSummary(
   const { sql } = getOrgPg();
   const schema = slugToSchema(callerSlug);
   const rows = await sql.unsafe(
-    `INSERT INTO ${schema}.directive_summaries (directive_id, source, summary, caller_slug)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO ${schema}.directive_summaries (workspace_id, directive_id, source, summary, caller_slug)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING id, created_at`,
-    [action.directiveId, source, action.summary.trim(), callerSlug],
+    [activeWorkspaceId(), action.directiveId, source, action.summary.trim(), callerSlug], // ws explicit (WI-5243)
   );
   return {
     ok: true,

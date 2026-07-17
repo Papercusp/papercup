@@ -20,6 +20,10 @@
  *                  curation-signal-gaps-2026-07-17 — the deterministic Health-tab
  *                  aggregation, read via the cached `getSystemHealth()` surface;
  *                  never a second aggregation, D-006/plan-decision)
+ *   deadClaims   → work_items.taken_by joined against the liveness ORACLE
+ *                  (P-005, curation-signal-gaps-2026-07-17 — resolveSessionStates,
+ *                  not a bare heartbeat check; complements the claim-reconciler
+ *                  gap EI-11035 without touching the claim itself)
  *
  * NOTE (v1): coord readers operate on the coord workspace; hfc reads on the
  * active workspace. On the single-workspace dev box these coincide. The work_item
@@ -39,6 +43,8 @@ import { surfaceCuratedMessage } from './curation-surface';
 import { planEventProgressTitle } from './plan-event-title';
 import { getSystemHealth } from '../system-health/compute';
 import type { SystemHealth } from '../system-health/types';
+import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
+import { WORK_ITEM_NON_REQUEUE_STATES } from '../work-items-stale-claims';
 import type {
   FleetReaders,
   RawEscalation,
@@ -47,6 +53,7 @@ import type {
   RawCompletion,
   RawProgress,
   RawHealthPanel,
+  RawDeadClaim,
 } from './fleet-signals';
 import type { CurationDeps } from './curation-loop';
 
@@ -270,6 +277,64 @@ async function readHealth(): Promise<RawHealthPanel[]> {
   return mapHealthPanelsToRaw(health);
 }
 
+/** Bounds the raw claimed-rows scan (P-005) — mirrors BLOCKED_WORK_ITEMS_LIMIT's
+ *  "capped ~50" convention for the other structured-status readers, but wider
+ *  since most claimed rows will have a LIVE holder and get filtered out before
+ *  the final signal count. */
+const DEAD_CLAIM_SCAN_LIMIT = 200;
+/** Final signal cap, after the liveness-oracle filter — matches the ~50 convention. */
+const DEAD_CLAIM_SIGNAL_LIMIT = 50;
+
+/**
+ * Dead-session-held claims sentinel (P-005, curation-signal-gaps-2026-07-17):
+ * open+claimed work_items whose holder's session is genuinely `ended` per the
+ * liveness ORACLE (`resolveSessionStates`), not the bare heartbeat-freshness
+ * check `work-items-stale-claims.ts`'s reclaim sweep uses — exactly the gap
+ * EI-11035 reported (a session can read heartbeat-fresh yet its richer
+ * `sessionState` is already `ended`, so the reconciler never frees it). This
+ * is a READ-ONLY signal — it never mutates `taken_by`/`status`; fixing the
+ * reconciler itself is EI-11035's own scope, this only complements it with
+ * visibility.
+ */
+async function readDeadSessionClaims(): Promise<RawDeadClaim[]> {
+  const ws = activeWorkspaceId();
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    { harness_slug: string; feature_id: string; title: string | null; taken_by: string; updated_ts: string | null }[]
+  >`
+    SELECT harness_slug, feature_id, title, taken_by, updated_ts::text
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${ws}
+       AND taken_by IS NOT NULL AND taken_by <> ''
+       AND status <> ALL(${WORK_ITEM_NON_REQUEUE_STATES}::text[])
+     ORDER BY updated_ts DESC NULLS LAST
+     LIMIT ${DEAD_CLAIM_SCAN_LIMIT}
+  `;
+  if (rows.length === 0) return [];
+  // Bare ownerIds only (no heartbeat/host/pid on hand) — hydratePerId fills
+  // every leg from each subject's own coord_presence row, so this bare-id
+  // call carries the SAME legs a full roster verdict would (per the oracle's
+  // own doc comment for exactly this "only ownerIds" caller shape).
+  const owners = [...new Set(rows.map((r) => r.taken_by))];
+  const verdicts = await resolveSessionStates(
+    owners.map((ownerId) => ({ ownerId })),
+    { hydratePerId: true },
+  );
+  const out: RawDeadClaim[] = [];
+  for (const r of rows) {
+    if (verdicts.get(r.taken_by)?.sessionState !== 'ended') continue;
+    out.push({
+      ref: `${r.harness_slug}#${r.feature_id}`,
+      harness: r.harness_slug,
+      title: r.title?.trim() || r.feature_id,
+      holder: r.taken_by,
+      workItemId: r.feature_id,
+      ts: r.updated_ts ? new Date(Number(r.updated_ts)).toISOString() : undefined,
+    });
+  }
+  return out.slice(0, DEAD_CLAIM_SIGNAL_LIMIT);
+}
+
 /** The production source bag. */
 export function buildFleetReaders(): FleetReaders {
   return {
@@ -279,6 +344,7 @@ export function buildFleetReaders(): FleetReaders {
     completions: readCompletions,
     progress: readProgress,
     health: readHealth,
+    deadClaims: readDeadSessionClaims,
   };
 }
 

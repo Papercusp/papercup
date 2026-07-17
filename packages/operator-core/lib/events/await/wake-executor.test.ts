@@ -1159,6 +1159,23 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     expect(calls[0]).toMatchObject({ origin: 'loop-fire' });
   });
 
+  it('an owner-Inbox-reply wake (inboxOwnerReply marker on the payload) tags origin coord-inject:owner (owner-inbox-single-pane-2026-07-17 D-006)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const { calls, tag } = spyTagger();
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: { inboxOwnerReply: true } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn: tag,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(calls[0]).toMatchObject({ origin: 'coord-inject:owner' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toMatch(/^⟦tagged:coord-inject:owner⟧\n/);
+  });
+
   it('the COLD injection is tagged too (origin loop-fire wraps renderColdWakeInjection)', async () => {
     const injectPsuHost = vi.fn(async () => true);
     const { tag } = spyTagger();

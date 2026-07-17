@@ -335,4 +335,31 @@ describe('flipStatusInBody', () => {
     expect(out.oldStatus).toBe('wip');
     expect(out.newBody).toContain('`needs-human`');
   });
+
+  describe('note handling (EI-384)', () => {
+    it('appends a note verbatim — never strips the caller\'s own punctuation', () => {
+      const body = '- **P-001** `wip` do the thing';
+      const out = flipStatusInBody(body, 'P-001', 'wip', 'ratified in (a) prior review, see (b)');
+      // Before the fix: `.replace(/[()]/g, '')` turned this into
+      // "ratified in a prior review, see b" — a meaning-changing mangle.
+      expect(out.newBody).toContain('ratified in (a) prior review, see (b)');
+    });
+
+    it('a second call with a corrected note REPLACES the first instead of stacking', () => {
+      const body = '- **P-001** `wip` do the thing';
+      const first = flipStatusInBody(body, 'P-001', 'wip', 'oops typo');
+      const second = flipStatusInBody(first.newBody, 'P-001', 'wip', 'fixed note');
+      expect(second.newBody).toContain('fixed note');
+      expect(second.newBody).not.toContain('oops typo');
+      // Exactly one note marker survives, not two.
+      expect((second.newBody.match(/—\s*note:/g) ?? []).length).toBe(1);
+    });
+
+    it('a note-free flip leaves an existing injected note untouched', () => {
+      const body = '- **P-001** `wip` do the thing';
+      const withNote = flipStatusInBody(body, 'P-001', 'wip', 'keep me').newBody;
+      const out = flipStatusInBody(withNote, 'P-001', 'needs-human');
+      expect(out.newBody).toContain('keep me');
+    });
+  });
 });

@@ -150,6 +150,52 @@ export function findUnguardedConstraintRename(sqlText) {
 }
 
 /**
+ * Flag a LITERAL default on a tenant-scoping column — the WI-5125 class.
+ *
+ * Seven consolidation migrations (116/118/119/120/170) each ended with:
+ *
+ *     ALTER VIEW <schema>.agent_chats ALTER COLUMN workspace_id SET DEFAULT 'default'
+ *
+ * under a comment reading "so writers that omit these on INSERT still pass
+ * through". For `harness_slug` / `created_at` that reasoning holds — the view
+ * knows its own slug and `now()` is always right. For `workspace_id` it does
+ * NOT: the active workspace is only knowable IN-PROCESS (a request's
+ * `x-papercusp-workspace` header → ALS, or the process pin), so a literal in
+ * DDL is a GUESS that is wrong for every workspace except the one hardcoded.
+ *
+ * The consequence is not a loud failure but a silent one: a writer omitting the
+ * column INSERTs successfully under the WRONG tenant. It shipped 181/181
+ * mis-tenanted agent_chats rows, and the owner met it as a work-item Chat panel
+ * that spun on "loading chat…" forever (the row existed; the workspace-scoped
+ * read could never see it). A loud NOT NULL violation would have been caught in
+ * minutes; the literal default turned it into weeks of invisible corruption.
+ *
+ * Scans RAW text, deliberately UNLIKE its siblings: these ALTERs live inside the
+ * per-schema `DO $$ … $$` loop that `stripSqlBodies` removes, so a stripped scan
+ * would see nothing and pass — the exact false-green this lint exists to prevent.
+ *
+ * The FIX SHAPE is to drop the literal and let the writer stamp the column
+ * explicitly (`activeWorkspaceId()`), with `fill_workspace_id_from_projects()`
+ * as a derive-net. A default that DERIVES — `current_setting(...)`, a function
+ * call — is fine and is not flagged; only a quoted literal is.
+ */
+export function findLiteralTenantDefault(sqlText) {
+  const hits = [];
+  // Strip COMMENTS ONLY — not dollar-quoted bodies (see the note above: the real
+  // ALTERs live inside a DO $$ … $$ loop). Without this, a migration that
+  // DOCUMENTS the trap by quoting the offending DDL — as 616, its own fix, does —
+  // gets flagged for the words in its comment. A lint that fires on the fix for
+  // the bug it detects is a lint people delete.
+  sqlText = sqlText.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  // ALTER [VIEW|TABLE] <rel> ALTER [COLUMN] <tenant-col> SET DEFAULT '<literal>'
+  const re =
+    /ALTER\s+(?:VIEW|TABLE)\s+[^\n;]*?\bALTER\s+(?:COLUMN\s+)?["']?(workspace_id|hive_slug|tenant_id)["']?\s+SET\s+DEFAULT\s+('(?:[^']|'')*'|%L)/gi;
+  let m;
+  while ((m = re.exec(sqlText)) !== null) hits.push({ column: m[1], value: m[2] });
+  return hits;
+}
+
+/**
  * Group migration filenames by numeric prefix; return duplicate groups whose
  * number is ≥ `enforcedFrom` (default ENFORCED_FROM). A duplicate BELOW that
  * line is pre-existing, already-applied, ledgered history — the runner keys
@@ -249,7 +295,28 @@ async function main() {
     );
   }
 
-  // 4. unreserved numbers (PG optional)
+  // 4. literal default on a tenant-scoping column (the WI-5125 class)
+  //
+  // Grandfathered below ENFORCED_FROM for the same reason as the rename check:
+  // 116/118/119/120/170 still carry this DDL, they are already applied, and the
+  // runner verifies each applied file by sha256 — editing one now would break its
+  // recorded checksum. Migration 616 already corrected their EFFECT on live
+  // databases (drops the literals, attaches the derive-trigger); this lint stops a
+  // NEW migration from re-introducing the trap.
+  for (const f of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    if (num < ENFORCED_FROM) continue;
+    const hits = findLiteralTenantDefault(readFileSync(join(SQL_DIR, f), 'utf8'));
+    if (!hits.length) continue;
+    failed = true;
+    console.error(
+      `✗ ${f}: literal DEFAULT on a tenant-scoping column (${hits
+        .map((h) => `${h.column} SET DEFAULT ${h.value}`)
+        .join(', ')}) — the active workspace is only knowable IN-PROCESS (request header → ALS, or the process pin), so a literal here is a GUESS that silently files rows under the WRONG tenant while the INSERT still reports success. This shipped 181 mis-tenanted agent_chats rows and surfaced as a chat panel spinning forever (WI-5125). Drop the default and stamp the column explicitly in the writer (activeWorkspaceId()); a derive-net belongs in a BEFORE INSERT trigger (harness_shared.fill_workspace_id_from_projects) — see 616-workspace-stamp-consolidated-views.sql and /internal/docs/agent-insights/consolidated-view-literal-workspace-default.`,
+    );
+  }
+
+  // 5. unreserved numbers (PG optional)
   const fileNums = files
     .map((f) => /^(\d+)-/.exec(f)?.[1])
     .filter(Boolean)

@@ -348,6 +348,14 @@ export interface BootHarnessOpts {
    */
   swarmJoinRetryMs?: number;
   /**
+   * Fired ONCE when the WI-752 join-retry attaches the swarm AFTER boot. Anything
+   * wired against the boot-time `swarm: null` handle (the presence announce's
+   * gossip registration no-ops without a swarm and is then marked wired forever —
+   * the 2026-07-17 bg-host boot lost presence-gossip for its whole lifetime this
+   * way) must re-wire here. boot-all passes `markSendSideUnwired + re-wire`.
+   */
+  onSwarmJoinRecovered?: () => void;
+  /**
    * Test seam (A-003) — override how the joiner's hive-home projection slug is
    * resolved. Production leaves this undefined and `resolveHiveHomeProjectionSlug`
    * imports the real `joinerPotHomeSlug` (reads the remote_hive registry). Tests
@@ -3625,10 +3633,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // NEW topic, never re-join the boot-time one from the opts snapshot.
       await joinForBinding(currentBinding);
       if (swarmHandle !== null) {
-         
+
         console.info(
           `[swarm] join RECOVERED via retry harness=${opts.harnessSlug} — federation re-established without a restart`,
         );
+        try {
+          opts.onSwarmJoinRecovered?.();
+        } catch {
+          /* a re-wire hook failure must never kill the retry loop's tail */
+        }
         return; // joined — stop retrying
       }
       swarmJoinRetryDelay = Math.min(swarmJoinRetryDelay * 2, SWARM_JOIN_RETRY_CAP_MS);

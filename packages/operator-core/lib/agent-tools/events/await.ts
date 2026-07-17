@@ -30,6 +30,8 @@ import { startAwaitSweeper } from '../../events/await/engine';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { liveBlockedState, liveSettledProbe } from '../../work-items-events';
 import { hardText, softText, clampText, LIMITS } from '../limits';
+import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
+import { resolvePlanScope } from '../plans/source';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
@@ -109,6 +111,25 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     startAwaitSweeper();
 
+    // EI-383: a REAL registered await ends the turn until the wake — no activity-
+    // bus event fires again until then, so any plan-item claim the caller holds
+    // would otherwise lapse mid-sleep on a long park. Extend it to survive the
+    // sleep (capped at the existing MAX_TTL_SEC ceiling — see claims.ts). Called
+    // only right before an ACTUAL registration succeeds (not on an early
+    // already_satisfied/already_fired/already_done short-circuit, which never
+    // sleeps at all). Best-effort: never let this block or fail the await itself.
+    const extendClaimsForThisAwait = async (timeoutSec: number): Promise<void> => {
+      try {
+        const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+        const { workspaceId } = await resolvePlanScope({
+          harnessSlug: typeof harnessRaw === 'string' ? harnessRaw : undefined,
+        });
+        await extendOwnerClaimsForAwait(workspaceId, identity.ownerId, timeoutSec);
+      } catch {
+        /* best-effort — a claim-extension failure must never block registering the await */
+      }
+    };
+
     // ── Composed threshold-tree await (composable-event-awaits-2026-07-11): a `spec`
     //    (mutually exclusive with `event`) registers an all/any/some TREE that wakes
     //    ONCE when its combination is satisfied. Leaves are ordinary awaits; only a ROOT
@@ -144,6 +165,7 @@ export default defineTool({
             ],
           };
         }
+        await extendClaimsForThisAwait(args.timeout_sec ?? DEFAULT_TIMEOUT_SEC);
         return {
           content: [
             {
@@ -407,6 +429,8 @@ export default defineTool({
       timeoutSec: args.timeout_sec ?? DEFAULT_TIMEOUT_SEC,
       payloadFilter: args.payload_filter ?? null,
     });
+
+    await extendClaimsForThisAwait(args.timeout_sec ?? DEFAULT_TIMEOUT_SEC);
 
     return {
       content: [

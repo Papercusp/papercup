@@ -721,6 +721,19 @@ export async function bootSingleHarness(
       harnessSlug,
       swarmBinding,
       mergeCursorStore,
+      // WI-752 late-join re-wire: the presence step no-ops against a swarm-less
+      // handle and is then marked wired, so a join that only succeeds via the
+      // retry left presence-gossip dead for the process lifetime (tower bg-host,
+      // 2026-07-17). Un-mark JUST presence (outbox never needs the swarm and a
+      // re-wire there could double-arm its drain loop) and re-attempt against
+      // the registered handle, which now sees the live swarm.
+      onSwarmJoinRecovered: () => {
+        markSendSideUnwired(k, 'presence');
+        const h = handles.get(k);
+        if (h && !skipSendSideWiring) {
+          void ensureSendSideWired(h, opts.wireSendSide).catch(() => {});
+        }
+      },
     });
     return await Promise.race([
       rawBoot,

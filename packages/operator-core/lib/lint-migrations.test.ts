@@ -15,6 +15,7 @@ import {
   stripSqlBodies,
   findRawTxControl,
   findUnguardedConstraintRename,
+  findLiteralTenantDefault,
   duplicateNumberGroups,
   unreservedNumbers,
   ENFORCED_FROM,
@@ -195,5 +196,78 @@ describe('the real libs/papercusp/libs/db/sql/ directory (gate wiring)', () => {
       if (hits.length) violations.push(`${f}: ${hits.join(', ')}`);
     }
     expect(violations).toEqual([]);
+  });
+
+  // WI-5125 / WI-5243. Same shape as the RENAME guard above: the instances are
+  // corrected (migration 616), this stops the CLASS from silently returning.
+  it('has no literal tenant-column DEFAULT in an enforced-era migration', () => {
+    const violations: string[] = [];
+    for (const f of files) {
+      const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+      if (num < ENFORCED_FROM) continue; // applied history: immutable (sha256-verified by the runner)
+      const hits = findLiteralTenantDefault(readFileSync(join(SQL_DIR, f), 'utf8'));
+      if (hits.length) violations.push(`${f}: ${hits.map((h) => `${h.column}=${h.value}`).join(', ')}`);
+    }
+    expect(violations).toEqual([]);
+  });
+});
+
+/**
+ * WI-5125 — a literal DEFAULT on a tenant-scoping column silently mis-tenants
+ * every writer that omits it. The INSERT still SUCCEEDS, so nothing fails loudly:
+ * it shipped 181/181 mis-tenanted agent_chats rows and reached the owner as a chat
+ * panel spinning on "loading chat…" forever.
+ */
+describe('findLiteralTenantDefault', () => {
+  it('flags the exact DDL that caused WI-5125 (migration 116)', () => {
+    // Verbatim shape from 116-consolidate-agent-chats.sql: the literal rides a
+    // format() %L arg, INSIDE a per-schema DO $$ … $$ loop.
+    const sql = `DO $mig$ BEGIN
+      EXECUTE format('ALTER VIEW %I.agent_chats ALTER COLUMN workspace_id SET DEFAULT %L', s, 'default');
+    END $mig$;`;
+    expect(findLiteralTenantDefault(sql)).toEqual([{ column: 'workspace_id', value: '%L' }]);
+  });
+
+  it('flags a direct quoted literal too', () => {
+    const sql = `ALTER VIEW s.agent_chats ALTER COLUMN workspace_id SET DEFAULT 'default';`;
+    expect(findLiteralTenantDefault(sql)).toEqual([{ column: 'workspace_id', value: "'default'" }]);
+  });
+
+  // The load-bearing reason this scans RAW text while its siblings scan stripped
+  // text: the real ALTERs live inside a DO $$ … $$ body, so a stripped scan sees
+  // NOTHING and passes. That false green is the whole bug.
+  it('still catches it despite the DO-block body (why it does not use stripSqlBodies)', () => {
+    const sql = `DO $$ BEGIN
+      EXECUTE format('ALTER VIEW %I.messages ALTER COLUMN workspace_id SET DEFAULT %L', s, 'default');
+    END $$;`;
+    expect(stripSqlBodies(sql)).not.toMatch(/workspace_id/); // the body is gone …
+    expect(findLiteralTenantDefault(sql)).toHaveLength(1); // … but the lint still sees it
+  });
+
+  it('does NOT flag a DERIVED default — deriving the tenant is the correct shape', () => {
+    expect(
+      findLiteralTenantDefault(
+        `ALTER VIEW s.t ALTER COLUMN workspace_id SET DEFAULT current_setting('app.workspace_id', true);`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('does NOT flag a literal on a non-tenant column (harness_slug/created_at are knowable in DDL)', () => {
+    const sql = [
+      `ALTER VIEW s.t ALTER COLUMN harness_slug SET DEFAULT 'papercusp';`,
+      `ALTER VIEW s.t ALTER COLUMN transcript SET DEFAULT '[]'::jsonb;`,
+    ].join('\n');
+    expect(findLiteralTenantDefault(sql)).toEqual([]);
+  });
+
+  // A lint that fires on the migration FIXING the bug it detects is a lint people
+  // delete. 616 quotes the offending DDL in its header comment to explain itself.
+  it('does NOT flag offending DDL quoted inside a comment', () => {
+    const sql = [
+      `-- ALTER VIEW <schema>.agent_chats ALTER COLUMN workspace_id SET DEFAULT 'default'`,
+      `/* also ALTER VIEW x ALTER COLUMN workspace_id SET DEFAULT 'default' */`,
+      `ALTER TABLE harness_shared.agent_chats_consolidated ALTER COLUMN workspace_id DROP DEFAULT;`,
+    ].join('\n');
+    expect(findLiteralTenantDefault(sql)).toEqual([]);
   });
 });

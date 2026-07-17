@@ -468,6 +468,38 @@ export function ackCoordMessage(args: { msg_id: string }) {
   return postCoord<{ ok?: boolean; error?: string }>('ack', args);
 }
 
+/** D-007 (owner-inbox-single-pane-2026-07-17 P-006): deliver + wake an inbox
+ *  reply to its LIVE asker (coord:presence). Routes through the dedicated
+ *  `/api/admin/coord-inbox-reply` endpoint — NOT the generic coord:send proxy
+ *  — because delivery stamps the owner-authoritative `coord-inject:owner`
+ *  turn-provenance origin (D-006), which must never be reachable via the
+ *  agent-callable coord:send tool. Returns `live:false` when the asker isn't
+ *  live; the caller falls back to the Discuss (Papercup) path. */
+export function deliverInboxReply(args: { askerId: string; text: string; summary?: string; planSlug?: string }) {
+  return postFullUrl<{ ok: boolean; live: boolean; delivered: boolean; woken: number; msgId?: string; error?: string }>(
+    '/api/admin/coord-inbox-reply',
+    args,
+  );
+}
+
+/** Like `postJson`/`postCoord` but against an absolute path (not the `/api/admin/plans`
+ *  or `/api/admin/coord` base) — for the small set of admin write routes that
+ *  deliberately live outside those two proxies (e.g. coord-inbox-reply, D-006). */
+async function postFullUrl<T>(url: string, body: Record<string, unknown>): Promise<T> {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`POST ${url} → ${r.status}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
 /** Triage an attention item (inbox:triage via the /api/admin/inbox proxy).
  *  Resolving an operator-report from the inbox IS the triage state machine
  *  (resolve → handled tier, auditable). report-cards-inbox-reconciliation P-007. */

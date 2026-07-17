@@ -892,6 +892,100 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(r2.fleetControl).toBeUndefined(); // best-effort — orientation never breaks
     });
   });
+
+  describe('WI-5228 (kickoff-prompt-absorption-2026-07-17 P-002): orient-first plan bootstrap', () => {
+    it('an explicit planSlug folds the Now block + next actionable item + my claims', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          agents: [
+            {
+              agentId: 'me',
+              isSelf: true,
+              declaredPlanSlug: 'some-other-plan',
+              claims: [
+                { planSlug: 'kickoff-prompt-absorption-2026-07-17', id: 'P-001' },
+                { planSlug: 'a-different-plan', id: 'P-999' },
+              ],
+            },
+          ],
+        }),
+        'plans:get': () => ({
+          results: [
+            {
+              now: { state: 'authored', next: 'first free member claims P-001' },
+              items: [
+                { id: 'P-001', text: 'Auto-arm the follow-on loop', phase: 'Phase 1', effectiveStatus: 'wip', unresolvedBlockers: [], needsHuman: false },
+                { id: 'P-002', text: 'Orient-first bootstrap', phase: 'Phase 1', effectiveStatus: 'todo', unresolvedBlockers: [], needsHuman: false },
+                { id: 'P-004', text: 'The shrink', phase: 'Phase 2', effectiveStatus: 'todo', unresolvedBlockers: ['P-001'], needsHuman: false },
+              ],
+            },
+          ],
+        }),
+      });
+      const r = await composeOrient({ planSlug: 'kickoff-prompt-absorption-2026-07-17', harness: 'h' }, call, 'me');
+      expect(r.planNow).toEqual({
+        planSlug: 'kickoff-prompt-absorption-2026-07-17',
+        state: 'authored',
+        next: 'first free member claims P-001',
+        // P-001 is 'wip' (not 'todo') so it's skipped; P-004 has an unresolved
+        // blocker so it's skipped; P-002 is the first genuinely admissible item.
+        nextActionable: { id: 'P-002', title: 'Orient-first bootstrap', phase: 'Phase 1' },
+        // Only the claim inside THIS plan is surfaced, not the other-plan one.
+        myClaims: ['P-001'],
+      });
+    });
+
+    it('no planSlug + no declaredPlanSlug on the self row: planNow is null and plans:get is never called', async () => {
+      const { call, calls } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.planNow).toBeNull();
+      expect(calls.some((c) => c.name === 'plans:get')).toBe(false);
+    });
+
+    it('falls back to the self row\'s declaredPlanSlug (fleet:assignments presence) when planSlug is omitted', async () => {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: 'me', isSelf: true, declaredPlanSlug: 'my-bound-plan', claims: [] }],
+        }),
+        'plans:get': () => ({ results: [{ now: { state: 's', next: 'n' }, items: [] }] }),
+      });
+      const r = await composeOrient({}, call, 'me');
+      expect(calls.find((c) => c.name === 'plans:get')?.args).toMatchObject({ slug: 'my-bound-plan' });
+      expect(r.planNow).toEqual({
+        planSlug: 'my-bound-plan',
+        state: 's',
+        next: 'n',
+        nextActionable: null,
+        myClaims: [],
+      });
+    });
+
+    it('a monitor tick skips the leg entirely (no plans:get call, no extra round-trip)', async () => {
+      const { call, calls } = fakeCall({ ...CORE });
+      await composeOrient({ mode: 'monitor', planSlug: 'whatever' }, call, 'me');
+      expect(calls.some((c) => c.name === 'plans:get')).toBe(false);
+    });
+
+    it('a plans:get failure degrades planNow to null instead of throwing (best-effort)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'plans:get': () => {
+          throw new Error('plan store unavailable');
+        },
+      });
+      const r = await composeOrient({ planSlug: 'whatever', harness: 'h' }, call, 'me');
+      expect(r.planNow).toBeNull();
+      expect(r.ok).toBe(true); // orientation as a whole still succeeds
+      warnSpy.mockRestore();
+    });
+  });
 });
 
 describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', () => {

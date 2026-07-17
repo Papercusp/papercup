@@ -48,6 +48,7 @@
  */
 
 import { promises as fsp, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
@@ -1721,6 +1722,177 @@ export async function reportTurnJournal(ctx: unknown): Promise<void> {
     source_kind: 'omp',
     ...(filePath ? { transcript_path: filePath } : {}),
   });
+}
+
+// ── Unstructured owner-ask detection + ingest (owner-inbox-single-pane-2026-07-17 P-004) ──
+//
+// OMP has no hook-level signal equivalent to Claude's AskUserQuestion tool_use (P-001's
+// PreToolUse mirror) — there is nothing to intercept, only the turn's final TEXT. So the OMP
+// leg works off a bounded, best-effort tail-read of the turn's own transcript file, self
+// -contained (this file ships standalone to OMP — no operator import): a minimal mirror of
+// the server's readLastAssistantTurn/parseOmpLine (packages/operator-core/lib/{turn-journal,
+// search/session-ingest}.ts). Any read/parse failure degrades to "no text" — never throws.
+
+/** Bounded tail-read size — an OMP JSONL line can carry a large tool payload, but the final
+ *  TEXT turn sits at the very end of the file; 64 KB is generous headroom for a text-only scan. */
+const OMP_ASK_TAIL_READ_BYTES = 64 * 1024;
+
+/** Same shape as the server's textFromContent (session-ingest.ts) — OMP message content is
+ *  either a plain string or an array of `{type:'text'|'input_text'|'output_text', text}`
+ *  blocks. Pure, unit-tested. */
+export function extractOmpMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const p of content) {
+    if (!p || typeof p !== 'object') continue;
+    const part = p as { type?: string; text?: string };
+    if (typeof part.text !== 'string') continue;
+    if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+      parts.push(part.text);
+    }
+  }
+  return parts.join('\n');
+}
+
+/** Read the last ASSISTANT text turn from an OMP transcript (`{type:'message',
+ *  message:{role,content}}` lines — verified against packages/operator-core/lib/search/
+ *  session-ingest.ts's parseOmpLine). Bounded tail read; best-effort — any failure (missing
+ *  file, mid-file JSON fragment, unknown shape) returns '' rather than throwing, since this
+ *  runs inside a fire-and-forget turn_end hook. */
+export async function readLastOmpAssistantText(filePath: string): Promise<string> {
+  try {
+    const st = await fsp.stat(filePath);
+    const start = Math.max(0, st.size - OMP_ASK_TAIL_READ_BYTES);
+    const fh = await fsp.open(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(st.size - start);
+      await fh.read(buf, 0, buf.length, start);
+      let lines = buf.toString('utf8').split('\n');
+      if (start > 0) lines = lines.slice(1); // a mid-file start lands mid-line — unparseable
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (obj.type !== 'message') continue;
+        const message = obj.message as { role?: string; content?: unknown } | undefined;
+        if (!message || message.role !== 'assistant') continue;
+        const text = extractOmpMessageText(message.content);
+        if (text) return text;
+      }
+      return '';
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return '';
+  }
+}
+
+/** Heuristic: does the last assistant turn's plain text look like it ends by asking the OWNER
+ *  a question with NO structured envelope (an `<ask>` block, or an explicit coord:escalate /
+ *  coord:ask-owner mention)? Deliberately conservative in both directions: a false negative
+ *  (a missed ask) just means no nudge fires this turn; a false positive would nudge on ordinary
+ *  rhetorical prose, so this only trips on a short, standalone LAST non-empty line ending in
+ *  '?' — a genuine turn-ending question, not a stray '?' inside a code block or a long
+ *  multi-clause sentence. Pure, unit-tested. */
+export function looksLikeUnstructuredOwnerAsk(text: string): boolean {
+  const trimmed = (text ?? '').trim();
+  if (!trimmed) return false;
+  if (/<ask\b/i.test(trimmed) || /<report\b/i.test(trimmed)) return false; // already structured
+  if (/coord:escalate|coord:ask-owner/i.test(trimmed)) return false; // already routed durably
+  const lines = trimmed
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1] ?? '';
+  if (!last.endsWith('?')) return false;
+  return last.length <= 300 && !last.startsWith('```') && !last.startsWith('//');
+}
+
+/** sessionId → the open ask-gate's refId this hook itself opened, so the matching `cleared`
+ *  event carries the SAME refId (the contract's pairing key) and we never re-open a gate every
+ *  single turn the model keeps asking the same way. Process-lifetime only — a restarted OMP
+ *  process re-detects and re-opens, which is fine (the server dedupes on refId, not on us). */
+const _openAskGates = new Map<string, string>();
+
+/** Test-only: reset the open-ask-gate tracking between cases. */
+export function _resetOpenAskGatesForTests(): void {
+  _openAskGates.clear();
+}
+
+/**
+ * Ingest the turn's final text into P-002's ask/owner-gate surface (OMP leg of
+ * `owner-inbox-single-pane-2026-07-17` P-004; D-002's "soft enforce" tier for OMP — see
+ * /internal/docs/agent-insights/su-owner-ask-capability-matrix). Locked contract from the P-002
+ * holder (WI-5234, coord msg mroqabes…): `sessions:ingest-gate-event` — role-gated built-in,
+ * `{ sessionId, client, kind:'ask'|'permission_wait'|'cleared', refId, question?, text?,
+ * ownerId? }` → `{ ok, gateId, state }`. We generate refId; the SAME refId closes the gate.
+ *
+ * Soft enforcement only (D-002): unlike Claude's Stop hook, OMP has no blocking primitive at a
+ * turn boundary, so the strongest available cue is a `followUp` nudge delivered on the NEXT
+ * turn — never a bounce of the one that just ended. Fire-and-forget from the caller;
+ * callMcpTool fails open (detached, or the tool not yet live on :3170 → null → no-op), so this
+ * is safe to have landed ahead of the endpoint going live.
+ */
+export async function reportTurnAskIngest(ctx: unknown): Promise<{ nudge: string }> {
+  const c = ctx as HookSessionLinkContext | undefined;
+  const sessionId = c?.sessionManager?.getSessionId?.()?.trim();
+  if (!sessionId) return { nudge: '' };
+  const filePath = c?.sessionManager?.getSessionFile?.();
+  if (!filePath) return { nudge: '' };
+  const text = await readLastOmpAssistantText(filePath);
+  const isAsk = looksLikeUnstructuredOwnerAsk(text);
+  const openRefId = _openAskGates.get(sessionId);
+
+  if (!isAsk) {
+    // A previously-open gate for this session is now resolved (the model moved on, or
+    // re-asked structurally) — close it so the gate list doesn't accumulate stale rows.
+    if (openRefId) {
+      _openAskGates.delete(sessionId);
+      void callMcpTool('sessions:ingest-gate-event', {
+        sessionId,
+        client: 'omp',
+        kind: 'cleared',
+        refId: openRefId,
+      });
+    }
+    return { nudge: '' };
+  }
+
+  const refId = openRefId ?? randomUUID();
+  if (!openRefId) _openAskGates.set(sessionId, refId);
+  const lastLine = trimmedLastLine(text);
+  await callMcpTool('sessions:ingest-gate-event', {
+    sessionId,
+    client: 'omp',
+    kind: 'ask',
+    refId,
+    question: lastLine,
+    text,
+    ownerId: hookOwnerId(),
+  });
+  return {
+    nudge:
+      'Your last turn ended in what looks like a question for the owner, but it was not ' +
+      'wrapped in a durable channel, so the owner Inbox cannot see it. Re-ask via ' +
+      "coord:escalate with structured options (preferred), or an <ask> block at minimum.",
+  };
+}
+
+/** The last non-empty trimmed line of `text`, capped for a `question` field. Pure helper. */
+function trimmedLastLine(text: string): string {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1] ?? '';
+  return last.length > 500 ? `${last.slice(0, 499)}…` : last;
 }
 
 // ── Objective title (session-objective-display-2026-06-22, P-004) ────────
@@ -3702,6 +3874,19 @@ export default function register(pi: HookApi): void {
     await safe(() => onTurnEnd(), undefined);
     // Per-turn journal ping (P-012) — deliberately un-awaited: fire-and-forget.
     void safe(() => reportTurnJournal(ctx), undefined);
+    // owner-inbox-single-pane-2026-07-17 P-004: ingest the turn's final text into P-002's
+    // ask surface, and soft-nudge a correction on the NEXT turn if it ended in an
+    // unstructured owner-ask. followUp (not steer) so an in-flight tool is never aborted —
+    // same non-interrupting delivery as the tool_result activity reminder below.
+    void safe(async () => {
+      const { nudge } = await reportTurnAskIngest(ctx);
+      if (nudge.length > 0) {
+        pi.sendMessage(
+          { customType: 'coord-reminder', content: nudge, display: false, attribution: 'agent' },
+          { deliverAs: 'followUp' },
+        );
+      }
+    }, undefined);
   });
 
   pi.on('tool_call', async (event) => {

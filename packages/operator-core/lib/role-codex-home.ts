@@ -26,6 +26,20 @@
  *                               the real login — copying would risk a
  *                               single-use refresh-token logout).
  *
+ * KNOWN GAP (D-002, owner-inbox-single-pane-2026-07-17): codex's hook
+ * surface is PreToolUse/PostToolUse ONLY — there is no turn_end/Stop
+ * equivalent event today (an upstream `notify` turn-complete channel is
+ * reportedly available but UNVERIFIED against our pin). That means the
+ * su convention "an owner-directed question must ride a durable channel"
+ * (coord:escalate w/ options, or an `<ask>` block at minimum) cannot be
+ * enforced or even soft-nudged for a Codex role session the way Claude's
+ * Stop-bounce or OMP's turn_end capture+followUp can — it is
+ * convention-only here, backstopped only by the transcript watcher (P-002)
+ * detecting a pending owner-gate after the fact. This is a RECORDED
+ * decision, not a bug to file later — see
+ * /internal/docs/agent-insights/su-owner-ask-capability-matrix for the full
+ * per-client matrix. Re-evaluate if codex ever ships a genuine turn-end hook.
+ *
  * Server-only.
  */
 import {

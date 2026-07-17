@@ -92,7 +92,17 @@ export async function wirePresenceAnnounceForHarness(
   // Only a harness that JOINED a swarm has peers to announce to (handle.swarm is
   // non-null exactly when a shared harness's swarm-join succeeded). A private /
   // local-only / gh-unauthenticated harness has no swarm → nothing to announce.
-  if (!handle.swarm) return null;
+  // Logged because this skip is INVISIBLE otherwise: when the boot-time join
+  // failed transiently, presence stays dead until the WI-752 join-retry recovery
+  // re-wires (boot-all onSwarmJoinRecovered) — the 2026-07-17 tower bg-host ran
+  // a whole process lifetime presence-less with zero log evidence.
+  if (!handle.swarm) {
+    console.info(
+      `[wire-presence] skip ${handle.workspaceId}::${handle.harnessSlug} — no swarm ` +
+        `(private/local-only, or join pending; a join-retry recovery re-wires)`,
+    );
+    return null;
+  }
   const intervalMs = opts.intervalMs ?? DEFAULT_PRESENCE_INTERVAL_MS;
   if (intervalMs <= 0) return null;
 
@@ -138,6 +148,10 @@ export async function wirePresenceAnnounceForHarness(
       ...(writer ? { writer } : {}),
     });
   }
+  console.info(
+    `[wire-presence] wired ${handle.workspaceId}::${handle.harnessSlug} — ` +
+      `gossipWriter=${gossipWriterOn ? 'on' : 'off'} topic=${gossipTopicHex ? gossipTopicHex.slice(0, 12) : 'none'} pot=${potSlug ?? 'none'}`,
+  );
 
   const loop = startPresenceAnnounceLoop({
     resolveIdentity,

@@ -18,6 +18,14 @@
  *     resolve the question with the owner's text as the accepted answer.
  *   - `resolveAttentionAction` also dispatches the standing-approval terminal
  *     grant/dismiss and the improvement Dismiss (reject) (D-027 follow-on (1)).
+ *   - `replyToAttentionItem(item, text)` (owner-inbox-single-pane-2026-07-17
+ *     P-006) wraps `answerAttentionItem` with REPLY ROUTING (D-007): when the
+ *     item's asker (`ownerAgentId`) is LIVE (coord:presence), the reply is
+ *     ALSO delivered straight to their coord inbox and they are woken —
+ *     stamped with owner-authoritative turn-provenance (D-006) — instead of
+ *     relying solely on the resolve path's own (best-effort, awaiting-only)
+ *     notification. A dead/unknown asker is untouched here; the existing
+ *     Discuss (Papercup) button remains the fallback (D-007).
  *
  * These deliberately reproduce today's `OtherDetail` / `InboxItemActions`
  * behavior — see attention-card.test.ts for the parity assertions (P-013).
@@ -37,6 +45,7 @@ import {
   decideStandingApproval,
   resolveConversationAnswer,
   dismissImprovement,
+  deliverInboxReply,
 } from './plans-api';
 import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskChoiceCard';
 
@@ -265,4 +274,48 @@ export async function answerAttentionItem(item: AttentionItem, answerText: strin
   if ('error' in r) throw new Error(r.error ?? 'set-status failed');
   resumeLoop(item.harnessSlug);
   return { resolved: true };
+}
+
+export interface ReplyResult extends ResolveResult {
+  /** True when the asker was live (coord:presence) and the reply was pushed
+   *  straight to their inbox + they were woken. False (including on any
+   *  delivery error) means the caller should treat this like today — the
+   *  answer still resolved the item; only the extra push didn't happen. */
+  live: boolean;
+  woken: number;
+}
+
+/**
+ * D-006/D-007 (owner-inbox-single-pane-2026-07-17 P-006): answer an ask item
+ * AND route the reply straight back to its asker. Resolves via the existing
+ * `answerAttentionItem` path first (unchanged behavior — the item still
+ * resolves even if reply-routing below fails or the asker is dead), then,
+ * only when the item names an asker (`ownerAgentId`), best-effort delivers +
+ * wakes them via the admin-UI-only inbox-reply route (D-007) — which also
+ * stamps the delivered turn `coord-inject:owner` in the turn-provenance
+ * ledger (D-006). Never throws for a dead/unknown asker or a delivery
+ * fault — those degrade to `{ live: false, woken: 0 }`; the resolve itself
+ * already landed via the (already-thrown-on-failure) `answerAttentionItem`
+ * call above.
+ */
+export async function replyToAttentionItem(item: AttentionItem, answerText: string): Promise<ReplyResult> {
+  const resolved = await answerAttentionItem(item, answerText);
+  const askerId = item.ownerAgentId;
+  const body = answerText.trim();
+  if (!resolved.resolved || !askerId || !body) return { ...resolved, live: false, woken: 0 };
+  try {
+    const res = await deliverInboxReply({
+      askerId,
+      text: body,
+      summary: `Owner answered your ${item.kind} (${item.id})`,
+      planSlug: item.planSlug ?? undefined,
+    });
+    if (res.error) return { ...resolved, live: false, woken: 0 };
+    return { ...resolved, live: res.live, woken: res.woken };
+  } catch {
+    // D-007: reply-routing is best-effort layered on top of the (already
+    // successful) resolve — a delivery hiccup must never surface as an
+    // "answer failed" toast.
+    return { ...resolved, live: false, woken: 0 };
+  }
 }

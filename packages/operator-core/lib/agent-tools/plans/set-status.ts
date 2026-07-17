@@ -50,7 +50,7 @@ const STATUS = z.enum([...ITEM_STATUSES] as [string, ...string[]]);
 
 const NOTE = softText(8000)
   .describe(
-    'Optional SHORT comment appended inline to the item line. Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
+    'Optional SHORT comment appended inline to the item line — REPLACES any note this same tool previously injected on the item (a repeat call to fix a typo overwrites, never stacks; EI-384). Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
   );
 
 const itemSpec = z.object({
@@ -313,6 +313,12 @@ export async function releaseTodoClaim(opts: {
   return { claimReleased };
 }
 
+/** The marker `flipStatusInBody` injects for a caller-supplied `note` (EI-384) —
+ *  matches from the marker to end-of-line so a REPEAT call replaces the whole
+ *  previously-injected note instead of appending another one. Exported only for
+ *  the note-replacement test below; not part of the tool's public surface. */
+export const NOTE_MARKER_RE = /\s*—\s*note:.*$/;
+
 export function flipStatusInBody(
   body: string,
   itemId: string,
@@ -334,8 +340,18 @@ export function flipStatusInBody(
   const oldStatus = m[2] ?? '';
   let rest = m[3] ?? '';
   if (note) {
-    // Append note at end of line, single space separator.
-    rest = `${rest} (${note.replace(/[()]/g, '')})`;
+    // EI-384: two bugs in the old `rest = \`${rest} (${note.replace(/[()]/g, '')})\``
+    // form — (1) it silently stripped parens from the caller's OWN note text
+    // (turning "(a)" into "a" — a meaning-changing mangle, not cosmetic), and
+    // (2) a repeat set-status call on the same item (e.g. fixing a typo'd note)
+    // APPENDED a second parenthetical instead of replacing the first, so notes
+    // accumulated without bound. Fixed by (1) never touching the note's own
+    // characters, and (2) using a distinctive, unambiguous " — note: " marker so
+    // an existing INJECTED note (this function's own prior output) can be found
+    // and replaced — never appended to — while ordinary item text that happens
+    // to end in parens is left alone (it never matches this marker).
+    rest = rest.replace(NOTE_MARKER_RE, '');
+    rest = `${rest} — note: ${note}`;
   }
   const newLine = `${m[1] ?? ''}${newStatus}${rest}`;
   // Index-based splice rather than body.replace(re, newLine): a string

@@ -17,12 +17,14 @@ vi.mock('./plans-api', () => ({
   decideStandingApproval: vi.fn(async () => ({ ok: true })),
   resolveConversationAnswer: vi.fn(async () => ({ ok: true, state: 'resolved' })),
   dismissImprovement: vi.fn(async () => ({ ok: true, closed: true })),
+  deliverInboxReply: vi.fn(async () => ({ ok: true, live: true, delivered: true, woken: 1 })),
 }));
 
 import {
   attentionItemToCardSpec,
   resolveAttentionAction,
   answerAttentionItem,
+  replyToAttentionItem,
 } from './attention-card';
 import {
   resolveEscalation,
@@ -33,6 +35,7 @@ import {
   decideStandingApproval,
   resolveConversationAnswer,
   dismissImprovement,
+  deliverInboxReply,
 } from './plans-api';
 import type { AttentionItem } from './plans-api';
 
@@ -139,8 +142,18 @@ const conversation = item({
   status: 'open',
   tier: 'alert',
   needsHuman: false,
+  ownerAgentId: 'su-asker-1',
   actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'message-owner', label: 'Message owner' }],
   ref: { kind: 'conversation', conversationId: 'CONV-7' },
+});
+const conversationNoAsker = item({
+  kind: 'conversation',
+  status: 'open',
+  tier: 'alert',
+  needsHuman: false,
+  ownerAgentId: null,
+  actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'message-owner', label: 'Message owner' }],
+  ref: { kind: 'conversation', conversationId: 'CONV-8' },
 });
 const improvement = item({
   kind: 'improvement',
@@ -375,5 +388,52 @@ describe('answerAttentionItem (P-021 Answer flow parity)', () => {
     expect(addPlanDecision).not.toHaveBeenCalled();
     expect(setItemStatus).not.toHaveBeenCalled();
     expect(r.resolved).toBe(true);
+  });
+});
+
+// owner-inbox-single-pane-2026-07-17 P-006 (D-006/D-007): reply routing layered
+// on top of the existing answer/resolve path.
+describe('replyToAttentionItem (P-006 reply routing, D-006/D-007)', () => {
+  it('resolves the conversation AND pushes the reply to a LIVE asker (ownerAgentId set)', async () => {
+    const r = await replyToAttentionItem(conversation, 'use approach B');
+    expect(resolveConversationAnswer).toHaveBeenCalledWith({ conversation_id: 'CONV-7', accepted_answer: 'use approach B' });
+    expect(deliverInboxReply).toHaveBeenCalledWith(
+      expect.objectContaining({ askerId: 'su-asker-1', text: 'use approach B', planSlug: 'p' }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.live).toBe(true);
+    expect(r.woken).toBe(1);
+  });
+
+  it('no asker (ownerAgentId null) still resolves — reply-routing is skipped, not an error', async () => {
+    const r = await replyToAttentionItem(conversationNoAsker, 'use approach B');
+    expect(resolveConversationAnswer).toHaveBeenCalledWith({ conversation_id: 'CONV-8', accepted_answer: 'use approach B' });
+    expect(deliverInboxReply).not.toHaveBeenCalled();
+    expect(r.resolved).toBe(true);
+    expect(r.live).toBe(false);
+    expect(r.woken).toBe(0);
+  });
+
+  it('a dead asker (deliverInboxReply reports live:false) still leaves the item resolved', async () => {
+    vi.mocked(deliverInboxReply).mockResolvedValueOnce({ ok: true, live: false, delivered: false, woken: 0 });
+    const r = await replyToAttentionItem(conversation, 'use approach B');
+    expect(r.resolved).toBe(true);
+    expect(r.live).toBe(false);
+    expect(r.woken).toBe(0);
+  });
+
+  it('a delivery fault never surfaces as a failed answer — resolve already succeeded', async () => {
+    vi.mocked(deliverInboxReply).mockRejectedValueOnce(new Error('network blip'));
+    const r = await replyToAttentionItem(conversation, 'use approach B');
+    expect(r.resolved).toBe(true);
+    expect(r.live).toBe(false);
+    expect(r.woken).toBe(0);
+  });
+
+  it('empty answer is a no-op, same as answerAttentionItem — no reply delivery attempted', async () => {
+    const r = await replyToAttentionItem(conversation, '   ');
+    expect(resolveConversationAnswer).not.toHaveBeenCalled();
+    expect(deliverInboxReply).not.toHaveBeenCalled();
+    expect(r.resolved).toBe(false);
   });
 });

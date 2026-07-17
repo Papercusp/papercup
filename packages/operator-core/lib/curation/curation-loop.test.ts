@@ -25,6 +25,7 @@ const EMPTY_READERS: FleetReaders = {
   completions: async () => [],
   progress: async () => [],
   health: async () => [],
+  deadClaims: async () => [],
 };
 
 function harness(
@@ -360,6 +361,37 @@ describe('formatters', () => {
     expect(digest).toMatch(/1 health warning/);
     expect(digest).toMatch(/1 item progressed/);
     expect(digest).not.toMatch(/2 items progressed/);
+  });
+
+  describe('formatSignalLine / formatSurfaceMessage — P-006 aging annotation', () => {
+    const OPENED = '2026-07-10T00:00:00Z';
+    const openedMs = Date.parse(OPENED);
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    it('appends "still open — day N" for an aged blocker, injecting `now`', () => {
+      const line = formatSignalLine(c({ kind: 'blocker', title: 'wedged', ts: OPENED }), () => openedMs + 2 * oneDayMs);
+      expect(line).toMatch(/still open — day 3/);
+    });
+
+    it('omits the annotation for a fresh signal (under the 1-day threshold)', () => {
+      const line = formatSignalLine(c({ kind: 'blocker', title: 'wedged', ts: OPENED }), () => openedMs + 1000);
+      expect(line).not.toMatch(/still open/);
+    });
+
+    it('never annotates a non-recoverable kind (e.g. completion), even when old', () => {
+      const line = formatSignalLine(c({ kind: 'completion', title: 'F-9', ts: OPENED }), () => openedMs + 10 * oneDayMs);
+      expect(line).not.toMatch(/still open/);
+    });
+
+    it('formatSurfaceMessage threads `now` through to every line', () => {
+      const msg = formatSurfaceMessage(
+        [c({ kind: 'blocker', title: 'wedged', ts: OPENED }), c({ kind: 'decision', title: 'd', ts: OPENED })],
+        () => openedMs + 5 * oneDayMs,
+      );
+      const lines = msg.split('\n');
+      expect(lines[0]).toMatch(/still open — day 6/);
+      expect(lines[1]).not.toMatch(/still open/); // decision is not an aging-eligible kind
+    });
   });
 });
 

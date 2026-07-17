@@ -14,6 +14,7 @@ const EMPTY: FleetReaders = {
   completions: async () => [],
   progress: async () => [],
   health: async () => [],
+  deadClaims: async () => [],
 };
 
 function readers(over: Partial<FleetReaders>): FleetReaders {
@@ -112,6 +113,24 @@ describe('gatherFleetSignals — normalization', () => {
     const byId = new Map(signals.map((s) => [s.id, s]));
     expect(byId.get('health:queen')).toMatchObject({ kind: 'blocker', title: 'Mug: stalled 47m', ref: 'health:queen' });
     expect(byId.get('health:infra')).toMatchObject({ kind: 'health', title: 'Infra: disk at 88%', ref: 'health:infra' });
+  });
+
+  it('maps dead-session claims → blocker kind, distinct id prefix from blocked (P-005)', async () => {
+    const signals = await gatherFleetSignals(
+      readers({
+        deadClaims: async () => [
+          { ref: 'papercusp#WI-1', title: 'stuck item', holder: 'su-dead-1', harness: 'papercusp', ts: '2026-07-17T03:00:00Z' },
+        ],
+      }),
+    );
+    expect(signals[0]).toMatchObject({
+      id: 'deadclaim:papercusp#WI-1',
+      kind: 'blocker',
+      title: 'stuck item',
+      detail: 'held by ended session su-dead-1',
+      harness: 'papercusp',
+      ref: 'wi:papercusp#WI-1',
+    });
   });
 
   it('sorts newest-first by ts', async () => {

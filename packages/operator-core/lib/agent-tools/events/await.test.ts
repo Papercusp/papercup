@@ -36,6 +36,15 @@ vi.mock('../../work-items-events', () => ({
   liveSettledProbe: vi.fn(async () => ({ verdict: 'live' as const, itemState: 'wip' })),
   liveBlockedState: vi.fn(async () => 'blocked' as const),
 }));
+// EI-383: the claim-lease-extension side-call also pulls db-org (via claims.ts +
+// resolvePlanScope) — mocked so the rig stays hermetic, same reasoning as the
+// work-items-events mock above.
+vi.mock('../../plan-items/claims', () => ({
+  extendOwnerClaimsForAwait: vi.fn(async () => [] as string[]),
+}));
+vi.mock('../plans/source', () => ({
+  resolvePlanScope: vi.fn(async () => ({ workspaceId: 'ws-x', harnessSlug: 'papercup' })),
+}));
 
 import awaitTool from './await';
 import { registerAwait } from '../../events/await/store';
@@ -45,6 +54,7 @@ import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { liveSettledProbe } from '../../work-items-events';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
+import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -289,5 +299,32 @@ describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-awa
   it('non-done keys never probe (no per-registration tax on unrelated awaits)', async () => {
     await call({ event: 'lock:grant:t9' });
     expect(liveSettledProbe).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-383 — extend the caller\'s plan-item claim leases to survive the sleep', () => {
+  it('an ACTUAL registration extends claims sized to the resolved timeout_sec', async () => {
+    await call({ event: 'lock:grant:t9', timeout_sec: 3600 });
+    expect(extendOwnerClaimsForAwait).toHaveBeenCalledTimes(1);
+    expect(extendOwnerClaimsForAwait).toHaveBeenCalledWith('ws-x', 'su-awaiter', 3600);
+  });
+
+  it('no timeout_sec passed → extends using the shared default', async () => {
+    await call({ event: 'lock:grant:t9' });
+    expect(extendOwnerClaimsForAwait).toHaveBeenCalledWith('ws-x', 'su-awaiter', AWAIT_DEFAULT_TIMEOUT_SEC);
+  });
+
+  it('an already-settled/no-sleep short-circuit does NOT extend anything (no real sleep happens)', async () => {
+    vi.mocked(liveSettledProbe).mockResolvedValueOnce({ verdict: 'settled', itemState: 'resolved' });
+    const out = await call({ event: 'work-item:done:WI-5075' });
+    expect(out.already_done).toBe(true);
+    expect(extendOwnerClaimsForAwait).not.toHaveBeenCalled();
+  });
+
+  it('a claim-extension failure never blocks or fails the await registration (best-effort)', async () => {
+    vi.mocked(extendOwnerClaimsForAwait).mockRejectedValueOnce(new Error('db unreachable'));
+    const out = await call({ event: 'lock:grant:t9' });
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
   });
 });

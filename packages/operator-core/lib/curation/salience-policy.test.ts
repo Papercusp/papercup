@@ -4,6 +4,8 @@ import {
   classifySignal,
   classifyAll,
   partition,
+  agingAnnotation,
+  AGING_ANNOTATION_THRESHOLD_MS,
   SALIENCE_POLICY_VERSION,
   type FleetSignal,
   type FleetSignalKind,
@@ -119,6 +121,36 @@ describe('classifyAll + partition', () => {
     const calm: FleetSignal[] = [sig({ id: 'decision:x', kind: 'decision' }), sig({ id: 'progress:x', kind: 'progress' })];
     const verdicts = classifyAll(calm, NONE);
     expect(partition(calm, verdicts).hasUrgent).toBe(false);
+  });
+});
+
+describe('agingAnnotation — P-006 "still open — day N" tag', () => {
+  const OPENED = Date.parse('2026-07-10T00:00:00Z');
+
+  it('is null for a fresh escalation/blocker (under the 1-day threshold)', () => {
+    expect(agingAnnotation({ kind: 'blocker', ts: new Date(OPENED).toISOString() }, OPENED + 1000)).toBeNull();
+    expect(
+      agingAnnotation({ kind: 'escalation', ts: new Date(OPENED).toISOString() }, OPENED + AGING_ANNOTATION_THRESHOLD_MS - 1),
+    ).toBeNull();
+  });
+
+  it('is "still open — day 2" exactly at the 1-day threshold, day N growing thereafter', () => {
+    expect(agingAnnotation({ kind: 'blocker', ts: new Date(OPENED).toISOString() }, OPENED + AGING_ANNOTATION_THRESHOLD_MS)).toBe(
+      'still open — day 2',
+    );
+    expect(
+      agingAnnotation({ kind: 'blocker', ts: new Date(OPENED).toISOString() }, OPENED + 2 * AGING_ANNOTATION_THRESHOLD_MS),
+    ).toBe('still open — day 3');
+  });
+
+  it('never annotates a non-recoverable kind, even when old', () => {
+    for (const kind of ['decision', 'completion', 'progress', 'health', 'cleared'] as FleetSignalKind[]) {
+      expect(agingAnnotation({ kind, ts: new Date(OPENED).toISOString() }, OPENED + 10 * AGING_ANNOTATION_THRESHOLD_MS)).toBeNull();
+    }
+  });
+
+  it('is null when ts is unparseable (defensive)', () => {
+    expect(agingAnnotation({ kind: 'blocker', ts: 'not-a-date' }, OPENED + 10 * AGING_ANNOTATION_THRESHOLD_MS)).toBeNull();
   });
 });
 

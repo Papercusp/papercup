@@ -251,6 +251,12 @@ import './claim-discipline-action';
 import './wake-brain-action';
 import './gym-actions';
 import '../../interactive-usage/interactive-usage-action';
+// owner-inbox-single-pane-2026-07-17 P-002: client-agnostic session-gate
+// transcript watcher (AskUserQuestion/ExitPlanMode tool_use with no
+// tool_result = blocked on the owner). Seeded inactive until a routine-seed
+// script activates it post-deploy, same discipline as the token-telemetry
+// routines below.
+import '../../attention/gate-watch-action';
 import './token-report-action';
 import './hive-canary-action';
 import './coord-invariant-actions';

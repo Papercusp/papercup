@@ -34,7 +34,7 @@ import DiscussPanel from './DiscussPanel';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputCard';
 import { QueueCardActions } from './QueueCardActions';
-import { attentionItemToCardSpec, resolveAttentionAction, answerAttentionItem } from './attention-card';
+import { attentionItemToCardSpec, resolveAttentionAction, replyToAttentionItem } from './attention-card';
 import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
 import { byAuthorizer, planSections, whyLine } from './queue-authorizer';
 import { useLexicon } from '@/lib/useLexicon';
@@ -459,7 +459,10 @@ export function OtherDetail({ item, onResolved, onDiscuss }: {
 
   // D-027 follow-on (1): the inline Answer submit (conversation kind). Resolves
   // the question with the owner's text as the accepted answer (captured for the
-  // next asker), which drops it from the Queue.
+  // next asker), which drops it from the Queue. owner-inbox-single-pane P-006
+  // (D-006/D-007): also routes the reply straight to a LIVE asker (wakes them,
+  // stamped with owner turn-provenance) — the toast reflects whether that push
+  // landed, a dead/unknown asker silently keeps today's resolve-only behavior.
   const onAnswerResponse = async (r: InputCardResponse) => {
     if (r.action !== 'submit') {
       setAnswerOpen(false);
@@ -468,10 +471,14 @@ export function OtherDetail({ item, onResolved, onDiscuss }: {
     if (busy || !item) return;
     setBusy(true);
     try {
-      const res = await answerAttentionItem(item, String(r.value));
+      const res = await replyToAttentionItem(item, String(r.value));
       if (res.resolved) {
         setAnswered({ picks: [{ option_id: 'answer', label: 'Answer' }], at: Date.now() });
-        toast.success(`Answered ${kindLabel}`, { description: 'Recorded as the accepted answer; question resolved.' });
+        toast.success(`Answered ${kindLabel}`, {
+          description: res.live
+            ? 'Recorded as the accepted answer; question resolved and the asker was notified.'
+            : 'Recorded as the accepted answer; question resolved.',
+        });
         onResolved();
       }
     } catch (e) {

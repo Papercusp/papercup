@@ -84,6 +84,7 @@ import {
 import { getLoopCarryNote } from '../../carry-note';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
+import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeOutcome } from './types';
 
@@ -455,13 +456,19 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
  * agent-origin instead of owner input. Applied ONLY to PTY/prompt deliveries —
  * never to inbox bodies (coord messages carry native `from` provenance).
  * Origin: a loop fire's wake (cold-loop marker on the payload) tags `loop-fire`;
- * every other await delivery tags `wake-pump`. Fail-soft by construction: a
- * failed ledger write still returns deliverable tagged text (the turn then
- * shows as UNVERIFIED at the hook — visible, never a dropped wake).
+ * an owner-Inbox-authored reply wake (owner-inbox-single-pane-2026-07-17 D-006 —
+ * `inbox-reply.ts`'s marker on the payload) tags `coord-inject:owner`; every
+ * other await delivery tags `wake-pump`. Fail-soft by construction: a failed
+ * ledger write still returns deliverable tagged text (the turn then shows as
+ * UNVERIFIED at the hook — visible, never a dropped wake).
  */
 function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInjection): string {
   try {
-    const origin = readColdLoopMarker(d.payload) ? 'loop-fire' : 'wake-pump';
+    const origin = readColdLoopMarker(d.payload)
+      ? 'loop-fire'
+      : isInboxOwnerReplyPayload(d.payload)
+        ? 'coord-inject:owner'
+        : 'wake-pump';
     return tag({ sid: d.subscriberId, origin, text }).taggedText;
   } catch {
     return text; // provenance must never break a wake

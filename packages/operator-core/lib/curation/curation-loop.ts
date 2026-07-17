@@ -19,6 +19,7 @@
 import {
   classifyAll,
   partition,
+  agingAnnotation,
   SALIENCE_POLICY_VERSION,
   type ClassifiedSignal,
   type FleetSignal,
@@ -98,8 +99,11 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 /** Format ONE always-surface signal into a calm line, with the drill-in ref
- *  (D-005 — curation never hides; the raw item is always reachable). */
-export function formatSignalLine(c: ClassifiedSignal): string {
+ *  (D-005 — curation never hides; the raw item is always reachable). `now`
+ *  (injectable for tests) drives the P-006 aging annotation — a still-open
+ *  escalation/blocker at least a day old gets a "still open — day N" tag so a
+ *  re-nag past the idempotency window reads as a reminder, not new news. */
+export function formatSignalLine(c: ClassifiedSignal, now: () => number = Date.now): string {
   const { signal } = c;
   const marker = KIND_MARKER[signal.kind] ?? '•';
   const label = KIND_LABEL[signal.kind] ?? signal.kind;
@@ -107,13 +111,15 @@ export function formatSignalLine(c: ClassifiedSignal): string {
   const requested = signal.kind === 'completion' && signal.userRequested ? ' (you asked for this)' : '';
   let line = `${marker} **${label}**${where}${requested} — ${signal.title}`;
   if (signal.detail) line += ` · ${signal.detail}`;
+  const aging = agingAnnotation(signal, now());
+  if (aging) line += ` · ${aging}`;
   if (signal.ref) line += ` · drill in: \`${signal.ref}\``;
   return line;
 }
 
 /** Compose the single always-surface message (urgent-first). */
-export function formatSurfaceMessage(surfaceNow: readonly ClassifiedSignal[]): string {
-  return surfaceNow.map(formatSignalLine).join('\n');
+export function formatSurfaceMessage(surfaceNow: readonly ClassifiedSignal[], now: () => number = Date.now): string {
+  return surfaceNow.map((c) => formatSignalLine(c, now)).join('\n');
 }
 
 /** Compose ONE calm batch digest from routine items: a count-by-kind header
@@ -197,7 +203,7 @@ export async function runCurationTick(
 
   // 1) Always-surface items → one calm operator message (urgent leads).
   if (surfaceNow.length > 0) {
-    const text = formatSurfaceMessage(surfaceNow);
+    const text = formatSurfaceMessage(surfaceNow, deps.now ?? Date.now);
     await deps.surface(text);
     messages.push(text);
     for (const c of surfaceNow) recorded.push({ id: c.signal.id, kind: c.signal.kind, title: c.signal.title });

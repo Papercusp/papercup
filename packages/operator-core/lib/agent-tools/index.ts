@@ -703,6 +703,12 @@ import './sessions/timeline';
 // list → per-session tail-read → "hope the last turn was a summary" pattern, which
 // returns nothing for exactly the sessions that matter (crashed / wedged / running).
 import './sessions/digest';
+// owner-inbox-single-pane-2026-07-17 P-002: the client-agnostic owner-gate
+// tracker — hook push (ingest-gate-event) + the read side (list-pending-gates)
+// the future attention adapter (P-005) wraps. gate-watch-action.ts (the
+// transcript-watcher pull path) self-registers via register-system-actions.ts.
+import './sessions/ingest-gate-event';
+import './sessions/list-pending-gates';
 // sentinel-herald Phase 8 P-037 — pre-existing override mechanisms now self-register as
 // config-override concerns so config:list-overrides is the canonical audit surface. These
 // stores are already transitively imported by their tools; importing them here makes the

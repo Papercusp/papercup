@@ -24,7 +24,7 @@
 
 /** Version stamped on every surfaced row so "why did this surface?" is always
  *  answerable (the reactive-graph / audit trail). Bump on a policy change. */
-export const SALIENCE_POLICY_VERSION = 'curator-v3';
+export const SALIENCE_POLICY_VERSION = 'curator-v4';
 
 /**
  * The normalized, structured unit the curator reasons over. Produced by
@@ -81,6 +81,39 @@ export interface FleetSignal {
   ref?: string;
   /** ISO timestamp of the underlying event. */
   ts: string;
+}
+
+/**
+ * P-006 aging re-surface (curation-signal-gaps-2026-07-17): a still-open
+ * escalation/blocker that re-surfaces after the idempotency window rolls over
+ * (`classifySignal`'s overlay) would otherwise read as brand-new information.
+ * `agingAnnotation` computes a "still open — day N" tag purely from the
+ * signal's own `ts` — the ORIGINAL open time (coord escalations / blocked
+ * work_items never rewrite `ts` on a later gather) — so it applies uniformly
+ * regardless of *why* this tick re-surfaced it, with no extra state to track.
+ */
+export const AGING_ANNOTATION_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 1 day
+
+/** The only kinds that are genuinely a "still open" standing condition worth
+ *  aging — a completion/progress/health/decision/cleared signal is a
+ *  point-in-time fact, not something that stays open over days. */
+const AGING_ELIGIBLE_KINDS: ReadonlySet<FleetSignalKind> = new Set<FleetSignalKind>(['escalation', 'blocker']);
+
+/**
+ * "still open — day N" for an escalation/blocker at least
+ * `AGING_ANNOTATION_THRESHOLD_MS` old, else `null`. Day 1 = still within its
+ * first day (never annotated — day 1 short-circuits via the threshold check);
+ * day N (N ≥ 2) = N-1 full days have elapsed since `signal.ts`. Pure — no
+ * database, directly unit-testable.
+ */
+export function agingAnnotation(signal: Pick<FleetSignal, 'kind' | 'ts'>, now: number): string | null {
+  if (!AGING_ELIGIBLE_KINDS.has(signal.kind)) return null;
+  const openedAt = Date.parse(signal.ts);
+  if (!Number.isFinite(openedAt)) return null;
+  const ageMs = now - openedAt;
+  if (ageMs < AGING_ANNOTATION_THRESHOLD_MS) return null;
+  const day = Math.floor(ageMs / AGING_ANNOTATION_THRESHOLD_MS) + 1;
+  return `still open — day ${day}`;
 }
 
 export type Disposition = 'surface' | 'batch' | 'suppress';

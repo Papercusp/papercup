@@ -78,6 +78,31 @@ describe('curation deps production readers (real PG)', () => {
          ${T_ISSUE}, ${blockerPayload}::text::jsonb),
         (${WS}, 'papercup', 'F-BLOCKED-BARE', 'Bare-blocked item', 'stuck on a design call', 'blocked',
          ${T_DEDUP}, NULL)`;
+
+    // P-005 (curation-signal-gaps-2026-07-17): open+claimed work_items whose
+    // holder's liveness ORACLE verdict is 'ended'. GHOST_OWNER has zero rows
+    // anywhere (event_awaits / agent_activity / coord_presence / adv_sessions)
+    // — fetchWakeability defaults an unknown id to wakeable:false, liveTurn:false,
+    // which deriveSessionState resolves to 'ended' (the detection case). LIVE_OWNER
+    // is backed by a genuine standing coord:inbox-wake await (unfired, uncancelled,
+    // unexpired) — resolves to 'parked' (the exclusion case), proving the reader
+    // doesn't just flag "any claim", only genuinely dead-held ones. A third row
+    // (terminal status, held by GHOST_OWNER) proves status filtering: a `passed`
+    // claim is never re-surfaced as a dead claim regardless of its holder's liveness.
+    await sql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, taken_by, updated_ts)
+      VALUES
+        (${WS}, 'papercup', 'F-DEAD-CLAIM', 'Stuck on a dead session', 'in_progress',
+         'ghost-owner-p005', ${T_ISSUE}),
+        (${WS}, 'papercup', 'F-LIVE-CLAIM', 'Held by a live session', 'in_progress',
+         'live-owner-p005', ${T_ISSUE}),
+        (${WS}, 'papercup', 'F-DEAD-CLAIM-TERMINAL', 'Already done, ignore the dead holder', 'passed',
+         'ghost-owner-p005', ${T_ISSUE})`;
+
+    await sql`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, policy)
+      VALUES (${WS}, 'live-owner-p005', 'coord:inbox-wake:live-owner-p005', 'wake')`;
   }, 120_000);
 
   afterAll(async () => {
@@ -131,5 +156,24 @@ describe('curation deps production readers (real PG)', () => {
         ts: new Date(T_ISSUE).toISOString(),
       },
     ]);
+  });
+
+  it('surfaces only claims held by a genuinely-`ended` session (liveness oracle), never a live/parked holder or a terminal item (P-005)', async () => {
+    const dead = await buildFleetReaders().deadClaims();
+    expect(dead).toEqual([
+      {
+        ref: 'papercup#F-DEAD-CLAIM',
+        harness: 'papercup',
+        title: 'Stuck on a dead session',
+        holder: 'ghost-owner-p005',
+        workItemId: 'F-DEAD-CLAIM',
+        ts: new Date(T_ISSUE).toISOString(),
+      },
+    ]);
+    // F-LIVE-CLAIM (a wakeable holder → 'parked') and F-DEAD-CLAIM-TERMINAL
+    // (status='passed', excluded by WORK_ITEM_NON_REQUEUE_STATES regardless of
+    // its ghost holder) must never appear.
+    expect(dead.map((d) => d.workItemId)).not.toContain('F-LIVE-CLAIM');
+    expect(dead.map((d) => d.workItemId)).not.toContain('F-DEAD-CLAIM-TERMINAL');
   });
 });

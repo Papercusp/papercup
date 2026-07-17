@@ -258,6 +258,57 @@ describe('renewOwnerActivityClaims — the per-turn auto-renewal', () => {
   });
 });
 
+describe('extendOwnerClaimsForAwait — EI-383 (survive an events:await sleep)', () => {
+  const leaseMs = async () =>
+    new Map(
+      (await claims.listClaimsForPlan(WS, HARNESS, PLAN)).map((c) => [
+        c.itemId,
+        new Date(c.expiresTs).getTime(),
+      ]),
+    );
+
+  it('pushes a live claim\'s expiry out to the target TTL; lapsed + other owners untouched', async () => {
+    await acquire({ itemId: 'P-030', livenessMode: 'activity' });
+    await acquire({ itemId: 'P-031', livenessMode: 'activity', owner: 'su-bob' });
+    await acquire({ itemId: 'P-032', livenessMode: 'activity' });
+    await lapse('P-032'); // an already-lapsed claim must NOT resurrect
+
+    const before = await leaseMs();
+    // A long await (well beyond the default ~20-30m activity TTL) — this is
+    // exactly the case the ticket describes: a claim held while genuinely
+    // parked on a push-wake sleep.
+    const extended = await claims.extendOwnerClaimsForAwait(WS, 'su-alice', 3600);
+    expect(extended).toEqual(['P-030']);
+
+    const after = await leaseMs();
+    expect(after.get('P-030')!).toBeGreaterThan(before.get('P-030')!);
+    // The extension lands roughly `targetTtlSec` out from now, not just a small bump.
+    expect(after.get('P-030')! - Date.now()).toBeGreaterThan(3000 * 1000);
+    expect(after.get('P-031')).toBe(before.get('P-031')); // other owner untouched
+    const lapsed = await claims.getClaim(WS, HARNESS, PLAN, 'P-032');
+    expect(lapsed?.expired).toBe(true); // not resurrected
+  });
+
+  it('never SHRINKS an existing longer expiry (GREATEST, not overwrite)', async () => {
+    await acquire({ itemId: 'P-033', livenessMode: 'activity', ttlSec: 5000 }); // already ~83m out
+    const before = await leaseMs();
+    // A short await timeout must not pull the expiry IN.
+    const extended = await claims.extendOwnerClaimsForAwait(WS, 'su-alice', 60);
+    expect(extended).toEqual(['P-033']); // still touched (matched the WHERE), but…
+    const after = await leaseMs();
+    expect(after.get('P-033')!).toBe(before.get('P-033')!); // …expiry unchanged (GREATEST kept the longer one)
+  });
+
+  it('caps at MAX_TTL_SEC — the same 2h dead-holder-detection ceiling every lease respects', async () => {
+    await acquire({ itemId: 'P-034', livenessMode: 'activity' });
+    await claims.extendOwnerClaimsForAwait(WS, 'su-alice', 24 * 3600); // a 1-day await
+    const claim = await claims.getClaim(WS, HARNESS, PLAN, 'P-034');
+    const outMs = new Date(claim!.expiresTs).getTime() - Date.now();
+    expect(outMs).toBeLessThanOrEqual(claims.MAX_TTL_SEC * 1000 + 5000); // capped, +slack for test latency
+    expect(outMs).toBeGreaterThan(claims.MAX_TTL_SEC * 1000 - 5000);
+  });
+});
+
 describe('reads + sweep', () => {
   it('getClaim/listClaimsForPlan derive `expired`; listing is item-ordered', async () => {
     await acquire({ itemId: 'P-002' });

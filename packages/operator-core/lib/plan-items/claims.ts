@@ -412,6 +412,47 @@ export async function renewOwnerActivityClaims(workspaceId: string, owner: strin
   return rows.map((r) => r.item_id);
 }
 
+/**
+ * EI-383: extend an owner's currently-HELD (non-expired) claims' `expires_ts` to
+ * survive a genuine push-wake sleep (`events:await` + END TURN), where NO turn
+ * runs — and therefore no activity-bus event fires `renewOwnerActivityClaims` —
+ * until the wake. Without this, a claim held while correctly parked (the designed
+ * push-not-poll pattern) lapses mid-sleep: claim-discipline nags a live-but-asleep
+ * agent, `fleet:assignments` shows the lane as unclaimed (the exact double-
+ * placement window claims exist to prevent), and the agent burns a wake re-
+ * claiming it.
+ *
+ * Sizes the extension to `targetTtlSec` (typically the await's `timeout_sec`) but
+ * NEVER beyond `MAX_TTL_SEC` — the same 2h hard cap every other lease respects
+ * (`clampTtl`), so this does not weaken dead-holder detection: a holder that goes
+ * silent (crashes, never re-invokes on the wake) is still reclaimable within the
+ * existing ceiling. It also never SHRINKS an existing longer expiry (`GREATEST`),
+ * and — mirroring `renewOwnerActivityClaims` — an already-EXPIRED claim is not
+ * resurrected (`expires_ts > now()` guard): only a still-live claim survives the
+ * sleep, so a claim that lapsed before the await was registered must be re-
+ * acquired as before. Only `expires_ts` moves; `ttl_sec` is left untouched so the
+ * claim's normal per-turn renewal cadence resumes unchanged once the wake fires
+ * and activity-bus renewals resume. Best-effort by design: callers must never let
+ * a failure here block the await registration itself.
+ */
+export async function extendOwnerClaimsForAwait(
+  workspaceId: string,
+  owner: string,
+  targetTtlSec: number,
+): Promise<string[]> {
+  const capped = clampTtl(targetTtlSec);
+  const { sql } = getOrgPg();
+  const rows = await sql<{ item_id: string }[]>`
+    UPDATE harness_shared.plan_item_claims
+       SET expires_ts = GREATEST(expires_ts, clock_timestamp() + make_interval(secs => ${capped}))
+     WHERE (workspace_id = ${workspaceId} OR workspace_id = ${DEFAULT_WORKSPACE_ID})
+       AND owner = ${owner}
+       AND expires_ts > clock_timestamp()
+    RETURNING item_id
+  `;
+  return rows.map((r) => r.item_id);
+}
+
 /** The current claim on an item (with derived `expired`), or null. */
 export async function getClaim(
   workspaceId: string,

@@ -94,6 +94,26 @@ export interface RawHealthPanel {
   ts: string;
 }
 
+/**
+ * An open+claimed work_item whose holder's session is genuinely `ended` per
+ * the liveness ORACLE (P-005, curation-signal-gaps-2026-07-17 — the
+ * `resolveSessionStates` verdict, NOT a bare heartbeat-freshness check).
+ * Complements the claim-reconciler gap EI-11035: a session can look
+ * heartbeat-fresh (so `work-items-stale-claims.ts`'s reclaim sweep never
+ * frees it) while its richer `sessionState` is already `ended` — this is a
+ * deterministic curation SIGNAL for that gap, not a fix for it.
+ */
+export interface RawDeadClaim {
+  /** Stable ref of the held item, e.g. `<harness>#<id>`. */
+  ref: string;
+  harness?: string;
+  title: string;
+  /** The dead holder's owner id (for the "why" line). */
+  holder: string;
+  workItemId?: string;
+  ts?: string;
+}
+
 /** The injectable source bag. Each returns already-fetched, lightly-shaped rows. */
 export interface FleetReaders {
   escalations(): Promise<RawEscalation[]>;
@@ -103,6 +123,8 @@ export interface FleetReaders {
   progress(): Promise<RawProgress[]>;
   /** P-002 system-health source: warn/crit `computeSystemHealth` panels. */
   health(): Promise<RawHealthPanel[]>;
+  /** P-005 dead-session-held claims sentinel. */
+  deadClaims(): Promise<RawDeadClaim[]>;
 }
 
 /** Map an escalation's severity onto a FleetSignal kind:
@@ -130,13 +152,14 @@ async function safe<T>(fn: () => Promise<T[]>, label: string): Promise<T[]> {
  * `id` (first-wins) and sorted newest-first. Pure over the injected readers.
  */
 export async function gatherFleetSignals(readers: FleetReaders): Promise<FleetSignal[]> {
-  const [esc, blk, dec, cmp, prog, hlt] = await Promise.all([
+  const [esc, blk, dec, cmp, prog, hlt, dead] = await Promise.all([
     safe(() => readers.escalations(), 'escalations'),
     safe(() => readers.blocked(), 'blocked'),
     safe(() => readers.decisions(), 'decisions'),
     safe(() => readers.completions(), 'completions'),
     safe(() => readers.progress(), 'progress'),
     safe(() => readers.health(), 'health'),
+    safe(() => readers.deadClaims(), 'deadClaims'),
   ]);
 
   const signals: FleetSignal[] = [];
@@ -217,6 +240,24 @@ export async function gatherFleetSignals(readers: FleetReaders): Promise<FleetSi
       title: `${h.label}: ${h.summary}`,
       ref: `health:${h.panelId}`,
       ts: h.ts,
+    });
+  }
+
+  // P-005: a claim held by a genuinely-`ended` session is a stuck item nobody
+  // will ever advance — always-surface, urgent (mirrors P-001's blocked-item
+  // treatment). Distinct id prefix ('deadclaim:') from 'blocked:' — these are
+  // independent facts (a blocked STATUS vs a dead-CLAIM) that can co-occur on
+  // the same item without dedup-colliding.
+  for (const d of dead) {
+    signals.push({
+      id: `deadclaim:${d.ref}`,
+      kind: 'blocker',
+      title: d.title,
+      detail: `held by ended session ${d.holder}`,
+      harness: d.harness,
+      workItemId: d.workItemId,
+      ref: `wi:${d.ref}`,
+      ts: d.ts ?? new Date(0).toISOString(),
     });
   }
 
