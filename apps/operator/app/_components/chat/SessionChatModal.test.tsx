@@ -4,9 +4,16 @@
  * popup. The SSE transport is mocked the same way AgentInspectorModal.test.tsx
  * mocks it (so `useAgentThinkingStream` runs for real, unmodified); `fetch`
  * is mocked for the two REST hops (sessions:list owner-resolution, coord:send).
+ *
+ * P-008 (cards in the popup): `@papercusp/sync` and `PlanOtherList` are
+ * mocked the SAME way InboxPane.test.tsx mocks them — a hoisted per-queryName
+ * result table + an `OtherDetail` stub that echoes its item id/onResolved seam
+ * (parity behavior is the Queue suites' job; this file only asserts the right
+ * item is selected + hosted).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { AttentionItem } from '@/app/admin/plans/plans-api';
 
 // jsdom-vs-virtualization seam (same as ChatConversation.test.tsx): the real
 // @tanstack/react-virtual renders nothing without real layout, and the
@@ -31,7 +38,67 @@ vi.mock('@papercusp/sse', () => ({
   },
 }));
 
+// P-008: the shared sync layer, mocked exactly like InboxPane.test.tsx —
+// keyed by queryName, defaulting to an empty/blank result so every existing
+// (pre-P-008) test in this file keeps rendering with zero pending escalations.
+const H = vi.hoisted(() => ({
+  results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
+}));
+const attentionInvalidate = vi.fn();
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) =>
+    H.results[queryName] ?? { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() },
+}));
+// OtherDetail is the Queue's own component (its behavior is covered by the
+// Queue's own suites) — stub it to a marker that echoes the hosted item id
+// and exposes the onResolved seam, mirroring InboxPane.test.tsx's stub.
+vi.mock('@/app/admin/plans/PlanOtherList', () => ({
+  OtherDetail: ({ item, onResolved }: { item: { id: string }; onResolved: () => void }) => (
+    <div data-testid="other-detail" data-item={item.id}>
+      <button type="button" data-testid="stub-resolve" onClick={onResolved} />
+    </div>
+  ),
+}));
+
 import SessionChatModal from './SessionChatModal';
+
+function mkEscalation(id: string, over: Partial<AttentionItem> = {}): AttentionItem {
+  return {
+    id,
+    kind: 'coord-escalation',
+    source: 'coord',
+    harnessSlug: 'papercusp',
+    planSlug: null,
+    itemRef: null,
+    title: `Escalation ${id}`,
+    body: `Body of ${id}`,
+    status: 'open',
+    importance: 'normal',
+    tier: 'decision',
+    needsHuman: true,
+    ownerAgentId: 'su-live-1',
+    ownerLabel: 'su · live-1',
+    triageState: 'untriaged',
+    triageNote: null,
+    triagedBy: null,
+    triagedAt: null,
+    actions: [{ id: 'resolve', label: 'Resolve', primary: true }],
+    ref: { kind: 'coord-escalation', options: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] },
+    ...over,
+  } as AttentionItem;
+}
+
+function seedAttention(items: AttentionItem[]) {
+  H.results['plans.attention'] = {
+    data: [
+      { key: 'g1', kind: 'plan', planSlug: 'plan-x', harnessSlug: 'papercusp', title: 'plan-x', items, maxImportance: 'normal' },
+    ],
+    loading: false,
+    fetching: false,
+    error: null,
+    invalidate: attentionInvalidate,
+  };
+}
 
 const fetchMock = vi.fn();
 
@@ -52,6 +119,8 @@ beforeEach(() => {
   vi.stubGlobal('IntersectionObserver', class {
     observe() {} unobserve() {} disconnect() {}
   });
+  H.results = {};
+  attentionInvalidate.mockClear();
 });
 afterEach(() => {
   cleanup();

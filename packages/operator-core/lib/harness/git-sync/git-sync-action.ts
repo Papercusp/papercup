@@ -61,6 +61,7 @@ import { openHiveGitDuplexToDevice } from '../../sync/pot-git/peer-dial-registry
 import { Duplex } from 'node:stream';
 import { listHiveMembers } from '../../hive-membership-store';
 import { resolveUsageActor } from '../usage-actor';
+import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-announce-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { resolveAuthorCommsTier } from '../../sync/hyperbee/comms-tier-gate';
@@ -1438,7 +1439,17 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     const repoPath = await ensurePotGitRepo(potHomeSlug, slug);
 
     const actor = await resolveUsageActor();
-    const selfDevicePubkey = actor?.devicePubkey;
+    // Self-identification must NOT ride on gh reachability: resolveUsageActor
+    // returns null whenever `gh` is unauthenticated or GET /user fails (rate
+    // limit), and an undefined self here used to (a) let `find(d => d !==
+    // undefined)` pick THIS device's own attestation on the home box — dialing
+    // yourself never has a registry entry, so every tick reported the decoy
+    // "no live dial path" — and (b) make the warm gate below count OUR OWN
+    // namespace as a peer seed, silently skipping bootstrap forever. Fall back
+    // to the persisted, keychain-verified announce-identity cache (no network).
+    const selfDevicePubkey =
+      actor?.devicePubkey ??
+      (await loadCachedLocalAnnounceIdentity().catch(() => null))?.devicePubkeyBase64;
 
     const members = await listHiveMembers(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -1446,8 +1457,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     ];
     if (memberDevicePubkeysBase64.length === 0) return; // no attested peers to seed from yet
 
-    const peerDevicePubkeyBase64 = memberDevicePubkeysBase64.find((d) => d !== selfDevicePubkey);
-    if (!peerDevicePubkeyBase64) return; // no member peer other than self yet — nothing to seed from
+    // ALL non-self attested devices are candidates — a single `.find()` pick
+    // wedged G-8 permanently when its one candidate was offline/stale (any
+    // dead first candidate starved every later tick; live-caught on the P-303
+    // reverse-leg drill 2026-07-17 with a live registered peer sitting unused).
+    const candidateDevicePubkeys = memberDevicePubkeysBase64.filter((d) => d !== selfDevicePubkey);
+    if (candidateDevicePubkeys.length === 0) return; // no member peer other than self yet — nothing to seed from
 
     // Warm means "already seeded from a PEER MEMBER's device" — nothing else
     // counts. Our own namespace is local (own-head-publish), and the
@@ -1460,15 +1475,13 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // member's namespace proves a prior seed. A stale member-set false-cold
     // just re-runs bootstrapFromPeer, which is rewind-safe by contract.
     const memberNamespaceKeys = new Set(
-      memberDevicePubkeysBase64
-        .filter((d) => d !== selfDevicePubkey)
-        .flatMap((d) => {
-          try {
-            return [deviceNamespaceKey(d)];
-          } catch {
-            return []; // malformed attestation pubkey — never counts as warm
-          }
-        }),
+      candidateDevicePubkeys.flatMap((d) => {
+        try {
+          return [deviceNamespaceKey(d)];
+        } catch {
+          return []; // malformed attestation pubkey — never counts as warm
+        }
+      }),
     );
     const existing = await listNamespaces(repoPath);
     if (existing.some((n) => memberNamespaceKeys.has(n))) return; // warm — already seeded from a peer member
@@ -1478,46 +1491,79 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // pre-WI-3583 destroyed stub when it doesn't (private/local-only harness,
     // or not yet booted onto a swarm) — mirrors runRefAnnounceLeg's own
     // openStream floor exactly.
-    let duplex: Duplex;
-    {
-      const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
-      const topicHex = getBootedHarness(workspaceId, potHomeSlug)?.swarm?.topicHex;
-      if (!topicHex) {
-        const stub = new Duplex({
-          read() {},
-          write(_chunk, _enc, cb) {
-            cb();
-          },
-        });
-        // Swallow the destroy-time error BEFORE destroy(err) schedules it —
-        // with no listener, Node emits an UNHANDLED 'error' next tick =
-        // uncaughtException = the whole host exits (live-caught: this
-        // crash-looped the tower bg-host at boot, WI-3496/WI-5177 —
-        // bootstrapFromPeer awaits dropQuarantine before fetchOverDuplex can
-        // attach its own listener). Same idiom as openHiveGitDuplexToDevice's
-        // no-live-connection stub: callers read `.destroyed`, never 'error'.
-        stub.on('error', () => {});
-        stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
-        duplex = stub;
-      } else {
-        duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
-          repoKey: slug,
-          peerGithubUserId: actor?.githubUserId,
-        });
+    const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
+    const topicHex = getBootedHarness(workspaceId, potHomeSlug)?.swarm?.topicHex;
+    if (!topicHex) {
+      const stub = new Duplex({
+        read() {},
+        write(_chunk, _enc, cb) {
+          cb();
+        },
+      });
+      // Swallow the destroy-time error BEFORE destroy(err) schedules it —
+      // with no listener, Node emits an UNHANDLED 'error' next tick =
+      // uncaughtException = the whole host exits (live-caught: this
+      // crash-looped the tower bg-host at boot, WI-3496/WI-5177 —
+      // bootstrapFromPeer awaits dropQuarantine before fetchOverDuplex can
+      // attach its own listener). Same idiom as openHiveGitDuplexToDevice's
+      // no-live-connection stub: callers read `.destroyed`, never 'error'.
+      stub.on('error', () => {});
+      stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
+      const outcome = await bootstrapFromPeer(repoPath, stub, { selfDevicePubkey });
+      await patchRoutineMetadata(slug, {
+        bootstrap: {
+          at: Date.now(),
+          ok: outcome.ok,
+          namespaceCount: outcome.namespaces.length,
+          skippedExisting: outcome.skippedExisting.length,
+        },
+      });
+      if (!outcome.ok) {
+        console.warn(`[git-sync] ${slug}: bootstrap-tick reported errors: ${outcome.stderr.trim().slice(0, 500)}`);
       }
+      return;
     }
 
-    const outcome = await bootstrapFromPeer(repoPath, duplex, { selfDevicePubkey });
+    // Try each candidate until one seeds: a dial-registry miss (pre-destroyed
+    // decoy duplex) costs nothing and moves on; a LIVE duplex whose fetch then
+    // fails also moves on (bootstrapFromPeer is rewind-safe by contract, and a
+    // half-dead channel must not starve a healthy later candidate). Attempts
+    // are capped so a large member set can't stack fetch ceilings in one tick.
+    const MAX_LIVE_ATTEMPTS = 3;
+    const dialLog: string[] = [];
+    let outcome: Awaited<ReturnType<typeof bootstrapFromPeer>> | null = null;
+    let liveAttempts = 0;
+    for (const peerDevicePubkeyBase64 of candidateDevicePubkeys) {
+      if (liveAttempts >= MAX_LIVE_ATTEMPTS) break;
+      const duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
+        repoKey: slug,
+        peerGithubUserId: actor?.githubUserId,
+      });
+      if (duplex.destroyed) {
+        dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:no-path`);
+        continue;
+      }
+      liveAttempts++;
+      outcome = await bootstrapFromPeer(repoPath, duplex, { selfDevicePubkey });
+      dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:${outcome.ok ? 'ok' : 'failed'}`);
+      if (outcome.ok) break;
+    }
     await patchRoutineMetadata(slug, {
       bootstrap: {
         at: Date.now(),
-        ok: outcome.ok,
-        namespaceCount: outcome.namespaces.length,
-        skippedExisting: outcome.skippedExisting.length,
+        ok: outcome?.ok ?? false,
+        namespaceCount: outcome?.namespaces.length ?? 0,
+        skippedExisting: outcome?.skippedExisting.length ?? 0,
       },
     });
-    if (!outcome.ok) {
-      console.warn(`[git-sync] ${slug}: bootstrap-tick reported errors: ${outcome.stderr.trim().slice(0, 500)}`);
+    if (!outcome) {
+      console.warn(
+        `[git-sync] ${slug}: bootstrap-tick: no live dial path to any candidate member device (dialed: ${dialLog.join(', ')})`,
+      );
+    } else if (!outcome.ok) {
+      console.warn(
+        `[git-sync] ${slug}: bootstrap-tick reported errors (dialed: ${dialLog.join(', ')}): ${outcome.stderr.trim().slice(0, 500)}`,
+      );
     }
   } catch (e) {
     console.warn(`[git-sync] ${slug}: bootstrap-tick failed: ${e instanceof Error ? e.message : e}`);

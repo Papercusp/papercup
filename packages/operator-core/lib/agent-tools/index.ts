@@ -1013,6 +1013,9 @@ import './plans/set-status';
 import './plans/set-importance';
 import './plans/set-now';
 import './plans/add-decision';
+// queen-autonomy-policy-2026-06-13 B-04/P-015 coverage refinement (EI-458) — a distinct
+// ratify verb so "propose a decision" and "ratify it" are separately governable.
+import './plans/ratify-decision';
 import './plans/add-item';
 // Phase 5 — whole-document write (CAS) + legacy-frontmatter conversion.
 import './plans/set-content';

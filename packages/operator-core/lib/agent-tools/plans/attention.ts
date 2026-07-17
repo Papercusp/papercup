@@ -276,6 +276,17 @@ export default defineTool({
         // pushes (safe in single-threaded JS) change nothing observable. Each stays
         // best-effort in its own try/catch, so one slow/failing source can neither block
         // nor fail the others.
+        //
+        // Two of the sources below (the smoke-fail read and P-005a's needs-human
+        // work-items read) both need `@papercusp/db-org`'s `getOrgPg`. Hoist ONE
+        // shared dynamic import instead of each firing its own `await
+        // import("@papercusp/db-org")` — two concurrent first-time dynamic imports
+        // of the SAME specifier inside this Promise.all fan-out race Vitest's mock
+        // interception (attention-parallel-db-org-mock-race-2026-07-17): only the
+        // import that wins the race gets the vi.mock'd module, the other silently
+        // falls through to the real implementation. A single shared import promise
+        // makes it structurally impossible to race.
+        const dbOrgImportP = import("@papercusp/db-org");
         await Promise.all([
           // 2. Open coord escalations (workspace-level).
           (async () => {
@@ -364,7 +375,7 @@ export default defineTool({
           //    writer after the bash orchestrator was archived.)
           (async () => {
             try {
-              const { getOrgPg } = await import("@papercusp/db-org");
+              const { getOrgPg } = await dbOrgImportP;
               const { activeWorkspaceId } =
                 await import("../../workspace-registry");
               const { sql } = getOrgPg();
@@ -540,12 +551,10 @@ export default defineTool({
           //     resolved post-fan-out by `dropDuplicateNeedsHumanWorkItems` (D-008).
           (async () => {
             try {
-              const { getOrgPg } = await import("@papercusp/db-org");
+              const { getOrgPg } = await dbOrgImportP;
               const { activeWorkspaceId } =
                 await import("../../workspace-registry");
               const { sql } = getOrgPg();
-              // eslint-disable-next-line no-console
-              console.log("DEBUG-P005A getOrgPg.toString()=", getOrgPg.toString().slice(0, 200));
               const wid = activeWorkspaceId();
               const hf = harnessFilter;
               const rows = await sql<

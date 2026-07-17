@@ -28,12 +28,27 @@
  * proxy — the SAME endpoint AssignDialog's `assignToUser` already POSTs to.
  * `wake:'required'` per D-007 (this is a live two-way chat action, distinct
  * from P-006's inbox "answer this ask" action, which owns actions/provenance).
+ *
+ * Cards in the popup (P-008): when this owner has a pending `coord-escalation`
+ * with named options, it renders inline above the chat as the SAME
+ * `OtherDetail` card the Queue and InboxPane already use (REUSE, not a second
+ * card renderer) — sourced from the SAME `useInboxAttention` feed (shared sync
+ * cache entry, no new query) InboxPane reads. Answering it here goes through
+ * `OtherDetail`'s own action path unmodified, so it is byte-identical to
+ * answering from the inbox (P-006's resolve/reply routing + provenance stamp).
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Modal } from '../../harness/Modal';
 import { OperatorChat } from '../OperatorChat';
 import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
 import { sessionTimelineToChatMessages } from './session-transcript-mapping';
+import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
+import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
+import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
+// OtherDetail's styles (pc-items__*, pc-tier/pc-kind badges) — global CSS, so
+// importing it here (as InboxPane already does) makes this modal
+// self-sufficient wherever it's mounted.
+import '@/app/admin/plans/plans.css';
 
 interface SessionListRow {
   source_kind: string;
@@ -153,6 +168,24 @@ export default function SessionChatModal({
   const [sending, setSending] = useState(false);
   const [sentOk, setSentOk] = useState(false);
 
+  const open = sessionOwnerId !== null;
+  // P-008: this owner's pending coord-escalation(s) with named options — the
+  // SAME shared `plans.attention` feed InboxPane/the Queue read (no new
+  // query), filtered to what's actionable for THIS agent right now. Disabled
+  // while closed so a hidden modal never holds an extra live query open.
+  const { items: attentionItems, refresh: refreshAttention } = useInboxAttention(open);
+  const pendingEscalations = useMemo(
+    () =>
+      attentionItems.filter(
+        (i) =>
+          i.ownerAgentId === sessionOwnerId &&
+          i.kind === 'coord-escalation' &&
+          effectiveTier(i) !== 'handled' &&
+          isEscalationWithOptions(i),
+      ),
+    [attentionItems, sessionOwnerId],
+  );
+
   useEffect(() => {
     setResolved(null);
     setResolveError(null);
@@ -193,7 +226,6 @@ export default function SessionChatModal({
       .finally(() => setSending(false));
   };
 
-  const open = sessionOwnerId !== null;
   const agentName = ownerLabel || sessionOwnerId || 'agent session';
   const title = `Chat — ${agentName}`;
 
@@ -213,6 +245,19 @@ export default function SessionChatModal({
       }}
     >
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }} data-testid="session-chat-modal">
+        {pendingEscalations.length > 0 ? (
+          <div
+            style={{ flex: '0 0 auto', maxHeight: '45%', overflowY: 'auto', borderBottom: '1px solid var(--border)' }}
+            data-testid="session-chat-pending-escalations"
+          >
+            {pendingEscalations.map((i) => (
+              // key remounts per item so its local card state (answered/discuss)
+              // resets on selection change — same contract as OtherDetail's other
+              // hosts (InboxPane, the Queue's PlansClient).
+              <OtherDetail key={i.id} item={i} onResolved={refreshAttention} />
+            ))}
+          </div>
+        ) : null}
         {resolving ? (
           <div style={BANNER_STYLE}>Finding this agent's session…</div>
         ) : resolveError ? (

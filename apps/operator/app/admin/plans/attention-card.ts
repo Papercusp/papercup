@@ -80,6 +80,14 @@ function escalationOptions(item: AttentionItem): EscalationOption[] {
   return (ref.options as EscalationOption[]).filter((o) => o && typeof o.id === 'string');
 }
 
+/** True for a `coord-escalation` item carrying named pickable options — the
+ *  set SessionChatModal (owner-inbox-single-pane-2026-07-17 P-008) surfaces
+ *  inline as an AskChoiceCard. Exported so callers don't re-derive the
+ *  `ref.kind === 'coord-escalation' && ref.options` shape check. */
+export function isEscalationWithOptions(item: AttentionItem): boolean {
+  return escalationOptions(item).length > 0;
+}
+
 /**
  * Map an inbox item to a card spec. Render with `allowDecline={false}` —
  * durable records have no "Skip" (D-008).

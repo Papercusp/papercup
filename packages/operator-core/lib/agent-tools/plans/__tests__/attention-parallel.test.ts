@@ -107,10 +107,6 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     const p = await run();
     expect(Array.isArray(p.groups)).toBe(true);
     expect(p.tierCounts).toBeTypeOf('object');
-    // DEBUG (temporary): dump kind counts to find the unexpected contributor.
-    const byKind: Record<string, number> = {};
-    for (const it of allItems(p)) byKind[it.kind] = (byKind[it.kind] ?? 0) + 1;
-    console.log('DEBUG byKind', JSON.stringify(byKind));
     expect(allItems(p)).toHaveLength(0);
   });
 

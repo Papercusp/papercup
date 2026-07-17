@@ -11,7 +11,22 @@
  */
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
-import { parseTscErrors, syntaxBrokenFiles, countByFile, decidePerFile } from '../../../scripts/lint-tsc.mjs';
+import { parseTscErrors, syntaxBrokenFiles, countByFile, decidePerFile, TSC_COMMAND } from '../../../scripts/lint-tsc.mjs';
+
+describe('TSC_COMMAND (EI-487 regression guard)', () => {
+  it('always measures fresh — never trusts a warm/stale incremental cache', () => {
+    // A stale tsconfig.tsbuildinfo under-reports errors for files affected-but-
+    // not-yet-reindexed (WI-4488). Under THIS script that under-report is worse
+    // than a normal false-green: on `--update` it silently ratchets a file's
+    // baseline DOWN to the incomplete count, so a later fully-fresh run (CI, or
+    // the same file once its cache catches up) trips the gate on code that
+    // already passed its author's own `lint:tsc` — the fleet-wide false red
+    // EI-487 traced back to this flag being absent. Pin it so nobody removes it
+    // as a "harmless" perf tweak without re-deriving why it's here.
+    expect(TSC_COMMAND).toContain('--incremental false');
+    expect(TSC_COMMAND).toContain('--noEmit');
+  });
+});
 
 const SAMPLE = [
   "lib/foo.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.",

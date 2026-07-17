@@ -99,6 +99,20 @@ describe('action surface — coverage (P-016)', () => {
     expect(row?.queenVerbs).toEqual(['review:approve', 'merge:approve']);
   });
 
+  it('the plan-decision ratification partial (EI-458) is now covered by plans:ratify-decision', () => {
+    const row = ACTION_SURFACE.find((a) => a.id === 'plan.ratify-decision');
+    expect(row?.coverage).toBe('covered');
+    expect(row?.queenVerbs).toEqual(['plans:add-decision', 'plans:ratify-decision']);
+    expect(partialCoverage().map((p) => p.id)).not.toContain('plan.ratify-decision');
+  });
+
+  it('the askUser card-answer partial (EI-458) is now covered by coord:resolve\'s card-link side-effect', () => {
+    const row = ACTION_SURFACE.find((a) => a.id === 'escalations.answer-card');
+    expect(row?.coverage).toBe('covered');
+    expect(row?.queenVerbs).toEqual(['coord:resolve', 'coord:escalations']);
+    expect(partialCoverage().map((p) => p.id)).not.toContain('escalations.answer-card');
+  });
+
   it('partialCoverage() returns only partial rows', () => {
     expect(partialCoverage().every((p) => p.coverage === 'partial')).toBe(true);
   });

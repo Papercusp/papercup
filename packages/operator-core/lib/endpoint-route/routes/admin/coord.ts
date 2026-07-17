@@ -31,6 +31,7 @@ import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent
 import '../../../agent-tools/index';
 import { PROJECTED_DEPS } from '../../../projected-tool-deps';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { requireAllowedOriginOr403 } from '../../cors';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
 
 // Shared with the Planning inbox's ack-dismiss filter (plans/attention.ts) so
@@ -77,6 +78,12 @@ function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
 }
 
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
+  // The unverified-loopback admission below relies on this CSRF backstop
+  // (auth-posture.test.ts): a browser cross-origin POST is refused; the desktop
+  // webview's allowed origins and no-Origin native/IPC-bridge fetches pass.
+  const csrf = requireAllowedOriginOr403(req);
+  if (csrf) return csrf;
+
   const verb = ctx.params.verb;
   if (!WRITE_VERBS.has(verb)) {
     return Response.json(
