@@ -108,6 +108,7 @@ describe('writeJsonAtomic + readOperatorDiscovery', () => {
       port: 3070,
       token: 'super-secret-token',
       pid: process.pid,
+      processIdentity: 'linux:test-boot:12345',
       startedAt: Date.now(),
       version: 'test',
       sha: 'abc1234',
@@ -120,6 +121,7 @@ describe('writeJsonAtomic + readOperatorDiscovery', () => {
       port: 3070,
       token: 'super-secret-token',
       pid: process.pid,
+      processIdentity: 'linux:test-boot:12345',
       sha: 'abc1234',
     });
 
@@ -128,7 +130,7 @@ describe('writeJsonAtomic + readOperatorDiscovery', () => {
     expect(statSync(pcDir()).mode & 0o777).toBe(0o700);
   });
 
-  it('defaults sha to null when the on-disk record predates the EI-9002 field', async () => {
+  it('defaults sha and process identity to null for a legacy discovery record', async () => {
     const disc = {
       httpUrl: 'http://127.0.0.1:3070',
       port: 3070,
@@ -140,6 +142,7 @@ describe('writeJsonAtomic + readOperatorDiscovery', () => {
     };
     await serve.writeJsonAtomic(operatorJson(), disc);
     expect(serve.readOperatorDiscovery()?.sha).toBeNull();
+    expect(serve.readOperatorDiscovery()?.processIdentity).toBeNull();
   });
 
   it('returns null when the file is missing', () => {

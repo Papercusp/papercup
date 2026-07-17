@@ -8,17 +8,40 @@
 import { describe, it, expect } from 'vitest';
 import { killOne, findTabShellPid, closeTerminalPid, type ProcInfo, type KillDeps } from './kill';
 import type { PsuPtyHost } from '../../events/await/psu-pty-discovery';
+import { linuxProcessIdentityFromStat, linuxStartTicksFromProcStat } from '../../process-identity';
 
 const MARKER_CMD = "bash -lc printf … && touch .papercup-console-active.$$ … (eval 'psu --no-picker --fleet=x')";
 
 /** A tiny fake process tree: pid → { ppid, cmdline, env } . */
-function makeProcTree(nodes: Record<number, { ppid: number; cmdline: string | null; env?: boolean }>) {
+function makeProcTree(
+  nodes: Record<
+    number,
+    {
+      ppid: number;
+      cmdline: string | null;
+      env?: boolean;
+      processIdentity?: string | null;
+      consoleIdentity?: string | null;
+    }
+  >,
+) {
   const alive = new Set(Object.keys(nodes).map(Number));
   const kills: Array<{ pid: number; signal: string }> = [];
   const readProc = (pid: number): ProcInfo | null => {
     const n = nodes[pid];
     if (!n || !alive.has(pid)) return null;
-    return { ppid: n.ppid, cmdline: n.cmdline, environHas: () => Boolean(n.env) };
+    const processIdentity =
+      n.processIdentity === undefined ? `linux:test-boot:${pid}` : n.processIdentity;
+    const consoleIdentity =
+      n.consoleIdentity === undefined && n.env ? processIdentity : n.consoleIdentity;
+    return {
+      ppid: n.ppid,
+      cmdline: n.cmdline,
+      processIdentity,
+      environHas: (marker: string) => marker === 'PAPERCUSP_HARNESS_SLUG=' && Boolean(n.env),
+      environmentValue: (name: string) =>
+        name === 'PAPERCUSP_CONSOLE_IDENTITY' ? consoleIdentity ?? null : null,
+    };
   };
   const kill = (pid: number, signal: NodeJS.Signals): boolean => {
     if (!alive.has(pid)) return false;
@@ -184,7 +207,7 @@ describe('closeTerminalPid (orphaned windows)', () => {
     expect(t.aliveSet.has(500)).toBe(true);
   });
 
-  it('closes a marked (post-exec, env-marker-only) tab shell', async () => {
+  it('closes a marked tab shell only when its launch identity matches its current birth identity', async () => {
     // After `exec $SHELL -l` the cmdline marker is GONE — only the env marker survives.
     const t = makeProcTree({ 500: { ppid: 1, cmdline: 'bash -l', env: true } });
     const r = await closeTerminalPid(500, { readProc: t.readProc, kill: t.kill, alive: t.alive, sleep: noSleep });
@@ -193,10 +216,51 @@ describe('closeTerminalPid (orphaned windows)', () => {
     expect(t.kills[0]).toEqual({ pid: 500, signal: 'SIGHUP' });
   });
 
+  it('refuses a legacy env-only marker with no birth identity', async () => {
+    const t = makeProcTree({
+      500: { ppid: 1, cmdline: 'bash -l', env: true, consoleIdentity: null },
+    });
+    const r = await closeTerminalPid(500, { readProc: t.readProc, kill: t.kill, alive: t.alive, sleep: noSleep });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('birth identity');
+    expect(t.kills).toEqual([]);
+  });
+
+  it('refuses a recycled pid whose recorded and current birth identities differ', async () => {
+    const t = makeProcTree({
+      500: {
+        ppid: 1,
+        cmdline: 'bash -l',
+        env: true,
+        processIdentity: 'linux:test-boot:999',
+        consoleIdentity: 'linux:test-boot:500',
+      },
+    });
+    const r = await closeTerminalPid(500, { readProc: t.readProc, kill: t.kill, alive: t.alive, sleep: noSleep });
+    expect(r.ok).toBe(false);
+    expect(t.kills).toEqual([]);
+  });
+
+  it('refuses protected session processes even if markers are spoofed', async () => {
+    const t = makeProcTree({ 500: { ppid: 1, cmdline: '/usr/lib/systemd/systemd --user', env: true } });
+    const r = await closeTerminalPid(500, { readProc: t.readProc, kill: t.kill, alive: t.alive, sleep: noSleep });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('protected');
+    expect(t.kills).toEqual([]);
+  });
+
   it('reports pid not found for a dead pid', async () => {
     const t = makeProcTree({});
     const r = await closeTerminalPid(999, { readProc: t.readProc, kill: t.kill, alive: t.alive, sleep: noSleep });
     expect(r.ok).toBe(false);
     expect(r.error).toBe('pid not found');
+  });
+});
+
+describe('kernel process identity parsing', () => {
+  it('reads Linux starttime field 22 after a comm containing spaces and parens', () => {
+    const stat = '42 (odd process) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 987654 19';
+    expect(linuxStartTicksFromProcStat(stat)).toBe('987654');
+    expect(linuxProcessIdentityFromStat('boot-abc\n', stat)).toBe('linux:boot-abc:987654');
   });
 });

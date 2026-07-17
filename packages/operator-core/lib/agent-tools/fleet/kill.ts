@@ -49,6 +49,7 @@ import { findLiveHost, type PsuPtyHost } from '../../events/await/psu-pty-discov
 import { clearPresence } from '../coordination/presence';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
+import { readProcessIdentity } from '../../process-identity';
 
 /** Console-marker substring stamped into every fleet/desktop launch command
  *  (capability:terminal / fleet:launch-on-plan) — identifies a papercusp tab
@@ -58,6 +59,7 @@ const CONSOLE_MARKER = '.papercup-console-active';
 /** Env marker that SURVIVES the tab shell's `exec $SHELL -l` (cmdline does not)
  *  — the validation gate for closing a stale window by pid. */
 const ENV_MARKER = 'PAPERCUSP_HARNESS_SLUG=';
+const CONSOLE_IDENTITY_ENV = 'PAPERCUSP_CONSOLE_IDENTITY';
 
 const KILL_WAIT_POLLS = 6;
 const KILL_WAIT_MS = 250;
@@ -67,7 +69,10 @@ const KILL_WAIT_MS = 250;
 export interface ProcInfo {
   ppid: number | null;
   cmdline: string | null;
+  /** Current kernel-backed boot + process-start identity. */
+  processIdentity: string | null;
   environHas: (marker: string) => boolean;
+  environmentValue: (name: string) => string | null;
 }
 
 export interface KillDeps {
@@ -122,15 +127,25 @@ const defaultReadProc = (pid: number): ProcInfo | null => {
     } catch {
       cmdline = null;
     }
+    let environ: string | null = null;
+    const readEnviron = (): string | null => {
+      if (environ !== null) return environ;
+      try {
+        environ = readFileSync(`/proc/${pid}/environ`, 'utf8').replace(/\0/g, '\n');
+        return environ;
+      } catch {
+        return null;
+      }
+    };
     return {
       ppid: Number.isFinite(ppid) ? ppid : null,
       cmdline,
-      environHas: (marker: string) => {
-        try {
-          return readFileSync(`/proc/${pid}/environ`, 'utf8').replace(/\0/g, '\n').includes(marker);
-        } catch {
-          return false;
-        }
+      processIdentity: readProcessIdentity(pid),
+      environHas: (marker: string) => Boolean(readEnviron()?.includes(marker)),
+      environmentValue: (name: string) => {
+        const prefix = `${name}=`;
+        const entry = readEnviron()?.split('\n').find((line) => line.startsWith(prefix));
+        return entry ? entry.slice(prefix.length) : null;
       },
     };
   } catch {
@@ -278,13 +293,37 @@ export async function closeTerminalPid(
   const prims = { kill: deps.kill ?? defaultKill, alive: deps.alive ?? defaultAlive, sleep: deps.sleep ?? defaultSleep };
   const info = readProc(pid);
   if (!info) return { ok: false, pid, error: 'pid not found' };
-  const marked = info.environHas(ENV_MARKER) || Boolean(info.cmdline?.includes(CONSOLE_MARKER));
-  if (!marked) {
-    return { ok: false, pid, error: 'refused: pid carries no papercusp console marker (PAPERCUSP_HARNESS_SLUG env / launch cmdline) — fleet:kill only closes papercusp fleet windows' };
+  const recordedIdentity = info.environmentValue(CONSOLE_IDENTITY_ENV);
+  const marked = info.environHas(ENV_MARKER) && Boolean(recordedIdentity);
+  if (!marked || !info.processIdentity || recordedIdentity !== info.processIdentity) {
+    return {
+      ok: false,
+      pid,
+      error:
+        'refused: pid does not carry a matching papercusp console birth identity ' +
+        '(harness marker + boot id + process start time are all required)',
+    };
   }
+  const cmdline = (info.cmdline ?? '').toLowerCase();
+  if (/\b(systemd|gnome-shell|gdm|plasmashell|login|launchd|windowserver)\b/.test(cmdline)) {
+    return { ok: false, pid, error: 'refused: protected desktop/session process' };
+  }
+
+  // Re-read immediately before each signal. If the shell exits and its pid is
+  // recycled during the grace interval, the replacement never receives TERM.
+  const stillSameConsole = (): boolean => {
+    const current = readProc(pid);
+    return Boolean(
+      current &&
+        current.processIdentity === recordedIdentity &&
+        current.environHas(ENV_MARKER) &&
+        current.environmentValue(CONSOLE_IDENTITY_ENV) === recordedIdentity,
+    );
+  };
+  if (!stillSameConsole()) return { ok: false, pid, error: 'refused: process identity changed before signal delivery' };
   prims.kill(pid, 'SIGHUP');
   await prims.sleep(KILL_WAIT_MS);
-  if (prims.alive(pid)) prims.kill(pid, 'SIGTERM');
+  if (prims.alive(pid) && stillSameConsole()) prims.kill(pid, 'SIGTERM');
   return { ok: true, pid, closed: true };
 }
 

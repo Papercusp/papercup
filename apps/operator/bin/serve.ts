@@ -45,6 +45,7 @@ import { execFileSync } from 'node:child_process';
 import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
 import { runShutdownWithDeadline } from '../lib/shutdown-deadline';
 import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
+import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 // The three sidecar entrypoints (substrate / spawner / inference-gateway) are
 // imported DYNAMICALLY inside main(), never here — same as host-bootstrap,
@@ -101,6 +102,9 @@ export interface OperatorDiscovery {
   /** Superuser bearer token (from ~/.papercusp/superuser-token), or null. */
   token: string | null;
   pid: number;
+  /** Kernel-backed boot + process-start identity. A PID-only record is never
+   *  sufficient authority for a later cleanup signal. */
+  processIdentity: string | null;
   startedAt: number;
   version: string;
   /** Short git sha this operator was built from (getBuildInfo().sha), or null
@@ -179,6 +183,8 @@ export function readOperatorDiscovery(): OperatorDiscovery | null {
         port: Number(j.port) || 0,
         token: typeof j.token === 'string' ? j.token : null,
         pid: j.pid,
+        processIdentity:
+          typeof j.processIdentity === 'string' && j.processIdentity ? j.processIdentity : null,
         startedAt: Number(j.startedAt) || 0,
         version: typeof j.version === 'string' ? j.version : 'unknown',
         sha: typeof j.sha === 'string' && j.sha ? j.sha : null,
@@ -1058,6 +1064,7 @@ async function main(): Promise<void> {
           port: info.port,
           token: readToken(),
           pid: process.pid,
+          processIdentity: readProcessIdentity(process.pid),
           startedAt: Date.now(),
           version: VERSION,
           sha: BUILD_SHA,
