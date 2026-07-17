@@ -59,7 +59,7 @@ describe('canaryAxes', () => {
 
 describe('main() — plan-only default (no --execute)', () => {
   it('never touches makeDriver and never arms the sweep', async () => {
-    const runSweep = vi.fn(async (input: RunSweepInput) => {
+    const runSweep = vi.fn(async (input: RunSweepInput = {}) => {
       expect(input.armed).not.toBe(true);
       return stubSweepResult({ cells: [{ cellId: 'c1' } as never], reachableCount: 1 });
     });
@@ -78,7 +78,7 @@ describe('main() — plan-only default (no --execute)', () => {
 
   it('passes the canary (single-cell) axes by default, not the full matrix', async () => {
     let seenAxes: RunSweepInput['axes'];
-    const runSweep = vi.fn(async (input: RunSweepInput) => {
+    const runSweep = vi.fn(async (input: RunSweepInput = {}) => {
       seenAxes = input.axes;
       return stubSweepResult();
     });
@@ -89,7 +89,7 @@ describe('main() — plan-only default (no --execute)', () => {
 
   it('--full widens the plan-only preview to the whole default matrix', async () => {
     let seenAxes: RunSweepInput['axes'];
-    const runSweep = vi.fn(async (input: RunSweepInput) => {
+    const runSweep = vi.fn(async (input: RunSweepInput = {}) => {
       seenAxes = input.axes;
       return stubSweepResult();
     });
@@ -146,7 +146,7 @@ describe('main() — --execute arms the live driver', () => {
       status: 'ok',
       metrics: { ...emptyCellMetrics(), taskSuccessRate: 1 },
     };
-    const runSweep = vi.fn(async (input: RunSweepInput) => {
+    const runSweep = vi.fn(async (input: RunSweepInput = {}) => {
       expect(input.armed).toBe(true);
       expect(typeof input.driver).toBe('function');
       return stubSweepResult({ ran: true, results: [cellResult], reachableCount: 1 });
@@ -192,7 +192,7 @@ describe('main() — --execute arms the live driver', () => {
       status: 'ok',
       metrics: { ...emptyCellMetrics(), taskSuccessRate: 1 },
     };
-    const runSweep = vi.fn(async (input: RunSweepInput) => {
+    const runSweep = vi.fn(async (input: RunSweepInput = {}) => {
       expect(typeof input.onCell).toBe('function');
       await input.onCell!(cellResult);
       await input.onCell!({ ...cellResult, cellId: 'second-cell', status: 'error' });
@@ -214,7 +214,7 @@ describe('main() — --execute arms the live driver', () => {
 
   it('--repeats <n> is threaded through to runSweep', async () => {
     let seenRepeats: number | undefined;
-    const runSweep = vi.fn(async (input: RunSweepInput) => {
+    const runSweep = vi.fn(async (input: RunSweepInput = {}) => {
       seenRepeats = input.repeats;
       return stubSweepResult({ ran: true });
     });

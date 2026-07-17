@@ -1418,6 +1418,39 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
  * cross-machine reachability (Phase 3's live rig, P-302) exercises the happy
  * path end-to-end.
  */
+/**
+ * Resolve the live swarm topic for a hive-git-enabled harness, DEMANDING a
+ * boot when the substrate isn't currently resident in this process (WI-5247).
+ *
+ * `getBootedHarness` only re-boots an engine the P-008 reaper EVICTED —  a
+ * harness that was simply never booted in this process (a joined hive whose
+ * workspace didn't happen to boot-sweep it, or any process restart with an
+ * empty in-memory handle cache) falls through it as a silent, permanent
+ * `null`: LAZY_SUBSTRATE_BOOT's "boot sweep boots only actively-demanded
+ * harnesses" contract requires SOMETHING to register that demand, and
+ * nothing did. Every git-sync tick for a hiveGit-enabled harness IS genuine
+ * demand for its substrate, so treat "not currently booted" the same as
+ * "evicted": fire a background `bootSingleHarness` (idempotent — coalesces
+ * on its own `inflight` map, and a no-op once already booted, so calling it
+ * every tick from every leg here is safe) so the substrate eventually comes
+ * up and a LATER tick finds a live topic instead of the harness staying
+ * stranded forever. Best-effort: never throws into the calling git-sync tick.
+ */
+async function resolveHiveGitTopicHex(
+  workspaceId: string,
+  potHomeSlug: string,
+): Promise<string | undefined> {
+  const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
+  const handle = getBootedHarness(workspaceId, potHomeSlug);
+  if (!handle) {
+    void bootSingleHarness(workspaceId, potHomeSlug).catch(() => {
+      // best-effort demand-boot; a failure just leaves the harness unbooted
+      // for this tick — the next tick's access retries.
+    });
+  }
+  return handle?.swarm?.topicHex;
+}
+
 export async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
@@ -1491,8 +1524,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // pre-WI-3583 destroyed stub when it doesn't (private/local-only harness,
     // or not yet booted onto a swarm) — mirrors runRefAnnounceLeg's own
     // openStream floor exactly.
-    const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
-    const topicHex = getBootedHarness(workspaceId, potHomeSlug)?.swarm?.topicHex;
+    const topicHex = await resolveHiveGitTopicHex(workspaceId, potHomeSlug);
     if (!topicHex) {
       const stub = new Duplex({
         read() {},
@@ -1727,8 +1759,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
         // modules from a leaf call site (e.g. boot.ts's own
         // `await import('../../hive-membership-store')`), so it loads only
         // when a fetch is actually attempted, never at module-init time.
-        const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
-        const topicHex = getBootedHarness(workspaceId, potHomeSlug)?.swarm?.topicHex;
+        const topicHex = await resolveHiveGitTopicHex(workspaceId, potHomeSlug);
         if (!topicHex) {
           const stub = new Duplex({
             read() {},
