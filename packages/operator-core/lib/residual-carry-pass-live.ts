@@ -25,6 +25,7 @@ import {
   scoreResidualMissRate,
   type MissRateSample,
   type MissRateReport,
+  type ResidualFinding,
   type ResidualLlmFn,
 } from './residual-carry-pass';
 
@@ -94,6 +95,32 @@ export interface ResidualSampleLedgerEvent extends MissRateSample {
   source: string;
   /** Findings, when the caller wants them preserved for a human audit later. */
   findingsCount?: number;
+  /** Bounded copies of the findings themselves (text/provenance/anchor/material),
+   *  so a material row is TRIAGEABLE later — "real builder gap → fix that carry
+   *  slot" vs "spurious flag" — instead of an unactionable count. A strict-zero
+   *  retirement gate (D-010) plus a deliberately over-flagging instrument can
+   *  only converge if each flag can be turned into a builder fix. Absent on rows
+   *  written before this field existed, and on clean rows. */
+  findings?: ResidualLedgerFinding[];
+}
+
+/** Max findings persisted per ledger row + per-string char bound — triage needs
+ *  the gist and the anchor, never the whole dropped context back. */
+export const RESIDUAL_LEDGER_MAX_FINDINGS = 5;
+export const RESIDUAL_LEDGER_FINDING_MAX_CHARS = 240;
+
+export type ResidualLedgerFinding = Pick<ResidualFinding, 'provenance' | 'material'> & {
+  text: string;
+  anchor: string | null;
+};
+
+export function boundLedgerFindings(findings: ResidualFinding[]): ResidualLedgerFinding[] {
+  return findings.slice(0, RESIDUAL_LEDGER_MAX_FINDINGS).map((f) => ({
+    text: f.text.slice(0, RESIDUAL_LEDGER_FINDING_MAX_CHARS),
+    provenance: f.provenance,
+    anchor: f.anchor === null ? null : f.anchor.slice(0, RESIDUAL_LEDGER_FINDING_MAX_CHARS),
+    material: f.material,
+  }));
 }
 
 export function residualCarryLedgerPath(dir: string = PSU_PTY_DIR): string {
@@ -421,6 +448,7 @@ export async function runMaintenanceResidualSample(
     parseError: result.parseError,
     source: RESIDUAL_SAMPLE_SOURCE,
     findingsCount: result.findings.length,
+    ...(result.findings.length > 0 ? { findings: boundLedgerFindings(result.findings) } : {}),
   });
   if (!appended) return { sampled: false, reason: 'append-failed', sessionClass };
   return {

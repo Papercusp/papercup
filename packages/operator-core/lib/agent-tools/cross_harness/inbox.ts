@@ -57,8 +57,6 @@ export default defineTool({
       role: args.role ?? null,
       limit: args.limit,
     });
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ slug, status: args.status ?? 'pending', role: args.role ?? null, messages }) }],
-    };
+    return { data: { slug, status: args.status ?? 'pending', role: args.role ?? null, messages } };
   },
 });

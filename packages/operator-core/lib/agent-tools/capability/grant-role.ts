@@ -95,22 +95,17 @@ export default defineTool({
     );
 
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            ok: true,
-            role: args.role,
-            dryRun: outcome.dryRun,
-            applied: outcome.applied,
-            reverted: outcome.reverted,
-            preview: outcome.preview,
-            verify: outcome.verify,
-            auditId: outcome.auditId,
-            grants: outcome.next ?? outcome.prev,
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        role: args.role,
+        dryRun: outcome.dryRun,
+        applied: outcome.applied,
+        reverted: outcome.reverted,
+        preview: outcome.preview,
+        verify: outcome.verify,
+        auditId: outcome.auditId,
+        grants: outcome.next ?? outcome.prev,
+      },
     };
   },
 });

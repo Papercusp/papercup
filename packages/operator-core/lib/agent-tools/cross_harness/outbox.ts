@@ -49,6 +49,6 @@ export default defineTool({
       return harnessRequiredResult('cross_harness:outbox');
     }
     const messages = await readOutbox(slug, args.limit);
-    return { content: [{ type: 'text', text: JSON.stringify({ slug, messages }) }] };
+    return { data: { slug, messages } };
   },
 });

@@ -137,6 +137,6 @@ export default defineTool({
           LIMIT ${limit}
         `;
 
-    return { content: [{ type: 'text', text: JSON.stringify({ activity: rows, count: rows.length }) }] };
+    return { data: { activity: rows, count: rows.length } };
   },
 });

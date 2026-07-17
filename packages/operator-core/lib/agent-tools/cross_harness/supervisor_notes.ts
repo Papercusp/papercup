@@ -48,6 +48,6 @@ export default defineTool({
       return harnessRequiredResult('cross_harness:supervisor_notes');
     }
     const notes = await readSupervisorNotes(slug, args.limit);
-    return { content: [{ type: 'text', text: JSON.stringify({ slug, notes }) }] };
+    return { data: { slug, notes } };
   },
 });

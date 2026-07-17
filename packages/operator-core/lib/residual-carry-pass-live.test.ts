@@ -18,6 +18,8 @@ import {
   isResidualClassRetired,
   RESIDUAL_SAMPLE_MIN_INTERVAL_MS,
   RESIDUAL_SAMPLE_SOURCE,
+  RESIDUAL_LEDGER_MAX_FINDINGS,
+  RESIDUAL_LEDGER_FINDING_MAX_CHARS,
   type ResidualSampleLedgerEvent,
 } from './residual-carry-pass-live';
 
@@ -192,6 +194,32 @@ describe('runMaintenanceResidualSample — the gateway-boundary sampling harness
     const r = await runMaintenanceResidualSample(INPUT, h.deps);
     expect(r).toMatchObject({ sampled: true, material: true, parseError: false });
     expect(h.appended[0]).toMatchObject({ material: true, findingsCount: 1 });
+  });
+
+  it('persists BOUNDED finding copies on a material row (triageable into a builder fix), and omits the field on a clean row', async () => {
+    const longText = 'x'.repeat(1000);
+    const findings = Array.from({ length: 8 }, (_, i) => ({
+      text: `${i}:${longText}`,
+      provenance: 'owner',
+      anchor: i % 2 === 0 ? longText : null,
+      material: true,
+    }));
+    const h = harness({ llmFn: async () => JSON.stringify({ findings }) });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toMatchObject({ sampled: true, material: true });
+    const row = h.appended[0];
+    expect(row.findingsCount).toBe(8);
+    expect(row.findings).toHaveLength(RESIDUAL_LEDGER_MAX_FINDINGS);
+    for (const f of row.findings ?? []) {
+      expect(f.text.length).toBeLessThanOrEqual(RESIDUAL_LEDGER_FINDING_MAX_CHARS);
+      if (f.anchor !== null) expect(f.anchor.length).toBeLessThanOrEqual(RESIDUAL_LEDGER_FINDING_MAX_CHARS);
+      expect(f).toMatchObject({ provenance: 'owner', material: true });
+    }
+
+    const clean = harness();
+    await runMaintenanceResidualSample(INPUT, clean.deps);
+    expect(clean.appended[0].findingsCount).toBe(0);
+    expect(clean.appended[0]).not.toHaveProperty('findings');
   });
 
   it('non-interactive boundaries skip WITHOUT appending — drone compactions are graded by the P-020 drills, and skip rows must not roll real samples out of the bounded ledger', async () => {

@@ -858,12 +858,13 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
-    // The account-steering fix (operator-spawn.ts) threads cup's OWN committed floor
-    // through PAPERCUSP_SPAWN_MODEL even with no bench flag, so the EFFECTIVE spec (not
-    // just AGENT_CMD) drives backend inference. Post WI-4623 revert cup's floor is the
-    // claude-family `sonnet[1m]:high`, so "keeps its floor" means exactly that value —
-    // and inferBackendFromModelSpec keeps the child on the claude binary.
-    expect(env.PAPERCUSP_SPAWN_MODEL).toBe('sonnet[1m]:high');
+    // The account-steering fix (operator-spawn.ts) promotes a committed floor into
+    // PAPERCUSP_SPAWN_MODEL ONLY when it is codex-shaped (so inferBackendFromModelSpec
+    // can swap the child to the codex binary). Post WI-4623 revert cup's floor is the
+    // claude-family `sonnet[1m]:high` — NOT codex-shaped — so no promotion fires and
+    // "keeps its floor" means an absent pin: the floor rides the exec boundary
+    // (applyRoleModel) on the claude CLI, exactly as before the luna migration.
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();
   });
 
   it('does NOT pin a non-bee role even under the bench flag (only bench bees are pinned)', async () => {

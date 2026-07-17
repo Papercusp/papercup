@@ -275,10 +275,10 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
 
   it('GAP-2: an owner tier override raises the QUEEN\'s OWN model (bodyExtra.spawnModel) at launch', async () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // Owner set the menu (mug's home tier, P-020 `luna`) to opus:xhigh in the 👑-tab → session override.
+    // Owner set the menu (mug's home tier `standard`, WI-4623 revert) to opus:xhigh in the 👑-tab → session override.
     getOwnerSteering.mockResolvedValueOnce({
       directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null,
-      modelTiers: [{ name: 'luna', spec: 'opus:xhigh' }], tierCeilings: null,
+      modelTiers: [{ name: 'standard', spec: 'opus:xhigh' }], tierCeilings: null,
     });
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });

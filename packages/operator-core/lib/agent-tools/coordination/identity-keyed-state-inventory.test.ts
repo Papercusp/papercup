@@ -243,6 +243,54 @@ const ALLOWLIST: Record<string, Classification> = {
       'journal:recent filters, not a current-holder claim any presence-tied reaper acts on. Same class as ' +
       'session_turns.owner / agent_activity.owner_id.',
   },
+  'session_cursor.owner_id': {
+    status: 'exempt',
+    reason:
+      'ambient-semantic-push-2026-07-14 P-001 (migration 609): per-session lexical-cursor cache keyed by ' +
+      'session_id, REBUILT at every turn end and pruned by staleness code-side — owner_id is nullable ' +
+      '("coord identity when known") debug/prune metadata, never a current-holder claim a presence-tied ' +
+      'reaper/reader keys on. Same class as session_turns.owner.',
+  },
+  'push_delivery.target_owner_id': {
+    status: 'exempt',
+    reason:
+      'ambient-semantic-push-2026-07-14 P-003 (migration 610): the ambient-push delivery rail\'s queue + tally + ' +
+      'disposition ledger — target_owner_id is the RECIPIENT axis of a per-push row (queued → delivered/dropped). ' +
+      'A row stranded by an identity rebind is just an ambient hint that never ships (the rail\'s own floor/' +
+      'novelty/budget gates drop it); nothing holds work or is reaped on it. Whole feature DEFAULT-OFF behind ' +
+      'PAPERCUSP_AMBIENT_CURSOR.',
+  },
+  'collision_hysteresis.owner_id': {
+    status: 'exempt',
+    reason:
+      'ambient-semantic-push-2026-07-14 P-004 (migration 612): per-SELF-session detector streak state keyed by ' +
+      'session_id, replaced on every tick — owner_id is nullable and per the migration comment "for pruning/' +
+      'debugging only". Same class as session_cursor.owner_id.',
+  },
+  'topic_hysteresis.owner_id': {
+    status: 'exempt',
+    reason:
+      'ambient-semantic-push-2026-07-14 P-008 (migration 613): per-SELF-session auto-subscribe streak state, ' +
+      'same shape and same "for pruning/debugging only" owner_id as collision_hysteresis.owner_id.',
+  },
+  'adjacency_state.owner_id': {
+    status: 'exempt',
+    reason:
+      'ambient-semantic-push-2026-07-14 P-013 (migration 614): per-SELF-session adjacency streak state, same ' +
+      'shape and same "for pruning/debugging only" owner_id as collision_hysteresis.owner_id.',
+  },
+  'bak_20260717_unify_work_items.taken_by': {
+    status: 'exempt',
+    reason:
+      'frozen pre-migration backup snapshot of work_items taken during the 2026-07-17 unify migration — no live ' +
+      'reader or reaper touches it; DELETE this entry when the bak_ table is dropped.',
+  },
+  'bak_20260717_unify_subs.subscriber_id': {
+    status: 'exempt',
+    reason:
+      'frozen pre-migration backup snapshot of subscriptions taken during the 2026-07-17 unify migration — no ' +
+      'live reader or reaper touches it; DELETE this entry when the bak_ table is dropped.',
+  },
 };
 
 /** Column-name patterns that mean "this stores a CURRENT holder/owner

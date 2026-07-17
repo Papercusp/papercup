@@ -76,13 +76,6 @@ export default defineTool({
        WHERE install_slug = ${slug} AND name LIKE 'bp-schedule-%'
        ORDER BY name
     `;
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ harnessSlug: slug, rows: gated.length > 0 ? gated : null, scheduleRoutines: routines }),
-        },
-      ],
-    };
+    return { data: { harnessSlug: slug, rows: gated.length > 0 ? gated : null, scheduleRoutines: routines } };
   },
 });

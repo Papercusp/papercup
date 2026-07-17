@@ -2,7 +2,7 @@
  * routines:group-set — bulk pause/resume every routine in a group, and/or patch the
  * group's metadata (description, steward, review_cadence, mark-reviewed) — WI-5018
  * "routines can grow infinitely large ... grouping functionality would be very
- * beneficial" [owner:Avi 2026-07-15].
+ * beneficial" [owner 2026-07-15].
  *
  * GUARDRAIL (non-negotiable, per repo CLAUDE.md scheduling rules): this tool is
  * metadata + management ONLY. It never fires anything and never creates a third
@@ -195,21 +195,16 @@ export default defineTool({
     );
 
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            ok: true,
-            group,
-            dryRun: outcome.dryRun,
-            applied: outcome.applied,
-            reverted: outcome.reverted,
-            preview: outcome.preview,
-            verify: outcome.verify,
-            auditId: outcome.auditId,
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        group,
+        dryRun: outcome.dryRun,
+        applied: outcome.applied,
+        reverted: outcome.reverted,
+        preview: outcome.preview,
+        verify: outcome.verify,
+        auditId: outcome.auditId,
+      },
     };
   },
 });

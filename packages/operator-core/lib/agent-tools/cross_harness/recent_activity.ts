@@ -28,6 +28,6 @@ export default defineTool({
   }),
   async handler(args) {
     const events = await readRecentActivity(args.limit);
-    return { content: [{ type: 'text', text: JSON.stringify({ events }) }] };
+    return { data: { events } };
   },
 });
