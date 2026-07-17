@@ -157,7 +157,7 @@ describe('docs:outline handler — happy path + per-run cache', () => {
     const p1 = payloadOf(r1);
     expect(p1.cached).toBe(false);
     expect(p1.surface).toBe('harness');
-    expect(p1.pages[0].slug).toBe('p1'); // engine payload spread through
+    expect(p1.sections[0].pages[0].slug).toBe('p1'); // engine payload spread through
     expect(buildOutline).toHaveBeenCalledTimes(1);
 
     const r2 = await tool.handler({} as never, ctx);

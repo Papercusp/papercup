@@ -382,6 +382,37 @@ describe('speak / cancelAllSpeech queue', () => {
     mod.speak('quiet', 'system:operator'); // mode off, no force → gated out
     expect((globalThis as any).window.speechSynthesis.speak).not.toHaveBeenCalled();
   });
+
+  // WI-5174: every silent gate in speak() now leaves a breadcrumb readable via
+  // the dev test seam, so "reply was correct but never spoken" is diagnosable
+  // instead of a dead end. Covers the two gates reachable without a real
+  // BroadcastChannel/leader/realtime setup; not-leader-tab and
+  // realtime-session-active share the exact same silenceSpeak() call path.
+  it('records WHY speak() was silenced (WI-5174 diagnostic seam)', async () => {
+    const g = globalThis as any;
+    g.window.__PAPERCUSP_DEV_WRAPPER__ = true;
+    try {
+      const mod = await loadVoiceMode();
+      mod.speak('quiet', 'system:operator'); // mode off, no force → gated out
+      expect(g.window.__pcVoiceTest.lastSilenced()).toMatchObject({
+        reason: 'voice-mode-off',
+        text: 'quiet',
+      });
+
+      mod.setVoiceMode('always-on');
+      mod.setVoiceOutputMuted(true);
+      mod.speak('still quiet', 'system:operator');
+      expect(g.window.__pcVoiceTest.lastSilenced()).toMatchObject({
+        reason: 'output-muted',
+        text: 'still quiet',
+      });
+      mod.setVoiceOutputMuted(false);
+      mod.setVoiceMode('off');
+    } finally {
+      delete g.window.__PAPERCUSP_DEV_WRAPPER__;
+      delete g.window.__pcVoiceTest;
+    }
+  });
 });
 
 describe('setVoiceMode', () => {

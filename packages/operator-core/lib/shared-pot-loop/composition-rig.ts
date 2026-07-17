@@ -864,6 +864,18 @@ export class CompositionRig {
       staleMs: this.staleMs,
       resolveSelf: async () => ({ githubUserId: uid, devicePubkey: selfPubkey }),
       fetchHivePresenceRows: presenceRows,
+      // WI-5192 (same class as WI-5190): HRW_RENDEZVOUS_AUTHORITY graduated to
+      // default-ON 2026-07-17 — without pinning it, resolveUseHrwRendezvous()
+      // reads the LIVE flag and silently switches which peer-selection algorithm
+      // decides the authority from selectAuthorityFromRows (row-argmin) to the
+      // hash-based selectAuthorityRendezvous. This rig's whole roster/election
+      // fixture is deliberately built for argmin ("cell a = argmin", see above)
+      // to make cell A the deterministic authority — pin it OFF so the chaos
+      // scenarios (partition/kill-authority/re-election) keep exercising THAT
+      // deterministic election, independent of the unrelated flag. The hash
+      // algorithm itself is covered by its own dedicated rendezvous-authority
+      // test suite.
+      useHrwRendezvous: false,
     });
     const depsA = mkDeps(ELECT_A, 4201);
     const depsB = mkDeps(ELECT_B, 4202);

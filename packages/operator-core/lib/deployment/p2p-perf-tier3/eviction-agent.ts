@@ -259,6 +259,11 @@ async function main(): Promise<void> {
         last_seen_ms: lastSeenMs.get(r.devicePubkey) ?? 0,
       })),
     evictionMonitor: monitor,
+    // Sibling of the WI-5203 fix (claim-agent.ts) — same real-OS-process pattern,
+    // same HRW_RENDEZVOUS_AUTHORITY-graduated-default-ON exposure. Pin OFF so this
+    // agent's election stays the deterministic argmin the eviction-monitor scenarios
+    // are built against, independent of the live flag.
+    useHrwRendezvous: false,
   };
 
   // ── The HTTP server: GET /alive (the heartbeat) + POST (authority RPC). ──

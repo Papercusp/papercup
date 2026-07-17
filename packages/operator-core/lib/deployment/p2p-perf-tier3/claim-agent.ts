@@ -184,6 +184,16 @@ async function main(): Promise<void> {
         machine_label: r.machineLabel,
         last_seen_ms: Date.now(),
       })),
+    // WI-5203 (same class as WI-5190/WI-5192): HRW_RENDEZVOUS_AUTHORITY graduated
+    // to default-ON 2026-07-17. This agent runs as a REAL separate OS process (not
+    // an in-process mock), so left unpinned it reads the LIVE flag and silently
+    // swaps the deterministic argmin election this whole harness is documented and
+    // built around ("authority = argmin pubkey", line 171) for the hash-based
+    // selectAuthorityRendezvous — breaking the "survivors keep electing the killed
+    // Swarm → fail-open" invariant the KILL-AUTHORITY scenario depends on. Pin OFF
+    // so this proves the argmin/RPC/fail-open/reconcile mechanics the docstring
+    // describes; the hash algorithm itself has its own dedicated test suite.
+    useHrwRendezvous: false,
   };
 
   // 4. The authority HTTP endpoint (the production /api/authority/rpc, served minimally).

@@ -45,15 +45,24 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 // Drift the workspace scope the CLAIM PATH captures (work-items.ts imports this symbol) away
-// from the scope the module-internal `getIssue` re-derives. Overriding only the EXPORT leaves
-// issues-engineer's own internal `issuesScopeWorkspace()` (used by the real `getIssue`) intact
-// at its flag-OFF default ('default') — exactly the two-derivations-disagree state EI-6480 hit
-// in production. `getIssueInWorkspace` (the fix) is left REAL: it takes the workspace as a
-// parameter and never calls `issuesScopeWorkspace`, so it is immune to this drift.
+// from the scope the module-internal `getIssue` re-derives. Overriding only the EXPORTS leaves
+// issues-engineer's own internal `issuesScopeWorkspace()`/`resolveIssuesScopeWorkspace()` calls
+// (used by the real `getIssue`, a SAME-FILE call vi.mock cannot intercept) intact at their
+// flag-OFF default ('default') — exactly the two-derivations-disagree state EI-6480 hit in
+// production. `getIssueInWorkspace` (the fix) is left REAL: it takes the workspace as a
+// parameter and never calls either scope-resolver, so it is immune to this drift.
+//
+// WI-5261: `claimNextIssueWorkItem`'s claim-time scope now goes through
+// `resolveIssuesScopeWorkspace(explicitActiveWorkspaceId)` (work-items.ts, imported from this
+// module) rather than the bare `issuesScopeWorkspace()` — mock BOTH exports the same way (both
+// unconditionally return CLAIM_WS, ignoring any argument) so the simulated drift still reaches
+// the claim path exactly as before; the mocked function's own arg is irrelevant here since the
+// point is "whatever value production logic would compute, this test forces it to CLAIM_WS,
+// independent from `activeWorkspaceId`'s separately-mocked 'default'".
 const CLAIM_WS = 'ws-drift';
 vi.mock('./issues-engineer', async () => {
   const actual = await vi.importActual<typeof import('./issues-engineer')>('./issues-engineer');
-  return { ...actual, issuesScopeWorkspace: () => CLAIM_WS };
+  return { ...actual, issuesScopeWorkspace: () => CLAIM_WS, resolveIssuesScopeWorkspace: () => CLAIM_WS };
 });
 
 const wi = await import('./work-items');

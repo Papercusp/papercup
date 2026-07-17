@@ -248,6 +248,11 @@ async function main(): Promise<void> {
         machine_label: r.machineLabel,
         last_seen_ms: Date.now(),
       })),
+    // Sibling of the WI-5203 fix (claim-agent.ts, "claim-agent parity" per the
+    // comment above) — pin OFF so this agent's election stays the deterministic
+    // argmin the loop-agent scenarios are built against, independent of the
+    // now-default-ON HRW_RENDEZVOUS_AUTHORITY flag.
+    useHrwRendezvous: false,
   };
 
   // ── 4. The authority HTTP endpoint (claim-agent parity) ──
