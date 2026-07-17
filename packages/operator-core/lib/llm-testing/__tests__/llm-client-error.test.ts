@@ -198,7 +198,13 @@ describe('llmCall priority default (EI-315: llm-testing lane starvation)', () =>
     // aggressively AIMD-shed lane, and the literal root cause of this item's
     // "17/17 attempts 429-capped over 7h". It must now land in the shared gym/benchmark
     // batch band (tier 4) instead.
-    expect(lastRunAgentChatOpts?.priority).toBe('llm-testing');
+    // WI-5217: `lastRunAgentChatOpts` is narrowed to the LITERAL `undefined` here (the
+    // preceding `= undefined` reset, with no call TS's CFA can see reassigning it before
+    // this read — the mock's own reassignment lives in a separately-registered vi.mock
+    // factory, invisible to this function's flow analysis) — `?.priority` on a value
+    // narrowed to exactly `undefined` then errors TS2339 on the `never` non-nullable arm.
+    // Re-assert the declared type to read the real (runtime-populated) value.
+    expect((lastRunAgentChatOpts as Record<string, unknown> | undefined)?.priority).toBe('llm-testing');
   });
 
   it('an explicit caller priority still wins over the llm-testing default', async () => {
@@ -213,6 +219,7 @@ describe('llmCall priority default (EI-315: llm-testing lane starvation)', () =>
       maxTokens: 8,
       priority: 'gym',
     });
-    expect(lastRunAgentChatOpts?.priority).toBe('gym');
+    // WI-5217: see the comment on the sibling assertion above — same narrowed-to-`undefined` quirk.
+    expect((lastRunAgentChatOpts as Record<string, unknown> | undefined)?.priority).toBe('gym');
   });
 });

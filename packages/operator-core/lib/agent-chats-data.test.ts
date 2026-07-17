@@ -30,9 +30,13 @@ vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => TEST_WS }));
 // The same fake client backs listChats (.all), getChat/createChat (.get +
 // .run) and archiveChat (.run) — every prepare() records its SQL + bound
 // args so a test can assert exactly which statements ran (and which DIDN'T).
-const allMock = vi.fn(async () => [] as Array<Record<string, unknown>>);
-const getMock = vi.fn(async () => undefined as Record<string, unknown> | undefined);
-const runMock = vi.fn(async () => undefined);
+// WI-5217: real (...args: unknown[]) rest-param signature so `.mock.calls[N]` is a
+// real (non-empty) tuple — the call sites below used to spread `args as []`, which
+// forced the mock's inferred call-arg tuple to `[]` (no real args, even though the
+// runtime spread still passed the real bound args through the type erasure).
+const allMock = vi.fn(async (..._args: unknown[]) => [] as Array<Record<string, unknown>>);
+const getMock = vi.fn(async (..._args: unknown[]) => undefined as Record<string, unknown> | undefined);
+const runMock = vi.fn(async (..._args: unknown[]) => undefined);
 let lastSql = '';
 /** Every (sql, boundArgs) pair prepared+executed, in order. */
 const calls: Array<{ sql: string; args: unknown[] }> = [];
@@ -43,15 +47,15 @@ vi.mock('@papercusp/db-org', () => ({
       return {
         all: (...args: unknown[]) => {
           calls.push({ sql, args });
-          return allMock(...(args as []));
+          return allMock(...args);
         },
         get: (...args: unknown[]) => {
           calls.push({ sql, args });
-          return getMock(...(args as []));
+          return getMock(...args);
         },
         run: (...args: unknown[]) => {
           calls.push({ sql, args });
-          return runMock(...(args as []));
+          return runMock(...args);
         },
       };
     },
