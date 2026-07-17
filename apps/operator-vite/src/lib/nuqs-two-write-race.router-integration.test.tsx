@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 //
 // Regression for the "stuck Add-a-Hive modal" (CreateHarnessPicker): closing the
-// modal must clear TWO url keys at once — ?create (open) and ?picker (step). Over
-// the REAL custom adapter (nuqs-tanstack-router-adapter), two SEPARATE same-tick
-// useQueryState writes CLOBBER each other (the adapter re-derives every watched
-// key from the last navigate's snapshot), and awaiting them does NOT serialize
-// (the setter resolves before the startTransition→navigate lands). The proven
-// fix is a SINGLE useQueryStates write — one navigate, no race. The picker now
-// routes every multi-key transition through one useQueryStates; this pins the
-// pattern so a future "just call the two setters" regression is caught.
+// modal must clear TWO url keys at once — ?create (open) and ?picker (step).
+// History: over the OLD custom adapter, two SEPARATE same-tick useQueryState
+// writes clobbered each other (the watchKeys-scoped merge-over-prev resurrected
+// the OTHER hook's removed key — ?open survived, the stuck-modal bug). WI-3499
+// (2026-07-17: unfiltered snapshot + wholesale updateUrl rebuild) fixed the
+// adapter so separate same-tick removals are now SAFE — both keys land. Test 1
+// pins the single-useQueryStates path (still preferred: one navigate); test 2
+// now pins that even the two-separate-setter path clears BOTH keys, so a future
+// adapter regression that reintroduces the clobber is caught.
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
