@@ -493,7 +493,7 @@ describe('directiveSuggestsResume / steeringLooksInconsistent (EI-8277 drift nud
     // The live incident directive, verbatim: pauseNewWork=true froze all
     // placements for ~36h while this stood, and inconsistent stayed false.
     const liveDirective =
-      'Owner-directed public-release readiness run [Avi 2026-07-14]. Run the full Mug→Cup→Kettle→Blender loop. Place and complete real work, emit rubric scorecards, close the learning cycle. Diagnose every failed cup/wake to evidence; do not hand-wave as capacity without a real capacity signal.';
+      'Owner-directed public-release readiness run [owner 2026-07-14]. Run the full Mug→Cup→Kettle→Blender loop. Place and complete real work, emit rubric scorecards, close the learning cycle. Diagnose every failed cup/wake to evidence; do not hand-wave as capacity without a real capacity signal.';
     expect(directiveSuggestsResume(liveDirective)).toBe(true);
     expect(steeringLooksInconsistent({ ...base, pauseNewWork: true, directive: liveDirective })).toBe(true);
     // Same directive with the gate already open — consistent, no nudge.

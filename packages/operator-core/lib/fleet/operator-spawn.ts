@@ -751,6 +751,17 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   let spawnModelTier: string | null = null;
   let spawnModelBackend: string | null = null;
   let spawnCompactionLimit: number | null = null;
+  // True only when `spawnModelSpec` was populated by the account-steering DEFAULT
+  // fallback below (a role's own committed floor, promoted only because it crosses
+  // backends) — never by an explicit caller pick (`input.modelSpec`/`input.tier`) or
+  // an owner-configured own-model override (`resolveRoleOwnModelSpec`). The bench-
+  // scoped opus pin (P-033 Fix 2, below) must still win over this DEFAULT the same
+  // way it always won when a role's own default happened to need no promotion —
+  // without this flag a codex-family committed default (e.g. cup's gpt-5.6-luna:high,
+  // P-020) silently pre-fills spawnModelSpec, and the pin's `if (!spawnModelSpec)`
+  // guard then never fires (the bench feature goes silently inert for every migrated
+  // role — caught by the P-033 Fix 2 test suite going red on the P-020 migration).
+  let spawnModelSpecIsImplicitDefault = false;
   if (!spawnModelSpec && input.tier && input.tier.trim()) {
     const [{ resolveTierSpec }, { tiers, tierCeilings }] = await Promise.all([
       import('./model-tiers'),
@@ -840,6 +851,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     const committedDefault = roleModelDefault(role);
     if (committedDefault && inferBackendFromModelSpec(committedDefault)) {
       spawnModelSpec = committedDefault;
+      spawnModelSpecIsImplicitDefault = true;
     }
   }
   const inferredBackend = inferBackendFromModelSpec(spawnModelSpec ?? undefined);
@@ -1182,6 +1194,14 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
         ).trim()
       : '';
   if (benchBeeDirective) {
+    // The account-steering DEFAULT fallback (P-020, above) is not an explicit pick —
+    // let the bench-scoped pin below own model+backend selection exactly as it did
+    // before a role's own committed default could cross backends (P-033 Fix 2).
+    if (spawnModelSpecIsImplicitDefault) {
+      spawnModelSpec = null;
+      spawnModelBackend = null;
+      spawnModelSpecIsImplicitDefault = false;
+    }
     // Append the directive when the placer's brief lacks it (the real-Queen arm, whose situational overlay
     // never contains it). The FIFO arm's executeBatch already passes the SAME directive as the brief, so
     // skip the append there to avoid a duplicate paragraph (idempotent either way).

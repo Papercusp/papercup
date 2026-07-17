@@ -502,7 +502,7 @@ export async function handleOverwatchLaunch(
       );
       return;
     }
-    // Owner invariant [owner:Avi 2026-07-16]: the Kettle supervises a RUNNING pot —
+    // Owner invariant [owner 2026-07-16]: the Kettle supervises a RUNNING pot —
     // only STARTED pots receive kettle (and mug) work. The overwatch-started bit
     // above is the LOOP's own switch (kettle:start/kettle:pause) and survives a pot
     // stop, so without this check a stale overwatch-wake routine keeps launching
