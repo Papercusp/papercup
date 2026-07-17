@@ -30,12 +30,14 @@ coordination features only … work on this plan from start to finish"]).
 - **Surface 5 (claim-spec) ✓** 6s: drill-cup-18f2f landed VM origin='remote' fed_hlc+fed_ts.
 - **H1/H2/H3+M5/M6 in-process suites ✓** re-run this drill: presence-gossip.test.ts +
   __tests__/coord-message-federation.integration.test.ts — 2/2 files green.
-- **Surface 2 receipt — EMIT CONTRACT PROVEN, transport pending**: the tower AUTHORED the
-  delivery receipt for msg mrobxkzz… at 22:56:54 EDT — exactly ONE row, payload
-  `{delivered:true, woken:1, machine:tower}` (M5a honest shape ✓; envelope carried
-  receipt:true because the probe was wake:'required' + directed + harness-scoped —
-  send.ts:407; expectsReply/wakeOnReply are IRRELEVANT to receipts). The row federates to
-  the VM only when the t2v rail rejoins (backlog is lossless — proven surface 3).
+- **Surface 2 ✓ GREEN (23:29 EDT — the LAST surface)**: the delivery receipt federated back
+  to the sender's machine — VM reads EXACTLY ONE `coord:receipt:mrobxkzz…` row with
+  `delivered:true` (the fed_assert_delivery_receipts pass shape verbatim), landing via
+  lossless backlog catch-up ~4 min after the 23:26 rejoin. Emit half was proven earlier:
+  tower authored it 22:56:54 EDT, payload `{delivered:true, woken:1, machine:tower}` (M5a
+  honest shape ✓; envelope carried receipt:true because the probe was wake:'required' +
+  directed + harness-scoped — send.ts:407; expectsReply/wakeOnReply are IRRELEVANT to
+  receipts). **ALL FIVE PARITY SURFACES NOW PROVEN LIVE.**
 - **WEDGE v2 RESOLVED 23:26 EDT**: the coordinated bg-host restart (23:24) reconnected the
   link within ~2 min — VM presence row on tower went age 2073s → 2s and re-stamps steadily;
   both directions fresh. Confirms EI-13317's shape: only a fresh announce on the WEDGED side

@@ -7,9 +7,15 @@
  *   op='list'   → sessions newest-first (optionally filtered by cwd substring).
  *                 The reliable read — "which session for project X around date Y".
  *   op='search' → bounded content search; returns {sessionId, cwd, matchCount,
- *                 snippet}. LOSSY by nature (a final message is often not persisted
- *                 verbatim; markers match incidentally) — treat a hit as a lead, not
- *                 proof; the code + work-item/plan ledger is the real source of truth.
+ *                 snippet, byteCapped} per match, plus top-level `truncated` +
+ *                 `filesByteCapped` (EI-12890). LOSSY by nature (a final message
+ *                 is often not persisted verbatim; markers match incidentally) —
+ *                 treat a hit as a lead, not proof; the code + work-item/plan
+ *                 ledger is the real source of truth. A byte-capped file reads
+ *                 its TAIL (most recent turns), not its head — but a "no match"
+ *                 on a `filesByteCapped` file is NOT authoritative: raise
+ *                 perFileMaxBytes or fall back to a raw shell grep on that one
+ *                 file before concluding the text doesn't exist.
  *   op='read'   → one session as a compact, bounded turn list (most-recent first-N).
  */
 
@@ -50,7 +56,7 @@ export default defineTool({
     filePath: z.string().min(1).optional().describe('Absolute transcript path to read (alternative to sessionId).'),
     limit: z.number().int().positive().max(2000).optional().describe('Max rows/turns (list/search default 30/20, read default 200).'),
     maxFilesScanned: z.number().int().positive().max(2000).optional().describe('op=search: cap files scanned, newest-first (default 400).'),
-    perFileMaxBytes: z.number().int().positive().max(5_000_000).optional().describe('op=search: cap bytes read per file (default 1_000_000).'),
+    perFileMaxBytes: z.number().int().positive().max(5_000_000).optional().describe('op=search: cap bytes read per file (default 1_000_000). When a file exceeds this, its TAIL (most recent bytes) is read, not its head, and its sessionId is listed in the result\'s filesByteCapped — a "no match" for a byte-capped file is not authoritative.'),
   }),
   async handler(args) {
     const op = args.op ?? (args.filePath || args.sessionId ? 'read' : args.query ? 'search' : 'list');

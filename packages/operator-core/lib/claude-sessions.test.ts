@@ -130,6 +130,69 @@ describe('fs entrypoints (fixture root)', () => {
   });
 });
 
+describe('searchClaudeSessions: byte-capped tail read + honest truncation (EI-12890)', () => {
+  const userRec = (cwd: string, ts: string, text: string) =>
+    JSON.stringify({ type: 'user', cwd, sessionId: 'x', timestamp: ts, gitBranch: 'staging', message: { role: 'user', content: text } });
+
+  it('a file LARGER than perFileMaxBytes reads its TAIL, so a marker near the end is FOUND — and the file is reported as byte-capped, not silently under-scanned', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'claude-sessions-cap-'));
+    try {
+      const dir = join(root, '-home-x-proj-big');
+      await fs.mkdir(dir, { recursive: true });
+      const filePath = join(dir, 'sess-big.jsonl');
+      // Build a file well past the (minimum allowed) 1024-byte cap: a HEADMARKER
+      // in the first turn, a TAILMARKER in the last — simulating a recent owner
+      // turn near the end of a long-running session's transcript.
+      const lines: string[] = [userRec('/home/x/proj-big', '2026-06-01T00:00:00Z', 'HEADMARKER at the very start')];
+      for (let i = 0; i < 200; i++) {
+        lines.push(userRec('/home/x/proj-big', `2026-06-01T00:${String(i % 60).padStart(2, '0')}:00Z`, `filler turn number ${i} padding padding padding`));
+      }
+      lines.push(userRec('/home/x/proj-big', '2026-06-01T05:00:00Z', 'TAILMARKER at the very end'));
+      const content = lines.join('\n') + '\n';
+      await fs.writeFile(filePath, content);
+      expect(content.length).toBeGreaterThan(10_000); // sanity: comfortably exceeds the 1024 floor cap
+
+      // The old head-read implementation would find HEADMARKER but MISS
+      // TAILMARKER entirely (and — the actual bug — report truncated:false).
+      const tail = await searchClaudeSessions({ root, query: 'TAILMARKER', perFileMaxBytes: 1024 });
+      expect(tail.matches).toHaveLength(1);
+      expect(tail.matches[0].sessionId).toBe('sess-big');
+      expect(tail.matches[0].byteCapped).toBe(true);
+      expect(tail.truncated).toBe(true);
+      expect(tail.filesByteCapped).toContain('sess-big');
+
+      // The tail read trades away head visibility — document that honestly too:
+      // HEADMARKER is now a genuine miss, but it is NOT reported as authoritative
+      // (the sessionId is still in filesByteCapped) so a caller knows to widen
+      // perFileMaxBytes or fall back to a raw grep before concluding "not said".
+      const head = await searchClaudeSessions({ root, query: 'HEADMARKER', perFileMaxBytes: 1024 });
+      expect(head.matches).toHaveLength(0);
+      expect(head.filesByteCapped).toContain('sess-big');
+      expect(head.truncated).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a file SMALLER than perFileMaxBytes is scanned whole — not byte-capped, truncated:false', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'claude-sessions-nocap-'));
+    try {
+      const dir = join(root, '-home-x-proj-small');
+      await fs.mkdir(dir, { recursive: true });
+      const filePath = join(dir, 'sess-small.jsonl');
+      await fs.writeFile(filePath, userRec('/home/x/proj-small', '2026-06-01T00:00:00Z', 'a small MARKER turn') + '\n');
+
+      const res = await searchClaudeSessions({ root, query: 'MARKER' });
+      expect(res.matches).toHaveLength(1);
+      expect(res.matches[0].byteCapped).toBe(false);
+      expect(res.filesByteCapped).toHaveLength(0);
+      expect(res.truncated).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('isolation-dir scanning (EI-5790)', () => {
   it('claudeProjectsRoots includes the global root + each per-session isolation projects dir', async () => {
     const base = await fs.mkdtemp(join(tmpdir(), 'claude-iso-base-'));

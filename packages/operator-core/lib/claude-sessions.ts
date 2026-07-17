@@ -499,14 +499,42 @@ export async function listClaudeSessions(opts: { root?: string; roots?: string[]
 export interface ClaudeSessionMatch extends ClaudeSessionMeta {
   matchCount: number;
   snippet: string;
+  /** EI-12890: true when this file is LARGER than perFileMaxBytes, so the scan
+   *  covered only part of it — a "no match" on a file NOT in this list is
+   *  authoritative; on a file that IS, it is not (some bytes went unscanned). */
+  byteCapped: boolean;
 }
 
-async function readUpTo(filePath: string, maxBytes: number): Promise<string> {
+interface ReadUpToResult {
+  text: string;
+  /** file size in bytes exceeded maxBytes — some of the file was NOT scanned. */
+  truncated: boolean;
+  fileSizeBytes: number;
+  bytesRead: number;
+}
+
+/**
+ * Bounded read of a (possibly huge) JSONL transcript. Reads the TAIL, not the
+ * head: transcripts are append logs, so the most recent turns — the ones a
+ * caller chasing "the un-indexed pre-window tail" (per the tool's own
+ * guidance) actually wants — sit at the END of the file. A head-read on a
+ * file far larger than maxBytes silently scans only the oldest slice and
+ * misses everything recent (EI-12890: a 187MB session capped at 5MB read only
+ * its earliest 2.7%, right past the turn a provenance check needed).
+ */
+async function readUpTo(filePath: string, maxBytes: number): Promise<ReadUpToResult> {
+  const stat = await fs.stat(filePath);
+  const fileSizeBytes = stat.size;
+  if (fileSizeBytes <= maxBytes) {
+    const text = await fs.readFile(filePath, 'utf8');
+    return { text, truncated: false, fileSizeBytes, bytesRead: fileSizeBytes };
+  }
   const fh = await fs.open(filePath, 'r');
   try {
+    const start = fileSizeBytes - maxBytes;
     const buf = Buffer.alloc(maxBytes);
-    const { bytesRead } = await fh.read(buf, 0, maxBytes, 0);
-    return buf.subarray(0, bytesRead).toString('utf8');
+    const { bytesRead } = await fh.read(buf, 0, maxBytes, start);
+    return { text: buf.subarray(0, bytesRead).toString('utf8'), truncated: true, fileSizeBytes, bytesRead };
   } finally {
     await fh.close();
   }
@@ -521,25 +549,36 @@ export async function searchClaudeSessions(opts: {
   limit?: number;
   maxFilesScanned?: number;
   perFileMaxBytes?: number;
-}): Promise<{ matches: ClaudeSessionMatch[]; filesScanned: number; filesTotal: number; truncated: boolean }> {
+}): Promise<{
+  matches: ClaudeSessionMatch[];
+  filesScanned: number;
+  filesTotal: number;
+  truncated: boolean;
+  /** EI-12890: files that were byte-capped (only part scanned) — a "no match"
+   *  verdict is NOT authoritative for any sessionId listed here. */
+  filesByteCapped: string[];
+}> {
   const query = opts.query.trim();
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
   const maxFiles = Math.min(Math.max(opts.maxFilesScanned ?? 400, 1), 2000);
   const perFileMaxBytes = Math.min(Math.max(opts.perFileMaxBytes ?? 1_000_000, 1024), 5_000_000);
-  if (!query) return { matches: [], filesScanned: 0, filesTotal: 0, truncated: false };
+  if (!query) return { matches: [], filesScanned: 0, filesTotal: 0, truncated: false, filesByteCapped: [] };
 
   const all = await allClaudeSessionMetas({ ...(opts.root ? { root: opts.root } : {}), ...(opts.roots ? { roots: opts.roots } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}) });
   const candidates = all.slice(0, maxFiles); // newest-first, so a scan cap keeps the most-relevant
   const q = query.toLowerCase();
   const matches: ClaudeSessionMatch[] = [];
+  const filesByteCapped: string[] = [];
 
   for (const meta of candidates) {
-    let content: string;
+    let read: ReadUpToResult;
     try {
-      content = await readUpTo(meta.filePath, perFileMaxBytes);
+      read = await readUpTo(meta.filePath, perFileMaxBytes);
     } catch {
       continue;
     }
+    if (read.truncated) filesByteCapped.push(meta.sessionId);
+    const content = read.text;
     const lc = content.toLowerCase();
     let count = 0;
     let idx = lc.indexOf(q);
@@ -563,7 +602,7 @@ export async function searchClaudeSessions(opts: {
       }
     }
     if (!snippet) snippet = firstMatchSnippet(content, query)?.snippet ?? '';
-    matches.push({ ...meta, matchCount: count, snippet });
+    matches.push({ ...meta, matchCount: count, snippet, byteCapped: read.truncated });
   }
 
   matches.sort((a, b) => b.matchCount - a.matchCount || b.lastActivityMs - a.lastActivityMs);
@@ -571,7 +610,8 @@ export async function searchClaudeSessions(opts: {
     matches: matches.slice(0, limit),
     filesScanned: candidates.length,
     filesTotal: all.length,
-    truncated: matches.length > limit || all.length > candidates.length,
+    truncated: matches.length > limit || all.length > candidates.length || filesByteCapped.length > 0,
+    filesByteCapped,
   };
 }
 
