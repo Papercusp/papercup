@@ -18,7 +18,7 @@
  *   - Collapses to a thin icon rail (the three tab icons — clicking one
  *     expands straight into that tab), never disappears.
  *   - Drag-resizable from its RIGHT edge, width persisted per-workspace.
- *   - State in the URL via nuqs (`?lsb=…&lst=swarm`) so it is deep-linkable
+ *   - State in the URL via nuqs (`?lsb=…&lst=queen`) so it is deep-linkable
  *     and agent-driveable (ui:get_state / ui:dispatch).
  *   - Only the ACTIVE tab's panel is mounted (lazy chunks; queries gate on
  *     mount), and the whole body unmounts while collapsed.

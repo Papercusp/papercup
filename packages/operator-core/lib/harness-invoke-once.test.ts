@@ -525,10 +525,12 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
 
     expect(roleBackendOverride('mug')).toBe('codex');
     const env = buildInvokeOnce(spec({ role: 'mug' })).env;
-    // mug resolves to gpt-5.6-luna:high (P-020, autonomous-loop-prod-audit-2026-07-02) —
-    // when applied with codex backend, :high maps to codex's model_reasoning_effort config.
-    expect(env.AGENT_CMD).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
-    expect(env.CLAUDE).toBe('codex exec --model gpt-5.6-luna -c model_reasoning_effort="high"');
+    // mug resolves to its committed sonnet[1m]:high default (WI-4623 revert); this test
+    // FORCES the codex backend via AGENT_ROLE_BACKENDS, so the command takes the codex
+    // shape and :high maps to codex's model_reasoning_effort config. The point here is
+    // the backend-OVERRIDE swap, not the model choice.
+    expect(env.AGENT_CMD).toBe('codex exec --model sonnet[1m] -c model_reasoning_effort="high"');
+    expect(env.CLAUDE).toBe('codex exec --model sonnet[1m] -c model_reasoning_effort="high"');
     expect(env.AGENT_BACKEND).toBe('codex');
     expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
     // EI-7138: omp takes a `<model>:<effort>` spec as ONE opaque value natively (no

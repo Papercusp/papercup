@@ -53,7 +53,7 @@ import {
   type AnnounceBudgetState,
 } from '../../sync/pot-git/ref-announce';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
-import { hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
+import { deviceNamespaceKey, ensurePotGitRepo, hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer } from '../../sync/pot-git/bootstrap';
@@ -1429,18 +1429,34 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
     if (!potHomeSlug) return;
 
-    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
-    const existingNamespaces = await listNamespaces(repoPath);
-    if (existingNamespaces.length > 0) return; // warm repo — nothing to bootstrap
+    // G-8 cold-start (live-caught on the P-302 rig, WI-3496): the bare store
+    // must EXIST before any git runs against it — bootstrap.ts's documented
+    // precondition ("The local bare repo must exist (G-1 ensurePotGitRepo)").
+    // Without this, every runGit on a cold device dies `spawn git ENOENT`
+    // (missing cwd), and the first store is only ever created by the LATER
+    // own-head leg — which then poisons the warm check below forever.
+    const repoPath = await ensurePotGitRepo(potHomeSlug, slug);
+
+    const actor = await resolveUsageActor();
+    const selfDevicePubkey = actor?.devicePubkey;
+
+    // Warm means "already seeded from a PEER" — our own namespace doesn't
+    // count (own-head-publish creates it locally; treating it as warm would
+    // permanently skip the cold-join whenever own-head ever ran first).
+    let selfNamespaceKey: string | undefined;
+    try {
+      selfNamespaceKey = selfDevicePubkey ? deviceNamespaceKey(selfDevicePubkey) : undefined;
+    } catch {
+      selfNamespaceKey = undefined; // malformed self pubkey — treat every namespace as peer
+    }
+    const peerNamespaces = (await listNamespaces(repoPath)).filter((n) => n !== selfNamespaceKey);
+    if (peerNamespaces.length > 0) return; // warm repo — nothing to bootstrap
 
     const members = await listHiveMembers(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
     if (memberDevicePubkeysBase64.length === 0) return; // no attested peers to seed from yet
-
-    const actor = await resolveUsageActor();
-    const selfDevicePubkey = actor?.devicePubkey;
 
     const peerDevicePubkeyBase64 = memberDevicePubkeysBase64.find((d) => d !== selfDevicePubkey);
     if (!peerDevicePubkeyBase64) return; // no member peer other than self yet — nothing to seed from

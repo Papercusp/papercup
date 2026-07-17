@@ -28,9 +28,9 @@ describe('roleDefaultSpec — the floor input', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ cup: 'sonnet' }));
     expect(roleDefaultSpec('cup')).toBe('sonnet');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // P-020 (autonomous-loop-prod-audit-2026-07-02): cup's committed floor moved off
-    // haiku onto the autonomous-loop GPT-5.6 Luna tier.
-    expect(roleDefaultSpec('cup')).toBe('gpt-5.6-luna:high');
+    // WI-4623 revert (owner decision 2026-07-16): cup's committed floor is the
+    // autonomous-loop sonnet-5 trimmed tier — the bare `sonnet[1m]:high`.
+    expect(roleDefaultSpec('cup')).toBe('sonnet[1m]:high');
     expect(roleDefaultSpec('release-manager')).toBe('opus:xhigh');
     // The launch-fixer family's committed floors (git-sync-content-guard D-008
     // follow-up): the two fleet-blast-radius fixers pin opus:xhigh — merge-resolver
@@ -215,12 +215,12 @@ describe('effectiveTierConfig — session override precedence (queen-steering D-
 
 describe('roleHomeTier — the default-menu tier a role runs at', () => {
   it('maps a committed default spec to its default-menu tier name', () => {
-    // P-020 (autonomous-loop-prod-audit-2026-07-02): mug/cup's committed floor moved
-    // to the autonomous-loop GPT-5.6 Luna tier — worker (a pipeline execution role,
-    // unaffected by the migration) stays on the sonnet 'standard' tier.
-    expect(roleHomeTier('mug')).toBe('luna'); // gpt-5.6-luna:high → luna
+    // WI-4623 revert: mug/cup's committed floor is the sonnet-5 trimmed spec
+    // (`sonnet[1m]:high`), which maps to the sonnet 'standard' tier — the same
+    // home tier as worker (a pipeline execution role also on the sonnet family).
+    expect(roleHomeTier('mug')).toBe('standard'); // sonnet[1m]:high → standard
     expect(roleHomeTier('worker')).toBe('standard'); // sonnet → standard
-    expect(roleHomeTier('cup')).toBe('luna'); // gpt-5.6-luna:high → luna
+    expect(roleHomeTier('cup')).toBe('standard'); // sonnet[1m]:high → standard
   });
 
   it('treats the current versioned Claude id and its stable menu alias as one family', () => {
@@ -237,30 +237,30 @@ describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-ste
     expect(resolveRoleOwnModelSpec('mug', {})).toBeNull();
   });
 
-  it('an owner menu override that raises the luna (mug home) tier MOVES the queen', () => {
+  it('an owner menu override that raises the standard (mug home) tier MOVES the queen', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // P-020: mug's home tier is now `luna` (gpt-5.6-luna:high), not `standard`.
-    const eff = { tiers: [{ name: 'luna', spec: 'opus:xhigh' }] };
+    // WI-4623 revert: mug's home tier is `standard` (sonnet[1m]:high), not `luna`.
+    const eff = { tiers: [{ name: 'standard', spec: 'opus:xhigh' }] };
     expect(resolveRoleOwnModelSpec('mug', eff)).toBe('opus:xhigh');
   });
 
   it('same-family owner rows can raise effort but never weaken the committed role floor', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // P-020: mug's committed default is now gpt-5.6-luna:high — a marker-only /
+    // WI-4623 revert: mug's committed default is now sonnet[1m]:high — a marker-only /
     // identical-effort menu row is not an override; a raised effort is.
-    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'luna', spec: 'gpt-5.6-luna:high' }] })).toBeNull();
-    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'luna', spec: 'gpt-5.6-luna:xhigh' }] })).toBe('gpt-5.6-luna:xhigh');
+    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'standard', spec: 'sonnet:high' }] })).toBeNull();
+    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'standard', spec: 'sonnet:xhigh' }] })).toBe('sonnet:xhigh');
   });
 
   it('allows cross-provider own-model menu specs; invoke infers the backend from the model spec', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const eff = { tiers: [{ name: 'luna', spec: 'gpt-5.5:high' }] };
+    const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high' }] };
     expect(resolveRoleOwnModelSpec('mug', eff)).toBe('gpt-5.5:high');
   });
 
   it('allows role-own tier rows that name a non-Claude backend', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const eff = { tiers: [{ name: 'luna', spec: 'gpt-5.5:high', backend: 'codex' as const }] };
+    const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high', backend: 'codex' as const }] };
     expect(resolveRoleOwnModelSpec('mug', eff)).toBe('gpt-5.5:high');
   });
 
@@ -366,19 +366,18 @@ describe('resolveTierSpec compactionLimit', () => {
   });
 
   it('honors an explicit per-tier limit and reflects a [1m] window', () => {
-    // Ordered weakest → strongest (the order IS the floor ranking): the haiku
-    // tier must come FIRST or bee's haiku floor ([1m]-insensitive family
-    // match) clamps a weaker-ranked pick up past it.
+    // `reviewer` — a floorless role — so this isolates the per-tier compactionLimit
+    // derivation without any role-floor clamp perturbing which tier resolves.
     const tiers = [
       { name: 'vast', spec: 'haiku[1m]' },
       { name: 'lean', spec: 'sonnet', compactionLimit: 90_000 },
       { name: 'wide', spec: 'opus[1m]:high' },
     ];
-    const lean = resolveTierSpec({ tier: 'lean', role: 'cup', tiers });
+    const lean = resolveTierSpec({ tier: 'lean', role: 'reviewer', tiers });
     expect(lean.ok && lean.compactionLimit).toBe(90_000);
-    const vast = resolveTierSpec({ tier: 'vast', role: 'cup', tiers });
+    const vast = resolveTierSpec({ tier: 'vast', role: 'reviewer', tiers });
     expect(vast.ok && vast.compactionLimit).toBe(400_000); // [1m] ⇒ the uniform 400k spend cap (marker-keyed, 2026-07-03)
-    const wide = resolveTierSpec({ tier: 'wide', role: 'cup', tiers });
+    const wide = resolveTierSpec({ tier: 'wide', role: 'reviewer', tiers });
     expect(wide.ok && wide.compactionLimit).toBe(400_000); // [1m] ⇒ 400k cap (owner directive 2026-07-03)
   });
 
