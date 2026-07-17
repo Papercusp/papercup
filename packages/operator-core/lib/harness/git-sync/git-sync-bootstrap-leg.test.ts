@@ -28,6 +28,7 @@ const {
   listHiveMembersMock,
   hiveGitRepoPathMock,
   listNamespacesMock,
+  ensurePotGitRepoMock,
   bootstrapFromPeerMock,
   resolveUsageActorMock,
   unsafeMock,
@@ -42,6 +43,9 @@ const {
   ]),
   hiveGitRepoPathMock: vi.fn((potHomeSlug: string, repoKey: string) => `/repos/${potHomeSlug}/${repoKey}`),
   listNamespacesMock: vi.fn(async (_repoPath: string) => [] as string[]),
+  // G-8 cold-start (WI-3496 rig finding): the leg must ensure the bare store
+  // exists BEFORE any read against it — mirrors the real helper's return.
+  ensurePotGitRepoMock: vi.fn(async (potHomeSlug: string, repoKey: string) => `/repos/${potHomeSlug}/${repoKey}`),
   // DIAL-REGISTRY (WI-3583/P-302): getBootedHarness is dynamically imported
   // (see git-sync-action.ts's own comment on why) so it must be mocked here
   // too, or the dynamic import pulls in boot-all.ts's real module graph —
@@ -84,6 +88,10 @@ vi.mock('../../hive-membership-store', () => ({ listHiveMembers: listHiveMembers
 vi.mock('../../sync/pot-git/storage', () => ({
   hiveGitRepoPath: hiveGitRepoPathMock,
   listNamespaces: listNamespacesMock,
+  ensurePotGitRepo: ensurePotGitRepoMock,
+  // Deterministic base64→hex, mirroring the real mapping's shape without the
+  // raw-32 length check (the fixture pubkeys are readable strings, not real keys).
+  deviceNamespaceKey: (b64: string) => Buffer.from(b64, 'base64').toString('hex'),
 }));
 vi.mock('../../sync/pot-git/bootstrap', () => ({ bootstrapFromPeer: bootstrapFromPeerMock }));
 vi.mock('../usage-actor', () => ({ resolveUsageActor: resolveUsageActorMock }));
@@ -144,12 +152,30 @@ beforeEach(() => {
 });
 
 describe('runBootstrapLeg', () => {
-  it('self-gates as a no-op when the local repo already has any namespace (warm repo)', async () => {
+  it('self-gates as a no-op when the local repo already has a PEER namespace (warm repo)', async () => {
     listNamespacesMock.mockResolvedValue(['abcd1234']);
     await runBootstrapLeg(SLUG, WS);
-    expect(hiveGitRepoPathMock).toHaveBeenCalledWith(SLUG, SLUG);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
     expect(listHiveMembersMock).not.toHaveBeenCalled();
     expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+  });
+
+  it('G-8 cold start (WI-3496): ensures the bare store exists BEFORE reading namespaces', async () => {
+    await runBootstrapLeg(SLUG, WS);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
+    const ensureOrder = ensurePotGitRepoMock.mock.invocationCallOrder[0];
+    const listOrder = listNamespacesMock.mock.invocationCallOrder[0];
+    expect(ensureOrder).toBeLessThan(listOrder);
+  });
+
+  it('WI-3496: our OWN namespace does not count as warm — still bootstraps from the peer', async () => {
+    // own-head-publish created only the self namespace (its key = the mocked
+    // base64→hex of the self device pubkey); a cold-join from a peer must
+    // still run or the store never gains any peer namespace.
+    const selfHex = Buffer.from('c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=', 'base64').toString('hex');
+    listNamespacesMock.mockResolvedValue([selfHex]);
+    await runBootstrapLeg(SLUG, WS);
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
   });
 
   it('self-gates as a no-op when no hive member has an attested device pubkey', async () => {
@@ -183,7 +209,7 @@ describe('runBootstrapLeg', () => {
       projects: [{ slug: SLUG, self_repo: true }],
     });
     await runBootstrapLeg(SLUG, WS);
-    expect(hiveGitRepoPathMock).toHaveBeenCalledWith(SLUG, SLUG);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
   });
 
   it('no-ops (no throw) when the registry has no matching entry for slug', async () => {

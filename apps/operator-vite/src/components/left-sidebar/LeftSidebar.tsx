@@ -252,7 +252,9 @@ export default function LeftSidebar() {
           data-collapsed={open ? 'false' : 'true'}
           data-tab={active.id}
           style={{ width: renderedWidth }}
-          aria-label={`${t('fleet')} sidebar`}
+          // Was "<Fleet> sidebar" — stale once the Fleet tab moved out
+          // (WI-5162); this rail holds the steering/settings tabs now.
+          aria-label={`${t('pot')} steering sidebar`}
         >
         {/* Collapsed: the expand control on TOP — the mirror of the collapse
             chevron (re-expands to the LAST pane, no tab switch; owner ask

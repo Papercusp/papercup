@@ -423,10 +423,10 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
   it('mints + records a session_id and threads forceSessionId for a claude backend', async () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     try {
-      // P-020: cup's own committed floor is now the codex-family gpt-5.6-luna:high,
-      // which the account-steering fix (operator-spawn.ts) promotes ahead of AGENT_CMD
-      // — so testing the CLAUDE-specific forced-session-id path (P-016/D-007) for a
-      // role with no explicit pin now needs an explicit claude-family modelSpec.
+      // cup's committed floor is the claude-family `sonnet[1m]:high` (WI-4623 revert);
+      // the explicit `modelSpec: 'sonnet'` pins the claude family deterministically so
+      // this test exercises the CLAUDE-specific forced-session-id path (P-016/D-007)
+      // regardless of the role's default.
       const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup', modelSpec: 'sonnet' });
       expect(res.ok).toBe(true);
 
@@ -858,12 +858,12 @@ describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
-    // P-020's account-steering fix (operator-spawn.ts) now threads cup's OWN committed
-    // floor (gpt-5.6-luna:high, a codex-family spec) through PAPERCUSP_SPAWN_MODEL even
-    // with no bench flag — required so `inferBackendFromModelSpec` swaps the child to the
-    // codex binary instead of applying the OpenAI model text to a Claude command. "keeps
-    // its floor" now means exactly that value, not an absent pin.
-    expect(env.PAPERCUSP_SPAWN_MODEL).toBe('gpt-5.6-luna:high');
+    // The account-steering fix (operator-spawn.ts) threads cup's OWN committed floor
+    // through PAPERCUSP_SPAWN_MODEL even with no bench flag, so the EFFECTIVE spec (not
+    // just AGENT_CMD) drives backend inference. Post WI-4623 revert cup's floor is the
+    // claude-family `sonnet[1m]:high`, so "keeps its floor" means exactly that value —
+    // and inferBackendFromModelSpec keeps the child on the claude binary.
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBe('sonnet[1m]:high');
   });
 
   it('does NOT pin a non-bee role even under the bench flag (only bench bees are pinned)', async () => {

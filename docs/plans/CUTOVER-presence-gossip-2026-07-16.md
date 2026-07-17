@@ -8,9 +8,19 @@ on the tower↔VM rig; PRESENCE_GOSSIP + HRW both flipped ON in both stores AND 
 code; V4 30-min no-dupe soak PASSED (VM 7/7 samples clean, tower 0 dupe groups, freshness
 ≤26s both directions); GREEN verdict delivered to su-4d3eb (msg mroesq7i…); fleet hold
 released. Follow-ups filed: EI-13307 (bg-host restart coalescing — helper cup implementing),
-EI-13317 (swarm rejoin failure, critical — agent-insights doc written). Post-cutover test
+EI-13317 (swarm rejoin failure, critical — agent-insights doc written:
+agent-insights/swarm-link-severed-restart-the-wedged-side). Post-cutover test
 pin: hive-two-peer-federation.test.ts now pins its log-append leg via the new
-`presenceGossip` seam in WirePresenceOpts (the gate red su-05b41 reported, fixed 00:02 EDT).**
+`presenceGossip` seam in WirePresenceOpts (the gate red su-05b41 reported, fixed 00:02 EDT).
+Second collateral wave (04:10–04:53Z, same root shape): the HRW graduation flipped
+`resolveUseHrwRendezvous`'s default under the argmin-asserting lib/authority suite — 6 unit
+files red at the gate + 5 integration files. Fixed by pinning `useHrwRendezvous: false` on
+every argmin-rollback fixture (commits 88a84793 + 31ae8016; unit 66/66, integration 30/30);
+gate run 13dc6e03 (candidate 56bafe94, 04:53Z) confirms ZERO authority/hyperbee reds remain —
+its residual red (operator-vite LeftSidebar + 2 operator-core files) is other lanes' work,
+routed to su-05b41/su-33019ac2 (msg mrogrf8c…). Moral for future flag graduations: grep the
+test tree for the flag's SEAM before flipping the default — every unpinned test that asserted
+the old default's behavior becomes a gate red the moment the default inverts.**
 
 ## LIVE drill scoreboard (2026-07-17 02:55Z — su-18f2f, mid-drill carry)
 

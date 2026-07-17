@@ -85,9 +85,9 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
 
   it('CEILING: a pick above the role ceiling clamps DOWN', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // `worker`, not `cup` — cup's own floor is now `luna` (P-020, above `standard`),
-    // which would trip the FLOOR-outranks-ceiling rule below instead of a plain
-    // ceiling clamp; worker stays sonnet-floored so this exercises the ceiling path.
+    // `worker` — a sonnet-floored execution role — so a `max` pick clamps DOWN to the
+    // sonnet `standard` ceiling: a plain ceiling clamp, not the floor-outranks-ceiling
+    // path.
     const r = resolveTierSpec({ tier: 'max', role: 'worker', tierCeilings: { worker: 'standard' } });
     expect(r).toMatchObject({ ok: true, spec: 'sonnet[1m]', tier: 'standard', clamped: 'ceiling' });
   });
@@ -137,8 +137,7 @@ describe('resolveTierSpec — user-defined menu', () => {
 
   it('an empty tiers array falls back to the default menu', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // `worker`, not `cup` — cup's own floor is now `luna` (P-020), which would clamp
-    // a `standard` pick up past it; worker stays sonnet-floored, so `standard` resolves
+    // `worker` — a sonnet-floored execution role — so a `standard` pick resolves
     // unclamped and this purely exercises the empty-array→default-menu fallback.
     expect(resolveTierSpec({ tier: 'standard', role: 'worker', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet[1m]' });
   });
@@ -303,10 +302,10 @@ describe('downgradeOpusTierForBudget — floor-safe opus→sonnet shed (B-GW-4)'
   });
 
   it('downgrades to sonnet for a role with NO committed floor — sonnet is unclamped', () => {
-    // P-020 (autonomous-loop-prod-audit-2026-07-02) moved every haiku-floored role
-    // (cup/scanner/judge) onto the gpt-5.6-luna floor — per the ROLE_MODEL_DEFAULTS
-    // comment, no role currently occupies haiku, so this now exercises the
-    // no-committed-floor case (`reviewer`) instead of a genuine haiku floor.
+    // cup/scanner/judge sit on the sonnet-5 trimmed floor (WI-4623 revert), not haiku —
+    // per the ROLE_MODEL_DEFAULTS comment no role currently occupies the haiku volume
+    // tier, so this exercises the no-committed-floor case (`reviewer`) instead of a
+    // genuine haiku floor.
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const d = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'reviewer' });
     expect(d.downgraded).toBe(true);

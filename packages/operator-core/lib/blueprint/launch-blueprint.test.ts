@@ -285,7 +285,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
     expect(target.role).toBe('mug');
     expect(fired).toHaveLength(1);
-    // Her OWN model is now tier-driven — resolved from the owner's menu, not her gpt-5.6-luna:high default.
+    // Her OWN model is now tier-driven — resolved from the owner's menu, not her sonnet[1m]:high default.
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:xhigh');
   });
 
