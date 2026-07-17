@@ -35,7 +35,17 @@ interface Blueprint {
   spine?: { decider?: string; maxTurns?: number };
   planner?: { kind?: string };
   roles?: Array<string | { id: string; reactive?: boolean; description?: string }>;
-  gates?: { finalize?: { onDone?: string[]; onEscalate?: string[] } };
+  gates?: {
+    finalize?: {
+      onDone?: Array<string | { role: string; extras?: string[] }>;
+      onEscalate?: Array<string | { role: string; extras?: string[] }>;
+    };
+  };
+}
+
+/** The role/step name of a raw-YAML finalize entry (plain string, or `{role,extras}`). */
+function finalizeEntryRoleName(entry: string | { role: string; extras?: string[] }): string {
+  return typeof entry === 'string' ? entry : entry.role;
 }
 
 function normalizeRoles(roles: Blueprint['roles']): RoleEntry[] {
@@ -143,8 +153,8 @@ function build(): string {
     if (bp.planner?.kind) facts.push(`- **Planner:** ${cell(bp.planner.kind)}`);
     if (bp.dispatch) facts.push(`- **Dispatch:** ${dispatchCell(bp)}`);
     if (bp.gates?.finalize) {
-      const onDone = bp.gates.finalize.onDone?.join(' → ');
-      const onEscalate = bp.gates.finalize.onEscalate?.join(' → ');
+      const onDone = bp.gates.finalize.onDone?.map(finalizeEntryRoleName).join(' → ');
+      const onEscalate = bp.gates.finalize.onEscalate?.map(finalizeEntryRoleName).join(' → ');
       const g = [onDone ? `done: ${onDone}` : null, onEscalate ? `escalate: ${onEscalate}` : null].filter(Boolean).join('; ');
       if (g) facts.push(`- **Finalize gates:** ${cell(g)}`);
     }

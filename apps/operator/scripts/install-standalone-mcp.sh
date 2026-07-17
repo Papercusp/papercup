@@ -278,6 +278,15 @@ CC_TURN_MEMORY_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-memory.sh"
 # ⟦journal⟧ line (mechanical first-line fallback, flagged). Fire-and-forget,
 # fail-open, psu-gated.
 CC_TURN_JOURNAL_HOOK="${CC_HOOK_DEST_DIR}/stop-turn-journal.sh"
+# PreToolUse+PostToolUse+Notification+Stop hook (owner-inbox-single-pane-2026-07-17
+# P-001): the owner-gate CAPTURE + MIRROR layer. PreToolUse/PostToolUse (matcher
+# "AskUserQuestion|ExitPlanMode") open/close a client-agnostic blocked-session gate
+# (sessions:ingest-gate-event, P-002) around the two Claude-native dialogs;
+# Notification captures a permission-wait; Stop parses the turn's final text for a
+# structured `<ask>` block (mirrors it to coord:escalate) or BOUNCES a bare
+# question-shaped ending with no structured mirror (loop-guarded via
+# stop_hook_active). Own settings entries (4 — see the script's own header).
+CC_ASK_GATE_HOOK="${CC_HOOK_DEST_DIR}/ask-gate-mirror.sh"
 
 # Merge our PreToolUse + PostToolUse lock hooks into a settings.json
 # (Claude's ~/.claude/settings.json or a codex-su CODEX_HOME). Idempotent
@@ -806,6 +815,54 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# Merge the owner-gate mirror hook (owner-inbox-single-pane-2026-07-17 P-001) as
+# FOUR entries — one script, four hook_event_name branches (see the script's own
+# header): PreToolUse + PostToolUse scoped to the two Claude-native dialog tools
+# (matcher "AskUserQuestion|ExitPlanMode"), plus matcher-less Notification + Stop
+# entries (those fire for every notification/turn-end; the script itself narrows
+# what it acts on). Idempotent per event, same command-level drop_ours pattern as
+# every sibling merge_* function.
+#   $1 = settings.json path
+merge_ask_gate_hook() {
+  python3 - "$1" "$CC_ASK_GATE_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+# PreToolUse + PostToolUse: matcher-scoped to the two dialog tools.
+for event in ('PreToolUse', 'PostToolUse'):
+    arr = [e for e in (drop_ours(x) for x in hooks.get(event, [])) if e]
+    arr.append({'matcher': 'AskUserQuestion|ExitPlanMode',
+                'hooks': [{'type': 'command', 'command': hook}]})
+    hooks[event] = arr
+# Notification + Stop: no tool matcher — the script's own event-name branch narrows.
+for event in ('Notification', 'Stop'):
+    arr = [e for e in (drop_ours(x) for x in hooks.get(event, [])) if e]
+    arr.append({'hooks': [{'type': 'command', 'command': hook}]})
+    hooks[event] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
 # OMP looks for its MCP server config at ~/.omp/agent/mcp.json. The
 # directory may not exist on a fresh OMP install — create it.
 OMP_CONFIG_DIR="${HOME}/.omp/agent"
@@ -1167,6 +1224,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" "$CC_TURN_JOURNAL_HOOK"
     chmod 755 "$CC_TURN_JOURNAL_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/ask-gate-mirror.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/ask-gate-mirror.sh" "$CC_ASK_GATE_HOOK"
+    chmod 755 "$CC_ASK_GATE_HOOK"
+  fi
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
@@ -1190,6 +1251,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_PROVENANCE_HOOK" ] && merge_provenance_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_MEMORY_HOOK" ] && merge_turn_memory_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_JOURNAL_HOOK" ] && merge_turn_journal_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_ASK_GATE_HOOK" ] && merge_ask_gate_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"
   echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
 else

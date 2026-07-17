@@ -28,6 +28,7 @@
 import { useCallback, useMemo } from 'react';
 import { useQueryState, useQueryStates, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { MessageCircle } from 'lucide-react';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
 import { TIER_LABEL, type AttentionItem, type AttentionTier } from '@/app/admin/plans/plans-api';
 import { effectiveTier, useInboxAttention } from './use-inbox-pending';
@@ -214,19 +215,25 @@ export default function InboxPane({ onDiscussInChat }: {
                   <span className="op-inbox__kind">{KIND_LABEL[i.kind] ?? i.kind}</span>
                   {meta ? <span className="op-inbox__meta">{meta}</span> : null}
                   {i.ownerAgentId ? (
-                    <button
-                      type="button"
-                      className="op-inbox__chat-button"
-                      data-testid={`inbox-chat-open-${i.id}`}
-                      aria-label={`Open live chat with ${i.ownerLabel ?? i.ownerAgentId}`}
-                      title="Open live chat with the originating agent"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void setChatOwner(i.ownerAgentId);
-                      }}
-                    >
-                      <MessageCircle size={13} aria-hidden="true" />
-                    </button>
+                    // Shared Tooltip primitive, not a native title= (design-primitives
+                    // lint): title= renders the browser's own chrome, which ignores the
+                    // design tokens and never matches the tooltips everywhere else. The
+                    // aria-label below stays — it is the accessible name, which the
+                    // tooltip does not provide.
+                    <Tooltip label="Open live chat with the originating agent">
+                      <button
+                        type="button"
+                        className="op-inbox__chat-button"
+                        data-testid={`inbox-chat-open-${i.id}`}
+                        aria-label={`Open live chat with ${i.ownerLabel ?? i.ownerAgentId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void setChatOwner(i.ownerAgentId);
+                        }}
+                      >
+                        <MessageCircle size={13} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
                   ) : null}
                 </span>
                 <span className="op-inbox__title">{i.title}</span>

@@ -30,6 +30,93 @@ import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope'
 
 const cache = new RunCache<OutlinePayload>();
 
+/**
+ * EI-400: the Papercusp engineering/project doc corpus (harness:'all') is
+ * 700+ pages — a full outline (every page's headings) serializes to
+ * ~800KB+, which always blew the MCP per-result budget and got silently
+ * spilled to a scratch file every single call (never a usable outline). A
+ * per-harness corpus is small enough that the full shape stays useful, so
+ * only these two "whole corpus" surfaces get the brief-by-default +
+ * section-drill-down treatment; `surface: 'harness'` is untouched.
+ */
+const BRIEF_BY_DEFAULT_SURFACES = new Set(['engineering', 'project']);
+
+const DEFAULT_SECTION_PAGE_LIMIT = 200;
+const MAX_SECTION_PAGE_LIMIT = 500;
+
+/** Compact per-section view for the default (no `section` arg) listing on a
+ *  brief-by-default surface — titles/counts only, no per-page headings. */
+function summarizeSections(payload: OutlinePayload) {
+  return payload.sections.map((s) => ({
+    slug: s.slug,
+    title: s.title,
+    ...(s.description ? { description: s.description } : {}),
+    pageCount: s.pages.length,
+  }));
+}
+
+/**
+ * Shape the response body for one docs:outline call given the full (cached
+ * or freshly built) payload and the caller's `section`/`offset`/`limit`
+ * args. Pure function of (payload, args, surface) so it's unit-testable
+ * without touching the engine or the fs adapters.
+ */
+export function shapeOutlineResponse(
+  payload: OutlinePayload,
+  args: { section?: string; offset?: number; limit?: number },
+  surface: 'harness' | 'engineering' | 'project',
+): Record<string, unknown> {
+  const base = {
+    generatedAt: payload.generatedAt,
+    sectionCount: payload.sectionCount,
+    pageCount: payload.pageCount,
+  };
+
+  if (args.section) {
+    const wanted = args.section.trim().toLowerCase();
+    const match = payload.sections.find((s) => s.slug.toLowerCase() === wanted);
+    if (!match) {
+      return {
+        ...base,
+        error: 'section_not_found',
+        section: args.section,
+        availableSections: payload.sections.map((s) => s.slug),
+      };
+    }
+    const offset = Math.max(0, args.offset ?? 0);
+    const limit = Math.min(Math.max(1, args.limit ?? DEFAULT_SECTION_PAGE_LIMIT), MAX_SECTION_PAGE_LIMIT);
+    const pagesTotal = match.pages.length;
+    const pagesSlice = match.pages.slice(offset, offset + limit);
+    return {
+      ...base,
+      section: {
+        slug: match.slug,
+        title: match.title,
+        ...(match.description ? { description: match.description } : {}),
+        pages: pagesSlice,
+        pagesTotal,
+        pagesOffset: offset,
+        pagesReturned: pagesSlice.length,
+        ...(offset + pagesSlice.length < pagesTotal ? { nextOffset: offset + pagesSlice.length } : {}),
+      },
+    };
+  }
+
+  if (BRIEF_BY_DEFAULT_SURFACES.has(surface)) {
+    return {
+      ...base,
+      sections: summarizeSections(payload),
+      brief: true,
+      hint:
+        "Per-page outline omitted — this corpus is too large for one result. " +
+        "Pass { section: '<slug>' } (from the `sections` list above) to drill into " +
+        'one section with its full page list + headings (paginate large sections with `offset`/`limit`).',
+    };
+  }
+
+  return { ...payload };
+}
+
 export async function resolveAdapter(
   harnessSlug: string | undefined,
   opts: { isSuperuser?: boolean } = {},
@@ -93,13 +180,13 @@ export async function resolveAdapter(
 export default defineTool({
   name: 'docs:outline',
   description:
-    'Return the documentation table-of-contents for your context — your harness\'s docs (in a harness), your project\'s docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework engineering reference (papercusp-su callers only). Cached per run. Call this FIRST when you need design context; drill in via docs:get.',
+    'Return the documentation table-of-contents for your context — your harness\'s docs (in a harness), your project\'s docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework engineering reference (papercusp-su callers only). Cached per run. Call this FIRST when you need design context; drill in via docs:get. The Papercusp engineering/project corpus (harness:\'all\') is large: without `section` you get a compact section index (slug/title/pageCount), not full pages+headings — pass `section` to drill into one section\'s full outline.',
   guidance: {
     when: 'You need design context, architectural rationale, or "how does X work" answers and have not yet called docs:outline this run.',
     notWhen:
       'You already called docs:outline this run — cached. For prose recall (chats, escalations, brainstorms) use search:fulltext. To explore another harness from outside, use cross_harness:docs_outline.',
     chaining:
-      'docs:outline → docs:get { slugs: [...] }. Use { slug, heading } when only one section of a long page is relevant.',
+      "docs:outline → (harness:'all' only) docs:outline { harness:'all', section } to drill into one section → docs:get { slugs: [...] }. Use { slug, heading } when only one section of a long page is relevant.",
     seeAlso: [
       'docs:search (find a page by specific term instead of browsing the tree)',
       'docs:get (read the slugs the outline lists)',
@@ -116,6 +203,29 @@ export default defineTool({
       .describe(
         "Harness slug whose docs outline to return. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
           "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
+      ),
+    section: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Top-level section slug to drill into (e.g. "agent-insights") — from the `sections[].slug` list a section-less call returns. ' +
+          "Only meaningful on the large harness:'all' corpus (a per-harness outline is already returned whole); ignored-equivalent (whole-outline) elsewhere.",
+      ),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('Page offset within the selected `section` (only used together with `section`). Default 0.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_SECTION_PAGE_LIMIT)
+      .optional()
+      .describe(
+        `Max pages to return within the selected \`section\` (only used together with \`section\`). Default ${DEFAULT_SECTION_PAGE_LIMIT}, max ${MAX_SECTION_PAGE_LIMIT}.`,
       ),
   }),
   async handler(args, ctx) {
@@ -149,7 +259,16 @@ export default defineTool({
     const hit = cache.get(ctxAny, resolved.scope);
     if (hit) {
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ...hit, cached: true, surface: resolved.surface }) }],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...shapeOutlineResponse(hit, args, resolved.surface),
+              cached: true,
+              surface: resolved.surface,
+            }),
+          },
+        ],
       };
     }
     const payload = await buildOutline(resolved.adapter, {
@@ -160,7 +279,16 @@ export default defineTool({
     });
     cache.set(ctxAny, payload, resolved.scope);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ...payload, cached: false, surface: resolved.surface }) }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ...shapeOutlineResponse(payload, args, resolved.surface),
+            cached: false,
+            surface: resolved.surface,
+          }),
+        },
+      ],
     };
   },
 });

@@ -174,6 +174,93 @@ describe('docs:outline handler — happy path + per-run cache', () => {
   });
 });
 
+/**
+ * EI-400: harness:'all' (engineering/project surface) routes through the
+ * SAME handler but gets the brief-by-default + section-drill-down shaping
+ * (shapeOutlineResponse) instead of the raw full payload a small
+ * harness-scoped corpus gets above.
+ */
+describe('docs:outline handler — engineering scope brief-by-default (EI-400)', () => {
+  const bigPayload = {
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    sectionCount: 2,
+    pageCount: 3,
+    sections: [
+      {
+        slug: 'agent-insights',
+        title: 'Agent Insights',
+        pages: [
+          { slug: 'agent-insights/a', title: 'A', headings: [{ id: 'h1', text: 'H1', depth: 2 }] },
+          { slug: 'agent-insights/b', title: 'B', headings: [] },
+        ],
+      },
+      { slug: 'design', title: 'Design', pages: [{ slug: 'design/overview', title: 'Overview', headings: [] }] },
+    ],
+  };
+
+  it('no `section` arg → brief section index (no per-page headings)', async () => {
+    mockRegistry([]);
+    buildOutline.mockResolvedValueOnce(bigPayload);
+    const tool = (await import('../outline')).default;
+    const res = await tool.handler(
+      { harness: 'all' } as never,
+      { harnessSlug: '*', isSuperuser: true, runId: 'run_E' } as never,
+    );
+    const p = payloadOf(res);
+    expect(p.surface).toBe('engineering');
+    expect(p.brief).toBe(true);
+    expect(typeof p.hint).toBe('string');
+    expect(p.sections).toEqual([
+      { slug: 'agent-insights', title: 'Agent Insights', pageCount: 2 },
+      { slug: 'design', title: 'Design', pageCount: 1 },
+    ]);
+    expect(p.section).toBeUndefined();
+    for (const s of p.sections) expect(s.pages).toBeUndefined();
+  });
+
+  it('`section` arg → that section\'s full page list + headings, brief omitted', async () => {
+    mockRegistry([]);
+    buildOutline.mockResolvedValueOnce(bigPayload);
+    const tool = (await import('../outline')).default;
+    const res = await tool.handler(
+      { harness: 'all', section: 'agent-insights' } as never,
+      { harnessSlug: '*', isSuperuser: true, runId: 'run_F' } as never,
+    );
+    const p = payloadOf(res);
+    expect(p.brief).toBeUndefined();
+    expect(p.section.slug).toBe('agent-insights');
+    expect(p.section.pages).toHaveLength(2);
+    expect(p.section.pages[0].headings).toEqual([{ id: 'h1', text: 'H1', depth: 2 }]);
+  });
+
+  it('unknown `section` → section_not_found with availableSections, not an MCP error', async () => {
+    mockRegistry([]);
+    buildOutline.mockResolvedValueOnce(bigPayload);
+    const tool = (await import('../outline')).default;
+    const res = await tool.handler(
+      { harness: 'all', section: 'nope' } as never,
+      { harnessSlug: '*', isSuperuser: true, runId: 'run_G' } as never,
+    );
+    expect(textResult(res).isError).toBeFalsy();
+    const p = payloadOf(res);
+    expect(p.error).toBe('section_not_found');
+    expect(p.availableSections).toEqual(['agent-insights', 'design']);
+  });
+
+  it('the brief shaping also applies on a cache HIT (second call, same run)', async () => {
+    mockRegistry([]);
+    buildOutline.mockResolvedValueOnce(bigPayload);
+    const tool = (await import('../outline')).default;
+    const ctx = { harnessSlug: '*', isSuperuser: true, runId: 'run_H' } as never;
+    await tool.handler({ harness: 'all' } as never, ctx);
+    const r2 = await tool.handler({ harness: 'all' } as never, ctx);
+    const p2 = payloadOf(r2);
+    expect(p2.cached).toBe(true);
+    expect(p2.brief).toBe(true);
+    expect(buildOutline).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('docs:get handler', () => {
   it('harness_required gate fires (no arg, ctx "*") with no engine call', async () => {
     mockRegistry([]);

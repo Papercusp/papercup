@@ -31,7 +31,15 @@ export type AttentionKind =
   | 'improvement' // a human-routed self-improvement awaiting triage (ideation-intake)
   | 'standing-approval' // a standing-approval candidate awaiting the owner (system-control)
   | 'conversation' // an open agent question / coord:ask awaiting an answer (escalations)
-  | 'scout-grade'; // a rollup nudge: N routed Scout ideas await the owner's grade (ideation-intake)
+  | 'scout-grade' // a rollup nudge: N routed Scout ideas await the owner's grade (ideation-intake)
+  // owner-inbox-single-pane-2026-07-17 P-005: the folded owner-gate channels — an
+  // agent that hit a wall only the owner can clear (an ambiguous decision, a
+  // registered dark-flag ratification, a blocked-session ask a client hook
+  // couldn't mirror). Each is a DISTINCT gate a working agent explicitly raised.
+  | 'work-item-needs-human' // a work-item of ANY kind (feature/chunk/bug/change/task) routed to the owner — the cross-kind counterpart of a needs-human PLAN item (source #1 only reads plan docs, never the work_items table itself)
+  | 'owner-wall' // a registered owner-gated blocker (loop:checkpoint walls) — the coord:walls union, folded into the same unified inbox
+  | 'dark-flag-ratification' // a KNOWN_DARK_FLAGS entry awaiting the owner's flip-or-confirm
+  | 'blocked-session'; // a client session sitting on an open ask/permission-wait gate (session_pending_gates) — the client-agnostic watcher backstop for a client whose hook can't mirror (D-002)
 
 export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
 
@@ -60,6 +68,13 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
   'standing-approval': 'system-control', // grant standing auto-dispatch — autonomy-widening, owner-authority (PROTECTED, never-auto: the recursion D-005 guards)
   'conversation': 'escalations', // answer an open agent question (coord:ask / the owner-decision-queue)
   'scout-grade': 'ideation-intake', // grade routed Scout ideas
+  // owner-inbox-single-pane P-005: every folded owner-gate channel is the SAME
+  // disposition as a needs-human plan item — ratify/answer the thing only the
+  // owner may clear — so it shares plan-item's category.
+  'work-item-needs-human': 'plan-governance', // ratify a needs-human work-item (any kind)
+  'owner-wall': 'plan-governance', // clear a registered owner-gated blocker
+  'dark-flag-ratification': 'system-control', // flip-or-confirm a dark flag — owner-authority by the CLAUDE.md dark-flag policy itself
+  'blocked-session': 'escalations', // an unanswered ask mirrored from a session's transcript — the client-agnostic sibling of 'conversation'
 };
 
 /** The autonomy category for an attention kind — `null` for an ungoverned
@@ -123,6 +138,10 @@ export const ATTENTION_KIND_AUTHORITY: Record<AttentionKind, 'owner' | 'system'>
   'standing-approval': 'owner', // grant standing auto-dispatch — autonomy-widening, owner-only
   'conversation': 'system', // answer an open agent question
   'scout-grade': 'system', // grade routed Scout ideas
+  'work-item-needs-human': 'owner', // ratify a needs-human work-item — same owner-by-right disposition as a needs-human plan item
+  'owner-wall': 'owner', // clear a registered owner-gated blocker — by definition only the owner can
+  'dark-flag-ratification': 'owner', // the CLAUDE.md dark-flag policy requires the OWNER to ratify/flip these specifically
+  'blocked-session': 'system', // answering the mirrored ask is queen-eligible in principle, same as 'conversation'
 };
 
 /** The gating fields {@link deriveAuthorization} stamps onto an item. */
@@ -259,7 +278,12 @@ export type AttentionRef =
   | { kind: 'improvement'; issueId: string }
   | { kind: 'standing-approval'; capability: string; targetHarness: string }
   | { kind: 'conversation'; conversationId: string }
-  | { kind: 'scout-grade'; count: number };
+  | { kind: 'scout-grade'; count: number }
+  // owner-inbox-single-pane P-005 folded owner-gate channels:
+  | { kind: 'work-item-needs-human'; workItemId: string; itemKind: string }
+  | { kind: 'owner-wall'; wallSource: 'loop-carry-note' | 'work-item'; wallOwnerId: string | null; wallRef: string | null }
+  | { kind: 'dark-flag-ratification'; flagKey: string }
+  | { kind: 'blocked-session'; sessionId: string; client: string; refId: string };
 
 export interface AttentionItem {
   /** Unique within a reader response. `<kind>:<...>`. */

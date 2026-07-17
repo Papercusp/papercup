@@ -15,26 +15,32 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     const cfg = mergeClaudeHookSettings({}, DEST, { isClaudeSettings: true });
 
     // PreToolUse: lock-acquire (Edit|Write|MultiEdit) + activity-pre (*) + bash-gate (Bash)
-    // + plans-read-guard (Read|Grep, P-003(b)), in install order.
+    // + plans-read-guard (Read|Grep, P-003(b)) + ask-gate-mirror
+    // (AskUserQuestion|ExitPlanMode, owner-inbox-single-pane P-001), in install order.
     expect(commandsFor(cfg, 'PreToolUse')).toEqual([
       `${DEST}/pretooluse-locks-acquire.sh`,
       `${DEST}/pretooluse-activity-report.sh`,
       `${DEST}/pretooluse-bash-resource-gate.sh`,
       `${DEST}/pretooluse-plans-read-guard.sh`,
+      `${DEST}/ask-gate-mirror.sh`,
     ]);
     expect(cfg.hooks.PreToolUse[0].matcher).toBe('Edit|Write|MultiEdit');
     expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
     expect(cfg.hooks.PreToolUse[2].matcher).toBe('Bash');
     expect(cfg.hooks.PreToolUse[3].matcher).toBe('Read|Grep');
+    expect(cfg.hooks.PreToolUse[4].matcher).toBe('AskUserQuestion|ExitPlanMode');
 
-    // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge
-    // (in install order). The separate coord-inbox entry is retired — merged into activity.
+    // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge +
+    // ask-gate-mirror (in install order). The separate coord-inbox entry is retired —
+    // merged into activity.
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
       `${DEST}/posttooluse-locks-release.sh`,
       `${DEST}/posttooluse-activity-report.sh`,
       `${DEST}/workitem-verify-nudge.sh`,
+      `${DEST}/ask-gate-mirror.sh`,
     ]);
     expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
+    expect(cfg.hooks.PostToolUse[3].matcher).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);
@@ -42,11 +48,18 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/lifecycle-report.sh`,
       `${DEST}/workitem-verify-nudge.sh`,
     ]);
-    // Stop: the work-item nudge + the per-turn journal ping (deterministic-context-carry P-012).
+    // Stop: work-item nudge + per-turn journal ping (deterministic-context-carry P-012)
+    // + the ask-gate-mirror bounce/mirror (owner-inbox-single-pane P-001).
     expect(commandsFor(cfg, 'Stop')).toEqual([
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/stop-turn-journal.sh`,
+      `${DEST}/ask-gate-mirror.sh`,
     ]);
+    expect(cfg.hooks.Stop[2].matcher).toBeUndefined(); // fires at every turn end
+
+    // Notification: ask-gate-mirror only (permission-wait capture, P-001).
+    expect(commandsFor(cfg, 'Notification')).toEqual([`${DEST}/ask-gate-mirror.sh`]);
+    expect(cfg.hooks.Notification[0].matcher).toBeUndefined(); // fires on every notification
 
     // UserPromptSubmit: turn-provenance classification (turn-provenance-owner-vs-agent P-003)
     // + turn-start memory delta (memory-delivery-unification-2026-07-12 P-003a).

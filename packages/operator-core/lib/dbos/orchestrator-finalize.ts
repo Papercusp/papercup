@@ -48,16 +48,39 @@ export function parseAcceptanceVerdict(output: string): 'pass' | 'revise' {
 }
 
 /**
- * The finalize recipe — the ordered role/step names a blueprint declares in
+ * One `gates.finalize` entry: usually just a role/step name (the plain-string
+ * form), or — when the launch needs parameterizing beyond the outcome-derived
+ * extras (`TRIGGER`/`FEATURE_ID`/`REASON`/`OUTPUT_KIND`) — an object naming the
+ * role plus extra `KEY=VALUE` env entries appended to that role's invoke
+ * (EI-421: closes the last hardcoded piece of D-007's "finalizer is declared,
+ * not a fake pipeline" model — the debugger's reactive-role and the finalize
+ * recipe's role LIST were already declarative; only per-role extras/hooks
+ * still required code. `archive`/`postCuratorOutputs` — non-role steps — only
+ * take the plain-string form; `extras` on them is a no-op since they never
+ * invoke an agent).
+ */
+export type FinalizeEntry = string | { role: string; extras?: string[] };
+
+function finalizeEntryRole(entry: FinalizeEntry): string {
+  return typeof entry === 'string' ? entry : entry.role;
+}
+
+function finalizeEntryDeclaredExtras(entry: FinalizeEntry): string[] {
+  return typeof entry === 'string' ? [] : (entry.extras ?? []);
+}
+
+/**
+ * The finalize recipe — the ordered entries a blueprint declares in
  * `gates.finalize` (`onDone` / `onEscalate`). `archive` + `postCuratorOutputs` are
  * non-role finalize STEPS (validate.ts's FINALIZE_STEPS); everything else is a role
- * dispatched with the outcome-derived extras. unify-agent-launches-as-blueprints
- * P-007: the recipe is now DECLARATIVE (resolved from the harness blueprint), not a
- * hardcoded constant — a fork that adds/removes/reorders finalize roles is honored.
+ * dispatched with the outcome-derived extras (+ any entry-declared extras — EI-421).
+ * unify-agent-launches-as-blueprints P-007: the recipe is now DECLARATIVE (resolved
+ * from the harness blueprint), not a hardcoded constant — a fork that adds/removes/
+ * reorders finalize roles, or parameterizes one with extra env, is honored.
  */
 export interface FinalizeRecipe {
-  onDone: string[];
-  onEscalate: string[];
+  onDone: FinalizeEntry[];
+  onEscalate: FinalizeEntry[];
 }
 
 /**

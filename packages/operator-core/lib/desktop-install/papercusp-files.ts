@@ -514,6 +514,11 @@ const CC_HOOK_FILES = [
   // pings journal:record-turn at each Stop; the server extracts the agent's
   // ⟦journal⟧ line (mechanical first-line fallback, flagged).
   'stop-turn-journal.sh',
+  // owner-inbox-single-pane-2026-07-17 P-001: the owner-gate CAPTURE + MIRROR layer —
+  // PreToolUse/PostToolUse around AskUserQuestion/ExitPlanMode, a Notification
+  // permission-wait capture, and a Stop `<ask>`-tag mirror + question-shaped-ending
+  // bounce. See the script's own header for the full four-branch contract.
+  'ask-gate-mirror.sh',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1419,6 +1424,18 @@ export function mergeClaudeHookSettings(
     hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-turn-journal.sh'), {
       hooks: cmd('stop-turn-journal.sh'),
     });
+  // merge_ask_gate_hook — PreToolUse + PostToolUse (matcher 'AskUserQuestion|ExitPlanMode')
+  // + matcher-less Notification + Stop. owner-inbox-single-pane-2026-07-17 P-001: the
+  // owner-gate CAPTURE + MIRROR layer (see the script's own header for the four branches).
+  if (has('ask-gate-mirror.sh')) {
+    for (const e of ['PreToolUse', 'PostToolUse'])
+      hooks[e] = replaceOurHookEntries(ev(e), ours('ask-gate-mirror.sh'), {
+        matcher: 'AskUserQuestion|ExitPlanMode',
+        hooks: cmd('ask-gate-mirror.sh'),
+      });
+    for (const e of ['Notification', 'Stop'])
+      hooks[e] = replaceOurHookEntries(ev(e), ours('ask-gate-mirror.sh'), { hooks: cmd('ask-gate-mirror.sh') });
+  }
 
   return cfg;
 }

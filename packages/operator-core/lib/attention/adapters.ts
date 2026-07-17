@@ -585,3 +585,208 @@ export function scoutGradeToAttention(g: ScoutGradeInput): AttentionItem {
     ref: { kind: 'scout-grade', count: g.count },
   };
 }
+
+/* ── owner-inbox-single-pane-2026-07-17 P-005: the folded owner-gate channels ──
+ * Each is a DISTINCT wall a working agent explicitly raised — every one already
+ * a Decision by construction (the reader only ever passes rows already routed
+ * to the owner), so `tier` is always 'decision' here, never derived. */
+
+/* ── needs-human work-item of ANY kind (P-005a) ─────────────────────────── */
+
+export interface WorkItemNeedsHumanInput {
+  /** The cross-kind work-item id (feature_id in the harness_shared.work_items
+   *  view — WI-/F-/EI- style depending on kind). */
+  workItemId: string;
+  /** feature | chunk | research-task | bug | change | task. */
+  itemKind: string;
+  title: string;
+  body?: string | null;
+  harnessSlug?: string | null;
+  ownerAgentId?: string | null;
+  ownerLabel?: string | null;
+}
+
+/**
+ * A work-item (any kind) an agent routed to the owner via `needs_human_review`
+ * (feature-family) or `payload.needsHuman` (issue-family). Distinct from
+ * `plan-item`'s needs-human tier: a plan item lives in a plan DOCUMENT and is
+ * read from parsed markdown (source #1); a work-item is a row in the
+ * `harness_shared.work_items` cross-kind view and may have NO plan attached at
+ * all (a bare `improvements:capture` / `work_items:create`). Also distinct from
+ * `improvement`: that source is topic-scoped to `papercusp-improvement`
+ * (engineer_issues only) — this one is topic-agnostic across every kind,
+ * including feature/chunk and untagged bug/change/task rows. The reader dedups
+ * the overlap (D-008 — see `dropDuplicateNeedsHumanWorkItems` in sources.ts).
+ */
+export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): AttentionItem {
+  const tier: AttentionTier = 'decision';
+  return {
+    id: `work-item-needs-human:${i.workItemId}`,
+    kind: 'work-item-needs-human',
+    category: ATTENTION_KIND_CATEGORY['work-item-needs-human'],
+    source: 'harness',
+    harnessSlug: i.harnessSlug ?? null,
+    planSlug: null, // unattached → the synthetic "Alerts" bucket
+    itemRef: null,
+    title: clip(i.title),
+    body: (i.body ?? '').trim() || i.title,
+    status: `needs-human (${i.itemKind})`,
+    importance: 'high',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: i.ownerAgentId ?? null,
+    ownerLabel: i.ownerLabel ?? null,
+    ...untriaged(),
+    actions: [{ id: 'open', label: 'Open', primary: true }, DISCUSS],
+    ref: { kind: 'work-item-needs-human', workItemId: i.workItemId, itemKind: i.itemKind },
+  };
+}
+
+/* ── registered owner-wall (P-005b) ─────────────────────────────────────── */
+
+export interface OwnerWallInput {
+  source: 'loop-carry-note' | 'work-item';
+  ownerId: string | null;
+  harnessSlug?: string | null;
+  claim: string;
+  recheck?: string | null;
+  ref?: string | null;
+  waitingHours?: number | null;
+  /** Mirrors coord:walls' liveness join: `stranded` = the raising agent's
+   *  session is gone, so answering alone will not resume the work. */
+  status: 'waiting' | 'stranded' | 'unknown';
+}
+
+/**
+ * A wall an agent already registered via `loop:checkpoint { walls }` or by
+ * parking a work-item in `needs-human` — the SAME union `coord:walls` reads
+ * (reuse-first: no new store). Folded into the unified inbox so an owner-gated
+ * blocker shows up alongside every other Decision instead of requiring a
+ * separate `coord:walls` call. `stranded` walls are flagged in the body: the
+ * owner must respawn the agent, not just answer.
+ */
+export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
+  const tier: AttentionTier = 'decision';
+  const idPart = w.ref ?? w.ownerId ?? w.claim;
+  const strandedNote =
+    w.status === 'stranded'
+      ? '\n\n⚠ STRANDED — the raising agent\'s session has died. Answering alone will not resume this work; it also needs a respawn.'
+      : '';
+  const hours = w.waitingHours ?? 0;
+  return {
+    id: `owner-wall:${w.source}:${idPart}`,
+    kind: 'owner-wall',
+    category: ATTENTION_KIND_CATEGORY['owner-wall'],
+    source: 'harness',
+    harnessSlug: w.harnessSlug ?? null,
+    planSlug: null,
+    itemRef: null,
+    title: clip(w.claim),
+    body: `${w.claim}${w.recheck ? `\n\nRecheck: ${w.recheck}` : ''}${strandedNote}`,
+    status: w.status,
+    importance: hours >= 4 ? 'urgent' : hours >= 1 ? 'high' : 'normal',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: w.ownerId,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [MESSAGE_OWNER, DISCUSS],
+    ref: { kind: 'owner-wall', wallSource: w.source, wallOwnerId: w.ownerId, wallRef: w.ref ?? null },
+  };
+}
+
+/* ── pending dark-flag ratification (P-005c) ────────────────────────────── */
+
+export interface DarkFlagRatificationInput {
+  /** The FLAGS key (libs/flags/src/types.ts) carried on KNOWN_DARK_FLAGS. */
+  flagKey: string;
+  justification?: string | null;
+  /** The allowlist's DARK_FLAGS_REVIEW_BY expiry, when present. */
+  reviewBy?: string | null;
+}
+
+/**
+ * A `KNOWN_DARK_FLAGS` entry (libs/flags/src/production-defaults.test.ts) —
+ * a flag the CLAUDE.md dark-flag policy allows to ship default-OFF ONLY
+ * because it is genuinely incomplete / would-break-the-fleet / owner-authority
+ * / a staged cutover, each requiring an owner justification already recorded
+ * on the allowlist. Surfacing it here closes the loop: the allowlist is
+ * shrink-only, so every entry is a standing ratification-or-graduate decision
+ * the owner should eventually see, not a silent permanent exception.
+ */
+export function darkFlagRatificationToAttention(f: DarkFlagRatificationInput): AttentionItem {
+  const tier: AttentionTier = 'decision';
+  return {
+    id: `dark-flag-ratification:${f.flagKey}`,
+    kind: 'dark-flag-ratification',
+    category: ATTENTION_KIND_CATEGORY['dark-flag-ratification'],
+    source: 'harness',
+    harnessSlug: null,
+    planSlug: null,
+    itemRef: null,
+    title: `Dark flag awaiting ratification: ${f.flagKey}`,
+    body:
+      (f.justification ?? '').trim() ||
+      `${f.flagKey} is on the KNOWN_DARK_FLAGS allowlist and defaults OFF pending owner ratification.`,
+    status: f.reviewBy ? `awaiting-ratification (review by ${f.reviewBy})` : 'awaiting-ratification',
+    importance: 'normal',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: null,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [{ id: 'open', label: 'Review flag', primary: true }],
+    ref: { kind: 'dark-flag-ratification', flagKey: f.flagKey },
+  };
+}
+
+/* ── blocked session / mirrored ask (P-005d) ────────────────────────────── */
+
+export interface BlockedSessionInput {
+  sessionId: string;
+  client: string;
+  refId: string;
+  gateKind: 'ask' | 'permission_wait';
+  question?: string | null;
+  ownerAgentId?: string | null;
+  harnessSlug?: string | null;
+  waitingHours?: number | null;
+}
+
+/**
+ * A `harness_shared.session_pending_gates` row still open — the watcher's
+ * client-agnostic backstop (owner-inbox-single-pane P-002/D-002): a session
+ * sitting on an unanswered ask/permission-wait, captured regardless of
+ * whether that client's own hook could mirror it as a structured envelope
+ * (Codex has no turn-end hook at all — this is its ONLY path to the inbox).
+ * Distinct from `conversation` (an explicit `coord:ask`) — this is a raw
+ * transcript observation, so the body says plainly that it's a mirror, not a
+ * first-class ask.
+ */
+export function blockedSessionToAttention(g: BlockedSessionInput): AttentionItem {
+  const tier: AttentionTier = 'decision';
+  const label = g.gateKind === 'permission_wait' ? 'permission prompt' : 'question';
+  const hours = g.waitingHours ?? 0;
+  return {
+    id: `blocked-session:${g.client}:${g.sessionId}:${g.refId}`,
+    kind: 'blocked-session',
+    category: ATTENTION_KIND_CATEGORY['blocked-session'],
+    source: 'harness',
+    harnessSlug: g.harnessSlug ?? null,
+    planSlug: null,
+    itemRef: null,
+    title: clip(g.question) || `${g.client} session blocked on a ${label}`,
+    body:
+      (g.question ?? '').trim() ||
+      `A ${g.client} session (${g.sessionId}) is sitting on an unanswered ${label} — its client hook could not mirror this as a structured ask (D-002 capability matrix).`,
+    status: `blocked (${g.client})`,
+    importance: hours >= 1 ? 'high' : 'normal',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: g.ownerAgentId ?? null,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [DISCUSS, MESSAGE_OWNER],
+    ref: { kind: 'blocked-session', sessionId: g.sessionId, client: g.client, refId: g.refId },
+  };
+}

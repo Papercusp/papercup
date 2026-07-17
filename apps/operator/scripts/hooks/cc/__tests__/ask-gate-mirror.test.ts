@@ -1,0 +1,364 @@
+/**
+ * ask-gate-mirror.test.ts — regression guard for the P-001 owner-gate
+ * mirror hook (owner-inbox-single-pane-2026-07-17). Two halves, per the repo
+ * convention (see pretooluse-plans-read-guard.test.ts / workitem-verify-nudge.test.ts):
+ *
+ *   - OPERATOR-INDEPENDENT: the psu/install gates, malformed input, tool-name
+ *     matcher filtering, the Stop loop-guard (stop_hook_active), the
+ *     question-shaped-ending BOUNCE decision, and the fail-open contract
+ *     against an unreachable operator (mirrors workitem-verify-nudge's
+ *     `http://127.0.0.1:1` trick — never a real network hop).
+ *   - OPERATOR-DEPENDENT: an in-process HTTP stub (the pretooluse-locks-decision
+ *     / posttooluse-activity-report-bundle pattern — async `spawn`, never
+ *     `spawnSync`, so the stub can actually answer) asserting the EXACT
+ *     `sessions:ingest-gate-event` / `coord:escalate` request bodies for the
+ *     PreToolUse open, PostToolUse close, Notification permission-wait, and
+ *     Stop `<ask>`-tag mirror branches.
+ *
+ * Cardinal contract shared with every sibling cc/ hook: this hook must NEVER
+ * exit non-zero, and every branch except the Stop bounce prints EMPTY stdout
+ * (the bounce is the one deliberate exception — that IS its job).
+ */
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { runHookProcess } from './spawn-hook';
+import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import { join } from 'node:path';
+import { createServer, type Server } from 'node:http';
+
+const HOOK = join(__dirname, '..', 'ask-gate-mirror.sh');
+
+// ── OPERATOR-INDEPENDENT ────────────────────────────────────────────────────
+
+describe('ask-gate-mirror — operator-independent paths', () => {
+  let home: string, tmp: string;
+
+  beforeAll(() => {
+    home = fs.mkdtempSync(join(os.tmpdir(), 'askgate-home-'));
+    fs.mkdirSync(join(home, '.papercusp'), { recursive: true });
+    fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token\n');
+    tmp = fs.mkdtempSync(join(os.tmpdir(), 'askgate-tmp-'));
+  });
+  afterAll(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function run(input: string, extraEnv: Record<string, string> = {}, withSid = true) {
+    const env: Record<string, string> = { HOME: home, PATH: process.env.PATH ?? '' };
+    if (withSid) env.PAPERCUSP_SID = 'su-test';
+    // Unreachable operator: any accidental real network call fails fast + fail-open.
+    env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:1';
+    Object.assign(env, extraEnv);
+    const r = spawnSync('bash', [HOOK], { input, encoding: 'utf8', env });
+    return { status: r.status, stdout: (r.stdout ?? '').trim(), stderr: (r.stderr ?? '').trim() };
+  }
+  const payload = (o: object) => JSON.stringify(o);
+  const transcriptWith = (text: string) => {
+    const p = join(tmp, `t-${Math.random().toString(36).slice(2)}.jsonl`);
+    fs.writeFileSync(p, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }) + '\n');
+    return p;
+  };
+
+  it('no PAPERCUSP_SID → exit 0, empty stdout', () => {
+    const r = run(payload({ hook_event_name: 'Stop' }), {}, false);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('no install (missing token) → exit 0, empty stdout', () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'askgate-bare-'));
+    try {
+      const r = spawnSync('bash', [HOOK], {
+        input: payload({ hook_event_name: 'Stop' }),
+        encoding: 'utf8',
+        env: { HOME: bareHome, PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' },
+      });
+      expect(r.status).toBe(0);
+      expect((r.stdout ?? '').trim()).toBe('');
+    } finally {
+      fs.rmSync(bareHome, { recursive: true, force: true });
+    }
+  });
+
+  it('malformed JSON → fail-open, exit 0, empty stdout', () => {
+    const r = run('not json {');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('PreToolUse on an unrelated tool (Bash) → no-op', () => {
+    const r = run(payload({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('PostToolUse on an unrelated tool (Read) → no-op', () => {
+    const r = run(payload({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {} }));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('Notification with a non-permission message → no-op (never mirrored)', () => {
+    const r = run(payload({ hook_event_name: 'Notification', message: 'Claude is waiting for your input' }));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('Stop with a normal (non-question) ending → allow, empty stdout', () => {
+    const r = run(payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith('All done, tests pass.') }));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('Stop with a bare question-shaped ending and NO <ask> tag → BOUNCE (decision:block)', () => {
+    const r = run(
+      payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith('Should I proceed with the migration now?') }),
+    );
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.decision).toBe('block');
+    expect(out.reason).toMatch(/coord:escalate/);
+    expect(out.reason).toMatch(/<ask>/);
+  });
+
+  it('Stop with a question ending but stop_hook_active:true → loop-guarded, allow (no bounce)', () => {
+    const r = run(
+      payload({
+        hook_event_name: 'Stop',
+        session_id: 's1',
+        transcript_path: transcriptWith('Should I proceed with the migration now?'),
+        stop_hook_active: true,
+      }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('Stop with a <ask> tag present → allow (structured mirror found, no bounce)', () => {
+    const r = run(
+      payload({
+        hook_event_name: 'Stop',
+        session_id: 's1',
+        transcript_path: transcriptWith('Status update. <ask>{"question":"Which route?"}</ask>'),
+      }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('Stop with a malformed <ask> tag body → falls through to question-shaped-ending check (no <ask> text left after the tag, so no bounce here since the line before the tag is not itself question-shaped)', () => {
+    const r = run(
+      payload({
+        hook_event_name: 'Stop',
+        session_id: 's1',
+        transcript_path: transcriptWith('Update. <ask>{not valid json</ask>'),
+      }),
+    );
+    expect(r.status).toBe(0);
+    // The final non-blank line is the whole malformed-tag line, which does not end in
+    // "?" — so this is neither a valid mirror NOR a question-shaped ending: allow.
+    expect(r.stdout).toBe('');
+  });
+
+  it('Stop with a code-fence last line ending in "?" → NOT question-shaped (narrow heuristic), allow', () => {
+    const r = run(
+      payload({
+        hook_event_name: 'Stop',
+        session_id: 's1',
+        transcript_path: transcriptWith('Here:\n```ts\nconst x = a ?? b?\n```'),
+      }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('Stop with no transcript_path (unreadable) → allow, never throws', () => {
+    const r = run(payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: '/nonexistent/path.jsonl' }));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('an unrecognized hook_event_name → no-op, allow', () => {
+    const r = run(payload({ hook_event_name: 'SessionStart' }));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+});
+
+// ── OPERATOR-DEPENDENT (in-process HTTP stub) ───────────────────────────────
+
+describe('ask-gate-mirror — operator-dependent request bodies', () => {
+  let home: string;
+  let server: Server;
+  let port: number;
+  let lastCalls: Array<{ tool: string; args: Record<string, any> }>;
+
+  beforeAll(async () => {
+    home = fs.mkdtempSync(join(os.tmpdir(), 'askgate-stub-home-'));
+    fs.mkdirSync(join(home, '.papercusp'), { recursive: true });
+    fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token\n');
+
+    server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        const rpc = JSON.parse(body) as { params: { name: string; arguments: Record<string, any> } };
+        lastCalls.push({ tool: rpc.params.name, args: rpc.params.arguments });
+        const result = { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] } };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    port = (server.address() as { port: number }).port;
+  });
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+  beforeEach(() => {
+    lastCalls = [];
+  });
+
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'askgate-stub-tmp-'));
+  afterEach(() => {
+    for (const f of fs.readdirSync(tmp)) fs.rmSync(join(tmp, f), { force: true });
+  });
+  const transcriptWith = (text: string) => {
+    const p = join(tmp, `t-${Math.random().toString(36).slice(2)}.jsonl`);
+    fs.writeFileSync(p, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }) + '\n');
+    return p;
+  };
+
+  async function run(input: object) {
+    return runHookProcess('bash', [HOOK], {
+      input: JSON.stringify(input),
+      env: { HOME: home, PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}` },
+    });
+  }
+
+  it('PreToolUse AskUserQuestion → opens a gate with kind:ask, the question + options + refId', async () => {
+    const r = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'AskUserQuestion',
+      tool_use_id: 'tu-1',
+      session_id: 'sess-1',
+      tool_input: {
+        questions: [
+          {
+            question: 'Which route?',
+            header: 'Route',
+            multiSelect: false,
+            options: [
+              { label: 'Yourself', description: 'do it now' },
+              { label: 'Fleet' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('');
+    expect(lastCalls).toHaveLength(1);
+    expect(lastCalls[0].tool).toBe('sessions:ingest-gate-event');
+    expect(lastCalls[0].args).toMatchObject({
+      sessionId: 'sess-1',
+      client: 'claude',
+      kind: 'ask',
+      refId: 'tu-1',
+      question: 'Which route?',
+      ownerId: 'su-test',
+    });
+    expect(lastCalls[0].args.options).toEqual([
+      { label: 'Yourself', description: 'do it now' },
+      { label: 'Fleet' },
+    ]);
+  });
+
+  it('PreToolUse AskUserQuestion with MULTIPLE questions → mirrors the first, notes the rest', async () => {
+    const r = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'AskUserQuestion',
+      tool_use_id: 'tu-2',
+      session_id: 'sess-1',
+      tool_input: { questions: [{ question: 'First?', header: 'H', multiSelect: false, options: [] }, { question: 'Second?', header: 'H2', multiSelect: false, options: [] }] },
+    });
+    expect(r.status).toBe(0);
+    expect(lastCalls[0].args.question).toBe('First? (+1 more question)');
+  });
+
+  it('PreToolUse ExitPlanMode → opens a gate with a fixed question + the plan as text', async () => {
+    const r = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'ExitPlanMode',
+      tool_use_id: 'tu-3',
+      session_id: 'sess-1',
+      tool_input: { plan: '## My plan\n1. do a thing' },
+    });
+    expect(r.status).toBe(0);
+    expect(lastCalls[0].args).toMatchObject({
+      kind: 'ask',
+      refId: 'tu-3',
+      question: 'Approve this plan?',
+      text: '## My plan\n1. do a thing',
+    });
+  });
+
+  it('PostToolUse AskUserQuestion → closes the SAME refId with kind:cleared', async () => {
+    const r = await run({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'AskUserQuestion',
+      tool_use_id: 'tu-1',
+      session_id: 'sess-1',
+      tool_input: {},
+      tool_response: { optionId: 'yourself' },
+    });
+    expect(r.status).toBe(0);
+    expect(lastCalls[0].args).toMatchObject({ sessionId: 'sess-1', kind: 'cleared', refId: 'tu-1' });
+  });
+
+  it('Notification mentioning "permission" → opens a permission_wait gate keyed on notify:<session>', async () => {
+    const r = await run({
+      hook_event_name: 'Notification',
+      session_id: 'sess-9',
+      message: 'Claude needs your permission to use Bash',
+    });
+    expect(r.status).toBe(0);
+    expect(lastCalls[0].args).toMatchObject({
+      sessionId: 'sess-9',
+      kind: 'permission_wait',
+      refId: 'notify:sess-9',
+      ownerId: 'su-test',
+    });
+    expect(lastCalls[0].args.text).toContain('permission');
+  });
+
+  it('Stop mirrors a structured <ask> tag to coord:escalate (severity:question, options mapped)', async () => {
+    const r = await run({
+      hook_event_name: 'Stop',
+      session_id: 'sess-1',
+      transcript_path: transcriptWith(
+        'Status: done. <ask>{"question":"Ship it now?","options":[{"id":"y","label":"Yes"},{"id":"n","label":"No"}],"refs":["WI-1"]}</ask>',
+      ),
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('');
+    // Two calls: the best-effort notify-gate clear, then the escalate mirror.
+    const escalate = lastCalls.find((c) => c.tool === 'coord:escalate');
+    expect(escalate).toBeDefined();
+    expect(escalate!.args).toMatchObject({ severity: 'question', summary: 'Ship it now?', body: 'refs: WI-1' });
+    expect(escalate!.args.options).toEqual([
+      { id: 'y', label: 'Yes' },
+      { id: 'n', label: 'No' },
+    ]);
+  });
+
+  it('Stop always best-effort-clears the notify:<session> gate first', async () => {
+    await run({ hook_event_name: 'Stop', session_id: 'sess-5', transcript_path: transcriptWith('All good.') });
+    const clear = lastCalls.find((c) => c.tool === 'sessions:ingest-gate-event' && c.args.kind === 'cleared');
+    expect(clear).toBeDefined();
+    expect(clear!.args.refId).toBe('notify:sess-5');
+  });
+});
