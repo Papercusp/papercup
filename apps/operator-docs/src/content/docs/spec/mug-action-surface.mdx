@@ -185,7 +185,7 @@ lives in `action-surface.ts`.
 | Approve / dispatch auto-implement | implementation | rev | system | `work_items:create`, `improvements:resolve` | partial |
 | Judge a gym candidate | review-merge | rev | system | `gym:judge` | covered |
 | Record a design reviewer verdict | review-merge | rev | system | `design-phase:record_review` | covered |
-| **Approve a code review / merge** | review-merge | rev | system | — | **gap** |
+| Approve a code review / merge | review-merge | rev | system | `review:approve`, `merge:approve` | covered |
 | Approve / run a deploy | release-deploy | **irrev** | owner | `deploy:harness` | covered |
 | Tear down a deploy target | release-deploy | **irrev** | owner | `deploy:teardown` | covered |
 | Promote staging → green | release-deploy | **irrev** | owner | — (automation) | partial |
@@ -219,11 +219,6 @@ genuine **gap** (human-only, no Mug verb) and the notable **partials** are filed
 as build items so the coverage invariant can eventually go green for the whole
 surface:
 
-- **`review.approve-code-review-merge`** *(gap)* — code-review approval +
-  merge-to-staging is handled by pipeline roles + the git-sync routine +
-  merge-resolver; there is no Mug-accessible "approve review / approve merge"
-  verb. Until one exists, **review & merge** is observable but not a governable
-  category.
 - **`plan.ratify-decision`** *(partial)* — `plans:add-decision` authors a decision
   but ratification is encoded as prose ("RATIFIED by owner"); there is no explicit
   ratification state/verb to distinguish propose vs ratify.

@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv, type GymOperatorBootConfig } from '../boot-spec';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  buildGymOperatorBootSpec,
+  scrubLauncherClaudeSessionEnv,
+  gymWorkerInvokeTimeoutMs,
+  DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS,
+  type GymOperatorBootConfig,
+} from '../boot-spec';
 
 /**
  * P-001 "minimal bootable unit": the dedicated gym-operator is ONE headless
@@ -95,6 +101,17 @@ describe('buildGymOperatorBootSpec', () => {
     expect(() => buildGymOperatorBootSpec({ ...base, harnessCommit: 'main' })).toThrow();
   });
 
+  it('EI-481: widens PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS to the gym-operator default (wider than the shared 45min fleet default)', () => {
+    const { env } = buildGymOperatorBootSpec(base);
+    expect(env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS).toBe(String(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS));
+    expect(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS).toBeGreaterThan(45 * 60 * 1000);
+  });
+
+  it('EI-481: cfg.invokeTimeoutMs overrides the default', () => {
+    const { env } = buildGymOperatorBootSpec({ ...base, invokeTimeoutMs: 123_000 });
+    expect(env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS).toBe('123000');
+  });
+
   it('sets AGENT_CMD only when provided; ALWAYS pins AGENT_MODELS to seal the inherited env', () => {
     // AGENT_CMD: caller-provided (gym callers always pass it).
     expect(buildGymOperatorBootSpec(base).env.AGENT_CMD).toBeUndefined();
@@ -109,6 +126,34 @@ describe('buildGymOperatorBootSpec', () => {
     });
     expect(pinned.env.AGENT_CMD).toBe('claude -p');
     expect(JSON.parse(pinned.env.AGENT_MODELS)).toEqual({ worker: 'claude-sonnet-4-6' });
+  });
+});
+
+describe('gymWorkerInvokeTimeoutMs (EI-481)', () => {
+  const ENV_KEY = 'PAPERCUSP_GYM_WORKER_INVOKE_TIMEOUT_MS';
+  const original = process.env[ENV_KEY];
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
+  it('defaults to DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS when unset', () => {
+    delete process.env[ENV_KEY];
+    expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
+  });
+
+  it('honors a valid positive override', () => {
+    process.env[ENV_KEY] = '600000';
+    expect(gymWorkerInvokeTimeoutMs()).toBe(600_000);
+  });
+
+  it('fails soft to the default on a non-numeric / non-positive value', () => {
+    process.env[ENV_KEY] = 'not-a-number';
+    expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
+    process.env[ENV_KEY] = '-5';
+    expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
+    process.env[ENV_KEY] = '0';
+    expect(gymWorkerInvokeTimeoutMs()).toBe(DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS);
   });
 });
 

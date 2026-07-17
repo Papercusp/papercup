@@ -544,6 +544,8 @@ export default defineTool({
               const { activeWorkspaceId } =
                 await import("../../workspace-registry");
               const { sql } = getOrgPg();
+              // eslint-disable-next-line no-console
+              console.log("DEBUG-P005A getOrgPg.toString()=", getOrgPg.toString().slice(0, 200));
               const wid = activeWorkspaceId();
               const hf = harnessFilter;
               const rows = await sql<

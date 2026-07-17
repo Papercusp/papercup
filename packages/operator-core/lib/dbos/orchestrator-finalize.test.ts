@@ -232,6 +232,54 @@ describe('planFinalization — declarative recipe (unify-launches P-007)', () =>
     ]);
   });
 
+  test("an `{role,extras}` entry parameterizes that role's launch declaratively (EI-421)", () => {
+    const { steps } = planFinalization({
+      ...base,
+      finalize: {
+        onDone: ['curator', { role: 'documenter', extras: ['SINK=blob-store', 'RETRY=2'] }],
+        onEscalate: [],
+      },
+    });
+    expect(steps).toEqual([
+      { kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] },
+      // declared extras are APPENDED after the outcome-derived ones (TRIGGER/FEATURE_ID/…).
+      {
+        kind: 'invoke',
+        role: 'documenter',
+        extras: ['TRIGGER=done', 'FEATURE_ID=F-001', 'SINK=blob-store', 'RETRY=2'],
+      },
+      { kind: 'hook', hook: 'afterDone' },
+    ]);
+  });
+
+  test('an object finalize entry combines with output.kind (declared extras still appended after OUTPUT_KIND)', () => {
+    const { steps } = planFinalization({
+      ...base,
+      outputKind: 'artifacts',
+      finalize: { onDone: [{ role: 'documenter', extras: ['SINK=blob-store'] }], onEscalate: [] },
+    });
+    expect(steps[0]).toEqual({
+      kind: 'invoke',
+      role: 'documenter',
+      extras: ['TRIGGER=done', 'FEATURE_ID=F-001', 'OUTPUT_KIND=artifacts', 'SINK=blob-store'],
+    });
+  });
+
+  test('an object finalize entry with no `extras` behaves exactly like the plain-string form', () => {
+    const withObject = planFinalization({ ...base, finalize: { onDone: [{ role: 'curator' }], onEscalate: [] } });
+    const withString = planFinalization({ ...base, finalize: { onDone: ['curator'], onEscalate: [] } });
+    expect(withObject).toEqual(withString);
+  });
+
+  test('object entries naming a non-role finalize step (archive/postCuratorOutputs) are a no-op for extras', () => {
+    const { steps } = planFinalization({
+      ...base,
+      archiveOnDone: true,
+      finalize: { onDone: [{ role: 'archive', extras: ['IGNORED=1'] }], onEscalate: [] },
+    });
+    expect(steps).toEqual([{ kind: 'archive' }, { kind: 'hook', hook: 'afterDone' }]);
+  });
+
   test('escalate honors the onEscalate recipe (curator gets TRIGGER=escalate + REASON, no FEATURE_ID)', () => {
     const { steps } = planFinalization({
       ...base,

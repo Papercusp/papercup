@@ -40,6 +40,42 @@ export interface GymOperatorBootConfig {
   agentCmd?: string;
   /** Optional pin of per-role models (AGENT_MODELS json). */
   agentModels?: Record<string, string>;
+  /** Optional explicit override of the gym-operator's own per-turn invoke wall-clock timeout
+   *  (PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS); default `gymWorkerInvokeTimeoutMs()` (below). */
+  invokeTimeoutMs?: number;
+}
+
+/** Default per-turn invoke wall-clock budget (ms) for the isolated gym-operator's spawned agent
+ *  turns (worker/architect/etc — orchestrator-runner.ts's `invokeTimeoutMs()`), env-overridable
+ *  via PAPERCUSP_GYM_WORKER_INVOKE_TIMEOUT_MS. Deliberately WIDER than the shared fleet default
+ *  (45min) — EI-481: a live gym cycle wedged when a `worker` turn was flat-SIGTERM'd (exit 143,
+ *  empty stderr) mid-93min-runtime under sustained upstream-429 pressure on the shared
+ *  inference-gateway pool, and the cycle then produced nothing until the 60-min stale-run reclaim
+ *  cleared it. Root cause: orchestrator-runner's `runChild()` kill timer is a flat WALL-CLOCK
+ *  deadline (`opts.timeoutMs ?? invokeTimeoutMs()`), reading PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS
+ *  PER-PROCESS — the gym-operator is its own dedicated process (D-018), so pinning this var here
+ *  (an "explicit gym override", per this file's header) only widens the gym's OWN worker budget;
+ *  it never touches the shared :3070 default every other role relies on. Gym is already the most
+ *  latency-tolerant lane in the fleet (tier 4 batch, DEFAULT_GATEWAY_PRIORITY_MAP — it already
+ *  yields to interactive/su traffic at the gateway admission layer), so giving its turns more
+ *  wall-clock room to pace/retry through contention rather than being killed mid-backoff is a safe,
+ *  gym-scoped widening, not a fleet-wide policy change. */
+export const DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS = 90 * 60 * 1000; // 90 min (shared default: 45 min)
+
+/** Resolve the gym-operator's per-turn invoke timeout: env override
+ *  PAPERCUSP_GYM_WORKER_INVOKE_TIMEOUT_MS, else DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS. Fail-soft to
+ *  the default on a missing/invalid/non-positive value (mirrors gymBudgetFloorUsd()'s pattern). */
+export function gymWorkerInvokeTimeoutMs(): number {
+  const raw = process.env.PAPERCUSP_GYM_WORKER_INVOKE_TIMEOUT_MS;
+  if (raw == null || raw.trim() === '') return DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(
+      `[gym-boot-spec] PAPERCUSP_GYM_WORKER_INVOKE_TIMEOUT_MS="${raw}" is not a positive number — using ${DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS}`,
+    );
+    return DEFAULT_GYM_WORKER_INVOKE_TIMEOUT_MS;
+  }
+  return n;
 }
 
 export interface GymOperatorBootSpec {
@@ -139,6 +175,10 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // test/CI-spawned gym boots as a real operator, not a suppressed vitest worker.
     PAPERCUSP_BACKGROUND_WORKERS: '1',
     VITEST: '',
+    // EI-481: widen the gym-operator's OWN per-turn invoke wall-clock timeout — see
+    // gymWorkerInvokeTimeoutMs() above. An explicit gym override (this env object wins over the
+    // inherited process.env spread), so this never affects the shared :3070 default.
+    PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS: String(cfg.invokeTimeoutMs ?? gymWorkerInvokeTimeoutMs()),
   };
 
   if (cfg.agentCmd) env.AGENT_CMD = cfg.agentCmd;
