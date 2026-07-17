@@ -21,8 +21,19 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 // useSyncQuery → a single chat row matching the panel's chatId so `chat`
 // populates from the cache (loadChat takes the cached-row path, no REST fetch).
 let syncRows: Array<Record<string, unknown>> = [];
+// Whether the subscription is still resolving. Default false = settled, which is
+// what every pre-existing test wants; the WI-5125 cases below flip it to assert
+// the loading-vs-resolved-but-empty distinction.
+let syncLoading = false;
+const invalidateSpy = vi.fn();
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: syncRows, loading: false, fetching: false, error: null, invalidate: vi.fn() }),
+  useSyncQuery: () => ({
+    data: syncRows,
+    loading: syncLoading,
+    fetching: false,
+    error: null,
+    invalidate: invalidateSpy,
+  }),
 }));
 
 // The confirm dialog is only used by archive; stub it out of the way.
