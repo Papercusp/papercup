@@ -677,24 +677,22 @@ const searchTranscripts = defineTool({
 
     // owner-plans-single-pane-2026-07-17 P-006: `?plan=<slug>` scopes the
     // search to ONE plan's sessions — the plan popup's Sessions-tab search.
-    // We resolve the plan's session HANDLES (claude session_id + omp thread id,
-    // via the same listPlanSessions two-leg attribution the popup's list uses)
-    // and filter the engine's turn-hits to them post-search. Handle-based (not
-    // owner-classification-based) so it stays independent of the roster join
-    // and needs no new engine capability. Absent → unscoped (today's behavior).
+    // We resolve the plan's OWNER set (the same listPlanSessions two-leg
+    // attribution the popup's list uses) and push it into the engine as
+    // `filters.owners` (the session_turn source ANDs `owner = ANY(owners)` in
+    // BOTH rankers). Engine-level scoping — NOT a post-filter — so the ranking
+    // happens only within the plan's turns; a common term (e.g. "escalation")
+    // whose plan hits would rank below the GLOBAL top-N still surfaces. Absent
+    // → unscoped (today's behavior).
     const planScope = (url.searchParams.get('plan') ?? '').trim().slice(0, 200);
-    let allowedHandles: Set<string> | null = null;
+    let planOwners: string[] | null = null;
     if (planScope) {
       const { listPlanSessions } = await import('../../../adv-sessions');
       const planSessions = await listPlanSessions(planScope, { workspaceId: null });
-      allowedHandles = new Set<string>();
-      for (const s of planSessions) {
-        if (s.sessionId) allowedHandles.add(s.sessionId);
-        if (s.ompThreadId) allowedHandles.add(s.ompThreadId);
-      }
-      // A plan with no recorded session handles can match nothing — short-circuit
-      // (an empty allow-set would filter every hit out anyway).
-      if (allowedHandles.size === 0) {
+      planOwners = [...new Set(planSessions.map((s) => s.coordOwnerId).filter((o): o is string => !!o))];
+      // A plan with no attributable owners can match nothing — short-circuit
+      // (an empty owners filter would otherwise mean "no narrowing" = unscoped).
+      if (planOwners.length === 0) {
         return new Response(
           JSON.stringify({ ok: true, query: q, plan: planScope, totalHits: 0, sessions: [] }),
           { status: 200, headers: JSON_HEADERS },
@@ -710,8 +708,13 @@ const searchTranscripts = defineTool({
     const sinceParam = (url.searchParams.get('since') ?? '').trim();
     const untilParam = (url.searchParams.get('until') ?? '').trim();
     const filters: SearchFilters | undefined =
-      sinceParam || untilParam
-        ? { ...(sinceParam ? { since: sinceParam } : {}), ...(untilParam ? { until: untilParam } : {}) }
+      sinceParam || untilParam || planOwners
+        ? {
+            ...(sinceParam ? { since: sinceParam } : {}),
+            ...(untilParam ? { until: untilParam } : {}),
+            // P-006 plan scope → engine-level owner narrowing (see above).
+            ...(planOwners ? { owners: planOwners } : {}),
+          }
         : undefined;
     // 2. SOFT RE-RANK + FRESH-CANDIDATE LEG — a recency decay blended into the
     //    fused score before the top-N cut, plus a recent-window BM25 candidate
@@ -793,16 +796,12 @@ const searchTranscripts = defineTool({
     // after the 408 already went out (2026-07-09 incident: 34–69s server
     // burn past the 30s budget under host load). Abort → throw → the route
     // stack's aborted-catch path returns the 408.
-    // P-006: when plan-scoped, search WIDER (the plan filter runs post-search,
-    // so a narrow top-N could be entirely non-plan hits) then keep hitLimit
-    // after filtering. Capped so it never blows the engine budget.
-    const engineLimit = allowedHandles ? Math.min(200, hitLimit * 6) : hitLimit;
     const { results } = await runHybridSearch(sources, {
       sql,
       query: q,
       workspaceId: activeWorkspaceId(),
       scopeFilter: null,
-      limit: engineLimit,
+      limit: hitLimit,
       mode: 'hybrid',
       embedder,
       embedTimeoutMs,
@@ -825,8 +824,6 @@ const searchTranscripts = defineTool({
     for (const r of results) {
       const ref = parseTurnRef(r.source_id);
       if (!ref) continue;
-      // P-006 plan-scope: drop hits whose session isn't one of this plan's.
-      if (allowedHandles && !allowedHandles.has(ref.sessionId)) continue;
       turnHits.push({
         sourceKind: ref.sourceKind,
         sessionId: ref.sessionId,
@@ -866,10 +863,7 @@ const searchTranscripts = defineTool({
     }
     mark('metadataHydration');
 
-    // Group per session; when plan-scoped we searched wide, so keep the top
-    // hitLimit SESSIONS after grouping (groups are already score-desc).
-    const groupsAll = groupHitsBySession(turnHits);
-    const groups = allowedHandles ? groupsAll.slice(0, hitLimit) : groupsAll;
+    const groups = groupHitsBySession(turnHits);
     // Await the t0-started roster (usually already settled — it ran concurrent
     // with the search) + the hit-dependent session-row hydration.
     const [{ active }, sessionRows] = await Promise.all([
