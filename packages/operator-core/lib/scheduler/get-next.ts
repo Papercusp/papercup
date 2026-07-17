@@ -449,6 +449,23 @@ function issueKindsForFallback(filter: FilterNode | undefined): readonly IssueFa
  * once its feature-family tiers miss (regression-tested by the pre-existing
  * "tier 3: an issue-kind spec narrows issue fallback instead of claiming an older
  * task" case).
+ *
+ * EI-14172-adjacent (backlog-drain-clean@6, 2026-07-17): `!=` is not the only way
+ * to write a negative id exclusion — `{ not: { field:'id', op:'in', value:[...] } }`
+ * (a fleet leader's "exclude these 2 already-handled ids" clause, e.g. `not:{id in
+ * [WI-5245, WI-5246]}`) is the SAME negative-exclusion shape wearing the `not`
+ * combinator instead of the `!=` op. The naive `return walk(node.not)` recurses
+ * into the inner leaf and evaluates it AS IF IT WERE UN-NEGATED — `{field:'id',
+ * op:'in'}` alone reads as a positive closed-world allowlist, so a `not`-wrapped
+ * exclusion was misclassified as "the spec names an explicit id set", which then
+ * (positiveIdCohortIds correctly returning null for a not-wrapped leaf — it isn't
+ * a bare/all-nested positive leaf) hit the fully-conservative "id constraint
+ * exists but its exact set can't be safely extracted" branch and skipped tier 3
+ * ENTIRELY — a whole issue-family fleet (10 members) silently starved with a
+ * genuinely wide-open, unbounded issue lane sitting right there. Nothing under a
+ * `not` can EVER express a positive closed-world identity set — by definition its
+ * negation is an open-world exclusion — so a leaf reached via `not` must never
+ * count here, regardless of the leaf's own op.
  */
 function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
   if (!filter) return false;
@@ -456,7 +473,10 @@ function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
     if (isLeaf(node)) return node.field === 'id' && (node.op === '=' || node.op === 'in');
     if ('all' in node) return node.all.some(walk);
     if ('any' in node) return node.any.some(walk);
-    return walk(node.not);
+    // A `not` is a negation of whatever it wraps — even a bare `{field:'id',
+    // op:'in'}` inside it is an EXCLUSION (id NOT IN [...]), never a positive
+    // closed-world allowlist. Do not recurse into it as if it were unnegated.
+    return false;
   }
   return walk(filter);
 }
