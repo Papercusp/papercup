@@ -41,13 +41,17 @@ import {
 import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskChoiceCard';
 
 /** Action ids that open a sub-surface rather than answering the item. The
- *  component handles these; `resolveAttentionAction` ignores them. */
+ *  component handles these; `resolveAttentionAction` ignores them. An id
+ *  missing from this set is dispatched as a TERMINAL submit, so every
+ *  navigate-style action the adapters emit MUST be listed — omitting
+ *  `discuss` made the Discuss button resolve real escalations (EI-13037). */
 export const NAVIGATE_ACTION_IDS: ReadonlySet<AttentionActionId> = new Set<AttentionActionId>([
   'chat',
   'message-owner',
   'answer',
   'view-log',
   'open',
+  'discuss',
 ]);
 
 export function isNavigateAction(id: string): boolean {
@@ -151,8 +155,13 @@ export async function resolveAttentionAction(
   const ref = item.ref as { kind: string };
 
   if (ref.kind === 'coord-escalation') {
-    // optionId is a named escalation option id, or the generic resolve fallback.
+    // Resolve ONLY a named escalation option id, or the generic resolve
+    // action itself. Any other id (a future navigate action missing from
+    // NAVIGATE_ACTION_IDS, a typo'd adapter id) must NOT fall through to a
+    // generic resolve — that silently closes a real owner gate (the Discuss
+    // incident, EI-13037).
     const named = escalationOptions(item).some((o) => o.id === optionId);
+    if (!named && optionId !== 'resolve' && optionId !== 'mark-done') return { resolved: false };
     const choice = named ? optionId : 'resolved';
     const res = await resolveEscalation({ msg_id: refField(item, 'msgId'), choice });
     if (res?.error) throw new Error(res.error);

@@ -176,6 +176,19 @@ describe('attentionItemToCardSpec (P-010)', () => {
     expect(byId(spec, 'resolve').terminal).toBeUndefined();
   });
 
+  it('discuss is a NAVIGATE option (terminal:false) — a terminal dispatch here resolved a real escalation (EI-13037)', () => {
+    const spec = attentionItemToCardSpec(
+      item({
+        kind: 'coord-escalation',
+        status: 'open',
+        actions: [{ id: 'resolve', label: 'Resolve', primary: true }, { id: 'discuss', label: 'Discuss' }],
+        ref: { kind: 'coord-escalation', msgId: 'm1', options: [{ id: 'authorize', label: 'Authorize' }, { id: 'stop', label: 'Stop' }] },
+      }),
+    );
+    expect(ids(spec)).toEqual(['authorize', 'stop', 'discuss']);
+    expect(byId(spec, 'discuss').terminal).toBe(false);
+  });
+
   it('needs-human plan item: Answer + Drop survive (the P-009/P-010 gap)', () => {
     const spec = attentionItemToCardSpec(needsHuman);
     expect(ids(spec)).toEqual(['answer', 'mark-done', 'drop', 'chat']);
@@ -247,6 +260,18 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
     const r = await resolveAttentionAction(escWithOptions, 'retry');
     expect(resolveEscalation).toHaveBeenCalledWith({ msg_id: 'm1', choice: 'retry' });
     expect(r.resolved).toBe(true);
+  });
+
+  it('escalation Discuss / unknown option ids NEVER resolve — no generic-"resolved" fallthrough (EI-13037)', async () => {
+    // The incident: 'discuss' was missing from NAVIGATE_ACTION_IDS, dispatched
+    // as a terminal submit, and the old fallthrough mapped ANY unknown id to
+    // choice:'resolved' — silently closing a real owner-authority escalation.
+    // Both layers are pinned: the dispatcher must refuse ids it doesn't know.
+    for (const optionId of ['discuss', 'not-a-real-option']) {
+      const r = await resolveAttentionAction(escWithOptions, optionId);
+      expect(r.resolved).toBe(false);
+    }
+    expect(resolveEscalation).not.toHaveBeenCalled();
   });
 
   it('escalation with no options → choice "resolved"', async () => {

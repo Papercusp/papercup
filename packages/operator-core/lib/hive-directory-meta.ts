@@ -30,6 +30,12 @@ export async function getOwnedHiveMeta(potId: string, workspaceId?: string): Pro
 
 /** Create or update a hive's directory metadata (the create/edit write). */
 export async function saveOwnedHiveMeta(meta: HiveDirectoryMeta, workspaceId?: string): Promise<void> {
+  if (!meta.potId || typeof meta.potId !== 'string') {
+    // A missing potId stores the entry under the literal key "undefined"; every
+    // boot then tries to wire hive "undefined" and fires the owner-key-missing
+    // alarm forever (observed live 2026-07-16, cross-hive-boot).
+    throw new Error(`saveOwnedHiveMeta: meta.potId is required (got ${JSON.stringify(meta.potId)})`);
+  }
   if (meta.visibility === 'invite' && !meta.inviteSecret) {
     throw new Error(`saveOwnedHiveMeta: hive ${meta.potId} is invite-visibility but has no inviteSecret`);
   }

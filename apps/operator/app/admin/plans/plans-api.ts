@@ -177,6 +177,7 @@ export type AttentionActionId =
   | 'view-log'
   | 'open'
   | 'ack'
+  | 'discuss'
   // B-14 / D-027 follow-on (1): inline disposition for the folded kinds
   // (standing-approval grant/dismiss). Mirrors AttentionActionId in
   // operator-core/lib/attention/types.ts — keep in sync.
