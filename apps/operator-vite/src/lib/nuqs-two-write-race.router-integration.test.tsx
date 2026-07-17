@@ -78,15 +78,17 @@ describe('nuqs custom-adapter multi-key write (CreateHarnessPicker close regress
     expect(window.location.search).not.toContain('step=');
   });
 
-  it('two SEPARATE same-tick setters CLOBBER (documents why the picker must not do this)', async () => {
+  it('two SEPARATE same-tick setters now BOTH land (WI-3499 adapter fix made separate multi-key removals safe)', async () => {
     mountAt('/?open=true&step=github', <TwoSeparateHooks />);
     await waitFor(() => expect(window.location.search).toContain('open=true'));
     fireEvent.click(screen.getByTestId('close'));
     await new Promise((r) => setTimeout(r, 60));
-    // ?step cleared but ?open SURVIVES — the exact stuck-modal failure mode. If a
-    // future adapter change makes separate writes safe, this flips and we can
-    // simplify the picker; until then, the single-useQueryStates pattern is required.
+    // BOTH keys clear — WI-3499's fix (unfiltered snapshot + wholesale updateUrl
+    // rebuild) made two separate same-tick removals safe. Before the fix ?open
+    // SURVIVED here (the stuck-modal bug); these assertions now GUARD that the
+    // clobber cannot return. The single-useQueryStates pattern above is still
+    // preferred (one navigate) but no longer required for correctness.
     expect(window.location.search).not.toContain('step=');
-    expect(window.location.search).toContain('open=true');
+    expect(window.location.search).not.toContain('open=true');
   });
 });
