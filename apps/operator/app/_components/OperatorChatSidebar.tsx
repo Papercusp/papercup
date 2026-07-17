@@ -862,7 +862,7 @@ const OP_CHAT_SIDEBAR_CSS = `
    and let their labels go — the three original faces keep theirs.
 
    The 860px threshold is MEASURED, not guessed (WI-5162, in the Tauri shell at
-   1280x800). Label widths by sidebar width, `potLabel:wordmark:fleetLabel`:
+   1280x800). Label widths by sidebar width, potLabel:wordmark:fleetLabel:
        360→0:0:0   460→0:0:0   560→4:2:0   700→37:35:15   900→65:62:32
    i.e. this row is ALREADY over-subscribed before these two faces exist: at the
    360px default the "Pot Health" label (WI-4789) and the Papercup wordmark

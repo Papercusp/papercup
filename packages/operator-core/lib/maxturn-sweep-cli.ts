@@ -25,7 +25,13 @@
  *   tsx maxturn-sweep-cli.ts --repeats 3 --execute
  *
  * Flags: --execute | --full | --repeats <n> | --session-class <ornith-drone|
- *        gateway-claude-drone|interactive> | --target-tokens <n>
+ *        gateway-claude-drone|interactive> | --target-tokens <n> | --out <file>
+ *
+ * With --full, --session-class / --target-tokens NARROW the matrix (the chunking
+ * lever: run a multi-hour campaign class-by-class instead of one un-resumable
+ * shot); a filter matching nothing fails loud instead of widening. --out <file>
+ * appends each driven cell as JSONL the moment it resolves, so a killed campaign
+ * keeps every completed cell.
  *
  * The canary default cell (no --full): the SMALLEST maxTurn target
  * (DEFAULT_MAXTURN_TARGETS_TOKENS[0], currently 2K), ornith-drone (the
@@ -75,6 +81,27 @@ function valueOf(argv: string[], flag: string): string | undefined {
   return i >= 0 ? argv[i + 1] : undefined;
 }
 
+/** Build the `--full` matrix axes, optionally NARROWED by --session-class /
+ *  --target-tokens (the chunking lever a multi-hour campaign runs class-by-class
+ *  instead of as one un-resumable 189-cell shot). Pure. Returns null on a filter
+ *  that matches nothing — a typo'd class must fail loud, never silently widen to
+ *  the whole matrix's spend. */
+export function fullAxes(opts: { sessionClass?: SweepSessionClass; targetTokens?: number } = {}): SweepAxes | null {
+  const sessionClasses = opts.sessionClass
+    ? DEFAULT_SESSION_CLASSES.filter((c) => c.sessionClass === opts.sessionClass)
+    : DEFAULT_SESSION_CLASSES;
+  const maxTurnTargetsTokens = opts.targetTokens != null
+    ? DEFAULT_MAXTURN_TARGETS_TOKENS.filter((t) => t === opts.targetTokens)
+    : DEFAULT_MAXTURN_TARGETS_TOKENS;
+  if (sessionClasses.length === 0 || maxTurnTargetsTokens.length === 0) return null;
+  return {
+    maxTurnTargetsTokens,
+    sessionClasses,
+    doorSplitVariants: DEFAULT_DOOR_SPLIT_VARIANTS,
+    tasks: DEFAULT_BENCHMARK_TASKS,
+  };
+}
+
 /** Build the bounded single-cell axes the canary default runs (before ever
  *  reaching for `--full`'s whole matrix). Pure. */
 export function canaryAxes(opts: { sessionClass?: SweepSessionClass; targetTokens?: number } = {}): SweepAxes {
@@ -102,8 +129,20 @@ export async function main(deps: MaxTurnSweepCliDeps = {}): Promise<number> {
   const sessionClass = valueOf(argv, '--session-class') as SweepSessionClass | undefined;
   const targetTokensRaw = valueOf(argv, '--target-tokens');
   const targetTokens = targetTokensRaw != null ? Number(targetTokensRaw) : undefined;
+  const outFile = valueOf(argv, '--out');
 
-  const axes = full ? DEFAULT_SWEEP_AXES : canaryAxes({ sessionClass, targetTokens });
+  const axes = full ? fullAxes({ sessionClass, targetTokens }) : canaryAxes({ sessionClass, targetTokens });
+  if (axes === null) {
+    out(
+      JSON.stringify({
+        mode: 'error',
+        error: `--full filter matched nothing (session-class=${sessionClass ?? '*'}, target-tokens=${targetTokens ?? '*'}) — refusing to widen to the whole matrix`,
+        knownSessionClasses: DEFAULT_SESSION_CLASSES.map((c) => c.sessionClass),
+        knownTargetsTokens: DEFAULT_MAXTURN_TARGETS_TOKENS,
+      }),
+    );
+    return 1;
+  }
 
   if (!execute) {
     // PLAN ONLY — assemble + print the matrix; spends nothing, spawns nothing.
@@ -126,7 +165,15 @@ export async function main(deps: MaxTurnSweepCliDeps = {}): Promise<number> {
   }
 
   const driver = makeDriver();
-  const result: SweepRunResult = await runSweep({ axes, armed: true, driver, repeats });
+  // --out <file>: append each DRIVEN cell as one JSONL row the moment it resolves, so a
+  // killed multi-hour campaign keeps every completed cell (score later from the file).
+  const onCell = outFile
+    ? async (r: unknown) => {
+        const { appendFile } = await import('node:fs/promises');
+        await appendFile(outFile, `${JSON.stringify(r)}\n`);
+      }
+    : undefined;
+  const result: SweepRunResult = await runSweep({ axes, armed: true, driver, repeats, onCell });
   const report: SweepScoreReport = score(result.results);
   out(
     JSON.stringify(

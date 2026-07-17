@@ -10,10 +10,13 @@
  * maxTurn target on the cheapest (ornith-drone) class.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { main, canaryAxes } from './maxturn-sweep-cli';
+import { main, canaryAxes, fullAxes } from './maxturn-sweep-cli';
 import {
   DEFAULT_MAXTURN_TARGETS_TOKENS,
   DEFAULT_SWEEP_AXES,
+  DEFAULT_SESSION_CLASSES,
+  DEFAULT_DOOR_SPLIT_VARIANTS,
+  DEFAULT_BENCHMARK_TASKS,
   emptyCellMetrics,
   type CellResult,
   type RunSweepInput,
@@ -95,6 +98,44 @@ describe('main() — plan-only default (no --execute)', () => {
   });
 });
 
+describe('fullAxes — --full narrowed by --session-class / --target-tokens', () => {
+  it('unfiltered = the whole default matrix axes', () => {
+    expect(fullAxes()).toMatchObject({
+      maxTurnTargetsTokens: DEFAULT_MAXTURN_TARGETS_TOKENS,
+      doorSplitVariants: DEFAULT_DOOR_SPLIT_VARIANTS,
+      tasks: DEFAULT_BENCHMARK_TASKS,
+    });
+    expect(fullAxes()?.sessionClasses).toHaveLength(DEFAULT_SESSION_CLASSES.length);
+  });
+
+  it('a session-class filter narrows to that one class, keeping every other axis full', () => {
+    const axes = fullAxes({ sessionClass: 'interactive' });
+    expect(axes?.sessionClasses.map((c) => c.sessionClass)).toEqual(['interactive']);
+    expect(axes?.maxTurnTargetsTokens).toEqual(DEFAULT_MAXTURN_TARGETS_TOKENS);
+  });
+
+  it('a filter matching nothing returns null — never silently the whole matrix', () => {
+    expect(fullAxes({ sessionClass: 'typo-class' as never })).toBeNull();
+    expect(fullAxes({ targetTokens: 12_345 })).toBeNull();
+  });
+
+  it('main() fails loud (exit 1, mode:error) on an unmatched --full filter without building a driver', async () => {
+    const runSweep = vi.fn();
+    const makeDriver = vi.fn();
+    const out = vi.fn();
+    const code = await main({
+      argv: ['--full', '--execute', '--session-class', 'typo-class'],
+      runSweep: runSweep as never,
+      makeDriver: makeDriver as never,
+      out,
+    });
+    expect(code).toBe(1);
+    expect(runSweep).not.toHaveBeenCalled();
+    expect(makeDriver).not.toHaveBeenCalled();
+    expect(JSON.parse(out.mock.calls[0][0] as string).mode).toBe('error');
+  });
+});
+
 describe('main() — --execute arms the live driver', () => {
   it('builds the driver, arms the sweep, and scores the results', async () => {
     const cellResult: CellResult = {
@@ -135,6 +176,40 @@ describe('main() — --execute arms the live driver', () => {
       out: vi.fn(),
     });
     expect(code).toBe(1);
+  });
+
+  it('--out <file> composes an onCell that appends each driven cell as JSONL', async () => {
+    const { mkdtemp, readFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const outFile = join(await mkdtemp(join(tmpdir(), 'sweep-cli-out-')), 'cells.jsonl');
+
+    const cellResult: CellResult = {
+      cellId: 'ornith-drone__mt2k__baked__drain',
+      cell: {} as never,
+      config: {} as never,
+      repeats: 1,
+      status: 'ok',
+      metrics: { ...emptyCellMetrics(), taskSuccessRate: 1 },
+    };
+    const runSweep = vi.fn(async (input: RunSweepInput) => {
+      expect(typeof input.onCell).toBe('function');
+      await input.onCell!(cellResult);
+      await input.onCell!({ ...cellResult, cellId: 'second-cell', status: 'error' });
+      return stubSweepResult({ ran: true, results: [cellResult], reachableCount: 1 });
+    });
+    const code = await main({
+      argv: ['--execute', '--out', outFile],
+      runSweep,
+      makeDriver: vi.fn(() => vi.fn() as never),
+      score: vi.fn(() => stubReport()),
+      out: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const rows = (await readFile(outFile, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows).toHaveLength(2);
+    expect(rows[0].cellId).toBe('ornith-drone__mt2k__baked__drain');
+    expect(rows[1]).toMatchObject({ cellId: 'second-cell', status: 'error' });
   });
 
   it('--repeats <n> is threaded through to runSweep', async () => {

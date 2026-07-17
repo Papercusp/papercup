@@ -324,6 +324,10 @@ export interface RunSweepInput {
   armed?: boolean;
   /** When armed, skip cells the config surface cannot realize (the 100K point). Default true. */
   onlyReachable?: boolean;
+  /** Incremental per-DRIVEN-cell observer (fires after each ok/error cell resolves) — lets a
+   *  multi-hour campaign persist completed cells as it goes instead of only at the end.
+   *  Fail-soft: an observer throw never fails the sweep. Staged cells do not fire it. */
+  onCell?: (result: CellResult) => void | Promise<void>;
   now?: () => number;
 }
 
@@ -387,6 +391,13 @@ export async function runMaxTurnSweep(input: RunSweepInput = {}): Promise<SweepR
     } catch (err) {
       ran = true; // an attempt was made; the sweep stays soft and moves on
       results.push({ ...base, status: 'error', metrics: emptyCellMetrics(), note: err instanceof Error ? err.message : String(err) });
+    }
+    if (input.onCell) {
+      try {
+        await input.onCell(results[results.length - 1]);
+      } catch {
+        // observer faults never fail the sweep
+      }
     }
   }
 

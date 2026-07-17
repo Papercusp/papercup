@@ -1013,6 +1013,130 @@ describe('AdvConversationsTab — unified communication views', () => {
   });
 });
 
+// ─── P-008 stress regressions (conversations-sync-migration-and-app-audit-2026-07-11) ──
+//
+// WI-4142 differential (D-001) left one hypothesis UNCONFIRMED: does
+// composeUnifiedConversationRows's global re-sort on every single-source
+// invalidation cause rows from OTHER, unchanged sources to visibly reshuffle
+// more often than a single-source list ever would? These regressions confirm
+// or refute it deterministically (no timers, no flakiness), plus cover the
+// three other P-008 targets: rapid cross-source selection, row/DOM identity
+// continuity across invalidations, and no request-storm on selection.
+describe('AdvConversationsTab — P-008 stress regressions', () => {
+  it('repeated invalidation of one source does not reorder or change the identity of unrelated rows (reorder-churn hypothesis: REFUTED)', () => {
+    const deliberation = {
+      thread_id: 'th-static', parent_kind: 'issue', parent_ref: 'WI-1', title: 'static deliberation',
+      created_by: 'architect', harness_slug: 'papercusp', created_at: TS(10), last_post_at: TS(10), post_count: 1,
+    };
+    const message = {
+      id: 'msg-static', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
+      kind: 'handoff', subject: 'static message', body: 'unchanged', status: 'delivered',
+      created_at: TS(5), from_feature_id: null, to_feature_id: null,
+    };
+    // A newly-arriving question is always the most recent row (TS(1)), so the
+    // unrelated pair's relative order — message (TS5) ahead of deliberation
+    // (TS10) — is the only thing under test across every recompute below.
+    for (let i = 0; i < 20; i += 1) {
+      const questions = [{
+        id: `q-${i}`, kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
+        title: `live question ${i}`, asker_id: 'oracle', topics: [], promoted_issue_id: null,
+        created_ts: TS(1), updated_ts: TS(1),
+      }];
+      // A brand-new array reference each pass, as a real background refetch hands back.
+      const rows = composeUnifiedConversationRows(questions, [deliberation], [], [message], 50);
+      expect(rows.map((row) => row.id)).toEqual(['threads:' + `q-${i}`, 'messages:msg-static', 'deliberations:th-static']);
+    }
+  });
+
+  it('a genuine timestamp change on one row moves only that row, leaving other rows in their prior relative order', () => {
+    const oldest = { thread_id: 'th-a', parent_kind: null, parent_ref: null, title: 'a', created_by: 'architect', harness_slug: 'papercusp', created_at: TS(30), last_post_at: TS(30), post_count: 1 };
+    const middle = { thread_id: 'th-b', parent_kind: null, parent_ref: null, title: 'b', created_by: 'architect', harness_slug: 'papercusp', created_at: TS(20), last_post_at: TS(20), post_count: 1 };
+    const newest = { thread_id: 'th-c', parent_kind: null, parent_ref: null, title: 'c', created_by: 'architect', harness_slug: 'papercusp', created_at: TS(10), last_post_at: TS(10), post_count: 1 };
+
+    const before = composeUnifiedConversationRows([], [oldest, middle, newest], [], [], 50);
+    expect(before.map((row) => row.sourceId)).toEqual(['th-c', 'th-b', 'th-a']);
+
+    // th-a gets a fresh reply and jumps to the front; th-b/th-c are untouched
+    // and must keep their relative order (b before c) even though the array
+    // position shifted underneath them.
+    const afterOldestUpdated = { ...oldest, last_post_at: TS(0.1) };
+    const after = composeUnifiedConversationRows([], [afterOldestUpdated, middle, newest], [], [], 50);
+    expect(after.map((row) => row.sourceId)).toEqual(['th-a', 'th-c', 'th-b']);
+  });
+
+  it('resolves to exactly the final selection after a rapid multi-source selection burst, never a stale cross-source flash', async () => {
+    nuqsState.conv = 'threads';
+    nuqsState.conversation = 'c-1'; // beforeEach fixture: "why does the watchdog recycle the host?"
+    syncResults['conversations.deliberationList'] = ready([{
+      thread_id: 'th-x', parent_kind: null, parent_ref: null, title: 'deliberation detail row',
+      created_by: 'architect', harness_slug: 'papercusp', created_at: TS(2), last_post_at: TS(2), post_count: 1,
+    }]);
+    syncResults[syncKey('conversations.deliberationDetail', { id: 'th-x' })] = ready([{
+      thread: { thread_id: 'th-x', title: 'deliberation detail row', parent_kind: null, parent_ref: null, created_by: null, harness_slug: null, created_at: TS(2), last_post_at: null, post_count: 1 },
+      posts: [{ id: 1, author_id: 'architect', body: 'deliberation body', created_at: TS(2), harness_slug: null }],
+    }]);
+    syncResults['conversations.agentChatList'] = ready([{
+      id: 'chat-x', harness_slug: 'papercusp', role: 'worker', feature_id: null, title: 'agent chat detail row',
+      created_at: Date.now(), archived_at: Date.now(), total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 1,
+    }]);
+    syncResults[syncKey('conversations.agentChatDetail', { id: 'chat-x' })] = ready([{
+      id: 'chat-x', harness_slug: null, role: 'worker', feature_id: null, title: 'chat-x', created_at: Date.now(), archived_at: Date.now(),
+      total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 1, transcript: [{ role: 'assistant', content: 'chat body' }],
+    }]);
+
+    const { rerender } = render(<AdvConversationsTab />);
+    expect(await screen.findByRole('heading', { name: 'why does the watchdog recycle the host?' })).toBeTruthy();
+
+    // Rapid burst: thread -> deliberation -> agent chat -> back to thread,
+    // without awaiting each detail query's settle — a user double/triple
+    // clicking through the rail faster than a per-id fetch can resolve.
+    nuqsState.conv = 'deliberations'; nuqsState.conversation = null; nuqsState.thread = 'th-x';
+    rerender(<AdvConversationsTab />);
+    nuqsState.conv = 'agentchats'; nuqsState.thread = null; nuqsState.chat = 'chat-x';
+    rerender(<AdvConversationsTab />);
+    nuqsState.conv = 'threads'; nuqsState.chat = null; nuqsState.conversation = 'c-1';
+    rerender(<AdvConversationsTab />);
+
+    expect(await screen.findByRole('heading', { name: 'why does the watchdog recycle the host?' })).toBeTruthy();
+    expect(screen.queryByText('deliberation body')).toBeNull();
+    expect(screen.queryByText('chat body')).toBeNull();
+  });
+
+  it('keeps the same DOM row node across repeated unrelated-source invalidations (no remount flash)', () => {
+    const { rerender } = render(<AdvConversationsTab />);
+    const before = screen.getByRole('button', { name: 'Open pick up the UI work' });
+    for (let i = 0; i < 5; i += 1) {
+      // A brand-new array reference each pass (as a real background refetch
+      // hands back), for an UNRELATED source — the messages row's own data
+      // never changes, so its DOM node (keyed by conversation identity) must
+      // survive every invalidation rather than being torn down and remounted.
+      syncResults['conversations.deliberationList'] = ready([{
+        thread_id: `th-churn-${i}`, parent_kind: 'issue', parent_ref: `WI-${i}`, title: `churn ${i}`,
+        created_by: 'architect', harness_slug: 'papercusp', created_at: TS(1), last_post_at: TS(1), post_count: 1,
+      }]);
+      rerender(<AdvConversationsTab />);
+    }
+    const after = screen.getByRole('button', { name: 'Open pick up the UI work' });
+    expect(after).toBe(before);
+  });
+
+  it('a rapid selection burst never triggers a list refetch on any source (no request storm)', () => {
+    const invalidateQuestions = vi.fn();
+    const invalidateMessages = vi.fn();
+    syncResults['conversations.questionsList'] = { ...(syncResults['conversations.questionsList'] as Record<string, unknown>), invalidate: invalidateQuestions };
+    syncResults['conversations.messageList'] = { ...(syncResults['conversations.messageList'] as Record<string, unknown>), invalidate: invalidateMessages };
+
+    const { rerender } = render(<AdvConversationsTab />);
+    for (let i = 0; i < 10; i += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'Open pick up the UI work' }));
+      rerender(<AdvConversationsTab />);
+    }
+
+    expect(invalidateQuestions).not.toHaveBeenCalled();
+    expect(invalidateMessages).not.toHaveBeenCalled();
+  });
+});
+
 // ─── picker-kit adoption — the shared Create⇄Conversations visual vocabulary ──────
 //
 // adopt-picker-kit-in-conversations: the tab adopts the shared picker-kit

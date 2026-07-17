@@ -159,7 +159,9 @@ export interface BootstrapPapercuspHiveDeps {
   loadRegistry?: (
     ws: string,
     opts?: { fresh?: boolean },
-  ) => Promise<{ projects: Array<{ slug: string; path?: string; self_repo?: boolean }> }>;
+  ) => Promise<{
+    projects: Array<{ slug: string; path?: string; self_repo?: boolean; remote_hive?: boolean }>;
+  }>;
   clone?: typeof cloneGithubRepo;
   ensureHive?: typeof ensurePapercuspHive;
   /** Make `ws` the active/home workspace (so the hive is visible). */
@@ -966,7 +968,16 @@ export async function bootstrapPapercuspHive(
       const ownEntry = (
         await loadRegistry(PAPERCUSP_WORKSPACE_ID, { fresh: true }).catch(() => null)
       )?.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG);
-      if (ownEntry?.self_repo) {
+      // WI-5165: `self_repo` ALONE is not "owner checkout" — a SELF-ADMITTED canonical
+      // entry also carries self_repo (EI-8793 stamps it for git-sync eligibility) but is
+      // remote_hive:true. On a packaged install, a PEER process (a request-only env
+      // sidecar racing this same bootstrap) can win the self-admit and register that
+      // entry while being FORBIDDEN from booting the substrate itself — skipping here on
+      // its debris left the pot a permanent empty shell. Only a self_repo entry that is
+      // NOT a remote hive is the owner dev checkout this guard exists for; re-admitting
+      // a remote_hive entry is an idempotent upsert and MUST proceed so THIS process
+      // runs the substrate boot below.
+      if (ownEntry?.self_repo && !ownEntry.remote_hive) {
         setHome(PAPERCUSP_WORKSPACE_ID);
         record('clone', 'done', { detail: 'self-admit skipped: owner self_repo checkout present' });
         record('submodules', 'done');

@@ -119,6 +119,39 @@ export const DRAIN_PASS_TIMEOUT_MS = 120_000;
 export const DRAIN_BACKLOG_STALL_MS = 10 * 60 * 1000;
 
 /**
+ * WI-5147 (EI-13571): backlog-AGE/SIZE alert — PROGRESS-INDEPENDENT, unlike
+ * `DRAIN_BACKLOG_STALL_MS` above. That detector only escalates when the drain
+ * makes ZERO forward progress for the whole window; a backlog that is ALWAYS
+ * making *some* progress — however pathologically slow relative to its size —
+ * never trips it, and can silently starve new content for days to weeks with
+ * nobody paged. That is the exact live incident this was filed on: a papercusp
+ * harness backlog of 7351 rows, oldest 3 WEEKS old, drained at ~2 rows/min the
+ * whole time (steady but nowhere near enough) and went completely undetected
+ * until an agent doing a live federation witness happened to notice their own
+ * queued write wasn't landing.
+ *
+ * This detector reads the oldest-undrained-row AGE and the undrained COUNT
+ * directly from `substrate_outbox` (not the since-last-progress clock), so it
+ * fires independently of whether the drain is "moving". Either threshold alone
+ * is sufficient to escalate (a huge backlog of fresh rows during a legitimate
+ * bulk catch-up is fine; an old backlog that never shrinks below the size floor
+ * is not). 1h / 2000 rows are generous relative to a normal catch-up (a process
+ * restart draining a few minutes' worth of backlog clears well under both) but
+ * far tighter than "three weeks unnoticed".
+ */
+export const DRAIN_BACKLOG_AGE_STALL_MS = 60 * 60 * 1000;
+
+/** Undrained-row-count threshold for the same detector — see
+ *  `DRAIN_BACKLOG_AGE_STALL_MS`'s doc-comment. Either threshold alone escalates. */
+export const DRAIN_BACKLOG_SIZE_STALL_THRESHOLD = 2000;
+
+/** How often the backlog-age/size probe runs (throttled — it's a cheap read, but
+ *  no need to run it every single pass). Mirrors `DRAIN_ORPHAN_CHECK_INTERVAL_MS`'s
+ *  cadence: run once at boot (the moment a stale backlog is detectable) and then
+ *  at most this often. */
+export const DRAIN_BACKLOG_AGE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
  * WI-2136 (orphan-tail recurrence guard): the lookback window for the orphan-tail
  * detector. It only considers rows drained within this window into a PRIOR-era
  * own-log key. Set to the inline-GC horizon (24h) — a still-present drained row is
@@ -638,6 +671,17 @@ export interface StartDrainOptions {
   /** Test seam: override the no-forward-progress backlog-stall window
    *  (`DRAIN_BACKLOG_STALL_MS`). 0 disables the backlog detector. Production omits it. */
   _backlogStallMs?: number;
+  /** Test seam (WI-5147): override the backlog-AGE threshold
+   *  (`DRAIN_BACKLOG_AGE_STALL_MS`). `<= 0` disables the age leg (size can still
+   *  fire alone). Production omits it. */
+  _backlogAgeStallMs?: number;
+  /** Test seam (WI-5147): override the backlog-SIZE threshold
+   *  (`DRAIN_BACKLOG_SIZE_STALL_THRESHOLD`). `<= 0` disables the size leg (age can
+   *  still fire alone). Production omits it. */
+  _backlogSizeStallThreshold?: number;
+  /** Test seam (WI-5147): override the age/size probe throttle
+   *  (`DRAIN_BACKLOG_AGE_CHECK_INTERVAL_MS`). Production omits it. */
+  _backlogAgeCheckIntervalMs?: number;
   /** Test seam (WI-2136): override the orphan-tail lookback window
    *  (`DRAIN_ORPHAN_LOOKBACK_MS`). Production omits it. */
   _orphanLookbackMs?: number;
@@ -675,11 +719,16 @@ export interface StartDrainOptions {
   /** Test seam: intercept ALL detector escalations (default = durable EI via
    *  `fileReplicationStallEi`). Receives the human detail + the episode `kind`
    *  ('drain_stalled' hung-pass | 'drain_backlog_stalled' no-progress |
-   *  'drain_orphan_tail' prior-era log | 'drain_row_quarantined' poison row).
-   *  Production omits it. */
+   *  'drain_backlog_aged' pathologically-slow-but-progressing | 'drain_orphan_tail'
+   *  prior-era log | 'drain_row_quarantined' poison row). Production omits it. */
   _onStallEpisode?: (
     detail: string,
-    kind?: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail' | 'drain_row_quarantined',
+    kind?:
+      | 'drain_stalled'
+      | 'drain_backlog_stalled'
+      | 'drain_backlog_aged'
+      | 'drain_orphan_tail'
+      | 'drain_row_quarantined',
   ) => void;
 }
 
@@ -758,6 +807,16 @@ export function startOutboxDrain(
   let lastProgressAt = Date.now();
   let backlogStallEscalated = false;
 
+  // WI-5147 backlog-age/size detector state (progress-INDEPENDENT — see
+  // `DRAIN_BACKLOG_AGE_STALL_MS`'s doc-comment). `lastBacklogAgeCheckAt` throttles
+  // the probe; `backlogAgeEscalated` edge-triggers ONCE per episode and clears the
+  // moment BOTH thresholds recover, so a later re-breach re-escalates.
+  const backlogAgeStallMs = opts._backlogAgeStallMs ?? DRAIN_BACKLOG_AGE_STALL_MS;
+  const backlogSizeStallThreshold = opts._backlogSizeStallThreshold ?? DRAIN_BACKLOG_SIZE_STALL_THRESHOLD;
+  const backlogAgeCheckIntervalMs = opts._backlogAgeCheckIntervalMs ?? DRAIN_BACKLOG_AGE_CHECK_INTERVAL_MS;
+  let lastBacklogAgeCheckAt = 0;
+  let backlogAgeEscalated = false;
+
   // WI-2136 orphan-tail detector state. `escalatedOrphanKeys` latches each dead
   // prior-era log key so it pages ONCE per process; `lastOrphanCheckAt` throttles
   // the check to `orphanCheckIntervalMs` (0 ⇒ never run yet → run on the first pass,
@@ -781,7 +840,12 @@ export function startOutboxDrain(
    *  (harness, log, kind) while one stays open). Best-effort — never throws into
    *  the drain loop. */
   const escalateStall = (
-    kind: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail' | 'drain_row_quarantined',
+    kind:
+      | 'drain_stalled'
+      | 'drain_backlog_stalled'
+      | 'drain_backlog_aged'
+      | 'drain_orphan_tail'
+      | 'drain_row_quarantined',
     detail: string,
     stalledForMs: number,
     // WI-2136: the log key the EI dedups on. Defaults to the LIVE own-log key
@@ -845,6 +909,75 @@ export function startOutboxDrain(
           `[epoch key never arrived — WI-2003 divergence] or a persistent append fault). Local writes are ` +
           `NOT federating; the ${pollMs}ms poll keeps re-attempting.`,
         stalledForMs,
+      );
+    } catch {
+      // best-effort observability — the drain's own liveness must not depend on it
+    }
+  }
+
+  /**
+   * WI-5147 (EI-13571): escalate when the backlog is old/large enough to be
+   * pathological EVEN THOUGH the drain is making forward progress — the class
+   * `maybeEscalateBacklogStall` above cannot see (that one only fires on ZERO
+   * progress). Reads the oldest-undrained-row age + undrained count directly
+   * (not the since-last-progress clock), so it fires regardless of whether the
+   * drain is "moving". Throttled (cheap read, but no need every pass) and
+   * edge-triggered per episode — recovers (clears the latch) the moment BOTH
+   * thresholds are back under control, so a later re-breach re-escalates.
+   * Best-effort + read-only: a probe fault must never wedge the drain.
+   */
+  async function maybeEscalateBacklogAged(): Promise<void> {
+    if (stopped) return;
+    if (backlogAgeStallMs <= 0 && backlogSizeStallThreshold <= 0) return;
+    const nowT = Date.now();
+    if (lastBacklogAgeCheckAt !== 0 && nowT - lastBacklogAgeCheckAt < backlogAgeCheckIntervalMs) return;
+    lastBacklogAgeCheckAt = nowT;
+    try {
+      // Same forward-compat exclusion as the zero-progress detector: a row this
+      // build can't map is left undrained ON PURPOSE (a newer build federates
+      // it) — it must never count toward "pathological", only genuinely
+      // mappable undrained rows do.
+      const unknownTables = [...loggedUnknownTables];
+      const [row] = await pg<Array<{ undrained_count: string | number; oldest_ts: string | number | null }>>`
+        SELECT count(*)::bigint AS undrained_count, min(ts) AS oldest_ts
+          FROM harness_shared.substrate_outbox
+         WHERE workspace_id = ${handle.workspaceId}
+           AND harness_slug = ${handle.harnessSlug}
+           AND drained_at IS NULL
+           AND NOT (table_name = ANY(${unknownTables as string[]}::text[]))`;
+      const undrainedCount = row ? Number(row.undrained_count) : 0;
+      const oldestTs = row?.oldest_ts != null ? Number(row.oldest_ts) : null;
+      const oldestAgeMs = oldestTs != null ? Math.max(0, nowT - oldestTs) : 0;
+
+      const ageBreached = backlogAgeStallMs > 0 && oldestAgeMs >= backlogAgeStallMs;
+      const sizeBreached = backlogSizeStallThreshold > 0 && undrainedCount >= backlogSizeStallThreshold;
+
+      if (!ageBreached && !sizeBreached) {
+        backlogAgeEscalated = false; // recovered on both legs — a later re-breach re-escalates
+        return;
+      }
+      if (backlogAgeEscalated) return; // already paged for this episode
+
+      backlogAgeEscalated = true;
+      const reasons = [
+        ageBreached
+          ? `oldest undrained row is ${Math.round(oldestAgeMs / 60000)}min old (≥ ` +
+            `${Math.round(backlogAgeStallMs / 60000)}min threshold)`
+          : null,
+        sizeBreached
+          ? `${undrainedCount} undrained rows (≥ ${backlogSizeStallThreshold} threshold)`
+          : null,
+      ]
+        .filter((r): r is string => r !== null)
+        .join(' AND ');
+      escalateStall(
+        'drain_backlog_aged',
+        `outbox-drain for ${wantPayload} has a PATHOLOGICALLY SLOW backlog: ${reasons}. The drain IS ` +
+          `making SOME forward progress (this is NOT the 'drain_backlog_stalled' zero-progress case, which ` +
+          `never trips here) — it is simply far too slow relative to the backlog's age/size, and a ` +
+          `slowly-but-always-progressing backlog can otherwise go undetected indefinitely (WI-5147 class: a ` +
+          `papercusp harness backlog sat 3 weeks like this before anyone noticed).`,
+        oldestAgeMs,
       );
     } catch {
       // best-effort observability — the drain's own liveness must not depend on it
@@ -1049,6 +1182,10 @@ export function startOutboxDrain(
     // drain settles — reached on BOTH the normal and the throw (fast-fail) path,
     // so a pass that fails fast every time (the filed signature) is caught.
     if (!stopped && !anyProgress) await maybeEscalateBacklogStall();
+    // WI-5147: check the backlog age/size directly — independent of `anyProgress`
+    // (that's the entire point: this fires even while the drain IS progressing,
+    // just too slowly relative to the backlog).
+    if (!stopped) await maybeEscalateBacklogAged();
     // WI-2136: check for an orphaned prior-era drain tail (throttled; runs at boot
     // via the initial pass). Independent of drain progress — a perfectly healthy
     // draining process can still be sitting on a stranded tail from a prior era

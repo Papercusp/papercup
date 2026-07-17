@@ -43,6 +43,13 @@ export const REPLICATION_LIVENESS_TOPIC = 'replication-liveness';
  *     whole no-progress window while mapped undrained rows wait (the original filed
  *     silent-permanence signature the hung-pass watchdog does not cover); logKeyHex
  *     = the harness's LIVE own-log key;
+ *   - 'drain_backlog_aged' (WI-5147) — the backlog IS making forward progress (unlike
+ *     'drain_backlog_stalled' above) but is pathologically old/large regardless —
+ *     the oldest undrained row's age or the undrained count crossed its threshold.
+ *     Progress-independent by design: catches a backlog that crawls forward forever
+ *     without ever tripping the zero-progress detector (the WI-5147 filed signature:
+ *     a 3-week-old backlog went completely undetected this way); logKeyHex = the
+ *     harness's LIVE own-log key;
  *   - 'drain_orphan_tail' (WI-2136) — fed-scope rows were drained into a PRIOR-era
  *     own-log key that no longer matches the live log (the own-log keypair did not
  *     persist across a restart — WI-2105 class), so that era's unreplicated tail is
@@ -59,6 +66,7 @@ export type StallEiEpisode = Omit<ReplicationStallEpisode, 'kind'> & {
     | ReplicationStallEpisode['kind']
     | 'drain_stalled'
     | 'drain_backlog_stalled'
+    | 'drain_backlog_aged'
     | 'drain_orphan_tail'
     | 'drain_row_quarantined';
 };
@@ -73,6 +81,7 @@ export function replicationStallEiTitle(episode: {
     | 'connected_never_replicated'
     | 'drain_stalled'
     | 'drain_backlog_stalled'
+    | 'drain_backlog_aged'
     | 'drain_orphan_tail'
     | 'drain_row_quarantined';
 }): string {
@@ -116,6 +125,16 @@ function buildReplicationStallBody(episode: StallEiEpisode): string {
           'keeps re-attempting; this EI turns the otherwise silent console-spam into a durable page. ' +
           'Root-cause: check whether this device holds the current epoch key (hive_epoch_keys) and ' +
           'whether appends are landing on the own log.'
+        : episode.kind === 'drain_backlog_aged'
+        ? 'the OUTBOX DRAIN for this harness IS making forward progress (this is NOT the ' +
+          '\'drain_backlog_stalled\' zero-progress case) but the backlog is old/large enough to be ' +
+          'pathological regardless — the oldest undrained row\'s age or the undrained row count crossed ' +
+          'its threshold (WI-5147 class: a backlog that always crawls forward, however slowly, never trips ' +
+          'the zero-progress detector, and can silently starve new content for days to weeks with nobody ' +
+          'paged — this is the guard against exactly that). Root-cause: check current drain throughput ' +
+          '(is it degraded relative to normal — DB/CPU contention, an intermittent pass-timeout pattern) ' +
+          'and whether the backlog composition includes a mass-mutation sweep that should be coalesced ' +
+          'before hitting the outbox rather than one row per historical mutation.'
         : episode.kind === 'drain_row_quarantined'
         ? 'the OUTBOX DRAIN for this harness hit ONE row whose per-stage (epoch-encrypt / append) ' +
           'timeout recurred repeatedly for the SAME row id — that row always sorts first ' +
