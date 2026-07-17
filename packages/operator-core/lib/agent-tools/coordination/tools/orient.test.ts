@@ -140,6 +140,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'memory:search': () => ({ ok: true, results: [{ id: 'mem1', memory: 'prefers nuqs over useState', score: 0.9 }] }),
       'recipes:search': () => ({ ok: true, query: 'implement P-005', recipes: [{ id: 'fan-out-wi', title: 'Fan-out work items', description: 'd', runCount: 7, toolsUsed: ['work_items:get'], similarity: 0.82 }] }),
       'coord:declare-intent': () => ({ ok: true }),
+      // WI-5228: planSlug is passed below, so the new orient-first plan-now leg
+      // calls plans:get — register a benign empty-items response so this test
+      // (which doesn't assert on r.planNow) stays focused on the intent/recipes
+      // bootstrap it's actually testing.
+      'plans:get': () => ({ results: [{ now: { state: null, next: null }, items: [] }] }),
     });
     const r = await composeOrient(
       { intent: 'implement P-005', planSlug: 'tool-call-batching-wrappers-2026-06-21', planItems: ['P-005'], harness: 'h' },
