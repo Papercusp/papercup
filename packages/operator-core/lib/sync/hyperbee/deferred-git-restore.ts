@@ -160,7 +160,10 @@ export async function triggerDeferredGitRestore(
         log(`[seed] post-admission restore of ${entry.kind} store succeeded`);
       } else {
         stillDeferred.push(entry.kind);
-        log(`[seed] post-admission restore of ${entry.kind} store did not complete — cold-pathing`);
+        // Carry the per-store failure reason (WI-5179: it was dropped here, so the
+        // packaged install's 'gave up after retries' had no visible cause).
+        const reason = res.outcomes.find((o) => o.kind === entry.kind)?.reason;
+        log(`[seed] post-admission restore of ${entry.kind} store did not complete — cold-pathing${reason ? `: ${reason}` : ''}`);
       }
     } catch (e) {
       stillDeferred.push(entry.kind);

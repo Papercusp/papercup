@@ -21,8 +21,9 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -298,33 +299,42 @@ export function createGitSeedProvider(): SeedProvider {
         throw new Error('git seed is encrypted but no decryption key was provided (resolve it post-admission)');
       }
 
-      // Decrypt a bundle to a plaintext temp path (or return it as-is when
-      // unencrypted). git can only clone from a plaintext bundle.
+      // Decrypt a bundle to a plaintext temp path OUTSIDE the seed dir (or return
+      // it as-is when unencrypted). git can only clone from a plaintext bundle.
+      // ⚠ Never write into the seed dir itself: on a packaged install it is a
+      // root-owned read-only resource (/usr/lib/<Product>/seed — every offline
+      // restore EACCES'd there, WI-5179), and a private repo's plaintext must not
+      // persist at rest next to the installer payload anyway.
+      const decryptDir = index.encrypted ? await mkdtemp(join(tmpdir(), 'papercusp-seed-git-')) : null;
       const materialize = async (bundleRel: string): Promise<string> => {
         const sealedPath = join(seedPath, bundleRel);
-        if (!index.encrypted) return sealedPath;
+        if (!decryptDir) return sealedPath;
         const plain = openBytes(decryptionKey!, await readFile(sealedPath));
-        const outPath = join(seedPath, '.decrypted', bundleRel);
+        const outPath = join(decryptDir, bundleRel);
         await mkdir(dirname(outPath), { recursive: true });
         await writeFile(outPath, plain);
         return outPath;
       };
 
-      // Clone the superproject from its bundle (offline), then re-point origin.
-      await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(index.super), targetRepoDir], {
-        maxBuffer: GIT_MAX_BUFFER,
-      });
-      if (index.snapshot) await git(targetRepoDir, ['branch', '-M', 'main']);
-      if (origin) await git(targetRepoDir, ['remote', 'set-url', 'origin', origin]);
-
-      // Restore each submodule from its bundle into the submodule working path.
-      for (const sub of index.submodules) {
-        const subTarget = join(targetRepoDir, sub.path);
-        await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(sub.bundle), subTarget], {
+      try {
+        // Clone the superproject from its bundle (offline), then re-point origin.
+        await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(index.super), targetRepoDir], {
           maxBuffer: GIT_MAX_BUFFER,
         });
-        if (index.snapshot) await git(subTarget, ['branch', '-M', 'main']);
-        if (sub.url) await git(subTarget, ['remote', 'set-url', 'origin', sub.url]);
+        if (index.snapshot) await git(targetRepoDir, ['branch', '-M', 'main']);
+        if (origin) await git(targetRepoDir, ['remote', 'set-url', 'origin', origin]);
+
+        // Restore each submodule from its bundle into the submodule working path.
+        for (const sub of index.submodules) {
+          const subTarget = join(targetRepoDir, sub.path);
+          await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(sub.bundle), subTarget], {
+            maxBuffer: GIT_MAX_BUFFER,
+          });
+          if (index.snapshot) await git(subTarget, ['branch', '-M', 'main']);
+          if (sub.url) await git(subTarget, ['remote', 'set-url', 'origin', sub.url]);
+        }
+      } finally {
+        if (decryptDir) await rm(decryptDir, { recursive: true, force: true }).catch(() => {});
       }
     },
   };

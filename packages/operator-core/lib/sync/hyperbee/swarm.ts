@@ -58,6 +58,15 @@ export interface SwarmHandle {
   liveConnectionCount: number;
 }
 
+/** EI-13317: one topic's severed-link escalation event, carried by
+ *  {@link JoinHarnessSwarmOpts.onSeveredLink}. */
+export interface SeveredLinkInfo {
+  /** Hex topic that tripped the escalation. */
+  topicHex: string;
+  /** How long (ms) the topic had zero live peers before escalating. */
+  severedMs: number;
+}
+
 /** Snapshot of the shared swarm's peer-budget pressure at a near-cap crossing
  *  (P-004). Carried by {@link JoinHarnessSwarmOpts.onNearPeerCap}. */
 export interface PeerCapInfo {
@@ -197,6 +206,28 @@ export interface JoinHarnessSwarmOpts {
    * only, then flat 60s slow cadence).
    */
   hasStalledLogs?: () => boolean;
+  /**
+   * EI-13317 escalation ladder: once this topic HAD a live peer and then sits
+   * at ZERO live peers for this long — DESPITE the refresh() self-heal loop
+   * actively ticking — force a topic-level leave()+rejoin() (a fresh
+   * discovery session/DHT announce) and fire `onSeveredLink`. Forensics
+   * (tower↔VM rig, 2026-07-16/17) show refresh() alone does NOT recover a
+   * link severed by a ONE-SIDE RESTART: the surviving side's fast-window
+   * ticks fire every ~2.5s with zero paired peers for 20+ minutes; only a
+   * full process restart (== a fresh swarm.join) ever reconnects — this is
+   * the cheapest in-process analog of that recovery, scoped to one topic
+   * rather than tearing down the whole shared swarm. Default
+   * `DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS`. `0` disables the escalation
+   * entirely (byte-identical pre-EI-13317 behavior).
+   */
+  severedEscalationMs?: number;
+  /**
+   * EI-13317 observability: fires when the severed-link escalation trips
+   * (see `severedEscalationMs`) — the LOUD signal the "correct state"
+   * requires instead of a silently-frozen rail. Best-effort; a throw is
+   * swallowed.
+   */
+  onSeveredLink?: (info: SeveredLinkInfo) => void;
   /**
    * P-201 (p2p-git-live-activation-2026-07-09): register this harness's
    * connections to SERVE `papercusp/pot-git` fetch requests (a peer member
@@ -774,6 +805,20 @@ function fireNearCapSafely(cb: ((info: PeerCapInfo) => void) | undefined, info: 
   }
 }
 
+/** Fire the severed-link escalation callback without letting a diagnostic
+ *  throw crash the handler (EI-13317). */
+function fireSeveredLinkSafely(
+  cb: ((info: SeveredLinkInfo) => void) | undefined,
+  info: SeveredLinkInfo,
+): void {
+  if (!cb) return;
+  try {
+    cb(info);
+  } catch {
+    // diagnostic-only callback; swallow
+  }
+}
+
 /**
  * P-004: emit the near-cap pressure signal (a loud `console.warn` + the optional
  * `onNearPeerCap` event) when the shared swarm's live peer count first crosses
@@ -875,6 +920,19 @@ export const DEFAULT_SUBSTRATE_REFRESH_MS = 2500;
 // still bounded (no forever-hammering). Re-armed on last-peer-loss for snappy reheal.
 export const DEFAULT_SUBSTRATE_FAST_WINDOW_MS = 120_000;
 export const DEFAULT_SUBSTRATE_SLOW_REFRESH_MS = 60_000;
+/**
+ * EI-13317: how long a topic that previously had a live peer must sit at
+ * ZERO live peers — despite the refresh() self-heal loop actively ticking —
+ * before escalating to a forced topic leave+rejoin (a fresh discovery
+ * session/DHT announce). Forensics (tower↔VM rig, 2026-07-16/17) show
+ * refresh() alone does NOT recover a link severed by a one-side restart: the
+ * surviving side's fast-window ticks fire every ~2.5s with zero paired peers
+ * for 20+ minutes; only a full process restart (== a fresh swarm.join) ever
+ * reconnects. 5 minutes matches the "correct state" requirement that a
+ * persistent severed link raise a loud signal instead of silently freezing.
+ * `0` disables the escalation (status-quo pre-EI-13317 behavior).
+ */
+export const DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS = 5 * 60_000;
 
 export async function joinHarnessSwarm(
   opts: JoinHarnessSwarmOpts,
@@ -894,6 +952,9 @@ export async function joinHarnessSwarm(
   // re-arm the window.
   let fastWindowStartMs = Date.now();
   let lastRefreshMs = 0;
+  // EI-13317 escalation-ladder state: last time the severed-link escalation
+  // fired (rate-limits repeated escalations to once per severedEscalationMs).
+  let lastEscalationMs = 0;
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
     liveConnectionCount++;
@@ -1053,7 +1114,7 @@ export async function joinHarnessSwarm(
   // setup failure so a failed join leaks nothing.
   let refreshTimer: ManagedHandle | null = null;
   try {
-    const discovery = opts.swarm.join(opts.topic, { server: true, client: true });
+    let discovery = opts.swarm.join(opts.topic, { server: true, client: true });
     // Best-effort flush — some Hyperswarm builds expose this, some
     // don't. Either way, returning before flush is fine because peers
     // can connect any time after the join call returns.
@@ -1094,6 +1155,55 @@ export async function joinHarnessSwarm(
           void Promise.resolve(discovery?.refresh?.({ client: true, server: true })).catch(() => {});
         } catch {
           // best-effort — refresh is keepalive, not load-bearing for this tick
+        }
+
+        // ── EI-13317 escalation ladder ──
+        // refresh() alone does NOT recover a link severed by a ONE-SIDE
+        // RESTART (forensics: fast-window ticks fire every ~2.5s with zero
+        // paired peers for 20+ minutes; only a fresh process/swarm.join ever
+        // reconnects — the surviving side's local discovery session holds
+        // stale DHT announce/lookup state that refresh() cannot clear). Once
+        // this topic HAD a live peer (connectionCount > 0) and has sat at
+        // ZERO live peers (the LOCAL per-join counter — deliberately NOT the
+        // shared swarm's global connection count, which would mask this
+        // topic's severed state behind an unrelated peer on a DIFFERENT
+        // harness/topic sharing the same swarm) for `severedEscalationMs`,
+        // force a topic-level leave+rejoin (a fresh discovery session) and
+        // fire the loud, rate-limited health signal the "correct state"
+        // requires instead of a silently-frozen rail.
+        const severedEscalationMs = opts.severedEscalationMs ?? DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS;
+        if (severedEscalationMs > 0) {
+          const severedMs = now - fastWindowStartMs;
+          const genuinelySevered = connectionCount > 0 && liveConnectionCount === 0;
+          if (
+            genuinelySevered &&
+            severedMs >= severedEscalationMs &&
+            now - lastEscalationMs >= severedEscalationMs
+          ) {
+            lastEscalationMs = now;
+            const topicHex = opts.topic.toString('hex');
+            const info: SeveredLinkInfo = { topicHex, severedMs };
+            console.error(
+              `[swarm] ⚠ topic ${topicHex.slice(0, 16)}… severed for ${Math.round(severedMs / 1000)}s ` +
+                'despite refresh() ticking — forcing a fresh topic leave+rejoin ' +
+                '(the local discovery session likely holds stale DHT announce/lookup state).',
+            );
+            fireSeveredLinkSafely(opts.onSeveredLink, info);
+            void Promise.resolve(opts.swarm.leave(opts.topic))
+              .then(() => {
+                discovery = opts.swarm.join(opts.topic, { server: true, client: true });
+                // A fresh join re-arms the fast window too — the rejoin gets
+                // the same aggressive post-join re-announce cadence a cold
+                // boot would, instead of falling straight back to the slow
+                // keepalive.
+                fastWindowStartMs = Date.now();
+              })
+              .catch(() => {
+                // best-effort — a failed rejoin attempt is retried at the
+                // next escalation tick (lastEscalationMs already advanced,
+                // so this waits a full severedEscalationMs before retrying).
+              });
+          }
         }
       }, { category: 'lifecycle', instanced: true });
     }

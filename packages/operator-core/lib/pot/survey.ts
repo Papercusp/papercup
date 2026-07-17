@@ -763,7 +763,15 @@ export async function fetchReconcileFrontier(
      ORDER BY cn.updated_ts DESC NULLS LAST
      LIMIT ${limit}`;
   return {
-    rows: rows.map(({ total: _total, ...r }) => r),
+    rows: rows.map(({ total: _total, ...r }) => ({
+      ...r,
+      // carry_notes.updated_ts is a bigint — postgres.js returns it as a string;
+      // coerce like getWorkItemCheckpointWithMeta does so the type is honest.
+      checkpoint_updated_ts:
+        r.checkpoint_updated_ts == null || !Number.isFinite(Number(r.checkpoint_updated_ts))
+          ? null
+          : Number(r.checkpoint_updated_ts),
+    })),
     total: Number(rows[0]?.total ?? 0),
   };
 }

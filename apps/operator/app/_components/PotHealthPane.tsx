@@ -242,13 +242,16 @@ export function PotHealthPane() {
                 Ranked frontier
                 <span className="op-ph-card-n">
                   {floor.frontierTotal} ready · {floor.frontierBlocked} blocked · {floor.frontierQuarantined} quarantined
+                  {(floor.frontierReconcile ?? 0) > 0 ? ` · ${floor.frontierReconcile} reconcile` : ''}
                 </span>
               </h4>
               {floor.frontier.length === 0 ? (
                 <div className="op-pot-empty">
                   {floor.frontierQuarantined > 0
                     ? `frontier empty — ${floor.frontierQuarantined} quarantined by the admission gate`
-                    : 'no ready work'}
+                    : (floor.frontierReconcile ?? 0) > 0
+                      ? `frontier empty — ${floor.frontierReconcile} attempted item(s) awaiting reconcile (dead cup, surviving checkpoint)`
+                      : 'no ready work'}
                 </div>
               ) : (
                 <ol className="op-pot-list op-pot-queue">

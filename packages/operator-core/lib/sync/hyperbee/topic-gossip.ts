@@ -69,7 +69,34 @@ interface TopicState<Frame> {
   fastWindowStartMs: number;
   /** Last refresh tick for this topic (drives the slow keepalive). */
   lastRefreshMs: number;
+  /** EI-13317: has this topic EVER had a paired channel? Distinguishes
+   *  "genuinely severed" (had a peer, now has none) from "no peer has ever
+   *  joined yet" — only the former is worth escalating. */
+  everPaired: boolean;
+  /** EI-13317: last time the severed-link escalation fired for this topic
+   *  (rate-limits repeated escalations to once per severedEscalationMs). */
+  lastEscalationMs: number;
 }
+
+/** EI-13317: one topic's severed-link escalation event, carried by
+ *  {@link CreateTopicGossipOpts.onSeveredLink}. */
+export interface GossipSeveredLinkInfo {
+  /** Hex topic that tripped the escalation. */
+  topicHex: string;
+  /** How long (ms) the topic had zero paired channels before escalating. */
+  severedMs: number;
+}
+
+/**
+ * EI-13317: how long a topic that previously had a paired channel must sit at
+ * ZERO paired channels — despite the refresh() self-heal loop actively
+ * ticking — before escalating to a forced topic leave+rejoin (a fresh
+ * discovery session/DHT announce). Mirrors swarm.ts's
+ * `DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS` — see that constant's doc for the
+ * forensics (refresh() alone does not recover a one-side-restart severed
+ * link). `0` disables the escalation (status-quo pre-EI-13317 behavior).
+ */
+export const DEFAULT_SEVERED_ESCALATION_MS = 5 * 60_000;
 
 export interface TopicGossipHandle<Frame> {
   /** Join a gossip topic. Opens the topic's channel on every existing
