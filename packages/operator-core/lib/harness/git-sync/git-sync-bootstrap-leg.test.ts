@@ -70,6 +70,13 @@ const {
   bootstrapFromPeerMock: vi.fn<
     (repoPath: string, duplex: FakeDuplex, opts: Record<string, unknown>) => Promise<BootstrapOutcome>
   >(async (_repoPath, duplex, _opts) => {
+    // Mimic the REAL bootstrapFromPeer's timing: it awaits dropQuarantine/
+    // listNamespaces BEFORE fetchOverDuplex ever attaches an 'error' listener
+    // — so a stub destroyed WITHOUT its own no-op listener emits an UNHANDLED
+    // 'error' in this gap (live-caught: crash-looped the tower bg-host,
+    // WI-3496). Deferring one macrotask here makes the stub-path tests below
+    // genuine regression tests for that; attaching synchronously would mask it.
+    await new Promise((r) => setImmediate(r));
     duplex.on('error', () => {});
     return {
       ok: true,
@@ -112,10 +119,12 @@ const WS = 'ws-1';
  *  'error' listener) exactly like the real fetchOverDuplex chain does now —
  *  see the vi.hoisted() comment above for why. */
 const bootstrapOutcome = (result: BootstrapOutcome) => async (_repoPath: string, duplex: FakeDuplex, _opts: Record<string, unknown>): Promise<BootstrapOutcome> => {
+  await new Promise((r) => setImmediate(r)); // real-timing gap — see vi.hoisted comment
   duplex.on('error', () => {});
   return result;
 };
 const bootstrapRejection = (err: Error) => async (_repoPath: string, duplex: FakeDuplex, _opts: Record<string, unknown>): Promise<BootstrapOutcome> => {
+  await new Promise((r) => setImmediate(r)); // real-timing gap — see vi.hoisted comment
   duplex.on('error', () => {});
   throw err;
 };

@@ -569,9 +569,10 @@ export async function fetchEscalatedIssueFrontierRows(
  *
  * MUST mirror fetchFrontierRows' WHERE clause. (Pre-readiness: a `blocked_by`
  * lane is still counted here — the survey's {@link filterReadyFrontier} refines
- * that; a cheap per-tick count omits the block-graph fetch. This already kills
- * the dominant scope/kind/taken/cursed false-positive set; the residual
- * all-blocked-frontier edge is a follow-up.)
+ * that. A starvation/throughput consumer must NOT gate on this count directly:
+ * use {@link potReadyFrontierDepth}, which applies the readiness refinement —
+ * the all-blocked-frontier edge fired a phantom Mug-stall scorecard FAIL when a
+ * dependency-chained wave sat "placeable" for hours, EI-12461.)
  */
 export async function countPlaceableFrontier(
   sql: postgres.Sql,
@@ -702,6 +703,81 @@ export async function potFrontierAdmission(workspaceId: string, potHomeSlug: str
  *  being withheld? Pure, so the readiness gate can assert it with no DB. */
 export function isAdmissionStarved(f: FrontierAdmission): boolean {
   return f.placeable === 0 && f.quarantined > 0;
+}
+
+/**
+ * Readiness-refined frontier depth — the {@link countPlaceableFrontier} follow-up
+ * that comment promised ("the residual all-blocked-frontier edge"). The
+ * placeable-SHAPED count includes rows whose `blocked_by` / plan-item chain is
+ * unsatisfied, so a starvation alarm gating on it fires "N ready, 0 placed" while
+ * every one of the N is dependency-held. EI-12461 (2026-07-17): a 25-item wave
+ * landed with its tiers blocked_by-chained; the throughput tick's
+ * `frontier_depth` read ~14 through ~2.5h of CORRECT zero placement, and the
+ * release scorecard failed placement-throughput on a phantom Mug stall. `ready`
+ * is the same predicate the Mug's survey and the orchestrator dispatch by
+ * ({@link filterReadyFrontier}) — what placement can pick up NOW.
+ */
+export interface ReadyFrontierDepth {
+  /** Rows placement can pick up NOW (placeable-shaped AND readiness-satisfied). */
+  ready: number;
+  /** Placeable-shaped rows held back by an unsatisfied blocked_by / plan-item chain. */
+  blocked: number;
+  /** The pre-readiness placeable-shaped count ({@link countPlaceableFrontier}). */
+  placeableShaped: number;
+}
+
+/**
+ * Resolve a pot's membership and return its frontier depth with the readiness
+ * refinement applied ({@link ReadyFrontierDepth}). Cheap in the common idle case:
+ * the graph/plan reads are spent only when the placeable-shaped count is nonzero
+ * (an empty frontier needs no refinement), so a 30s ticker can afford it.
+ * Fail-open mirrors {@link surveyPot}: an unreadable block graph or plan index
+ * treats lanes as unblocked — worst case `ready` is over-reported (the
+ * pre-refinement behaviour), never under.
+ */
+export async function potReadyFrontierDepth(workspaceId: string, potHomeSlug: string): Promise<ReadyFrontierDepth> {
+  const { sql } = getOrgPg();
+  const membership = await resolvePotMembership(workspaceId, potHomeSlug);
+  const placeableShaped = await countPlaceableFrontier(sql, workspaceId, membership.surveySlugs);
+  if (placeableShaped === 0) return { ready: 0, blocked: 0, placeableShaped: 0 };
+
+  const rows = await fetchFrontierRows(
+    sql,
+    workspaceId,
+    membership.surveySlugs,
+    Math.min(Math.max(placeableShaped, 50), 200),
+  );
+  const graphByHarness = new Map<string, HarnessBlockGraph>();
+  await Promise.all(
+    [...new Set(rows.map((r) => r.harness_slug))].map(async (h) => {
+      try {
+        graphByHarness.set(h, await fetchHarnessBlockGraph(sql, workspaceId, h));
+      } catch (err) {
+        console.warn(
+          `[pot-frontier-depth] block-graph read failed for '${h}' — lanes treated unblocked:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }),
+  );
+  // Plan-item chains (EI-12372) scope like surveyPot: the survey slugs, or the
+  // home slug on the workspace-wide membership fallback.
+  const planSlugs = membership.surveySlugs.length > 0 ? membership.surveySlugs : [potHomeSlug];
+  const planRowsPerHarness = await Promise.all(
+    planSlugs.map(async (slug) => {
+      try {
+        return await listPlanIndexRows({ harnessSlug: slug, workspaceId });
+      } catch (err) {
+        console.warn(
+          `[pot-frontier-depth] plan read failed for '${slug}' — plan-item lanes treated unblocked:`,
+          err instanceof Error ? err.message : err,
+        );
+        return [] as PlanIndexRow[];
+      }
+    }),
+  );
+  const { ready, blockedCount } = filterReadyFrontier(rows, graphByHarness, buildPlanItemBlockGraph(planRowsPerHarness));
+  return { ready: ready.length, blocked: blockedCount, placeableShaped };
 }
 
 /**

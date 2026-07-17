@@ -342,8 +342,8 @@ export async function recordPotThroughputTick(opts: {
     // Frontier + headroom + spawns + last-tick, all cheap workspace-scoped reads.
     const { potDemandCheck } = await import('./watchdog');
     const { getSpawnHeadroom } = await import('../fleet/operator-spawn');
-    const { potPlaceableFrontierDepth } = await import('./survey');
-    const [demand, headroom, spawnRows, lastRows, placeableFrontier] = await Promise.all([
+    const { potReadyFrontierDepth } = await import('./survey');
+    const [demand, headroom, spawnRows, lastRows, frontier] = await Promise.all([
       potDemandCheck(ws).catch(() => ({ demand: false, todoItems: 0, startedPlans: 0 })),
       getSpawnHeadroom(ws).catch(() => ({ ceiling: 0, running: 0, headroom: 0 })),
       sql<SpawnRow[]>`
@@ -355,11 +355,14 @@ export async function recordPotThroughputTick(opts: {
         SELECT tick_at FROM harness_shared.pot_throughput_ticks
          WHERE workspace_id = ${ws} AND pot_slug = ${opts.potSlug}
          ORDER BY tick_at DESC LIMIT 1`.catch(() => [] as Array<{ tick_at: string | Date }>),
-      // WI-267: the pot's REAL placeable-frontier depth (member-scoped; feature-kind,
-      // todo, unassigned, not-cursed) — NOT the workspace-wide demand.todoItems — so the
-      // starvation breach gates on what THIS Mug can actually place. Fail-soft ⇒ 0 (a
-      // flaky read must never manufacture a false 'saturated with work queued' alarm).
-      potPlaceableFrontierDepth(ws, opts.potSlug).catch(() => 0),
+      // WI-267 + EI-12461: the pot's READY frontier depth (member-scoped; feature-kind,
+      // todo, unassigned, not-cursed, AND blocked_by/plan-item-chain satisfied) — NOT the
+      // workspace-wide demand.todoItems, and NOT the placeable-SHAPED count either: a
+      // dependency-chained wave sat "placeable" for hours of correct zero placement and
+      // failed a release scorecard on a phantom stall. The starvation breach gates on what
+      // THIS Mug can actually place NOW. Fail-soft ⇒ zeros (a flaky read must never
+      // manufacture a false 'saturated with work queued' alarm).
+      potReadyFrontierDepth(ws, opts.potSlug).catch(() => ({ ready: 0, blocked: 0, placeableShaped: 0 })),
     ]);
 
     const spawns: PotSpawnSnapshot[] = spawnRows.map((r) => ({
@@ -372,8 +375,10 @@ export async function recordPotThroughputTick(opts: {
 
     const metrics = computePotThroughput({
       nowMs,
-      // WI-267: real placeable frontier (member-scoped) — was demand.todoItems (workspace-wide).
-      frontierDepth: placeableFrontier,
+      // WI-267/EI-12461: READY frontier (member-scoped, readiness-satisfied) — was
+      // demand.todoItems (workspace-wide), then the placeable-shaped count (blocked
+      // lanes included).
+      frontierDepth: frontier.ready,
       ceiling: headroom.ceiling,
       running: headroom.running,
       spawns,
@@ -408,6 +413,10 @@ export async function recordPotThroughputTick(opts: {
            stuckThresholdMs: stuckThresholdMs(),
            startedPlans: demand.startedPlans,
            breaches: breaches.map((b) => b.kind),
+           // EI-12461 diagnosability: frontier_depth is the READY count; these two say
+           // what readiness withheld, so "depth 0 because all blocked" reads at a glance.
+           frontierBlocked: frontier.blocked,
+           frontierPlaceableShaped: frontier.placeableShaped,
          })}::text::jsonb)`;
 
     // FB-21 audit-as-sensors: a breach files through capture (best-effort, deduped

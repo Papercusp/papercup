@@ -1489,6 +1489,14 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
             cb();
           },
         });
+        // Swallow the destroy-time error BEFORE destroy(err) schedules it —
+        // with no listener, Node emits an UNHANDLED 'error' next tick =
+        // uncaughtException = the whole host exits (live-caught: this
+        // crash-looped the tower bg-host at boot, WI-3496/WI-5177 —
+        // bootstrapFromPeer awaits dropQuarantine before fetchOverDuplex can
+        // attach its own listener). Same idiom as openHiveGitDuplexToDevice's
+        // no-live-connection stub: callers read `.destroyed`, never 'error'.
+        stub.on('error', () => {});
         stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
         duplex = stub;
       } else {
@@ -1677,6 +1685,10 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
               cb();
             },
           });
+          // Same unhandled-'error' footgun as runBootstrapLeg's stub above —
+          // attach the no-op listener BEFORE destroy(err) or the host dies
+          // on an uncaughtException next tick.
+          stub.on('error', () => {});
           stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
           return stub;
         }
