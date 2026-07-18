@@ -25,6 +25,7 @@
     "accent-strong-rgb": { "$value": "214, 166, 74", "$type": "color", "$description": "RGB triplet of --accent-strong for rgba() alpha composition (same leak rule as accent-rgb)" },
     "accent-cool":     { "$value": "#E8D9B5", "$type": "color", "$description": "Cream highlight for glows and linework" },
     "accent-soft":     { "$value": "#E0C071", "$type": "color", "$description": "Soft honey signal tint" },
+    "accent-soft-rgb": { "$value": "224, 192, 113", "$type": "color", "$description": "RGB triplet of --accent-soft for rgba() alpha composition (same leak rule as accent-rgb)" },
     "accent-deep":     { "$value": "#8B5E16", "$type": "color", "$description": "Burnt honey active tint" },
     "accent-deeper":   { "$value": "#5F3F12", "$type": "color", "$description": "Deep amber shadow tint" },
     "accent-ink":      { "$value": "#130D03", "$type": "color", "$description": "Text on honey fills" },

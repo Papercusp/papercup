@@ -22,6 +22,7 @@
     "accent-strong-rgb": { "$value": "255, 255, 255", "$type": "color", "$description": "RGB triplet of --accent-strong for rgba() alpha composition (same leak rule as accent-rgb)" },
     "accent-cool":   { "$value": "#B0B0B0", "$type": "color", "$description": "Cool grey accent" },
     "accent-soft":   { "$value": "#D8D8D8", "$type": "color", "$description": "Light grey — glows/highlights go monochrome on black (frost: sky-200)" },
+    "accent-soft-rgb": { "$value": "216, 216, 216", "$type": "color", "$description": "RGB triplet of --accent-soft for rgba() alpha composition (same leak rule as accent-rgb)" },
     "accent-deep":   { "$value": "#707070", "$type": "color", "$description": "Mid grey — deeper accent tint on black (frost: sky-500)" },
     "accent-deeper": { "$value": "#4A4A4A", "$type": "color", "$description": "Dark grey — deepest accent tint on black (frost: sky-700)" },
     "accent-ink":    { "$value": "#000000", "$type": "color", "$description": "Black text drawn on top of an accent fill" }

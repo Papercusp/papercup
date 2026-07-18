@@ -520,6 +520,7 @@ import './computer/list-desktops';
 import './dev/restart';
 import './dev/service_health';
 import './dev/rate_governor_status';
+import './dev/stall_waker_status';
 import './dev/worker_chunk_loop_metrics';
 import './db/migrate';
 import './db/check_drift';
