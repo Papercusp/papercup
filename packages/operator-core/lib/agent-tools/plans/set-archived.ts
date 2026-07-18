@@ -23,7 +23,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, runBulk } from '../_bulk';
@@ -68,17 +68,25 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    // ⚠ WI-5125 class: harness_plans is keyed on (workspace_id, harness_slug,
+    // plan_slug). workspace_id is only knowable in-process via
+    // activeWorkspaceId() — it honors the WINDOW's request-scoped workspace
+    // (x-papercusp-workspace → ALS), which is what a UI-initiated write needs.
+    // A literal DEFAULT_WORKSPACE_ID here silently matches ZERO rows for any
+    // non-default tenant (caught live: every archive returned plan_not_found
+    // because the plans live in 'papercusp-workspace', not 'default').
+    const workspaceId = activeWorkspaceId();
     const items = args.items ?? [{ slug: args.slug, archived: args.archived }];
     const env = await runBulk(
       items,
       async (item) => {
         const now = new Date().toISOString();
-        const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+        const rows = await withWorkspace(workspaceId, async (tx) => {
           return tx<{ plan_slug: string }[]>`
             UPDATE harness_shared.harness_plans
                SET archived      = ${item.archived},
                    op_updated_at = ${now}
-             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+             WHERE workspace_id = ${workspaceId}
                AND harness_slug = ${harnessSlug}
                AND plan_slug    = ${item.slug}
             RETURNING plan_slug

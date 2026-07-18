@@ -48,6 +48,7 @@ import {
   ownerWallToAttention,
   darkFlagRatificationToAttention,
   blockedSessionToAttention,
+  blockedWorkItemToAttention,
 } from "../../attention/adapters";
 import {
   planItemsToAttention,
@@ -672,6 +673,39 @@ export default defineTool({
                     ownerAgentId: g.owner_id,
                     harnessSlug: resolveHarness(g.harness_slug, null),
                     waitingHours,
+                  }),
+                );
+              }
+            } catch {
+              /* best-effort */
+            }
+          })(),
+
+          // 15. Blocked work-items of EVERY kind (curated-signal-cards P-001) —
+          //     `status='blocked'` rows off the same cross-kind
+          //     `harness_shared.work_items` VIEW source #11 reads. Source #1
+          //     already surfaces a blocked PLAN item as an Alert, but it reads
+          //     plan DOCUMENTS only, so a blocked work-item row (often with no
+          //     plan attached) had no card — even though the curated digest's
+          //     `🚧 Blocked` chat line scans exactly this table. Alert tier,
+          //     never a Decision: stuck work is worth surfacing, but unblocking
+          //     is work, not a triage verdict.
+          (async () => {
+            try {
+              const { readBlockedWorkItems } =
+                await import("../../attention/blocked-work-items-source");
+              const rows = await readBlockedWorkItems({
+                harness: harnessFilter,
+              });
+              for (const r of rows) {
+                items.push(
+                  blockedWorkItemToAttention({
+                    workItemId: r.feature_id,
+                    itemKind: r.item_kind ?? "unknown",
+                    title: r.title ?? r.feature_id,
+                    reason: r.reason,
+                    harnessSlug: resolveHarness(r.harness_slug, null),
+                    ownerAgentId: r.taken_by,
                   }),
                 );
               }
