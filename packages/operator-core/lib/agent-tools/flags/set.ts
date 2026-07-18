@@ -27,8 +27,25 @@ import { publishFlagChange } from '../../flag-bus';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import './_register-backend';
 
-const FlagKeySchema = z.enum(ALL_FLAG_KEYS as unknown as [FlagKey, ...FlagKey[]]);
+// EI-1168: NOT a z.enum(ALL_FLAG_KEYS) anymore — see flags:get.ts's identical comment
+// for the full rationale (a static enum bakes the key list at module-load time, so a
+// flag added to libs/flags/src/types.ts after that moment is unflippable through this
+// tool even though flags:list, reading the same ALL_FLAG_KEYS, may already see it in a
+// fresher process). assertKnownFlagKey still rejects a genuinely-unknown key, per-item,
+// through the existing bulk error contract.
+const FlagKeySchema = z.string().min(1).describe('a Papercusp flag key (libs/flags/src/types.ts)');
 const FlagFlip = z.object({ key: FlagKeySchema, enabled: z.boolean() });
+
+/** Throws with guidance when `key` isn't a live flag (EI-1168) — mirrors flags:get.ts. */
+function assertKnownFlagKey(key: string): asserts key is FlagKey {
+  if (!(ALL_FLAG_KEYS as readonly string[]).includes(key)) {
+    throw new Error(
+      `Unknown flag key "${key}" — not in this process's flag registry (libs/flags/src/types.ts). ` +
+        `If this flag was just added, the operator process may need a restart to pick it up; ` +
+        `check flags:list for the current known set.`,
+    );
+  }
+}
 
 export default defineTool({
   name: 'flags:set',
@@ -66,6 +83,7 @@ export default defineTool({
     const env = await runBulk(
       flips,
       async ({ key, enabled }) => {
+        assertKnownFlagKey(key);
         const result = await setFlag(key, enabled);
         if (result.ok) {
           // The flip lives in PostHog now — drop any PG override so it can't

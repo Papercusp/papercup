@@ -106,6 +106,20 @@ describe('flags:get (bulk keyed-array, P-006)', () => {
       expect(b.results[0]).toMatchObject({ key: k0, enabled: true });
     }
   });
+
+  // EI-1168: `key` is a plain string now (not a z.enum(ALL_FLAG_KEYS)), so an
+  // unknown key is no longer rejected at argument-parsing time by a stale
+  // enum — it's caught at runtime, per-item, through the ordinary bulk error
+  // contract instead. getFlag is a legit flag key never even reached.
+  it('an unknown key fails ONLY that item with a clear message — never a bare zod enum rejection (EI-1168)', async () => {
+    const { default: tool } = await import('../get');
+    const b = parseEnvelope(await tool.handler({ key: 'papercusp-totally-made-up-flag' }, MAKE_CTX()) as never);
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, key: 'papercusp-totally-made-up-flag' });
+    expect(b.results[0].error).toMatch(/unknown flag key/i);
+    expect(getFlag).not.toHaveBeenCalled();
+  });
 });
 
 describe('flags:list', () => {
