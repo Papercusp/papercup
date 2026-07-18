@@ -31,7 +31,7 @@ import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { gcOldOperatorTurns } from '../operator-turns-gc';
 import { readRegistry } from '../workspace-registry';
-import { sweepOrphanSnapshots } from '@papercusp/backup';
+import { sweepOrphanSnapshots, sweepRecoveryDebrisTick } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
@@ -578,6 +578,23 @@ const orphanCleanupWorkflow = idempotentRegisterWorkflow('backupOrphanCleanup', 
   }),
 );
 DBOS.registerScheduled(orphanCleanupWorkflow, { name: 'backupOrphanCleanup', crontab: '0 */5 * * * *' });
+
+// Once daily (04:00): reap on-disk recovery-debris directories (EI-1032) — the
+// timestamped `<name>.broken-*` / `.zz-recover-*` / `.half-restored-*` /
+// `.audit-wipe-*` / `.rolled-back-*` copies a restore/rollback/corruption-audit
+// leaves behind under each workspace root. policy.ts's SELF_EXCLUSION_RULES stops
+// kopia from re-snapshotting this debris; this is the complementary sweep that
+// actually reclaims the disk space (a conservative 14-day age floor — see
+// DEFAULT_DEBRIS_MAX_AGE_MS — so a recent recovery stays inspectable).
+async function recoveryDebrisCleanupTick(): Promise<void> {
+  await DBOS.runStep(async () => { await sweepRecoveryDebrisTick(); }, { name: 'backup-recovery-debris-cleanup' });
+}
+const recoveryDebrisCleanupWorkflow = idempotentRegisterWorkflow('backupRecoveryDebrisCleanup', () =>
+  DBOS.registerWorkflow(recoveryDebrisCleanupTick, {
+    name: 'backupRecoveryDebrisCleanup', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(recoveryDebrisCleanupWorkflow, { name: 'backupRecoveryDebrisCleanup', crontab: '0 0 4 * * *' });
 
 // Every 30min: refresh APNs/FCM push credentials (consolidation P-003). Replaces
 // the legacy 50min setInterval (which stands down on dbosTimersActive); 30min is

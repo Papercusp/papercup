@@ -54,5 +54,11 @@ export {
   stopOrphanSweepWorker,
   type SweepResult,
 } from './orphan-cleanup';
+export {
+  sweepRecoveryDebris,
+  sweepRecoveryDebrisTick,
+  DEFAULT_DEBRIS_MAX_AGE_MS,
+  type DebrisSweepResult,
+} from './recovery-debris-cleanup';
 export type { DestinationType, DestinationConfig } from './destinations';
-export { IGNORE_PATTERNS, diffPolicyIgnores } from './policy';
+export { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './policy';

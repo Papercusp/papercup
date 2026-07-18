@@ -25,8 +25,22 @@
  * itself, the 1TB-runaway case) plus the restore/rollback scratch dirs. Every
  * one of these is asserted against the live kopia global policy before each
  * snapshot (assertSelfExclusionPolicy). Don't remove.
+ *
+ * EI-1032: PG/kopia recovery events rename the OLD copy aside with a
+ * `<name>.<tag>-<timestamp>` suffix, e.g. `embedded-pg-data.broken-2026-05-01`
+ * or `kopia-repo.broken-2026-05-01` — a COMPOUND name, not a bare
+ * `.broken-*` (which only matches a name that itself STARTS with
+ * `.broken-`, e.g. a literal `.broken-2026-05-01` dir). `*.broken-*` is the
+ * superset glob that also catches the compound form; kept alongside the
+ * original `.broken-*` for back-compat. `.zz-recover-*`, `.half-restored-*`,
+ * and `.audit-wipe-*` are the other recovery-debris tags observed causing
+ * unbounded disk growth (91% full on the `default` workspace, ~66G of dead
+ * debris since early May) because nothing excluded OR reaped them.
  */
-export const SELF_EXCLUSION_RULES = ['backups', '.restored', '.broken-*', '.rolled-back-*'];
+export const SELF_EXCLUSION_RULES = [
+  'backups', '.restored', '.broken-*', '*.broken-*', '.rolled-back-*',
+  '.zz-recover-*', '.half-restored-*', '.audit-wipe-*',
+];
 
 export const IGNORE_PATTERNS = [
   'node_modules', '.next', 'out', 'target', 'dist', 'build', '.turbo', '.cache',
