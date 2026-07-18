@@ -159,7 +159,15 @@ describe('readScoutSnapshot', () => {
       },
     });
     const snap = await readScoutSnapshot(sql, 'ws-1');
-    expect(snap).toEqual({
+    // This test's contract is the TICK half: on 42P01 it is omitted SILENTLY
+    // (lastTick null / ticks empty, no warn). Assert that plus the empty-state
+    // ledger halves — but with toMatchObject, NOT a closed-world toEqual: the
+    // snapshot grows additive best-effort legs over time (cadence P-001, drafts
+    // P-005, …), each landing as a new default-valued field, and an exact-match
+    // here would re-red the green gate on every such addition without testing
+    // anything this case is about. Extra additive fields are fine; the values
+    // below are still pinned exactly.
+    expect(snap).toMatchObject({
       totalRouted: 0,
       railCounts: [],
       recent: [],

@@ -76,6 +76,12 @@ export interface ScoutTickEconomics {
   cycleId: string | null;
   /** Lens → routed-count for THIS tick's cycle (joined by cycle_id; empty when none routed). */
   lenses: Record<string, number>;
+  /**
+   * Digest grounding-lane composition of THIS cycle's corpus (`detail.groundingLanes`,
+   * e.g. { corpus: 17, "plan-health": 5, "rubric-rating": 1 }) — what the cycle was
+   * actually FED (learning-tab-visibility P-006). Empty for gated ticks / pre-field rows.
+   */
+  groundingLanes: Record<string, number>;
 }
 
 /** One routed idea, as the Scout view lists it (the ledger row, UI-shaped). */
