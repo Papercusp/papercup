@@ -1906,8 +1906,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the bee is never woken. Fire-and-forget a best-effort PG write-through so the waker can
     // recover this stall directly from PG even across a gateway restart (stall-waker-loop.ts's
     // fetchStalls merges it in). Never blocks/slows this request-serving path and never throws —
-    // a DB outage degrades to today's in-memory-only behavior, it never affects serving.
-    void (async () => {
+    // a DB outage degrades to today's in-memory-only behavior, it never affects serving. Skipped
+    // hermetically under vitest (hive-directory-boot.ts's `!process.env.VITEST` convention) — this
+    // function is exercised directly by gateway.test.ts's synthetic-owner stall tests, which have
+    // no reason to reach a real DB and previously left junk `spawn-test-1`/`test-acct` rows in the
+    // shared dev harness_shared.gateway_stall_events table on every test run (caught in review).
+    if (!process.env.VITEST) void (async () => {
       try {
         const { activeWorkspaceId } = await import('../workspace-registry');
         await recordGatewayStall({ ownerId, accountId, soonestResetAt, at }, activeWorkspaceId());

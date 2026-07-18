@@ -332,6 +332,135 @@ else
   log "         operator-vite first for a genuinely isolated (watcher-proof) module server."
 fi
 
+# ── EI-10387: boot a genuinely isolated, throwaway embedded Postgres ────────
+# Opt-in (VERIFY_TAURI_ISOLATED_DB=1). Reuses the SAME primitive
+# scripts/with-test-pg.mjs uses for hermetic test runs
+# (startEmbeddedPostgresServer from @papercusp/embedded-postgres-server): a
+# fresh datadir, a free port nobody else picked, fully migrated. We then point
+# the sidecar at it via HARNESS_ADMIN_DATABASE_URL / HARNESS_DATABASE_URL —
+# these beat DATABASE_URL in both resolvers (libs/db/src/connection.ts adminUrl/
+# appUrl AND @papercusp/embedded-pg-discovery's getHarnessAdminUrl chain), so
+# they win over apps/operator/.env.local's unconditional
+# `DATABASE_URL=...5432/papercusp` (the live DB) even though DEFAULT_DEV_CMD
+# sources that file — .env.local never sets HARNESS_ADMIN_DATABASE_URL /
+# HARNESS_DATABASE_URL, so sourcing it can't clobber ours. PAPERCUSP_HOME is
+# also scoped here so the sidecar's own operator.json/embedded-pg.json/
+# superuser-token/lock files land under $WORK, never the real ~/.papercusp
+# (the box-canonical-discovery-hijack class of incident documented in
+# apps/operator/bin/serve.ts's EI-13917 note).
+ISOLATED_DB="${VERIFY_TAURI_ISOLATED_DB:-0}"
+ISOLATED_ENV_LINE=""
+ISOLATED_HOME=""
+if [ "$ISOLATED_DB" = "1" ]; then
+  ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-90}"
+  ISOLATED_PG_DATA_DIR="$WORK/isolated-pgdata"
+  ISOLATED_PG_LOG="$WORK/isolated-pg.log"
+  ISOLATED_HOME="$WORK/papercusp-home"
+  ISOLATED_WORKSPACE="verify-tauri-isolated-$DISPLAY_NUM"
+  mkdir -p "$ISOLATED_HOME"
+
+  # Migrations dir: monorepo path, else a packaged sidecar's own copy — same
+  # resolution with-test-pg.mjs uses.
+  ISOLATED_PG_SQL_DIR=""
+  for cand in "$REPO_DIR/libs/papercusp/libs/db/sql" "$REPO_DIR/sidecar/db-sql"; do
+    [ -d "$cand" ] && { ISOLATED_PG_SQL_DIR="$cand"; break; }
+  done
+  [ -n "$ISOLATED_PG_SQL_DIR" ] || { echo "FATAL: VERIFY_TAURI_ISOLATED_DB=1 but no migrations dir found (looked under $REPO_DIR)" >&2; exit 1; }
+
+  ISOLATED_PG_BOOT_SCRIPT="$WORK/boot-isolated-pg.mjs"
+  # Quoted heredoc (no bash expansion inside) — every input crosses via env,
+  # never string-interpolated into the JS.
+  cat > "$ISOLATED_PG_BOOT_SCRIPT" <<'PGBOOT'
+import { createServer } from 'node:net';
+import { pathToFileURL } from 'node:url';
+
+const repoDir = process.env.ISOLATED_PG_REPO_DIR;
+const dataDir = process.env.ISOLATED_PG_DATA_DIR;
+const sqlDir = process.env.ISOLATED_PG_SQL_DIR;
+if (!repoDir || !dataDir || !sqlDir) {
+  console.error('PG_FAILED missing ISOLATED_PG_{REPO_DIR,DATA_DIR,SQL_DIR} env');
+  process.exit(2);
+}
+
+function freePort() {
+  return new Promise((res, rej) => {
+    const srv = createServer();
+    srv.on('error', rej);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => res(port));
+    });
+  });
+}
+
+const modUrl = pathToFileURL(
+  `${repoDir}/libs/papercusp/packages/embedded-postgres-server/src/index.js`,
+).href;
+const { startEmbeddedPostgresServer } = await import(modUrl);
+
+let pg = null;
+async function shutdown() {
+  try {
+    await pg?.stop();
+  } catch {
+    /* best effort */
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+try {
+  const port = await freePort();
+  pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog: () => {} });
+  // Deliberately NOT flushed through `log()` — one grep-able line for the shell.
+  console.log(`PG_READY port=${port} admin=${pg.urls.admin} app=${pg.urls.app}`);
+} catch (e) {
+  console.error(`PG_FAILED ${e?.stack ?? e}`);
+  process.exit(1);
+}
+
+// Hold the postmaster up until the shell teardown SIGTERMs us.
+await new Promise(() => {});
+PGBOOT
+
+  log "VERIFY_TAURI_ISOLATED_DB=1 — booting a throwaway migrated Postgres (data=$ISOLATED_PG_DATA_DIR)"
+  setsid env \
+    ISOLATED_PG_REPO_DIR="$REPO_DIR" \
+    ISOLATED_PG_DATA_DIR="$ISOLATED_PG_DATA_DIR" \
+    ISOLATED_PG_SQL_DIR="$ISOLATED_PG_SQL_DIR" \
+    node "$ISOLATED_PG_BOOT_SCRIPT" >"$ISOLATED_PG_LOG" 2>&1 &
+  ISOLATED_PG_PID=$!
+  trap teardown EXIT INT TERM   # re-arm now that ISOLATED_PG_PID is set (teardown reads it)
+
+  ISOLATED_PG_ELAPSED=0
+  until grep -q '^PG_READY ' "$ISOLATED_PG_LOG" 2>/dev/null; do
+    kill -0 "$ISOLATED_PG_PID" 2>/dev/null || { echo "FATAL: isolated-db postgres exited before ready — tail:" >&2; tail -40 "$ISOLATED_PG_LOG" >&2; exit 1; }
+    [ "$ISOLATED_PG_ELAPSED" -ge "$ISOLATED_PG_TIMEOUT" ] && { echo "FATAL: isolated-db postgres did not come up within ${ISOLATED_PG_TIMEOUT}s — tail:" >&2; tail -40 "$ISOLATED_PG_LOG" >&2; exit 1; }
+    sleep 1; ISOLATED_PG_ELAPSED=$((ISOLATED_PG_ELAPSED + 1))
+  done
+  ISOLATED_PG_READY_LINE="$(grep '^PG_READY ' "$ISOLATED_PG_LOG" | head -1)"
+  ISOLATED_PG_PORT="$(sed -n 's/^PG_READY port=\([0-9]*\).*/\1/p' <<<"$ISOLATED_PG_READY_LINE")"
+  ISOLATED_ADMIN_URL="$(sed -n 's/.*admin=\(postgresql:\/\/[^ ]*\).*/\1/p' <<<"$ISOLATED_PG_READY_LINE")"
+  ISOLATED_APP_URL="$(sed -n 's/.*app=\(postgresql:\/\/[^ ]*\).*/\1/p' <<<"$ISOLATED_PG_READY_LINE")"
+  [ -n "$ISOLATED_PG_PORT" ] && [ -n "$ISOLATED_ADMIN_URL" ] || { echo "FATAL: could not parse isolated-db readiness line: $ISOLATED_PG_READY_LINE" >&2; exit 1; }
+
+  # Recurrence guard (EI-10387's own point 4): the isolated port must actually
+  # differ from whatever the box-canonical embedded-pg.json currently advertises
+  # — belt-and-braces against a freak port collision before we ever trust it.
+  LIVE_PG_JSON="$HOME/.papercusp/embedded-pg.json"
+  if [ -f "$LIVE_PG_JSON" ]; then
+    LIVE_PG_PORT="$(sed -n 's/.*"port":[ ]*\([0-9]*\).*/\1/p' "$LIVE_PG_JSON" | head -1)"
+    [ -n "$LIVE_PG_PORT" ] && [ "$LIVE_PG_PORT" = "$ISOLATED_PG_PORT" ] && {
+      echo "FATAL: isolated PG picked the SAME port ($ISOLATED_PG_PORT) as the live box-canonical embedded-pg.json — refusing to proceed (EI-10387 recurrence guard)." >&2
+      exit 1
+    }
+  fi
+
+  log "isolated-db postgres ready on :$ISOLATED_PG_PORT (data=$ISOLATED_PG_DATA_DIR) after ${ISOLATED_PG_ELAPSED}s"
+  ISOLATED_ENV_LINE="PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1"
+fi
+
 # ── launch the isolated dev instance (agent-e2e.mdx §1.3 recipe, packaged) ──
 # setsid makes this its own process group so teardown can `kill -- -$PID`
 # the WHOLE tree (cargo, node, the built binary, webkit helper processes) —

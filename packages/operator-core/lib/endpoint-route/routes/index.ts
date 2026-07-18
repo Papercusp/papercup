@@ -567,7 +567,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),
   ...flatten(flagsDashboardUrl as AnyRoute),
-  ...flatten(operatorBudgetTiers as AnyRoute),
   ...flatten(operatorStateSnapshot as AnyRoute),
   ...flatten(operatorSettingsByKey as AnyRoute),
   ...flatten(operatorRateLimitConfig as AnyRoute),
