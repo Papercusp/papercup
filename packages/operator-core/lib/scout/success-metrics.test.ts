@@ -499,10 +499,12 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
 });
 
 describe('isCapacityError — the no-capacity classifier (scheduler)', () => {
-  it('classifies typed admission denials as capacity, not failure', () => {
-    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused' } })).toBe(true);
-    expect(isCapacityError({ admissionDenial: { reason: 'provider-429' } })).toBe(true);
-    expect(isCapacityError({ admissionDenial: { reason: 'no-free-slot', freeSlots: 0 } })).toBe(false);
+  it('classifies ATTESTED admission denials as capacity, not failure (WI-5391: via stamp required)', () => {
+    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', via: 'governor' } })).toBe(true);
+    expect(isCapacityError({ admissionDenial: { reason: 'provider-429', via: 'http-429' } })).toBe(true);
+    expect(isCapacityError({ admissionDenial: { reason: 'no-free-slot', via: 'governor', freeSlots: 0 } })).toBe(false);
+    // An UNATTESTED denial (no via) is evidence-free and fails closed — stays an error.
+    expect(isCapacityError({ admissionDenial: { reason: 'provider-429' } })).toBe(false);
     // Provider prose alone is intentionally not authoritative.
     expect(isCapacityError('rate-limit pause exceeds maxWait')).toBe(false);
   });

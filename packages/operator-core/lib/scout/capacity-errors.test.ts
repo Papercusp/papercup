@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   admissionDenialFrom,
   CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+  capacityContradictedFrom,
   isCapacityError,
   isLegacyCapacityError,
   isPersistedCapacityError,
@@ -25,27 +26,49 @@ import {
  * broader string match.
  */
 describe('isCapacityError — the pool genuinely had nothing to give', () => {
-  it('matches a typed all-accounts-paused denial', () => {
+  it('matches a governor-attested all-accounts-paused denial', () => {
     expect(
-      isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 } }),
+      isCapacityError({
+        admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
+      }),
     ).toBe(true);
   });
 
-  it('matches a typed provider-429 denial', () => {
-    expect(isCapacityError({ turn: { admissionDenial: { reason: 'provider-429' } } })).toBe(true);
+  it('matches an http-status-attested provider-429 denial', () => {
+    expect(isCapacityError({ turn: { admissionDenial: { reason: 'provider-429', via: 'http-429' } } })).toBe(true);
   });
 
-  it('recovers the typed denial from an LlmCallError-shaped value', () => {
-    expect(admissionDenialFrom({ turn: { admissionDenial: { reason: 'all-accounts-paused', freeSlots: 0 } } })).toEqual(
-      {
-        reason: 'all-accounts-paused',
-        freeSlots: 0,
-      },
-    );
+  it('recovers the typed denial — including the via/governorReason evidence — from an LlmCallError-shaped value', () => {
+    // Dropping `via` on re-extraction would strip the attestation the classifier requires
+    // every time a denial round-trips (the scheduler re-extracts before persisting).
+    expect(
+      admissionDenialFrom({
+        turn: { admissionDenial: { reason: 'all-accounts-paused', via: 'governor', governorReason: 'paused', freeSlots: 0 } },
+      }),
+    ).toEqual({
+      reason: 'all-accounts-paused',
+      via: 'governor',
+      governorReason: 'paused',
+      freeSlots: 0,
+    });
   });
 
   it('does not infer capacity from provider prose', () => {
     expect(isCapacityError('429 rate_limit_error: too many requests')).toBe(false);
+  });
+});
+
+describe('isCapacityError — evidence-required: an UNATTESTED denial fails CLOSED (WI-5391 Part B)', () => {
+  // A denial with a capacity reason but no `via` stamp is exactly what an evidence-free
+  // prose-inferring mint site would produce. It must count as a loud error — otherwise an
+  // admission-path defect wearing a capacity costume vanishes from the metric built to catch it.
+  it('rejects a capacity-reason denial with no via stamp', () => {
+    expect(isCapacityError({ admissionDenial: { reason: 'provider-429' } })).toBe(false);
+    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3 } })).toBe(false);
+  });
+
+  it('rejects a denial with an unrecognized via value', () => {
+    expect(isCapacityError({ admissionDenial: { reason: 'provider-429', via: 'vibes' } })).toBe(false);
   });
 });
 
@@ -111,8 +134,43 @@ describe('persisted capacity classification across the typed-carrier transition'
       isPersistedCapacityError({
         error: 'opaque',
         capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
-        admissionDenial: { reason: 'all-accounts-paused' },
+        admissionDenial: { reason: 'all-accounts-paused', via: 'governor' },
       }),
     ).toBe(true);
+  });
+
+  it('does NOT let an unattested denial on a versioned row reach the capacity bucket', () => {
+    // Part-A-window shape: typed reason, no via stamp. Fail closed on read too.
+    expect(
+      isPersistedCapacityError({
+        error: 'opaque',
+        capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+        admissionDenial: { reason: 'provider-429' },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('capacityContradicted — the write path counted it, the read path must not un-count it (WI-5391 Part B)', () => {
+  const contradictedDetail = {
+    error: '429 from gateway',
+    capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+    admissionDenial: { reason: 'provider-429', via: 'http-429' },
+    capacityContradicted: true,
+    poolSnapshot: { probedAtMs: 1, healthyAccounts: 3, codexConfigured: false },
+  };
+
+  it('reads the flag from a persisted detail', () => {
+    expect(capacityContradictedFrom(contradictedDetail)).toBe(true);
+    expect(capacityContradictedFrom({ capacityContradicted: 'yes' })).toBe(false);
+    expect(capacityContradictedFrom(undefined)).toBe(false);
+  });
+
+  it('never re-excludes a contradicted row, even though its denial is attested', () => {
+    // Without this override the read path (quality-metrics) would re-classify the row as
+    // capacity from its attested denial — silently undoing the record-time discrimination,
+    // and the metric could be greened by relabeling alone.
+    expect(isCapacityError(contradictedDetail)).toBe(true); // the denial ALONE would exclude…
+    expect(isPersistedCapacityError(contradictedDetail)).toBe(false); // …the contradiction wins.
   });
 });

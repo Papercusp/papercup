@@ -345,6 +345,12 @@ export async function runCapacityStormDrill(
       admissionDenialFrom(unattestedRow?.detail)?.reason === 'provider-429' &&
       admissionDenialFrom(unattestedRow?.detail)?.via === undefined,
     unattestedReadStaysError: unattestedRow !== undefined && unattested.readClassifiedCapacity === false,
+    contradictedStaysError:
+      contradicted.tickReason === 'cycle-error' &&
+      contradicted.persistedStatus === 'error' &&
+      contradictedRow?.detail?.capacityContradicted === true &&
+      admissionDenialFrom(contradictedRow?.detail)?.via === 'http-429',
+    contradictedReadStaysError: contradictedRow !== undefined && contradicted.readClassifiedCapacity === false,
     allLegsPersisted: legResults.every((l) => l.persistedStatus !== undefined),
     organicTickLeaks,
     organicMetricsUnchanged: organicTickLeaks === 0,
