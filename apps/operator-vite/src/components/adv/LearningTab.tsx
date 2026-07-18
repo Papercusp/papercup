@@ -58,6 +58,7 @@ import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-re
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
 import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
 import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
+import { tabOverflowState } from "./AdvShell";
 import { BenchmarkTrend, type BenchmarkTrendInstance } from "./BenchmarkTrend";
 import type { BakeoffTrendRow } from "@papercusp/operator-core/lib/pot-eval/bakeoff-trend";
 import { EkgPanel } from "./EkgPanel";
@@ -306,6 +307,62 @@ export default function LearningTab() {
     ...warmViews.filter((candidate) => candidate !== view),
   ].slice(0, 3);
 
+  // View-tab strip overflow affordance (P-007): when tabs are clipped, fade the
+  // clipped edge so it reads "there are more views this way" instead of
+  // silently cutting off. Same data-attr + mask pattern (and the same pure
+  // tabOverflowState helper) as AdvShell's top-level tab strip.
+  const viewListRef = useRef<HTMLDivElement | null>(null);
+  const [viewOverflow, setViewOverflow] = useState({
+    left: false,
+    right: false,
+  });
+  const updateViewOverflow = useCallback(() => {
+    const list = viewListRef.current;
+    if (!list) {
+      setViewOverflow({ left: false, right: false });
+      return;
+    }
+    setViewOverflow(
+      tabOverflowState(list.scrollLeft, list.scrollWidth, list.clientWidth),
+    );
+  }, []);
+  useEffect(() => {
+    const list = viewListRef.current;
+    // activeStage in the deps: the strip's tab set (and whether the strip is
+    // rendered at all) changes per stage, which changes scrollWidth without a
+    // resize the ResizeObserver would see.
+    updateViewOverflow();
+    if (!list) return;
+    list.addEventListener("scroll", updateViewOverflow, { passive: true });
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => updateViewOverflow())
+        : null;
+    ro?.observe(list);
+    return () => {
+      list.removeEventListener("scroll", updateViewOverflow);
+      ro?.disconnect();
+    };
+  }, [updateViewOverflow, activeStage]);
+  // Only scroll the selected view tab into view when it is actually clipped
+  // (e.g. a URL-restored view on a narrow pane) — never scroll away from
+  // fully-visible tabs.
+  useEffect(() => {
+    const list = viewListRef.current;
+    if (!list) return;
+    const trigger = list.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!trigger) return;
+    const listRect = list.getBoundingClientRect();
+    const tabRect = trigger.getBoundingClientRect();
+    if (tabRect.left >= listRect.left && tabRect.right <= listRect.right)
+      return;
+    try {
+      trigger.scrollIntoView({ block: "nearest", inline: "nearest" });
+    } catch {
+      /* best effort */
+    }
+  }, [view]);
+
   return (
     <div className="pc-learning">
       <Tabs.Root
@@ -365,10 +422,13 @@ export default function LearningTab() {
           <Tabs.Root
             className="pc-learning__view-tabs"
             data-stage={activeStageMeta.id}
+            data-of-left={viewOverflow.left ? "" : undefined}
+            data-of-right={viewOverflow.right ? "" : undefined}
             value={view}
             onValueChange={(next) => void setLview(next as LView)}
           >
             <Tabs.List
+              ref={viewListRef}
               className="pc-learning__view-list"
               aria-label={`${activeStageMeta.label} views`}
             >
@@ -3149,7 +3209,7 @@ export function ScoutView({
                 {spend ? (
                   <span className="pc-learning__tickspend">{spend}</span>
                 ) : null}
-                {lensPairs.map(([lens, n]) => (
+                {lensPairs.slice(0, 3).map(([lens, n]) => (
                   <i
                     key={lens}
                     className="pc-learning__ticklens"
@@ -3159,6 +3219,17 @@ export function ScoutView({
                     {n > 1 ? `×${n}` : ""}
                   </i>
                 ))}
+                {lensPairs.length > 3 ? (
+                  <i
+                    className="pc-learning__ticklens"
+                    title={lensPairs
+                      .slice(3)
+                      .map(([lens, n]) => `${lens} ×${n}`)
+                      .join(" · ")}
+                  >
+                    +{lensPairs.length - 3}
+                  </i>
+                ) : null}
               </span>
             );
           })
@@ -3750,6 +3821,22 @@ export function LearningStyles() {
       .pc-learning__view-icon .pc-learning__statusmark { right: -3px; bottom: -3px; width: 6px; height: 6px; border-width: 1.5px; }
       .pc-learning__view-tab:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 5%, transparent); }
       .pc-learning__view-tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+      /* Overflow affordance (P-007): fade the clipped edge of the view strip so
+         hidden tabs read as "more this way" (background-independent CSS mask,
+         -webkit- prefixed for the WebKitGTK desktop) — same pattern as
+         AdvShell's top-level tab strip. */
+      .pc-learning__view-tabs[data-of-left][data-of-right] .pc-learning__view-list {
+        -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);
+        mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);
+      }
+      .pc-learning__view-tabs[data-of-left]:not([data-of-right]) .pc-learning__view-list {
+        -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px);
+        mask-image: linear-gradient(90deg, transparent 0, #000 22px);
+      }
+      .pc-learning__view-tabs:not([data-of-left])[data-of-right] .pc-learning__view-list {
+        -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent 100%);
+        mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent 100%);
+      }
 
       .pc-learning__hivepick {
         display: inline-flex; align-items: center; gap: 6px;
@@ -3776,11 +3863,12 @@ export function LearningStyles() {
         .pc-learning__rubricsplit:has(.pc-learning__rubricdetail) { grid-template-columns: 1fr; overflow: auto; }
         .pc-learning__rubricdetail { min-height: 420px; }
       }
+      /* P-007: the former ≤1100px Verify-only icon-pill collapse (labels
+         clip-path-hidden except the selected tab) is deliberately GONE — it was
+         mystery-meat. Labels stay visible at every width; a crowded strip
+         scrolls, with the edge-fade affordance above signalling clipped tabs. */
       @container learning (max-width: 1100px) {
-        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-tab[aria-selected="true"] .pc-learning__view-label { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: nowrap; }
-        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-tab { padding-inline: 7px; }
-        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-icon { width: 22px; height: 22px; }
+        .pc-learning__view-tab { padding-inline: 7px; }
       }
       @container learning (max-width: 560px) {
         .pc-learning { padding-inline: 9px; }
