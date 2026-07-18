@@ -523,6 +523,12 @@ export interface InteractiveMcpDarkResult {
    *  entirely, so it dropped out of `hosts` and would otherwise never be
    *  revisited again. See the recovery-sweep comment in checkInteractiveMcpDark. */
   recovered: string[];
+  /** EI-13020: owners whose CLAUDE_CONFIG_DIR was found NOT launch-ready and was
+   *  repaired at heal time — i.e. the dark was (at least partly) CONFIG-caused,
+   *  not transport-caused. A `/mcp` reconnect cannot fix that class on its own,
+   *  so this is the measurement that decides whether a relaunch escalation is
+   *  worth building. Empty on a healthy fleet. */
+  configRepaired: string[];
 }
 
 /**
@@ -535,7 +541,7 @@ export async function checkInteractiveMcpDark(
   sql: Sql,
   opts: InteractiveDarkThresholds & { maxAttempts?: number } = {},
 ): Promise<InteractiveMcpDarkResult> {
-  const out: InteractiveMcpDarkResult = { darkOwners: [], healed: [], healSent: [], notified: [], recovered: [] };
+  const out: InteractiveMcpDarkResult = { darkOwners: [], healed: [], healSent: [], notified: [], recovered: [], configRepaired: [] };
   try {
     const discovery = await import('../events/await/psu-pty-discovery');
     const hosts = discovery.listLiveHosts();
@@ -674,8 +680,42 @@ async function runInteractiveHealStep(
 ): Promise<void> {
   const { sql, discovery, out, now } = ctx;
   if (step.action === 'heal') {
+    // EI-13020: a `/mcp` reconnect can only reconnect servers the session's config
+    // DECLARES. If this session is dark because its CLAUDE_CONFIG_DIR holds the
+    // EI-12938 stub `.claude.json` (an `oauthAccount` but NO `mcpServers` — what
+    // claude mints for itself on a first-run boot into a transcript-only dir),
+    // then the macro below has nothing to reconnect to: the heal lands as 'sent',
+    // burns both attempts, escalates to "owner action needed, /mcp in its
+    // terminal" — and even that manual /mcp cannot recover it. Repair the dir
+    // FIRST so the reconnect (or the owner's relaunch/resume) has a server.
+    //
+    // Safe unconditionally: `ensureInteractiveClaudeConfig` never throws, and a
+    // healthy dir is left BYTE-IDENTICAL for the cost of one lstat. Lazily
+    // imported per this module's convention so a box with no interactive infra
+    // degrades to a no-op.
+    //
+    // This is deliberately NOT gated on the open question of whether claude's
+    // /mcp RE-READS the config from disk or only reconnects birth-known servers
+    // (EI-13020's proposed experiment) — the repair strictly helps either way:
+    // if it re-reads, the live process heals here; if it does not, the on-disk
+    // config is correct so the next relaunch/resume recovers instead of the
+    // session staying permanently unhealable. `repaired` also INSTRUMENTS that
+    // question for free: it reports how much of the interactive dark set is
+    // config-caused, which is what decides whether a relaunch escalation is
+    // worth building.
+    let repaired = false;
+    try {
+      const { ensureInteractiveClaudeConfig } = await import('../interactive-claude-config');
+      ({ repaired } = ensureInteractiveClaudeConfig({ sid: step.ownerId }));
+      if (repaired) out.configRepaired.push(step.ownerId);
+    } catch {
+      // Never let config repair block the heal it is trying to enable.
+    }
     const sent = await discovery.mcpReconnectViaPty(step.ownerId);
-    console.warn(`[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}: ${v?.reason ?? ''}`);
+    console.warn(
+      `[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}` +
+        `${repaired ? ' (config dir REPAIRED — was config-caused dark)' : ''}: ${v?.reason ?? ''}`,
+    );
     if (sent === 'sent') {
       out.healSent.push(step.ownerId);
       // Only LANDED envelopes may later justify an announce (false-heal bug #3).

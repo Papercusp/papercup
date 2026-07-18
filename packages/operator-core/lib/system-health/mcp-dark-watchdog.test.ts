@@ -332,6 +332,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       healSent: [],
       notified: [],
       recovered: [],
+      configRepaired: [],
     });
   });
 });
