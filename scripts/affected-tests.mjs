@@ -535,6 +535,7 @@ for (const t of tasks) {
       errSync(`  (quarantined failure — not gating)`);
     } else {
       failed++;
+      failedTaskNames.push(`${t.ws.name} :: ${t.script}`);
     }
   }
 }
@@ -556,18 +557,21 @@ try {
     errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
     if (!quarantined.has('papercusp-desktop')) {
       failed++;
+      failedTaskNames.push('papercusp-desktop :: cargo test');
     }
   }
 } catch (err) {
   errSync(`>>> cargo test runner error: ${err.message}`);
   failed++;
+  failedTaskNames.push('papercusp-desktop :: cargo test (runner error)');
 }
 
 if (quarantinedFailed) {
   errSync(`\n${quarantinedFailed} quarantined task(s) failed (not gating).`);
 }
 if (failed) {
-  errSync(`\n${failed} non-quarantined task(s) failed.`);
+  errSync(`\n${failed} non-quarantined task(s) failed:`);
+  for (const name of failedTaskNames) errSync(`  - ${name}`);
   process.exit(1);
 }
 outSync('\nAll affected tests passed.');
