@@ -144,6 +144,31 @@ describe('TMPDIR is normalized to a sandbox-writable dir (EI-5912)', () => {
   });
 });
 
+describe('operator secrets are NOT inherited by a spawned command (EI-1617)', () => {
+  it('a fake operator secret in process.env never reaches the child shell', async () => {
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = 'postgres://user:pw@host/db-should-not-leak';
+    try {
+      const r = await runForeground(
+        { command: 'printf "[%s]"  "${DATABASE_URL:-unset}"', cwd: STATE, stateDir: STATE },
+        never,
+        10_000,
+      );
+      expect(r.status).toBe('completed');
+      expect(r.output).toBe('[unset]');
+    } finally {
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  it('a plain allowlisted var (PATH) still reaches the child', async () => {
+    const r = await runForeground({ command: 'test -n "$PATH" && echo has-path', cwd: STATE, stateDir: STATE }, never, 10_000);
+    expect(r.status).toBe('completed');
+    expect(r.output).toContain('has-path');
+  });
+});
+
 describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
   it('rewrites an inherited direct operator URL through the resilient proxy when configured', async () => {
     const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;

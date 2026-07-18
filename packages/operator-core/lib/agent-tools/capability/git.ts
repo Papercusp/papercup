@@ -74,7 +74,10 @@ export default defineTool({
   },
 });
 
-function runGit(
+/** Exported for direct unit testing (mirrors bash-jobs.ts's runForeground export) —
+ *  decouples the env-scrub regression test from the flag/DB plumbing the
+ *  `handler` above resolves `sandboxEnabled` through. */
+export function runGit(
   argv: string[],
   cwd: string,
   _stateDir: string | undefined,

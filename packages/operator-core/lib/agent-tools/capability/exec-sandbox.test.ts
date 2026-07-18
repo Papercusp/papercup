@@ -208,6 +208,69 @@ describe('credential-mask parity with the fleet sandbox', () => {
   });
 });
 
+describe('scrubExecEnv (EI-1617 — allowlist, not a passthrough-minus-denylist)', () => {
+  it('drops an arbitrary operator secret that is not on the allowlist', () => {
+    const out = scrubExecEnv({
+      PATH: '/usr/bin',
+      DATABASE_URL: 'postgres://user:pw@host/db',
+      DEFGUARD_API_TOKEN: 'secret-token',
+      ELEVENLABS_WEBHOOK_SECRET: 'wh-secret',
+      MOBILE_JWT_SECRET: 'jwt-secret',
+      NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN: 'chatwoot-token',
+      STARSHIP_SESSION_KEY: 'session-key',
+      STOREWOLFPASSWORD: 'wolf-pw',
+    });
+    expect(out.PATH).toBe('/usr/bin');
+    expect(out).not.toHaveProperty('DATABASE_URL');
+    expect(out).not.toHaveProperty('DEFGUARD_API_TOKEN');
+    expect(out).not.toHaveProperty('ELEVENLABS_WEBHOOK_SECRET');
+    expect(out).not.toHaveProperty('MOBILE_JWT_SECRET');
+    expect(out).not.toHaveProperty('NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN');
+    expect(out).not.toHaveProperty('STARSHIP_SESSION_KEY');
+    expect(out).not.toHaveProperty('STOREWOLFPASSWORD');
+  });
+
+  it('keeps common shell/toolchain vars', () => {
+    const out = scrubExecEnv({
+      PATH: '/usr/bin', HOME: '/home/op', LANG: 'en_US.UTF-8', TERM: 'xterm',
+      TMPDIR: '/tmp', NODE_ENV: 'test', CARGO_HOME: '/home/op/.cargo',
+      NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org', GOPATH: '/home/op/go',
+    });
+    expect(out).toEqual({
+      PATH: '/usr/bin', HOME: '/home/op', LANG: 'en_US.UTF-8', TERM: 'xterm',
+      TMPDIR: '/tmp', NODE_ENV: 'test', CARGO_HOME: '/home/op/.cargo',
+      NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org', GOPATH: '/home/op/go',
+    });
+  });
+
+  it('drops host-X vars (DISPLAY/XAUTHORITY/WAYLAND_DISPLAY are not allowlisted)', () => {
+    const out = scrubExecEnv({ PATH: '/usr/bin', DISPLAY: ':0', XAUTHORITY: '/run/gdm/xauth', WAYLAND_DISPLAY: 'wayland-0' });
+    expect(out).toEqual({ PATH: '/usr/bin' });
+  });
+
+  it('keeps the Papercusp exec-path plumbing vars the spawn path itself depends on', () => {
+    const out = scrubExecEnv({
+      PATH: '/usr/bin',
+      PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp',
+      PAPERCUSP_WORKSPACE_ROOT: '/home/op/workspace',
+    });
+    expect(out.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3070/api/mcp');
+    expect(out.PAPERCUSP_WORKSPACE_ROOT).toBe('/home/op/workspace');
+  });
+
+  it('drops undefined-valued entries (a bare NodeJS.ProcessEnv can carry them)', () => {
+    const out = scrubExecEnv({ PATH: '/usr/bin', HOME: undefined });
+    expect(out).toEqual({ PATH: '/usr/bin' });
+  });
+
+  it('extraAllow widens the set for one call site without changing the default', () => {
+    const withExtra = scrubExecEnv({ PATH: '/usr/bin', MY_SCOPED_TOKEN: 'x' }, ['MY_SCOPED_TOKEN']);
+    expect(withExtra.MY_SCOPED_TOKEN).toBe('x');
+    const withoutExtra = scrubExecEnv({ PATH: '/usr/bin', MY_SCOPED_TOKEN: 'x' });
+    expect(withoutExtra).not.toHaveProperty('MY_SCOPED_TOKEN');
+  });
+});
+
 /** True if `needle` appears as a contiguous subsequence of `hay`. */
 function seq(hay: string[], needle: string[]): boolean {
   return seqIndex(hay, needle) >= 0;

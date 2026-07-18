@@ -14,7 +14,14 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 const H = vi.hoisted(() => ({
   policy: [] as unknown[],
   armed: false,
-  useSyncQuery: vi.fn(() => ({ data: H.policy, loading: false, error: null })),
+  // EI-1543-adjacent typecheck-ratchet fix: an explicit rest param (rather than a
+  // bare `()`) so `Parameters<typeof H.useSyncQuery>` is `unknown[]`, not the empty
+  // tuple `[]` TS infers from a zero-arg factory — the EI-1538 test below destructures
+  // `([opts]) => ...` off `H.useSyncQuery.mock.calls`, which needs a real element 0 to
+  // exist at the type level (an empty-tuple mock.calls entry has none, TS2493/TS2352),
+  // and the `(...args) => H.useSyncQuery(...args)` wrapper just below needs a rest
+  // parameter to spread a non-tuple `unknown[]` into (TS2556) — both trip on a bare `()`.
+  useSyncQuery: vi.fn((..._args: unknown[]) => ({ data: H.policy, loading: false, error: null })),
 }));
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (...args: unknown[]) => H.useSyncQuery(...args),
