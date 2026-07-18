@@ -67,6 +67,7 @@ module.exports = {
   },
   create(context) {
     let usesThrowingPool = false;
+    const candidates = []; // sql.json(...)-shaped CallExpression nodes seen during the normal traversal
 
     function checkImportSource(source, specifiers) {
       if (source !== DB_ORG_PACKAGE) return;
@@ -102,36 +103,23 @@ module.exports = {
           checkImportSource(node.init.argument.source.value, names);
         }
       },
-      'Program:exit'(program) {
+      // Collected via ESLint's own traversal (not a hand-rolled re-walk) —
+      // whether to actually REPORT depends on `usesThrowingPool`, which may
+      // only be known once the whole file (incl. a later dynamic import) has
+      // been visited, so reporting is deferred to Program:exit below.
+      CallExpression(node) {
+        if (isSqlJsonMemberCall(node)) candidates.push(node);
+      },
+      'Program:exit'() {
         if (!usesThrowingPool) return;
-        // Second pass over CallExpressions now that we know the file's
-        // pool — collected during traversal above via a saved node list to
-        // avoid a second full walk would be ideal, but ESLint doesn't warn on
-        // a plain re-visit, so just query the source ourselves via a simple
-        // recursive scan bounded to CallExpression nodes.
         const sourceCode = context.getSourceCode ? context.getSourceCode() : context.sourceCode;
-        const visited = new Set();
-        function visit(node) {
-          if (!node || typeof node.type !== 'string' || visited.has(node)) return;
-          visited.add(node);
-          if (isSqlJsonMemberCall(node)) {
-            context.report({
-              node,
-              messageId: 'throws',
-              data: { expr: sourceCode.getText(node.callee.object) },
-            });
-          }
-          for (const key in node) {
-            if (key === 'parent') continue;
-            const val = node[key];
-            if (Array.isArray(val)) {
-              for (const child of val) if (child && typeof child.type === 'string') visit(child);
-            } else if (val && typeof val.type === 'string') {
-              visit(val);
-            }
-          }
+        for (const node of candidates) {
+          context.report({
+            node,
+            messageId: 'throws',
+            data: { expr: sourceCode.getText(node.callee.object) },
+          });
         }
-        visit(program);
       },
     };
   },

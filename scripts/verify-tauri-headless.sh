@@ -40,17 +40,34 @@
 #   This header used to claim "own embedded-PG, own workspace state; NOT just a
 #   second window pointed at shared backend state". That was FALSE, and it is
 #   exactly the kind of claim an agent takes on trust before clicking a
-#   destructive button — so it is corrected here rather than left to mislead.
-#   Making it TRUE (per-run temp PG + scrubbed PAPERCUSP_HOME/WORKSPACE + a
-#   boot-assert that the resolved DB is not the live one) is tracked as EI-10387.
+#   destructive button — so it was corrected here rather than left to mislead.
 #
-#   Until then: to exercise WRITE paths safely, intercept them in the webview
-#   instead of letting them reach the backend — stub `window.fetch` for
+#   EI-10387 (2026-07-18): the claim is now TRUE, OPT-IN. Pass
+#   VERIFY_TAURI_ISOLATED_DB=1 and this script boots a throwaway, fully-migrated,
+#   per-run embedded Postgres (own datadir, own free port — nobody else's pot),
+#   scopes PAPERCUSP_HOME/PAPERCUSP_WORKSPACE to this run, and *asserts at boot*
+#   (reading the real sidecar process's own /proc/<pid>/environ, not just our own
+#   env construction) that the resolved DB actually differs from the live one —
+#   refusing to proceed otherwise. Every write in that mode is safe: it lands in
+#   the throwaway DB, which nothing else reads, and is discarded at teardown. The
+#   instance boots into the normal first-run onboarding flow (an empty, freshly-
+#   migrated DB — the same state every real fresh install boots into), not the
+#   owner's real pots/plans.
+#
+#   Default (VERIFY_TAURI_ISOLATED_DB unset) is UNCHANGED: shared live DB, as
+#   warned above — because many verify runs legitimately want to read/exercise
+#   real existing state (the header's original "READ paths are safe as-is"
+#   still holds), which an isolated empty DB cannot offer. Use isolation when you
+#   need to click through WRITE paths and don't care about pre-existing data;
+#   stay on the shared default to verify against real live state.
+#
+#   For write-path testing WITHOUT isolation (e.g. you need the isolated run's
+#   speed/onboarding tradeoff to not apply), intercept the webview instead of
+#   letting the write reach the backend: stub `window.fetch` for
 #   POST /api/agent-mcp/run-tool, capture the request body, return a synthetic
 #   `{ ok:true, result:{ content:[{ text:'{"ok":true}' }] } }`, and validate the
-#   captured payloads offline against the tool's own zod schema. That proves the
-#   full UI→wire contract with zero live mutations (the method used for the
-#   2026-07-12 Mug/Kettle/Papercup button sweep). READ paths are safe as-is.
+#   captured payloads offline against the tool's own zod schema (the method used
+#   for the 2026-07-12 Mug/Kettle/Papercup button sweep).
 #
 # Reuses fed_pick_free_port from bin/lib/federation-asserts.sh (the same
 # staggered free-port picker the two-instance federation smokes already use)
@@ -77,6 +94,17 @@
 #     leaked-Xvfb lesson, WI-2115 — a display left up starves the next run).
 #
 # ENV OVERRIDES (all optional)
+#   VERIFY_TAURI_ISOLATED_DB    1 = boot a genuinely isolated, throwaway,
+#                                fully-migrated embedded Postgres for this run
+#                                instead of sharing the live DATABASE_URL/
+#                                workspace (EI-10387). See the header block.
+#                                Default 0 (today's shared-live-DB behavior).
+#   VERIFY_TAURI_ISOLATED_PG_TIMEOUT
+#                               seconds to wait for the isolated Postgres to
+#                                come up (default 90 — a from-scratch initdb +
+#                                full migration replay is ~10-30s; a pre-built
+#                                seed extract is ~1s). Only used with
+#                                VERIFY_TAURI_ISOLATED_DB=1.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
 #   VERIFY_TAURI_TIMEOUT        seconds to wait for the bridge (default 180 —
