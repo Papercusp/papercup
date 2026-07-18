@@ -371,3 +371,57 @@ CRASH_LOOP_MIN_COUNT=3 bash apps/operator/scripts/papercup-fedplane-disk-health-
 # RED-EI dedup window (default 12h, mirrors the DHT probe's DHT_RED_REFILE_H):
 DISK_RED_REFILE_H=6 bash apps/operator/scripts/papercup-fedplane-disk-health-check.sh
 ```
+
+---
+
+# Postgres backup + offsite kopia — the EXECUTION units (EI-12028)
+
+`papercusp-db-backup.{timer,service}` (hourly `pg_dump -Fd -j` per database, EI-10733),
+`papercusp-db-backup-alert.service` (its `OnFailure=` handler), `kopia-snapshots.{timer,service}`
+(5-min offsite ship of the dumps via kopia), and `kopia-healthcheck.{timer,service}` (15-min
+dump-freshness/snapshot-recency probe, a BACKSTOP to `papercup-backup-health.{timer,service}`
+above — see its own header comment for why two checks exist and how they're kept from
+disagreeing).
+
+**Why these are here:** until EI-12028, these 7 unit files existed ONLY as regular files in
+`~/.config/systemd/user/` — no repo copy, unlike `papercup-backup-health.{timer,service}` (the
+detection layer, already symlinked). A machine re-provision restored the health PROBE (repo,
+symlinked) but silently lost backup EXECUTION entirely — broken-but-detected is still broken.
+Relocated here and re-symlinked, mirroring every other unit in this directory, so the whole
+backup stack re-materializes on a fresh machine.
+
+**Deliberately UNIT-FILES-ONLY.** The scripts these units invoke
+(`~/.config/kopia/db-backup.sh`, `snapshot-all.sh`, `healthcheck.sh`, `backup-alert.sh`) are
+NOT relocated here — they stay at their current `~/.config/kopia/` paths (the units' `ExecStart=`
+is untouched) because that directory is separately managed and a full script relocation needs
+its own coordination pass (EI-12028's own filing said as much). This is a strict subset of the
+original ask: it closes the "unit definitions lost on re-provision" gap completely, without
+touching script content or execution behavior at all — verified byte-identical
+(`diff` clean) before symlinking, and `systemctl --user daemon-reload` + `list-timers` confirmed
+every affected timer's schedule/state was unaffected by the swap.
+
+## Install (one-time, on a fresh machine)
+
+```bash
+cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+for f in papercusp-db-backup.timer papercusp-db-backup.service papercusp-db-backup-alert.service \
+         kopia-snapshots.timer kopia-snapshots.service \
+         kopia-healthcheck.timer kopia-healthcheck.service; do
+  ln -sf "$(pwd)/$f" ~/.config/systemd/user/
+done
+systemctl --user daemon-reload
+systemctl --user enable --now papercusp-db-backup.timer kopia-snapshots.timer kopia-healthcheck.timer
+```
+
+You must ALSO recreate `~/.config/kopia/db-backup.sh`, `snapshot-all.sh`, `healthcheck.sh`, and
+`backup-alert.sh` on the new machine — those are not version-controlled (see above). This
+directory's units will load but the timers will fail with "No such file or directory" until
+those scripts exist at their expected paths.
+
+## Verify
+
+```bash
+systemctl --user list-timers papercusp-db-backup.timer kopia-snapshots.timer kopia-healthcheck.timer
+journalctl --user -u papercusp-db-backup.service --since "2 hours ago"
+cat /mnt/data/Backup/db-dumps/STATUS.json
+```
