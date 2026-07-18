@@ -445,6 +445,7 @@ const mkTick = (over: Partial<ScoutTickEconomics>): ScoutTickEconomics => ({
   spendUsd: 1.5,
   cycleId: 'scout-1',
   lenses: {},
+  groundingLanes: {},
   ...over,
 });
 

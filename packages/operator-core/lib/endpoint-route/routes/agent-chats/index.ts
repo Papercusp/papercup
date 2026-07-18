@@ -344,7 +344,13 @@ const messagesRoute = defineTool({
         } catch { /* best-effort — the agent still has its read tools */ }
       }
 
-      const promptText = `${r.text}${lockNotice}${planContextSection}${dossierSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
+      // work-item-chat-context-modernize P-002: the work-item dossier LEADS the task
+      // framing — it identifies WHAT this chat is even about — so it is placed
+      // immediately after the persona, before the lock notice / plan context /
+      // memory / history. Previously it sat last (after planContextSection),
+      // effectively an appendix the model could reach only after wading through
+      // lock/plan boilerplate for a feature it may not even recognize yet.
+      const promptText = `${r.text}${dossierSection}${lockNotice}${planContextSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
       assembled = { text: promptText, runId: r.meta.runId };
     } catch (e) {
       return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });
