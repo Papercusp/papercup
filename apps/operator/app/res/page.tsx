@@ -258,6 +258,7 @@ export default function ResourcesPage() {
   const assignments = useMemo<Record<string, Assignment[]>>(() => {
     const out: Record<string, Assignment[]> = {};
     for (const a of allotmentsData ?? []) {
+      if (!a.fleetSlug) continue; // pot-scoped row (P-001) — rendered separately below
       if (a.resourceKind !== 'account' && a.resourceKind !== 'gpu') continue;
       (out[a.fleetSlug] ??= []).push({
         resId: a.resourceRef,
@@ -270,14 +271,38 @@ export default function ResourcesPage() {
   }, [allotmentsData, accountLabel]);
 
   // Seat rows per fleet (agent_slot allotments). Degraded pre-mig-486 rows are
-  // dropped by toSlotRow rather than crashing the board.
+  // dropped by toSlotRow rather than crashing the board. Pot-scoped rows
+  // (fleetSlug null) are excluded here — see potSlotRows below.
   const slotRows = useMemo<Record<string, SlotRow[]>>(() => {
     const out: Record<string, SlotRow[]> = {};
     for (const a of allotmentsData ?? []) {
+      if (!a.fleetSlug) continue;
       const row = toSlotRow(a);
       if (row) (out[a.fleetSlug] ??= []).push(row);
     }
     return out;
+  }, [allotmentsData]);
+
+  // P-002: pot-wide seat offers (potSlug set) — one flat list (a workspace has
+  // at most one shared-hive "pot" today), each row's audience tracked
+  // separately since the store carries it per-row, not per-pot.
+  const potSlotRows = useMemo<SlotRow[]>(() => {
+    const out: SlotRow[] = [];
+    for (const a of allotmentsData ?? []) {
+      if (!a.potSlug) continue;
+      const row = toSlotRow(a);
+      if (row) out.push(row);
+    }
+    return out;
+  }, [allotmentsData]);
+  const potAudienceByRef = useMemo(() => {
+    const m = new Map<string, AllotmentAudience>();
+    for (const a of allotmentsData ?? []) {
+      if (a.potSlug && a.resourceKind === 'agent_slot' && (a.audience === 'trusted-members' || a.audience === 'whole-pot')) {
+        m.set(a.resourceRef, a.audience);
+      }
+    }
+    return m;
   }, [allotmentsData]);
 
   // Tree expansion is user-meaningful view state → URL (nuqs); collapsed hive ids.
@@ -306,6 +331,7 @@ export default function ResourcesPage() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [overFleet, setOverFleet] = useState<string | null>(null);
+  const [overPot, setOverPot] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const assign = useCallback(
@@ -416,6 +442,126 @@ export default function ResourcesPage() {
     [slotRows, setAllotment],
   );
 
+  // ── P-002: pot-wide seat offers — the same seat operations as a fleet's
+  //    row, but keyed by potSlug instead of fleetSlug and carrying the
+  //    required audience. New offers default to the narrower 'trusted-members'
+  //    (D-002 has no silent default at the tool boundary; the UI still needs
+  //    ONE to seed the drop — the audience Select on the chip corrects it
+  //    immediately after, before anyone can spend it). ──
+  const DEFAULT_POT_AUDIENCE: AllotmentAudience = 'trusted-members';
+
+  const assignPotSeat = useCallback(
+    async (cardRes: ResourceCard) => {
+      if (!potHomeSlug || cardRes.type !== 'seat') return;
+      setBusy(true);
+      try {
+        const target: SlotAxis = { ...cardRes.seat!, account: AUTO_ACCOUNT };
+        const plan = planSlotWrite(potSlotRows, target, 1);
+        await setAllotment({
+          action: 'set',
+          potSlug: potHomeSlug,
+          audience: potAudienceByRef.get(agentSlotRef(plan.set.axis)) ?? DEFAULT_POT_AUDIENCE,
+          resourceKind: 'agent_slot',
+          resourceRef: agentSlotRef(plan.set.axis),
+          quantity: plan.set.quantity,
+          axis: plan.set.axis,
+        });
+        toast.success(`${plan.set.quantity} × ${cardRes.meta} seat${plan.set.quantity !== 1 ? 's' : ''} → whole pot`);
+      } catch (e) {
+        toast.error(`Couldn't offer to the pot: ${e instanceof Error ? e.message : 'failed'}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [potHomeSlug, potSlotRows, potAudienceByRef, setAllotment],
+  );
+  const unassignPot = useCallback(
+    async (resId: string, kind: WireKind) => {
+      if (!potHomeSlug) return;
+      setBusy(true);
+      try {
+        await setAllotment({ action: 'remove', potSlug: potHomeSlug, resourceKind: kind, resourceRef: resId });
+      } catch (e) {
+        toast.error(`Couldn't remove: ${e instanceof Error ? e.message : 'failed'}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [potHomeSlug, setAllotment],
+  );
+  const stepPotSlot = useCallback(
+    async (row: SlotRow, delta: number) => {
+      if (!potHomeSlug) return;
+      const plan = planSlotWrite(potSlotRows, row.axis, row.quantity + delta, row.ref);
+      if (plan.set.quantity === row.quantity) return;
+      setBusy(true);
+      try {
+        await setAllotment({
+          action: 'set',
+          potSlug: potHomeSlug,
+          audience: potAudienceByRef.get(row.ref) ?? DEFAULT_POT_AUDIENCE,
+          resourceKind: 'agent_slot',
+          resourceRef: row.ref,
+          quantity: plan.set.quantity,
+          axis: plan.set.axis,
+        });
+      } catch (e) {
+        toast.error(`Couldn't change seats: ${e instanceof Error ? e.message : 'failed'}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [potHomeSlug, potSlotRows, potAudienceByRef, setAllotment],
+  );
+  const retargetPotSlotAccount = useCallback(
+    async (row: SlotRow, account: string) => {
+      if (!potHomeSlug || account === row.axis.account) return;
+      const plan = planSlotWrite(potSlotRows, { ...row.axis, account }, row.quantity, row.ref);
+      setBusy(true);
+      try {
+        await setAllotment({
+          action: 'set',
+          potSlug: potHomeSlug,
+          audience: potAudienceByRef.get(row.ref) ?? DEFAULT_POT_AUDIENCE,
+          resourceKind: 'agent_slot',
+          resourceRef: agentSlotRef(plan.set.axis),
+          quantity: plan.set.quantity,
+          axis: plan.set.axis,
+        });
+        if (plan.removeRef) {
+          await setAllotment({ action: 'remove', potSlug: potHomeSlug, resourceKind: 'agent_slot', resourceRef: plan.removeRef });
+        }
+      } catch (e) {
+        toast.error(`Couldn't move seats: ${e instanceof Error ? e.message : 'failed'}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [potHomeSlug, potSlotRows, potAudienceByRef, setAllotment],
+  );
+  const setPotAudience = useCallback(
+    async (row: SlotRow, audience: AllotmentAudience) => {
+      if (!potHomeSlug || potAudienceByRef.get(row.ref) === audience) return;
+      setBusy(true);
+      try {
+        await setAllotment({
+          action: 'set',
+          potSlug: potHomeSlug,
+          audience,
+          resourceKind: 'agent_slot',
+          resourceRef: row.ref,
+          quantity: row.quantity,
+          axis: row.axis,
+        });
+      } catch (e) {
+        toast.error(`Couldn't change audience: ${e instanceof Error ? e.message : 'failed'}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [potHomeSlug, potAudienceByRef, setAllotment],
+  );
+
   const setDraftPct = useCallback((fleetId: string, resId: string, pct: number) => {
     const k = pctKey(fleetId, resId);
     pctDraftRef.current[k] = pct;
@@ -446,9 +592,14 @@ export default function ResourcesPage() {
         } else n.children.forEach(walk);
       };
       walk(tree);
+      // P-002: a seat template offered to the whole pot shows up alongside its
+      // per-fleet assignments on the draggable card.
+      if (c.type === 'seat' && potSlotRows.some((r) => r.axis.model === c.seat!.model && r.axis.effort === c.seat!.effort)) {
+        names.push('the pot');
+      }
       return names;
     },
-    [assignments, slotRows, tree],
+    [assignments, slotRows, potSlotRows, tree],
   );
 
   const onCardClick = useCallback((id: string) => setPickedId((cur) => (cur === id ? null : id)), []);
@@ -461,6 +612,12 @@ export default function ResourcesPage() {
     },
     [pickedId, allCards, assign],
   );
+  const onPotActivate = useCallback(() => {
+    if (!pickedId) return;
+    const cardRes = allCards.find((c) => c.id === pickedId);
+    if (cardRes?.type === 'seat') void assignPotSeat(cardRes);
+    setPickedId(null);
+  }, [pickedId, allCards, assignPotSeat]);
 
   /** Account options a fleet's seat chips may bill to: AUTO + the accounts THIS
       fleet has been allocated (D-003 — the supply→seat link, visible in the control). */
@@ -668,6 +825,104 @@ export default function ResourcesPage() {
             <span className="ct">{countFleets(tree)} fleets</span>
           </div>
           <div className="res-tree">{renderNode(tree)}</div>
+
+          {/* P-002: pot-wide seat offers — a standing seat delegation any fleet
+              in the pot can spend from (once P-003/P-004 land), instead of one
+              named fleet. Hidden behind an explanatory note when this
+              workspace has no single shared hive to publish into. */}
+          {potHomeSlug ? (
+            <div
+              className={`res-fleet res-pot${overPot ? ' over' : ''}`}
+              onDragOver={(e) => {
+                if (dragRef.current?.type !== 'seat') return;
+                e.preventDefault();
+                setOverPot(true);
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverPot(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setOverPot(false);
+                const cardRes = dragRef.current;
+                if (cardRes?.type === 'seat') void assignPotSeat(cardRes);
+              }}
+              onClick={onPotActivate}
+            >
+              <div className="res-fhead">
+                <span className="dia" aria-hidden="true">☕</span>
+                <span className="nm">Whole pot</span>
+                <span className="who">{potHomeSlug} — audience-gated, spendable by any fleet in the pot</span>
+              </div>
+              <div className="res-drop">
+                {potSlotRows.length === 0 && <span className="hint">Drop a seat here to offer it to the whole pot</span>}
+                {potSlotRows.map((row) => {
+                  const audience = potAudienceByRef.get(row.ref) ?? DEFAULT_POT_AUDIENCE;
+                  return (
+                    <span key={row.ref} className="res-chip s">
+                      <span className="lbl" title={row.ref}>{slotChipLabel(row)}</span>
+                      <span className="res-step" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="stepbtn"
+                          disabled={busy || row.quantity <= 1}
+                          aria-label={`Fewer ${row.axis.model}·${row.axis.effort} pot-wide seats`}
+                          onClick={() => void stepPotSlot(row, -1)}
+                        >
+                          −
+                        </button>
+                        <button
+                          type="button"
+                          className="stepbtn"
+                          disabled={busy || row.quantity >= AGENT_SLOT_MAX_QUANTITY}
+                          aria-label={`More ${row.axis.model}·${row.axis.effort} pot-wide seats`}
+                          onClick={() => void stepPotSlot(row, +1)}
+                        >
+                          +
+                        </button>
+                      </span>
+                      <span onClick={(e) => e.stopPropagation()}>
+                        <Select
+                          value={audience}
+                          onChange={(value) => void setPotAudience(row, value as AllotmentAudience)}
+                          options={[
+                            { value: 'trusted-members', label: 'Trusted members' },
+                            { value: 'whole-pot', label: 'Whole pot' },
+                          ]}
+                          disabled={busy}
+                          ariaLabel={`${row.axis.model}·${row.axis.effort} pot-wide audience`}
+                          triggerClassName="res-acct res-audience"
+                        />
+                      </span>
+                      <span onClick={(e) => e.stopPropagation()}>
+                        <Select
+                          value={row.axis.account}
+                          onChange={(value) => void retargetPotSlotAccount(row, value)}
+                          options={[{ value: AUTO_ACCOUNT, label: 'AUTO' }]}
+                          disabled={busy}
+                          ariaLabel={`${row.axis.model}·${row.axis.effort} pot-wide seats gateway account`}
+                          triggerClassName="res-acct"
+                        />
+                      </span>
+                      <button
+                        type="button"
+                        className="x"
+                        aria-label={`Remove ${slotChipLabel(row)} pot-wide seats`}
+                        onClick={(e) => { e.stopPropagation(); void unassignPot(row.ref, 'agent_slot'); }}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="res-empty">
+              Pot-wide seat offers need a single shared hive for this workspace — none configured. Fleet-scoped
+              seats above still work; join or publish a shared hive to enable a standing pot-wide offer.
+            </div>
+          )}
         </div>
 
         {/* D-001 group 1: the SUPPLY pool — what the autonomous loop (and the

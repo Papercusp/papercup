@@ -402,6 +402,18 @@
 }
 .res-chip .res-acct:disabled { opacity: 0.5; cursor: default; }
 
+/* ── P-002: pot-wide seat offers (the "Whole pot" card) ── */
+.res-pot {
+  border-left-color: var(--warn, #fbbf24);
+}
+.res-pot .who {
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+}
+.res-chip .res-audience {
+  min-width: 96px;
+  max-width: 140px;
+}
+
 .res-chip .x {
   cursor: pointer;
   border: 0;
