@@ -87,6 +87,22 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     expect(readWatchdogFlowTicks).toHaveBeenCalledWith('ws-test');
   });
 
+  it('strips the per-item rank/impact ranking metadata off the wire (WI-5412 slimming)', async () => {
+    // An open needs-human item lands in humanQueue, where the ranker attaches
+    // rank + impact — the resolver must drop both from the wire (the UI never
+    // renders them; the improvements:digest TOOL keeps the full breakdown).
+    readImprovementItems.mockResolvedValue([
+      { id: 'EI-9', kind: 'bug', scope: 'operator', title: 'needs a human', state: 'open', createdAt: recentIso(1), needsHuman: true },
+    ]);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+    const rows = (await resolveNamedQueryV2('learning.improvements', {})) as Array<ImprovementDigest>;
+    expect(rows[0].humanQueue.length).toBeGreaterThan(0);
+    for (const item of rows[0].humanQueue) {
+      expect(item).not.toHaveProperty('rank');
+      expect(item).not.toHaveProperty('impact');
+    }
+  });
+
   it('degrades to an empty watchdog block when the tick read fails (no 500 for the tab)', async () => {
     readImprovementItems.mockResolvedValue(items);
     readWatchdogFlowTicks.mockRejectedValue(new Error('pg down'));

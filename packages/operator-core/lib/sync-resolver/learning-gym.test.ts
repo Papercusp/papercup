@@ -13,9 +13,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const listRecentProposalsForWorkspace = vi.fn();
 const listAutoloopsForWorkspace = vi.fn();
+const listScoutArchiveSeeds = vi.fn();
 vi.mock('../gym/control-plane', () => ({
   listRecentProposalsForWorkspace: (...a: unknown[]) => listRecentProposalsForWorkspace(...a),
   listAutoloopsForWorkspace: (...a: unknown[]) => listAutoloopsForWorkspace(...a),
+  listScoutArchiveSeeds: (...a: unknown[]) => listScoutArchiveSeeds(...a),
 }));
 
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
@@ -30,6 +32,7 @@ import { resolveNamedQueryV2 } from './index';
 beforeEach(() => {
   listRecentProposalsForWorkspace.mockReset().mockResolvedValue([]);
   listAutoloopsForWorkspace.mockReset().mockResolvedValue([]);
+  listScoutArchiveSeeds.mockReset().mockResolvedValue([]);
 });
 
 describe('learning.gym — per-Hive lens (P-041)', () => {
@@ -43,6 +46,10 @@ describe('learning.gym — per-Hive lens (P-041)', () => {
       { tag: 'tx' },
       { workspaceId: 'ws-test', harnessSlug: 'my-hive' },
     );
+    expect(listScoutArchiveSeeds).toHaveBeenCalledWith(
+      { tag: 'tx' },
+      { workspaceId: 'ws-test', harnessSlug: 'my-hive' },
+    );
   });
 
   it('omits harnessSlug entirely with no hive (cross-harness workspace rollup)', async () => {
@@ -52,17 +59,29 @@ describe('learning.gym — per-Hive lens (P-041)', () => {
       { workspaceId: 'ws-test', limit: 50 },
     );
     expect(listAutoloopsForWorkspace).toHaveBeenCalledWith({ tag: 'tx' }, { workspaceId: 'ws-test' });
+    expect(listScoutArchiveSeeds).toHaveBeenCalledWith({ tag: 'tx' }, { workspaceId: 'ws-test' });
   });
 
-  it('returns the 1-element { proposals, autoloops } snapshot', async () => {
+  it('returns the 1-element { proposals, autoloops, archiveSeeds } snapshot', async () => {
     listRecentProposalsForWorkspace.mockResolvedValue([{ id: 'p1' }]);
     listAutoloopsForWorkspace.mockResolvedValue([{ harnessSlug: 'my-hive' }]);
+    listScoutArchiveSeeds.mockResolvedValue([{ candidateId: 'SP-002' }]);
     const rows = (await resolveNamedQueryV2('learning.gym', { hive: 'my-hive' })) as Array<{
       proposals: unknown[];
       autoloops: unknown[];
+      archiveSeeds: unknown[];
     }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].proposals).toEqual([{ id: 'p1' }]);
     expect(rows[0].autoloops).toEqual([{ harnessSlug: 'my-hive' }]);
+    expect(rows[0].archiveSeeds).toEqual([{ candidateId: 'SP-002' }]);
+  });
+
+  it('archive-seed read failure degrades to [] (WI-5412) — never fails the snapshot', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    listScoutArchiveSeeds.mockRejectedValue(new Error('no archive table'));
+    const rows = (await resolveNamedQueryV2('learning.gym', {})) as Array<{ archiveSeeds: unknown[] }>;
+    expect(rows[0].archiveSeeds).toEqual([]);
+    warn.mockRestore();
   });
 });

@@ -131,6 +131,7 @@ describe('readScoutSnapshot', () => {
         origin: null,
         cycleId: null,
         addressesPatternRefs: [],
+        harnessSlug: null,
       },
       {
         ideaId: 'scout-idea-analogical-1-0',
@@ -146,6 +147,7 @@ describe('readScoutSnapshot', () => {
         origin: 'scout',
         cycleId: 'scout-42',
         addressesPatternRefs: ['wi:EI-100', 'fact:workspace:some-standing-fact'],
+        harnessSlug: null,
       },
     ]);
   });
