@@ -22,7 +22,7 @@ export default defineTool({
     when: "A targeted rubric improvement: fold a new replication-drill variant into one criterion, sharpen one model/driftMarkers paragraph, or point methodRef at a runbook — without resubmitting the whole document.",
     notWhen:
       'Adding/removing criteria, renaming keys, or changing rating scales — those reshape grading history: use rubrics:propose (whole-document) so the loss-guards see the full picture.',
-    chaining: 'rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` like propose/ratify.',
+    chaining: 'rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` and `replicationSqlCheck` like propose/ratify.',
     seeAlso: ['rubrics:propose (whole-document revision)', 'rubrics:get (read before amending)'],
   },
   capability: 'coord:write',
