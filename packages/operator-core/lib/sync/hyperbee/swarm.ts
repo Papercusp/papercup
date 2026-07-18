@@ -1028,6 +1028,13 @@ export async function joinHarnessSwarm(
     (socket as { once?: (ev: string, fn: () => void) => unknown })?.once?.('close', () => {
       fastWindowStartMs = Date.now();
       liveConnectionCount = Math.max(0, liveConnectionCount - 1);
+      // WI-5355: this socket genuinely closed (Hyperswarm's own `close` handler
+      // prunes it from both `connections` and the internal `_allConnections` in
+      // the SAME synchronous tick — verified against node_modules/hyperswarm —
+      // so a real close never needs eviction help). Prune our own bookkeeping so
+      // a later forceRejoinNow doesn't waste a destroy() on an already-dead ref.
+      mySockets.delete(socket);
+      swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
     });
     const remotePublicKeyHex = extractPublicKeyHex(peerInfo);
     const remoteIp = extractRemoteIp(socket);
@@ -1172,12 +1179,64 @@ export async function joinHarnessSwarm(
   // escalation ladder tick and by `handle.forceRejoin()` — can reassign it.
   let discovery: ReturnType<HyperswarmLike['join']> | undefined;
   /**
+   * WI-5355: true when `socket` currently holds ZERO live registrations across
+   * EVERY harness/topic sharing it (the cross-harness `swarmJoinSocketTopics`
+   * registry) — i.e. every join that once considered it connected has since
+   * seen it close, yet the socket OBJECT itself never fired its own `close`
+   * (a true zombie: still open at the transport layer, doing nothing for
+   * anyone). Mirrors topic-gossip.ts's `isSocketIdleAcrossAllTopics` — see
+   * that function's doc for the full hyperswarm `_handlePeer`/`_allConnections`
+   * trace this is defending against.
+   */
+  const isSocketIdleAcrossAllTopics = (socket: unknown): boolean => {
+    const set = swarmJoinSocketTopics.get(socket as object);
+    return !set || set.size === 0;
+  };
+
+  /**
+   * WI-5355: best-effort evict a zombie socket — one every harness/topic
+   * sharing it has already stopped relying on, but that never fired its own
+   * `close` — so the NEXT `leave()+join()` can result in a genuinely fresh
+   * connection attempt instead of `_handlePeer` silently no-op'ing against a
+   * stale `_allConnections` entry (confirmed by reading node_modules/hyperswarm:
+   * `connections`/`_allConnections` are only pruned together, synchronously, on
+   * the socket's OWN `close` event — a socket that never closes blocks
+   * rediscovery of that peer forever). Duck-typed `.destroy()`, same convention
+   * hyperswarm's own duplicate-connection handling uses internally
+   * (`_handleServerConnection`'s `existing.destroy(...)`).
+   */
+  const evictIdleZombieSocket = (socket: unknown): void => {
+    try {
+      (socket as { destroy?: (err?: Error) => void }).destroy?.(
+        new Error('papercusp: WI-5355 zombie-socket eviction on forced topic rejoin'),
+      );
+    } catch {
+      /* best-effort — a socket that can't be destroyed is left for Hyperswarm's own cleanup */
+    }
+    mySockets.delete(socket);
+    swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
+  };
+
+  /**
    * The actual leave+rejoin action, shared by the severed-link escalation
    * tick (rung (a)) and the external `forceRejoin()` lever on the handle
    * (rung (b) callers — see the SwarmHandle.forceRejoin doc). A fresh join
    * re-arms the fast self-heal window too, same as a cold boot would.
+   *
+   * WI-5355: rung (a) fires only once THIS join's own `liveConnectionCount`
+   * hits zero, which (per the trace above) means `mySockets` is already empty
+   * by the time we get here — nothing to evict, byte-identical to before this
+   * fix. Rung (b) — `handle.forceRejoin()` — is exactly the opposite case: its
+   * own doc's motivating scenario is a socket that stays live (never closes)
+   * while replication silently dies, i.e. precisely the socket still sitting in
+   * `mySockets`. Sweep it (through the cross-harness idle check) BEFORE
+   * leave()+join() so the stale `_allConnections`/`connections` entry can't
+   * block the fresh join from ever attempting a real reconnect.
    */
   async function forceRejoinNow(): Promise<void> {
+    for (const socket of mySockets) {
+      if (isSocketIdleAcrossAllTopics(socket)) evictIdleZombieSocket(socket);
+    }
     await Promise.resolve(opts.swarm.leave(opts.topic)).catch(() => {});
     discovery = opts.swarm.join(opts.topic, { server: true, client: true });
     fastWindowStartMs = Date.now();
