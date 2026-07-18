@@ -267,6 +267,46 @@ export async function listAutoloopsForWorkspace(
   return rows.map(mapAutoloop);
 }
 
+/** One Scout-seeded MAP-Elites archive niche (source='scout') — the landing
+ *  place of a gym-rail routed idea (`gym:SP-…`), which never becomes a
+ *  gym_proposals row (WI-5412 item 4: the Ideas-view gym pill referenced these
+ *  while the Gym view listed only prompt-optimization challengers). */
+export interface GymArchiveSeedRow {
+  candidateId: string;
+  nicheKey: string;
+  fitness: number;
+  rationale: string | null;
+  /** epoch ms. */
+  updatedAt: number;
+  harnessSlug: string;
+}
+
+/** Scout-seeded archive niches, freshest first. A seed absent here was either
+ *  never admitted or has been superseded by a stronger candidate — its niche
+ *  row now carries the winner's candidate_id. */
+export async function listScoutArchiveSeeds(
+  sql: Sql,
+  q: { workspaceId: string; harnessSlug?: string; limit?: number },
+): Promise<GymArchiveSeedRow[]> {
+  const limit = Math.min(Math.max(q.limit ?? 30, 1), 200);
+  const rows = (await sql`
+    SELECT candidate_id, niche_key, fitness, rationale, updated_at, harness_slug
+      FROM harness_shared.gym_qd_archive
+     WHERE workspace_id = ${q.workspaceId}
+       AND source = 'scout'
+       ${q.harnessSlug ? sql`AND harness_slug = ${q.harnessSlug}` : sql``}
+     ORDER BY updated_at DESC
+     LIMIT ${limit}`) as Row[];
+  return rows.map((r) => ({
+    candidateId: String(r.candidate_id ?? ''),
+    nicheKey: String(r.niche_key ?? ''),
+    fitness: Number(r.fitness ?? 0),
+    rationale: typeof r.rationale === 'string' && r.rationale ? r.rationale : null,
+    updatedAt: Number(r.updated_at ?? 0),
+    harnessSlug: String(r.harness_slug ?? ''),
+  }));
+}
+
 export interface DecideResult {
   ok: boolean;
   reason?: string;

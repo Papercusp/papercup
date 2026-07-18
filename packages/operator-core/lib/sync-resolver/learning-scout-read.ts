@@ -231,6 +231,20 @@ export interface ScoutDigestSnapshot {
   truncated: boolean;
 }
 
+/** Improve-stage funnel (WI-5412 item 3): ideas → filed → claimed → done over
+ *  the improvement rail — grades teach the generator; this is what the routed
+ *  work actually did. */
+export interface ScoutImproveFunnel {
+  /** Every routed idea (all rails) — the funnel mouth. */
+  routed: number;
+  /** Improvement-rail rows (wi: refs filed as work). */
+  filed: number;
+  /** Filed items currently open AND assigned. */
+  claimed: number;
+  /** Filed items resolved/closed. */
+  done: number;
+}
+
 export interface ScoutSnapshot {
   totalRouted: number;
   railCounts: ScoutRailCount[];
@@ -264,6 +278,8 @@ export interface ScoutSnapshot {
    * Best-effort: an unresolvable ref simply has no entry.
    */
   groundingTitles: Record<string, string>;
+  /** Improve-stage funnel (WI-5412 item 3) — null when the ledger read degrades. */
+  improveFunnel: ScoutImproveFunnel | null;
   /**
    * Live firing state (learning-tab-visibility P-001): the accumulator's
    * per-lane pending counts + the weighted score vs the gate's threshold.
@@ -768,5 +784,50 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
   }
 
   const health = evaluateIdeasDriftMarkers({ ticks, recent, scoutLensSample });
-  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles, cadence, drafts, digest };
+  // Improve-funnel leg (WI-5412 item 3): ideas → filed → claimed → done over
+  // the improvement rail — the routed wi: refs joined to their live issue
+  // state. Best-effort like every other leg.
+  let improveFunnel: ScoutImproveFunnel | null = null;
+  try {
+    const funnelRows = (await sql`
+      SELECT count(*)::int AS filed,
+             count(*) FILTER (WHERE ei.state = 'open' AND ei.assignee IS NOT NULL)::int AS claimed,
+             count(*) FILTER (WHERE ei.state IN ('resolved', 'closed'))::int AS done
+        FROM harness_shared.scout_routed_ideas sri
+        LEFT JOIN harness_shared.engineer_issues ei
+          ON ei.workspace_id = ${workspaceId}
+         AND ei.issue_id = substring(sri.routed_ref FROM 4)
+       WHERE sri.workspace_id = ${workspaceId}
+         AND sri.rail = 'improvement'
+         AND sri.routed_ref LIKE 'wi:%'
+    `) as Array<Record<string, unknown>>;
+    const row = funnelRows[0];
+    if (row) {
+      improveFunnel = {
+        routed: totalRouted,
+        filed: Number(row.filed ?? 0),
+        claimed: Number(row.claimed ?? 0),
+        done: Number(row.done ?? 0),
+      };
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] improve-funnel read failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return {
+    totalRouted,
+    railCounts,
+    recent,
+    lastTick,
+    ticks,
+    health,
+    lensWeights,
+    groundingTitles,
+    cadence,
+    drafts,
+    digest,
+    improveFunnel,
+  };
 }

@@ -265,6 +265,13 @@ export default function LearningTab() {
     hives.find((candidate) => candidate.slug === harnessSlug)?.slug ||
     hives[0]?.slug ||
     "";
+  // WI-5412 perf: a hive-aware view must NOT fetch until the hive lens is
+  // resolved — firing with {} and re-firing with {hive} once the hive list
+  // landed made the first click pay the heavy improvements read TWICE,
+  // sequentially. An explicit ?lhive= is ready immediately; otherwise wait for
+  // the hive list (data present, even if empty ⇒ workspace-wide is the real
+  // answer, not a transient).
+  const hiveReady = !hiveAware || Boolean(lhive) || hiveList.data !== undefined;
   const activeStage = stageForView(view);
   const activeStageMeta =
     STAGES.find((stage) => stage.id === activeStage) ?? null;
@@ -531,6 +538,7 @@ export default function LearningTab() {
               <LearningViewContent
                 view={mountedView}
                 hive={hive}
+                hiveReady={hiveReady}
                 rubricId={rubricId}
                 onRubricSelect={setRubricId}
                 onStatus={reportStatus}
@@ -549,12 +557,14 @@ export default function LearningTab() {
 function LearningViewContent({
   view,
   hive,
+  hiveReady,
   rubricId,
   onRubricSelect,
   onStatus,
 }: {
   view: LView;
   hive: string;
+  hiveReady: boolean;
   rubricId: string | null;
   onRubricSelect: (id: string | null) => void;
   onStatus: (view: LView, status: LearningViewStatus) => void;
@@ -600,10 +610,10 @@ function LearningViewContent({
     );
   }
   if (view === "gym") {
-    return <GymView hive={hive} onStatus={reportViewStatus} />;
+    return <GymView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
   }
   if (view === "improvements") {
-    return <ImprovementsView hive={hive} onStatus={reportViewStatus} />;
+    return <ImprovementsView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
   }
   if (view === "benchmark") {
     return <ApiaryView onStatus={reportViewStatus} />;
@@ -625,7 +635,7 @@ function LearningViewContent({
   if (view === "throughput") {
     return <ThroughputView onStatus={reportViewStatus} />;
   }
-  return <LearningsView hive={hive} onStatus={reportViewStatus} />;
+  return <LearningsView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
 }
 
 // ─── Release-readiness strip (learning-tab-alignment-2026-07-13 P-001) ───────
@@ -728,17 +738,22 @@ function ageLabel(days: number): string {
 
 function ImprovementsView({
   hive,
+  hiveReady,
   onStatus,
 }: {
   hive: string;
+  hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
 }) {
   // P-042: the tab-level hive lens scopes the feed to one hive's member-harness
-  // improvements; '' ⇒ the workspace-wide feed (no hive arg).
+  // improvements; '' ⇒ the workspace-wide feed (no hive arg). Gated on
+  // hiveReady (WI-5412): this is the tab's heaviest read — firing it before
+  // the lens resolves paid it twice on every first click.
   const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({
     queryName: "learning.improvements",
     args: hive ? { hive } : {},
     staleTime: 30_000,
+    enabled: hiveReady,
   });
   const digest = sync.data?.[0];
   const [lane, setLane] = useQueryState(
@@ -949,18 +964,69 @@ function ImprovementsView({
           ))}
         </ul>
       ) : (
-        <ul className="pc-learning__list">
-          {rows.map((it) => (
-            <ImprovementRow
-              key={it.id}
-              item={it}
-              selected={it.id === lsel}
-              onDismissSelect={() => void setLsel(null)}
-            />
-          ))}
-        </ul>
+        <WindowedImprovementList
+          rows={rows}
+          lsel={lsel}
+          onDismissSelect={() => void setLsel(null)}
+        />
       )}
     </section>
+  );
+}
+
+/** First page renders immediately; the long tail mounts only on demand
+ *  (WI-5412 perf: ~380 un-virtualized rows mounted at once was a real slice of
+ *  the first-click cost). The deep-link target (?lsel) is hoisted into the
+ *  first page so a selection is never hidden behind the disclosure. */
+const IMPROVEMENTS_PAGE = 60;
+
+function WindowedImprovementList({
+  rows,
+  lsel,
+  onDismissSelect,
+}: {
+  rows: ScoredItem[];
+  lsel: string | null;
+  onDismissSelect: () => void;
+}) {
+  const { page, rest } = useMemo(() => {
+    const head = rows.slice(0, IMPROVEMENTS_PAGE);
+    const tail = rows.slice(IMPROVEMENTS_PAGE);
+    if (!lsel) return { page: head, rest: tail };
+    const selectedInTail = tail.find((it) => it.id === lsel);
+    if (!selectedInTail) return { page: head, rest: tail };
+    return {
+      page: [selectedInTail, ...head],
+      rest: tail.filter((it) => it.id !== lsel),
+    };
+  }, [rows, lsel]);
+  return (
+    <>
+      <ul className="pc-learning__list">
+        {page.map((it) => (
+          <ImprovementRow
+            key={it.id}
+            item={it}
+            selected={it.id === lsel}
+            onDismissSelect={onDismissSelect}
+          />
+        ))}
+      </ul>
+      {rest.length > 0 ? (
+        <LearningDisclosure label="Earlier items" count={rest.length}>
+          <ul className="pc-learning__list">
+            {rest.map((it) => (
+              <ImprovementRow
+                key={it.id}
+                item={it}
+                selected={it.id === lsel}
+                onDismissSelect={onDismissSelect}
+              />
+            ))}
+          </ul>
+        </LearningDisclosure>
+      ) : null}
+    </>
   );
 }
 
@@ -1188,9 +1254,19 @@ interface GymAutoloop {
   spentUsd: number;
   lastCycle: number | null;
 }
+interface GymArchiveSeed {
+  candidateId: string;
+  nicheKey: string;
+  fitness: number;
+  rationale: string | null;
+  updatedAt: number;
+  harnessSlug: string;
+}
 interface GymSnapshot {
   proposals: GymProposal[];
   autoloops: GymAutoloop[];
+  /** Scout-seeded MAP-Elites niches (WI-5412 item 4) — absent on older server snapshots. */
+  archiveSeeds?: GymArchiveSeed[];
 }
 
 function whenLabel(ms: number): string {
@@ -1219,21 +1295,26 @@ function deltaLabel(d: number | null): {
 
 function GymView({
   hive,
+  hiveReady,
   onStatus,
 }: {
   hive: string;
+  hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
 }) {
   // P-042: scope the gym rollup to one hive's gym harness; '' ⇒ the whole
-  // workspace (every gym harness).
+  // workspace (every gym harness). Gated on hiveReady (WI-5412) so the first
+  // click never pays a wrong-lens fetch + refetch.
   const sync = useSyncQuery<GymSnapshot>({
     queryName: "learning.gym",
     args: hive ? { hive } : {},
     staleTime: 30_000,
+    enabled: hiveReady,
   });
   const snap = sync.data?.[0];
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
+  const archiveSeeds = snap?.archiveSeeds ?? [];
   const activeAutoloops = autoloops.filter(
     (autoloop) => autoloop.enabled || autoloop.status === "running",
   );
@@ -2822,6 +2903,7 @@ export function ScoutView({
   const [, setCreateView] = useQueryState("view", parseAsString);
   const [, setPlanSel] = useQueryState("plan", parseAsString);
   const [, setLviewRaw] = useQueryState("lview", parseAsString);
+  const [, setLhiveRaw] = useQueryState("lhive", parseAsString);
   const [, setLane] = useQueryState("lane", parseAsString);
   const [, setSrcSel] = useQueryState("lsrc", parseAsString);
   const [, setLsel] = useQueryState("lsel", parseAsString);
@@ -2841,6 +2923,11 @@ export function ScoutView({
       void setCreateView("plans");
       void setTab("plans");
     } else if (item.rail === "gym") {
+      // WI-5412 item 4: carry the idea's hive so the Gym view opens on the
+      // seed's data, not the default hive's (empty) challengers. The ledger
+      // doesn't stamp harness_slug consistently (EI-10520) — when absent,
+      // navigate without touching the lens.
+      if (item.harnessSlug) void setLhiveRaw(item.harnessSlug);
       void setLviewRaw("gym");
     } else if (item.rail === "instance") {
       void setLviewRaw("benchmark");
@@ -3268,6 +3355,36 @@ export function ScoutView({
         </div>
       ) : null}
 
+      {/* Improve-stage funnel (WI-5412 item 3): ideas → filed → claimed → done
+          — what the routed work actually did, distinct from grading (which
+          teaches the generator). Server-derived (improveFunnel leg). */}
+      {snap?.improveFunnel ? (
+        <div
+          className="pc-learning__improvementflow pc-learning__improvementflow--funnel"
+          aria-label="Idea-to-work funnel"
+        >
+          <span title="Every idea a cycle routed onto a rail (work item, gym seed, plan, benchmark).">
+            <small>Ideas routed</small>
+            <strong>{snap.improveFunnel.routed}</strong>
+          </span>
+          <i aria-hidden />
+          <span title="Routed onto the improvement rail — filed as a work item.">
+            <small>Filed</small>
+            <strong>{snap.improveFunnel.filed}</strong>
+          </span>
+          <i aria-hidden />
+          <span title="Filed items currently claimed by an agent (open + assigned).">
+            <small>Claimed</small>
+            <strong>{snap.improveFunnel.claimed}</strong>
+          </span>
+          <i aria-hidden />
+          <span className="is-good" title="Filed items resolved or closed.">
+            <small>Done</small>
+            <strong>{snap.improveFunnel.done}</strong>
+          </span>
+        </div>
+      ) : null}
+
       {lensEntries.length > 0 ? (
         <LearningDisclosure label="Lens weights" count={lensEntries.length}>
           <div className="pc-learning__flow" aria-label="Lens sampling weights">
@@ -3378,14 +3495,24 @@ export function ScoutView({
             </button>
           ) : null}
           {reviewedItems.length > 0 ? (
-            <LearningDisclosure
-              label="Reviewed ideas"
-              count={reviewedItems.length}
-            >
-              <ul className="pc-learning__list">
-                {reviewedItems.map(renderIdeaRow)}
-              </ul>
-            </LearningDisclosure>
+            <>
+              {/* WI-5412 item 3: "graded", not "reviewed" — the 1–5 stars teach
+                  the GENERATOR (lens weights); routing to a rail already
+                  happened at cycle time. The old label read as an acceptance
+                  step it never was. */}
+              <LearningDisclosure
+                label="Graded ideas"
+                count={reviewedItems.length}
+              >
+                <p className="pc-learning__gradednote">
+                  Grades teach the generator — routing already happened when
+                  the cycle fired.
+                </p>
+                <ul className="pc-learning__list">
+                  {reviewedItems.map(renderIdeaRow)}
+                </ul>
+              </LearningDisclosure>
+            </>
           ) : null}
         </>
       )}
