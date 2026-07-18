@@ -65,6 +65,21 @@ export interface OwnHeadPublishTickInput {
   /** This device's raw-32 Ed25519 pubkey, base64 (the namespace key). */
   devicePubkeyBase64: string;
   publishGuardCaps?: PublishGuardCaps;
+  /**
+   * WI-5395 follow-on (genesis-publish baseline): the sha of content ALREADY
+   * EXPOSED outside this machine (e.g. the GitHub origin's branch tip), used as
+   * the G-10 guard baseline ONLY on a FIRST-EVER publish (priorSha null).
+   *
+   * Without it, genesis judges `(null, head]` — the repo's ENTIRE history — so
+   * any pre-existing repo above the flood caps (papercusp: 200k+ objects vs the
+   * 50k cap) is refused forever and can never onboard onto the hive-git plane.
+   * Content the GitHub remote already serves to every hive member is not NEW
+   * exposure; only `(alreadyExposed, head]` is. The caller must VERIFY the
+   * baseline is an ancestor of head before passing it (git-sync-action does:
+   * remote-tracking ref + merge-base --is-ancestor). Ignored after genesis —
+   * incremental publishes keep the strict namespace-prior baseline.
+   */
+  genesisBaselineSha?: string | null;
   runGit?: RunGit;
 }
 
@@ -146,11 +161,16 @@ export async function runOwnHeadPublishTick(
 
   // G-10: judge the (prior, head] range BEFORE the ref makes it servable. On a
   // rewound/rebased head this judges the new-side commits, same as announce.
+  // Genesis (priorSha null): use the caller-verified already-exposed baseline
+  // when given, so onboarding a pre-existing GitHub-backed repo judges only the
+  // genuinely unexposed delta instead of refusing the whole history (see
+  // genesisBaselineSha).
+  const guardBaseline = priorSha ?? input.genesisBaselineSha ?? null;
   let guard: PublishGuardResult;
   try {
     guard = await checkPublishGuard({
       repoPath,
-      fromOid: priorSha,
+      fromOid: guardBaseline,
       toOid: headSha,
       caps: input.publishGuardCaps,
       runGit,

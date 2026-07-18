@@ -143,7 +143,8 @@ export interface WorkOfferStoreRecord {
 export const WORK_OFFER_STORE_SIG_DOMAIN = 'papercusp-work-offer-store-v1';
 
 /** Mirrors fleet-directory-schema's slug fence — an offer must only ever name
- *  fleets whose scope ids parse. */
+ *  fleets whose scope ids parse. Reused verbatim for potSlug (P-001): a pot
+ *  slug is a shared-hive home slug, same shape as a fleet slug. */
 const FLEET_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 const FLEET_SLUG_MAX = 100;
 /** No '/' (the fed key is `<uid>/<offerId>` and the projection's delete parses
@@ -371,7 +372,8 @@ export function coerceWorkOfferStoreRecord(
     record: {
       offerId: r.offerId,
       publisherGithubUserId: r.publisherGithubUserId,
-      fleetSlug: r.fleetSlug,
+      fleetSlug: fleetSlugRaw as string | null,
+      potSlug: potSlugRaw as string | null,
       kind: r.kind,
       status: r.status as OfferStoreStatus,
       cancelReason,

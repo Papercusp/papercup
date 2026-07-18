@@ -106,6 +106,7 @@ describe('resolveRemoteSeatInventory', () => {
   });
 
   it('fails soft to the unshared summary when the scope resolution throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const resolveScope = vi.fn(async () => {
       throw new Error('boom');
     });
@@ -115,6 +116,7 @@ describe('resolveRemoteSeatInventory', () => {
   });
 
   it('fails soft to the unshared summary when the offer-store read throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const resolveScope = vi.fn(async () => ({ kind: 'one' as const, homeSlug: HOME }));
     const listOffers = vi.fn(async () => {
       throw new Error('pg down');

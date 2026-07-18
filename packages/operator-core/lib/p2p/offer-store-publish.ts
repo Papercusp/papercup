@@ -84,28 +84,40 @@ function defaultHostLabel(): string | null {
 const AUTO_ACCOUNT = 'AUTO';
 
 /**
- * The deterministic seat-offer id for one (machine, fleet, trio): stable across
- * re-delegations so the allotment layer's idempotent upsert stays idempotent at
- * the offer layer, and machine-scoped (the device pubkey is in the hash) so two
- * machines of the SAME user never collide. The raw account string participates
- * in the hash ONLY — it never appears in the id or the record (D-005/M19).
+ * The deterministic seat-offer id for one (machine, grantee, trio): stable
+ * across re-delegations so the allotment layer's idempotent upsert stays
+ * idempotent at the offer layer, and machine-scoped (the device pubkey is in
+ * the hash) so two machines of the SAME user never collide. The raw account
+ * string participates in the hash ONLY — it never appears in the id or the
+ * record (D-005/M19). P-001: the grantee scope (`fleet:<slug>` vs
+ * `pot:<slug>`) is folded into the hash input so a fleet-scoped and a
+ * pot-scoped offer of the SAME trio+account never collide on id, and
+ * re-delegating with the SAME grantee stays a stable upsert.
  */
 export function seatOfferId(args: {
-  fleetSlug: string;
+  fleetSlug?: string | null;
+  potSlug?: string | null;
   model: string;
   effort: string;
   account: string;
   devicePubkey: string;
 }): string {
+  const scope = args.potSlug ? `pot:${args.potSlug}` : `fleet:${args.fleetSlug ?? ''}`;
   const digest = createHash('sha256')
-    .update([args.fleetSlug, args.model, args.effort, args.account, args.devicePubkey].join('|'), 'utf8')
+    .update([scope, args.model, args.effort, args.account, args.devicePubkey].join('|'), 'utf8')
     .digest('hex');
   return `seat-${digest.slice(0, 16)}`;
 }
 
 export interface PublishSeatOfferOpts {
   workspaceId: string | null | undefined;
-  fleetSlug: string;
+  /** The grantee — exactly one of fleetSlug/potSlug (P-001; mirrors resource:delegate). */
+  fleetSlug?: string;
+  /** Pot-scoped grantee (P-001): publish a standing seat-offer to the pot's
+   *  hive topic (any fleet in the pot may spend it) instead of one fleet owner. */
+  potSlug?: string;
+  /** Required iff potSlug is set (D-002); ignored for a fleet-scoped offer. */
+  audience?: 'trusted-members' | 'whole-pot';
   /** The agent_slot trio as delegated (account may be 'AUTO' or a concrete id —
    *  it feeds the offer-id hash only, never the wire). */
   model: string;
@@ -147,19 +159,39 @@ export async function publishSeatOfferForDelegation(
   const resolveHostLabel = deps.resolveHostLabel ?? defaultHostLabel;
 
   if (!opts.workspaceId) return { ok: false, skipped: 'no_workspace' };
+
+  // P-001 grantee: exactly one of fleetSlug/potSlug. Best-effort/fire-and-forget
+  // per the header, but a grantee mixup is an AUTHORING bug (the caller —
+  // resource:delegate — already validated this at the store layer), so it is a
+  // loud `error`, not a benign `skipped`.
+  const fleetSlug = opts.fleetSlug?.trim() || undefined;
+  const potSlug = opts.potSlug?.trim() || undefined;
+  if (!fleetSlug && !potSlug) {
+    return { ok: false, error: 'grantee_required: exactly one of fleetSlug/potSlug is required' };
+  }
+  if (fleetSlug && potSlug) {
+    return { ok: false, error: 'grantee_conflict: fleetSlug and potSlug are mutually exclusive' };
+  }
+  if (potSlug && opts.audience !== 'trusted-members' && opts.audience !== 'whole-pot') {
+    return { ok: false, error: "audience_required: a pot-scoped seat offer requires audience 'trusted-members'|'whole-pot' (D-002)" };
+  }
+
   const scope = await resolveScope(opts.workspaceId);
   // Resolve WHICH hive to advertise the seat in. Default: the sole shared hive.
-  // WI-5211: on a multi-hive workspace the caller MUST disambiguate via
-  // `hiveOverride` — validated against the workspace's real shared-hive set so a
-  // seat can never be published to a private/absent hive.
+  // A pot-scoped delegation names its target hive/pot DIRECTLY via potSlug (P-001
+  // — "the pot's hive topic" IS a shared-hive home slug); a fleet-scoped one on a
+  // multi-hive workspace disambiguates via `hiveOverride` (WI-5211). Either way
+  // it is validated against the workspace's real shared-hive set so a seat can
+  // never be published to a private/absent hive.
   const sharedHomeSlugs =
     scope.kind === 'one' ? [scope.homeSlug] : scope.kind === 'many' ? scope.candidates : [];
+  const disambiguator = potSlug ?? opts.hiveOverride;
   let homeSlug: string;
-  if (opts.hiveOverride) {
-    if (!sharedHomeSlugs.includes(opts.hiveOverride)) {
-      return { ok: false, skipped: `hive_not_shared:${opts.hiveOverride}` };
+  if (disambiguator) {
+    if (!sharedHomeSlugs.includes(disambiguator)) {
+      return { ok: false, skipped: `hive_not_shared:${disambiguator}` };
     }
-    homeSlug = opts.hiveOverride;
+    homeSlug = disambiguator;
   } else if (scope.kind === 'one') {
     homeSlug = scope.homeSlug;
   } else {
@@ -179,7 +211,8 @@ export async function publishSeatOfferForDelegation(
   }
 
   const offerId = seatOfferId({
-    fleetSlug: opts.fleetSlug,
+    fleetSlug,
+    potSlug,
     model: opts.model,
     effort: opts.effort,
     account: opts.account || AUTO_ACCOUNT,
@@ -198,10 +231,12 @@ export async function publishSeatOfferForDelegation(
     return { ok: false, skipped: 'no_offer_to_cancel' };
   }
 
+  const audience = potSlug ? (opts.audience as 'trusted-members' | 'whole-pot') : null;
   const record: WorkOfferStoreRecord = {
     offerId,
     publisherGithubUserId: actor.githubUserId,
-    fleetSlug: opts.fleetSlug,
+    fleetSlug: fleetSlug ?? null,
+    potSlug: potSlug ?? null,
     kind: 'seat',
     status: opts.removed ? 'cancelled' : opts.paused ? 'paused' : 'open',
     cancelReason: opts.removed ? 'delegation-removed' : null,
@@ -216,6 +251,7 @@ export async function publishSeatOfferForDelegation(
           count: Math.max(1, Math.min(1000, Math.trunc(opts.count) || 1)),
           accountScope: (opts.account || AUTO_ACCOUNT).toUpperCase() === AUTO_ACCOUNT ? 'auto' : 'pinned',
           hostLabel: resolveHostLabel(),
+          audience,
         })
       : {
           model: opts.model,
@@ -223,6 +259,7 @@ export async function publishSeatOfferForDelegation(
           count: opts.count,
           accountScope: (opts.account || AUTO_ACCOUNT).toUpperCase() === AUTO_ACCOUNT ? 'auto' : 'pinned',
           hostLabel: resolveHostLabel(),
+          audience,
         },
     // Key position matters: the no-churn gate below compares JSON.stringify of
     // THIS literal against a coerce-parsed record — keep coerce's field order.

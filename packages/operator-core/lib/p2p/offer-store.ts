@@ -54,7 +54,10 @@ export interface StoredWorkOffer {
   signerDevicePubkey: string;
   signature: string;
   recordVersion: number;
-  fleetSlug: string;
+  /** P-001: nullable — a pot-scoped 'seat' offer carries fleetSlug=null instead. */
+  fleetSlug: string | null;
+  /** P-001: the pot-scoped grantee (mutually exclusive with fleetSlug for kind 'seat'). */
+  potSlug: string | null;
   offerKind: string;
   status: string;
   /** HOST-LOCAL refusal (never federated), or null. A non-null disposition means
@@ -71,7 +74,7 @@ function pg(sql?: Sql): Sql {
 // author_pubkey/origin/fed_ts/fed_hlc are owned by the stamp + projection layers
 // (NOT set by the local author), exactly like p2p_fleet_directory.
 const READ_COLS = `workspace_id, harness_slug, publisher_github_user_id, offer_id,
-  record_json, signer_device_pubkey, signature, record_version, fleet_slug,
+  record_json, signer_device_pubkey, signature, record_version, fleet_slug, pot_slug,
   offer_kind, status, local_disposition, fed_hlc, updated_at`;
 
 interface WorkOfferDbRow {
@@ -83,7 +86,8 @@ interface WorkOfferDbRow {
   signer_device_pubkey: string;
   signature: string;
   record_version: string | number;
-  fleet_slug: string;
+  fleet_slug: string | null;
+  pot_slug: string | null;
   offer_kind: string;
   status: string;
   local_disposition: string | null;
@@ -103,6 +107,7 @@ function rowToStored(r: WorkOfferDbRow): StoredWorkOffer {
     signature: r.signature,
     recordVersion: Number(r.record_version),
     fleetSlug: r.fleet_slug,
+    potSlug: r.pot_slug,
     offerKind: r.offer_kind,
     status: r.status,
     localDisposition: r.local_disposition,
@@ -130,6 +135,8 @@ export async function getWorkOffer(
 
 export interface ListWorkOffersFilter {
   fleetSlug?: string;
+  /** P-001: restrict to a pot-scoped grantee (mutually exclusive in practice with fleetSlug). */
+  potSlug?: string;
   status?: OfferStoreStatus;
   kind?: 'work' | 'seat' | 'spawn_request';
   publisherGithubUserId?: number;
@@ -150,6 +157,10 @@ export async function listWorkOffers(
   if (filter?.fleetSlug) {
     params.push(filter.fleetSlug);
     conds.push(`fleet_slug = $${params.length}`);
+  }
+  if (filter?.potSlug) {
+    params.push(filter.potSlug);
+    conds.push(`pot_slug = $${params.length}`);
   }
   if (filter?.status) {
     params.push(filter.status);
@@ -245,18 +256,19 @@ export async function putWorkOffer(input: PutWorkOfferInput): Promise<PutWorkOff
   const rows = (await pg(input.sql).unsafe(
     `INSERT INTO harness_shared.p2p_work_offers
        (workspace_id, harness_slug, publisher_github_user_id, offer_id, record_json,
-        signer_device_pubkey, signature, record_version, fleet_slug, offer_kind,
+        signer_device_pubkey, signature, record_version, fleet_slug, pot_slug, offer_kind,
         status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
      ON CONFLICT (workspace_id, harness_slug, publisher_github_user_id, offer_id) DO UPDATE SET
        record_json          = EXCLUDED.record_json,
        signer_device_pubkey = EXCLUDED.signer_device_pubkey,
        signature            = EXCLUDED.signature,
        record_version       = EXCLUDED.record_version,
        fleet_slug           = EXCLUDED.fleet_slug,
+       pot_slug             = EXCLUDED.pot_slug,
        offer_kind           = EXCLUDED.offer_kind,
        status               = EXCLUDED.status,
-       updated_at           = $12
+       updated_at           = $13
      RETURNING ${READ_COLS}`,
     [
       input.workspaceId,
@@ -268,6 +280,7 @@ export async function putWorkOffer(input: PutWorkOfferInput): Promise<PutWorkOff
       signature,
       record.recordVersion,
       record.fleetSlug,
+      record.potSlug,
       record.kind,
       record.status,
       now,
