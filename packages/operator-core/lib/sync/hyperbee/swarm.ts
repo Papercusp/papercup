@@ -1213,8 +1213,6 @@ export async function joinHarnessSwarm(
     } catch {
       /* best-effort — a socket that can't be destroyed is left for Hyperswarm's own cleanup */
     }
-    mySockets.delete(socket);
-    swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
   };
 
   /**
@@ -1229,14 +1227,22 @@ export async function joinHarnessSwarm(
    * fix. Rung (b) — `handle.forceRejoin()` — is exactly the opposite case: its
    * own doc's motivating scenario is a socket that stays live (never closes)
    * while replication silently dies, i.e. precisely the socket still sitting in
-   * `mySockets`. Sweep it (through the cross-harness idle check) BEFORE
-   * leave()+join() so the stale `_allConnections`/`connections` entry can't
-   * block the fresh join from ever attempting a real reconnect.
+   * `mySockets`. For each such socket: first UNREGISTER this topic's own claim
+   * on it (we've independently decided this topic is done with it — the same
+   * bookkeeping a genuine `close` would perform, just performed proactively
+   * instead of waiting for one that may never come), THEN check the
+   * cross-harness registry — only destroy it if NO other harness/topic still
+   * has a live claim (never touch a socket another join genuinely still needs).
+   * A socket some other harness still relies on is left completely alone; only
+   * our own bookkeeping for it is cleared, so a later close still prunes
+   * cleanly.
    */
   async function forceRejoinNow(): Promise<void> {
     for (const socket of mySockets) {
+      swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
       if (isSocketIdleAcrossAllTopics(socket)) evictIdleZombieSocket(socket);
     }
+    mySockets.clear();
     await Promise.resolve(opts.swarm.leave(opts.topic)).catch(() => {});
     discovery = opts.swarm.join(opts.topic, { server: true, client: true });
     fastWindowStartMs = Date.now();

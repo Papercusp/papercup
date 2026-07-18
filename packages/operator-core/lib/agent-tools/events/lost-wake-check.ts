@@ -17,14 +17,14 @@ import { findLostWakes } from '../../events/await/lost-wake-detect';
 export default defineTool({
   name: 'events:lost-wake-check',
   description:
-    'Read harness_shared.event_awaits and report awaitable event keys whose live real-fire rate is degenerate: a settled-enough key with almost no fired_reason=\'event\' outcomes (mostly \'timeout\'). Each finding is either CONVICTED (an independent witness confirms the underlying condition occurred in the window while the wake did not — a proven lost-wake bug, EI-10800\'s exact class) or a SUSPECT (no declared witness, or the witness could not confirm — a review item, not a proven bug). This is the reader for the await log that tool_invocations could never provide (a parked await settling by timeout is not a tool call).',
+    'Read harness_shared.event_awaits and report awaitable event keys whose live real-fire rate is degenerate: a settled-enough key with almost no fired_reason=\'event\' outcomes (mostly \'timeout\'). Each finding is CONVICTED (an independent witness confirms the condition occurred while the wake did not — a proven lost-wake bug, EI-10800\'s class) or a SUSPECT (no witness, or unconfirmed — a review item, not a proven bug). The reader for the await log tool_invocations cannot provide: an await settling by timeout is not a tool call.',
   guidance: {
     when:
-      'Auditing whether an events:await-based wake path is actually firing on live traffic — especially before trusting that an emit call site is correct, since a lost wake fails silently in the safe-looking direction (the awaiter just... waits). Also the direct check for the "0% real-fire rate" class.',
+      'Auditing whether an events:await wake path actually fires on live traffic — especially before trusting an emit call site, since a lost wake fails silently in the safe-looking direction (the awaiter just waits). Also the direct check for the "0% real-fire rate" class.',
     notWhen:
-      'A key has too few settled awaits (below minSettled) to mean anything — few calls that happened to time out is not evidence. A high timeout rate on a key that legitimately rarely fires (e.g. a failure-path event) is also not by itself a bug — that is exactly why unwitnessed suspects are never reported as convicted.',
+      'A key has too few settled awaits (below minSettled) to mean anything. A high timeout rate on a key that legitimately rarely fires (e.g. a failure-path event) is also not by itself a bug — which is why unwitnessed suspects are never reported as convicted.',
     chaining:
-      'events:lost-wake-check → a CONVICTED finding names the witness evidence: go read the emit call site for that event key (often a fire-and-forget dynamic import that races process teardown, EI-10800\'s shape) and make the emit AWAITED. A SUSPECT with no witness means: add a witness to LOST_WAKE_WITNESSES in events/await/lost-wake-detect.ts (independent evidence the condition occurred), or investigate by hand before concluding anything.',
+      'events:lost-wake-check → a CONVICTED finding names its witness evidence: read the emit call site for that key (often a fire-and-forget dynamic import racing process teardown, EI-10800\'s shape) and make the emit AWAITED. A SUSPECT with no witness: add one to LOST_WAKE_WITNESSES in events/await/lost-wake-detect.ts, or investigate by hand first.',
     seeAlso: ['gates:degenerate-check', 'events:status', 'events:catalog'],
   },
   capability: 'coord:read',
