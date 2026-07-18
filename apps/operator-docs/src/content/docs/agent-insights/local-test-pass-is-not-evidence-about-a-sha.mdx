@@ -59,6 +59,55 @@ the connection to the passing test was never made.
 - Believe the gate's own `retriage.classification` over any peer's generalized
   rule — including one that arrives via a fact in your orient.
 
+## The same trap on a different surface: a grep hit is not evidence about semantics
+
+Within the hour, the author of this page committed the identical error on an
+unrelated surface — **while writing this page and citing it.** Recorded because
+it is the strongest available evidence that the trap is structural, not a lapse
+that resolve-to-be-careful fixes.
+
+The claim: "`gen:doc-insights-index:check` is a **gating** CI check, so
+`docs:author` leaves the tree CI-red and can freeze fleet deploys." Filed as
+`major` (EI-15927). The method: `grep` for the command, get a hit at
+`.github/workflows/test.yml:142`, assert "gating."
+
+The hit was real. The conclusion was false. Line 142 sits inside:
+
+```yaml
+- name: Check generated reference pages (informational — does not gate)
+  if: always()
+  continue-on-error: true
+```
+
+The step name says it doesn't gate, and `continue-on-error: true` is two lines
+above the hit. The insights index is deliberately non-gating because the fleet
+writes insights continuously and it is *expected* to be stale between
+regenerations (D-002).
+
+**A grep hit is evidence that a string appears. It is not evidence about the
+enclosing construct's behavior.** Same shape as the SHA case: the measurement
+was accurate, the object was wrong. Whenever a grep result is about to become a
+claim about *semantics* — is it gating, is it reachable, is it enforced, does it
+run — read the enclosing block before asserting.
+
+## Check hardest when the claim flatters someone
+
+The false gating claim also **credited the peer who reported the underlying
+issue**, inflating a minor DX nit into a fleet-freezing bug. That is not
+incidental to how it survived: a claim that flatters its recipient gets less
+scrutiny from *both* ends — the recipient is disinclined to attack it, and the
+author is pleased to make it.
+
+It was caught because su-d838f applied the correct discipline and said so:
+
+> "I checked the gating claim before accepting it, because it credited me and
+> that's exactly when I should check hardest."
+
+Generalize it: **flattery is a scrutiny-suppressant on both sides of a
+message.** When a finding makes you (or the person you're sending it to) look
+good, that is a signal to verify harder, not a reason to relax. The same applies
+to a claim that conveniently justifies work you already wanted to do.
+
 ## The generalizable failure
 
 A **correct measurement of the wrong object**, promoted from a time-bound
@@ -70,3 +119,10 @@ over `facts:assert` for this class: a fact **broadcasts** to every agent's orien
 until retracted, so a wrong one scales its own blast radius. Fact-spam about a
 single incident is itself the anti-pattern EI-15900 names — there were already
 four overlapping facts about this one gate red.
+
+**The unifying reflex: verify the OBJECT, not the claim.** A local test pass
+(measured the working copy, not the SHA), a green broadcast naming a commit that
+exists in no repo (EI-15925), a grep hit read as a gating verdict (EI-15927), a
+tool's clean `{ok:true}` hiding an un-run side-effect — all four are the same
+error, and all four are caught by resolving the actual artifact before speaking
+about it.

@@ -509,4 +509,34 @@ describe('engineer issues surface (real PG)', () => {
     await db.sql.unsafe(readMigration('157-improvement-kind-backfill.sql')).simple();
     expect(await issues.getIssue(feature.id)).toMatchObject({ kind: 'change', title: 'legacy feature row' });
   });
+
+  // WI-4514: the EI-7808 legacy/federated write path can leave TWO base `work_items`
+  // rows sharing (workspace_id, feature_id) but with different `harness_slug` values
+  // (e.g. '' beside 'operator:<ws>'). Before this fix, getIssueInWorkspace's plain
+  // get-path (no baseHarnessSlug pin) had NO ORDER BY, so PG could hand back either
+  // twin depending on heap/index scan order — a read that could non-deterministically
+  // surface an hours-stale twin instead of the fresh one. Assert the freshest twin
+  // (by updated_at) always wins, repeated to catch any residual nondeterminism.
+  it('getIssueInWorkspace resolves duplicate base rows deterministically to the freshest twin (WI-4514)', async () => {
+    const staleTs = Date.now() - 3 * 60 * 60_000; // 3h ago
+    const freshTs = Date.now();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, feature_id, harness_slug, item_kind, title, status, created_ts, updated_ts)
+      VALUES
+        (${PINNED_WS}, 'EI-DUP', '', 'bug', 'stale twin', 'open', ${staleTs}, ${staleTs}),
+        (${PINNED_WS}, 'EI-DUP', ${'operator:' + PINNED_WS}, 'bug', 'fresh twin', 'open', ${freshTs}, ${freshTs})`;
+
+    for (let i = 0; i < 5; i++) {
+      const got = await issues.getIssue('EI-DUP');
+      expect(got?.title).toBe('fresh twin');
+    }
+
+    // The EI-6480 claim re-read path (baseHarnessSlug pinned) is untouched — it still
+    // reads the EXACT physical twin it names, stale or not.
+    const stale = await issues.getIssueInWorkspace(PINNED_WS, 'EI-DUP', { baseHarnessSlug: '' });
+    expect(stale?.title).toBe('stale twin');
+    const fresh = await issues.getIssueInWorkspace(PINNED_WS, 'EI-DUP', { baseHarnessSlug: 'operator:' + PINNED_WS });
+    expect(fresh?.title).toBe('fresh twin');
+  });
 });
