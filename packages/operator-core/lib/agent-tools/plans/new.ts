@@ -52,6 +52,20 @@ const stringTolerantBool = z.preprocess(
 export const argsSchema = z
   .object({
     harness: harnessArg,
+    workspaceId: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        "EI-1543: explicit opt-in escape hatch for an UNREGISTERED harness (one with no row in " +
+          "harness_shared.harness_registry or harness_shared.projects in ANY workspace) — resolvePlanScope " +
+          "refuses to silently default the workspace (WI-148: a wrong-workspace default once corrupted a " +
+          "named harness's plans), so plans:new otherwise throws for such a harness even though " +
+          "work_items:create succeeds against it. Pass the target workspace id explicitly to write the " +
+          'plan there anyway (e.g. "default" for a throwaway/demo harness). Omit for the normal case — ' +
+          'the workspace is resolved from the harness registry.',
+      ),
     slug: z
       .string()
       .min(3)
@@ -396,6 +410,7 @@ export default defineTool({
         slug,
         intent: `plans:new ${slug}`,
         ...(harnessSlug ? { harnessSlug } : {}),
+        ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
         afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: NewPlanValue }> => {

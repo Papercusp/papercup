@@ -1,0 +1,69 @@
+/**
+ * plans:new — explicit `workspaceId` opt-in passthrough (EI-1543).
+ *
+ * `resolvePlanScope` already accepts an explicit `workspaceId` override (it
+ * refuses to silently default one for an UNREGISTERED harness — WI-148 — but
+ * happily honors an explicit one), and `withPlanLock` already threads it
+ * through. The gap EI-1543 reported was that `plans:new`'s own args schema
+ * never exposed the field, so a caller hitting the unregistered-harness
+ * throw (e.g. `offsite-planner-demo`) had no escape hatch even though
+ * `work_items:create` succeeds against the same harness via a different
+ * resolution path. This pins that the new `workspaceId` arg actually reaches
+ * `withPlanLock`'s opts — the one thing this change adds.
+ *
+ * Mocks every collaborator new.ts touches so this stays a pure handler-shape
+ * unit test (no DB). Run:
+ *   cd packages/operator-core && npx vitest run lib/agent-tools/plans/new.workspace-id.test.ts
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: vi.fn(() => 'offsite-planner-demo') }));
+vi.mock('../_harness-scope', async (orig) => ({
+  ...(await orig<typeof import('../_harness-scope')>()),
+  harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
+}));
+vi.mock('./source', () => ({ listPlanIndexRows: vi.fn(async () => []) }));
+vi.mock('./revisions', () => ({
+  planRevisionCapture: vi.fn(() => ({ recorded: { current: null }, afterWrite: vi.fn() })),
+}));
+vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
+vi.mock('../../harness/usage-emitters', () => ({ emitPlanAuthored: vi.fn(async () => {}) }));
+vi.mock('./item-parse-feedback', () => ({ summarizeItemParse: vi.fn(() => ({})) }));
+vi.mock('./with-plan-lock', () => ({
+  withPlanLock: vi.fn(async () => ({ kind: 'ok', value: { ok: true, slug: 'demo-plan-2026-07-18' }, filePath: 'x' })),
+}));
+
+const { withPlanLock } = await import('./with-plan-lock');
+const withPlanLockM = vi.mocked(withPlanLock);
+const tool = (await import('./new')).default;
+
+type Out = { content: { text: string }[]; isError?: boolean };
+const meta = vi.fn();
+const call = (extra: Record<string, unknown> = {}) =>
+  tool.handler(
+    { harness: 'offsite-planner-demo', slug: 'demo-plan', title: 'Demo plan', force: true, ...extra } as never,
+    { metadata: meta } as never,
+  ) as Promise<Out>;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  withPlanLockM.mockResolvedValue({
+    kind: 'ok',
+    value: { ok: true, slug: 'demo-plan-2026-07-18' },
+    filePath: 'x',
+  } as never);
+});
+
+describe('plans:new workspaceId opt-in (EI-1543)', () => {
+  it('omits workspaceId from withPlanLock opts when not passed (unchanged default behavior)', async () => {
+    await call();
+    const opts = withPlanLockM.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty('workspaceId');
+  });
+
+  it('threads an explicit workspaceId through to withPlanLock so an unregistered harness can opt in', async () => {
+    await call({ workspaceId: 'default' });
+    const opts = withPlanLockM.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(opts).toMatchObject({ workspaceId: 'default', harnessSlug: 'offsite-planner-demo' });
+  });
+});
