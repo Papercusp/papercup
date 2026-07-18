@@ -39,7 +39,13 @@ export type AttentionKind =
   | 'work-item-needs-human' // a work-item of ANY kind (feature/chunk/bug/change/task) routed to the owner — the cross-kind counterpart of a needs-human PLAN item (source #1 only reads plan docs, never the work_items table itself)
   | 'owner-wall' // a registered owner-gated blocker (loop:checkpoint walls) — the coord:walls union, folded into the same unified inbox
   | 'dark-flag-ratification' // a KNOWN_DARK_FLAGS entry awaiting the owner's flip-or-confirm
-  | 'blocked-session'; // a client session sitting on an open ask/permission-wait gate (session_pending_gates) — the client-agnostic watcher backstop for a client whose hook can't mirror (D-002)
+  | 'blocked-session' // a client session sitting on an open ask/permission-wait gate (session_pending_gates) — the client-agnostic watcher backstop for a client whose hook can't mirror (D-002)
+  // curated-signal-cards-2026-07-17 P-001: a work-item stuck at status='blocked'.
+  // The cross-kind counterpart of a blocked PLAN item (source #1, which reads
+  // plan documents only) — the curation digest's `🚧 Blocked` line already
+  // scans this exact table (curation `deps.ts readBlockedWorkItems()`) but had
+  // no card anywhere to point at, so the signal was chat-text-only.
+  | 'work-item-blocked';
 
 export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
 
@@ -75,6 +81,12 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
   'owner-wall': 'plan-governance', // clear a registered owner-gated blocker
   'dark-flag-ratification': 'system-control', // flip-or-confirm a dark flag — owner-authority by the CLAUDE.md dark-flag policy itself
   'blocked-session': 'escalations', // an unanswered ask mirrored from a session's transcript — the client-agnostic sibling of 'conversation'
+  // curated-signal-cards P-001: like 'smoke-fail', a blocked work-item is a
+  // SIGNAL that work is stuck — an Alert, not a governed human decision. `null`
+  // keeps it out of the auto-disposition gate entirely (D-009 unmapped →
+  // never-auto), which is the fail-safe: unblocking is real work, not a triage
+  // verdict the Queen could take on the owner's behalf.
+  'work-item-blocked': null,
 };
 
 /** The autonomy category for an attention kind — `null` for an ungoverned
@@ -142,6 +154,7 @@ export const ATTENTION_KIND_AUTHORITY: Record<AttentionKind, 'owner' | 'system'>
   'owner-wall': 'owner', // clear a registered owner-gated blocker — by definition only the owner can
   'dark-flag-ratification': 'owner', // the CLAUDE.md dark-flag policy requires the OWNER to ratify/flip these specifically
   'blocked-session': 'system', // answering the mirrored ask is queen-eligible in principle, same as 'conversation'
+  'work-item-blocked': 'system', // ungoverned alert signal (category null) — mirrors 'smoke-fail'
 };
 
 /** The gating fields {@link deriveAuthorization} stamps onto an item. */
@@ -283,7 +296,9 @@ export type AttentionRef =
   | { kind: 'work-item-needs-human'; workItemId: string; itemKind: string }
   | { kind: 'owner-wall'; wallSource: 'loop-carry-note' | 'work-item'; wallOwnerId: string | null; wallRef: string | null }
   | { kind: 'dark-flag-ratification'; flagKey: string }
-  | { kind: 'blocked-session'; sessionId: string; client: string; refId: string };
+  | { kind: 'blocked-session'; sessionId: string; client: string; refId: string }
+  // curated-signal-cards P-001:
+  | { kind: 'work-item-blocked'; workItemId: string; itemKind: string };
 
 export interface AttentionItem {
   /** Unique within a reader response. `<kind>:<...>`. */

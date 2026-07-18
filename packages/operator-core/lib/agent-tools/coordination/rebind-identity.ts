@@ -231,9 +231,9 @@ export async function rebindIdentity(
 
   // 5. Fleet leadership pointer.
   await run('fleet-leadership', async (r) => {
-    const led = await sql<Array<{ slug: string }>>`
+    const led = await sql<Array<{ fleet_slug: string }>>`
       UPDATE harness_shared.agent_fleets SET leader_owner_id = ${t}
-       WHERE leader_owner_id = ${f} RETURNING slug
+       WHERE leader_owner_id = ${f} RETURNING fleet_slug
     `;
     r.moved = led.length;
   });

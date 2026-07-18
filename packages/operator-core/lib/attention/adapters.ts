@@ -670,6 +670,61 @@ export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): Atten
   };
 }
 
+/* ── blocked work-item of ANY kind (curated-signal-cards P-001) ─────────── */
+
+export interface BlockedWorkItemInput {
+  /** The cross-kind work-item id (feature_id in the harness_shared.work_items
+   *  view — WI-/F-/EI- style depending on kind). */
+  workItemId: string;
+  /** feature | chunk | research-task | bug | change | task. */
+  itemKind: string;
+  title: string;
+  /** Why it is blocked — external blockers when present, else the summary. */
+  reason: string;
+  harnessSlug?: string | null;
+  ownerAgentId?: string | null;
+  ownerLabel?: string | null;
+}
+
+/**
+ * A work-item parked at `status='blocked'`. The cross-kind counterpart of a
+ * blocked PLAN item: `planItemToAttention` already tiers a blocked plan item as
+ * an Alert, but that source reads plan DOCUMENTS only — a work-item row in
+ * `harness_shared.work_items` (often with no plan attached at all) had no card.
+ *
+ * Tier is `alert`, never `decision`: work being stuck is a problem worth
+ * surfacing, but unblocking it is WORK, not a triage verdict the human is being
+ * asked to render. That matches the blocked-plan-item tiering exactly, and it
+ * keeps `needsHuman` false so these never inflate the Decisions bucket.
+ *
+ * The id (`work-item-blocked:<id>`) is the join key the curation salience policy
+ * maps its `blocked:<harness>#<id>` signal onto (P-003), so triaging this card
+ * suppresses the chat re-nag the same way triaging an escalation already does.
+ */
+export function blockedWorkItemToAttention(i: BlockedWorkItemInput): AttentionItem {
+  const tier: AttentionTier = 'alert';
+  return {
+    id: `work-item-blocked:${i.workItemId}`,
+    kind: 'work-item-blocked',
+    category: ATTENTION_KIND_CATEGORY['work-item-blocked'],
+    source: 'harness',
+    harnessSlug: i.harnessSlug ?? null,
+    planSlug: null, // unattached → the synthetic "Alerts" bucket
+    itemRef: null,
+    title: clip(i.title),
+    body: i.reason.trim() || i.title,
+    status: `blocked (${i.itemKind})`,
+    importance: 'high',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: i.ownerAgentId ?? null,
+    ownerLabel: i.ownerLabel ?? null,
+    ...untriaged(),
+    actions: [{ id: 'open', label: 'Open', primary: true }, DISCUSS],
+    ref: { kind: 'work-item-blocked', workItemId: i.workItemId, itemKind: i.itemKind },
+  };
+}
+
 /* ── registered owner-wall (P-005b) ─────────────────────────────────────── */
 
 export interface OwnerWallInput {
