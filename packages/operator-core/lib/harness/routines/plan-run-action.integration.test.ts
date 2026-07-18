@@ -190,6 +190,11 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     const sched = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
     expect(sched!.replayed).toBe(false);
     expect(sched!.runSeq).toBe(0);
+    // EI-1386: the default concurrency policy is 'skip', which now genuinely skips a fire
+    // while a prior run is still 'running' — settle it first, matching what a real manual
+    // run-now against a completed cadence fire would see (this test is about run-TOKEN
+    // uniqueness, not concurrency policy, which has its own dedicated tests above).
+    await sql`UPDATE harness_shared.plan_runs SET status = 'done' WHERE id = ${sched!.runId}`;
 
     // A MANUAL run-now must NOT reuse last_fired_at's token (that would recompute sched's slug and
     // replay-no-op). It mints a fresh run instead — even though last_fired_at is still set.
@@ -199,6 +204,7 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(m1!.replayed).toBe(false);
     expect(m1!.instanceSlug).not.toBe(sched!.instanceSlug);
     expect(m1!.runSeq).toBe(1);
+    await sql`UPDATE harness_shared.plan_runs SET status = 'done' WHERE id = ${m1!.runId}`;
 
     // A SECOND manual run-now (potentially the same millisecond) still mints a distinct run —
     // the module-monotonic manual token guarantees uniqueness.
@@ -218,6 +224,10 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
   it('mints DISTINCT runs across fires (run_seq increments, fresh work_items)', async () => {
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
     const r0 = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    // EI-1386: settle r0 before the next fire — the default 'skip' policy now genuinely
+    // skips while a prior run is 'running' (this test is about run-token/run_seq
+    // mechanics across SETTLED fires, not concurrency policy, which has its own tests).
+    await sql`UPDATE harness_shared.plan_runs SET status = 'done' WHERE id = ${r0!.runId}`;
     await stampClaim(new Date('2026-06-17T09:00:00.000Z')); // next day's fire
     const r1 = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
 

@@ -90,6 +90,46 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
     }
     return claimed;
   }
+  // EI-1387: a RECURRING plan-schedule routine past its owning plan's expires_at must
+  // STOP firing at claim time — the Calendar (scheduled-occurrences.ts) only clamps the
+  // DISPLAY window by expires_at, and neither the routines table nor computeNextFire
+  // know about plan expiry, so without this check an expired recurring schedule would
+  // keep advancing next_fire_at and firing forever. Deactivate instead of advancing —
+  // mirroring the one-shot auto-deactivate above, including the two-write that un-arms
+  // harness_plans.schedule_active (EI-1371) — and report NOT claimed so this due tick
+  // does not also fire the expired occurrence. A bare cron/rrule routine that was never
+  // materialized via plans:arm-schedule (name doesn't match plan-schedule-<slug>) has no
+  // owning plan / expiry concept and falls straight through to the normal advance below.
+  if (routine.targetRole === 'system:plan-run' && routine.name.startsWith('plan-schedule-')) {
+    const templateSlug = routine.name.slice('plan-schedule-'.length);
+    const [planRow] = await sql<{ expires_at: Date | null }[]>`
+      SELECT expires_at FROM harness_shared.harness_plans
+       WHERE workspace_id = ${routine.workspaceId}
+         AND harness_slug = ${routine.installSlug}
+         AND plan_slug = ${templateSlug}
+    `;
+    if (planRow?.expires_at && planRow.expires_at.getTime() <= Date.now()) {
+      await sql`
+        UPDATE harness_shared.routines
+           SET last_fired_at = now(),
+               next_fire_at = NULL,
+               active = FALSE,
+               updated_at = now()
+         WHERE id = ${routine.id}
+           AND active = TRUE
+           AND (next_fire_at IS NULL OR next_fire_at <= now())
+      `;
+      await sql`
+        UPDATE harness_shared.harness_plans
+           SET schedule_active = FALSE, updated_at = now()
+         WHERE workspace_id = ${routine.workspaceId}
+           AND harness_slug = ${routine.installSlug}
+           AND plan_slug = ${templateSlug}
+      `;
+      return false;
+    }
+  }
+
   const next = computeNextFire(cfg, new Date());
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.routines

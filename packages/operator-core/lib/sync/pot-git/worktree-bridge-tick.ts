@@ -102,6 +102,19 @@ export interface WorktreeBridgeTickResultEntry {
   bridge: StagingAdvanceBridgeResult;
 }
 
+/**
+ * Rejections that are TRANSIENT-STATE, not verdicts on the envelope (P-505,
+ * the WI-3497 drop-forever fix): `unknown-sha` = the objects haven't fetched
+ * into the local mirror yet (P-202's ref-announce fetch races the fed-event);
+ * `ungranted-epoch` = a successor authority's first advance arrived before
+ * its granting handoff token federated. Both verify unchanged on a later
+ * tick, so the batch STOPS there (same rationale as `fetch-failed`) and the
+ * caller must NOT advance its cursor past the item. Every other reason
+ * (stale/forged/wrong-device/non-ff/malformed) is a terminal verdict on the
+ * envelope itself — retrying can never change it — so those skip-and-continue.
+ */
+export const RETRYABLE_REJECT_REASONS: ReadonlySet<string> = new Set(['unknown-sha', 'ungranted-epoch']);
+
 export interface WorktreeBridgeTickOutcome {
   ran: boolean;
   results: WorktreeBridgeTickResultEntry[];
@@ -115,6 +128,18 @@ export interface WorktreeBridgeTickOutcome {
    *  fed-event-log cursor past the un-processed tail (retry them next tick,
    *  same `pending` order they'd be re-collected in). */
   stoppedOnFetchFailure: boolean;
+  /**
+   * Index into `input.pending` of the first item NOT durably processed this
+   * tick, or null when every item was (accepted or terminally rejected).
+   * Set by BOTH stop paths — a `fetch-failed` and a retryable rejection
+   * ({@link RETRYABLE_REJECT_REASONS}) — and it is the value the caller's
+   * cursor math needs: advance the fed-event cursor only past items BEFORE
+   * this index (the stopped item re-collects and retries next tick). The
+   * caller should age-bound the retry (a row stuck retryable for hours is a
+   * genuinely lost object, not a race) so one poisoned row can't wedge the
+   * cursor forever.
+   */
+  unprocessedFromIndex: number | null;
   errors: string[];
 }
 
@@ -131,10 +156,10 @@ export async function runWorktreeBridgeTick(
   let watermark = input.prior;
 
   if (input.pending.length === 0) {
-    return { ran: false, results, watermark, stoppedOnFetchFailure: false, errors };
+    return { ran: false, results, watermark, stoppedOnFetchFailure: false, unprocessedFromIndex: null, errors };
   }
 
-  for (const incoming of input.pending) {
+  for (const [index, incoming] of input.pending.entries()) {
     const cfg: WorktreeBridgeConfig = {
       bareRepoPath: input.bareRepoPath,
       worktreePath: input.worktreePath,
@@ -171,11 +196,21 @@ export async function runWorktreeBridgeTick(
       errors.push(
         `fetch failed for epoch=${incoming.epoch},seq=${incoming.seq}: ${bridge.detail} — stopping this tick's batch, retrying next tick`,
       );
-      return { ran: true, results, watermark, stoppedOnFetchFailure: true, errors };
+      return { ran: true, results, watermark, stoppedOnFetchFailure: true, unprocessedFromIndex: index, errors };
     }
-    // 'rejected' (stale/malformed/forged/non-ff/unknown-sha): skip, never
-    // starve the rest of the batch.
+    if (bridge.outcome === 'rejected' && RETRYABLE_REJECT_REASONS.has(bridge.reason)) {
+      // P-505: transient-state rejection — the SAME envelope verifies once the
+      // missing objects / granting token federate. Stop here so the caller's
+      // cursor holds at this item (mirrors the fetch-failed contract).
+      errors.push(
+        `retryable rejection (${bridge.reason}) for epoch=${incoming.epoch},seq=${incoming.seq} — ` +
+          `holding the batch here, retrying next tick`,
+      );
+      return { ran: true, results, watermark, stoppedOnFetchFailure: false, unprocessedFromIndex: index, errors };
+    }
+    // 'rejected' with a TERMINAL reason (stale/malformed/forged/wrong-device/
+    // non-ff): skip, never starve the rest of the batch.
   }
 
-  return { ran: true, results, watermark, stoppedOnFetchFailure: false, errors };
+  return { ran: true, results, watermark, stoppedOnFetchFailure: false, unprocessedFromIndex: null, errors };
 }

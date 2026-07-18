@@ -45,6 +45,9 @@ import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { BRIDGE_CANONICAL_REF, runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
 import { runWorktreeBridgeTick } from '../../sync/pot-git/worktree-bridge-tick';
+import { deriveIntegratorGrant, deriveMaxGrantedEpoch } from '../../sync/pot-git/authority-epoch';
+import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
+import { lockAuthorityForHive } from '../../authority/lock-authority';
 import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from '../../sync/pot-git/ref-announce-tick';
 import {
   REF_ANNOUNCE_EVENT_KEY,

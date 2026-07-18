@@ -10,6 +10,9 @@
  *    just nulls next_fire_at (which would refire forever);
  *  - EI-1371: claiming a `plan-schedule-<slug>` one-shot ALSO un-arms the owning
  *    plan (harness_plans.schedule_active=FALSE) — the two-write.
+ *  - EI-1387: claiming a RECURRING `plan-schedule-<slug>` routine whose owning plan's
+ *    expires_at is in the past DEACTIVATES it (and un-arms the plan) instead of
+ *    advancing next_fire_at, and reports NOT claimed (no fire for the expired tick).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
@@ -50,7 +53,8 @@ beforeAll(async () => {
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.harness_plans (
       workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
-      schedule_active boolean NOT NULL DEFAULT false, updated_at timestamptz DEFAULT now() NOT NULL,
+      schedule_active boolean NOT NULL DEFAULT false, expires_at timestamptz,
+      updated_at timestamptz DEFAULT now() NOT NULL,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     )`);
 }, 90_000);
@@ -119,6 +123,58 @@ describe('claimDueRoutine — one-shot', () => {
     expect(await activeOf('ps1')).toBe(false); // routine deactivated
     const plan = (await rootSql<{ schedule_active: boolean }[]>`SELECT schedule_active FROM harness_shared.harness_plans WHERE plan_slug='myplan'`)[0]!;
     expect(plan.schedule_active).toBe(false); // plan un-armed too (the two-write)
+  });
+});
+
+// EI-1387 — a recurring plan-schedule must STOP firing once its owning plan expires.
+describe('claimDueRoutine — recurring plan-schedule expiry (EI-1387)', () => {
+  it('a due recurring plan-schedule PAST its plan expires_at is DEACTIVATED, not re-claimed, and un-arms the plan', async () => {
+    const past = new Date(Date.now() - 3_600_000);
+    await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, schedule_active, expires_at)
+                  VALUES ('ws1', 'web', 'expiredplan', true, ${past})`;
+    const r = await insertRoutine({
+      id: 'ps-exp1', name: 'plan-schedule-expiredplan', targetRole: 'system:plan-run',
+      cfg: { cron: '0 0 * * *' }, nextFireAt: null,
+    });
+    expect(await claimDueRoutine(rootSql, r)).toBe(false); // NOT claimed — must not fire the expired occurrence
+    expect(await activeOf('ps-exp1')).toBe(false); // deactivated — won't refire
+    const plan = (await rootSql<{ schedule_active: boolean }[]>`SELECT schedule_active FROM harness_shared.harness_plans WHERE plan_slug='expiredplan'`)[0]!;
+    expect(plan.schedule_active).toBe(false); // plan un-armed too (the two-write, mirrors EI-1371)
+    // A second tick sees the routine inactive and never re-enters this branch — stays deactivated.
+    expect(await claimDueRoutine(rootSql, r)).toBe(false);
+    expect(await activeOf('ps-exp1')).toBe(false);
+  });
+
+  it('a due recurring plan-schedule with a FUTURE expires_at claims + advances normally', async () => {
+    const future = new Date(Date.now() + 3_600_000);
+    await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, schedule_active, expires_at)
+                  VALUES ('ws1', 'web', 'liveplan', true, ${future})`;
+    const r = await insertRoutine({
+      id: 'ps-live1', name: 'plan-schedule-liveplan', targetRole: 'system:plan-run',
+      cfg: { cron: '0 0 * * *' }, nextFireAt: null,
+    });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await activeOf('ps-live1')).toBe(true); // stays active — not yet expired
+    expect(await nextFireOf('ps-live1')).toBeInstanceOf(Date); // advanced normally
+    const plan = (await rootSql<{ schedule_active: boolean }[]>`SELECT schedule_active FROM harness_shared.harness_plans WHERE plan_slug='liveplan'`)[0]!;
+    expect(plan.schedule_active).toBe(true); // untouched
+  });
+
+  it('a due recurring plan-schedule with NO expires_at (open-ended) claims + advances normally', async () => {
+    await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, schedule_active, expires_at)
+                  VALUES ('ws1', 'web', 'foreverplan', true, NULL)`;
+    const r = await insertRoutine({
+      id: 'ps-forever1', name: 'plan-schedule-foreverplan', targetRole: 'system:plan-run',
+      cfg: { cron: '0 0 * * *' }, nextFireAt: null,
+    });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await activeOf('ps-forever1')).toBe(true);
+  });
+
+  it('a plain (non-plan-schedule) recurring routine is unaffected — no owning-plan lookup happens', async () => {
+    const r = await insertRoutine({ id: 'plain-cron1', cfg: { cron: '0 0 * * *' }, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await activeOf('plain-cron1')).toBe(true);
   });
 });
 
