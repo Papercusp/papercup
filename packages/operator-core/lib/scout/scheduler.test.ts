@@ -63,6 +63,7 @@ function makeDeps(over: Partial<ScoutTickDeps> & { state?: Partial<ScoutCadenceS
         calls.ticks.push(rec);
       }),
     ...(over.fireGate ? { fireGate: over.fireGate } : {}),
+    ...(over.persistStageArtifacts ? { persistStageArtifacts: over.persistStageArtifacts } : {}),
     newCycleId: over.newCycleId ?? (() => 'cyc-1'),
   };
   return { deps, calls };
@@ -124,6 +125,38 @@ describe('runScoutTick (P-008)', () => {
     expect(r.routedCount).toBe(0);
     expect(calls.persisted).toBe(0); // nothing to persist
     expect(calls.refreshed).toBe(1); // still refreshes outcomes
+  });
+
+  it('persists stage artifacts on a fired cycle (P-009) — best-effort, a persist failure never fails the tick', async () => {
+    const cycle: ScoutCycleLike = {
+      provenance: [],
+      ideas: [{ id: 'i1' }],
+      scored: [{ verdict: 'keep' }],
+      proposals: [{ id: 'p1' }],
+      ideators: [{ lens: 'analogical', ok: true, raw: 3, produced: 1 }],
+    };
+    const persisted: Array<{ cycle: ScoutCycleLike; cycleId: string }> = [];
+    const ok = makeDeps({
+      runCycle: async () => cycle,
+      persistStageArtifacts: async (c, id) => {
+        persisted.push({ cycle: c, cycleId: id });
+      },
+    });
+    const r = await runScoutTick(ok.deps);
+    expect(r.fired).toBe(true);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].cycleId).toBe(r.cycleId);
+    expect(persisted[0].cycle.proposals).toEqual([{ id: 'p1' }]);
+
+    const failing = makeDeps({
+      runCycle: async () => cycle,
+      persistStageArtifacts: async () => {
+        throw new Error('artifacts table down');
+      },
+    });
+    const r2 = await runScoutTick(failing.deps);
+    expect(r2.fired).toBe(true); // artifact persist outage never disturbs the cycle
+    expect(failing.calls.fire).toEqual(['attempt', 'ok']);
   });
 
   it('fires friction-triggered even under load (idle below threshold)', async () => {

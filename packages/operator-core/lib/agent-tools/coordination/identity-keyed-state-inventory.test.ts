@@ -156,6 +156,15 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'a delivery-history LOG row (what was sent to whom) — not a live subscription or claim.',
   },
+  'gateway_stall_events.owner_id': {
+    status: 'exempt',
+    reason:
+      'append-only stall-event LOG (migration 624, EI-2431): a short-lived durability mirror of the ' +
+      "gateway's in-memory stall ring, age-pruned on every insert — owner_id is the wake TARGET the " +
+      'stall-waker resolves at read time, not a held claim. A carry-respawn keeps the coord ownerId so ' +
+      'the row stays addressable, and a row for a genuinely dead owner just ages out; no presence-tied ' +
+      'reaper keys on this table.',
+  },
   'event_await_nodes.subscriber_id': {
     status: 'exempt',
     reason:
