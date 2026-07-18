@@ -352,6 +352,21 @@ const announcePairedMuxers = new WeakSet<object>();
 const guardCountedSockets = new WeakSet<object>();
 
 /**
+ * WI-5355 (EI-13317 downstream, mirrored from topic-gossip.ts's identical
+ * `socketTopics` registry): module-level, shared across EVERY `joinHarnessSwarm`
+ * call in this process — tracks, per live peer socket, which harness topic-hexes
+ * currently consider it connected (added on that join's own `connection` handler,
+ * removed on that join's own socket `close`). A single Hyperswarm A↔B socket is
+ * shared across every topic/harness that peer participates in (Hyperswarm dedupes
+ * connections per peer — see topic-gossip.ts's module header for the canonical
+ * explanation), so a socket must never be destroyed while ANY OTHER harness's join
+ * still holds it live — this registry is what lets `forceRejoinNow` (below) tell
+ * "this socket is dead weight for every topic sharing it" apart from "still
+ * serving some other harness perfectly well".
+ */
+const swarmJoinSocketTopics = new WeakMap<object, Set<string>>();
+
+/**
  * EI-1599 — content-replication peer accounting. `announceTopicStateByMuxer`
  * is a WeakMap (keyed by muxer, for GC) and therefore NOT enumerable, so it
  * cannot answer "how many peers is hive X actually content-syncing with" —
@@ -967,6 +982,7 @@ export async function joinHarnessSwarm(
   if (!opts.swarm) throw new Error('joinHarnessSwarm: swarm required');
 
   const guard = opts.guard ?? getSwarmGuard();
+  const topicHex = opts.topic.toString('hex');
   let connectionCount = 0;
   let liveConnectionCount = 0;
   // WI-752 self-heal state: the start of the current FAST-refresh window (join
@@ -978,9 +994,24 @@ export async function joinHarnessSwarm(
   // EI-13317 escalation-ladder state: last time the severed-link escalation
   // fired (rate-limits repeated escalations to once per severedEscalationMs).
   let lastEscalationMs = 0;
+  // WI-5355: sockets THIS join currently considers connected (added on
+  // `connection`, removed on that socket's own `close` — see the handler +
+  // close listener below). Mirrors topic-gossip.ts's per-instance `sockets` Set;
+  // `forceRejoinNow` sweeps this (filtered through the cross-harness
+  // `swarmJoinSocketTopics` registry) before every leave()+join().
+  const mySockets = new Set<unknown>();
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
     liveConnectionCount++;
+    mySockets.add(socket);
+    {
+      let set = swarmJoinSocketTopics.get(socket as object);
+      if (!set) {
+        set = new Set<string>();
+        swarmJoinSocketTopics.set(socket as object, set);
+      }
+      set.add(topicHex);
+    }
     // An unclean peer disconnect (reset / timeout / mid-replication death)
     // emits 'error' on the connection socket; with no listener Node escalates
     // it to an UNCAUGHT EXCEPTION — i.e. a remote peer dying could crash this

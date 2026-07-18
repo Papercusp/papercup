@@ -41,8 +41,15 @@ import {
   type PgErrorInfo,
 } from './pg-read-query';
 
-/** Matches the start of a top-level SQL read statement embedded in prose. */
-const SQL_START_RE = /\b(SELECT|WITH)\b/gi;
+/**
+ * Matches the start of a top-level SQL read statement embedded in prose. `SELECT` alone
+ * is specific enough to prose to match bare (case-insensitive — real drills only ever
+ * write it uppercase, but this stays lenient). `WITH` is NOT: "with" is an ordinary
+ * English preposition ("Count calls WITH tool_name LIKE …" in a drill's own grading
+ * prose, a real false-positive hit during development) — so it's only treated as a CTE
+ * start when actually shaped like one (`WITH [RECURSIVE] <name> AS (`).
+ */
+const SQL_START_RE = /\bSELECT\b|\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_][A-Za-z0-9_]*\s+AS\s*\(/gi;
 
 /**
  * PURE: scan from `start` for the end of one SQL statement, tracking single-quoted

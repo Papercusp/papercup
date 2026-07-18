@@ -152,7 +152,14 @@ export type WatchdogSource =
   // component "working as designed". A hold is a legit owner control, so this
   // NEVER auto-resumes — it pages, coalesced, once the hold is provably stale
   // (work-commanding directive + evidence of harm for >= minHoldHours):
-  | 'stale-protective-hold';
+  | 'stale-protective-hold'
+  // EI-10869: an awaitable event key (harness_shared.event_awaits) whose live real-fire
+  // rate is degenerate AND independently witnessed as a lost wake (the condition fired,
+  // the wake didn't — EI-10800's class, detector lost-wake-detect.ts). WORKSPACE-GLOBAL
+  // (the await log lives in one coord workspace, NOT per-harness); no flag gate (a healthy
+  // await log emits nothing, and an unwitnessed suspect never pages — see the detector's
+  // module doc for why the witness leg is required):
+  | 'lost-wake';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -2559,6 +2566,15 @@ export async function defaultPapercuspCollectors(
         import('./release-deploy-staleness-detect').then((m) =>
           m.collectReleaseDeployStalenessSignals({ installSlug: opts.installSlug ?? undefined }),
         ),
+    },
+    // EI-10869: the lost-wake recurrence guard — a rate scan over harness_shared.event_awaits
+    // (which awaitable keys are settling almost entirely by 'timeout' instead of 'event')
+    // promoted to a page ONLY when an independent witness confirms the underlying condition
+    // actually occurred (EI-10800's class: a real green-checkpoint verdict landed while the
+    // wake silently never fired). An unwitnessed suspect never pages — see lost-wake-detect.ts.
+    {
+      name: 'papercusp-lost-wake',
+      collect: () => import('./lost-wake-detect').then((m) => m.collectLostWakeSignals()),
     },
   ];
 }
