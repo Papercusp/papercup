@@ -5475,8 +5475,12 @@ export function forkSeedPaths(origConfigDir, forkConfigDir) {
  * run unblocked on the shared staging tree from a forked session (2026-07-05,
  * WI-3071).
  */
-export function trackedForkEnvelopeEnv(bootstrapEnvelopeEnv) {
-  return { ...bootstrapEnvelopeEnv, PAPERCUSP_AGENT_SESSION: '1' };
+export function trackedForkEnvelopeEnv(bootstrapEnvelopeEnv, agent = 'claude') {
+  // P-022: a fork spawns a NEW CLI process, so the native-compaction retirement
+  // must be re-stamped here exactly as on fresh launches and resumes — the
+  // server's bootstrap envelope never carries it. (The tracked-fork path is
+  // claude-only today; the agent param keeps the stamp honest if that widens.)
+  return { ...bootstrapEnvelopeEnv, PAPERCUSP_AGENT_SESSION: '1', ...nativeCompactionEnv(agent) };
 }
 
 /** Preserve the complete account-route decision when a tracked fork falls back

@@ -1888,6 +1888,10 @@ describe('psu-launcher arg parsing', () => {
     expect(trackedForkEnvelopeEnv(bootstrapEnvelopeEnv)).toEqual({
       ...bootstrapEnvelopeEnv,
       PAPERCUSP_AGENT_SESSION: '1',
+      // P-022: a fork is a new CLI process — the native-compaction retirement is
+      // re-stamped here just like fresh launches and resumes.
+      DISABLE_AUTO_COMPACT: '1',
+      DISABLE_COMPACT: '1',
     });
     // Never trust the server envelope's own claim — the marker is asserted
     // client-side even if bootstrap-su starts sending something under the key.

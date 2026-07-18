@@ -17,9 +17,6 @@ import {
   contextClearCommandForAgent,
   clearSettleMs,
   resetWritesForAgent,
-  compactCommandForAgent,
-  compactStartMs,
-  compactBusyCapMs,
   submitVerifyQuietMs,
   fireSessionCompactedEvent,
   SESSION_COMPACTED_EMIT_ENTRY,
@@ -294,45 +291,6 @@ describe('contextClearCommandForAgent (RESET-CONTEXT clear command)', () => {
   it('Codex starts a fresh conversation with /new', () => {
     expect(contextClearCommandForAgent('codex')).toBe('/new');
     expect(contextClearCommandForAgent(' CODEX ')).toBe('/new');
-  });
-});
-
-describe('compactCommandForAgent (WI-1804 post-compaction auto-continuation)', () => {
-  it('Claude / OMP / default → /compact with the focus appended', () => {
-    expect(compactCommandForAgent('claude', 'keep the plan items')).toBe('/compact keep the plan items');
-    expect(compactCommandForAgent('omp', 'keep X')).toBe('/compact keep X');
-    expect(compactCommandForAgent('', 'keep X')).toBe('/compact keep X');
-    expect(compactCommandForAgent(undefined, 'keep X')).toBe('/compact keep X');
-  });
-  it('a bare /compact when focus is empty/whitespace/undefined', () => {
-    expect(compactCommandForAgent('claude', '')).toBe('/compact');
-    expect(compactCommandForAgent('claude', '   ')).toBe('/compact');
-    expect(compactCommandForAgent('claude', undefined)).toBe('/compact');
-  });
-  it('codex → a BARE /compact (native command exists but takes no focus argument)', () => {
-    // Until 2026-07-05 codex mapped to null, silently no-op'ing the watchdog
-    // force-compact rung + session:request-compaction for codex sessions.
-    expect(compactCommandForAgent('codex', 'keep X')).toBe('/compact');
-    expect(compactCommandForAgent(' CODEX ', 'keep X')).toBe('/compact');
-    expect(compactCommandForAgent('codex', undefined)).toBe('/compact');
-  });
-});
-
-describe('compactStartMs (WI-1804 compaction START delay)', () => {
-  it('defaults to 2000ms; env override wins; a bad override falls back', () => {
-    expect(compactStartMs({})).toBe(2000);
-    expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '3500' })).toBe(3500);
-    expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: 'nope' })).toBe(2000);
-    expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '-5' })).toBe(2000);
-  });
-});
-
-describe('compactBusyCapMs (WI-1872 (1) — dedicated compaction completion budget)', () => {
-  it('defaults to 600000ms (10min); env override wins; a bad override falls back', () => {
-    expect(compactBusyCapMs({})).toBe(600_000);
-    expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: '900000' })).toBe(900_000);
-    expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: 'nope' })).toBe(600_000);
-    expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: '-5' })).toBe(600_000);
   });
 });
 

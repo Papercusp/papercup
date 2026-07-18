@@ -326,33 +326,6 @@ const TURN_INJECT_BUSY_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_BUSY_CAP_MS
  *  prompt. Too short and the carry text lands in the clearing/animating TUI;
  *  the clear itself is fast, so this is a repaint budget, not a compute one. */
 const CLEAR_SETTLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS) || 1_500;
-/** After submitting `/compact`, how long to let the compaction START emitting before
- *  the host waits for it to COMPLETE (post-compaction auto-continuation, WI-1804). The
- *  wait-for-completion is the agent-output idle gate (agentBusyGate) — this start-delay
- *  only ensures the compaction's own output has begun, so the gate reads it as mid-turn
- *  rather than the pre-compaction at-prompt quiet. Distinct from CLEAR_SETTLE_MS: /clear
- *  is a fast repaint budget, /compact runs a summarizer (seconds-to-minutes, variable),
- *  so the carry-note is gated on completion, NOT a fixed settle.
- *
- *  WI-1872 (2), START-RACE: this used to be a bare fixed delay before the
- *  completion-wait began. If `/compact`'s own summarizer is slow to emit its
- *  first byte, the busy-gate's output-quiet check at the 2s mark can still read
- *  as quiet (pre-compaction idle, never updated) → the completion-wait resolves
- *  IMMEDIATELY, and the continuation types into a still-compacting/thinking TUI
- *  (wedge / lost turn). `waitUntilBusy` (below) turns this into a BOUNDED poll
- *  for the agent to actually go busy, falling back to the old fixed-delay
- *  behavior if busy is never observed (e.g. a CLI that doesn't repaint during
- *  compaction) — same default budget, strictly safer in the race case. */
-const COMPACT_START_MS = Number(process.env.PAPERCUSP_PSU_PTY_COMPACT_START_MS) || 2_000;
-
-/** WI-1872 (1), COMPLETION-CAP DROP: the completion-wait for `/compact` used to
- *  reuse TURN_INJECT_BUSY_CAP_MS (180s) — sized for a normal wake turn, not a
- *  summarizer over a large transcript. A compaction that runs longer than 180s
- *  hit the cap and silently DROPPED the carry-note (the loop then sat cold with
- *  no continuation). Give compaction its own, generous, env-tunable completion
- *  budget — separate from (and independent of) the wake-turn busy cap. */
-const COMPACT_BUSY_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS) || 600_000;
-
 /** How long a RECYCLE waits for the killed child to actually exit before it
  *  spawns the fresh one, so we never double-spawn into a still-dying pty
  *  (su-cold-auto-mode P-004b). Fail-safe: on cap we spawn anyway (the old pid is
@@ -711,9 +684,8 @@ export function makeAgentBusyGate({
     /** Resolve once output has been quiet for quietMs (agent at its prompt), or
      *  defer after capMs (agent still mid-turn — drop the live inject).
      *  WI-1872 (1): `overrideCapMs` lets a caller use a DIFFERENT completion
-     *  budget than this gate's own construction-time `capMs` (e.g. compaction's
-     *  generous COMPACT_BUSY_CAP_MS vs the wake-turn's TURN_INJECT_BUSY_CAP_MS)
-     *  without needing a second gate instance over the same activity tracker. */
+     *  budget than this gate's own construction-time `capMs` without needing a
+     *  second gate instance over the same activity tracker. */
     async waitAtPrompt(overrideCapMs) {
       const effectiveCapMs = overrideCapMs ?? capMs;
       const deadline = now() + effectiveCapMs;
@@ -970,9 +942,9 @@ export function decodeControl(payload) {
           sessionClass: o.sessionClass != null ? String(o.sessionClass).slice(0, 200) : '',
           gated: true,
         };
-      // compact (WI-1804): post-compaction auto-continuation. GATED like a turn (fire at a
-      // settled turn, never mid-turn). `focus` = the `/compact <focus>` argument; `data` =
-      // the carry-note the compacted context opens on (empty ⇒ a bare compact, no carry).
+      // compact — RETIRED (P-022): still DECODED so a stale pre-cutover sender's
+      // message reaches the handler's loud drop instead of falling through to the
+      // legacy path below, which would TYPE the raw envelope at the agent as a turn.
       if (o.mode === 'compact')
         return {
           mode: 'compact',
@@ -1420,36 +1392,6 @@ export function submitVerifyQuietMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS, SUBMIT_VERIFY_QUIET_MS);
 }
 
-/** The compaction command for a backend (post-compaction auto-continuation, WI-1804).
- *  Claude Code / OMP expose `/compact [focus]` — summarize-and-continue, the WARM sibling
- *  of /clear's cold reset (transcript is summarized, not dropped). Codex ALSO has a native
- *  `/compact` (verified against the installed 0.142.5 binary: compact.rs + the TUI command
- *  table) but it takes NO focus argument — its summarizer isn't steerable — so the focus
- *  hint is dropped. Until 2026-07-05 codex mapped to null, which silently no-op'd the
- *  watchdog force-compact rung AND session:request-compaction for every codex session
- *  (the tool still reported "queued"). Pure — exported for tests. */
-export function compactCommandForAgent(agent, focus) {
-  const normalized = String(agent || '').trim().toLowerCase();
-  if (normalized === 'codex') return '/compact';
-  const f = String(focus ?? '').trim();
-  return f ? `/compact ${f}` : '/compact';
-}
-
-/** The compaction START delay (WI-1804): after submitting /compact, wait this long so the
- *  compaction output has begun before gating on its COMPLETION. Env-tunable, module default
- *  as fallback. */
-export function compactStartMs(env = process.env) {
-  return positiveNumber(env.PAPERCUSP_PSU_PTY_COMPACT_START_MS, COMPACT_START_MS);
-}
-
-/** The compaction COMPLETION-wait budget (WI-1872 (1)): dedicated, generous cap for how
- *  long the host waits for a `/compact` to finish before dropping the carry-note — distinct
- *  from TURN_INJECT_BUSY_CAP_MS (sized for a normal wake turn, not a summarizer pass over a
- *  large transcript). Env-tunable, module default as fallback. */
-export function compactBusyCapMs(env = process.env) {
-  return positiveNumber(env.PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS, COMPACT_BUSY_CAP_MS);
-}
-
 /** Absolute path to the session-compacted emit CLI (a sibling script, built by the
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */
@@ -1768,7 +1710,10 @@ export function hostThroughPty(o) {
     // older host that has no `caps` field. Additive — grow this as new modes land.
     // 'mcp-reconnect' (P-003, 2026-07-13): the in-place /mcp dialog heal; an old
     // host without it makes the watchdog fall back to notify-only.
-    caps: ['compact', 'carry-respawn', 'mcp-reconnect'],
+    // P-022: 'compact' is no longer advertised — a pre-cutover sender that
+    // caps-gates on hostSupports(host, 'compact') now skips cleanly instead of
+    // sending a message the handler will loudly drop.
+    caps: ['carry-respawn', 'mcp-reconnect'],
   };
   const writeMeta = () => {
     try {
@@ -2242,137 +2187,34 @@ export function hostThroughPty(o) {
           });
           return;
         }
-        // COMPACT (post-compaction auto-continuation, WI-1804): the /compact WARM sibling
-        // of reset's cold /clear. The gate above already guaranteed a settled turn. Then,
-        // as ONE sequential operation (no second racing socket inject): (1) submit
-        // `/compact <focus>`; (2) let the compaction START emitting; (3) wait for the
-        // compaction TURN to COMPLETE via the output-idle gate — the ONLY observable
-        // "compaction done" signal; (4) open the compacted context on the carry-note turn.
-        // If the compaction outruns the busy cap we DROP the carry (never type into a
-        // still-compacting TUI) — the agent's loop / next natural turn still resumes it.
+        // COMPACT — RETIRED (P-022, 2026-07-18): native compaction is removed
+        // fleet-wide; carry-respawn above is the only context cut, and every
+        // psu Claude child runs with DISABLE_COMPACT (the command doesn't even
+        // exist to type). A mode:'compact' arriving here means a STALE
+        // pre-P-022 sender is still running old code (the EI-16190 class: a
+        // long-lived host process, e.g. bg-host, never restarted after the
+        // cutover). Drop it LOUDLY — an absorbed stale message hid a broken
+        // fleet enforcer for ~13h; a screaming one gets its sender restarted.
         if (msg.mode === 'compact') {
-          const compactCmd = compactCommandForAgent(env.PAPERCUSP_AGENT, msg.focus);
-          if (!compactCmd) {
-            // No compaction command for this backend — every KNOWN backend (claude/omp/
-            // codex) has one, so this only guards a future backend. Surface the drop
-            // rather than silently returning (the pre-2026-07-05 codex behavior:
-            // request-compaction reported "queued" while nothing ever ran).
-            appendHostEvent(ownerId, 'compact-carry-dropped', {
-              reason: 'no-backend-compact-command',
-              backend: String(env.PAPERCUSP_AGENT || ''),
-            });
-            try {
-              process.stderr.write(
-                `psu-pty-host: mode:compact DROPPED for ${ownerId} — backend '${env.PAPERCUSP_AGENT}' has no compaction command\n`,
-              );
-            } catch {
-              /* diagnostic only */
-            }
-            return;
-          }
-          const submit = async (text) => {
-            for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
-              if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
-              child.write(step.data);
-            }
-          };
-          // (1) submit /compact <focus> — VERIFIED (WI-2930): a swallowed CR here
-          // would leave "/compact …" staged and, worse, let the quiet gate below
-          // pass immediately and type the carry into the same stranded composer.
-          await submit(compactCmd);
-          await verifySubmitted('compact command');
-          appendHostEvent(ownerId, 'compact-submitted', {
-            focus: String(msg.focus || '').slice(0, 200),
-            carry: Boolean(msg.data),
+          appendHostEvent(ownerId, 'retired-mode-dropped', {
+            mode: 'compact',
+            hint: 'stale pre-P-022 sender still running (EI-16190) — find and restart it',
           });
-          if (!msg.data) return; // bare compact — no continuation requested
-          // (2) WI-1872 (2): wait for the compaction to actually go BUSY (bounded —
-          // falls back to the old fixed compactStartMs(env) delay if busy is never
-          // observed), instead of unconditionally sleeping a fixed delay and hoping
-          // the compaction has started by then. Fixes the START-RACE: a slow-to-emit
-          // summarizer used to still read as quiet at the fixed-delay mark, so the
-          // completion-wait below resolved immediately and typed the continuation
-          // into a still-compacting TUI.
-          await agentBusyGate.waitUntilBusy(compactStartMs(env));
-          // (3) wait through the compaction to completion (or DROP the carry on cap).
-          // WI-1872 (1): a DEDICATED, generous completion budget (compactBusyCapMs),
-          // not the wake-turn's TURN_INJECT_BUSY_CAP_MS — a large-transcript compaction
-          // can legitimately run past 180s and used to be dropped silently on that cap.
-          const compactCapMs = compactBusyCapMs(env);
-          // EI-10067: snapshot the human-keystroke clock BEFORE the long completion
-          // wait below. `activity.touchInput()` is wired ONLY to the bridged
-          // terminal's raw stdin (see onStdin above) — never to our own
-          // control-socket writes — so `lastInputAt` moving is a clean "the OWNER
-          // typed" signal, distinct from `agentBusyGate`'s OUTPUT-only tracking.
-          // `agentBusyGate` reads "at prompt" the instant the compaction's own
-          // output goes quiet — even when the owner has ALREADY submitted a fresh
-          // turn that just hasn't started generating output yet. Without this
-          // check the carry-note below lands queued behind that fresh owner turn
-          // and is delivered a turn or two late, still claiming "this is a fresh
-          // turn right after your compaction" (owner-observed 2026-07-12).
-          const inputAtBeforeCompactWait = activity.snapshot().lastInputAt ?? 0;
-          const done = await agentBusyGate.waitAtPrompt(compactCapMs);
-          if (done.deferred) {
-            appendHostEvent(ownerId, 'compact-carry-dropped', {
-              reason: 'compaction-still-running',
-              capMs: compactCapMs,
-            });
-            try {
-              process.stderr.write(
-                `psu-pty-host: compact carry-note DROPPED for ${ownerId} ` +
-                  `(compaction still running > ${compactCapMs}ms cap); ` +
-                  `the agent's loop / next turn resumes it\n`,
-              );
-            } catch {
-              /* never let a diagnostic write break the session */
-            }
-            return;
+          try {
+            process.stderr.write(
+              `psu-pty-host: mode:compact DROPPED for ${ownerId} — retired by P-022 (carry-respawn is the only ` +
+                `context cut); a stale pre-cutover sender is still running (EI-16190): find and restart that process\n`,
+            );
+          } catch {
+            /* diagnostic only */
           }
-          // EI-10067 → EI-10412: the owner typed into the bridged terminal WHILE
-          // we were waiting for the compaction to finish. The FIRST cut of this
-          // check DROPPED the carry-note outright — but `lastInputAt` moves on ANY
-          // raw keystroke (ctrl+o to view the summary, scrollback, a /model
-          // command), not just a submitted owner turn, so the drop routinely fired
-          // with no owner turn in flight and the session sat DARK until the owner
-          // prodded it (the exact bug it was meant to smooth over). Now the carry
-          // is REWORDED instead of dropped: an appended caveat cedes precedence to
-          // any owner turn that did land, and delivery is retried at the prompt —
-          // injectTurnAtPrompt's own busy-gate wait naturally queues it behind a
-          // genuinely in-flight owner turn.
-          const ownerTypedDuringWait =
-            bridgeTty && (activity.snapshot().lastInputAt ?? 0) > inputAtBeforeCompactWait;
-          if (ownerTypedDuringWait) appendHostEvent(ownerId, 'owner-input-during-compact-wait', {});
-          // (3.5) The compaction has REALLY completed (not the done.deferred drop above).
-          // Fire session:compacted so any peer awaiting this member's compaction wakes now
-          // (event-await P-103). Emitted ONLY here: the host observes completion only on the
-          // continuation path, and only a settled, non-deferred compaction is a true
-          // "member compacted" signal.
-          fireSessionCompactedEvent(ownerId, msg.focus);
-          // (4) open the compacted context on the continuation turn — GUARANTEED-or-
-          // LOUDLY-DROPPED (EI-10412). The old single-shot submit had four silent
-          // exit paths and lost 10 continuations across 7 agents on 2026-07-12
-          // alone; injectTurnAtPrompt retries across a budget, re-checks the busy
-          // gate right before each write (closing most of the EI-10067 TOCTOU
-          // window), verifies the submit took (WI-2930), and leaves a durable
-          // event-log row either way.
-          const carryText = ownerTypedDuringWait
-            ? `${msg.data}\n\n(Host note, EI-10412: owner keystrokes were observed during the compaction wait — if an owner turn arrived before this continuation, that instruction takes precedence and the "fresh turn right after your compaction" framing above is stale.)`
-            : msg.data;
-          const carry = await injectTurnAtPrompt({ text: carryText, label: 'compact carry-note' });
-          appendHostEvent(
-            ownerId,
-            carry.delivered ? 'compact-carry-delivered' : 'compact-carry-dropped',
-            carry.delivered
-              ? { attempts: carry.attempts, rewordedForOwnerInput: ownerTypedDuringWait }
-              : { reason: carry.reason, attempts: carry.attempts },
-          );
           return;
         }
         // MCP-RECONNECT (mcp-transport-resilience P-003, 2026-07-13): drive the
         // claude TUI's /mcp dialog to re-attach a dead HTTP-MCP server IN PLACE.
         // The gates above already guaranteed a settled turn + quiet input line.
         // Claude-only: the dialog walker is pinned to the claude TUI; other
-        // backends drop durably (the compact no-backend-command posture). Truth
+        // backends drop durably with an event-log row. Truth
         // of the heal is judged operator-side (presence beat, P-005) — the host
         // event is advisory.
         if (msg.mode === 'mcp-reconnect') {
@@ -2447,7 +2289,7 @@ export function hostThroughPty(o) {
         // vanish without a trace — for compact that silently killed the whole
         // auto-continuation. The swallow stays (child may have exited mid-inject;
         // the host must survive), but the outcome is now durably recorded.
-        if (msg.mode === 'compact' || msg.mode === 'reset' || msg.mode === 'recycle') {
+        if (msg.mode === 'reset' || msg.mode === 'recycle') {
           appendHostEvent(ownerId, `${msg.mode}-inject-error`, {
             error: String((err && err.message) || err).slice(0, 300),
           });
@@ -2742,6 +2584,7 @@ export function hostThroughPty(o) {
         return;
       }
       const priorDisableAutoCompact = env.DISABLE_AUTO_COMPACT;
+      const priorDisableCompact = env.DISABLE_COMPACT;
       try {
         const dead = new Promise((res) => {
           try {
@@ -2765,7 +2608,12 @@ export function hostThroughPty(o) {
         // P-018: disable Claude Code's native AUTO compactor only on the fresh
         // child whose deterministic carry consumer is now installed. The old
         // child kept its native safety net right up to this successful cut.
-        if (systemPromptAddendum) env.DISABLE_AUTO_COMPACT = '1';
+        // P-022 adds DISABLE_COMPACT: a successor of a pre-cutover session
+        // would otherwise inherit an env where /compact still exists.
+        if (systemPromptAddendum) {
+          env.DISABLE_AUTO_COMPACT = '1';
+          env.DISABLE_COMPACT = '1';
+        }
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
@@ -2795,6 +2643,8 @@ export function hostThroughPty(o) {
         if (systemPromptAddendum) {
           if (priorDisableAutoCompact === undefined) delete env.DISABLE_AUTO_COMPACT;
           else env.DISABLE_AUTO_COMPACT = priorDisableAutoCompact;
+          if (priorDisableCompact === undefined) delete env.DISABLE_COMPACT;
+          else env.DISABLE_COMPACT = priorDisableCompact;
         }
         try {
           process.stderr.write(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
@@ -2839,6 +2689,12 @@ export function hostThroughPty(o) {
           firstPrompt: Boolean(carryText),
         });
       }
+      // P-022: session:compacted:<owner> used to fire from the /compact handler's
+      // completion path; with native compaction retired, a successful
+      // carry-respawn IS this member's context cut — fire the same event here so
+      // peers' `events:await { event: "session:compacted:<owner>" }` stays a live
+      // surface instead of a key nothing emits anymore.
+      if (respawnMode === 'carry-respawn') fireSessionCompactedEvent(ownerId, 'carry-respawn');
       recycling = false;
       if (!carryText) {
         if (drillId) {
