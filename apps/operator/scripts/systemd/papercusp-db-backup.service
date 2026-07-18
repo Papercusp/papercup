@@ -1,0 +1,19 @@
+[Unit]
+Description=Papercusp Postgres backup (pg_dump -Fd, parallel) — EI-10733
+Documentation=https://papercusp.internal/issues/EI-10733
+After=network-online.target
+# The backup is the thing you need most when everything else is broken, so its
+# failure must be VISIBLE. The old pg_dumpall leg failed silently behind a
+# one-line "pg-5432 FAIL" for 30 days (EI-10733); db-backup.sh exits non-zero
+# and healthcheck.sh asserts dump-content freshness from STATUS.json.
+#
+# OnFailure is a [Unit] key. It was previously in [Service], where systemd
+# SILENTLY IGNORES it — so a failed backup raised no alarm at all. Moved to
+# [Unit] 2026-07-14 (EI-10733 follow-up, su-a1a71).
+OnFailure=papercusp-db-backup-alert.service
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/home/marsh-office/.config/kopia/db-backup.sh

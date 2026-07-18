@@ -1,0 +1,30 @@
+[Unit]
+Description=Papercusp Postgres backup — hourly (EI-10733)
+
+[Timer]
+# Hourly. Runs db-backup.sh (pg_dump -Fd -j), which finishes in ~80-110s.
+#
+# WHY OnCalendar+Persistent, not OnUnitInactiveSec (EI-10733 follow-up,
+# su-a1a71 2026-07-14): OnUnitInactiveSec measures from the service's last
+# deactivation, but that reference is NOT persisted across a systemd *user
+# manager* restart. On 2026-07-14 the user manager restarted at 04:39, the
+# timer's Trigger went n/a, and the backup silently stopped for ~20h — the exact
+# invisible-gap class EI-10733 exists to prevent. Persistent=true was already
+# set here but is a NO-OP for OnUnitInactiveSec; it only works with OnCalendar.
+# OnCalendar+Persistent fires on wall-clock hours regardless of manager restarts
+# and catches up a missed run after downtime.
+#
+# The EI-10730 overlap-runaway (OnUnitActiveSec=5min vs a 5.5-7min kopia run =>
+# continuous back-to-back runs pinning ACCESS SHARE locks) CANNOT recur here:
+# this dump runs ~80-110s (<<1h), and systemd never starts a 2nd instance of an
+# already-active oneshot, so overlap is structurally impossible however long a
+# dump takes.
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=90
+AccuracySec=1min
+OnBootSec=10min
+Unit=papercusp-db-backup.service
+
+[Install]
+WantedBy=timers.target

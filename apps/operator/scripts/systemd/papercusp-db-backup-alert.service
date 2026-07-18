@@ -1,0 +1,6 @@
+[Unit]
+Description=Raise an alarm when the Papercusp DB backup fails (EI-10733)
+
+[Service]
+Type=oneshot
+ExecStart=/home/marsh-office/.config/kopia/backup-alert.sh "papercusp-db-backup.service failed"
