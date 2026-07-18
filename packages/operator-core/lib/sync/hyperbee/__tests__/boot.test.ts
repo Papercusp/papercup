@@ -2273,6 +2273,12 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       });
     }
 
+    // bootHarnessSubstrate's OWN initial swarm join already happened during
+    // setup above — capture the baseline so the forceRejoin delta (leave()
+    // then a SECOND join()) is what gets asserted, same pattern as the
+    // EI-13317 rung (b) test above.
+    const joinCallsBeforeEscalation = joinSpy.mock.calls.length;
+
     // ONE episode — this process's first ever for this log.
     sampleReplicationLiveness(
       workspaceId,
@@ -2293,7 +2299,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     expect(exhaustedEvents()[0]!.message).toContain('chronic zombie');
     expect(exhaustedEvents()[0]!.message).toContain('WI-5332');
     expect(leaveSpy).toHaveBeenCalledTimes(1); // forceRejoin fired
-    expect(joinSpy).toHaveBeenCalledTimes(1);
+    expect(joinSpy.mock.calls.length).toBe(joinCallsBeforeEscalation + 1);
 
     // The ordinary in-budget session re-attach ALSO still happened alongside
     // (harmless — a redundant close+reopen never blocks on the async check).
