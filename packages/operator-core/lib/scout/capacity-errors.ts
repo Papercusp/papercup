@@ -30,7 +30,10 @@ import type { AdmissionDenial } from '@papercusp/papercusp-shared/agent';
  */
 export const CAPACITY_CLASSIFIER_SCHEMA_VERSION = 1;
 
-/** Extract the typed admission fact from a TurnError/LlmCallError or persisted tick detail. */
+/** Extract the typed admission fact from a TurnError/LlmCallError or persisted tick detail.
+ * Copies the `via` evidence stamp — dropping it here would strip the attestation the
+ * classifier requires every time a denial round-trips through re-extraction (scheduler
+ * re-extracts before persisting). */
 export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined {
   if (!input || typeof input !== 'object') return undefined;
   const value = input as Record<string, unknown>;
@@ -42,6 +45,8 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
   if (reason !== 'all-accounts-paused' && reason !== 'no-free-slot' && reason !== 'provider-429') return undefined;
   return {
     reason,
+    ...(denial.via === 'governor' || denial.via === 'http-429' ? { via: denial.via } : {}),
+    ...(typeof denial.governorReason === 'string' ? { governorReason: denial.governorReason } : {}),
     ...(typeof denial.pausedAccounts === 'number' ? { pausedAccounts: denial.pausedAccounts } : {}),
     ...(typeof denial.freeSlots === 'number' ? { freeSlots: denial.freeSlots } : {}),
   };
