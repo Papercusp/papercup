@@ -118,3 +118,29 @@ test('PgThreadStore.getOrCreateThread tolerates a thread_id reused under a diffe
   const post = await store.addPost({ thread_id: TID, author_id: 'su-ei1743', body: 'comment after ref change', created_ts: '2026-06-20T00:02:00.000Z' });
   expect(post).toBeTruthy();
 });
+
+// EI-1652 regression: the ORIGINAL repro shape — two work_items:amend/comment calls firing in
+// the SAME parallel batch (a genuine race, not a sequential re-key like EI-1743's) both hit
+// `duplicate key value violates unique constraint "coord_threads_pkey"`. This is the same
+// bare-ON-CONFLICT-DO-NOTHING fix's OTHER leg: two truly CONCURRENT getOrCreateThread calls for
+// the SAME thread_id (e.g. two parallel comments on the same item, each lazily creating its
+// thread) must never throw on the PK race — one INSERT wins, the other's ON CONFLICT DO NOTHING
+// no-ops, and BOTH read back the same row.
+test('PgThreadStore.getOrCreateThread tolerates two CONCURRENT calls racing to create the same thread (EI-1652)', async () => {
+  const store = new PgThreadStore(opts(freshWs()));
+  const TID = 'work-item-thread-WI-EI1652';
+  const parent = { kind: 'feature' as const, ref: 'F-FIX-EI1652' };
+  const [t1, t2] = await Promise.all([
+    store.getOrCreateThread(parent, { thread_id: TID, created_ts: '2026-07-18T00:00:00.000Z' }),
+    store.getOrCreateThread(parent, { thread_id: TID, created_ts: '2026-07-18T00:00:00.001Z' }),
+  ]);
+  expect(t1.thread_id).toBe(TID);
+  expect(t2.thread_id).toBe(TID);
+  // Both concurrent callers can then post without a second race — each addPost is its own insert.
+  const [p1, p2] = await Promise.all([
+    store.addPost({ thread_id: TID, author_id: 'su-a', body: 'first parallel comment', created_ts: '2026-07-18T00:00:01.000Z' }),
+    store.addPost({ thread_id: TID, author_id: 'su-b', body: 'second parallel comment', created_ts: '2026-07-18T00:00:01.001Z' }),
+  ]);
+  expect(p1).toBeTruthy();
+  expect(p2).toBeTruthy();
+});
