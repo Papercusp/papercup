@@ -46,7 +46,7 @@ export function renderContextUsageLine(
   let line = `context: ${contextTokens}/${compactionLimit} (${pct}%)`;
   if (pct >= COMPACTION_HINT_PCT) {
     line +=
-      ' — near limit: CALL session:request-compaction (or /compact) with a focus NOW at a clean stopping point; do not merely describe ending the turn.';
+      ' — near limit: CALL session:request-compaction with a focus NOW at a clean stopping point; do not merely describe ending the turn.';
   }
   return line;
 }
@@ -97,12 +97,12 @@ export function renderBandedContextGauge(
       return (
         `⚠ ${fact} — approaching your soft compaction limit; FLUSH durable conclusions NOW ` +
         `(facts:assert / work_items:checkpoint / loop:checkpoint), then reach a clean stopping ` +
-        `point soon and call session:request-compaction (or /compact) with a focus.`
+        `point soon and call session:request-compaction with a focus.`
       );
     case 'critical':
       return (
         `⚠ ${fact} — CRITICAL: at your soft compaction limit. Flush checkpoints/facts if not yet done, ` +
-        `then call session:request-compaction (or /compact) with a focus NOW, at the nearest stopping ` +
+        `then call session:request-compaction with a focus NOW, at the nearest stopping ` +
         `point — do not merely narrate ending the turn.`
       );
   }

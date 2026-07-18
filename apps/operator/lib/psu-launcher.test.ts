@@ -596,32 +596,32 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).not.toMatch(/^retry:\n\s+enabled:\s*false$/m);
   });
 
-  it('seeds shake@70 compaction + gateway remoteEndpoint for a LOCAL-model session (deterministic-context-carry P-001/P-002)', () => {
+  it('seeds shake@70 compaction for a LOCAL-model session; no endpoint without an owner (P-001, P-022)', () => {
     // The ornith overflow (2026-07-13): default snapcompact + all-default thresholds on a
     // text-only 204K local window → image archives, summarizer 429 self-starvation, HTTP 400.
+    // P-022: shake is mechanical (no LLM call), so a clientId-less session gets NO
+    // remoteEndpoint — nothing would call it, and it would be the plain-LLM lane if it did.
     writeOmpSessionConfigDir('sess1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
     expect(written).toMatch(/^compaction:$/m);
     expect(written).toMatch(/\n\s+strategy:\s*shake/);
     expect(written).toMatch(/\n\s+thresholdPercent:\s*70/);
-    // P-002: any LLM summarization the session still runs rides the gateway maintenance
-    // lane, never the local model's own single-slot backend.
-    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
+    expect(written).not.toContain('remoteEndpoint');
   });
 
-  it('seeds remoteEndpoint ONLY for a gateway-routed hosted model; a direct hosted model stays untouched (P-002)', () => {
-    // Gateway-routed: the gateway is already a hard dependency, so summarization joins it —
-    // but the hosted model keeps its NATIVE strategy (no shake forced; P-001 decision).
+  it('P-022: EVERY hosted omp model gets the forced papercusp block — gateway-routed and direct alike (native strategies retired)', () => {
     writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6' }, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
     expect(written).toMatch(/^compaction:$/m);
-    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
-    expect(written).not.toContain('strategy: shake');
-    expect(written).not.toContain('thresholdPercent');
-    // Direct (non-gateway) hosted model: omp THROWS on a remoteEndpoint failure with no
-    // local fallback, and the gateway is NOT a dependency here — config copied untouched.
+    expect(written).toMatch(/\n\s+strategy:\s*shake/); // no clientId ⇒ mechanical
+    expect(written).toMatch(/\n\s+thresholdPercent:\s*\d+/);
+    expect(written).not.toContain('remoteEndpoint');
+    // Direct (non-gateway) hosted model: same forced block — omp's native
+    // strategies are retired everywhere, and shake introduces no gateway dependency.
     writeOmpSessionConfigDir('sess2', { model: 'anthropic/claude-opus-4-8' }, home);
-    expect(readFileSync(agentPath('sess2', 'config.yml'), 'utf8')).not.toContain('compaction');
+    const direct = readFileSync(agentPath('sess2', 'config.yml'), 'utf8');
+    expect(direct).toMatch(/^compaction:$/m);
+    expect(direct).toMatch(/\n\s+strategy:\s*shake/);
   });
 
   it('remoteEndpoint injection PRESERVES an inherited compaction block for a gateway model (no duplicate keys)', () => {
@@ -629,26 +629,27 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withCompaction);
     writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6' }, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    // P-022: the inherited native block is REPLACED wholesale, never merged — one
+    // block, snapcompact and the stale endpoint both gone.
     expect((written.match(/^compaction:/gm) ?? []).length).toBe(1);
-    expect((written.match(/remoteEndpoint:/g) ?? []).length).toBe(1); // stale endpoint replaced
     expect(written).not.toContain('http://old:1/x');
-    expect(written).toContain('strategy: snapcompact'); // native strategy preserved
-    expect(written).toMatch(/\n\s+thresholdPercent:\s*90/);
-    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
+    expect(written).not.toContain('snapcompact');
+    expect(written).toMatch(/\n\s+strategy:\s*shake/); // no clientId ⇒ mechanical, no endpoint
+    expect(written).not.toContain('remoteEndpoint');
   });
 
-  it('remoteEndpoint honors PAPERCUSP_GATEWAY_PORT (launcher port rule, default 8788)', () => {
+  it('remoteEndpoint honors PAPERCUSP_GATEWAY_PORT (launcher port rule, default 8788) — endpoint rides with a carry owner (P-022)', () => {
     const saved = process.env.PAPERCUSP_GATEWAY_PORT;
     try {
       process.env.PAPERCUSP_GATEWAY_PORT = '8797';
-      writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith' }, home);
+      writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-port-1' }, home);
       expect(readFileSync(agentPath('sess1', 'config.yml'), 'utf8')).toContain(
-        'remoteEndpoint: "http://127.0.0.1:8797/maintenance/summarize"',
+        'remoteEndpoint: "http://127.0.0.1:8797/maintenance/summarize?carryOwner=su-port-1"',
       );
       delete process.env.PAPERCUSP_GATEWAY_PORT;
-      writeOmpSessionConfigDir('sess2', { model: 'ollama/ornith' }, home);
+      writeOmpSessionConfigDir('sess2', { model: 'ollama/ornith', clientId: 'su-port-2' }, home);
       expect(readFileSync(agentPath('sess2', 'config.yml'), 'utf8')).toContain(
-        'remoteEndpoint: "http://127.0.0.1:8788/maintenance/summarize"',
+        'remoteEndpoint: "http://127.0.0.1:8788/maintenance/summarize?carryOwner=su-port-2"',
       );
     } finally {
       if (saved === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;
@@ -2705,8 +2706,8 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
 });
 
 describe('nativeCompactionEnv (P-022 — native auto-compact retired for every Claude launch)', () => {
-  it('claude → DISABLE_AUTO_COMPACT=1 regardless of spec or window (the carry-respawn ladder owns the boundary)', () => {
-    expect(nativeCompactionEnv('claude')).toEqual({ DISABLE_AUTO_COMPACT: '1' });
+  it('claude → DISABLE_AUTO_COMPACT + DISABLE_COMPACT regardless of spec or window (the carry-respawn ladder owns the boundary; the /compact command itself is removed)', () => {
+    expect(nativeCompactionEnv('claude')).toEqual({ DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' });
   });
 
   it('non-claude agents get no env fragment — their compaction is papercusp-owned at their own launch legs', () => {

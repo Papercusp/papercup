@@ -31,7 +31,8 @@ import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/p
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
-import { resolveModelSpecForOwner, modelWindowForSpec } from '../../compaction-usage';
+import { resolveModelSpecForOwner } from '../../compaction-usage';
+import { modelWindowForSpec } from '../../agent-config-constants';
 import {
   staleCheckpointWarnings,
   STALE_CHECKPOINT_WARN_MS,

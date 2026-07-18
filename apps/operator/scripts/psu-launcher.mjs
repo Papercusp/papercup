@@ -3272,7 +3272,12 @@ export function normalizeModelSpecForAgent(agent, spec) {
  * launches are audited separately (they have their own context controls).
  */
 export function nativeCompactionEnv(agent) {
-  return agent === 'claude' ? { DISABLE_AUTO_COMPACT: '1' } : {};
+  // DISABLE_AUTO_COMPACT kills the automatic fire; DISABLE_COMPACT removes the
+  // /compact command itself (both binary-verified CC 2.1.x envs) — the owner
+  // terminal state is "no /compact", not merely "no auto-compact", and the
+  // harness no longer types it either (session:request-compaction and the
+  // watchdog both drive mode:'carry-respawn' now).
+  return agent === 'claude' ? { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' } : {};
 }
 
 /** The canonical BARE cloud model aliases psu recognizes. Short + lowercase. The CLI/gateway own
