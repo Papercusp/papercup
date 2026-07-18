@@ -3212,7 +3212,7 @@ export function ScoutView({
           typed-revision loop, watchable instead of invisible. */}
       {drafts.length > 0 ? (
         <LearningDisclosure label="Drafts in iteration" count={drafts.length}>
-          <ul className="pc-learning__draftlist" aria-label="Scout draft plans in iteration">
+          <ul className="pc-learning__draftlist" aria-label={`${t("scout")} draft plans in iteration`}>
             {drafts.map((d) => {
               const upMs = d.planUpdatedAt ? Date.parse(d.planUpdatedAt) : NaN;
               return (

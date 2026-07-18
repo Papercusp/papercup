@@ -316,7 +316,19 @@ export async function composeDispatch(
     ...(Array.isArray(wake.recipient_dead) && wake.recipient_dead.length > 0
       ? { recipient_dead: wake.recipient_dead }
       : {}),
+    ...(skippedItems.length > 0 ? { skippedItems } : {}),
   };
+
+  // 3b. EI-2292: surface the guard's own skips as a loud warning too (in addition to
+  //     the structured `skippedItems` field) — don't silently let a caller miss that
+  //     some of its requested items were NOT added to the lane. Composed with (never
+  //     overwriting) the dead/absent/staged warnings below, which take priority when
+  //     the target itself is unreachable.
+  if (skippedItems.length > 0 && !result.warning) {
+    result.warning =
+      `coord:dispatch skipped ${skippedItems.length} of ${args.items?.length ?? 0} requested item(s) ` +
+      `(not added to ${resolvedTo}'s lane): ${skippedItems.map((s) => `${s.item} (${s.reason})`).join('; ')}`;
+  }
 
   // 4. The loud miss (D-002 / the #1 confusion this plan fixes): a dispatch to a
   //    non-pickup-able target. `ended` sessionState OR a recipient_dead/absent wake

@@ -28,6 +28,7 @@
  * resolver test can stub the seam. Lives next to the resolver (not lib/scout/)
  * because it is the Learning tab's read, not part of the scout engine.
  */
+import { term } from '@papercusp/lexicon';
 import type { Sql } from 'postgres';
 
 export interface ScoutRailCount {
@@ -413,7 +414,7 @@ export function evaluateIdeasDriftMarkers(input: {
         key: 'single-lens-collapse',
         severity: topCount === sample.length ? 'bad' : 'warn',
         rubricCriterion: 'multi-lens-routing',
-        summary: `${topCount} of the newest ${sample.length} scout-routed ideas are '${topLens}' — the per-lens learning subsystem has a dimension that never varies (the 17-day WI-4482 shape).`,
+        summary: `${topCount} of the newest ${sample.length} ${term('scout', { lower: true })}-routed ideas are '${topLens}' — the per-lens learning subsystem has a dimension that never varies (the 17-day WI-4482 shape).`,
       });
     }
   }

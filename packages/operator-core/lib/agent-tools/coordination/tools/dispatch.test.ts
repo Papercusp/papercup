@@ -53,21 +53,27 @@ describe('composeDispatch', () => {
       'coord:presence': presence([
         { ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true },
       ]),
+      'plan_items:status': { items: [] },
       'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
       'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
     });
     const res = await composeDispatch(baseArgs, call);
 
-    // all three legs ran, in order
-    expect(calls.map((c) => c.name)).toEqual(['coord:presence', 'plan_items:assign', 'coord:send']);
+    // all four legs ran, in order (EI-2292 inserts the pre-assign status guard read)
+    expect(calls.map((c) => c.name)).toEqual([
+      'coord:presence',
+      'plan_items:status',
+      'plan_items:assign',
+      'coord:send',
+    ]);
     // the lane assign carried the plan + items + assignee
-    expect(calls[1].args).toMatchObject({
+    expect(calls[2].args).toMatchObject({
       plan: baseArgs.planSlug,
       itemIds: ['P-001', 'P-002'],
       assignee: 'su-7a2a',
     });
     // the send opted into the REQUIRED wake on the single target
-    expect(calls[2].args).toMatchObject({ to: ['su-7a2a'], summary: baseArgs.note, wake: 'required' });
+    expect(calls[3].args).toMatchObject({ to: ['su-7a2a'], summary: baseArgs.note, wake: 'required' });
 
     expect(res.ok).toBe(true);
     expect(res.to).toBe('su-7a2aFULL'); // resolved ownerId from the send result
@@ -270,6 +276,124 @@ describe('composeDispatch', () => {
       const hydrateRefs = vi.fn(async () => []);
       await composeDispatch({ to: 'su-7a2a', note: 'resume what I sent you' }, call, { hydrateRefs });
       expect(hydrateRefs).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('EI-2292: pre-assign guard skips live-claimed / owner-gated items', () => {
+    it('drops an item live-claimed by ANOTHER agent — not re-assigned, but the note still delivers', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:status': {
+          items: [
+            { itemId: 'P-001', itemStatus: 'wip', claim: { owner: 'su-holder', ownerName: 'su-holder' } },
+            { itemId: 'P-002', itemStatus: 'todo', claim: null },
+          ],
+        },
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const res = await composeDispatch(baseArgs, call);
+
+      // only the unclaimed item reached plan_items:assign
+      const assignCall = calls.find((c) => c.name === 'plan_items:assign');
+      expect(assignCall?.args).toMatchObject({ itemIds: ['P-002'] });
+      expect(res.assigned?.items).toEqual(['P-002']);
+      expect(res.skippedItems).toEqual([
+        { item: 'P-001', reason: expect.stringMatching(/live-claimed by su-holder/) },
+      ]);
+      expect(res.warning).toMatch(/skipped 1 of 2 requested item/);
+      // the directed note still delivers — dispatch is not aborted by a partial skip
+      expect(res.woken).toBe(1);
+    });
+
+    it('keeps an item already live-claimed BY THE TARGET ITSELF (re-affirming your own claim is not a collision)', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:status': {
+          items: [
+            { itemId: 'P-001', itemStatus: 'wip', claim: { owner: 'su-7a2aFULL', ownerName: 'su-7a2aFULL' } },
+            { itemId: 'P-002', itemStatus: 'todo', claim: null },
+          ],
+        },
+        'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const res = await composeDispatch(baseArgs, call);
+      const assignCall = calls.find((c) => c.name === 'plan_items:assign');
+      expect(assignCall?.args).toMatchObject({ itemIds: ['P-001', 'P-002'] });
+      expect(res.skippedItems).toBeUndefined();
+    });
+
+    it('drops a needs-human item — the exact su-aede8 harm (owner-gated work re-pushed every cycle)', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:status': {
+          items: [
+            { itemId: 'P-001', itemStatus: 'needs-human', claim: null },
+            { itemId: 'P-002', itemStatus: 'todo', claim: null },
+          ],
+        },
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const res = await composeDispatch(baseArgs, call);
+      const assignCall = calls.find((c) => c.name === 'plan_items:assign');
+      expect(assignCall?.args).toMatchObject({ itemIds: ['P-002'] });
+      expect(res.skippedItems).toEqual([
+        { item: 'P-001', reason: expect.stringMatching(/needs-human.*owner-gated/) },
+      ]);
+    });
+
+    it('drops a blocked item the same way as needs-human', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:status': {
+          items: [
+            { itemId: 'P-001', itemStatus: 'blocked', claim: null },
+            { itemId: 'P-002', itemStatus: 'todo', claim: null },
+          ],
+        },
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const res = await composeDispatch(baseArgs, call);
+      const assignCall = calls.find((c) => c.name === 'plan_items:assign');
+      expect(assignCall?.args).toMatchObject({ itemIds: ['P-002'] });
+      expect(res.skippedItems?.[0]).toMatchObject({ item: 'P-001' });
+    });
+
+    it('ALL requested items skipped: plan_items:assign is never called, but the note still delivers', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:status': {
+          items: [
+            { itemId: 'P-001', itemStatus: 'needs-human', claim: null },
+            { itemId: 'P-002', itemStatus: 'wip', claim: { owner: 'su-other', ownerName: 'su-other' } },
+          ],
+        },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const res = await composeDispatch(baseArgs, call);
+      expect(calls.map((c) => c.name)).not.toContain('plan_items:assign');
+      expect(res.assigned).toBeNull();
+      expect(res.skippedItems).toHaveLength(2);
+      expect(res.woken).toBe(1); // the wake itself is not blocked by a fully-skipped lane
+    });
+
+    it('fail-open: a plan_items:status read error degrades to the pre-fix unfiltered behavior', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:status': () => {
+          throw new Error('status read down');
+        },
+        'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const res = await composeDispatch(baseArgs, call);
+      const assignCall = calls.find((c) => c.name === 'plan_items:assign');
+      expect(assignCall?.args).toMatchObject({ itemIds: ['P-001', 'P-002'] }); // unfiltered
+      expect(res.skippedItems).toBeUndefined();
+      expect(res.woken).toBe(1);
     });
   });
 });

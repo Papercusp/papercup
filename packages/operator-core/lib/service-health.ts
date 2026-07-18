@@ -19,6 +19,17 @@ export interface EndpointSpec {
   url: string;
   /** Per-endpoint probe timeout override (default 3000ms — see {@link probeEndpoint}). */
   timeoutMs?: number;
+  /**
+   * EI-2339: this endpoint is an ON-DEMAND dev-only layer with NO systemd unit
+   * (spawned ad hoc by `bin/dev` / the desktop dev shell), not a persistent
+   * service — being down is the NORMAL/expected state whenever no dev shell is
+   * running, not an outage. When true, `probeEndpoint` reports a down result as
+   * `present: false` (the same "legitimately absent, don't alert" contract
+   * already used for the desktop/bg-host-ticker/substrate-sidecar probes) so
+   * `diffHealth` never fires a transition and `collectServiceDownSignals` never
+   * escalates it — it stays purely informational in `dev:service_health`.
+   */
+  onDemand?: boolean;
 }
 
 /**
@@ -36,6 +47,15 @@ export interface EndpointSpec {
  *     removed per EI-276 (it fed the EI-187 CRITICAL "shop is down", re-announced
  *     on every boot). Verified down-because-absent, not a regression.
  * Don't re-add a retired surface here.
+ *
+ * NB2 (EI-2339): `vite` (:3055) is kept in this list for VISIBILITY (a "not
+ * currently running" row is still useful in `dev:service_health`) but is
+ * `onDemand: true` — it is the Tauri desktop's on-demand dev content layer
+ * (spawned ad hoc by `bin/dev`), has NO systemd unit, and is simply not
+ * listening whenever no desktop dev shell is up, by design. Before EI-2339 a
+ * down vite was treated exactly like a down persistent service (`operator`,
+ * `scout`) and 24h-aged into a CRITICAL escalation even though the live
+ * product (:3070) was healthy — see `onDemand` on `EndpointSpec` for the fix.
  */
 export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   { name: 'operator', url: 'http://127.0.0.1:3070/api/desktop/version' }, // 200 + build-info SHA (P-011)
@@ -45,8 +65,10 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   // was firing a persistent false "vite DOWN" alarm (aged 2 days, escalated to
   // critical) purely from probe impatience, not an actual outage. A generous
   // per-endpoint override here fixes the false positive without loosening the
-  // timeout for the other (consistently fast, <100ms) endpoints.
-  { name: 'vite', url: 'http://127.0.0.1:3055/', timeoutMs: 10_000 },
+  // timeout for the other (consistently fast, <100ms) endpoints. EI-2339: also
+  // onDemand — vite has no systemd unit, so a genuinely-down probe (no dev shell
+  // running at all) must never escalate either; see NB2 above.
+  { name: 'vite', url: 'http://127.0.0.1:3055/', timeoutMs: 10_000, onDemand: true },
   { name: 'scout', url: 'http://127.0.0.1:3350/' },
   // code-server probe removed (owner directive 2026-07-07): code-server is no
   // longer bundled or spawned, so :8082 was a permanent false-DOWN.
@@ -123,26 +145,34 @@ export function tcpPreflight(url: string, timeoutMs = CONNECT_PREFLIGHT_MS, conn
 
 export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeoutMs ?? 3000): Promise<ProbeResult> {
   const start = Date.now();
+  // EI-2339: an onDemand endpoint (no systemd unit, spawned ad hoc) being down
+  // is the expected/normal state, not an outage — mark it present:false so
+  // diffHealth/collectServiceDownSignals never alert or escalate it, while the
+  // raw up:false result still flows through to dev:service_health for visibility.
+  const markIfOnDemand = (r: ProbeResult): ProbeResult =>
+    !r.up && spec.onDemand
+      ? { ...r, present: false, note: r.note ? `${r.note} (on-demand dev layer, not currently running)` : 'on-demand dev layer, not currently running' }
+      : r;
   const reachable = await tcpPreflight(spec.url);
   if (!reachable) {
     // Fails fast (≤ CONNECT_PREFLIGHT_MS) instead of waiting out the full
     // (possibly 10s) response budget for a port that isn't even accepting.
-    return {
+    return markIfOnDemand({
       name: spec.name,
       up: false,
       status: null,
       latencyMs: Date.now() - start,
       note: `connect refused or did not complete within ${CONNECT_PREFLIGHT_MS}ms preflight (not a slow-response case)`,
-    };
+    });
   }
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const res = await fetch(spec.url, { method: 'GET', signal: ctl.signal });
     // < 500 = "up" (a 401/404 still means the server is answering); 5xx = down.
-    return { name: spec.name, up: res.status < 500, status: res.status, latencyMs: Date.now() - start };
+    return markIfOnDemand({ name: spec.name, up: res.status < 500, status: res.status, latencyMs: Date.now() - start });
   } catch {
-    return { name: spec.name, up: false, status: null, latencyMs: Date.now() - start };
+    return markIfOnDemand({ name: spec.name, up: false, status: null, latencyMs: Date.now() - start });
   } finally {
     clearTimeout(timer);
   }

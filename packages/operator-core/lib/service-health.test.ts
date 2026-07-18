@@ -17,6 +17,7 @@ import {
   supervisedProcesses,
   type ProbeResult,
 } from './service-health';
+import { collectServiceDownSignals } from './harness/improvements/watchdog';
 
 const r = (name: string, up: boolean): ProbeResult => ({
   name,
@@ -108,6 +109,18 @@ describe('HEALTH_ENDPOINTS', () => {
   it('gives vite a more generous probe timeout than the 3000ms default', () => {
     const vite = HEALTH_ENDPOINTS.find((e) => e.name === 'vite');
     expect(vite?.timeoutMs).toBeGreaterThan(3000);
+  });
+
+  // EI-2339 recurrence guard: vite (:3055) is the Tauri desktop's on-demand dev
+  // content layer — it has no systemd unit and is simply not listening whenever
+  // no desktop dev shell is up, by design. It must be flagged `onDemand` so a
+  // down probe never escalates like a real persistent-service outage; the other
+  // systemd-managed endpoints (operator, scout) must NOT be onDemand.
+  it('flags vite (and only vite) as onDemand — a down probe must never escalate like a real outage', () => {
+    const byName = Object.fromEntries(HEALTH_ENDPOINTS.map((e) => [e.name, e]));
+    expect(byName.vite?.onDemand).toBe(true);
+    expect(byName.operator?.onDemand).toBeFalsy();
+    expect(byName.scout?.onDemand).toBeFalsy();
   });
 });
 
@@ -210,6 +223,44 @@ describe('probeEndpoint — per-spec timeout override (EI-6902)', () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe('probeEndpoint — onDemand endpoints report present:false when down (EI-2339)', () => {
+  it('a down onDemand endpoint (nothing listening) reports present:false with an explanatory note', async () => {
+    // Nothing is listening on this port at all — mirrors "no desktop dev shell up".
+    const result = await probeEndpoint({ name: 'vite', url: 'http://127.0.0.1:1/', onDemand: true, timeoutMs: 50 });
+    expect(result.up).toBe(false);
+    expect(result.present).toBe(false);
+    expect(result.note).toMatch(/on-demand dev layer, not currently running/);
+  });
+
+  it('a down NON-onDemand endpoint still reports present unset (undefined) — normal alerting applies', async () => {
+    const result = await probeEndpoint({ name: 'scout', url: 'http://127.0.0.1:1/', timeoutMs: 50 });
+    expect(result.up).toBe(false);
+    expect(result.present).not.toBe(false);
+  });
+
+  it('an UP onDemand endpoint is unaffected — no present:false stamped while healthy', async () => {
+    const server = net.createServer((socket) => socket.on('data', () => {}));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const fetchSpy = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await probeEndpoint({ name: 'vite', url: `http://127.0.0.1:${port}/`, onDemand: true, timeoutMs: 200 });
+      expect(result.up).toBe(true);
+      expect(result.present).not.toBe(false);
+    } finally {
+      server.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('end-to-end: a down onDemand result is skipped by both diffHealth and collectServiceDownSignals — never escalates', async () => {
+    const down = await probeEndpoint({ name: 'vite', url: 'http://127.0.0.1:1/', onDemand: true, timeoutMs: 50 });
+    expect(diffHealth({ vite: true }, [down]).transitions).toEqual([]);
+    expect(collectServiceDownSignals([down])).toEqual([]);
   });
 });
 
