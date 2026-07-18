@@ -109,6 +109,47 @@ export function dropDuplicateNeedsHumanWorkItems(items: readonly AttentionItem[]
 }
 
 /**
+ * curated-signal-cards-2026-07-17 P-002 — the blocked-work-item counterpart of
+ * {@link dropDuplicateNeedsHumanWorkItems}, same canonicalization convention.
+ *
+ * Source #15 (`work-item-blocked`) reads `status='blocked'` off the cross-kind
+ * work_items view. An ISSUE-family row (bug/change/task) can be blocked AND
+ * carry `payload.needsHuman` at the same time — the status column and the
+ * payload flag are independent dialects — so the same underlying row can arrive
+ * from source #15 AND from a needs-human-shaped source (#11
+ * `work-item-needs-human`, #7 `improvement`, #12 `owner-wall`).
+ *
+ * The needs-human framing WINS and the blocked duplicate is dropped: those are
+ * Decision-tier cards carrying an explicit ask the human must answer, whereas
+ * `work-item-blocked` is an Alert-tier status signal. Surfacing both would put
+ * one real row in two different tiers — strictly worse than either alone. PURE.
+ */
+export function dropDuplicateBlockedWorkItems(items: readonly AttentionItem[]): AttentionItem[] {
+  const coveredIds = new Set<string>();
+  for (const it of items) {
+    if (it.kind === 'work-item-needs-human' && it.ref.kind === 'work-item-needs-human') {
+      coveredIds.add(it.ref.workItemId);
+    }
+    if (it.kind === 'improvement' && it.ref.kind === 'improvement') {
+      coveredIds.add(it.ref.issueId);
+    }
+    if (
+      it.kind === 'owner-wall' &&
+      it.ref.kind === 'owner-wall' &&
+      it.ref.wallSource === 'work-item' &&
+      it.ref.wallRef
+    ) {
+      coveredIds.add(it.ref.wallRef);
+    }
+  }
+  if (coveredIds.size === 0) return [...items];
+  return items.filter((it) => {
+    if (it.kind !== 'work-item-blocked' || it.ref.kind !== 'work-item-blocked') return true;
+    return !coveredIds.has(it.ref.workItemId);
+  });
+}
+
+/**
  * Map recent report-carrying operator turns to AttentionItems — the
  * operator-report source (report-cards-inbox-reconciliation-2026-06-05,
  * P-003 / D-003). The stored jsonb is re-validated through the shared

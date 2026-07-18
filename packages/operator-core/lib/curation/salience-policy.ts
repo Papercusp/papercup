@@ -246,9 +246,42 @@ export function partition(
  * inbox as the coord-escalation AttentionItem `coord-escalation:<msgId>`. Other
  * signal kinds are not inbox-triageable through this mapping → `null` (untouched).
  */
-export function attentionIdForSignal(signal: Pick<FleetSignal, 'id'>): string | null {
+export function attentionIdForSignal(
+  signal: Pick<FleetSignal, 'id' | 'workItemId'>,
+): string | null {
   const ESC = 'escalation:';
   if (signal.id.startsWith(ESC)) return `coord-escalation:${signal.id.slice(ESC.length)}`;
+
+  // curated-signal-cards-2026-07-17 P-003 — blocker signals now have cards too.
+  //
+  // The discriminator is STRUCTURAL, not a ref-string guess: the work-item leg
+  // of the `blocked` reader (`deps.ts readBlockedWorkItems`) stamps
+  // `workItemId`, while the plan-item leg (`getAllBlockedPlanItems`) does not.
+  // Both legs' refs look like `<x>#<y>`, so sniffing the ref would be guesswork;
+  // the presence of `workItemId` is exact.
+  const BLOCKED = 'blocked:';
+  if (signal.id.startsWith(BLOCKED)) {
+    // Work-item leg → the source #15 card (`work-item-blocked:<id>`), which by
+    // construction reads exactly the `status='blocked'` rows this signal came
+    // from, so the card is guaranteed to exist.
+    if (signal.workItemId) return `work-item-blocked:${signal.workItemId}`;
+    // Plan-item leg → the EXISTING source #1 card. Note the id separator
+    // differs from the ref's: ref is `<plan>#<P-id>`, the attention id is
+    // `plan-item:<plan>:<P-id>` (see `planItemToAttention`).
+    const ref = signal.id.slice(BLOCKED.length);
+    const hash = ref.indexOf('#');
+    if (hash > 0 && hash < ref.length - 1) {
+      return `plan-item:${ref.slice(0, hash)}:${ref.slice(hash + 1)}`;
+    }
+    return null;
+  }
+
+  // `deadclaim:` deliberately maps to NOTHING. A claim held by an ended session
+  // is an independent fact from a blocked STATUS (fleet-signals keeps the id
+  // prefixes distinct for exactly this reason), so the item it names is NOT
+  // necessarily a `status='blocked'` row — meaning source #15 may have no card
+  // for it. Returning a `work-item-blocked:` id here would be a link to a card
+  // that does not exist. It keeps its plain drill-in ref instead.
   return null;
 }
 

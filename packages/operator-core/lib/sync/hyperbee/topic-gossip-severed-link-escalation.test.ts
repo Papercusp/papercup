@@ -306,6 +306,59 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
     await g.close();
   });
 
+  it('WI-5355 iteration 3: re-attempts CHANNEL-level pairing on a surviving socket after the forced leave+rejoin (not just the DHT-level rejoin)', async () => {
+    // Root cause: a topic that severs on a socket which is NOT evicted (still
+    // serving some OTHER topic — the common real-world case, e.g. the shared
+    // substrate/corestore connection also carries a directory-gossip topic)
+    // never gets its Protomux CHANNEL recreated by the escalation — only the
+    // DHT-level swarm.leave()/join() ran. Since Hyperswarm dedupes connections
+    // per peer, the SAME socket persists, so unless the code re-invokes
+    // openTopicChannel (mux.createChannel + .open()) on that surviving socket,
+    // the channel-level handshake is NEVER retried and the topic can never
+    // re-pair — reproducing "forceRejoin fires but never actually re-pairs".
+    const TOPIC2 = Buffer.alloc(32, 33);
+    const f = fakeSwarm();
+    const g = createTopicGossip<Frame>({
+      swarm: f.swarm,
+      protocol: 'papercusp/test-gossip',
+      onFrame: () => {},
+      getHelloFrames: () => [],
+      refreshMs: 50,
+      fastWindowMs: 200,
+      slowRefreshMs: 500,
+      severedEscalationMs: 1000,
+    });
+    g.joinTopic(TOPIC);
+    g.joinTopic(TOPIC2);
+    const socket = f.connect();
+    const mux = socket.userData!;
+    const ch1 = mux.channels.find((c) => c.id && c.id.equals(TOPIC))!;
+    const ch2 = mux.channels.find((c) => c.id && c.id.equals(TOPIC2))!;
+    ch1.pairRemote();
+    ch2.pairRemote();
+    ch1.fireClose(); // TOPIC severs; TOPIC2 (same socket) stays live so the socket is never evicted
+
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(f.left).toHaveLength(1); // DHT-level escalation fired
+    expect(socket.destroyed).toBe(false); // survives — still serving TOPIC2
+
+    // The fix under test: a FRESH channel for TOPIC must have been created on
+    // the surviving socket (the closed ch1 plus a brand-new one), and it must
+    // have been opened (an "open" frame sent) — otherwise the remote peer
+    // (which, per the bug, already rejected/closed the old one) has nothing
+    // to pair against and the topic is wedged forever.
+    const topicChannelsOnSocket = mux.channels.filter((c) => c.id && c.id.equals(TOPIC));
+    expect(topicChannelsOnSocket.length).toBeGreaterThanOrEqual(2);
+    const freshChannel = topicChannelsOnSocket[topicChannelsOnSocket.length - 1]!;
+    expect(freshChannel.closed).toBe(false);
+    expect(freshChannel.opened).toBe(true);
+
+    // And it actually re-pairs once the remote (finally) acks it.
+    freshChannel.pairRemote();
+    expect(g.openChannelCount(HEX)).toBe(1);
+    await g.close();
+  });
+
   it('severedEscalationMs: 0 disables the escalation entirely', async () => {
     const f = fakeSwarm();
     const onSeveredLink = vi.fn();

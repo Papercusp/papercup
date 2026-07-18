@@ -55,6 +55,7 @@ import {
   reportTurnsToAttention,
   dropConvertedPlanItems,
   dropDuplicateNeedsHumanWorkItems,
+  dropDuplicateBlockedWorkItems,
 } from "../../attention/sources";
 import { buildAttentionGroups } from "../../attention/group";
 import {
@@ -706,6 +707,12 @@ export default defineTool({
                     reason: r.reason,
                     harnessSlug: resolveHarness(r.harness_slug, null),
                     ownerAgentId: r.taken_by,
+                    // The curator emits this row's drill-in as
+                    // `wi:<harness>#<featureId>`; carrying the same ref lets the
+                    // shipped resolveInboxDrillIn select THIS card.
+                    curatorRef: r.harness_slug
+                      ? `${r.harness_slug}#${r.feature_id}`
+                      : null,
                   }),
                 );
               }
@@ -720,6 +727,17 @@ export default defineTool({
         //      the SAME underlying id is dropped — one card per real ask.
         {
           const kept = dropDuplicateNeedsHumanWorkItems(items);
+          items.length = 0;
+          items.push(...kept);
+        }
+
+        // 15a. curated-signal-cards P-002: the same canonicalization for source
+        //      #15 — an issue-family row can be `status='blocked'` AND carry
+        //      `payload.needsHuman`, so drop the Alert-tier blocked card when a
+        //      Decision-tier needs-human card already covers that id. Runs AFTER
+        //      11a so it sees the post-dedupe needs-human set.
+        {
+          const kept = dropDuplicateBlockedWorkItems(items);
           items.length = 0;
           items.push(...kept);
         }

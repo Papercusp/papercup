@@ -684,6 +684,9 @@ export interface BlockedWorkItemInput {
   harnessSlug?: string | null;
   ownerAgentId?: string | null;
   ownerLabel?: string | null;
+  /** The curator's stable ref for this row, `<harness>#<featureId>` — the
+   *  identifier the chat status-card's drill-in carries as `wi:<ref>`. */
+  curatorRef?: string | null;
 }
 
 /**
@@ -700,6 +703,15 @@ export interface BlockedWorkItemInput {
  * The id (`work-item-blocked:<id>`) is the join key the curation salience policy
  * maps its `blocked:<harness>#<id>` signal onto (P-003), so triaging this card
  * suppresses the chat re-nag the same way triaging an escalation already does.
+ *
+ * `itemRef` carries the curator's `<harness>#<featureId>` ref (NOT a P-NNN —
+ * see the field doc) specifically so the ALREADY-SHIPPED chat status-card
+ * drill-in resolves onto this card: `resolveInboxDrillIn`
+ * (deterministic-status-cards-2026-07-17 / WI-5342) deliberately matches a
+ * `wi:<ref>` drill-in against each live item's OWN identifiers rather than
+ * enumerating per-kind mappings, and `itemRef` is the identifier it reads.
+ * Without this, clicking through a `🚧 Blocked` work-item status card opens the
+ * inbox pane with NOTHING selected — which is the live bug this source fixes.
  */
 export function blockedWorkItemToAttention(i: BlockedWorkItemInput): AttentionItem {
   const tier: AttentionTier = 'alert';
@@ -710,7 +722,7 @@ export function blockedWorkItemToAttention(i: BlockedWorkItemInput): AttentionIt
     source: 'harness',
     harnessSlug: i.harnessSlug ?? null,
     planSlug: null, // unattached → the synthetic "Alerts" bucket
-    itemRef: null,
+    itemRef: i.curatorRef ?? null,
     title: clip(i.title),
     body: i.reason.trim() || i.title,
     status: `blocked (${i.itemKind})`,

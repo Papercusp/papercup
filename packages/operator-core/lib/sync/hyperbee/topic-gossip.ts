@@ -490,6 +490,28 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
               for (const socket of sockets) {
                 if (isSocketIdleAcrossAllTopics(socket)) evictIdleZombieSocket(socket);
               }
+              // WI-5355 iteration 3: the DHT-level leave()+join() below cannot,
+              // by itself, heal a topic whose Protomux CHANNEL was already
+              // closed/rejected on a socket that SURVIVES this escalation
+              // (i.e. still serving some OTHER topic, so not evicted above —
+              // sockets are shared A↔B connections, module header). Hyperswarm
+              // dedupes connections per peer, so the same socket persists
+              // across the DHT rejoin and no 'connection' event ever re-fires
+              // to recreate the channel — the escalation was touching only the
+              // discovery/DHT layer while the actual wedge is one layer down,
+              // at the Protomux channel-pairing layer (see ensureMux's
+              // lazy-accept-notifier doc: a rejected/closed channel is GONE —
+              // the remote's original "open" is never re-delivered, so only a
+              // freshly-created LOCAL channel + a freshly-sent "open" frame can
+              // give the remote another chance to pair). Re-invoke
+              // openTopicChannel on every surviving socket now — it is
+              // idempotent (mux.createChannel no-ops if a channel for this
+              // (protocol, topic) is already open) and mirrors exactly what
+              // joinTopic() already does for a topic joined on existing
+              // sockets after the fact.
+              for (const socket of sockets) {
+                openTopicChannel(socket, st);
+              }
               void Promise.resolve(opts.swarm.leave(st.topic))
                 .then(() => {
                   st.discovery = opts.swarm.join(st.topic, { server: true, client: true }) as DiscoveryLike;
