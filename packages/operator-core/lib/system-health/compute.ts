@@ -1956,7 +1956,7 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
   // root-cause happens on a later backlog pass) otherwise finds no evidence.
   // Edge-triggered (not on every tick while it stays crit) + fail-soft.
   try {
-    if (health.infra?.status === 'crit' && prev?.infra?.status !== 'crit') {
+    if (health.panels.infra?.status === 'crit' && prev?.panels?.infra?.status !== 'crit') {
       const { preserveIncidentCapture } = await import('./perf-budgets');
       await preserveIncidentCapture('infra-crit');
     }
