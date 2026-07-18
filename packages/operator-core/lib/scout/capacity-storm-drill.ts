@@ -272,13 +272,25 @@ export async function runCapacityStormDrill(
         persistRouted: async () => {
           throw new Error(`capacity-storm ${leg.leg}: persistRouted must never run on a failed cycle`);
         },
-        recordTick: (rec) =>
-          recordTick({
+        recordTick: (rec) => {
+          // Provenance stamp parity (su-7c298e1b, 2026-07-18): the TIMEOUT leg's error
+          // string is minted by the DEPLOYED timeout wrapper — that's the certification
+          // point, so the drill can't prefix it at throw time like the other legs. A
+          // prefix-based consumer would read it as ORGANIC. Stamp it at persist time
+          // instead; origin/install_slug already mark the row, the string must agree.
+          const errText = rec.detail?.error;
+          const detail =
+            typeof errText === 'string' && !errText.startsWith('drill:')
+              ? { ...rec.detail, error: `drill:${drillId} ${errText}` }
+              : rec.detail;
+          return recordTick({
             ...rec,
+            ...(detail ? { detail } : {}),
             origin: CAPACITY_STORM_TICK_ORIGIN,
             installSlug: drillId,
             workspaceId,
-          }),
+          });
+        },
         newCycleId: () => leg.cycleId,
         readPoolSnapshot: async () => drillPoolSnapshot,
       },

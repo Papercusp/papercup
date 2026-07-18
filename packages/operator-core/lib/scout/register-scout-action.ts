@@ -144,6 +144,59 @@ export function resolveScoutModel(
   return backendForModel(requestedModel) === 'codex' ? claudeModel : requestedModel;
 }
 
+/**
+ * WI-5391 item 3 — cross-provider fallback-as-discriminator. `resolveScoutModel` only
+ * reroutes when the pool was ALREADY empty at cycle start; a call whose pool walls
+ * MID-cycle dies with an attested capacity denial and the cycle rides it into a timeout.
+ * Wraps a call so such a denial gets ONE retry on the Codex bridge, recorded loudly in
+ * `events`: `succeeded:true` after a Claude denial is evidence the cycle had somewhere to
+ * go when the pool said no. Cross-PROVIDER recovery only — never read it as within-Claude-
+ * pool failover evidence (that is the poolSnapshot/contradiction path + WI-4475).
+ *
+ * Only an ATTESTED capacity denial may divert (the same evidence bar the classifier
+ * holds); anything else — including an evidence-free capacity-shaped message — rethrows.
+ * When the fallback ALSO fails, the ORIGINAL denial is rethrown: it carries the
+ * attestation the classifier needs, and the `{succeeded:false}` event records the miss.
+ */
+export function withCodexCapacityFallback<O extends { model?: string }, R>(
+  call: (o: O) => Promise<R>,
+  opts: {
+    /** Cycle-start capacity probe (codex availability is config, not load). */
+    capacity: ScoutProviderCapacity;
+    backendForModel: (model: string | undefined) => string;
+    /** Mutated in place — the runner surfaces it on the cycle result / thrown error. */
+    events: CapacityFallbackEvent[];
+    fallbackModel?: string;
+  },
+): (o: O) => Promise<R> {
+  const fallbackModel = opts.fallbackModel ?? SCOUT_CODEX_FALLBACK_MODEL;
+  return async (o: O): Promise<R> => {
+    try {
+      return await call(o);
+    } catch (err) {
+      if (!isCapacityError(err) || !opts.capacity.codexAvailable || opts.backendForModel(o.model) === 'codex') {
+        throw err;
+      }
+      const denial = admissionDenialFrom(err);
+      const event: CapacityFallbackEvent = {
+        from: o.model ?? '(unresolved)',
+        to: fallbackModel,
+        succeeded: false,
+        ...(denial?.via ? { via: denial.via } : {}),
+        ...(denial?.reason ? { reason: denial.reason } : {}),
+      };
+      opts.events.push(event);
+      try {
+        const res = await call({ ...o, model: fallbackModel });
+        event.succeeded = true;
+        return res;
+      } catch {
+        throw err;
+      }
+    }
+  };
+}
+
 /** Swap the archive builder (a test, or an alternate gym-QD store). */
 export function setScoutArchiveBuilder(builder: ScoutArchiveBuilder): void {
   activeArchiveBuilder = builder;
@@ -233,43 +286,19 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // use the available Codex bridge when the gateway proves the Claude pool is empty (WI-4475).
   // (LLM_TEST_BACKEND is unset on bg-host, so backendForLlmCall is model-derived — pinning
   // the model is sufficient.)
-  // WI-5391 item 3 — cross-provider fallback-as-discriminator. `resolveScoutModel` above
-  // only reroutes when the pool was ALREADY empty at cycle start; a call whose pool walls
-  // MID-cycle dies with an attested capacity denial and the cycle rides it into a timeout.
-  // On such a denial, retry ONCE on the Codex bridge and record the attempt loudly:
-  // `succeeded:true` after a Claude denial is evidence the cycle had somewhere to go when
-  // the pool said no. Cross-PROVIDER recovery only — never read it as within-Claude-pool
-  // failover evidence (that is the poolSnapshot/contradiction path + WI-4475).
-  // `codexAvailable` is the cycle-start probe (codex availability is config, not load).
+  // WI-5391 item 3: one Codex retry on an attested mid-cycle capacity denial, recorded in
+  // capacityFallbacks as discriminator evidence — see withCodexCapacityFallback above.
   const capacityFallbacks: CapacityFallbackEvent[] = [];
-  const llmCall: typeof rawLlmCall = async (o) => {
+  const governedCall = (o: Parameters<typeof rawLlmCall>[0]) =>
+    rawLlmCall({ ...o, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
+  const callWithFallback = withCodexCapacityFallback(governedCall, {
+    capacity: providerCapacity,
+    backendForModel: backendForLlmCall,
+    events: capacityFallbacks,
+  });
+  const llmCall: typeof rawLlmCall = (o) => {
     const model = resolveScoutModel(o.model, providerCapacity, backendForLlmCall, SCOUT_IDEATOR_MODEL) ?? SCOUT_IDEATOR_MODEL;
-    const callSignal = combineAbortSignals(signal, o.signal);
-    try {
-      return await rawLlmCall({ ...o, model, signal: callSignal, priority: 'scout' });
-    } catch (err) {
-      // Only an ATTESTED capacity denial may divert (the same evidence bar the classifier
-      // holds); anything else — including an evidence-free capacity-shaped message — rethrows.
-      if (!isCapacityError(err) || !providerCapacity.codexAvailable || backendForLlmCall(model) === 'codex') throw err;
-      const denial = admissionDenialFrom(err);
-      const event: CapacityFallbackEvent = {
-        from: model,
-        to: SCOUT_CODEX_FALLBACK_MODEL,
-        succeeded: false,
-        ...(denial?.via ? { via: denial.via } : {}),
-        ...(denial?.reason ? { reason: denial.reason } : {}),
-      };
-      capacityFallbacks.push(event);
-      try {
-        const res = await rawLlmCall({ ...o, model: SCOUT_CODEX_FALLBACK_MODEL, signal: callSignal, priority: 'scout' });
-        event.succeeded = true;
-        return res;
-      } catch {
-        // Both providers failed. Rethrow the ORIGINAL denial — it carries the attestation
-        // the classifier needs; the {succeeded:false} event records the Codex miss.
-        throw err;
-      }
-    }
+    return callWithFallback({ ...o, model });
   };
 
   // ── Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20) ──────────

@@ -3,6 +3,7 @@ import {
   admissionDenialFrom,
   CAPACITY_CLASSIFIER_SCHEMA_VERSION,
   capacityContradictedFrom,
+  capacityFallbacksFrom,
   isCapacityError,
   isLegacyCapacityError,
   isPersistedCapacityError,
@@ -172,5 +173,64 @@ describe('capacityContradicted — the write path counted it, the read path must
     // and the metric could be greened by relabeling alone.
     expect(isCapacityError(contradictedDetail)).toBe(true); // the denial ALONE would exclude…
     expect(isPersistedCapacityError(contradictedDetail)).toBe(false); // …the contradiction wins.
+  });
+});
+
+describe('pool-counter evidence round-trip (WI-5391 item 3 — governor-leg audit parity)', () => {
+  it('carries pausedAccounts + totalAccounts through re-extraction', () => {
+    // The scheduler re-extracts before persisting; dropping the counters there would strip
+    // the only retro-audit evidence a governor-attested exclusion has.
+    expect(
+      admissionDenialFrom({
+        admissionDenial: {
+          reason: 'all-accounts-paused',
+          via: 'governor',
+          governorReason: 'paused',
+          pausedAccounts: 3,
+          totalAccounts: 4,
+        },
+      }),
+    ).toEqual({
+      reason: 'all-accounts-paused',
+      via: 'governor',
+      governorReason: 'paused',
+      pausedAccounts: 3,
+      totalAccounts: 4,
+    });
+  });
+
+  it('drops non-numeric counters instead of trusting them', () => {
+    expect(
+      admissionDenialFrom({
+        admissionDenial: { reason: 'provider-429', via: 'http-429', totalAccounts: 'twelve' },
+      }),
+    ).toEqual({ reason: 'provider-429', via: 'http-429' });
+  });
+});
+
+describe('capacityFallbacksFrom — the cross-provider fallback trail (WI-5391 item 3)', () => {
+  it('reads well-formed events from an error object or persisted detail', () => {
+    expect(
+      capacityFallbacksFrom({
+        capacityFallbacks: [
+          { from: 'claude-opus-4-8', to: 'chatgpt:5.5:low', succeeded: true, via: 'http-429', reason: 'provider-429' },
+          { from: 'claude-opus-4-8', to: 'chatgpt:5.5:low', succeeded: false },
+        ],
+      }),
+    ).toEqual([
+      { from: 'claude-opus-4-8', to: 'chatgpt:5.5:low', succeeded: true, via: 'http-429', reason: 'provider-429' },
+      { from: 'claude-opus-4-8', to: 'chatgpt:5.5:low', succeeded: false },
+    ]);
+  });
+
+  it('drops malformed entries and returns undefined when nothing valid remains', () => {
+    expect(
+      capacityFallbacksFrom({
+        capacityFallbacks: [{ from: 'x' }, 'not-an-object', { from: 1, to: 2, succeeded: 'yes' }],
+      }),
+    ).toBeUndefined();
+    expect(capacityFallbacksFrom({ capacityFallbacks: 'not-an-array' })).toBeUndefined();
+    expect(capacityFallbacksFrom(undefined)).toBeUndefined();
+    expect(capacityFallbacksFrom(new Error('plain error'))).toBeUndefined();
   });
 });

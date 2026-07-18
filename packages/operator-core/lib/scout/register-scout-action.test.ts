@@ -14,6 +14,7 @@ import {
   resetScoutProviderCapacityCache,
   cachedScoutProviderCapacity,
   resolveScoutModel,
+  withCodexCapacityFallback,
   SCOUT_CODEX_FALLBACK_MODEL,
 } from './register-scout-action';
 
@@ -120,5 +121,100 @@ describe('register-scout-action (Scout production runner provider)', () => {
       .toBe('claude-opus-4-8');
     expect(resolveScoutModel('claude-opus-4-8', { claudeAvailable: false, codexAvailable: false }, backend, 'claude-opus-4-8'))
       .toBe('claude-opus-4-8');
+  });
+});
+
+describe('withCodexCapacityFallback — one Codex retry on an ATTESTED mid-cycle capacity denial (WI-5391 item 3)', () => {
+  const backend = (model: string | undefined) => (model?.startsWith('chatgpt:') ? 'codex' : 'anthropic-direct');
+  const attestedDenial = (via: 'governor' | 'http-429', reason = 'provider-429') =>
+    Object.assign(new Error('capacity walled'), { admissionDenial: { reason, via } });
+
+  it('retries ONCE on the fallback model and records a succeeded event (the discriminator)', async () => {
+    const calls: (string | undefined)[] = [];
+    const events: import('./capacity-errors').CapacityFallbackEvent[] = [];
+    const wrapped = withCodexCapacityFallback(
+      async (o: { model?: string }) => {
+        calls.push(o.model);
+        if (o.model !== SCOUT_CODEX_FALLBACK_MODEL) throw attestedDenial('http-429');
+        return 'codex-answer';
+      },
+      { capacity: { claudeAvailable: true, codexAvailable: true }, backendForModel: backend, events },
+    );
+    await expect(wrapped({ model: 'claude-opus-4-8' })).resolves.toBe('codex-answer');
+    expect(calls).toEqual(['claude-opus-4-8', SCOUT_CODEX_FALLBACK_MODEL]);
+    expect(events).toEqual([
+      { from: 'claude-opus-4-8', to: SCOUT_CODEX_FALLBACK_MODEL, succeeded: true, via: 'http-429', reason: 'provider-429' },
+    ]);
+  });
+
+  it('rethrows the ORIGINAL attested denial when the fallback also fails — event stays succeeded:false', async () => {
+    const original = attestedDenial('governor', 'all-accounts-paused');
+    const events: import('./capacity-errors').CapacityFallbackEvent[] = [];
+    const wrapped = withCodexCapacityFallback(
+      async (o: { model?: string }) => {
+        if (o.model === SCOUT_CODEX_FALLBACK_MODEL) throw new Error('codex quota exhausted');
+        throw original;
+      },
+      { capacity: { claudeAvailable: true, codexAvailable: true }, backendForModel: backend, events },
+    );
+    // The original carries the attestation the capacity classifier needs; the codex miss
+    // must not replace it with an evidence-free error.
+    await expect(wrapped({ model: 'claude-opus-4-8' })).rejects.toBe(original);
+    expect(events).toEqual([
+      { from: 'claude-opus-4-8', to: SCOUT_CODEX_FALLBACK_MODEL, succeeded: false, via: 'governor', reason: 'all-accounts-paused' },
+    ]);
+  });
+
+  it('does NOT divert on an evidence-free capacity-shaped error (same bar as the classifier)', async () => {
+    const events: import('./capacity-errors').CapacityFallbackEvent[] = [];
+    const unattested = Object.assign(new Error('rate limit exceeded'), {
+      admissionDenial: { reason: 'provider-429' }, // no via stamp
+    });
+    let calls = 0;
+    const wrapped = withCodexCapacityFallback(
+      async () => {
+        calls += 1;
+        throw unattested;
+      },
+      { capacity: { claudeAvailable: true, codexAvailable: true }, backendForModel: backend, events },
+    );
+    await expect(wrapped({ model: 'claude-opus-4-8' })).rejects.toBe(unattested);
+    expect(calls).toBe(1);
+    expect(events).toEqual([]);
+  });
+
+  it('does NOT divert when codex is unavailable or the call is already on codex', async () => {
+    const events: import('./capacity-errors').CapacityFallbackEvent[] = [];
+    let calls = 0;
+    const failing = async () => {
+      calls += 1;
+      throw attestedDenial('http-429');
+    };
+    const noCodex = withCodexCapacityFallback(failing, {
+      capacity: { claudeAvailable: true, codexAvailable: false },
+      backendForModel: backend,
+      events,
+    });
+    await expect(noCodex({ model: 'claude-opus-4-8' })).rejects.toThrow('capacity walled');
+    const alreadyCodex = withCodexCapacityFallback(failing, {
+      capacity: { claudeAvailable: false, codexAvailable: true },
+      backendForModel: backend,
+      events,
+    });
+    await expect(alreadyCodex({ model: SCOUT_CODEX_FALLBACK_MODEL })).rejects.toThrow('capacity walled');
+    expect(calls).toBe(2); // one attempt each — no retries
+    expect(events).toEqual([]);
+  });
+
+  it('does NOT divert on a non-capacity error (transport death stays loud)', async () => {
+    const events: import('./capacity-errors').CapacityFallbackEvent[] = [];
+    const wrapped = withCodexCapacityFallback(
+      async () => {
+        throw new Error('ECONNREFUSED');
+      },
+      { capacity: { claudeAvailable: true, codexAvailable: true }, backendForModel: backend, events },
+    );
+    await expect(wrapped({ model: 'claude-opus-4-8' })).rejects.toThrow('ECONNREFUSED');
+    expect(events).toEqual([]);
   });
 });
