@@ -42,7 +42,7 @@
  */
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isDesktop } from '@papercusp/operator-core/lib/version-tauri';
 import { useSyncConnectivity } from '@papercusp/sync';
 
@@ -106,6 +106,15 @@ export function DesktopSupervisorBanner() {
   // given-up respawn cycle has since succeeded. Only clears the RETRYING state
   // — a broken install is terminal and stays latched even if some transport
   // briefly reports healthy.
+  //
+  // The `sawOffline` gate closes a race that would otherwise make this banner
+  // unshowable: `operator-dead` is emitted the instant the supervisor gives up,
+  // which is BEFORE useSyncConnectivity necessarily notices the transport
+  // dropped (it polls/reconnects on its own schedule). Clearing on a bare
+  // `!offline` would then wipe the banner on the very next render — the user
+  // sees a flash, or nothing at all. So we require having actually observed the
+  // transport DOWN since the event before treating a subsequent UP as recovery.
+  const sawOffline = useRef(false);
   useEffect(() => {
     if (!offline && dead) setDead(null);
   }, [offline, dead]);
@@ -138,8 +147,12 @@ export function DesktopSupervisorBanner() {
   return null;
 }
 
-// Positioned below HostCheckBanner's slot so the two can never overlap when a
-// shared host also hits a supervisor failure.
+// Shares HostCheckBanner's fixed slot (top: 56) but sits one layer ABOVE it
+// (zIndex 1001 vs 1000). Both are fixed-position, so on the rare host that
+// trips both, this one deliberately covers the other: a dead operator or a
+// broken install is unrecoverable-until-you-act, while the shared-host notice
+// is an advisory the user acknowledges once. The buried banner is not lost —
+// this one clears on recovery (or on reinstall), revealing it again.
 const banner: React.CSSProperties = {
   position: 'fixed', top: 56, left: 0, right: 0, zIndex: 1001,
   display: 'flex', alignItems: 'center', gap: 16,

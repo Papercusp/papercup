@@ -125,6 +125,26 @@ describe('DesktopSupervisorBanner', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('survives an operator-dead that lands while the transport still reads ONLINE', async () => {
+    // The race the `sawOffline` gate exists for: Rust emits operator-dead the
+    // instant the supervisor gives up, which can precede useSyncConnectivity
+    // noticing the drop. A bare `!offline` clear would wipe the banner on the
+    // next render and the user would never see it.
+    offlineState = false;
+    const { rerender } = await mount();
+    await fire('operator-dead', DEAD);
+    await act(async () => { rerender(<DesktopSupervisorBanner />); });
+    expect(screen.getByRole('alert').textContent).toContain('stopped responding');
+
+    // Now the real drop is observed, and only a LATER recovery clears it.
+    offlineState = true;
+    await act(async () => { rerender(<DesktopSupervisorBanner />); });
+    expect(screen.queryByRole('alert')).not.toBeNull();
+    offlineState = false;
+    await act(async () => { rerender(<DesktopSupervisorBanner />); });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('does NOT clear the install banner when the transport looks healthy', async () => {
     const { rerender } = await mount();
     await fire('install-broken', 'The sidecar folder is missing.');

@@ -294,3 +294,48 @@ describe('runScoutCycle — prompt-free autonomy', () => {
     // no human-input parameter and no human-gated step — autonomy is structural.
   });
 });
+
+/* ── WI-5391: retry-ladder deadline wiring ────────────────────────────── */
+
+// The transport's transient-retry ladder (8 attempts + backoff) is deadline-blind;
+// under a mid-cycle pool pause it outlives the cycle's own 600s timer, which then
+// mislabels the honest capacity 429 as "Scout cycle timed out during phase ideate"
+// (a hard error tick — the exact class that red-carded the 0.0.11-alpha blender leg,
+// EI-16177). recordingLlm must therefore bound the ladder for EVERY phase's calls:
+// retryDeadlineMs = cycle deadline − a 10s recording margin, so the classified error
+// lands while the phase can still conclude and the tick record the true condition.
+describe('runScoutCycle — WI-5391 retry-ladder deadline wiring', () => {
+  it('forwards retryDeadlineMs = deadlineMs − 10s margin (and an admission bound) on every phase call', async () => {
+    const { deps } = makeDeps();
+    const captured: Array<{ governorMaxWaitMs?: number; retryDeadlineMs?: number }> = [];
+    const inner = deps.llmCall;
+    const deadlineMs = Date.now() + 600_000;
+    const spied: typeof inner = async (o) => {
+      captured.push({ governorMaxWaitMs: o.governorMaxWaitMs, retryDeadlineMs: o.retryDeadlineMs });
+      return inner(o);
+    };
+    const r = await runScoutCycle({ ...deps, llmCall: spied, deadlineMs });
+
+    expect(r.stop).toBe('completed');
+    expect(captured.length).toBeGreaterThan(0); // ideate + critique + recombine all flow through
+    for (const c of captured) {
+      expect(c.retryDeadlineMs).toBe(deadlineMs - 10_000);
+      expect(c.governorMaxWaitMs).toBeGreaterThan(0);
+    }
+  });
+
+  it('injects nothing without a cycle deadline (legacy callers byte-identical)', async () => {
+    const { deps } = makeDeps();
+    const captured: Array<number | undefined> = [];
+    const inner = deps.llmCall;
+    const spied: typeof inner = async (o) => {
+      captured.push(o.retryDeadlineMs);
+      return inner(o);
+    };
+    const r = await runScoutCycle({ ...deps, llmCall: spied });
+
+    expect(r.stop).toBe('completed');
+    expect(captured.length).toBeGreaterThan(0);
+    for (const c of captured) expect(c).toBeUndefined();
+  });
+});
