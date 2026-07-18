@@ -12,7 +12,14 @@ WorkingDirectory=%h/papercupai-workspace/papercusp/papercusp-desktop
 # run), storm downgrade, staleness EI when no green for GATE_STALE_DAYS (P-013).
 Environment=SKIP_FROMREPO=1
 ExecStart=/usr/bin/env bash bin/live-federation-gate.sh
-# rebuild + repack + content-matrix with up to 3 discovery attempts ≈ 15-30 min
-TimeoutStartSec=2700
+# rebuild + repack + content-matrix (≈15-30 min) PLUS the local-matrix leg. Budget
+# history: 2700s killed every local-matrix-day run at exactly 45 min (2026-07-17 00:30);
+# raised to 7200s — which then killed runs 122147/142153/162155 (2026-07-18) at exactly
+# 2h, mid restart_durability/reconnect_catchup (orders 80-85), so the suite's tail
+# scenarios NEVER completed on a loaded box (failure paths burn their full 600s waits).
+# 14400s bounds a wedged run at 4h while letting a slow-but-progressing one finish; the
+# script's GREEN-freshness TTL + load gate keep real runs ~1/day regardless. The script
+# traps TERM and emits "GATE: TERMINATED" so a kill is never silent.
+TimeoutStartSec=14400
 Nice=10
 IOSchedulingClass=idle
