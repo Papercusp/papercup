@@ -254,24 +254,28 @@ describe('computeScoutQualityReport', () => {
           tick({ status: 'ran' }),
           // a genuine failure — stays an error
           tick({ status: 'error', detail: { error: 'ideator transport death: 401 unauthorized' } }),
-          // typed capacity failures — fold into no-capacity
+          // typed, ATTESTED capacity failures (WI-5391 Part B: the via stamp is the
+          // evidence the classifier requires) — fold into no-capacity
           tick({
             status: 'error',
             detail: {
               error: 'opaque admission failure',
-              admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 },
+              admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
             },
           }),
           tick({
             status: 'error',
-            detail: { error: 'opaque provider failure', admissionDenial: { reason: 'provider-429' } },
+            detail: { error: 'opaque provider failure', admissionDenial: { reason: 'provider-429', via: 'http-429' } },
           }),
           // a LIVE capacity failure (post-reclassification write) already arrives gated —
           // it must land in the SAME bucket, and each tick is counted exactly once.
           tick({
             status: 'gated',
             gate: 'no-capacity',
-            detail: { error: 'opaque admission failure', admissionDenial: { reason: 'all-accounts-paused' } },
+            detail: {
+              error: 'opaque admission failure',
+              admissionDenial: { reason: 'all-accounts-paused', via: 'governor' },
+            },
           }),
         ],
       }),
@@ -282,6 +286,28 @@ describe('computeScoutQualityReport', () => {
     expect(r.gatedTickBreakdown['no-capacity']).toBe(3);
     // Denominator is unchanged — a no-capacity tick is still a tick.
     expect(r.totalTicks).toBe(5);
+  });
+
+  // WI-5391 Part B: a capacity-shaped denial WITHOUT its `via` attestation stamp is
+  // evidence-free (e.g. a mint site pattern-matching prose) and fails CLOSED — it stays
+  // a loud error in the report instead of vanishing into the no-capacity bucket.
+  it('an evidence-free typed denial (no via stamp) stays a genuine error', () => {
+    const r = computeScoutQualityReport(
+      inputs({
+        ticks: [
+          tick({
+            status: 'error',
+            detail: {
+              error: 'opaque admission failure',
+              capacityClassifierVersion: 1,
+              admissionDenial: { reason: 'all-accounts-paused' },
+            },
+          }),
+        ],
+      }),
+    );
+    expect(r.errorTicks).toBe(1);
+    expect(r.gatedTickBreakdown['no-capacity']).toBe(0);
   });
 
   it('keeps legacy fallback behind the per-row classifier-version boundary', () => {
@@ -302,13 +328,13 @@ describe('computeScoutQualityReport', () => {
             status: 'error',
             detail: { error: 'rate-limit pause exceeds maxWait', capacityClassifierVersion: 1 },
           }),
-          // Typed current evidence still classifies as capacity.
+          // Typed, attested current evidence still classifies as capacity.
           tick({
             status: 'error',
             detail: {
               error: 'opaque',
               capacityClassifierVersion: 1,
-              admissionDenial: { reason: 'provider-429' },
+              admissionDenial: { reason: 'provider-429', via: 'http-429' },
             },
           }),
         ],
