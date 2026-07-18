@@ -65,6 +65,8 @@ export function SignalsPanel({
   const snap = sync.data?.[0];
   const cadence = snap?.cadence ?? null;
   const ranTicks = (snap?.ticks ?? []).filter((t) => t.status === "ran");
+  // P-008: the newest fired cycle's persisted digest (delta + standing corpus).
+  const digest = snap?.digest ?? null;
 
   const status: "neutral" | "good" | "warn" | "bad" = sync.error
     ? "bad"
@@ -160,6 +162,62 @@ export function SignalsPanel({
             </>
           ) : null}
 
+          {digest ? (
+            <>
+              <div className="pc-signals__sectionhead">
+                <h3>The digest the last cycle read</h3>
+                <span title="The persisted corpus digest the fired cycle's ideators were prompted with — the delta leg ('NEW since your last cycle') leads the prompt, exactly as shown here.">
+                  {digest.totalEntries} entries
+                  {digest.cycleId ? ` · ${digest.cycleId}` : ""}
+                </span>
+              </div>
+              {digest.newEntries.length > 0 ? (
+                <ul className="pc-signals__digest" aria-label="New digest entries since the previous cycle">
+                  {digest.newEntries.map((e) => (
+                    <li key={e.ref} className="is-new">
+                      <span className="pc-signals__fedchip" title={`Lane: ${e.lane.replace(/-/g, " ")}`}>
+                        new · {e.lane.replace(/-/g, " ")}
+                      </span>
+                      <span className="pc-signals__digest-summary" title={e.ref}>
+                        {e.summary}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="pc-signals__digest-none">
+                  No new entries vs the previous cycle — the delta leg was empty; the cycle ran on standing corpus.
+                </p>
+              )}
+              {digest.standingEntries.length > 0 ? (
+                <details className="pc-signals__digest-standing">
+                  <summary>
+                    Standing corpus ({Object.entries(digest.laneCounts)
+                      .map(([l, n]) => `${l.replace(/-/g, " ")} ${n}`)
+                      .join(" · ")})
+                  </summary>
+                  <ul className="pc-signals__digest" aria-label="Standing digest entries">
+                    {digest.standingEntries.map((e) => (
+                      <li key={e.ref}>
+                        <span className="pc-signals__fedchip" title={`Lane: ${e.lane.replace(/-/g, " ")}`}>
+                          {e.lane.replace(/-/g, " ")}
+                        </span>
+                        <span className="pc-signals__digest-summary" title={e.ref}>
+                          {e.summary}
+                        </span>
+                      </li>
+                    ))}
+                    {digest.truncated ? (
+                      <li>
+                        <em>…capped for display — the full digest is in scout_digest_snapshots.</em>
+                      </li>
+                    ) : null}
+                  </ul>
+                </details>
+              ) : null}
+            </>
+          ) : null}
+
           <div className="pc-signals__sectionhead">
             <h3>The full lane taxonomy</h3>
             <span>every input the pipeline reads</span>
@@ -218,6 +276,20 @@ export function SignalsPanel({
       }
       .pc-signals__fedchip strong { font-weight: 740; font-variant-numeric: tabular-nums; }
       .pc-signals__fedout { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); margin-left: auto; white-space: nowrap; }
+      .pc-signals__digest { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+      .pc-signals__digest li {
+        display: flex; align-items: baseline; gap: 7px; padding: 3px 8px;
+        border-radius: 6px; font-size: 11px; color: var(--fg-dim, #b9d4e8);
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+      }
+      .pc-signals__digest li.is-new { border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+      .pc-signals__digest li .pc-signals__fedchip { flex-shrink: 0; }
+      .pc-signals__digest-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-signals__digest-none { margin: 2px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-signals__digest-standing summary {
+        cursor: pointer; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); padding: 3px 2px;
+      }
+      .pc-signals__digest-standing[open] summary { margin-bottom: 4px; }
       `}</style>
     </section>
   );

@@ -117,9 +117,11 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
     lensWeights: { analogical: 0.4, reframing: 0.6 },
     // P-004 (pipeline trace): titles for the OPAQUE `wi:` grounding refs, keyed by the FULL ref.
     groundingTitles: { 'wi:EI-100': 'coord invariant: wake-queue depth growth' },
-    // learning-tab-visibility P-001/P-005: live firing state + drafts-in-iteration.
+    // learning-tab-visibility P-001/P-005/P-008: live firing state,
+    // drafts-in-iteration, latest cycle digest.
     cadence: null,
     drafts: [],
+    digest: null,
   };
 
   it('returns the reader snapshot as a 1-element array, scoped to the active workspace', async () => {
@@ -135,7 +137,7 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
     const rows = (await resolveNamedQueryV2('learning.scout', {})) as ScoutSnapshot[];
     // The degraded fallback must be a COMPLETE ScoutSnapshot — the tab renders straight off it,
     // so a partial object here is a crash/misrender on the one path that is already failing.
-    // Every field the type gained (ticks/health/groundingTitles) must be present and empty.
+    // Every field the type gained (ticks/health/groundingTitles/cadence/drafts) must be present and empty.
     expect(rows).toEqual([
       {
         totalRouted: 0,
@@ -146,6 +148,9 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
         health: { status: 'neutral', markers: [] },
         lensWeights: null,
         groundingTitles: {},
+        cadence: null,
+        drafts: [],
+        digest: null,
       },
     ]);
     expect(warn).toHaveBeenCalled();
