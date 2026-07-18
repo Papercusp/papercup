@@ -87,7 +87,7 @@ vi.mock('./console-launcher', () => ({
     mode: 'shell',
   })),
 }));
-vi.mock('./adv-sessions', () => ({
+vi.mock('./adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
   // bootstrap-su's inbox-wake arm resolves the caller's freshest adv session via
   // this; missing it made the arm's non-fatal error log trip fail-on-console.

@@ -48,7 +48,13 @@ const PLANS_GET_SOFT_TTL_MS = 45_000;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
-const ALL_ROLES = [...SU_ROLES, "promote", "kettle"] as const;
+// + worker/cup (EI-939): a pipeline worker or generic Hive worker told to "mark plan
+// progress" on a checkbox-style roadmap plan had no read path at all — plans:set-status
+// only flips the structured `- **P-NNN** \`status\`` line format, and plans:set-content
+// needs the current version/contentHash from plans:get for its CAS, so a bee blind to
+// this tool risked clobbering a peer's plan edit or hand-copying an untracked docs/plans
+// mirror that lags PG. Read-only (capability: plans:read) — never grants a write path.
+const ALL_ROLES = [...SU_ROLES, "promote", "kettle", "worker", "cup"] as const;
 
 const argsSchema = z
   .object({

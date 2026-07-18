@@ -89,7 +89,7 @@ vi.mock('../../console-launcher', () => ({
     mode: 'shell',
   })),
 }));
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => {}),

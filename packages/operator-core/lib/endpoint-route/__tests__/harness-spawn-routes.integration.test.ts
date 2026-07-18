@@ -48,7 +48,7 @@ vi.mock('../../harness-invoke-once', () => ({
 }));
 const recordAdvSession = vi.fn(async () => 77);
 const markAdvSessionEnded = vi.fn(async () => {});
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: (...a: unknown[]) => (recordAdvSession as (...args: unknown[]) => unknown)(...a),
   markAdvSessionEnded: (...a: unknown[]) =>
     (markAdvSessionEnded as (...args: unknown[]) => unknown)(...a),

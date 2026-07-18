@@ -43,7 +43,7 @@ vi.mock('../../agent-config', async () => {
 vi.mock('../../agent-bin-detect', () => ({
   detectBinaries: () => ({ claude: '/usr/bin/claude', codex: '/usr/bin/codex', omp: null, pi: null }),
 }));
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   listResumableSessions: (limit?: number) => listResumableSessionsMock(limit),
 }));
 vi.mock('../../role-codex-home', () => ({

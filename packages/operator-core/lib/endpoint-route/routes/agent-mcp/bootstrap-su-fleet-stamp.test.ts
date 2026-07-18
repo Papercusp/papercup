@@ -23,7 +23,7 @@ vi.mock('../../../fleet-membership-store', () => ({
   appendFleetMembershipIfAbsent: (input: unknown) => appendIfAbsentMock(input),
   appendFleetMembershipEvent: vi.fn(async () => {}),
 }));
-vi.mock('../../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => false),

@@ -131,7 +131,10 @@ export default defineTool({
   capability: "plans:read",
   requirePrincipal: false,
   // + overwatch (overwatch-role-2026-06-15 B-01): reads plan items to detect stalled work.
-  agentRoles: [...SU_ROLES, "kettle"],
+  // + worker/cup (EI-939): a pipeline/hive worker needs a read path to a checkbox-style
+  // roadmap plan's items before it can safely mark progress — see plans:get's ALL_ROLES
+  // comment for the full rationale. Read-only (capability: plans:read).
+  agentRoles: [...SU_ROLES, "kettle", "worker", "cup"],
   modality: ["text"],
   args: argsSchema,
   // context-trimming-tiers P-021: trimmed/standard sessions get flattened,

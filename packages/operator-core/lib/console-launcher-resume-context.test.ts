@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Resolve a row for the "found" session ids; [] for the "missing" one — so both
 // the happy path and the graceful-fallback path are exercised from one mock.
-vi.mock('./adv-sessions', () => ({
+vi.mock('./adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   advSessionsByTranscriptHandles: vi.fn(async ({ sessionIds }: { sessionIds?: string[] }) =>
     sessionIds?.[0] === 'ffffffff-0000-0000-0000-000000000000'
       ? []

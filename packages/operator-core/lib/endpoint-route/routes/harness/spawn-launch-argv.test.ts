@@ -38,7 +38,7 @@ vi.mock('../../../plugin-host-runtime', () => ({
 vi.mock('../../../events/pipeline-events', () => ({
   emitPipelineEvent: vi.fn(),
 }));
-vi.mock('../../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
 }));

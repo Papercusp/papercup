@@ -28,7 +28,7 @@ vi.mock('node:os', async () => {
 const { recordAdvSessionMock } = vi.hoisted(() => ({
   recordAdvSessionMock: vi.fn(async (_opts: unknown) => 99),
 }));
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
 }));
 

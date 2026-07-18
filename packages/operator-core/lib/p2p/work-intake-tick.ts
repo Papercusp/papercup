@@ -312,6 +312,10 @@ async function processOneOffer(
   // (receipts.ts) has no 'claimed'/'executed' kind to emit truthfully anyway
   // (only 'refusal' | 'excused-breach' exist today). A distinct success-receipt
   // kind is real product surface, out of D-004's scope — flagged, not invented.
-  ctx.log(`offer ${stored.offerId}: EXECUTED (outcome=${outcome.decision.outcome}, resultOutcome=${outcome.execute.outcome}).`);
+  ctx.log(
+    `offer ${stored.offerId}: EXECUTED (outcome=${outcome.decision.outcome}, ok=${outcome.execute.ok}${
+      outcome.execute.ok ? '' : `, refusal=${outcome.execute.refusal.code}`
+    }).`,
+  );
   return { offerId: stored.offerId, outcome: 'executed' };
 }

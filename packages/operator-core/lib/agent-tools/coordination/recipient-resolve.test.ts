@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('./presence', () => ({ listPresence: vi.fn() }));
-vi.mock('../../adv-sessions', () => ({ listRecordedLiveSessions: vi.fn() }));
+vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()), listRecordedLiveSessions: vi.fn() }));
 vi.mock('../../sync/hyperbee/session-presence-store', () => ({ listLiveSessionPresence: vi.fn() }));
 import {
   isSelectorOrWildcard,
