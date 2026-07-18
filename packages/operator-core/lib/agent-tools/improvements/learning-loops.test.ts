@@ -82,4 +82,26 @@ describe('improvements:learning_loops handler', () => {
     const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
     expect(routines[0]).toMatchObject({ active: false, lastFiredAt: null, nextFireAt: '2026-02-01T00:00:00.000Z' });
   });
+
+  it('WI-5322: su-ideation reads FIRING from routing activity even when the tick ledger is stale', async () => {
+    // Every tagged query resolves h.rows; give the row a fresh last_routed_at so ONLY the
+    // scout_routed_ideas source is live (tick/watchdog fields absent on the row → null).
+    // Regression for the false-stale bug: routing kept flowing while the tick ledger went
+    // quiet, and the lane must track real routing activity, not just ticks+watchdog.
+    h.rows = [{
+      install_slug: '@singleton', name: 'sg:calibration', active: true,
+      last_fired_at: new Date('2026-01-01T00:00:00Z'), next_fire_at: null,
+      last_routed_at: new Date().toISOString(),
+    }];
+    const b = body(await tool.handler({} as never, { workspaceId: 'ws-1' } as never) as Out);
+    const su = (b.loops as Array<Record<string, unknown>>).find((l) => l.blueprintId === 'su-ideation');
+    expect(su).toMatchObject({ status: 'firing', source: 'su-ideate-routing+ticks+ungraded-watchdog' });
+  });
+
+  it('WI-5322: su-ideation stays dark-by-design when no source (routing/ticks/watchdog) has activity', async () => {
+    // Default h.rows carries none of last_routed_at / last_tick_at / last_fire_at → all null.
+    const b = body(await tool.handler({} as never, { workspaceId: 'ws-1' } as never) as Out);
+    const su = (b.loops as Array<Record<string, unknown>>).find((l) => l.blueprintId === 'su-ideation');
+    expect(su).toMatchObject({ status: 'dark-by-design' });
+  });
 });

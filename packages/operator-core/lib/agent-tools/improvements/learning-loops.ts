@@ -129,11 +129,14 @@ export default defineTool({
 
     // su-ideation dark-lane (su-ideate-learning-substrate P-013): a ROUTINE-LESS,
     // judgment-driven learning loop (D-001: no su daemon), so it has no cadence row to
-    // classify — its liveness is the max of its P-010 pass ledger (scout_ticks
-    // origin='su-ideate') and its P-006 ungraded-filings backstop watchdog fires
-    // (pot_watchdog_fires source='su-ideate-ungraded'). Both reads fail-soft to null (an
-    // absent migration must not break this read-only health surface), so a cold su-ideate
-    // subsystem simply reads 'dark-by-design' rather than erroring.
+    // classify — its liveness is the max of THREE domain signals: its P-010 pass ledger
+    // (scout_ticks origin='su-ideate'), the ideas it actually ROUTES (scout_routed_ideas
+    // origin='su-ideate' — WI-5322: the tick ledger stopped being written ~2026-07-14 while
+    // routing kept flowing, so ticks+watchdog alone false-reported the live lane as stale),
+    // and its P-006 ungraded-filings backstop watchdog fires (pot_watchdog_fires
+    // source='su-ideate-ungraded'). All reads fail-soft to null (an absent migration must
+    // not break this read-only health surface), so a cold su-ideate subsystem simply reads
+    // 'dark-by-design' rather than erroring.
     const suIdeateTicks = (await sql<{ last_tick_at: Date | string | null }[]>`
       SELECT max(tick_at) AS last_tick_at
         FROM harness_shared.scout_ticks
@@ -150,14 +153,28 @@ export default defineTool({
     } catch {
       lastSuWatchdogFireAt = null; // pot_watchdog_fires (mig 212) absent → no signal, not an error
     }
-    const suHeartbeatMs = [suIdeateTicks[0]?.last_tick_at ?? null, lastSuWatchdogFireAt]
+    // Routing ledger (WI-5322): the live proof the lane is turning. routed_at is bigint
+    // epoch-ms → to_timestamp() so it folds into the same Date-based max as the timestamptz
+    // sources above. Fail-soft to null so an absent table never breaks this health read.
+    let lastSuRoutedAt: Date | string | null = null;
+    try {
+      const routed = (await sql<{ last_routed_at: Date | string | null }[]>`
+        SELECT to_timestamp(max(routed_at) / 1000.0) AS last_routed_at
+          FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${workspaceId}
+           AND origin = 'su-ideate'`) as { last_routed_at: Date | string | null }[];
+      lastSuRoutedAt = routed[0]?.last_routed_at ?? null;
+    } catch {
+      lastSuRoutedAt = null; // scout_routed_ideas (mig 571) absent → no signal, not an error
+    }
+    const suHeartbeatMs = [suIdeateTicks[0]?.last_tick_at ?? null, lastSuWatchdogFireAt, lastSuRoutedAt]
       .map((v) => (v == null ? NaN : new Date(v).getTime()))
       .filter((ms) => !Number.isNaN(ms));
     const suLane = computeActivityLaneHealth(
       {
         blueprintId: 'su-ideation',
         lastActivityAt: suHeartbeatMs.length ? new Date(Math.max(...suHeartbeatMs)).toISOString() : null,
-        source: 'su-ideate-ticks+ungraded-watchdog',
+        source: 'su-ideate-routing+ticks+ungraded-watchdog',
       },
       { nowMs, staleAfterDays: args.staleAfterDays },
     );

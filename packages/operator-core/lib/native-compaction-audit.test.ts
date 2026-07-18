@@ -13,9 +13,13 @@ import {
   firstTimestampMs,
 } from './native-compaction-audit';
 
-const CUTOVER = Date.parse('2026-07-18T02:00:00Z');
+// Relative instants — a hardcoded calendar cutover raced the wall clock (files
+// written "now" sat BEFORE a future cutover and the mtime prefilter skipped them).
+const CUTOVER = Date.now() - 3_600_000; // one hour ago
+const AFTER = new Date(CUTOVER + 600_000).toISOString();
+const BEFORE = new Date(CUTOVER - 600_000).toISOString();
 const row = (o: Record<string, unknown>) => JSON.stringify(o);
-const boundary = row({ type: 'system', subtype: 'compact_boundary', timestamp: '2026-07-18T03:30:00Z' });
+const boundary = row({ type: 'system', subtype: 'compact_boundary', timestamp: AFTER });
 
 let root = '';
 beforeEach(() => {
@@ -48,9 +52,7 @@ describe('countCompactBoundaries', () => {
 
 describe('firstTimestampMs', () => {
   it('parses the first row timestamp; null on malformed', () => {
-    expect(firstTimestampMs(row({ timestamp: '2026-07-18T03:00:00Z' }) + '\n' + boundary)).toBe(
-      Date.parse('2026-07-18T03:00:00Z'),
-    );
+    expect(firstTimestampMs(row({ timestamp: AFTER }) + '\n' + boundary)).toBe(Date.parse(AFTER));
     expect(firstTimestampMs('not json\n')).toBeNull();
     expect(firstTimestampMs('')).toBeNull();
   });
@@ -58,8 +60,8 @@ describe('firstTimestampMs', () => {
 
 describe('auditNativeCompactionRetirement', () => {
   it('a post-cutover session with native boundaries is an offender; the verdict flips to violations', async () => {
-    writeTranscript('dirty.jsonl', [row({ timestamp: '2026-07-18T03:00:00Z' }), boundary, boundary]);
-    writeTranscript('clean.jsonl', [row({ timestamp: '2026-07-18T04:00:00Z' }), row({ type: 'user' })]);
+    writeTranscript('dirty.jsonl', [row({ timestamp: AFTER }), boundary, boundary]);
+    writeTranscript('clean.jsonl', [row({ timestamp: AFTER }), row({ type: 'user' })]);
     const r = await auditNativeCompactionRetirement({ sinceMs: CUTOVER, root });
     expect(r.scanned).toBe(2);
     expect(r.offenders).toHaveLength(1);
@@ -69,7 +71,7 @@ describe('auditNativeCompactionRetirement', () => {
   });
 
   it('a session STARTED before the cutover is out of scope even if it compacted natively (pre-existing sessions die out, not audited)', async () => {
-    writeTranscript('old.jsonl', [row({ timestamp: '2026-07-17T01:00:00Z' }), boundary]);
+    writeTranscript('old.jsonl', [row({ timestamp: BEFORE }), boundary]);
     const r = await auditNativeCompactionRetirement({ sinceMs: CUTOVER, root });
     expect(r.scanned).toBe(0);
     expect(r.offenders).toEqual([]);
@@ -77,7 +79,7 @@ describe('auditNativeCompactionRetirement', () => {
   });
 
   it('a file untouched since before the cutover is skipped without being read into scope', async () => {
-    writeTranscript('stale.jsonl', [row({ timestamp: '2026-07-18T03:00:00Z' }), boundary], CUTOVER - 60_000);
+    writeTranscript('stale.jsonl', [row({ timestamp: AFTER }), boundary], CUTOVER - 60_000);
     const r = await auditNativeCompactionRetirement({ sinceMs: CUTOVER, root });
     expect(r.scanned).toBe(0);
     expect(r.verdict).toBe('clean');

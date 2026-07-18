@@ -18,6 +18,9 @@ export interface HealthResult {
   /** Set when `probeMemoryCanary` ran (EI-10361) — the verdict is attached
    *  for the caller to log/broadcast regardless of `memoryCanaryPolicy`. */
   memoryCanary?: MemoryCanaryProbeResult;
+  /** Set when `probeDomainRead` ran (EI-856) — the verdict is attached for
+   *  the caller to log/broadcast regardless of `domainReadPolicy`. */
+  domainRead?: DomainReadProbeResult;
 }
 
 export interface MemoryCanaryProbeResult {
@@ -31,6 +34,23 @@ export interface MemoryCanaryProbeResult {
   delta?: number | null;
   zeroHitRate?: number | null;
   skipReason?: string;
+  error?: string;
+}
+
+/** EI-856: the deploy-triggered consumer/domain-read canary result
+ *  (domain-read-canary.ts) — proves the freshly-restarted operator can
+ *  genuinely resolve + read a papercusp plan through the REAL production
+ *  resolver path, catching a lockstep data-move/code-flip half-state that
+ *  `/api/health` + the MCP round-trip cannot see. */
+export interface DomainReadProbeResult {
+  /** false only on a transport/parse failure talking to the probe route
+   *  itself (mirrors MemoryCanaryProbeResult.reachable). */
+  reachable: boolean;
+  harnessSlug?: string;
+  planCount?: number;
+  /** true when the read succeeded but returned ZERO plans — the exact
+   *  WI-148 half-state signature (health green, every papercusp read empty). */
+  empty?: boolean;
   error?: string;
 }
 
@@ -111,6 +131,50 @@ export async function probeMemoryCanaryCheck(
       delta: body.delta,
       zeroHitRate: body.zeroHitRate,
       skipReason: body.skipReason,
+      error: body.error,
+    };
+  } catch (e) {
+    return { reachable: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * POST the deploy-triggered domain-read canary probe route
+ * (domain-read-canary.ts, EI-856) and normalize its response. Never throws —
+ * a transport failure or malformed response is reported as `reachable: false`,
+ * which the 'report' policy treats as a note, never a probe failure
+ * (PASS-WITH-NOTE, mirrored from probeMemoryCanaryCheck / the route's own
+ * contract: a broken probe apparatus must never itself look like the
+ * deploy is unhealthy).
+ */
+export async function probeDomainReadCheck(
+  url: string,
+  opts: { requestTimeoutMs?: number; log?: (s: string) => void } = {},
+): Promise<DomainReadProbeResult> {
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 10_000;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    const body = (await res.json()) as {
+      ok?: boolean;
+      reachable?: boolean;
+      harnessSlug?: string;
+      planCount?: number;
+      empty?: boolean;
+      error?: string;
+    };
+    if (!res.ok) {
+      return { reachable: false, error: `status ${res.status}` };
+    }
+    return {
+      reachable: Boolean(body.reachable),
+      harnessSlug: body.harnessSlug,
+      planCount: body.planCount,
+      empty: body.empty,
       error: body.error,
     };
   } catch (e) {

@@ -15,6 +15,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { join } from 'node:path';
 
 const pexec = promisify(execFile);
 
@@ -111,14 +112,66 @@ export async function changedFiles(
   return out ? out.split('\n').filter(Boolean) : [];
 }
 
-/** SQL migration files newly added/changed between commits (deploy-staged schema). */
+/** SQL migration files newly added/changed between commits (deploy-staged schema).
+ *
+ * EI-856: submodule-aware. `libs/papercusp` (which holds `libs/db/sql/`) is a
+ * git SUBMODULE — a migration landing entirely inside it shows up in the
+ * SUPERPROJECT's own `git diff` only as the gitlink pointer moving, never as
+ * the actual `.sql` path, so the plain `changedFiles` filter above silently
+ * reports `[]` for a real migration. Two consumers relied on this being
+ * accurate and were both wrong for a submodule-only migration: the deploy
+ * plan's displayed `migrationCount`, and deploy.ts's `plan.migrations.length
+ * > 0` gate that decides whether `rollback-db` (restoreSnapshot) runs at all —
+ * so a submodule migration both under-reported AND silently disabled the
+ * DB-rollback safety net. Fixed by ALSO diffing the submodule's own commit
+ * history between its two pinned shas (submodulePins) and folding in any
+ * matched migration paths (fail-soft: a diff hiccup there degrades to the
+ * superproject-only result, never throws — this is a gate INPUT, and a
+ * probe fault must never block the deploy pipeline it feeds). */
 export async function migrationsBetween(
   repo: string,
   from: string | null,
   to: string,
 ): Promise<string[]> {
   const files = await changedFiles(repo, from, to);
-  return files.filter((f) => /(^|\/)libs\/papercusp\/libs\/db\/sql\/\d[^/]*\.sql$/.test(f));
+  const superprojectMigrations = files.filter((f) => /(^|\/)libs\/papercusp\/libs\/db\/sql\/\d[^/]*\.sql$/.test(f));
+  if (!from) return superprojectMigrations;
+  const submoduleMigrations = await migrationsBetweenInSubmodule(repo, from, to, 'libs/papercusp');
+  return [...new Set([...superprojectMigrations, ...submoduleMigrations])];
+}
+
+/**
+ * Diff a submodule's OWN history between its gitlink pin at `from` and its pin
+ * at `to` (both commit-ish in the SUPERPROJECT `repo`), returning any matched
+ * migration paths prefixed with `submodulePath` so they read consistently
+ * with the superproject-relative paths the caller already collects. Fail-soft
+ * end to end (a shallow clone missing the pin commit, a detached/uninitialized
+ * submodule, a pin that didn't move) — returns `[]` rather than throwing,
+ * since this only ENRICHES the superproject diff and must never block it.
+ */
+async function migrationsBetweenInSubmodule(
+  repo: string,
+  from: string,
+  to: string,
+  submodulePath: string,
+): Promise<string[]> {
+  try {
+    const [pinsFrom, pinsTo] = await Promise.all([submodulePins(repo, from), submodulePins(repo, to)]);
+    const fromPin = pinsFrom.get(submodulePath);
+    const toPin = pinsTo.get(submodulePath);
+    if (!fromPin || !toPin || fromPin === toPin) return [];
+    const submoduleRepo = join(repo, submodulePath);
+    const files = await changedFiles(submoduleRepo, fromPin, toPin);
+    // Paths here are relative to the SUBMODULE root (which mounts at
+    // `libs/papercusp/`), so the migration dir reads as `libs/db/sql/...`
+    // from inside it — re-prefix with the mount path for a consistent,
+    // superproject-relative result the caller can display/compare directly.
+    return files
+      .filter((f) => /(^|\/)libs\/db\/sql\/\d[^/]*\.sql$/.test(f))
+      .map((f) => `${submodulePath}/${f}`);
+  } catch {
+    return [];
+  }
 }
 
 /** One line per commit between two shas (oldest-last), for the release review. */
