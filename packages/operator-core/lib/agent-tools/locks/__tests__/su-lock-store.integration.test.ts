@@ -1,5 +1,12 @@
 /**
- * SU-locks store unit tests.
+ * SU-locks store INTEGRATION tests (EI-1551: renamed from `.test.ts` — this
+ * suite calls `ensureBootstrap()`, which opens a real postgres connection, so
+ * it hard-requires PG and was never hermetic. As a plain `*.test.ts` it ran
+ * under the unit layer (`test:affected`/bare `vitest run lib/agent-tools`)
+ * and failed with ECONNREFUSED on any box/run without that PG up — flaky
+ * green/red depending on environment, exactly what the four-frameworks
+ * testing policy exists to avoid. The `.integration.test.ts` suffix routes it
+ * to `vitest.integration.config.ts` (testcontainers-provisioned PG) instead.)
  *
  * Exercises the core store layer (tryAcquire, tryRelease, tryHeartbeat,
  * tryInsertWaiter, tryCancelWait, readQueue, readWaiterStatus,
@@ -13,7 +20,7 @@
  *     psql -c "ALTER ROLE harness_admin CREATEDB"` per dev machine).
  *
  * To run only this suite:
- *   npx vitest run lib/agent-tools/locks/__tests__/su-lock-store.test.ts
+ *   npx vitest run lib/agent-tools/locks/__tests__/su-lock-store.integration.test.ts
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

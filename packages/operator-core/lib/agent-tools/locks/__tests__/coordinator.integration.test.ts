@@ -6,8 +6,15 @@
  * SuLocksCoordinator (here). The interface alignment is real iff
  * both adapters pass the same suite.
  *
- * Setup mirrors su-lock-store.test.ts: real embedded PG, unique
+ * Setup mirrors su-lock-store.integration.test.ts: real embedded PG, unique
  * workspace per test, ensureBootstrap once.
+ *
+ * EI-1551: renamed from `.test.ts` — `ensureBootstrap()` opens a real
+ * postgres connection, so this suite hard-requires PG and was never
+ * hermetic; as a plain `*.test.ts` it ran under the unit layer and failed
+ * with ECONNREFUSED whenever that PG wasn't up. `.integration.test.ts`
+ * routes it to `vitest.integration.config.ts` (testcontainers-provisioned
+ * PG) instead.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { describeConformance } from '@papercusp/file-claim/conformance';

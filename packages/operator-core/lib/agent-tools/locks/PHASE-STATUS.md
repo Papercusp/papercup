@@ -109,7 +109,7 @@
 - ✅ Install-script re-run is idempotent (per-command dedup).
 
 ### Vitest unit suite (CI regression coverage)
-- ✅ `lib/agent-tools/locks/__tests__/su-lock-store.test.ts` — **27
+- ✅ `lib/agent-tools/locks/__tests__/su-lock-store.integration.test.ts` (renamed from `.test.ts`, EI-1551 — it hard-requires PG) — **27
   tests in 365ms**, full coverage of path validation, multi-path
   atomic acquire (success / busy-no-partial-state / stale-steal),
   release + cascade (basic / all_mine / grants-waiter / skips-partial-
