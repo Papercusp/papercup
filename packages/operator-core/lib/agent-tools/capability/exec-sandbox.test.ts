@@ -39,6 +39,50 @@ const base: Omit<BuildSandboxOpts, 'enabled'> = {
   maskExists: () => true,
 };
 
+describe('capabilityBuildCacheWritePaths (EI-12725 — out-of-tree build caches are writable)', () => {
+  // A real temp layout: the repo's cargo target is a SYMLINK out to a "big disk" dir,
+  // exactly the shape that made the Tauri AppImage unbuildable in-sandbox.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pc-buildcache-')));
+  const cwd = join(root, 'repo');
+  const bigDisk = join(root, 'bigdisk', 'cargo-target');
+  const home = join(root, 'home');
+  mkdirSync(join(cwd, 'papercusp-desktop', 'src-tauri'), { recursive: true });
+  mkdirSync(bigDisk, { recursive: true });
+  mkdirSync(home, { recursive: true });
+  symlinkSync(bigDisk, join(cwd, 'papercusp-desktop', 'src-tauri', 'target'));
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('resolves the SYMLINK to its real target — binding the link node would still write through to a read-only path', () => {
+    const paths = capabilityBuildCacheWritePaths(cwd, home);
+    expect(paths).toContain(bigDisk);
+    expect(paths).not.toContain(join(cwd, 'papercusp-desktop', 'src-tauri', 'target'));
+  });
+
+  it('skips a cache that does not exist — binding a missing path is fail-CLOSED under the read-only / bind (WI-608)', () => {
+    // `home` here has no .cargo-target; only the symlinked one above resolves.
+    expect(capabilityBuildCacheWritePaths(cwd, home)).toEqual([bigDisk]);
+    // A cwd with no caches at all yields nothing rather than a bogus bind.
+    expect(capabilityBuildCacheWritePaths(join(root, 'empty-repo'), home)).toEqual([]);
+  });
+
+  it('skips a cache that resolves INSIDE the cwd — the cwd bind already covers it', () => {
+    const stock = join(root, 'stock');
+    mkdirSync(join(stock, 'papercusp-desktop', 'src-tauri', 'target'), { recursive: true });
+    expect(capabilityBuildCacheWritePaths(stock, home)).toEqual([]);
+  });
+
+  it('bwrap argv binds the resolved cache rw, and does NOT weaken the read-only / bind', () => {
+    const d = buildCapabilitySandboxCommand({ cmd: CMD, cwd }, { ...base, enabled: true, homeDir: home });
+    const i = d.argv.indexOf(bigDisk);
+    expect(i).toBeGreaterThan(-1);
+    expect(d.argv[i - 1]).toBe('--bind'); // rw, not --ro-bind
+    expect(d.argv[i + 1]).toBe(bigDisk); // bound at its real path
+    // the host stays read-only apart from the carve-outs
+    expect(d.argv.slice(0, 3)).toEqual(['--ro-bind', '/', '/']);
+  });
+});
+
 describe('buildCapabilitySandboxCommand — fail-open', () => {
   it('flag OFF → raw command, not sandboxed (reason flag-off, mode raw)', () => {
     const d = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: false });

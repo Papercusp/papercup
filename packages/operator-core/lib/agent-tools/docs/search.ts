@@ -79,8 +79,9 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
-        "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
+      "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
+        "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden and must " +
+        "name a concrete harness instead (EI-12898). Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
     ),
   semantic: z
     .boolean()
