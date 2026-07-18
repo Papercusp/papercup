@@ -2301,6 +2301,10 @@ export function buildResumeEnv(session, { fork = false, brain = false, accountEn
     // purposes. Direct non-psu Claude terminals remain unmarked and keep the
     // owner-session exemption in pretooluse-bash-resource-gate.sh.
     PAPERCUSP_AGENT_SESSION: '1',
+    // P-022: a resume spawns a NEW CLI process, so the native-compaction
+    // retirement env must be re-stamped exactly as on a fresh launch — without
+    // it a resumed Claude session silently regains native auto-compact + /compact.
+    ...nativeCompactionEnv(session?.agent),
     ...(accountEnv?.env ?? {}),
   };
 }

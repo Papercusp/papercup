@@ -1818,7 +1818,23 @@ describe('psu-launcher arg parsing', () => {
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
       PAPERCUSP_AGENT_SESSION: '1',
+      DISABLE_AUTO_COMPACT: '1',
+      DISABLE_COMPACT: '1',
     });
+  });
+
+  it('buildResumeEnv: P-022 native-compaction retirement is re-stamped on Claude resumes only', () => {
+    // A resume spawns a NEW CLI process — without the stamp a resumed Claude
+    // session silently regains native auto-compact + /compact (the fresh-launch
+    // paths already carry it; this pins the resume path).
+    const claude = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
+    expect(buildResumeEnv(claude)).toMatchObject({ DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' });
+    // OMP compaction is papercusp-owned via its relocated per-session config,
+    // not CC envs — no stamp for non-claude agents.
+    const omp = { agent: 'omp', id: 8, coordOwnerId: 'su-def', workspaceId: 'ws1' };
+    const env = buildResumeEnv(omp) as Record<string, string>;
+    expect(env.DISABLE_AUTO_COMPACT).toBeUndefined();
+    expect(env.DISABLE_COMPACT).toBeUndefined();
   });
 
   it('buildResumeEnv: account env LAYERS onto the resume identity/scope and marker', () => {
@@ -1828,6 +1844,8 @@ describe('psu-launcher arg parsing', () => {
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
       PAPERCUSP_AGENT_SESSION: '1',
+      DISABLE_AUTO_COMPACT: '1',
+      DISABLE_COMPACT: '1',
     });
     // A resolved account env folds on top (the gateway pin the resume would otherwise lose).
     expect(
@@ -1840,6 +1858,8 @@ describe('psu-launcher arg parsing', () => {
       PAPERCUSP_WORKSPACE: 'ws1',
       PAPERCUSP_ADV_SESSION_ID: '7',
       PAPERCUSP_AGENT_SESSION: '1',
+      DISABLE_AUTO_COMPACT: '1',
+      DISABLE_COMPACT: '1',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
       ANTHROPIC_CUSTOM_HEADERS: 'anthropic-account-id: aviynw6',
       PAPERCUSP_ACCOUNT_ID: 'aviynw6',
