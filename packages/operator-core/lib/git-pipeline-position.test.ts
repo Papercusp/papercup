@@ -318,11 +318,11 @@ describe('runtime-owner map (EI-10895)', () => {
     'packages/operator-core/lib/harness/routines/register-system-actions.ts',
     'packages/operator-core/lib/harness/routines/system-actions.ts',
     'packages/operator-core/lib/harness/routines/routine-host.ts',
-    'packages/operator-core/lib/harness/routines/git-sync-action.ts',
-    'packages/operator-core/lib/harness/routines/improvement-implement-action.ts',
+    'packages/operator-core/lib/harness/routines/improvement-actions.ts',
     'packages/operator-core/lib/blueprint/blueprint-run-action.ts',
     'packages/operator-core/lib/scout/scout-cycle-action.ts',
     'packages/operator-core/lib/scout/cycle.ts',
+    'packages/operator-core/lib/harness/git-sync/git-sync-action.ts',
     'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
     'packages/operator-core/lib/harness/git-sync/git-sync-eligibility.ts',
   ])('EI-11120: %s → runs in bg-host only (routinesTick, BACKGROUND_WORKERS=1) — a deploy never carries it', (p) => {
@@ -334,8 +334,8 @@ describe('runtime-owner map (EI-10895)', () => {
   });
 
   it('EI-11120: a *-action.ts TEST file under harness/routines/ is NOT misclassified (only the handler itself is bg-host-exclusive)', () => {
-    // git-sync-action.test.ts ends in `.test.ts`, not `-action.ts` — must not match.
-    const own = classifyRuntimeOwner('packages/operator-core/lib/harness/routines/git-sync-action.test.ts')!;
+    // improvement-actions.test.ts ends in `.test.ts`, not `-action.ts` — must not match.
+    const own = classifyRuntimeOwner('packages/operator-core/lib/harness/routines/improvement-actions.test.ts')!;
     expect(own.host).toBe('operator-release');
     expect(own.releasePipelineApplies).toBe(true);
   });

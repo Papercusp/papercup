@@ -188,7 +188,10 @@ const RUNTIME_OWNERS: { match: RegExp; own: RuntimeOwnership }[] = [
     },
   },
   {
-    match: /^packages\/operator-core\/lib\/harness\/routines\/.*-action\.ts$/,
+    // Covers both the singular (`foo-action.ts`) and plural (`foo-actions.ts`,
+    // e.g. improvement-actions.ts, coord-invariant-actions.ts) naming used across
+    // this directory's registered `system:<action>` handlers.
+    match: /^packages\/operator-core\/lib\/harness\/routines\/.*-actions?\.ts$/,
     own: {
       host: 'bg-host',
       releasePipelineApplies: false,
