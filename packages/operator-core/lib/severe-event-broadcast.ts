@@ -16,6 +16,7 @@
  * Best-effort + fail-soft: a broadcast failure must NEVER break the watchdog sweep that calls it.
  */
 import { sendMessage } from './agent-tools/coordination/messages';
+import { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 /** The system identity severe-event broadcasts are attributed to (mirrors the
@@ -27,6 +28,24 @@ const SEVERE_EVENT_IDENTITY: AgentIdentity = {
   workspaceId: null,
   userId: null,
 };
+
+/**
+ * The ownership/routing leg (EI-10060, a follow-up to EI-9939's flap suppression):
+ * ADDITIVE to the unconditional `to:['*']` broadcast below — it never replaces it.
+ * When present, a SEPARATE directed message + best-effort wake also goes to the
+ * resolved responsible party, so they get a full-fidelity, expected-to-act-or-ack
+ * notice instead of relying on the ambient broadcast (which digest-suppresses after
+ * EI-9939's flap threshold like everyone else's). Build via
+ * `resolveSevereEventOwner()` (severe-event-owner.ts) — this module never resolves
+ * ownership itself, only routes to what the caller already resolved.
+ */
+export interface SevereEventRoute {
+  /** A coord:send audience selector ('@role:<slot>' / '@fleet-leader:<slug>') or a
+   *  concrete ownerId. */
+  ownerSelector: string;
+  /** Human-readable — who/why, folded into the directed message's body. */
+  reason: string;
+}
 
 export interface SevereEventBroadcast {
   /** One-line inbox summary — what's wrong + that it's claimable. */
@@ -44,6 +63,32 @@ export interface SevereEventBroadcast {
    * Omit for one-off events with no meaningful recovery.
    */
   conditionKey?: string;
+  /** EI-10060: the resolved responsible party, if any. See {@link SevereEventRoute}. */
+  route?: SevereEventRoute;
+}
+
+/**
+ * Best-effort directed route: a durable message to `route.ownerSelector` + a
+ * best-effort wake of whoever that selector resolves to LIVE right now (mirrors
+ * `wakeMug`'s two-halves pattern in pot/placement-watchdog.ts — a direct wake for
+ * a currently-live holder, a durable send for a role slot with none yet). Never
+ * throws; a routing failure must never break the underlying broadcast.
+ */
+async function deliverRoute(route: SevereEventRoute, summary: string, body: string | undefined): Promise<void> {
+  try {
+    const env = await sendMessage(SEVERE_EVENT_IDENTITY, {
+      to: [route.ownerSelector],
+      summary: `[routed: ${route.reason}] ${summary}`,
+      body,
+      expectsReply: true,
+    });
+    if (env.to.length > 0) {
+      await wakeRecipients(env.to, { summary, source: 'severe-event-broadcast' }).catch(() => {});
+    }
+  } catch (e) {
+
+    console.warn(`[severe-event-broadcast] route delivery failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /**
@@ -61,9 +106,10 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       category: ev.category ?? 'severe-event',
       ...(ev.conditionKey ? { extra: { condition_key: ev.conditionKey } } : {}),
     });
+    if (ev.route) await deliverRoute(ev.route, ev.summary, ev.body);
     return true;
   } catch (e) {
-     
+
     console.warn(`[severe-event-broadcast] failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }

@@ -8,6 +8,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { gatewayPort } from './spawn-env';
 import { fetchGatewayHeadroom } from './observability';
 import { getOrgPg } from '@papercusp/db-org';
+import { listGatewayStallsSince } from './gateway-stall-store';
 import { getSpawnPg } from '../fleet/pg-stores';
 import { accountStatus, type AccountStatusRow } from '../deployment/account-pool-store';
 import { readRegistry } from '../workspace-registry';
@@ -89,9 +90,34 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
   const base = () => `http://127.0.0.1:${gatewayPort()}`;
   return {
     fetchStalls: async (since) => {
-      const r = await fetch(`${base()}/admin/stalls?since=${since}`, { signal: AbortSignal.timeout(5000) });
-      if (!r.ok) return { now: Date.now(), stalls: [] };
-      return (await r.json()) as { now: number; stalls: StallEvent[] };
+      let now = Date.now();
+      let httpStalls: StallEvent[] = [];
+      try {
+        const r = await fetch(`${base()}/admin/stalls?since=${since}`, { signal: AbortSignal.timeout(5000) });
+        if (r.ok) {
+          const body = (await r.json()) as { now: number; stalls: StallEvent[] };
+          httpStalls = body.stalls;
+          now = body.now;
+        }
+      } catch {
+        // Gateway unreachable (e.g. mid-restart) — fall through to the PG-durable source below
+        // rather than losing the whole tick; a stall recorded just before a restart is exactly
+        // the case this durability path exists for (EI-2431).
+      }
+      // DURABILITY (EI-2431): the gateway's in-memory ring buffer is wiped by a restart. Merge in
+      // anything durably recorded to PG by recordStall() that the ring might have lost — a stall
+      // recorded in the window between the write and a gateway crash/restart still survives here.
+      // Best-effort: a DB hiccup degrades to the HTTP-only source, never breaks the tick.
+      let pgStalls: StallEvent[] = [];
+      try {
+        pgStalls = await listGatewayStallsSince(since);
+      } catch {
+        // non-fatal — HTTP-sourced stalls (if any) still serve this tick
+      }
+      if (pgStalls.length === 0) return { now, stalls: httpStalls };
+      const seen = new Set(httpStalls.map((s) => `${s.ownerId}:${s.at}`));
+      const merged = [...httpStalls, ...pgStalls.filter((s) => !seen.has(`${s.ownerId}:${s.at}`))];
+      return { now, stalls: merged };
     },
     ownerIsIdle: async (ownerId) => {
       // ROLE-AGNOSTIC idle check (2026-06-22): the auto-wake must behave the SAME for ANY caller that holds a

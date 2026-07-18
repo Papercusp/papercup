@@ -192,6 +192,16 @@ jobs:
       - name: Lint no raw setInterval
         run: npm run lint:no-raw-setinterval
 
+      # eager promisify(execFile) guard (EI-10161): a module-scope `const x =
+      # promisify(execFile)` throws at import time under a test's narrow
+      # `vi.mock('node:child_process', () => ({ spawn }))` (execFile resolves to
+      # undefined), crashing the WHOLE test file even when it never calls the
+      # function — confirmed live via watchdog.ts's transitive import chain.
+      # GATING on a NEW eager module-scope site; a shrink-to-empty BASELINE
+      # grandfathers the pre-existing ~60 files pending a remediation pass.
+      - name: Lint no eager execFile promisify
+        run: npm run lint:no-eager-execfile-promisify
+
       # sql.json guard (EI-607): postgres-js sql.json(object) THROWS on the getOrgPg
       # client (a dual-package postgres-js module-instance mismatch in @papercusp/db)
       # — it silently broke the experiment ledger + EVERY replay-harness cell's

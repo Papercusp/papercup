@@ -46,6 +46,7 @@ import { withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
+import { recordGatewayStall } from './gateway-stall-store';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
 import {
@@ -1892,13 +1893,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
   function recordStall(ownerId: string | undefined, accountId: string, soonestResetAt: number): void {
     if (!ownerId) return; // only bees that identified themselves (x-papercusp-owner) are wake-able
     stallsRecorded++;
-    recentStalls.push({ ownerId, accountId, soonestResetAt, at: Date.now() });
+    const at = Date.now();
+    recentStalls.push({ ownerId, accountId, soonestResetAt, at });
     if (recentStalls.length > STALL_BUFFER_MAX) recentStalls.splice(0, recentStalls.length - STALL_BUFFER_MAX);
     // Opportunistic age-based prune (belt-and-suspenders alongside the read-time filter below) —
     // keeps the array itself from carrying long-dead entries between stalls, not just hiding them.
     const cutoff = Date.now() - STALL_MAX_AGE_MS;
     while (recentStalls.length && recentStalls[0].at < cutoff) recentStalls.shift();
     recordOwnerOutcome(ownerId, 'stall', { account: accountId });
+    // DURABILITY (EI-2431): the ring buffer above is gateway-PROCESS memory — a restart in the
+    // window between this call and the stall-waker's next ~20s poll silently drops the stall and
+    // the bee is never woken. Fire-and-forget a best-effort PG write-through so the waker can
+    // recover this stall directly from PG even across a gateway restart (stall-waker-loop.ts's
+    // fetchStalls merges it in). Never blocks/slows this request-serving path and never throws —
+    // a DB outage degrades to today's in-memory-only behavior, it never affects serving.
+    void (async () => {
+      try {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        await recordGatewayStall({ ownerId, accountId, soonestResetAt, at }, activeWorkspaceId());
+      } catch (e) {
+        log('warn', `inference-gateway: stall PG durability write failed (non-fatal, in-memory ring still served): ${(e as Error)?.message ?? e}`);
+      }
+    })();
   }
 
   // Per-owner LAST-ROUTED account (routed-account-visibility, 2026-06-22): the account that ACTUALLY served

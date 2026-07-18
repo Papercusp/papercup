@@ -124,7 +124,7 @@ describe('db:migrate — withheld (PAPERCUSP_ALLOW_DB_MIGRATE unset)', () => {
     expect(input.summary).toContain('999-fake.sql');
     expect(input.body).toContain('BEGIN;');
     expect(input.body).toContain('INSERT INTO harness_shared.schema_migrations');
-    expect(input.meta.subjectSignature).toBe('db-migrate-withheld:999-fake.sql');
+    expect(input.meta?.subjectSignature).toBe('db-migrate-withheld:999-fake.sql');
   });
 
   it('EI-13299: a failed escalation is fail-soft — the withheld response still succeeds, with the error surfaced', async () => {

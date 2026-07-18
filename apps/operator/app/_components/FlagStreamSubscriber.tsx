@@ -17,8 +17,8 @@
  * — see fix C, `apps/operator/bin/host-spa.ts`'s `Cache-Control: no-store`
  * on the index shell).
  *
- * Mounted once at the router root, next to the other Global*/Desktop*
- * bridge components (DesktopAttentionNotifier, DesktopConsoleLaunchBridge).
+ * Mounted once at the router root, next to the other Global- and Desktop-
+ * prefixed bridge components (DesktopAttentionNotifier, DesktopConsoleLaunchBridge).
  * Renders nothing; opens exactly one resilient EventSource for the whole
  * app (createResilientEventSource auto-reconnects — see @papercusp/sse).
  */
