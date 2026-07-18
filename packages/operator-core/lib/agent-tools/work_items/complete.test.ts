@@ -555,6 +555,83 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── EI-12027: `completion.status: 'resolved'|'closed'` on an ISSUE-family item, with NO
+  // top-level `state`, is unambiguous close-intent (the issue's own native terminal words,
+  // never the schema's 'done' default) — infer + apply the close instead of only warning.
+  describe('stateInferredFromCompletionStatus — issue-family completion.status auto-close (EI-12027)', () => {
+    const issue = { id: 'WI-7', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+
+    it("infers + applies state:'resolved' from completion.status when top-level `state` is omitted", async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({ id: 'WI-7', completion: { summary: 'fixed it', status: 'resolved', tests: '5 green' } });
+
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-7', 'resolved', expect.objectContaining({ by: expect.any(String) }));
+      expect(r.ok).toBe(true);
+      expect(r.workItem.state).toBe('resolved');
+      expect(r.stateWarning).toBeUndefined(); // it DID close — no "not closed" footgun warning
+      expect(r.stateInferredFromCompletionStatus).toMatch(/inferred state:'resolved'/);
+    });
+
+    it("infers + applies state:'closed' the same way", async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'closed' }));
+      const r = await one({ id: 'WI-7', completion: { summary: 'closing it', status: 'closed' } });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-7', 'closed', expect.objectContaining({ by: expect.any(String) }));
+      expect(r.workItem.state).toBe('closed');
+      expect(r.stateInferredFromCompletionStatus).toMatch(/inferred state:'closed'/);
+    });
+
+    it('is case/whitespace tolerant on the inferred status value', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({ id: 'WI-7', completion: { summary: 'fixed', status: '  Resolved  ' } });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-7', 'resolved', expect.anything());
+      expect(r.stateInferredFromCompletionStatus).toBeTruthy();
+    });
+
+    it('an explicit top-level `state` always wins — no inference, no double-write', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({ id: 'WI-7', state: 'resolved', completion: { summary: 'fixed', status: 'closed' } });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-7', 'resolved', expect.anything());
+      expect(r.stateInferredFromCompletionStatus).toBeUndefined();
+    });
+
+    it('does NOT infer for a FEATURE-family item (would risk stepping on the pipeline\'s own status semantics)', async () => {
+      getWorkItem.mockResolvedValue(item); // family: 'feature'
+      const r = await one({ id: 'F-12', completion: { summary: 'all done', status: 'resolved' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.stateInferredFromCompletionStatus).toBeUndefined();
+      expect(r.stateWarning).toMatch(/NOT closed/); // stays the existing record-only behavior
+    });
+
+    it("does NOT infer on the DEFAULTED status ('done') — the exact landmine this stays clear of", async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const r = await one({ id: 'WI-7', completion: { summary: 'progress note' } }); // status defaults to 'done'
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.stateInferredFromCompletionStatus).toBeUndefined();
+      expect(r.stateWarning).toMatch(/NOT closed/);
+    });
+
+    it("does NOT infer on other freeform status verbs ('built+tested', 'shipped', 'landed')", async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const r = await one({ id: 'WI-7', completion: { summary: 'landed', status: 'built+tested' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.stateInferredFromCompletionStatus).toBeUndefined();
+    });
+
+    it('a FAILED inferred-close write reports ok:false (WI-4529 semantics apply to inference too)', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error("work_item 'WI-7' is HELD OPEN by su-peer"));
+      const r = await one({ id: 'WI-7', completion: { summary: 'fixed it', status: 'resolved' } });
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/DID NOT CLOSE/);
+      expect(r.completion).toMatchObject({ summary: 'fixed it' }); // EI-24: record still kept
+    });
+  });
+
   // ── duplicateOfWarning: dup-close accountability (EI-8993) ───────────────────────────────
   describe('duplicateOfWarning — dup-close accountability (EI-8993)', () => {
     it('creates a `duplicates` link + subscribes the prior assignee when duplicateOf is set', async () => {
