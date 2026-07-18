@@ -300,34 +300,100 @@ async function buildBlockInner(
   try {
     const minScore = injectMinScore();
     const minLexScore = injectMinLexScore();
-    const userPull: Promise<MemoryEntry[]> = input.userId
-      ? backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore, minLexScore })
-      : Promise.resolve([]);
-
-    const harnessPull: Promise<MemoryEntry[]> = harnessSlugs.length > 0
-      ? backend.search(input.queryContext, {
-          scope: harnessSlugs.map((slug) => `harness:${slug}`),
-          limit: PER_HARNESS_LIMIT,
-          minScore,
-          minLexScore,
-        })
-      : Promise.resolve([]);
-
-    const hivePull: Promise<MemoryEntry[]> = hiveSlugs.length > 0
-      ? backend.search(input.queryContext, {
-          scope: hiveSlugs.map(hiveScopeKey),
-          limit: PER_HARNESS_LIMIT,
-          minScore,
-          minLexScore,
-        })
-      : Promise.resolve([]);
 
     const tSearch = Date.now();
+    let sharedEmbedMs = 0;
+    const pullTimes: Record<string, number> = {};
+    const timed = async (label: string, p: Promise<MemoryEntry[]>): Promise<MemoryEntry[]> => {
+      const t = Date.now();
+      try {
+        return await p;
+      } finally {
+        pullTimes[label] = Date.now() - t;
+      }
+    };
+
+    // EI-12992: embed+3-pulls run as ONE region under the SAME MEMORY_INJECT_TIMEOUT_MS
+    // budget below (never a second, stacked timeout) — the shared embed just replaces
+    // part of what each pull used to spend its OWN slice of that same budget on.
+    const doSearch = async (): Promise<[MemoryEntry[], MemoryEntry[], MemoryEntry[]]> => {
+      // EI-12992: embed the query ONCE (best-effort) and share it across the harness +
+      // hive pulls via `SearchOptions.vector` — both already forgo mem0's entity-graph
+      // boost through the EI-12962 batched multi-scope path regardless of who embeds
+      // (see mem0-backend.ts), so sharing the vector there costs zero precision. 3
+      // independent per-pull embeds (~0.5-1s each) were riding right up against
+      // MEMORY_INJECT_TIMEOUT_MS (measured live: searchMs within ~10% of the 5s
+      // timeout) — this collapses up to 3 embeds into 1.
+      //
+      // The USER pool deliberately keeps its OWN per-call embed (never passed the
+      // shared vector): it's the highest-priority pool (userLimit=6 vs
+      // PER_HARNESS_LIMIT=3) and the ONLY one still entity-boosted today; trading
+      // that precision for speed was out of scope for this fix.
+      //
+      // `embedQuery` is an OPTIONAL backend capability (feature-tested) — a backend
+      // without it, or a failed/null embed, leaves `sharedVector` null and every
+      // pull embeds independently, exactly as before this fix (fully backward
+      // compatible; never a hard failure).
+      let sharedVector: number[] | null = null;
+      if ((harnessSlugs.length > 0 || hiveSlugs.length > 0) && backend.embedQuery) {
+        const tEmbed = Date.now();
+        try {
+          sharedVector = await backend.embedQuery(input.queryContext);
+        } catch (err) {
+          noteMemoryFailure(err);
+        } finally {
+          sharedEmbedMs = Date.now() - tEmbed;
+        }
+      }
+
+      const userPull: Promise<MemoryEntry[]> = input.userId
+        ? timed('user', backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore, minLexScore }))
+        : Promise.resolve([]);
+
+      const harnessPull: Promise<MemoryEntry[]> = harnessSlugs.length > 0
+        ? timed('harness', backend.search(input.queryContext, {
+            scope: harnessSlugs.map((slug) => `harness:${slug}`),
+            limit: PER_HARNESS_LIMIT,
+            minScore,
+            minLexScore,
+            ...(sharedVector ? { vector: sharedVector } : {}),
+          }))
+        : Promise.resolve([]);
+
+      const hivePull: Promise<MemoryEntry[]> = hiveSlugs.length > 0
+        ? timed('hive', backend.search(input.queryContext, {
+            scope: hiveSlugs.map(hiveScopeKey),
+            limit: PER_HARNESS_LIMIT,
+            minScore,
+            minLexScore,
+            ...(sharedVector ? { vector: sharedVector } : {}),
+          }))
+        : Promise.resolve([]);
+
+      return Promise.all([userPull, harnessPull, hivePull]);
+    };
+
     const [userEntries, harnessEntries, hiveEntries] = await withMemoryTimeout(
-      Promise.all([userPull, harnessPull, hivePull]),
+      doSearch(),
       'search',
       MEMORY_INJECT_TIMEOUT_MS,
-    ).finally(() => mark('searchMs', Date.now() - tSearch));
+    ).finally(() => {
+      const searchMs = Date.now() - tSearch;
+      mark('searchMs', searchMs);
+      // EI-12992 lever 2: per-pull + shared-embed breakdown — a SEPARATE line from
+      // the `marks` phase-sum (searchMs already covers this whole CONCURRENT block;
+      // folding these overlapping sub-legs into `marks` too would double-count and
+      // corrupt the existing postMs = totalMs − stamped-legs invariant). Only when
+      // the search phase itself was slow enough to be worth reading.
+      if (searchMs > SLOW_INJECTION_LOG_MS) {
+        console.log(
+          `[memory-injection] search-detail sharedEmbedMs=${sharedEmbedMs} ` +
+            Object.entries(pullTimes)
+              .map(([k, v]) => `${k}Ms=${v}`)
+              .join(' '),
+        );
+      }
+    });
     userResults = userEntries;
     harnessHits = harnessEntries.map((hit) => ({
       hit,
