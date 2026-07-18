@@ -42,6 +42,46 @@ function dbForSlug(slug: string) {
   return getLegacyClient(slug);
 }
 
+/**
+ * work-item-chat-context-modernize P-003: resolve `chat.feature_id` to its OWN
+ * harness BEFORE keying the dossier/checkpoint/plan-context/lock lookups below.
+ * The route's `:slug` is the CHAT's harness — but a cross-harness queue/view
+ * (an aggregated inbox spanning multiple harnesses) can open a chat for a work
+ * item that actually lives in a DIFFERENT harness. Using `slug` directly for
+ * those lookups silently keyed every one of them to the wrong harness for such
+ * a chat, so the item's own context never resolved — and failed SILENTLY
+ * (empty section, no notice), which is exactly what this fix + the loud-miss
+ * notice below address together. `getWorkItem` (no harness arg) resolves an
+ * id across every harness in the active workspace; falls back to `slug` when
+ * the item can't be resolved (no feature_id, an id that doesn't exist yet, or
+ * a lookup failure) so a miss here never blocks the chat.
+ */
+async function resolveItemHarness(
+  slug: string,
+  featureId: string | null | undefined,
+): Promise<{ harness: string; isLegacyBlueprint: boolean }> {
+  let harness = slug;
+  if (featureId) {
+    try {
+      const { getWorkItem } = await import('../../../work-items');
+      const wi = await getWorkItem(featureId);
+      if (wi?.harness) harness = wi.harness;
+    } catch { /* best-effort — fall back to the chat's own harness */ }
+  }
+  let isLegacyBlueprint = true;
+  try {
+    const { loadHarnessRegistry } = await import('../../../harness-registry');
+    const reg = await loadHarnessRegistry();
+    const project = reg.projects.find((p) => p.slug === harness);
+    // A `harness_kind:'hive'` harness runs the Mug/cup pot pipeline, never the
+    // legacy per-feature `harness_features.taken_by` worktree-claim + the
+    // `.papercusp/notes` mechanics (this is the SAME signal D-001 used to
+    // characterize "NOT the legacy 3-phase coding blueprint").
+    isLegacyBlueprint = project?.harness_kind !== 'hive';
+  } catch { /* best-effort — default to legacy-safe (today's unconditional behavior) */ }
+  return { harness, isLegacyBlueprint };
+}
+
 /** Per-harness chat cost cap from the effective harness config (blueprint ⊕
  *  workspace-PG instance — `deprecate-harness-config-json-2026-06-06`). */
 async function readChatCostCap(slug: string): Promise<{ perChatUsd?: number; aggregateUsd?: number }> {
@@ -209,18 +249,29 @@ const messagesRoute = defineTool({
       }
     }
 
+    // P-003: resolve the item's OWN harness ONCE — `slug` is the chat's/queue-
+    // view's harness, which a cross-harness view can differ from.
+    const itemHarness = await resolveItemHarness(slug, chat.feature_id);
+
     // Concurrency awareness — feature-lock state for the prompt notice / strict gate.
-    const featureLock = chat.feature_id ? await readFeatureLockState(slug, chat.feature_id) : null;
+    // Keyed to the ITEM's own harness (not `slug`): a legacy per-feature lock only
+    // ever lives in ITS OWNING harness's `harness_features` table.
+    const featureLock = chat.feature_id
+      ? await readFeatureLockState(itemHarness.harness, chat.feature_id)
+      : null;
     if (featureLock?.active) {
-      const respectLocks = await readChatLockPolicy(slug);
+      const respectLocks = await readChatLockPolicy(itemHarness.harness);
       if (respectLocks) {
+        const guidance = itemHarness.isLegacyBlueprint
+          ? `drop a note via POST /api/harness/${itemHarness.harness}/features/${chat.feature_id}/notes if you want guidance picked up on the next worker tick`
+          : `leave a comment on ${chat.feature_id} (\`work_items:comment\`) so whoever picks it up next sees it`;
         return Response.json({
           error: 'feature_locked',
           feature_id: chat.feature_id,
           taken_by: featureLock.taken_by,
           taken_at: featureLock.taken_at,
           expires_at: featureLock.expires_at,
-          hint: `Feature is currently being worked on autonomously by ${featureLock.taken_by}. Wait for the lock to release, or drop a note via POST /api/harness/${slug}/features/${chat.feature_id}/notes if you want guidance picked up on the next worker tick. Disable strict mode by removing parallelChat.respectFeatureLocks from .papercusp/config.json.`,
+          hint: `Feature is currently being worked on autonomously by ${featureLock.taken_by}. Wait for the lock to release, or ${guidance}. Disable strict mode by removing parallelChat.respectFeatureLocks from .papercusp/config.json.`,
         }, { status: 409 });
       }
     }
@@ -268,8 +319,11 @@ const messagesRoute = defineTool({
         mode: body.mode === 'discuss' ? 'discuss' : 'chat',
         promptOverrideText: chatOverride,
       });
+      const lockNoticeGuidance = itemHarness.isLegacyBlueprint
+        ? `add a note (it lands in \`.papercusp/notes/${chat.feature_id}.md\`, which the next worker tick reads)`
+        : `leave a comment on ${chat.feature_id} (\`work_items:comment\`) for whoever is working it`;
       const lockNotice = featureLock?.active
-        ? `\n---\n\n## ⚠ Concurrent autonomous run\n\nFeature ${chat.feature_id} is currently being worked on autonomously (taken_by=${featureLock.taken_by}, taken_at=${featureLock.taken_at}). The autonomous loop holds the worktree lock; you do not. **Do not propose code changes**; the user is asking you for advice or context. If they want guidance the autonomous worker should pick up, tell them to add a note (it lands in \`.papercusp/notes/${chat.feature_id}.md\`, which the next worker tick reads).\n`
+        ? `\n---\n\n## ⚠ Concurrent autonomous run\n\nFeature ${chat.feature_id} is currently being worked on autonomously (taken_by=${featureLock.taken_by}, taken_at=${featureLock.taken_at}). The autonomous loop holds the worktree lock; you do not. **Do not propose code changes**; the user is asking you for advice or context. If they want guidance the autonomous worker should pick up, tell them to ${lockNoticeGuidance}.\n`
         : '';
       const historyBlock = baseTranscript.length > 1
         ? '\n---\n\n## Conversation history\n\n' +
@@ -291,7 +345,7 @@ const messagesRoute = defineTool({
       if (CHAT_PLAN_ROLES.has(chat.role) && chat.feature_id) {
         try {
           const { getPlanContextForFeature } = await import('../../../plan-context-for-feature');
-          const planCtx = await getPlanContextForFeature(slug, chat.feature_id);
+          const planCtx = await getPlanContextForFeature(itemHarness.harness, chat.feature_id);
           if (planCtx) planContextSection = `\n---\n\n${planCtx.section}\n`;
         } catch { /* best-effort */ }
       }
@@ -326,10 +380,10 @@ const messagesRoute = defineTool({
           const ws = activeWorkspaceId();
           const [dossier, checkpoint] = await Promise.all([
             withBudget(
-              computeCupWakeDossier({ workspaceId: ws, harness: slug, workItemId: chat.feature_id }),
+              computeCupWakeDossier({ workspaceId: ws, harness: itemHarness.harness, workItemId: chat.feature_id }),
             ),
             withBudget(
-              getWorkItemCheckpoint({ workspaceId: ws, harness: slug, workItemId: chat.feature_id }),
+              getWorkItemCheckpoint({ workspaceId: ws, harness: itemHarness.harness, workItemId: chat.feature_id }),
             ),
           ]);
           if (dossier && dossier.trim()) dossierSection += `\n---\n\n${dossier.trim()}\n`;
@@ -342,6 +396,21 @@ const messagesRoute = defineTool({
               `${checkpoint.trim()}\n`;
           }
         } catch { /* best-effort — the agent still has its read tools */ }
+
+        // P-003: a SILENT miss here (a timeout, a resolve failure, or the item
+        // genuinely not found under `itemHarness.harness`) previously left the
+        // model with NO indication its item context is missing — it would just
+        // answer as if the item didn't exist, with no cue to reach for its own
+        // read tools. Render a loud notice instead whenever nothing loaded.
+        if (!dossierSection) {
+          dossierSection =
+            `\n---\n\n## ⚠ No dossier available for ${chat.feature_id}\n\n` +
+            `Could not load this item's dossier (identity, plan links, recent activity, ` +
+            `peer roster) or in-flight checkpoint from harness "${itemHarness.harness}" — ` +
+            'the lookup timed out, the item may not exist there yet, or a transient error ' +
+            'occurred. You do NOT have this item pre-loaded; use your `work_items:get` tool ' +
+            `to look up ${chat.feature_id} directly before answering.\n`;
+        }
       }
 
       // work-item-chat-context-modernize P-002: the work-item dossier LEADS the task
