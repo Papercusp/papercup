@@ -66,6 +66,34 @@ function sig(p: Partial<WatchdogSignal> & { key: string }): WatchdogSignal {
 const noKeyDups = async (): Promise<WatchdogKeyDup[]> => [];
 const noPrune = async (): Promise<void> => {};
 
+/**
+ * HERMETIC tick runner — use this instead of calling `runWatchdogTick` directly.
+ *
+ * `runWatchdogTick` resolves its lock as `deps?.withTickLock ?? withWatchdogTickLock`,
+ * so a tick test that omits `withTickLock` runs the REAL lock, which opens a live
+ * admin PG connection (`tickLockSql().reserve()`). With embedded-pg down that throws
+ * ECONNREFUSED, the fail-open branch emits a `console.warn`, and `vitest-fail-on-console`
+ * turns it into a failure — i.e. the file went red purely because the desktop shell
+ * (which owns embedded-pg) was not running. That is environment-dependent, not a real
+ * signal (EI-16132).
+ *
+ * Injecting a pass-through lock keeps the tick body's behavior identical while touching
+ * no DB — the same intent as `noKeyDups` / `noPrune` above, applied to the lock leg.
+ * `...deps` is spread LAST, so a test that exercises lock behavior passes its own
+ * `withTickLock` and still wins. Tests for the REAL lock call `withWatchdogTickLock`
+ * directly and spy on `console.warn` (see the fail-open tests).
+ */
+function runTick(
+  workspaceId: string,
+  opts: Parameters<typeof runWatchdogTick>[1] = {},
+  deps: Parameters<typeof runWatchdogTick>[2] = {},
+): ReturnType<typeof runWatchdogTick> {
+  return runWatchdogTick(workspaceId, opts, {
+    withTickLock: async (_ws, fn) => ({ ran: true, value: await fn() }),
+    ...deps,
+  });
+}
+
 describe('planWatchdogCaptures — pure anti-flood planning (close-loop D-003)', () => {
   it('caps captures per tick, highest severity first', () => {
     const signals = [
@@ -979,7 +1007,7 @@ describe('watchdog COVERAGE self-test — the original miss is caught end-to-end
     const redTests = Array.from({ length: 5 }, (_, i) =>
       sig({ key: `t${i}`, source: 'red-test', severity: 'major', title: `Test failing repeatedly: t${i}` }),
     );
-    const res = await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+    const res = await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune,
       // red-tests FIRST in the list — under the old global cap-3 they would fill every
       // slot and starve the memory signal. The per-source budget (P-009) prevents that.
       collect: async () => [...redTests, memSignal],
@@ -1169,7 +1197,7 @@ describe('runWatchdogTick — captures through the shared core', () => {
   it('captures each planned signal as kind=bug with dedupScope open + the paths', async () => {
     const { calls, capture } = captureRecorder();
     const signals = [sig({ key: 'lib/a.test.ts', paths: ['lib/a.test.ts'] })];
-    const res = await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
+    const res = await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
     expect(res.captured).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       kind: 'bug',
@@ -1185,25 +1213,25 @@ describe('runWatchdogTick — captures through the shared core', () => {
   it('passes a per-signal scope through to the capture (consume-edges P-021)', async () => {
     const { calls, capture } = captureRecorder();
     const signals = [sig({ key: 'hive-x', scope: 'harness:sheets' })];
-    await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
+    await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
     expect(calls[0]).toMatchObject({ scope: 'harness:sheets' });
   });
 
   it('passes a per-signal findingClass through to the capture (frontier P-044 taxonomy slug)', async () => {
     const { calls, capture } = captureRecorder();
     const signals = [sig({ key: 'slo-x', findingClass: 'learning-slo:triage-degeneracy' })];
-    await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
+    await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
     expect(calls[0]).toMatchObject({ findingClass: 'learning-slo:triage-degeneracy' });
     // absent on the signal stays absent on the capture — graduation's
     // findingClassOf falls back to `<source>:unclassified`, never a fake stamp.
     const { calls: bare, capture: bareCapture } = captureRecorder();
-    await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'y' })], capture: bareCapture, recordTick: noopRecord });
+    await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'y' })], capture: bareCapture, recordTick: noopRecord });
     expect((bare[0] as { findingClass?: string }).findingClass).toBeUndefined();
   });
 
   it('counts declined open-duplicates instead of re-filing (cross-tick dedup)', async () => {
     const { capture } = captureRecorder([{ created: false, reason: 'likely-duplicate' }]);
-    const res = await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'x' })], capture, recordTick: noopRecord });
+    const res = await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'x' })], capture, recordTick: noopRecord });
     expect(res.captured).toHaveLength(0);
     expect(res.declinedDuplicates).toBe(1);
   });
@@ -1211,7 +1239,7 @@ describe('runWatchdogTick — captures through the shared core', () => {
   it('respects the per-tick cap (deferred surfaces in the result)', async () => {
     const { calls, capture } = captureRecorder();
     const signals = [sig({ key: 'a' }), sig({ key: 'b' }), sig({ key: 'c' })];
-    const res = await runWatchdogTick('ws', { maxPerTick: 1 }, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
+    const res = await runTick('ws', { maxPerTick: 1 }, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
     expect(calls).toHaveLength(1);
     expect(res.deferred).toBe(2);
   });
@@ -1225,7 +1253,7 @@ describe('runWatchdogTick — captures through the shared core', () => {
         if (n === 1) throw new Error('pg hiccup');
         return { ok: true, created: true, issue: { id: 'EI-9' } as never, possibleDuplicates: [] };
       };
-      const res = await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'a' }), sig({ key: 'b' })], capture, recordTick: noopRecord });
+      const res = await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'a' }), sig({ key: 'b' })], capture, recordTick: noopRecord });
       expect(res.captured).toEqual(['EI-9']);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/capture failed for red-test:a/));
     } finally {
@@ -1247,7 +1275,7 @@ describe('runWatchdogTick — captures through the shared core', () => {
         collect: async () => [sig({ key: 'smoke', source: 'smoke-fail', title: 'My project smoke test failing' })],
       },
     ];
-    const res = await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collectors: customCollectors, capture, recordTick: noopRecord });
+    const res = await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collectors: customCollectors, capture, recordTick: noopRecord });
     expect(res.captured).toHaveLength(2);
     expect(calls).toHaveLength(2);
     expect(calls[0]).toMatchObject({ title: 'My project integration test failing' });
@@ -1270,7 +1298,7 @@ describe('runWatchdogTick — captures through the shared core', () => {
           },
         },
       ];
-      const res = await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collectors, capture, recordTick: noopRecord });
+      const res = await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collectors, capture, recordTick: noopRecord });
       expect(res.signals).toBe(1); // only the good signal
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/collector "bad-collector" failed/));
     } finally {
@@ -1294,7 +1322,7 @@ describe('runWatchdogTick — tick record (watchdog-robustness P-001)', () => {
     ];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const res = await runWatchdogTick('ws-1', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+      const res = await runTick('ws-1', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune,
         collectors,
         capture: captureOk(),
         recordTick: async (r) => { records.push(r); },
@@ -1316,7 +1344,7 @@ describe('runWatchdogTick — tick record (watchdog-robustness P-001)', () => {
 
   it('records the installSlug when given', async () => {
     const records: WatchdogTickRecord[] = [];
-    await runWatchdogTick('ws-2', { installSlug: 'papercup' }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+    await runTick('ws-2', { installSlug: 'papercup' }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
       collect: async () => [],
       capture: captureOk(),
       recordTick: async (r) => { records.push(r); },
@@ -1327,7 +1355,7 @@ describe('runWatchdogTick — tick record (watchdog-robustness P-001)', () => {
   it('a tick-record failure does NOT abort the tick (best-effort bookkeeping)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const res = await runWatchdogTick('ws-3', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+      const res = await runTick('ws-3', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune,
         collect: async () => [sig({ key: 'a' })],
         capture: captureOk(),
         recordTick: async () => { throw new Error('pg down'); },
@@ -1403,7 +1431,7 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { calls, capture } = captureRecorder();
-      const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+      const res = await runTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
         collectors: [throwingCollector],
         capture,
         recordTick: async () => {},
@@ -1426,7 +1454,7 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { calls, capture } = captureRecorder();
-      const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+      const res = await runTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
         collectors: [throwingCollector],
         capture,
         recordTick: async () => {},
@@ -1443,7 +1471,7 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { capture } = captureRecorder({ created: false, reason: 'likely-duplicate' });
-      const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+      const res = await runTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
         collectors: [throwingCollector],
         capture,
         recordTick: async () => {},
@@ -1458,7 +1486,7 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
   it('a healthy tick does not read recent ticks or self-escalate', async () => {
     let readCalled = false;
     const { calls, capture } = captureRecorder();
-    const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+    const res = await runTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
       collect: async () => [sig({ key: 'a' })], // injected → collectors = [{injected, ok:true}]
       capture,
       recordTick: async () => {},
@@ -1477,7 +1505,7 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
         { name: 'col-a', collect: async () => { throw new Error('a'); } },
         { name: 'col-b', collect: async () => { throw new Error('b'); } },
       ];
-      const res = await runWatchdogTick('ws', { failStreakToEscalate: 1, maxSelfEscalationsPerTick: 1 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
+      const res = await runTick('ws', { failStreakToEscalate: 1, maxSelfEscalationsPerTick: 1 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
         collectors: twoBad,
         capture,
         recordTick: async () => {},
@@ -1692,7 +1720,7 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
     const records: WatchdogTickRecord[] = [];
     const known = [sig({ key: 'a' }), sig({ key: 'b' }), sig({ key: 'c' })];
     const fresh = sig({ key: 'new-one', source: 'repeated-tool-error', title: 'Tool new-one returns a structural error' });
-    const res = await runWatchdogTick('ws', {}, {
+    const res = await runTick('ws', {}, {
       collect: async () => [...known, fresh],
       capture,
       recordTick: async (r) => { records.push(r); },
@@ -1713,7 +1741,7 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
   it('captures carry watchdogKey + evidenceAt (the next tick pre-filters on them)', async () => {
     const { calls, capture } = captureRec();
     const s = sig({ key: 'lib/x.test.ts', latestAt: '2026-06-09T10:00:00.000Z' });
-    await runWatchdogTick('ws', {}, {
+    await runTick('ws', {}, {
       collect: async () => [s],
       capture,
       recordTick: async () => {},
@@ -1728,7 +1756,7 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
     const { calls, capture } = captureRec();
     const records: WatchdogTickRecord[] = [];
     const s = sig({ key: 'lib/x.test.ts', latestAt: '2026-06-08T00:00:00.000Z' });
-    const res = await runWatchdogTick('ws', {}, {
+    const res = await runTick('ws', {}, {
       collect: async () => [s],
       capture,
       recordTick: async (r) => { records.push(r); },
@@ -1745,7 +1773,7 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { calls, capture } = captureRec();
-      const res = await runWatchdogTick('ws', {}, {
+      const res = await runTick('ws', {}, {
         collect: async () => [sig({ key: 'a' })],
         capture,
         recordTick: async () => {},
@@ -1765,7 +1793,7 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
 describe('runWatchdogTick — known-open aging wiring (consume-edges P-020 / EI-363)', () => {
   function knownOpenTick(processAging: (ws: string, keys: string[], o: unknown) => Promise<{ issueId: string; watchdogKey: string; reescalation: boolean }[]>) {
     const known = [sig({ key: 'shop', source: 'service-down', title: 'Service shop is down' })];
-    return runWatchdogTick('ws', {}, {
+    return runTick('ws', {}, {
       collect: async () => known,
       capture: (async () => ({ ok: true, created: true, issue: { id: 'EI-X' }, possibleDuplicates: [] })) as never,
       recordTick: async () => {},
@@ -1800,7 +1828,7 @@ describe('runWatchdogTick — known-open aging wiring (consume-edges P-020 / EI-
 
   it('a tick with NO known-open signals never invokes aging (zero extra reads when quiet)', async () => {
     const processAging = vi.fn(async () => []);
-    const res = await runWatchdogTick('ws', {}, {
+    const res = await runTick('ws', {}, {
       collect: async () => [sig({ key: 'fresh-one' })],
       capture: (async () => ({ ok: true, created: true, issue: { id: 'EI-1' }, possibleDuplicates: [] })) as never,
       recordTick: async () => {},
@@ -1927,7 +1955,7 @@ describe('per-signal ORIGIN scope tagging (per-hive-learning-loops P-032)', () =
     }) as typeof import('./capture-core').captureImprovement;
     const harnessSig = smokeFailSignalsFromRows([{ harness_slug: 'sheets', failure_content: 'x', mtime_ms: Date.now() }]);
     const globalSig = collectServiceDownSignals([{ name: 'sidecar', up: false } as ProbeResult]);
-    await runWatchdogTick('ws', { maxPerTick: 5 }, {
+    await runTick('ws', { maxPerTick: 5 }, {
       readKeyDups: noKeyDups, pruneTicks: noPrune,
       collect: async () => [...harnessSig, ...globalSig],
       capture, recordTick: async () => {},
@@ -2252,7 +2280,7 @@ describe('tick prune — retention is best-effort (audit P-009)', () => {
     try {
       const pruned: Array<[string, number]> = [];
       const okCapture = (async () => ({ ok: true, created: true, issue: { id: 'EI-1' } as never, possibleDuplicates: [] })) as unknown as typeof import('./capture-core').captureImprovement;
-      const res = await runWatchdogTick('ws', {}, {
+      const res = await runTick('ws', {}, {
         collect: async () => [sig({ key: 'a' })],
         capture: okCapture,
         recordTick: async () => {},
@@ -2263,7 +2291,7 @@ describe('tick prune — retention is best-effort (audit P-009)', () => {
       expect(res.captured).toHaveLength(1);
       expect(pruned).toEqual([['ws', 14]]);
 
-      const res2 = await runWatchdogTick('ws', { tickRetentionDays: 7 }, {
+      const res2 = await runTick('ws', { tickRetentionDays: 7 }, {
         collect: async () => [],
         capture: okCapture,
         recordTick: async () => {},
@@ -2283,7 +2311,7 @@ describe('deferred boost survives a skipped tick (audit P-011)', () => {
   it('the contended deferred-keys read asks for the last RAN tick, not the last tick', async () => {
     let filterSeen: { status?: 'ran' | 'skipped' } | undefined;
     const okCapture = (async () => ({ ok: true, created: true, issue: { id: 'EI-1' } as never, possibleDuplicates: [] })) as unknown as typeof import('./capture-core').captureImprovement;
-    await runWatchdogTick('ws', { maxPerTick: 1 }, {
+    await runTick('ws', { maxPerTick: 1 }, {
       collect: async () => [sig({ key: 'a' }), sig({ key: 'b' })], // contention → the read happens
       capture: okCapture,
       recordTick: async () => {},
