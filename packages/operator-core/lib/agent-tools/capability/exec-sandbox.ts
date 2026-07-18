@@ -211,6 +211,10 @@ const EXEC_ENV_ALLOW_EXACT: ReadonlySet<string> = new Set([
   'LANG', 'LC_ALL',
   'TMPDIR', 'TMP', 'TEMP',
   'CI',
+  // Network proxy config — a proxy URL/host is operational, not a secret, and its
+  // ABSENCE (on a host with none set, the common case here) is a no-op either way.
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR',
   // Native-build linkers (no secrets ride on a library search path).
   'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH',
   // Node/JS toolchain.
