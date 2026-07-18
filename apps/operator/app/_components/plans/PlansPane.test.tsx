@@ -6,7 +6,7 @@
 // (usePlanList / useInboxAttention / useSyncQuery roster / useWorkspaceId) and
 // the heavy PlanPopupModal (→ PlanDetail) are mocked; nuqs is a seeded store.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
 
 // jsdom has no layout, so the real @tanstack/react-virtual renders zero rows
@@ -22,13 +22,17 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
-const { nuqs, setters, planListData, attentionItems, rosterData } = vi.hoisted(() => ({
-  nuqs: {} as Record<string, unknown>,
-  setters: {} as Record<string, ReturnType<typeof vi.fn>>,
-  planListData: { value: null as { plans: PlanListRow[] } | null },
-  attentionItems: { value: [] as Array<{ planSlug: string | null; tier: string; needsHuman?: boolean; kind?: string }> },
-  rosterData: { value: [{ active: [] as Array<{ currentPlanSlug?: string | null }> }] },
-}));
+const { nuqs, setters, planListData, attentionItems, rosterData, setPlanArchived, confirmAnswer, toastSpies } =
+  vi.hoisted(() => ({
+    nuqs: {} as Record<string, unknown>,
+    setters: {} as Record<string, ReturnType<typeof vi.fn>>,
+    planListData: { value: null as { plans: PlanListRow[] } | null },
+    attentionItems: { value: [] as Array<{ planSlug: string | null; tier: string; needsHuman?: boolean; kind?: string }> },
+    rosterData: { value: [{ active: [] as Array<{ currentPlanSlug?: string | null }> }] },
+    setPlanArchived: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
+    confirmAnswer: { value: true },
+    toastSpies: { success: vi.fn(), error: vi.fn() },
+  }));
 function mkSetter(key: string) {
   if (!setters[key]) setters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });
   return setters[key];
@@ -51,10 +55,15 @@ vi.mock('@papercusp/sync', () => ({
 }));
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-1' }));
-// Keep bucketOf real (buildGlanceRows uses it) — only stub the data hook.
+// Keep bucketOf real (buildGlanceRows uses it) — only stub the data hook + the write.
 vi.mock('@/app/admin/plans/plans-api', async (orig) => ({
   ...(await orig<typeof import('@/app/admin/plans/plans-api')>()),
   usePlanList: () => ({ data: planListData.value, loading: planListData.value === null, error: null, refresh: vi.fn() }),
+  setPlanArchived: (a: unknown) => setPlanArchived(a),
+}));
+vi.mock('sonner', () => ({ toast: toastSpies }));
+vi.mock('@/app/harness/useConfirmDialog', () => ({
+  useConfirmDialog: () => ({ confirm: async () => confirmAnswer.value, element: null }),
 }));
 vi.mock('../inbox/use-inbox-pending', () => ({
   effectiveTier: (i: { tier?: string }) => i.tier ?? 'activity',
@@ -81,7 +90,16 @@ afterEach(() => {
   for (const k of Object.keys(nuqs)) delete nuqs[k];
   attentionItems.value = [];
   rosterData.value = [{ active: [] }];
+  confirmAnswer.value = true;
+  setPlanArchived.mockClear();
+  toastSpies.success.mockClear();
+  toastSpies.error.mockClear();
 });
+
+/** An ISO timestamp `days` in the past — for the stale (≥14d) threshold. */
+function daysAgo(days: number): string {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
 
 describe('PlansPane', () => {
   it('renders active plans with needs-you, live, and progress badges', () => {
@@ -130,5 +148,48 @@ describe('PlansPane', () => {
     render(<PlansPane />);
     expect(screen.queryByText(/everything is finished/i)).toBeNull();
     expect(screen.getByText(/no plans yet/i)).toBeTruthy();
+  });
+
+  /* ── Stale-plan sweep: one-click archive (P-008 / EI-15304) ────────── */
+
+  it('offers archive on a STALE row only', () => {
+    planListData.value = {
+      plans: [
+        plan({ slug: 'p-stale', title: 'Stale plan', updated: daysAgo(30) }),
+        plan({ slug: 'p-fresh', title: 'Fresh plan', updated: daysAgo(2) }),
+      ],
+    };
+    render(<PlansPane />);
+    expect(screen.getByTestId('plans-pane-archive-p-stale')).toBeTruthy();
+    expect(screen.queryByTestId('plans-pane-archive-p-fresh')).toBeNull();
+  });
+
+  it('archives the plan after the confirm is accepted', async () => {
+    planListData.value = { plans: [plan({ slug: 'p-stale', title: 'Stale plan', updated: daysAgo(30) })] };
+    render(<PlansPane />);
+    fireEvent.click(screen.getByTestId('plans-pane-archive-p-stale'));
+    await waitFor(() => expect(setPlanArchived).toHaveBeenCalled());
+    expect(setPlanArchived).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: 'p-stale', archived: true, harness: 'papercusp' }),
+    );
+    await waitFor(() => expect(toastSpies.success).toHaveBeenCalled());
+  });
+
+  it('does NOT archive when the confirm is declined', async () => {
+    confirmAnswer.value = false;
+    planListData.value = { plans: [plan({ slug: 'p-stale', updated: daysAgo(30) })] };
+    render(<PlansPane />);
+    fireEvent.click(screen.getByTestId('plans-pane-archive-p-stale'));
+    await waitFor(() => expect(confirmAnswer.value).toBe(false));
+    expect(setPlanArchived).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed archive as an error toast', async () => {
+    setPlanArchived.mockResolvedValueOnce({ ok: false, error: 'plan_not_found' } as never);
+    planListData.value = { plans: [plan({ slug: 'p-stale', updated: daysAgo(30) })] };
+    render(<PlansPane />);
+    fireEvent.click(screen.getByTestId('plans-pane-archive-p-stale'));
+    await waitFor(() => expect(toastSpies.error).toHaveBeenCalled());
+    expect(toastSpies.success).not.toHaveBeenCalled();
   });
 });
