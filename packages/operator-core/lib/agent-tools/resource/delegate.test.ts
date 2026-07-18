@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../p2p/resource-allotments', () => ({
   setResourceAllotment: vi.fn(),
   removeResourceAllotment: vi.fn(),
+  ALLOTMENT_AUDIENCES: ['trusted-members', 'whole-pot'],
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../coordination/identity', () => ({
@@ -94,6 +95,64 @@ describe('delegateResource — agent_slot mapping (the P-001 pinned contract)', 
     await delegateResource({ workspaceId: 'w', fleetSlug: 'x', kind: 'agent_slot', model: 'm', effort: 'low' });
     expect('quantity' in setArgs()).toBe(true);
     expect(setArgs().quantity).toBeUndefined();
+  });
+});
+
+describe('delegateResource — P-001 potSlug/audience passthrough (pot-seat-pools-prose-ux-2026-07-18)', () => {
+  it('forwards potSlug + audience to the store untouched (fleetSlug omitted)', async () => {
+    await delegateResource({
+      workspaceId: 'w',
+      potSlug: 'my-pot',
+      audience: 'whole-pot',
+      kind: 'account',
+      ref: 'pool-main',
+      sharePct: 25,
+    });
+    expect(setArgs()).toMatchObject({
+      fleetSlug: undefined,
+      potSlug: 'my-pot',
+      audience: 'whole-pot',
+      resourceKind: 'account',
+      resourceRef: 'pool-main',
+      sharePct: 25,
+    });
+  });
+
+  it('an agent_slot pot-scoped delegation also forwards potSlug/audience alongside the trio', async () => {
+    await delegateResource({
+      workspaceId: 'w',
+      potSlug: 'my-pot',
+      audience: 'trusted-members',
+      kind: 'agent_slot',
+      model: 'opus',
+      effort: 'high',
+      count: 3,
+    });
+    expect(setArgs()).toMatchObject({
+      potSlug: 'my-pot',
+      audience: 'trusted-members',
+      quantity: 3,
+      axis: { model: 'opus', effort: 'high', account: AUTO_ACCOUNT },
+    });
+  });
+
+  it('a store grantee/audience refusal (grantee_conflict etc.) passes through untouched', async () => {
+    setM.mockResolvedValue({ ok: false, refusal: { code: 'grantee_conflict', detail: 'both set' } });
+    const r = await delegateResource({
+      workspaceId: 'w',
+      fleetSlug: 'x',
+      potSlug: 'my-pot',
+      audience: 'whole-pot',
+      kind: 'account',
+      ref: 'p',
+      sharePct: 10,
+    });
+    expect(r).toEqual({ ok: false, refusal: { code: 'grantee_conflict', detail: 'both set' } });
+  });
+
+  it('the remove path forwards potSlug to removeResourceAllotment', async () => {
+    await delegateResource({ workspaceId: 'w', potSlug: 'my-pot', kind: 'account', ref: 'pool-main', remove: true });
+    expect(removeM.mock.calls[0]![0]).toMatchObject({ potSlug: 'my-pot', resourceKind: 'account', resourceRef: 'pool-main' });
   });
 });
 

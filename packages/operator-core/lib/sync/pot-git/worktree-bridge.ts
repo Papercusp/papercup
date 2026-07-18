@@ -214,11 +214,33 @@ export async function handleStagingAdvance(
     }
 
     // 3) Full acceptance: sha present locally + ff of the last accepted staging.
+    // A recorded watermark whose OBJECT is gone from this store (pruned store,
+    // drill residue, re-clone) can never verify ancestry — is-ancestor errors
+    // and every legitimate advance rejects as non-fast-forward FOREVER
+    // (live-caught on the hello-world-3-pot canary: watermark ad47cd48's
+    // object was missing, so the epoch-2 takeover advance was consumed+
+    // rejected every tick). Re-anchor an unverifiable watermark on the bare
+    // canonical ref (the very ref step 3.5 maintains — the true local
+    // lineage anchor); if that is absent too, treat as genesis (sha-exists
+    // check still applies, and the worktree advance below is ff-only anyway).
+    let effectivePriorSha = cfg.prior.stagingSha;
+    if (effectivePriorSha) {
+      const priorExists = await runGit(['rev-parse', '--verify', '-q', `${effectivePriorSha}^{commit}`], cfg.bareRepoPath);
+      if (priorExists.code !== 0) {
+        const cur = await runGit(['rev-parse', '--verify', '-q', `${WORKTREE_STAGING_REF}^{commit}`], cfg.bareRepoPath);
+        const reanchored = cur.code === 0 ? cur.stdout.trim() : null;
+        console.warn(
+          `[worktree-bridge] watermark stagingSha ${effectivePriorSha.slice(0, 12)} has no object in ${cfg.bareRepoPath} — ` +
+            `re-anchoring the FF fence on ${reanchored ? `canonical ${reanchored.slice(0, 12)}` : 'genesis (no canonical ref either)'}`,
+        );
+        effectivePriorSha = reanchored;
+      }
+    }
     const full = await acceptStagingAdvanceFF(
       cfg.bareRepoPath,
       incoming,
       cfg.prior.epochSeq,
-      cfg.prior.stagingSha,
+      effectivePriorSha,
       { ...cfg.accept, runGit },
     );
     if (!full.ok) return { outcome: 'rejected', reason: full.reason, preFetch: false };

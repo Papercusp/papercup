@@ -70,7 +70,7 @@ describe('coerceWorkOfferStoreRecord — seat kind', () => {
     expect(c.ok).toBe(true);
     if (!c.ok) return;
     expect(c.record.kind).toBe('seat');
-    expect(c.record.seat).toEqual(SEAT_RECORD.seat);
+    expect(c.record.seat).toEqual({ ...SEAT_RECORD.seat, audience: null });
     expect(c.record.workOffer).toBeNull();
     expect(c.record.authorship).toBeNull();
   });
@@ -101,6 +101,79 @@ describe('coerceWorkOfferStoreRecord — seat kind', () => {
   it("rejects work-kind fields on a seat record (kind discrimination is closed)", () => {
     expect(coerceWorkOfferStoreRecord({ ...SEAT_RECORD, workOffer: OFFER, authorship: AUTHORSHIP }).ok).toBe(false);
     expect(coerceWorkOfferStoreRecord({ ...SEAT_RECORD, seat: null }).ok).toBe(false);
+  });
+});
+
+describe('coerceWorkOfferStoreRecord — seat kind P-001 pot-scoped grantee (pot-seat-pools-prose-ux-2026-07-18)', () => {
+  it('accepts a pot-scoped seat record (potSlug set, fleetSlug null, audience required+set)', () => {
+    const c = coerceWorkOfferStoreRecord({
+      ...SEAT_RECORD,
+      fleetSlug: undefined,
+      potSlug: 'my-pot',
+      seat: { ...SEAT_RECORD.seat, audience: 'whole-pot' },
+    });
+    expect(c.ok).toBe(true);
+    if (!c.ok) return;
+    expect(c.record.fleetSlug).toBeNull();
+    expect(c.record.potSlug).toBe('my-pot');
+    expect(c.record.seat!.audience).toBe('whole-pot');
+  });
+
+  it('rejects a seat record with BOTH fleetSlug and potSlug set (grantee must be exactly one)', () => {
+    expect(
+      coerceWorkOfferStoreRecord({
+        ...SEAT_RECORD,
+        fleetSlug: 'alpha',
+        potSlug: 'my-pot',
+        seat: { ...SEAT_RECORD.seat, audience: 'whole-pot' },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it('rejects a seat record with NEITHER fleetSlug nor potSlug set', () => {
+    expect(
+      coerceWorkOfferStoreRecord({ ...SEAT_RECORD, fleetSlug: undefined, potSlug: undefined }).ok,
+    ).toBe(false);
+  });
+
+  it('rejects a pot-scoped seat with missing/invalid audience (D-002: no silent default)', () => {
+    for (const audience of [undefined, null, 'everyone']) {
+      expect(
+        coerceWorkOfferStoreRecord({
+          ...SEAT_RECORD,
+          fleetSlug: undefined,
+          potSlug: 'my-pot',
+          seat: { ...SEAT_RECORD.seat, audience },
+        }).ok,
+      ).toBe(false);
+    }
+  });
+
+  it('rejects a fleet-scoped seat that sets a non-null audience (audience is pot-scoped only)', () => {
+    expect(
+      coerceWorkOfferStoreRecord({
+        ...SEAT_RECORD,
+        seat: { ...SEAT_RECORD.seat, audience: 'trusted-members' },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects potSlug set on 'work' or 'spawn_request' kinds (only 'seat' may be pot-scoped)", () => {
+    expect(coerceWorkOfferStoreRecord({ ...WORK_RECORD, potSlug: 'my-pot' }).ok).toBe(false);
+    expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, potSlug: 'my-pot' }).ok).toBe(false);
+  });
+
+  it('canonical json round-trips a pot-scoped seat record', () => {
+    const c = coerceWorkOfferStoreRecord({
+      ...SEAT_RECORD,
+      fleetSlug: undefined,
+      potSlug: 'my-pot',
+      seat: { ...SEAT_RECORD.seat, audience: 'trusted-members' },
+    });
+    expect(c.ok).toBe(true);
+    if (!c.ok) return;
+    const json = canonicalWorkOfferRecordJson(c.record);
+    expect(parseWorkOfferRecordJson(json)).toEqual(c.record);
   });
 });
 

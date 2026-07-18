@@ -6,7 +6,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/worktree-bridge-tick.integration.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
@@ -290,5 +290,54 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
         accept: {},
       }),
     ).rejects.toThrow(/device gate/);
+  });
+
+  it('a watermark whose OBJECT is missing re-anchors on the bare canonical ref instead of rejecting forever', async () => {
+    // Regression (hello-world-3-pot canary, 2026-07-18): the persisted
+    // stagingSha pointed at an object absent from the local store (drill
+    // residue), so merge-base --is-ancestor errored and EVERY legitimate
+    // advance — including the epoch-2 authority-takeover announcement — was
+    // consumed + rejected as non-fast-forward, wedging acceptance forever.
+    const bogus = '1111111111111111111111111111111111111111';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // canonical currently sits at s3 from the earlier accepted batch; the
+      // incoming advance re-publishes s3 under a fresh (epoch, seq).
+      const out = await runWorktreeBridgeTick({
+        bareRepoPath: localMirror,
+        worktreePath: wt,
+        pending: [await announce(2, 1, s3)],
+        prior: { epochSeq: { epoch: 1, seq: 3 }, stagingSha: bogus },
+        accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+        openDuplex,
+      });
+      expect(out.ran).toBe(true);
+      expect(out.results[0].bridge.outcome).toBe('accepted');
+      expect(out.watermark).toEqual({ epochSeq: { epoch: 2, seq: 1 }, stagingSha: s3 });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('re-anchoring the FF fence'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the re-anchored fence still REJECTS a genuine rewind (missing watermark is no bypass)', async () => {
+    const bogus = '1111111111111111111111111111111111111111';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // canonical is at s3; an announcement rewinding to s1 must still reject
+      // non-fast-forward even though the recorded watermark is unverifiable.
+      const out = await runWorktreeBridgeTick({
+        bareRepoPath: localMirror,
+        worktreePath: wt,
+        pending: [await announce(2, 2, s1)],
+        prior: { epochSeq: { epoch: 2, seq: 1 }, stagingSha: bogus },
+        accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+        openDuplex,
+      });
+      expect(out.ran).toBe(true);
+      expect(out.results[0].bridge).toEqual({ outcome: 'rejected', reason: 'non-fast-forward', preFetch: false });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

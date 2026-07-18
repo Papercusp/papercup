@@ -65,11 +65,11 @@ describe('setResourceAllotment refusal paths (loud, structured, SQL-free)', () =
     }
   });
 
-  it('refuses bad kind / missing ref / missing fleet / out-of-range share, all before SQL', async () => {
+  it('refuses bad kind / missing ref / missing grantee / out-of-range share, all before SQL', async () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ resourceKind: 'cpu' }, 'invalid_resource_kind'],
       [{ resourceRef: '  ' }, 'resource_required'],
-      [{ fleetSlug: '' }, 'fleet_required'],
+      [{ fleetSlug: '' }, 'grantee_required'],
       [{ sharePct: 101 }, 'invalid_share_pct'],
       [{ sharePct: -1 }, 'invalid_share_pct'],
       [{ sharePct: Number.NaN }, 'invalid_share_pct'],
@@ -86,6 +86,59 @@ describe('setResourceAllotment refusal paths (loud, structured, SQL-free)', () =
 
   it('a fully-valid set proceeds PAST validation to the SQL write (refusals are not over-broad)', async () => {
     await expect(setResourceAllotment({ ...base }, throwingSql)).rejects.toThrow(/must not touch SQL/);
+  });
+});
+
+describe('setResourceAllotment P-001 pot-scoped grantee (fleetSlug/potSlug xor + audience gating)', () => {
+  const base = {
+    workspaceId: 'ws-1',
+    resourceKind: 'account' as const,
+    resourceRef: 'pool-main',
+    sharePct: 50,
+  };
+
+  it('refuses when neither fleetSlug nor potSlug is set → grantee_required', async () => {
+    const r = await setResourceAllotment({ ...base }, throwingSql);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.refusal.code).toBe('grantee_required');
+  });
+
+  it('refuses when BOTH fleetSlug and potSlug are set → grantee_conflict', async () => {
+    const r = await setResourceAllotment(
+      { ...base, fleetSlug: 'p2p-dist', potSlug: 'my-pot', audience: 'whole-pot' },
+      throwingSql,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.refusal.code).toBe('grantee_conflict');
+  });
+
+  it('refuses a pot-scoped set with no/invalid audience → audience_required (D-002: no silent default)', async () => {
+    for (const audience of [undefined, null, '', 'everyone']) {
+      const r = await setResourceAllotment(
+        { ...base, potSlug: 'my-pot', audience } as Parameters<typeof setResourceAllotment>[0],
+        throwingSql,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.refusal.code).toBe('audience_required');
+    }
+  });
+
+  it('refuses a fleet-scoped set that also sets audience → audience_not_applicable', async () => {
+    const r = await setResourceAllotment(
+      { ...base, fleetSlug: 'p2p-dist', audience: 'trusted-members' },
+      throwingSql,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.refusal.code).toBe('audience_not_applicable');
+  });
+
+  it('a valid pot-scoped set (potSlug + audience, no fleetSlug) proceeds PAST validation to SQL', async () => {
+    await expect(
+      setResourceAllotment({ ...base, potSlug: 'my-pot', audience: 'whole-pot' }, throwingSql),
+    ).rejects.toThrow(/must not touch SQL/);
+    await expect(
+      setResourceAllotment({ ...base, potSlug: 'my-pot', audience: 'trusted-members' }, throwingSql),
+    ).rejects.toThrow(/must not touch SQL/);
   });
 });
 
