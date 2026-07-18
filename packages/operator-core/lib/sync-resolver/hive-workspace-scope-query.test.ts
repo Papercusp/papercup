@@ -53,9 +53,12 @@ describe('hive.workspaceScope named query (pot-seat-pools-prose-ux-2026-07-18 P-
   });
 
   it('degrades to kind:none without throwing when the scope resolver rejects', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     resolveWorkspaceHiveScope.mockRejectedValue(new Error('hive registry unavailable'));
     await expect(resolveNamedQueryV2('hive.workspaceScope', {})).resolves.toEqual([
       { kind: 'none', homeSlug: null, candidates: [] },
     ]);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
