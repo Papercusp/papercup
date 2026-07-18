@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  clearContextAnchor,
   currentContextTokensSyncForOwner,
   resetContextAnchorsForTests,
   seedContextAnchorForTests,
@@ -139,6 +140,38 @@ describe('anchored incremental context reads (WI-4154)', () => {
 
   it('an owner never seeded returns null (background seed) rather than guessing', () => {
     expect(currentContextTokensSyncForOwner('o-unknown')).toBeNull();
+  });
+
+  it('EI-12966: a carry-respawn dead predecessor file that stops growing serves the SAME frozen reading forever — advanceAnchor never notices the successor lives elsewhere', () => {
+    // Simulates the pre-fix bug: the anchor is seeded on the PREDECESSOR's
+    // transcript. A carry-respawn kills that process and starts a successor
+    // on a DIFFERENT file, but the predecessor's file never grows again — so
+    // advanceAnchor's fast path (`size === a.sizeSeen`) keeps returning 'ok'
+    // with the byte-identical pre-respawn number, indefinitely, because it
+    // never re-resolves which file is actually live for this owner.
+    fs.writeFileSync(file, line(1_400_000)); // 350k tokens — CRITICAL-band territory
+    seedContextAnchorForTests('o9', file);
+    expect(currentContextTokensSyncForOwner('o9')).toBe(350_000);
+    // The successor writes its OWN fresh, tiny transcript elsewhere — the
+    // predecessor's `file` is never touched again.
+    const successorFile = path.join(dir, 'successor.jsonl');
+    fs.writeFileSync(successorFile, line(4_000)); // 1k tokens — nowhere near any limit
+    // Without invalidation, every further read of the SAME owner id still
+    // replays the dead predecessor's 350k — the exact "byte-identical
+    // pre-compaction CRITICAL gauge" symptom.
+    expect(currentContextTokensSyncForOwner('o9')).toBe(350_000);
+  });
+
+  it('EI-12966: clearContextAnchor drops the dead predecessor anchor so the next read reseeds instead of replaying it', () => {
+    fs.writeFileSync(file, line(1_400_000));
+    seedContextAnchorForTests('o10', file);
+    expect(currentContextTokensSyncForOwner('o10')).toBe(350_000);
+    clearContextAnchor('o10');
+    // No anchor left to trust: this call kicks a background reseed (which has
+    // no adv_sessions row to resolve in a unit test) and renders NOTHING —
+    // never the stale 350k — matching the documented "never a possibly-stale
+    // number" contract of the sync reader.
+    expect(currentContextTokensSyncForOwner('o10')).toBeNull();
   });
 });
 

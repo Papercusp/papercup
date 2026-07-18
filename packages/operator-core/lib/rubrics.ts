@@ -53,7 +53,9 @@ import {
   listLocalRubrics,
   rubricsNeedingSeed,
   FIRST_PARTY_RUBRIC_SEED_OWNER,
+  seedContentHash as computeSeedContentHash,
   type ExistingRubricRow,
+  type LocalRubric,
 } from './cupboard/rubric-store';
 
 export type RubricStatus = 'proposed' | 'active' | 'retired';
@@ -350,11 +352,49 @@ async function existingRubricPlanRows(): Promise<ExistingRubricRow[]> {
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${rubricsScopeWorkspace()}
        AND template = ${RUBRIC_TEMPLATE_NAME}`;
-  return rows.map((r) => ({
-    rubricId: r.plan_slug,
-    owner: r.owner,
-    valid: rubricTemplateDataSchema.safeParse(r.template_data).success,
-  }));
+  return rows.map((r) => {
+    const parsed = rubricTemplateDataSchema.safeParse(r.template_data);
+    return {
+      rubricId: r.plan_slug,
+      owner: r.owner,
+      valid: parsed.success,
+      // EI-12932: the comparable fields the seed's content-drift detection needs — only
+      // meaningful (and only supplied) for a row that actually parses.
+      ...(parsed.success ? { templateData: parsed.data } : {}),
+    };
+  });
+}
+
+/**
+ * Build the proposeRubric input for ONE bundled rubric's seed/upgrade write. `existingRow`
+ * is the row's pre-write state (undefined for a brand-new seed, `valid:false` for a WI-3617
+ * reclaim, `valid:true` for an EI-12932 content-drift upgrade). For the upgrade case, the
+ * caller has already fetched the live `Rubric` so provenance fields the bundle never
+ * carries (releaseGating, ratifiedBy, status) survive the whole-document replace instead
+ * of being silently dropped.
+ */
+function buildSeedProposeInput(
+  r: LocalRubric,
+  upgrading: Rubric | null,
+): ProposeRubricInput {
+  return {
+    rubricId: r.rubricId,
+    characteristic: r.characteristic,
+    title: r.title,
+    ...(r.description ? { description: r.description } : {}),
+    criteria: r.criteria,
+    ratingScale: r.ratingScale,
+    ...(r.methodRef ? { methodRef: r.methodRef } : {}),
+    by: FIRST_PARTY_RUBRIC_SEED_OWNER,
+    // EI-12932: an upgrade preserves the EXISTING row's status/provenance rather than
+    // unconditionally (re-)authoring 'active' — a human who retired a bundled rubric, or
+    // set releaseGating/ratifiedBy on it, must never have that silently reverted by an
+    // automatic content sync.
+    status: upgrading?.status ?? 'active',
+    ...(upgrading?.releaseGating !== undefined ? { releaseGating: upgrading.releaseGating } : {}),
+    ...(upgrading?.ratifiedBy ? { ratifiedBy: upgrading.ratifiedBy } : {}),
+    seedContentHash: computeSeedContentHash(r),
+  };
 }
 
 /**
@@ -363,6 +403,14 @@ async function existingRubricPlanRows(): Promise<ExistingRubricRow[]> {
  * getRubric) triggers it lazily. Seeded rubrics are authored ACTIVE (they shipped
  * ratified) with owner FIRST_PARTY_RUBRIC_SEED_OWNER, via the canonical proposeRubric
  * path (fail-loud schema validation, plan-lock writes).
+ *
+ * EI-12932: beyond authoring MISSING rubrics, this also UPGRADES an already-seeded rubric
+ * in place when the bundle's content has changed since it was last seeded (rubricsNeedingSeed
+ * gates this on the row still matching its own recorded `seedContentHash` — a genuinely
+ * locally-amended row is never touched). The WI-4287 loss-guards (assertNoSilentRubricLoss)
+ * still apply to an upgrade write exactly as to any propose: a bundle edit that would DROP a
+ * stored criterion or gut its procedure text fails loud here (caught below, logged, retried
+ * on a later read) rather than silently losing content.
  *
  * Re-entrancy: the seed's own writes read back through loadAllRubrics — the 'running'
  * state short-circuits those (and, benignly, a concurrent first read races the seed and
@@ -377,20 +425,16 @@ export async function ensureFirstPartyRubricsSeeded(): Promise<void> {
   try {
     const bundled = listLocalRubrics();
     if (bundled.length > 0) {
-      const missing = rubricsNeedingSeed(bundled, await existingRubricPlanRows());
-      for (const r of missing) {
+      const existingRows = await existingRubricPlanRows();
+      const existingById = new Map(existingRows.map((e) => [e.rubricId, e] as const));
+      const needsSeed = rubricsNeedingSeed(bundled, existingRows);
+      for (const r of needsSeed) {
         try {
-          await proposeRubric({
-            rubricId: r.rubricId,
-            characteristic: r.characteristic,
-            title: r.title,
-            ...(r.description ? { description: r.description } : {}),
-            criteria: r.criteria,
-            ratingScale: r.ratingScale,
-            ...(r.methodRef ? { methodRef: r.methodRef } : {}),
-            by: FIRST_PARTY_RUBRIC_SEED_OWNER,
-            status: 'active',
-          });
+          const existingRow = existingById.get(r.rubricId);
+          // Only a VALID pre-existing row (the EI-12932 upgrade case) has provenance worth
+          // reading back — a missing or WI-3617-invalid row gets a plain fresh seed.
+          const upgrading = existingRow?.valid ? await getRubric(r.rubricId) : null;
+          await proposeRubric(buildSeedProposeInput(r, upgrading));
         } catch (err) {
           ok = false; // one broken/blocked rubric never stops the rest
           console.warn(
@@ -489,6 +533,15 @@ export interface ProposeRubricInput {
    * stored ratifiedBy — a fresh revision needs a fresh ratification.
    */
   ratifiedBy?: string;
+  /**
+   * EI-12932: the first-party-bundle seed/upgrade path stamps its own content hash here
+   * (see cupboard/rubric-store.ts seedContentHash) so a later seed pass can tell whether
+   * this rubric's live content still matches what the seeder last wrote. Never set by a
+   * plain rubrics:propose / amendRubric call — a real edit should DROP it (a whole-
+   * document replace that omits it clears the field), which is exactly what un-blesses
+   * the row for a future silent auto-upgrade.
+   */
+  seedContentHash?: string;
 }
 
 // ─── WI-4287: loss-guards + completeness — never silently drop a testing procedure ────
@@ -499,8 +552,11 @@ export interface ProposeRubricInput {
 // a revision rebuilt from a stale copy silently deletes criteria or their embedded
 // procedures (the 4.6k-char batched-tool-calls REPLICATION DRILL was the live example).
 // These guards make that loss LOUD: enforced here in the LIB write path so every caller
-// (MCP tool, code:run facade, future surfaces) inherits them. The first-party seeder is
-// unaffected — it only writes MISSING rubrics (stored=null ⇒ no guard).
+// (MCP tool, code:run facade, future surfaces) inherits them. A brand-new first-party seed
+// write is unaffected (stored=null ⇒ no guard); an EI-12932 content-drift UPGRADE of an
+// already-seeded rubric goes through this same guard like any other propose — a bundle
+// edit that would drop a stored criterion or gut its procedure text fails loud instead of
+// silently losing content (caught by ensureFirstPartyRubricsSeeded, logged, retried later).
 
 /** The marker string that tags an embedded replication drill in method/replication
  *  prose. Losing it from a criterion's combined procedure text is a guard violation. */
@@ -742,6 +798,10 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     // unless explicitly carried (amendRubric threads it through for an already-active
     // rubric): a fresh revision needs a fresh ratification.
     ...(input.ratifiedBy ? { ratifiedBy: input.ratifiedBy } : {}),
+    // EI-12932: likewise dropped unless the first-party seed/upgrade path explicitly
+    // stamps it — a real propose/amend clearing it is exactly what un-blesses the row
+    // for a future auto-upgrade (see rubricsNeedingSeed).
+    ...(input.seedContentHash ? { seedContentHash: input.seedContentHash } : {}),
   };
   const parsed = rubricTemplateDataSchema.safeParse(data);
   if (!parsed.success) {

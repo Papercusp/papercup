@@ -2256,6 +2256,23 @@ const sessionRespawned = defineTool({
         } catch {
           /* gauge hygiene must never fail the respawn report */
         }
+        // EI-12966: the watchdog-mirror cache above is only a fallback/limit
+        // source now — the LIVE render paths (P-013 result annotator, P-015
+        // PostToolUse hook fold) read the WI-4154 anchored incremental cache
+        // in compaction-usage.ts instead, which has its OWN per-owner cache
+        // keyed on the dead predecessor's transcript path. That anchor's fast
+        // path never re-resolves the session ref, so left uncleared it keeps
+        // serving the byte-identical PRE-respawn reading indefinitely (the
+        // "stale CRITICAL gauge on the first post-compaction tool call" bug —
+        // not just for up to one watchdog pass, but forever until this clears
+        // it). Clear it too so the very next read reseeds from the successor's
+        // real transcript.
+        try {
+          const { clearContextAnchor } = await import('../../../compaction-usage');
+          clearContextAnchor(owner);
+        } catch {
+          /* gauge hygiene must never fail the respawn report */
+        }
       }
       return jsonRes({ ok: true, reanchored });
     } catch (err) {

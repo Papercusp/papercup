@@ -441,6 +441,29 @@ export function currentContextTokensSyncForOwner(ownerId: string): number | null
   return null;
 }
 
+/**
+ * EI-12966: respawn/carry-cut invalidation. A carry-respawn (P-018 soft/force
+ * cut, or a deliberate `session:request-compaction`) keeps the coord ownerId
+ * but KILLS the child process and starts a fresh one under a NEW native
+ * `--session-id` — the successor's transcript is a DIFFERENT FILE, not an
+ * appended `isCompactSummary` marker in the old one. The old file simply stops
+ * growing (the dead predecessor never writes to it again), so the anchor's
+ * fast path (`advanceAnchor`: size unchanged ⇒ 'ok') keeps serving the exact
+ * pre-cut reading forever — it never re-checks whether `a.path` is even still
+ * the LIVE transcript for this owner. That is the class WI-4154 was built to
+ * eliminate for an in-place `isCompactSummary` boundary, but a carry-respawn's
+ * boundary is a FILE change, which advanceAnchor cannot see by construction
+ * (it only stats the anchor's own cached path). Call this at the same
+ * `sessionRespawned` report site that already clears the watchdog-mirror cache
+ * (`context-usage-cache.ts`'s clearContextUsage) so BOTH per-owner caches drop
+ * together — the very next read reseeds from the successor's real transcript
+ * instead of replaying the dead predecessor's frozen number.
+ */
+export function clearContextAnchor(ownerId: string): void {
+  anchors.delete(ownerId);
+  seedInFlight.delete(ownerId);
+}
+
 /** Test seams: reset anchor state / seed an anchor for a known file directly
  *  (unit tests have no adv_sessions row to resolve an owner through). */
 export function resetContextAnchorsForTests(): void {

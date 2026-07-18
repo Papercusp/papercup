@@ -276,3 +276,28 @@ describe('embedding-space discriminator (WI-3616)', () => {
     expect(update.params![1]).toBe('openai'); // the mocked active mode
   });
 });
+
+describe('every TARGETS bodySql caps its free-text input (EI-12967)', () => {
+  // The sidecar hard-rejects any text over 32000 chars with an UNRETRYABLE 400 — a row
+  // whose embed input has no cap stays `embedCol IS NULL` forever and gets re-selected
+  // (and re-fails) by every future sweep tick. harness_escalations/harness_brainstorm/
+  // operator_turns/harness_decisions shipped with NO cap at all (live: 392 operator_turns
+  // rows + 9 harness_escalations rows over 32000 chars, one re-failing every ~5min since
+  // 2026-07-16) while every other target already used the `left(…, 2000)` convention.
+  // This is the recurrence guard: a future target (or a re-edit of one of these) that
+  // forgets the cap fails HERE instead of silently retry-looping in production.
+  it('wraps every bodySql column reference in left(…, N) for N <= 2000', () => {
+    for (const target of TARGETS) {
+      // A bodySql that is just a bare column name (no left(), no COALESCE-of-a-literal)
+      // is the exact shape that caused EI-12967 — every target must at minimum cap via
+      // left(<col-or-coalesce>, N). Constant/short expressions (verb, titles) are fine
+      // uncapped; every target below DOES reference a free-text column, so demand a cap
+      // present somewhere in the expression.
+      const leftCaps = [...target.bodySql.matchAll(/left\(\s*(?:COALESCE\([^)]*\)|\w+)\s*,\s*(\d+)\s*\)/g)];
+      expect(leftCaps.length, `${target.table}.bodySql has no left(…, N) cap: ${target.bodySql}`).toBeGreaterThan(0);
+      for (const m of leftCaps) {
+        expect(Number(m[1]), `${target.table}.bodySql cap exceeds 2000: ${target.bodySql}`).toBeLessThanOrEqual(2000);
+      }
+    }
+  });
+});

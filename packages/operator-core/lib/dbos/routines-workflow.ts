@@ -754,12 +754,18 @@ async function routinesTickImpl(): Promise<void> {
   // 12 days dead with 72 errors and no witness).
   await DBOS.runStep(
     async () => {
-      const { autoloopChronicFailureSweep } = await import('../harness/routines/autoloop-chronic-failure');
+      const { autoloopChronicFailureSweep, shouldLogChronicOutcome } = await import(
+        '../harness/routines/autoloop-chronic-failure'
+      );
       const results = await autoloopChronicFailureSweep();
       for (const r of results) {
-        if (r.outcome !== 'debounced') {
-          console.warn(`[autoloop-chronic] ${r.outcome}: ${r.role}@${r.harnessSlug} — ${r.reason.slice(0, 160)}`);
-        }
+        if (r.outcome === 'debounced') continue;
+        // EI-12968: a `skipped-*` outcome is rate-limited to once/hour per
+        // (outcome, harness, role) — the sweep's decision stays correct + un-
+        // throttled every tick; only this journal line was flooding (a frozen
+        // watermark re-logged identically every ~30s, forever).
+        if (!(await shouldLogChronicOutcome(r))) continue;
+        console.warn(`[autoloop-chronic] ${r.outcome}: ${r.role}@${r.harnessSlug} — ${r.reason.slice(0, 160)}`);
       }
     },
     { name: 'autoloop-chronic-failure-sweep' },

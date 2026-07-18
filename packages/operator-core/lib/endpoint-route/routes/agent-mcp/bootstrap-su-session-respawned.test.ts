@@ -25,6 +25,8 @@ beforeAll(async () => {
 }, 30_000);
 
 const reanchorMock = vi.hoisted(() => vi.fn(async () => ({ reanchored: true, owner: 'su-resp-owner' })));
+const clearContextUsageMock = vi.hoisted(() => vi.fn());
+const clearContextAnchorMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -42,8 +44,21 @@ vi.mock('../../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () 
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
 }));
+vi.mock('../../../system-health/context-usage-cache', () => ({
+  clearContextUsage: clearContextUsageMock,
+}));
+// EI-12966: the anchored incremental cache (compaction-usage.ts) must be
+// invalidated on respawn too — a stale watchdog-mirror clear alone leaves the
+// LIVE render paths (P-013 annotator, P-015 hook fold) replaying the dead
+// predecessor's frozen reading forever.
+vi.mock('../../../compaction-usage', () => ({
+  clearContextAnchor: clearContextAnchorMock,
+}));
 
-beforeEach(() => { vi.clearAllMocks(); reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' }); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' });
+});
 afterEach(() => { vi.clearAllMocks(); });
 
 const FRESH_ID = ' 1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f '.trim();
@@ -67,6 +82,21 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reanchored: true });
     expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID);
+  });
+
+  it('EI-12966: clears BOTH the watchdog-mirror cache AND the anchored incremental cache for the owner', async () => {
+    const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+    expect(res.status).toBe(200);
+    expect(clearContextUsageMock).toHaveBeenCalledWith('su-resp-owner');
+    expect(clearContextAnchorMock).toHaveBeenCalledWith('su-resp-owner');
+  });
+
+  it('skips both gauge-cache clears when the reanchor reports no owner (never throws)', async () => {
+    reanchorMock.mockResolvedValue({ reanchored: true, owner: null });
+    const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+    expect(res.status).toBe(200);
+    expect(clearContextUsageMock).not.toHaveBeenCalled();
+    expect(clearContextAnchorMock).not.toHaveBeenCalled();
   });
 
   it('an already-anchored id is a harmless no-op (reanchored: false)', async () => {

@@ -222,7 +222,15 @@ export type WatchdogSource =
   // an independent (Scout-cadence-decoupled) refresh, i.e. the plan-rail /
   // gym-rail / wi-rail outcome ledger looks genuinely stuck, not just
   // between cycles.
-  | 'scout-outcome-stale-pending';
+  | 'scout-outcome-stale-pending'
+  // EI-12968: the chronic-autoloop-failure sweep's non-escalation SKIP outcomes
+  // (skipped-stale/skipped-paused/skipped-drill/skipped-loop-arm) are correct,
+  // repeated-tick decisions — a FROZEN watermark row re-reports 'skipped-stale'
+  // on every ~30s routines tick forever (measured: ~60k duplicate log lines in
+  // one journal since the condition first appeared). The decision doesn't need
+  // debouncing (it's re-derived correctly every tick, cheaply); the LOG LINE
+  // does — log once per (outcome, harness, role) per hour, not 2880x/day.
+  | 'autoloop-chronic-skip-log';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review

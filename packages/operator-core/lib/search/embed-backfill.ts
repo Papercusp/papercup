@@ -165,28 +165,42 @@ export function modeColOf(target: BackfillTarget): string {
 // embedded prose surfaces, reused rather than re-listed so the self-check
 // never drifts from what the backfill sweep actually maintains.
 export const TARGETS: BackfillTarget[] = [
+  // EI-12967: these first four targets had NO char cap on their embed input — unlike
+  // every other target below (session_turns/work_items/doc_sections/harness_plans all
+  // `left(…, 2000)`). The sidecar hard-rejects any single text over 32000 chars
+  // (sidecar_embed_400), and the deterministic 400 is UNRETRYABLE: the row stays
+  // `embedCol IS NULL` forever, so the next 5-min sweep tick re-SELECTs and re-fails the
+  // SAME oversized row again — a permanent retry-forever loop for that one row (live:
+  // 392 operator_turns rows + 9 harness_escalations rows over 32000 chars, one re-failing
+  // every ~5min since 2026-07-16). Capping the embed INPUT at the same 2000-char
+  // convention used everywhere else in this file fixes it at the root — the embed call
+  // never again submits more than the sidecar accepts, so the row succeeds and stops
+  // being re-selected. The stored column itself is untouched; only what's HANDED to
+  // embed() is capped.
   {
     table: 'harness_shared.harness_escalations',
     embedCol: 'body_embedding',
-    bodySql: `COALESCE(escalation, '') || E'\\n' || COALESCE(supervisor_notes, '')`,
+    bodySql: `left(COALESCE(escalation, ''), 2000) || E'\\n' || left(COALESCE(supervisor_notes, ''), 2000)`,
     keyCols: ['harness_slug', 'phase'],
   },
   {
     table: 'harness_shared.harness_brainstorm',
     embedCol: 'content_embedding',
-    bodySql: 'content',
+    bodySql: `left(content, 2000)`,
     keyCols: ['harness_slug', 'phase'],
   },
   {
     table: 'harness_shared.operator_turns',
     embedCol: 'text_embedding',
-    bodySql: 'text',
+    bodySql: `left(text, 2000)`,
     keyCols: ['id'],
   },
   {
     table: 'harness_shared.harness_decisions',
     embedCol: 'body_embedding',
-    bodySql: `COALESCE(verb, '') || ' ' || COALESCE(args, '')`,
+    // args is free-form (a tool call's JSON args) — cap it too (EI-12967 belt-and-braces;
+    // observed max is small today, but nothing bounds it going forward).
+    bodySql: `COALESCE(verb, '') || ' ' || left(COALESCE(args, ''), 2000)`,
     keyCols: ['harness_slug', 'line_hash'],
   },
   // session-search-scope-2026-07-05: the episodic transcript index. Embed

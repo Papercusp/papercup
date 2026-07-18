@@ -406,3 +406,48 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
   }
   return results;
 }
+
+/**
+ * EI-12968: should THIS sweep tick's console.warn actually print, for one result?
+ *
+ * The sweep re-derives each row's outcome correctly on every ~30s tick — that
+ * decision needs no debouncing, it's cheap and always accurate. But a `skipped-*`
+ * outcome (skipped-stale/skipped-paused/skipped-drill/skipped-loop-arm) describes
+ * a condition that can persist INDEFINITELY once true (a frozen watermark never
+ * un-freezes itself, per staleWindowMs()'s own docs) — so logging it unconditionally
+ * every tick means one still-true condition floods the journal forever (measured:
+ * ~60k duplicate "skipped-stale: kettle@papercup (frozen watermark)" lines since
+ * the condition first appeared, burying real errors). The LOG LINE is what needs
+ * rate-limiting, not the sweep's decision or its returned results — every OTHER
+ * caller of autoloopChronicFailureSweep() still sees the full, accurate, un-throttled
+ * result set every tick; only this console.warn gate is new.
+ *
+ * `escalated`/`debounced`/`error` are NEVER rate-limited here: `escalated` is
+ * already deduped 24h upstream (via claimWatchdogFire in the sweep itself) so it's
+ * inherently rare; `debounced` never reaches this function (the caller already
+ * skips it, as before this fix); `error` deserves visibility every occurrence.
+ *
+ * Reuses the SAME watchdog-fires ledger + atomic claim primitive the sweep's own
+ * escalation debounce uses (claimWatchdogFire) — a distinct `source` tag
+ * ('autoloop-chronic-skip-log') so this log-throttling concern can never collide
+ * with the escalation debounce's 24h window. Keyed by (outcome, harness, role) —
+ * a TRANSITION (e.g. skipped-stale → escalated → skipped-stale) still gets its
+ * own fresh log line via claimWatchdogFire's normal window semantics, it does not
+ * stay silenced forever from one earlier claim.
+ */
+export async function shouldLogChronicOutcome(
+  r: Pick<ChronicFailureResult, 'harnessSlug' | 'role' | 'outcome'>,
+  opts: { workspaceId?: string; windowHours?: number } = {},
+): Promise<boolean> {
+  if (!r.outcome.startsWith('skipped-')) return true;
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const installSlug = `${r.outcome}::${r.harnessSlug}::${r.role}`;
+  return claimWatchdogFire({
+    workspaceId,
+    installSlug,
+    source: 'autoloop-chronic-skip-log',
+    reason: `rate-limited observability log line (${r.outcome})`,
+    wakeAt: null,
+    windowHours: opts.windowHours ?? 1,
+  });
+}
