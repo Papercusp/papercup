@@ -4,9 +4,22 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OperatorChatSidebar } from '../OperatorChatSidebar';
 import { OPERATOR_CHAT_COLLAPSED_WIDTH } from '../operator-chat-layout';
+
+// WI-5358: this file's many `waitFor(() => expect(body.classList...))` checks
+// wait on a two-effect hydration chain (mount → setHydrated(true) → the
+// CSS-var/classList effect). @testing-library/dom's waitFor defaults to a
+// 1000ms real-wall-clock poll timeout — plenty under normal conditions, but
+// on a heavily-loaded shared dev box (100+ concurrent agents, forks-pool
+// green-checkpoint runs) genuine event-loop scheduling delay can exceed that
+// even though the actual work is trivial. Raise the file-scoped default so a
+// real system-load spike doesn't read as a spurious CSS/layout regression —
+// this widens the wait window only; it does not touch what any assertion
+// checks (module-scoped via @testing-library/dom's `configure`, so it is
+// isolated to this file under vitest's per-file module registry).
+configure({ asyncUtilTimeout: 5000 });
 
 vi.mock('nuqs', async () => {
   const React = await import('react');

@@ -349,6 +349,7 @@ describe('tick economics (learning-tab-alignment P-002)', () => {
         spendUsd: 1.673,
         cycleId: 'scout-100',
         lenses: {},
+        groundingLanes: {},
       },
       {
         at: '2026-07-13T03:30:00.000Z',
@@ -360,6 +361,7 @@ describe('tick economics (learning-tab-alignment P-002)', () => {
         spendUsd: 3.603,
         cycleId: 'scout-99',
         lenses: {},
+        groundingLanes: {},
       },
       {
         at: '2026-07-13T03:00:00.000Z',
@@ -371,6 +373,7 @@ describe('tick economics (learning-tab-alignment P-002)', () => {
         spendUsd: null,
         cycleId: null,
         lenses: {},
+        groundingLanes: {},
       },
       {
         at: '2026-07-13T02:30:00.000Z',
@@ -382,6 +385,7 @@ describe('tick economics (learning-tab-alignment P-002)', () => {
         spendUsd: null,
         cycleId: null,
         lenses: {},
+        groundingLanes: {},
       },
     ]);
     // lastTick stays derived from row 0 (back-compat with the pre-P-002 shape).
