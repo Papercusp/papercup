@@ -304,4 +304,117 @@ describe('joinHarnessSwarm severed-link escalation ladder (EI-13317)', () => {
     expect(f.leaves).toHaveLength(2);
     expect(f.joins).toHaveLength(3);
   });
+
+  // WI-5355 (EI-13317 downstream): mirrors topic-gossip.ts's zombie-socket
+  // eviction into swarm.ts's forceRejoinNow. Root cause (traced into
+  // node_modules/hyperswarm): `connections`/`_allConnections` are only pruned
+  // together, synchronously, on a socket's OWN `close` event — a socket that
+  // never closes (still "connected" per Hyperswarm, but dead for us) makes
+  // `_handlePeer` permanently no-op for that peer, so a plain leave()+join()
+  // can never result in a fresh connection attempt. `forceRejoin()`'s own
+  // motivating case (a live socket, dead replication) is exactly this shape.
+  function makeFakeSocketWithDestroy(): { socket: unknown; destroy: ReturnType<typeof vi.fn> } {
+    const destroy = vi.fn();
+    const socket = { on: () => {}, once: () => {}, destroy };
+    return { socket, destroy };
+  }
+
+  it('forceRejoin() destroys a socket that never fired close (the zombie case) before rejoining', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const handle = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      severedEscalationMs: 10 * 60_000,
+    });
+    handles.push(handle);
+
+    // Connect a peer that NEVER fires its own 'close' — the zombie shape.
+    const { socket, destroy } = makeFakeSocketWithDestroy();
+    f.emitConnection(socket);
+    expect(destroy).not.toHaveBeenCalled();
+
+    await handle.forceRejoin();
+
+    // The zombie socket is force-destroyed before the leave+rejoin, so
+    // Hyperswarm's own bookkeeping is actually cleared this time.
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(f.leaves).toHaveLength(1);
+    expect(f.joins).toHaveLength(2);
+
+    // A second forceRejoin() is a no-op on the ALREADY-evicted socket (it was
+    // dropped from this join's own tracked-sockets set on the first pass).
+    await handle.forceRejoin();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('forceRejoin() never destroys a socket another harness/topic on the same shared swarm still relies on', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const handleA = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      severedEscalationMs: 10 * 60_000,
+    });
+    handles.push(handleA);
+    const TOPIC_B = Buffer.alloc(32, 11);
+    const handleB = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC_B,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      severedEscalationMs: 10 * 60_000,
+    });
+    handles.push(handleB);
+
+    // ONE shared A↔B socket connects — Hyperswarm dedupes per peer, so BOTH
+    // harnesses' handlers see the SAME 'connection' event (the module's own
+    // documented shared-socket model).
+    const { socket, destroy } = makeFakeSocketWithDestroy();
+    f.emitConnection(socket);
+
+    // Harness A decides its topic is done with this socket and force-rejoins.
+    await handleA.forceRejoin();
+
+    // Harness B never released its own claim — the socket must be left alone.
+    expect(destroy).not.toHaveBeenCalled();
+
+    // Once B ALSO force-rejoins (its own claim is now released too), NO other
+    // harness holds it — the socket is now genuinely idle and gets evicted.
+    await handleB.forceRejoin();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('the severed-link ladder (rung a) never attempts a redundant destroy — a genuinely closed socket is already pruned', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const onSeveredLink = vi.fn();
+    const handle = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      refreshMs: 50,
+      fastWindowMs: 200,
+      slowRefreshMs: 500,
+      severedEscalationMs: 1000,
+      onSeveredLink,
+    });
+    handles.push(handle);
+
+    // A socket that closes NORMALLY (fires its own 'close') — rung (a)'s own
+    // trigger path — is pruned by the close listener itself; nothing left for
+    // forceRejoinNow's eviction sweep to (redundantly) destroy.
+    const { socket, fireClose } = makeFakeSocket();
+    f.emitConnection(socket);
+    fireClose();
+
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(onSeveredLink).toHaveBeenCalledTimes(1);
+    expect(f.leaves).toHaveLength(1); // the escalation's own leave+rejoin, unaffected
+  });
 });

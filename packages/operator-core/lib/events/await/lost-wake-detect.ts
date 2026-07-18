@@ -137,7 +137,7 @@ export const GREEN_CHECKPOINT_WITNESS: LostWakeWitness = {
         occurred: true,
         evidence: `${n} ${statuses.join('/')} pipeline_events row(s) for install_slug=${installSlug} in the window (latest ${rows[0]?.latest}) — the verdict was produced independently of the await log`,
       };
-    } catch (e) {
+    } catch {
       return null; // fail-soft: a missing table / query error is "no witness", never a false conviction.
     }
   },

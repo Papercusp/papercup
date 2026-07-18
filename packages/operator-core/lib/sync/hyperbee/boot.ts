@@ -992,9 +992,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // it and throws the rows away. The WI-2105/WI-559 double-apply fear is closed by the
   // HOME-LOG EXCLUSION threaded below (`resolveHomeLogKeyHex`): ops sourced from the
   // locally-booted home's own log are skipped at this member scope — the home fold owns them.
+  //
+  // GATED to the OWNED case only (WI-5369 regression fix, found 2026-07-18): `resolvedPotHomeSlug`
+  // is `potHomeSlugForHarness` — UNGATED on remote_hive, unlike `joinerPotHomeSlug`/
+  // `hiveHomeProjectionSlug` above. Without this remote_hive check, this fallback ALSO fired for
+  // a JOINED member during its legitimate home=<none> pre-rekey window (the registry already has
+  // `hive_slug` set at that point; only `joinerPotHomeSlug`'s remote_hive check is what makes
+  // `hiveHomeProjectionSlug` correctly stay null until the 2c rekey) — collapsing that window and
+  // rebinding the hive-home projections BEFORE the rekey's forceReFold sequencing ever runs. Live
+  // symptom: none yet (this bug was same-day, never shipped in a gate .deb); caught by
+  // owner-roster-rebind-race.repro.integration.test.ts's own precondition assertion going red the
+  // same day WI-3734 landed. A joined member's home is already correctly (and safely) resolved on
+  // its own schedule via `hiveHomeProjectionSlug` — this fallback must stay OUT of that path and
+  // only cover the genuinely-owned case.
   const memberHomeRebindSlug =
     resolvedPotHomeSlug && resolvedPotHomeSlug !== opts.harnessSlug
-      ? resolvedPotHomeSlug
+      ? await (async () => {
+          try {
+            const { loadHarnessRegistry } = await import('../../harness-registry');
+            const reg = await loadHarnessRegistry(opts.workspaceId);
+            const homeEntry = reg.projects.find((p) => p.slug === resolvedPotHomeSlug);
+            // A joined (remote_hive) home is owned by hiveHomeProjectionSlug's own
+            // rekey-gated sequencing — never rebind it here.
+            if (homeEntry?.remote_hive === true) return undefined;
+          } catch {
+            /* fail-open: skip the owned-fallback rebind on a registry-read error */
+            return undefined;
+          }
+          return resolvedPotHomeSlug;
+        })()
       : undefined;
   const resolveHomeLogKeyHex: (() => string | null) | undefined = memberHomeRebindSlug
     ? await (async () => {
