@@ -16,9 +16,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const M = vi.hoisted(() => ({
-  sendMessage: vi.fn(async (..._args: unknown[]) => ({}) as unknown),
+  sendMessage: vi.fn(async (..._args: unknown[]) => ({ to: [] }) as unknown),
+  wakeRecipients: vi.fn(async (..._args: unknown[]) => ({}) as unknown),
 }));
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: M.sendMessage }));
+vi.mock('./agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: M.wakeRecipients }));
 
 import {
   broadcastSevereEvent,
@@ -28,7 +30,8 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  M.sendMessage.mockImplementation(async (..._args: unknown[]) => ({}) as unknown);
+  M.sendMessage.mockImplementation(async (..._args: unknown[]) => ({ to: [] }) as unknown);
+  M.wakeRecipients.mockImplementation(async (..._args: unknown[]) => ({}) as unknown);
 });
 
 describe('broadcastSevereEvent', () => {
@@ -58,6 +61,79 @@ describe('broadcastSevereEvent', () => {
       M.sendMessage.mockRejectedValueOnce(new Error('pg down'));
       await expect(broadcastSevereEvent({ summary: 's' })).resolves.toBe(false);
       expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () => {
+  it('no route ⇒ only the broadcast fires; no directed send, no wake', async () => {
+    await broadcastSevereEvent({ summary: 's' });
+    expect(M.sendMessage).toHaveBeenCalledTimes(1); // the broadcast alone
+    expect(M.wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it('a route ⇒ a SEPARATE directed send to the owner selector, in ADDITION to the unchanged broadcast', async () => {
+    M.sendMessage
+      .mockImplementationOnce(async () => ({ to: ['*'] })) // the broadcast call
+      .mockImplementationOnce(async () => ({ to: ['su-mug-1'] })); // the directed route call
+
+    await broadcastSevereEvent({
+      summary: 'health tick frozen',
+      route: { ownerSelector: '@role:mug', reason: 'fleet-health role' },
+    });
+
+    expect(M.sendMessage).toHaveBeenCalledTimes(2);
+    const [, broadcastOpts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(broadcastOpts).toMatchObject({ to: ['*'], summary: 'health tick frozen' }); // untouched
+    const [, routeOpts] = M.sendMessage.mock.calls[1] as [unknown, Record<string, unknown>];
+    expect(routeOpts).toMatchObject({
+      to: ['@role:mug'],
+      expectsReply: true,
+    });
+    expect(routeOpts.summary).toContain('fleet-health role');
+    expect(routeOpts.summary).toContain('health tick frozen');
+  });
+
+  it('wakes whoever the route resolved to LIVE (env.to from sendMessage), not the raw selector', async () => {
+    M.sendMessage
+      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: ['su-live-mug-session'] }));
+
+    await broadcastSevereEvent({
+      summary: 's',
+      route: { ownerSelector: '@role:mug', reason: 'r' },
+    });
+
+    expect(M.wakeRecipients).toHaveBeenCalledTimes(1);
+    const [recipients] = M.wakeRecipients.mock.calls[0] as [string[]];
+    expect(recipients).toEqual(['su-live-mug-session']);
+  });
+
+  it('a role slot with NO live holder (env.to empty — durable park only) skips the wake, no error', async () => {
+    M.sendMessage
+      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: [] })); // parked, nobody live
+
+    await expect(
+      broadcastSevereEvent({ summary: 's', route: { ownerSelector: '@role:mug', reason: 'r' } }),
+    ).resolves.toBe(true);
+    expect(M.wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it('a route delivery failure is fail-soft: the broadcast itself still reports success', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      M.sendMessage
+        .mockImplementationOnce(async () => ({ to: ['*'] })) // the broadcast succeeds
+        .mockImplementationOnce(async () => {
+          throw new Error('route send failed');
+        });
+      await expect(
+        broadcastSevereEvent({ summary: 's', route: { ownerSelector: '@role:mug', reason: 'r' } }),
+      ).resolves.toBe(true);
+      expect(warn).toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }

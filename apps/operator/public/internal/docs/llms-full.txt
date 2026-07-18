@@ -77747,6 +77747,14 @@ scripts/verify-tauri-headless.sh -- bash -c '
 
 `scripts/verify-tauri-headless.sh --boot-only` prints a source-able env (`VERIFY_TAURI_PID`/`PORT`/`DISPLAY`) plus a stop script for a multi-step interactive session — see the script’s own header for the full interface.
 
+Multi-step drives are now watcher-proof (EI-10364, closing EI-10360)
+
+On a busy tree, a bare isolated instance used to reuse the SHARED `apps/operator-vite/dist/` module server — the exact bundle the fleet’s `vite build --watch` continuously rewrites/empties. Any peer’s operator-vite edit could invalidate an already-open page’s lazy chunks mid-drive (`Importing a module script failed`), turning a multi-step navigate→click→assert→click→assert sequence into a coin-flip.
+
+`scripts/verify-tauri-headless.sh` now **freezes a private per-run snapshot** of the shared dist (`PAPERCUSP_SPA_DIST`) before boot, so this instance’s module graph is immutable for the whole run — a peer’s concurrent edit can no longer touch it. The script logs `SPA snapshot frozen at … — IMMUTABLE for this run; restart to pick up a newer build.` when it engages.
+
+**One residual gap:** if `apps/operator-vite/dist/` hasn’t been built yet (fresh checkout / never ran `npm run build` there), the script logs a WARNING and falls through to the shared, watcher-exposed dist as before — build operator-vite first for a genuinely isolated run. If you ever land in that fallback (or are driving the shell manually per the “manual recipe” below, which has no snapshot at all), fall back to the pre-EI-10364 resilience pattern: structure the drive as **one assertion per fresh page load** (state via nuqs URL params, which the operator already supports for exactly this) and retry on `Importing a module script failed` — a fresh load always fetches current chunks, and that error must never be read as a failure of the feature under test.
+
 The instance shares the LIVE database — writes are REAL (EI-10387)
 
 “Isolated” here means the **X display, the devUrl port, the pty port, and the sidecar process**. It does **not** mean isolated state: the sidecar inherits the ambient env, so `DATABASE_URL` / `PAPERCUSP_HOME` / `PAPERCUSP_WORKSPACE` all point at the **live** system. (The script’s header used to claim an “own embedded-PG, own workspace state” — that claim was false and has been corrected.)
