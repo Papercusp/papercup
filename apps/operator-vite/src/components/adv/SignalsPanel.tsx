@@ -1,28 +1,28 @@
 /**
- * SignalsPanel — the Observe-stage "what is the pipeline fed?" view
- * (learning-tab-visibility-2026-07-18 P-006, owner ask 2026-07-18: "there are
- * other signals that the learning pipeline looks at as well, shouldn't they be
- * surfaced somehow in the observe tab?").
+ * SignalsPanel — the Observe-stage signals view, organized around the two
+ * questions the owner actually asks (WI-5412 item 1, superseding the four-
+ * section P-006 layout that interleaved trigger and feed concepts):
  *
- * Three sections, all derived from the `learning.scout` snapshot (the gate's
- * own readers — never a UI-side re-derivation):
+ *   1. **Will it fire?** — the weighted score vs the volume gate's threshold,
+ *      plus the 6 TRIGGER lanes as compact chips (docs in tooltips).
+ *   2. **What will it read?** — the persisted digest the next/last cycle was
+ *      prompted with: NEW-since-last-cycle entries first, each carrying its
+ *      lane chip + drill-back source ref; the standing corpus behind a
+ *      disclosure.
  *
- *   1. TRIGGER lanes — the 6 signal-accumulator lanes whose weighted score
- *      fires a cycle (live pending counts, the same numbers the volume gate
- *      judges).
- *   2. FED lanes — the digest grounding-lane composition of the newest ran
- *      cycles (`detail.groundingLanes`): what each cycle's corpus actually
- *      contained, per lane.
- *   3. The lane taxonomy — every input lane named + explained in one line, so
- *      the full signal surface is legible without reading the engine.
- *
- * Self-contained (own sync query + pc-signals__* styles, the panel idiom).
+ * Recent-cycle composition collapses into one disclosure; the standalone lane
+ * taxonomy dissolved into tooltips + an "all lanes" disclosure. All data still
+ * derives from the `learning.scout` snapshot (the gate's own readers — never a
+ * UI-side re-derivation).
  */
 import { useEffect } from "react";
+import { parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import { Rss, RefreshCw } from "lucide-react";
 import type { ScoutSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
+import { Tooltip } from "@/app/harness/Tooltip";
 import {
+  LearningDisclosure,
   LearningPageHeader,
   LearningVisualEmpty,
   LearningVisualError,
@@ -42,9 +42,7 @@ const TRIGGER_LANE_DOCS: Record<string, string> = {
 
 /** One-line description per FED (digest grounding) lane — what the corpus
  *  synthesis reads and ideas cite as grounding. Mirrors the FULL flattenDigest
- *  lane list (lenses.ts) — every lane the ideator prompt actually renders, so
- *  "the full lane taxonomy" below is really full (owner ask 2026-07-18: the
- *  watchdog lane was fed but invisible here). */
+ *  lane list (lenses.ts) — every lane the ideator prompt actually renders. */
 const FED_LANE_DOCS: Record<string, string> = {
   corpus: "The standing MetaPattern corpus — recurring friction patterns distilled from the whole signal history.",
   "recurring-friction": "Recurring friction patterns — the same breakage/annoyance surfacing across many signals.",
@@ -65,6 +63,10 @@ const FED_LANE_DOCS: Record<string, string> = {
   "recent-commit": "Recent-commit churn hotspots — where the tree is actively morphing right now.",
 };
 
+function laneLabel(lane: string): string {
+  return lane.replace(/-/g, " ");
+}
+
 export function SignalsPanel({
   onStatus,
 }: {
@@ -81,6 +83,19 @@ export function SignalsPanel({
   // P-008: the newest fired cycle's persisted digest (delta + standing corpus).
   const digest = snap?.digest ?? null;
 
+  // Digest source refs deep-link like the Ideas view's grounding chips: wi:
+  // refs open the improvements backlog with that row selected.
+  const [, setLviewRaw] = useQueryState("lview", parseAsString);
+  const [, setLane] = useQueryState("lane", parseAsString);
+  const [, setSrcSel] = useQueryState("lsrc", parseAsString);
+  const [, setLsel] = useQueryState("lsel", parseAsString);
+  const openImprovement = (id: string) => {
+    void setLsel(id);
+    void setLane(null);
+    void setSrcSel(null);
+    void setLviewRaw("improvements");
+  };
+
   const status: "neutral" | "good" | "warn" | "bad" = sync.error
     ? "bad"
     : cadence == null && ranTicks.length === 0
@@ -90,8 +105,42 @@ export function SignalsPanel({
     onStatus?.(status);
   }, [onStatus, status]);
 
+  const renderSourceChip = (ref: string) => {
+    const sep = ref.indexOf(":");
+    const kind = sep > 0 ? ref.slice(0, sep) : "ref";
+    const rest = sep > 0 ? ref.slice(sep + 1) : ref;
+    if (kind === "wi") {
+      return (
+        <Tooltip label={`${rest} — open in Improvements`}>
+          <button
+            type="button"
+            className="pc-signals__srcchip pc-signals__srcchip--link"
+            onClick={() => openImprovement(rest)}
+          >
+            <i>{kind}</i>
+            {rest}
+          </button>
+        </Tooltip>
+      );
+    }
+    return (
+      <span className="pc-signals__srcchip" title={ref}>
+        <i>{kind}</i>
+        {rest}
+      </span>
+    );
+  };
+
+  const scorePct =
+    cadence && cadence.threshold > 0
+      ? Math.min(100, Math.round((cadence.score / cadence.threshold) * 100))
+      : 0;
+
   return (
-    <section className="pc-learning__section pc-signals" aria-label="Learning pipeline input signals">
+    <section
+      className="pc-learning__section pc-signals"
+      aria-label="Learning pipeline input signals"
+    >
       <LearningPageHeader
         icon={Rss}
         title="Signals"
@@ -109,52 +158,167 @@ export function SignalsPanel({
         }
       />
       {sync.error ? (
-        <LearningVisualError title="The signals read failed" onRetry={() => sync.invalidate()} />
+        <LearningVisualError
+          title="The signals read failed"
+          onRetry={() => sync.invalidate()}
+        />
       ) : sync.loading && !snap ? (
         <p className="pc-learning__quietempty">Loading signal state…</p>
       ) : cadence == null && ranTicks.length === 0 ? (
-        <LearningVisualEmpty icon={Rss} title="No signal state recorded yet — the accumulator sweep has not run on this workspace." />
+        <LearningVisualEmpty
+          icon={Rss}
+          title="No signal state recorded yet — the accumulator sweep has not run on this workspace."
+        />
       ) : (
         <>
+          {/* ── Half 1: Will it fire? ─────────────────────────────────── */}
           {cadence ? (
             <>
               <div className="pc-signals__sectionhead">
-                <h3>Trigger lanes — new signal since the last cycle</h3>
-                <span title={`The weighted score over these lanes fires a cycle at ≥${cadence.threshold}; zero withholds everything (spend drops to zero in quiet periods).`}>
-                  score {Math.round(cadence.score * 10) / 10} / {cadence.threshold}
+                <h3>Will it fire?</h3>
+                <span>
+                  the weighted score over the trigger lanes fires a cycle at ≥
+                  {cadence.threshold}; zero signal withholds everything
                 </span>
               </div>
-              <ul className="pc-signals__lanes" aria-label="Trigger lanes">
+              <div
+                className="pc-signals__meter"
+                role="meter"
+                aria-valuemin={0}
+                aria-valuemax={cadence.threshold}
+                aria-valuenow={cadence.score}
+                aria-label="Cycle trigger score"
+              >
+                <span
+                  className={`pc-signals__meterfill${scorePct >= 100 ? " is-armed" : ""}`}
+                  style={{ width: `${scorePct}%` }}
+                  aria-hidden
+                />
+                <strong>
+                  {Math.round(cadence.score * 10) / 10} / {cadence.threshold}
+                  {scorePct >= 100 ? " — fires next sweep" : ""}
+                </strong>
+              </div>
+              <div
+                className="pc-signals__triggerchips"
+                aria-label="Trigger lanes — new signal since the last cycle"
+              >
                 {cadence.lanes.map((l) => (
-                  <li key={l.lane} className={l.count > 0 ? "is-live" : undefined}>
-                    <strong>{l.count}</strong>
-                    <span className="pc-signals__lane">{l.lane.replace(/-/g, " ")}</span>
-                    <em title={TRIGGER_LANE_DOCS[l.lane] ?? ""}>
-                      ×{l.weight} → {Math.round(l.count * l.weight * 10) / 10}
-                    </em>
-                    <p>{TRIGGER_LANE_DOCS[l.lane] ?? ""}</p>
-                  </li>
+                  <Tooltip
+                    key={l.lane}
+                    label={`${TRIGGER_LANE_DOCS[l.lane] ?? l.lane} Weight ×${l.weight} → contributes ${Math.round(l.count * l.weight * 10) / 10}.`}
+                  >
+                    <span
+                      className={`pc-signals__triggerchip${l.count > 0 ? " is-live" : ""}`}
+                    >
+                      <strong>{l.count}</strong> {laneLabel(l.lane)}
+                    </span>
+                  </Tooltip>
                 ))}
-              </ul>
+              </div>
             </>
           ) : null}
 
-          {ranTicks.length > 0 ? (
+          {/* ── Half 2: What will it read? ────────────────────────────── */}
+          {digest ? (
             <>
               <div className="pc-signals__sectionhead">
-                <h3>What recent cycles were fed</h3>
-                <span>digest composition per fired cycle, newest first</span>
+                <h3>What will it read?</h3>
+                <span
+                  title="The persisted corpus digest the fired cycle's ideators were prompted with — the delta leg ('NEW since your last cycle') leads the prompt, exactly as shown here."
+                >
+                  {digest.totalEntries} entries
+                  {digest.cycleId ? ` · ${digest.cycleId}` : ""}
+                  {digest.at
+                    ? ` · ${new Date(Date.parse(digest.at)).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`
+                    : ""}
+                </span>
               </div>
-              <ul className="pc-signals__fed" aria-label="Recent cycle digest composition">
+              {digest.newEntries.length > 0 ? (
+                <ul
+                  className="pc-signals__digest"
+                  aria-label="New digest entries since the previous cycle"
+                >
+                  {digest.newEntries.map((e) => (
+                    <li key={e.ref} className="is-new">
+                      <Tooltip label={FED_LANE_DOCS[e.lane] ?? e.lane}>
+                        <span className="pc-signals__fedchip">
+                          new · {laneLabel(e.lane)}
+                        </span>
+                      </Tooltip>
+                      <span className="pc-signals__digest-summary">
+                        {e.summary}
+                      </span>
+                      {renderSourceChip(e.ref)}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="pc-signals__digest-none">
+                  No new entries vs the previous cycle — the delta leg was
+                  empty; the cycle ran on standing corpus.
+                </p>
+              )}
+              {digest.standingEntries.length > 0 ? (
+                <LearningDisclosure
+                  label="Standing corpus"
+                  count={digest.standingEntries.length}
+                >
+                  <ul
+                    className="pc-signals__digest"
+                    aria-label="Standing digest entries"
+                  >
+                    {digest.standingEntries.map((e) => (
+                      <li key={e.ref}>
+                        <Tooltip label={FED_LANE_DOCS[e.lane] ?? e.lane}>
+                          <span className="pc-signals__fedchip">
+                            {laneLabel(e.lane)}
+                          </span>
+                        </Tooltip>
+                        <span className="pc-signals__digest-summary">
+                          {e.summary}
+                        </span>
+                        {renderSourceChip(e.ref)}
+                      </li>
+                    ))}
+                    {digest.truncated ? (
+                      <li>
+                        <em>
+                          …capped for display — the full digest is in
+                          scout_digest_snapshots.
+                        </em>
+                      </li>
+                    ) : null}
+                  </ul>
+                </LearningDisclosure>
+              ) : null}
+            </>
+          ) : null}
+
+          {/* Recent-cycle composition — one disclosure, not a standing section. */}
+          {ranTicks.length > 0 ? (
+            <LearningDisclosure
+              label="What recent cycles were fed"
+              count={Math.min(ranTicks.length, 6)}
+            >
+              <ul
+                className="pc-signals__fed"
+                aria-label="Recent cycle digest composition"
+              >
                 {ranTicks.slice(0, 6).map((t, i) => {
-                  const lanes = Object.entries(t.groundingLanes ?? {}).sort((a, b) => b[1] - a[1]);
+                  const lanes = Object.entries(t.groundingLanes ?? {}).sort(
+                    (a, b) => b[1] - a[1],
+                  );
                   const atMs = t.at ? Date.parse(t.at) : NaN;
                   return (
                     <li key={t.cycleId ?? `${t.at ?? "tick"}-${i}`}>
                       <span className="pc-signals__fedwhen">
                         {Number.isNaN(atMs)
                           ? "—"
-                          : new Date(atMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                          : new Date(atMs).toLocaleTimeString(undefined, {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
                       </span>
                       {lanes.length === 0 ? (
                         <em title="This tick's recorder predates the groundingLanes field, or the cycle was fed no lane-tagged entries.">
@@ -162,87 +326,42 @@ export function SignalsPanel({
                         </em>
                       ) : (
                         lanes.map(([lane, n]) => (
-                          <span key={lane} className="pc-signals__fedchip" title={FED_LANE_DOCS[lane] ?? lane}>
-                            {lane.replace(/-/g, " ")} <strong>{n}</strong>
+                          <span
+                            key={lane}
+                            className="pc-signals__fedchip"
+                            title={FED_LANE_DOCS[lane] ?? lane}
+                          >
+                            {laneLabel(lane)} <strong>{n}</strong>
                           </span>
                         ))
                       )}
-                      <em className="pc-signals__fedout">→ {t.generated} ideas, {t.routed} routed</em>
+                      <em className="pc-signals__fedout">
+                        → {t.generated} ideas, {t.routed} routed
+                      </em>
                     </li>
                   );
                 })}
               </ul>
-            </>
+            </LearningDisclosure>
           ) : null}
 
-          {digest ? (
-            <>
-              <div className="pc-signals__sectionhead">
-                <h3>The digest the last cycle read</h3>
-                <span title="The persisted corpus digest the fired cycle's ideators were prompted with — the delta leg ('NEW since your last cycle') leads the prompt, exactly as shown here.">
-                  {digest.totalEntries} entries
-                  {digest.cycleId ? ` · ${digest.cycleId}` : ""}
-                </span>
-              </div>
-              {digest.newEntries.length > 0 ? (
-                <ul className="pc-signals__digest" aria-label="New digest entries since the previous cycle">
-                  {digest.newEntries.map((e) => (
-                    <li key={e.ref} className="is-new">
-                      <span className="pc-signals__fedchip" title={`Lane: ${e.lane.replace(/-/g, " ")}`}>
-                        new · {e.lane.replace(/-/g, " ")}
-                      </span>
-                      <span className="pc-signals__digest-summary" title={e.ref}>
-                        {e.summary}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="pc-signals__digest-none">
-                  No new entries vs the previous cycle — the delta leg was empty; the cycle ran on standing corpus.
-                </p>
-              )}
-              {digest.standingEntries.length > 0 ? (
-                <details className="pc-signals__digest-standing">
-                  <summary>
-                    Standing corpus ({Object.entries(digest.laneCounts)
-                      .map(([l, n]) => `${l.replace(/-/g, " ")} ${n}`)
-                      .join(" · ")})
-                  </summary>
-                  <ul className="pc-signals__digest" aria-label="Standing digest entries">
-                    {digest.standingEntries.map((e) => (
-                      <li key={e.ref}>
-                        <span className="pc-signals__fedchip" title={`Lane: ${e.lane.replace(/-/g, " ")}`}>
-                          {e.lane.replace(/-/g, " ")}
-                        </span>
-                        <span className="pc-signals__digest-summary" title={e.ref}>
-                          {e.summary}
-                        </span>
-                      </li>
-                    ))}
-                    {digest.truncated ? (
-                      <li>
-                        <em>…capped for display — the full digest is in scout_digest_snapshots.</em>
-                      </li>
-                    ) : null}
-                  </ul>
-                </details>
-              ) : null}
-            </>
-          ) : null}
-
-          <div className="pc-signals__sectionhead">
-            <h3>The full lane taxonomy</h3>
-            <span>every input the pipeline reads</span>
-          </div>
-          <ul className="pc-signals__taxonomy" aria-label="All signal lanes explained">
-            {Object.entries(FED_LANE_DOCS).map(([lane, doc]) => (
-              <li key={lane}>
-                <span className="pc-signals__lane">{lane.replace(/-/g, " ")}</span>
-                <p>{doc}</p>
-              </li>
-            ))}
-          </ul>
+          {/* The full lane taxonomy — reference material, behind a disclosure. */}
+          <LearningDisclosure
+            label="All input lanes"
+            count={Object.keys(FED_LANE_DOCS).length}
+          >
+            <ul
+              className="pc-signals__taxonomy"
+              aria-label="All signal lanes explained"
+            >
+              {Object.entries(FED_LANE_DOCS).map(([lane, doc]) => (
+                <li key={lane}>
+                  <span className="pc-signals__lane">{laneLabel(lane)}</span>
+                  <p>{doc}</p>
+                </li>
+              ))}
+            </ul>
+          </LearningDisclosure>
         </>
       )}
       <style>{`
@@ -254,27 +373,50 @@ export function SignalsPanel({
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-signals__sectionhead > span { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
-      .pc-signals__lanes, .pc-signals__taxonomy, .pc-signals__fed {
+      .pc-signals__meter {
+        position: relative; height: 22px; border-radius: 6px; overflow: hidden;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03));
+        display: flex; align-items: center;
+      }
+      .pc-signals__meterfill {
+        position: absolute; inset: 0 auto 0 0;
+        background: color-mix(in srgb, var(--accent, #7dd3fc) 22%, transparent);
+        transition: width 200ms ease;
+      }
+      .pc-signals__meterfill.is-armed { background: color-mix(in srgb, var(--good, #34d399) 28%, transparent); }
+      .pc-signals__meter strong {
+        position: relative; padding: 0 9px; font-size: 11px; font-weight: 700;
+        color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums;
+      }
+      .pc-signals__triggerchips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+      .pc-signals__triggerchip {
+        display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 9px;
+        border-radius: 999px; font-size: 10.5px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+        color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-signals__triggerchip.is-live {
+        color: var(--fg-dim, #b9d4e8);
+        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 35%, transparent);
+      }
+      .pc-signals__triggerchip strong { font-weight: 740; font-variant-numeric: tabular-nums; }
+      .pc-signals__taxonomy {
         list-style: none; margin: 0; padding: 0;
         display: flex; flex-direction: column; gap: 4px;
       }
-      .pc-signals__lanes li, .pc-signals__taxonomy li {
-        display: grid; grid-template-columns: 34px 170px 1fr; align-items: baseline; gap: 8px;
+      .pc-signals__taxonomy li {
+        display: grid; grid-template-columns: 170px 1fr; align-items: baseline; gap: 8px;
         padding: 4px 8px; border-radius: 6px; font-size: 11.5px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
         color: var(--fg-mute, #7f9bb4);
       }
-      .pc-signals__taxonomy li { grid-template-columns: 170px 1fr; }
-      .pc-signals__lanes li.is-live { color: var(--fg-dim, #b9d4e8); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
-      .pc-signals__lanes li strong { font-weight: 740; font-variant-numeric: tabular-nums; text-align: right; }
+      .pc-signals__taxonomy li p { margin: 0; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      @media (max-width: 900px) { .pc-signals__taxonomy li { grid-template-columns: 1fr; } }
       .pc-signals__lane { font-weight: 650; }
-      .pc-signals__lanes li em { font-style: normal; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .pc-signals__lanes li p, .pc-signals__taxonomy li p {
-        margin: 0; grid-column: 1 / -1; font-size: 10.5px; color: var(--fg-mute, #7f9bb4);
-      }
-      @media (min-width: 900px) {
-        .pc-signals__lanes li p { grid-column: 3; }
-        .pc-signals__taxonomy li p { grid-column: 2; }
+      .pc-signals__fed {
+        list-style: none; margin: 0; padding: 0;
+        display: flex; flex-direction: column; gap: 4px;
       }
       .pc-signals__fed li {
         display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
@@ -286,6 +428,7 @@ export function SignalsPanel({
       .pc-signals__fedchip {
         display: inline-flex; gap: 4px; padding: 1px 7px; border-radius: 999px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); font-size: 10px;
+        white-space: nowrap;
       }
       .pc-signals__fedchip strong { font-weight: 740; font-variant-numeric: tabular-nums; }
       .pc-signals__fedout { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); margin-left: auto; white-space: nowrap; }
@@ -295,14 +438,20 @@ export function SignalsPanel({
         border-radius: 6px; font-size: 11px; color: var(--fg-dim, #b9d4e8);
         border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
       }
-      .pc-signals__digest li.is-new { border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+      .pc-signals__digest li.is-new { border-color: color-mix(in srgb, var(--accent, #7dd3fc) 35%, transparent); }
       .pc-signals__digest li .pc-signals__fedchip { flex-shrink: 0; }
-      .pc-signals__digest-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-signals__digest-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pc-signals__digest-none { margin: 2px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
-      .pc-signals__digest-standing summary {
-        cursor: pointer; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); padding: 3px 2px;
+      .pc-signals__srcchip {
+        display: inline-flex; align-items: baseline; gap: 4px; padding: 1px 7px;
+        border-radius: 999px; font-size: 10px; flex-shrink: 0;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        color: var(--fg-mute, #7f9bb4); background: none;
+        max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
-      .pc-signals__digest-standing[open] summary { margin-bottom: 4px; }
+      .pc-signals__srcchip i { font-style: normal; opacity: 0.7; }
+      .pc-signals__srcchip--link { cursor: pointer; }
+      .pc-signals__srcchip--link:hover { border-color: color-mix(in srgb, var(--accent, #7dd3fc) 45%, transparent); color: var(--fg-dim, #b9d4e8); }
       `}</style>
     </section>
   );

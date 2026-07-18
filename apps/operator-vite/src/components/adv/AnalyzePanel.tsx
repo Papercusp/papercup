@@ -19,12 +19,14 @@
  * cycles stay UNMOUNTED — 8 full pipelines never render at once.
  */
 import { useEffect } from "react";
+import { parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
-import { Workflow, RefreshCw } from "lucide-react";
+import { Workflow, RefreshCw, CheckCircle2, CircleDashed } from "lucide-react";
 import type {
   AnalyzeSnapshot,
   AnalyzeCycle,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-analyze-read";
+import { Tooltip } from "@/app/harness/Tooltip";
 import { useLexicon } from "@/lib/useLexicon";
 import {
   LearningDisclosure,
@@ -169,8 +171,60 @@ export function AnalyzePanel({
       .pc-analyze__exp b { font-weight: 650; }
       .pc-analyze__sources { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
       .pc-analyze__routedref { color: var(--good); }
+      .pc-analyze__complete {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+        padding: 5px 8px; border-radius: 6px; margin-bottom: 2px;
+        border: 1px dashed var(--border, rgba(125, 211, 252, 0.16));
+      }
+      .pc-analyze__completemark {
+        display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px;
+        border-radius: 999px; font-size: 10px; color: var(--fg-mute, #7f9bb4);
+        border: 1px dashed var(--border, rgba(125, 211, 252, 0.18));
+      }
+      .pc-analyze__completemark.is-present {
+        border-style: solid; color: var(--good, #34d399);
+        border-color: color-mix(in srgb, var(--good, #34d399) 35%, transparent);
+      }
+      .pc-analyze__completewhen { margin-left: auto; font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+      .pc-analyze__chip--link { cursor: pointer; background: none; }
+      .pc-analyze__chip--link:hover { border-color: color-mix(in srgb, var(--accent, #7dd3fc) 45%, transparent); color: var(--fg-dim, #b9d4e8); }
+      .pc-analyze__chip--ungrounded { border-style: dashed; opacity: 0.8; }
       `}</style>
     </section>
+  );
+}
+
+/** One stage's persistence verdict for the completeness row (WI-5412 item 2):
+ *  stage-artifact persistence is best-effort, so a cycle can legitimately be
+ *  missing pieces — the row SAYS which, replacing ambiguous empty sections. */
+function CompletenessMark({
+  label,
+  present,
+  detail,
+}: {
+  label: string;
+  present: boolean;
+  detail: string;
+}) {
+  return (
+    <Tooltip
+      label={
+        present
+          ? `${detail} — persisted for this cycle.`
+          : `${detail} — NOT persisted for this cycle (stage-artifact capture is best-effort; a missing stage is a recording gap, not necessarily a pipeline gap).`
+      }
+    >
+      <span
+        className={`pc-analyze__completemark${present ? " is-present" : ""}`}
+      >
+        {present ? (
+          <CheckCircle2 size={10} aria-hidden />
+        ) : (
+          <CircleDashed size={10} aria-hidden />
+        )}
+        {label}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -178,8 +232,85 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
   const t = useLexicon();
   const ideaTitle = (id: string): string =>
     cycle.ideas.find((idea) => idea?.id === id)?.title ?? id;
+  // Grounding chips (WI-5412 item 2): each idea's addressesPatternRefs — the
+  // digest signals it targeted. wi: refs deep-link to the Improvements backlog.
+  const [, setLviewRaw] = useQueryState("lview", parseAsString);
+  const [, setLane] = useQueryState("lane", parseAsString);
+  const [, setSrcSel] = useQueryState("lsrc", parseAsString);
+  const [, setLsel] = useQueryState("lsel", parseAsString);
+  const renderGroundingChip = (ref: string) => {
+    const sep = ref.indexOf(":");
+    const kind = sep > 0 ? ref.slice(0, sep) : "ref";
+    const rest = sep > 0 ? ref.slice(sep + 1) : ref;
+    if (kind === "wi") {
+      return (
+        <Tooltip key={ref} label={`${rest} — open in Improvements`}>
+          <button
+            type="button"
+            className="pc-analyze__chip pc-analyze__chip--link"
+            onClick={() => {
+              void setLsel(rest);
+              void setLane(null);
+              void setSrcSel(null);
+              void setLviewRaw("improvements");
+            }}
+          >
+            ⊙ {rest}
+          </button>
+        </Tooltip>
+      );
+    }
+    return (
+      <span key={ref} className="pc-analyze__chip" title={ref}>
+        ⊙ {rest}
+      </span>
+    );
+  };
+  const cycleAtMs = cycle.at ? Date.parse(cycle.at) : NaN;
   return (
     <div>
+      {/* Explicit completeness row — which stages this cycle actually persisted. */}
+      <div className="pc-analyze__complete" aria-label="Cycle completeness">
+        <CompletenessMark
+          label="roster"
+          present={cycle.ideatorSlots.length > 0}
+          detail="Per-slot ideator outcomes"
+        />
+        <CompletenessMark
+          label="ideas"
+          present={cycle.ideas.length > 0}
+          detail="Raw per-ideator ideas"
+        />
+        <CompletenessMark
+          label="critique"
+          present={cycle.scored.length > 0}
+          detail="Adversarial critique verdicts"
+        />
+        <CompletenessMark
+          label="fusions"
+          present={cycle.proposals.length > 0}
+          detail="Debate/recombine proposals"
+        />
+        <CompletenessMark
+          label="routing"
+          present={cycle.routed.length > 0}
+          detail="Routed-ledger rows"
+        />
+        {!Number.isNaN(cycleAtMs) ? (
+          <em
+            className="pc-analyze__completewhen"
+            title="When the cycle's artifacts landed (≈ cycle completion)"
+          >
+            {new Date(cycleAtMs).toLocaleString(undefined, {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </em>
+        ) : null}
+      </div>
+
       <div className="pc-analyze__sectionhead">
         <h4>Divergent generation</h4>
         <span>
@@ -217,6 +348,24 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
               {idea?.mechanism ? (
                 <p className="pc-analyze__mech">{idea.mechanism}</p>
               ) : null}
+              {Array.isArray(idea?.addressesPatternRefs) &&
+              idea.addressesPatternRefs.length > 0 ? (
+                <div
+                  className="pc-analyze__sources"
+                  aria-label="Grounding — the signals this idea addresses"
+                >
+                  {idea.addressesPatternRefs.map(renderGroundingChip)}
+                </div>
+              ) : (
+                <div className="pc-analyze__sources">
+                  <span
+                    className="pc-analyze__chip pc-analyze__chip--ungrounded"
+                    title="No grounding refs recorded — the critics weigh ungroundedness against the idea."
+                  >
+                    ungrounded
+                  </span>
+                </div>
+              )}
             </li>
           ))}
         </ul>
