@@ -431,7 +431,9 @@ PGBOOT
     ISOLATED_PG_SQL_DIR="$ISOLATED_PG_SQL_DIR" \
     node "$ISOLATED_PG_BOOT_SCRIPT" >"$ISOLATED_PG_LOG" 2>&1 &
   ISOLATED_PG_PID=$!
-  trap teardown EXIT INT TERM   # re-arm now that ISOLATED_PG_PID is set (teardown reads it)
+  # No need to re-arm the EXIT/INT/TERM trap here: it was already set at line
+  # ~277 (right after Xvfb boot), and bash traps re-read every var (including
+  # ISOLATED_PG_PID) at FIRE time, not at trap-registration time.
 
   ISOLATED_PG_ELAPSED=0
   until grep -q '^PG_READY ' "$ISOLATED_PG_LOG" 2>/dev/null; do
