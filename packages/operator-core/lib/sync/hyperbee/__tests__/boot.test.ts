@@ -2402,8 +2402,10 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     // `checkRepairConfirmation` enqueued it last pass. No episode fired, no
     // `dropReplicationLogState` call. ──
     await handle.mergeNow();
-    // eslint-disable-next-line no-console
-    console.log('DEBUG all boot history after call2:', JSON.stringify(listBootHistory({ workspaceId, harnessSlug, limit: 50 })));
+    writeFileSync('/tmp/wi5340-debug.json', JSON.stringify({
+      allHistory: listBootHistory({ workspaceId, harnessSlug, limit: 50 }),
+      sessionsSoFar: sessions.length,
+    }, null, 2));
     expect(sessions).toHaveLength(2);
     expect(handle.admitted.get(keyHex)).toBe(sessions[1]);
     expect(sessions[0]!.close).toHaveBeenCalledTimes(1);

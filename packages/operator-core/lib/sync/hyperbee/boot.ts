@@ -1305,7 +1305,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (logKey) {
           admitted.delete(logKey);
           replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
-      dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
           dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
           pubkeyToLogKey.delete(pk);
           admittedIdentities.delete(logKey);

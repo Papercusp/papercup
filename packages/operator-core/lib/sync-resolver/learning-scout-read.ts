@@ -190,6 +190,38 @@ export interface ScoutDraftIteration {
   revised: boolean;
 }
 
+/** One digest entry, UI-shaped (learning-tab-visibility P-008). */
+export interface ScoutDigestEntry {
+  /** flattenDigest lane (recurring-friction | rubric-rating | niche-map | …). */
+  lane: string;
+  summary: string;
+  /** Drill-back ref ("wi:EI-…", "plan:slug", "rubric:…"). */
+  ref: string;
+  weight: number | null;
+}
+
+/**
+ * The persisted digest a fired cycle actually READ (P-008, owner ask
+ * 2026-07-18: "show the delta and full corpus used for the tick") — the
+ * newest scout_digest_snapshots row, flattened with the SAME flattenDigest
+ * the ideator prompt renderer uses, split into the delta leg (refs not in
+ * previousCycleRefs — the "NEW since your last cycle" the prompt leads with)
+ * and the standing corpus.
+ */
+export interface ScoutDigestSnapshot {
+  cycleId: string | null;
+  at: string | null;
+  watermarkAt: string | null;
+  totalEntries: number;
+  laneCounts: Record<string, number>;
+  /** Entries NEW since the previous cycle (capped, highest-weight first). */
+  newEntries: ScoutDigestEntry[];
+  /** Standing (non-new) entries (capped, highest-weight first). */
+  standingEntries: ScoutDigestEntry[];
+  /** True when caps trimmed either list. */
+  truncated: boolean;
+}
+
 export interface ScoutSnapshot {
   totalRouted: number;
   railCounts: ScoutRailCount[];
@@ -235,6 +267,11 @@ export interface ScoutSnapshot {
    * watchable. Empty when none routed or the read degrades.
    */
   drafts: ScoutDraftIteration[];
+  /**
+   * The newest fired cycle's persisted digest (P-008): delta + standing corpus.
+   * null when no snapshot exists yet or the read degrades.
+   */
+  digest: ScoutDigestSnapshot | null;
 }
 
 const UNDEFINED_TABLE = '42P01';
@@ -659,6 +696,67 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
+  // Digest leg (learning-tab-visibility P-008): the newest persisted per-cycle
+  // digest, flattened with the SAME flattenDigest the ideator prompt uses, and
+  // split delta-vs-standing on previousCycleRefs — exactly the "NEW since your
+  // last cycle" leg the prompt leads with. Best-effort.
+  let digest: ScoutDigestSnapshot | null = null;
+  try {
+    const snapRows = (await sql`
+      SELECT cycle_id, watermark_at, digest, created_at
+        FROM harness_shared.scout_digest_snapshots
+       WHERE workspace_id = ${workspaceId}
+       ORDER BY created_at DESC
+       LIMIT 1
+    `) as Array<Record<string, unknown>>;
+    const row = snapRows[0];
+    if (row && row.digest && typeof row.digest === 'object') {
+      const { flattenDigest } = await import('../scout/lenses');
+      const raw = row.digest as Record<string, unknown>;
+      const flat = flattenDigest(raw as never) ?? [];
+      const prevRefs = new Set(
+        Array.isArray(raw.previousCycleRefs)
+          ? (raw.previousCycleRefs as unknown[]).filter((r): r is string => typeof r === 'string')
+          : [],
+      );
+      const toEntry = (p: { category?: string; summary: string; ref: string; weight?: number }): ScoutDigestEntry => ({
+        lane: p.category ?? 'unknown',
+        summary: typeof p.summary === 'string' ? p.summary.slice(0, 240) : '',
+        ref: p.ref,
+        weight: typeof p.weight === 'number' && Number.isFinite(p.weight) ? p.weight : null,
+      });
+      const byWeight = (a: ScoutDigestEntry, b: ScoutDigestEntry): number => (b.weight ?? 0) - (a.weight ?? 0);
+      const NEW_CAP = 20;
+      const STANDING_CAP = 15;
+      // No previousCycleRefs (first-ever snapshot) ⇒ nothing is provably "new";
+      // treat all as standing rather than mislabeling the whole corpus as new.
+      const newEntries = prevRefs.size > 0 ? flat.filter((p) => !prevRefs.has(p.ref)).map(toEntry).sort(byWeight) : [];
+      const standingEntries = flat
+        .filter((p) => prevRefs.size === 0 || prevRefs.has(p.ref))
+        .map(toEntry)
+        .sort(byWeight);
+      const laneCounts: Record<string, number> = {};
+      for (const p of flat) {
+        const lane = p.category ?? 'unknown';
+        laneCounts[lane] = (laneCounts[lane] ?? 0) + 1;
+      }
+      digest = {
+        cycleId: typeof row.cycle_id === 'string' && row.cycle_id ? row.cycle_id : null,
+        at: toIso(row.created_at),
+        watermarkAt: toIso(row.watermark_at),
+        totalEntries: flat.length,
+        laneCounts,
+        newEntries: newEntries.slice(0, NEW_CAP),
+        standingEntries: standingEntries.slice(0, STANDING_CAP),
+        truncated: newEntries.length > NEW_CAP || standingEntries.length > STANDING_CAP,
+      };
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] digest read failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   const health = evaluateIdeasDriftMarkers({ ticks, recent, scoutLensSample });
-  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles, cadence, drafts };
+  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles, cadence, drafts, digest };
 }
