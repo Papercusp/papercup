@@ -2305,6 +2305,136 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     // (harmless — a redundant close+reopen never blocks on the async check).
     expect(sessions).toHaveLength(1);
   });
+
+  // WI-5340 (WI-5332 Direction #1): the two describes above only ever reach
+  // attempt 2/3 by manually calling `dropReplicationLogState` between fires —
+  // simulating a re-arm that a genuinely ineffective re-attach (the common
+  // case per the gate-run-211750/223011 evidence: "attempt 1/3" forever) can
+  // NEVER produce on its own, since replication-liveness.ts's alarm latch
+  // only clears on an OBSERVED recovery. This proves the fix: a re-attach
+  // that does not restore ingest reaches attempt 2/3 — and then the cap —
+  // purely off the post-repair confirmation window (`checkRepairConfirmation`,
+  // driven by mergeOnePass's own per-log sample), with `dropReplicationLogState`
+  // NEVER called anywhere in this test.
+  it('WI-5340: a re-attach that does NOT restore ingest reaches attempt 2/3 (and the cap) via the post-repair confirmation window alone — no dropReplicationLogState re-arm', async () => {
+    const workspaceId = 'ws-repair-confirm-5340';
+    const harnessSlug = 's-repair-confirm-5340';
+    const keyHex = 'a1'.repeat(32);
+
+    // Every re-opened session stays a "stuck" zombie — a real writer well
+    // ahead (length 1000) but zero merge progress and a live replicator peer —
+    // so each repair is judged ineffective instead of a genuine recovery.
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
+        keyHex: k,
+        length: 1000,
+        contiguousLength: 0,
+        get: async () => null,
+        update: async () => {},
+        prefetch: () => {},
+        has: () => false,
+        close: vi.fn(async () => {}),
+        peersCount: () => 1,
+      };
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+      // The post-repair confirmation judges on the very next per-log sample
+      // instead of waiting out the real 3-minute default grace.
+      replicationStallGraceMs: 0,
+    });
+    cleanups.push(() => handle.close());
+
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    function repairEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair' as BootHistoryKind],
+      });
+    }
+    function confirmationFailedEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair_confirmation_failed' as BootHistoryKind],
+      });
+    }
+    function exhaustedEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair_exhausted' as BootHistoryKind],
+      });
+    }
+
+    // ── Attempt 1: ONE genuine `frozen` episode — the only explicit fire in
+    // this whole test. drainRepairQueue applies it, and the SAME merge pass's
+    // per-log sample immediately judges the freshly re-attached session as
+    // still stuck (mergedPosition never advances off this fake), synthesizing
+    // attempt 2 directly via `enqueueRepairAttempt` — bypassing the edge-latch
+    // entirely. ──
+    sampleReplicationLiveness(
+      workspaceId,
+      harnessSlug,
+      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
+      { graceMs: 0 },
+    );
+    await handle.mergeNow();
+    expect(stale.close).toHaveBeenCalledTimes(1);
+    expect(sessions).toHaveLength(1);
+    expect(repairEvents()).toHaveLength(1);
+    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
+    expect(confirmationFailedEvents()).toHaveLength(1);
+
+    // ── Attempt 2 — drained on the NEXT pass purely because
+    // `checkRepairConfirmation` enqueued it last pass. No episode fired, no
+    // `dropReplicationLogState` call. ──
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(2);
+    expect(handle.admitted.get(keyHex)).toBe(sessions[1]);
+    expect(sessions[0]!.close).toHaveBeenCalledTimes(1);
+    expect(repairEvents()).toHaveLength(2);
+    expect(repairEvents()[0]!.message).toContain('attempt 2/3');
+    expect(confirmationFailedEvents()).toHaveLength(2);
+
+    // ── Attempt 3 — same mechanism, one more pass. ──
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(3);
+    expect(handle.admitted.get(keyHex)).toBe(sessions[2]);
+    expect(sessions[1]!.close).toHaveBeenCalledTimes(1);
+    expect(repairEvents()).toHaveLength(3);
+    expect(repairEvents()[0]!.message).toContain('attempt 3/3');
+    expect(confirmationFailedEvents()).toHaveLength(3);
+
+    // ── THE CAP — this pass's confirmation check judges session #3 as still
+    // stuck and calls `enqueueRepairAttempt` again, but `repairAttempts` is
+    // already at REPAIR_MAX_ATTEMPTS_PER_LOG: no 4th session repair: instead
+    // it escalates to the forced-topic-rejoin path (no swarm bound here, so
+    // the rejoin call itself is a no-op, but the exhaustion event lands). ──
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(3); // unchanged — no 4th re-attach
+    expect(sessions[2]!.close).not.toHaveBeenCalled();
+    expect(repairEvents()).toHaveLength(3); // no 4th entry
+    expect(exhaustedEvents()).toHaveLength(1);
+
+    // ── Stable past the cap: nothing outstanding to judge, no further churn. ──
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(3);
+    expect(repairEvents()).toHaveLength(3);
+    expect(exhaustedEvents()).toHaveLength(1);
+  });
 });
 
 describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {

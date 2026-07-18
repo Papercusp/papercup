@@ -13,27 +13,32 @@ sidebar:
 
 Plans are the durable record of project history — each `## Decisions` block is the "why". This is a generated snapshot grouped by status; for the live, authoritative view use the `plans:*` tools (`plans:list` / `plans:get { slug }`). Because plans churn constantly, this page is a periodically-regenerated convenience, not a live mirror.
 
-**1372 live plans.** By status: active (692), ready (126), draft (79), shipped (410), superseded (65).
+**930 live plans.** By status: active (161), ready (132), draft (84), shipped (437), superseded (116).
 
-## active (692)
+## active (161)
 
 | Plan | Items | Next action |
 |---|---|---|
 | Agent Allocation Framework — delegate agent slots (+ accounts/GPUs) to fleets for the queen↔bee loop and cross-machine su-agents<br/>`agent-allocation-framework-2026-07-03` | done 8, todo 2 | su-35c3b: awaiting background .deb build (b1au34ywr) → then local-matrix.sh --only=fleet_directory,seat_offer,spawn_request → on 57 green, complete WI-2118 + P-009 done. |
 | Self-compaction trigger discipline — self-compact proactively; never stall on an unarmed wake<br/>`agent-self-compaction-trigger-discipline-2026-07-10` | done 1, todo 3 | Reinstall/regenerate the deployed compaction projection (P-002) so the new section reaches live sessions, not just the source tree. |
 | Context-dependent facet pills + generic recency ranking for the agents-running search<br/>`agents-search-facet-pills-and-recency-2026-07-12` | todo 6 | Nothing outstanding on this plan. Adjacent follow-ups filed for the tooling this exposed, unclaimed: WI-4342 (FIXED — verify-tauri-headless.sh port collision + bridge-PID mis-resolution), EI-10364 (the "isolated" shell… |
-| Migrate all 13 active operator surfaces to canonical data sync<br/>`all-active-surfaces-data-sync-migration-2026-07-11` | done 11, todo 2 | — |
+| Migrate all 13 active operator surfaces to canonical data sync<br/>`all-active-surfaces-data-sync-migration-2026-07-11` | done 12, todo 1 | — |
 | Impersonation E2E round 5 — full-mutation user sweep + perf regression (desktop app)<br/>`app-impersonation-e2e-round5-2026-06-18` | blocked 1, done 15 | STEADY-STATE: SHA-gated watch — cheap HEAD+health each tick; on HEAD change re-run a reliable journey (now preferring the :3170 REAL-DATA grid/conversations since :3170 recovered); on :3270 recovery add a session-data p… |
 | Impersonation E2E round 6 — broad smoke + 4 owner-named golden-path journeys (fresh iso workspace, real agent completion)<br/>`app-impersonation-e2e-round6-2026-06-19` | done 1 | Teardown round-6b iso stack (operator :3380, Tauri webview PID2284085 pgid, Xvfb :96, DROP DB papercusp_e2e_r7, rm /tmp/e2e-r7-*). Owner's live window untouched. Testing series can resume for further rounds on request. |
 | App-impersonation E2E round 6 — exhaustive /adv user-journey + performance sweep (Tauri desktop)<br/>`app-impersonation-e2e-round6-2026-06-23` | done 2, todo 20 | Owner: 3 perf fixes are in staging → will auto-deploy; can re-measure warm-switch latency live on :3070 once deployed (expect Create/insights/docs to drop toward the ~300ms light-panel baseline). Only P-022 (git deeper… |
 | Impersonation E2E round 7 — continuous whole-app user sweep + perf, FIX-as-encountered (desktop app)<br/>`app-impersonation-e2e-round7-2026-06-30` | — | WATCH 16:10 tick (load1 21 ✓, tree HEAD 36e8dbe66): deployed staging :3170 /api/health = HEALTHY (36e8dbe66) → NO app regression. Iso operator deep-verify ABORTED: tsx-on-working-tree can't boot because the SHARED tree… |
+| Make account routing authoritative across Claude, OMP, Codex, and every spawn path<br/>`authoritative-account-routing-all-backends-2026-07-16` | done 4, todo 1 | P-005 (now unblocked): run the full fresh/resume/fork × Claude/OMP/Codex × default/auto/pin matrix, typecheck/diff checks, and live credential/provider probes to close out the plan. |
+| Full auto-loop (Mug→Cup→Kettle→Blender) public-release readiness<br/>`autoloop-release-readiness` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | Autonomous-loop canary reliability — make the daily hive-canary feature complete UNTOUCHED (bee write capability, cross-harness flip authority, stopped-hive auto-recovery)<br/>`autonomous-loop-canary-reliability-2026-06-29` | blocked 1, done 5 | OWNER: schedule P-005 (add capability:* to the bee kit, then re-arm papercusp-fleet-capability-only after live-bee validation). Everything else is complete; the canary is green. |
 | Autonomous loop — full-flow reliability: close the Queen↔Scout ratification link (scout drafts starve under bee-cap saturation)<br/>`autonomous-loop-full-flow-reliability-2026-06-29` | done 3, todo 2 | Land the overwatch/queen "prompt too long" fix (likely scope the invoke-launched agents' MCP toolset + bound the brief), deploy, then witness the full forward cycle: queen place → bee complete (survives on auto-routing)… |
 | Autonomous-loop hardening — fix the bugs + friction found dogfooding the hive loop (2026-07-01)<br/>`autonomous-loop-hardening-2026-07-01` | done 10 | Monitor (30min) confirms F8 lands live + opportunistically observes the periodic gate exercise the prefix-FF, then loop:end. Follow-ups (on release-pipeline-resilience, not this plan): arm the MANUAL checkpoint lever (-… |
-| Blender public-release readiness<br/>`blender-release-readiness` | — | The Queen ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
+| Autonomy and owner controls health<br/>`autonomy-owner-controls` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
+| Drive mug/kettle/blender autonomous loop to public-release GO via the blender-release-readiness rubric<br/>`blender-public-release-readiness-drive-2026-07-14` | done 8 | Released. No open items — plan complete. |
+| Blender public-release readiness<br/>`blender-release-readiness` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | Drain the papercusp open-bug queue (4× codex gpt-5.6-luna high, gateway auto)<br/>`bug-drain-luna-2026-07-10` | done 1 | — |
+| Bug drain (4× gpt-5.6-luna high) — clear the papercusp bug/issue backlog to terminal<br/>`bug-drain-luna-2026-07-13` | done 9 | Monitor the five lanes through terminal outcomes, audit completion evidence, re-feed the two remaining admissible cohort items as members free up, and triage the eight needs-human/external-blocker residues. |
 | Wave 2: codex auto-gateway LIVE TEST + residual bug drain (4× gpt-5.6-luna high, account=auto)<br/>`bug-drain-luna-w2-2026-07-10` | done 1 | — |
-| DRAIN: all non-P2P bugs in harness papercusp (5× sonnet high-effort fleet)<br/>`bug-drain-nonp2p-2026-07-11` | done 2 | Members pull WI-3777 / WI-3360 / WI-4394 first (rank order). Leader su-00a91 monitors on a ~5-min loop: liveness, completion-evidence audit (reopen bare closes), re-feed the spec as the wave drains, relaunch members kil… |
+| DRAIN: all non-P2P bugs in harness papercusp (5× sonnet high-effort fleet)<br/>`bug-drain-nonp2p-2026-07-11` | done 2 | Members: claim -> fix -> complete with REAL evidence (tests / commit / live verification). The leader AUDITS every close: bare-assertion closes get re-opened, and a CODE change with no test evidence gets pushed back (wa… |
 | Calendar App — local web app for managing a calendar<br/>`calendar-app-2026-07-06` | — | — |
 | capability:terminal — visible desktop terminal that runs arbitrary commands<br/>`capability-terminal-tool-2026-06-29` | — | human reviews scope and lists Phase 1 items. |
 | Claude OAuth credential sync-back + fleet setup-token<br/>`claude-credential-sync-2026-06-10` | done 4 | Owner runs `claude setup-token` and installs the sk-ant-oat01 token at ~/.papercusp/claude-token (0600) to activate fleet-token auth; until then fleet sessions keep riding the (now-converged) interactive family. |
@@ -42,7 +47,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | DUMMY WORK ONLY — codex/gpt-5.4-mini gateway smoke test (throwaway; no real tasks)<br/>`codex-dummy-work-gateway-smoke-2026-07-09` | done 6 | No next action; the smoke plan is drained. |
 | Codex/ChatGPT accounts live through the inference gateway (owner canary, gpt-5.4-mini dummy work)<br/>`codex-gateway-chatgpt-live-2026-07-09` | done 2, dropped 1, todo 1 | — |
 | Reproduce EI-10135 — self-issued /compact carries no turn-origin stamp<br/>`compact-provenance-repro-2026-07-12` | done 1 | — |
-| Conversations durable data-sync migration + whole-app compliance audit<br/>`conversations-sync-migration-and-app-audit-2026-07-11` | done 10 | Release pipeline will load the new Conversations query names into the green API host; the remaining 13 migration families are documented for follow-on implementation. |
+| Conversations durable data-sync migration + whole-app compliance audit<br/>`conversations-sync-migration-and-app-audit-2026-07-11` | blocked 1, done 8 | Release pipeline will load the new Conversations query names into the green API host; the remaining 13 migration families are documented for follow-on implementation. |
 | Conversations tab — intuitive visual hierarchy without new text<br/>`conversations-tab-intuitive-hierarchy-2026-07-10` | done 4 | — |
 | Coord authority hardening: enforce at source, verify in transit, check at receipt, hydrate refs at delivery (EI-9501 class)<br/>`coord-authority-hardening-2026-07-11` | done 11 | — |
 | Coord-inbox delivery: close the residual gaps (deafness detection, enrollment ensure, long-exec advisory, escalation ladder)<br/>`coord-delivery-residual-gaps-2026-07-11` | done 4 | test:affected verdict → flip P-004 done + complete WI-4160 → report to the owner with evidence; live-verify coordHook + ladder markers on :3070 once the pipeline ships this commit. |
@@ -50,571 +55,18 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Coord read-receipts via watermark-at-injection (EI-2042)<br/>`coord-read-receipts-2026-06-20` | — | Follow-ups (non-blocking): (1) the coord-injection-protocol.mdx doc-note — LOCKED by a peer right now; queue/land when released. (2) dedicated integration tests for coord:inbox advancing messages_shown_ts + coord:waterm… |
 | Coordination layer test hardening (continuous loop)<br/>`coordination-layer-test-hardening-2026-06-22` | — | DONE — loop ended (pure surface exhausted). To resume, re-arm on a BROADER domain with more zero-coverage pure surface: ledgers (decision-ledger/change-ledger), the events/await engine, gym/blueprint logic, or operator-… |
 | Create tab compact Plan / Queue / Sessions rail<br/>`create-tab-compact-view-rail-2026-07-11` | done 3 | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783377214435` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783378228507` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783379132126` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783380061660` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783380964580` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783382320255` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783383241294` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783384142252` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783385042753` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783385943992` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783386872089` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783387803901` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783388732037` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783389632308` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783390564057` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783391492724` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783392441384` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783393753216` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783394673463` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783395573433` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783396473954` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783397403219` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783398332299` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783399364898` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783400282558` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783401183990` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783402112371` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783403042426` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783403973529` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783404902439` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783405831620` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783406731679` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783407661833` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783408591290` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783409491282` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783410392473` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783411293186` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783412222469` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783413122070` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783414023206` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783414953760` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783415881106` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783416783009` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783417711379` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783418641079` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783419542375` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783420443138` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783421372919` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783422272935` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783423172425` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783424074250` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783425002607` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783425902618` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783426806082` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783427732501` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783428663532` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783429593168` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783430523327` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783431451907` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783432352195` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783433283704` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783434215169` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783435143136` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783436072903` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783437002897` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783437902595` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783438802256` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783439702708` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783440630749` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783441531432` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783442543576` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783443451724` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783444352357` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783445252882` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783446152659` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783447083750` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783448012383` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783448913185` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783449841828` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783450743685` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783451671390` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783452636466` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783453560590` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783454462279` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783455392742` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783456322628` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783457222271` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783458122419` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783459023179` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783459952620` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783460853372` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783461782161` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783462713591` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783463651773` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783464663947` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783465622467` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783466551189` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783467451239` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783468351810` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783469645479` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783470633552` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783471651994` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783472553382` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783473483993` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783474384404` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783475312681` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783476243120` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783477172057` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783478074518` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783479001985` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783479901512` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783480803794` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783481732626` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783482661201` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783483563628` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783484492530` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783485395858` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783486321990` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783487252831` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783488152393` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783489053305` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783489982600` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783490912482` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783491812176` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783492712537` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783493612301` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783494541049` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783495442125` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783496342063` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783497243051` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783498173128` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783499101975` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783500001920` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783500903444` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783501831505` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783502732299` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783503663855` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783504563885` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783505463261` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783506393352` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783507322949` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783508223268` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783509153072` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783510053025` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783510981147` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783511882550` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783512782165` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783513682581` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783514582283` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783515485254` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783516413608` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783517316239` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783518245115` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783519172616` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783520102797` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783521004102` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783521905165` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783522864705` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783523791278` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783524693214` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783525624320` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783526554561` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783527482413` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783528413435` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783529342731` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783530271670` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783531171156` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783532073264` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783532981076` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783533901896` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783534803704` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783535732367` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783536663162` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783537563196` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783538491376` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783539404982` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783540323180` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783541250866` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783542152058` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783543057886` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783543981868` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783544885175` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783545814780` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783546743683` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783547673659` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783548607277` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783549535492` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783550466308` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783551391799` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783552291777` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783553201147` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783554123612` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783555025423` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783555951164` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783556882835` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783557782193` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783558711368` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783559612306` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783560512697` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783561444456` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783562372436` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783563278058` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783564201237` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783565103370` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783566003627` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783566952245` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783567863071` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783568793631` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783569693216` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783570593469` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783571521121` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783572422500` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783573322225` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783574222695` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783575124200` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783576054724` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783576981308` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783577915603` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783578842382` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783579771800` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783580671963` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783581573411` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783582502146` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783583402640` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783584332699` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783585235491` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783586162634` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783587064112` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783587991037` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783588891504` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783589821220` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783590722602` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783591624603` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783592550824` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783593450343` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783594352178` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783595253743` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783596183903` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783597112623` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783598012635` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783598913391` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783599843949` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783600743719` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783601671825` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783602573253` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783603474273` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783604400999` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783605302876` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783606230789` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783607223645` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783608151022` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783609053801` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783609959956` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783610882387` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783611815588` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783612741515` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783613643393` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783614572226` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783615503486` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783616407596` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783617337390` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783618271789` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783619192227` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783620094758` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783620994464` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783621926877` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783622854390` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783623783197` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783624684328` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783625587003` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783626511272` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783627416139` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783628342738` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783629246872` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783630413369` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783631494823` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783632424260` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783633352201` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783634253084` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783635182024` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783637072442` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783638493774` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783639412291` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783640336930` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783641240509` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783642370693` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783646256788` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783647222677` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783648414700` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783649347461` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783650251432` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783651636791` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783652557231` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783653488361` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783654596393` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783655529087` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783656463344` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783657380981` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783658440897` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783660800373` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783670409065` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783671335443` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783672262241` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783673164242` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783674089902` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783689584874` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783690704606` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783691756804` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783692681554` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783693592454` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783694533365` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783695477596` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783696966859` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783698211935` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783699275819` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783700305551` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783701238794` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783702214702` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783703285306` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783704194998` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783705125204` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783706061315` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783707006934` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783707951380` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783709182841` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783710177211` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783711117830` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783712344724` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783713375753` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783715376596` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783716768749` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783717898369` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783719242147` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783720371715` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783721307823` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783722217165` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783723143687` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783724072318` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783724974808` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783726017033` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783726934551` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783727855860` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783728784108` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783729687887` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783734173932` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783735088191` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783736268316` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783737254541` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783738209740` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783739148179` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783740723120` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783742036475` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783742971395` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783743913769` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783744930899` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783745859347` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783746782715` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783747686884` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783748621373` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783749543810` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783750480977` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783751409709` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783752342524` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783753276252` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783754211790` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783755128372` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783756055996` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783757169398` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783758079177` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783758999569` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783759902557` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783760890728` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783761813395` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783762809105` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783763713795` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783764644754` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783765571093` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783766524247` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783767454064` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783768427266` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783769355982` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783770340670` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783771300159` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783772238907` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783773166193` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783774082393` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783775083669` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783776007284` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783776932843` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783777834601` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783778763977` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783779693257` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783780620662` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783781528225` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783782453286` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783783380591` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783784280937` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783785182852` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783786111026` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783787013328` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783787920473` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783788841899` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783789744926` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783790674180` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783791604443` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783792505017` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783793433366` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783794333352` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783795264073` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783796194296` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783797121740` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783798022357` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783798922582` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783799822841` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783800752251` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783801683308` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783802612450` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783803517840` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783804441236` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783805344990` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783806272955` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783807172357` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783808073120` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783808973535` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783809901702` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783810808024` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783811730760` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783812635860` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783813563785` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783814464115` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783815390252` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783816292412` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783817202581` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783818122365` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783819028013` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783819952411` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783820853880` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783821783981` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783822713447` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783823613219` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783824542475` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783825444691` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783826373776` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783827279497` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783828323440` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783829223196` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783830154254` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783831053135` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783831983752` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783832884038` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783833785293` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783834714352` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783835641899` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783836543370` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783837443896` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783838372831` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783839303844` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783840230418` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783841133966` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783842061992` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783842961256` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783843863456` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783843893845` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783844823614` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783845751624` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783846651596` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783847553741` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783848480767` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783849382212` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783850312454` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783851242519` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783852142056` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783853071249` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783853973620` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783854876783` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783855804364` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783856731552` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783857634768` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783858562237` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783859463693` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783860392357` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783861291477` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783862197073` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783863121545` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783864023965` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783864952062` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783865853277` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783866756784` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783867683688` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783868613571` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783869542805` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783870471162` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783871371263` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783872272739` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783873202506` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783874102095` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783875003466` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783875904219` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783876832575` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783877735348` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783878696952` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783879632972` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783880560494` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783881486640` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783882472666` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783883371390` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783884271793` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783885173977` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783886106846` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783887033871` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783887963168` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783888893185` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783889823476` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783890751799` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783891652493` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783892552351` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783893455686` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783894383639` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783895312199` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783896212731` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783897141943` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783898042623` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783898943717` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783899844476` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783900771021` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783901678931` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783902603179` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783903531481` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783904434008` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783905362961` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783906263981` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783907190790` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783908093053` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783909020760` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783909952627` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783910853672` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783911781767` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783912683022` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783913583315` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783914484186` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783915384002` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783916314713` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783917214468` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783918116649` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783919044269` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783919972661` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783920873102` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783921803805` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783922773861` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783923693557` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783924667021` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783925627473` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783926589372` | — | — |
-| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1783927563770` | — | — |
-| Cross-machine coordination parity + comms trust lattice (shared hives)<br/>`cross-machine-coord-parity-and-trust-2026-07-01` | done 58, todo 1 | UNBLOCK = leader P-108 scope-federation/corestore fix so the coord peer-log replication SUSTAINS + projects fed_event rows cross-machine (network is already healthy per DF-ping test). RE-TEST fwd bash /tmp/p059-e1c.sh,… |
+| Cross-machine coordination parity + comms trust lattice (shared hives)<br/>`cross-machine-coord-parity-and-trust-2026-07-01` | done 59 | UNBLOCK = leader P-108 scope-federation/corestore fix so the coord peer-log replication SUSTAINS + projects fed_event rows cross-machine (network is already healthy per DF-ping test). RE-TEST fwd bash /tmp/p059-e1c.sh,… |
 | Cross-platform hardening + agent-experience ergonomics<br/>`cross-platform-hardening-and-agent-ergonomics-2026-07-05` | — | Nothing in-plan. Residue as WIs: WI-3080 Mac/Win VM E2E smoke (needs VM), WI-3079 sidecar-spawn extraction. Plan archivable once keychain batch greens (next hourly checkpoint). |
 | Cup-lexicon backend-zero: eliminate ALL old-brand residuals everywhere (code + DB + wire)<br/>`cup-lexicon-backend-zero-2026-07-11` | done 3, todo 15 | When the owner says go: (1) extend scripts/lexicon-residual-count.mjs to all 11 mapped terms + scan-lexicon's keep-set/generated exclusions (drop overwatch/scout from keep) for an accurate burndown; (2) execute the inve… |
+| Cup lifecycle durability<br/>`cup-lifecycle-durability` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | Fully dogfood the Cupboard: refresh stale blueprint listings, bring templates + plugins to standard-path parity (author=papercupai)<br/>`cupboard-full-dogfood-2026-07-10` | done 6 | None — plan complete. Optional owner-gated follow-ups only: (1) build an isolated-PAPERCUSP_HOME live blueprint/plugin install harness for belt-and-suspenders rigor; (2) publish a real tool-providing pack if /tools inst… |
-| Cupboard public release — knowledge-packs rename, templates unification, packs v2 (tools + event deps), storefront hygiene, release gate<br/>`cupboard-public-release-2026-07-12` | done 6, needs-human 1, todo 8, wip 1 | Finish P-001: (a) wire migrateInstalledRoot() into the operator boot sequence (hook not yet located), (b) tools-md-sync green for the learning_packs:*→knowledge_packs:* verb group (regenerate tool-catalog.json), (c) doc… |
 | Decommission meridian (@rynfar/meridian) across onboarding/preflight/setup — remove the 'omp-meridian' OnboardingFramework union member + all install/probe/status references<br/>`decommission-meridian-2026-07-06` | done 2 | Confirm test:affected GREEN (fix any reds), then coord:send report to leader su-b0fbf with the 2 flagged items (frame-bootstrap + settings/agent+api-keys copy) and mark P-001/P-002 done. |
 | Deferred follow-ups — 2026-05-14<br/>`deferred-followups-2026-05-14` | — | Nothing actionable — keep as reference. Revisit A2/A3 only when a second singleton-tool / second mobile endpoint appears; V only once alpha users generate the gating telemetry. |
 | Demo Rehearsal Test (DRT) — prove the demo apparatus (video output)<br/>`demo-rehearsal-test-2026-06-20` | done 1, needs-human 1, todo 8 | Owner: RE-REVIEW DRT-definetool-walkthrough.mp4 (sync fixed). For the FULL engineer deep-dive, if live VSCode motion is wanted, record navigation then cut to the same per-phrase boundaries (don't overlay one continuous… |
 | Design simplification + design-doc violation fixes (full-app audit follow-through)<br/>`design-simplification-2026-07-09` | done 14, todo 2 | P-015 execution is teed up on WI-3739 (recommend owner weighs in on the Button asChild API question); a fully-agent-executable next item is P-016 (central categorical palette — inventory AdvConversationsTab KIND_COLOR +… |
 | Desktop agent behaviour suite — real su/ornith runs via visible fleet launches, scored by the shared headless eval code<br/>`desktop-agent-behaviour-suite-2026-07-03` | done 15 | Optional capstone: run ONE live desktop launch via behaviour:run mode:launch against a minted fixture (needs a :3170 restart to register the new tool), and watch it score a fresh ornith run end-to-end. Owner to green-li… |
 | Desktop release hosting — Cloudflare R2 + custom domain, secret in path (unblocks auto-update)<br/>`desktop-release-hosting-r2-2026-07-12` | done 5, todo 3 | MERGE + UPLOAD the darwin entries: $HOME/papercusp-release-staging/darwin/ now holds "Papercusp GUI.app.tar.gz" (462,630,955 B) + .sig (412 B, minisign base64 confirmed) and the Server tarball (1.33 GB, DO… |
+| Desktop voice public-release readiness<br/>`desktop-voice-release-readiness` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | Dialog-delivery guard: text emitted in the same turn as an AskUserQuestion dialog is never seen — enforce content-then-ask<br/>`dialog-delivery-guard-2026-07-11` | done 2 | — |
 | Public-release dogfood: silent on-install auto-join to the canonical Papercusp hive (+ public env top bar & remote-main recovery)<br/>`dogfood-silent-canonical-hive-join-2026-06-28` | done 16, needs-human 3 | OWNER (the only steps that require you — hardware + an outward publish): cut the release build (build-only command above proven to resolve), clean-install on your real machines to close P-008/P-010, then live in it (P-0… |
 | Experiment component quality<br/>`experiment-component-quality` | — | The Queen ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
@@ -644,16 +96,22 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Inference-gateway test hardening (continuous loop)<br/>`inference-gateway-test-hardening-2026-06-22` | — | DONE — loop ended (not padding, not crossing su-c5efc's lane). To resume hardening, re-arm only with BROADENED scope: (a) operator-core whole-app coverage (plan whole-app-test-coverage-breadth-2026-06-14 / WI-338), (b)… |
 | Infra fail-fast, fault-isolation & build-integrity (round-4)<br/>`infra-fail-fast-build-integrity-2026-06-19` | done 18 | OWNER (optional): decide PAPERCUSP_ADDON_PREFLIGHT_FATAL enablement; B2/B3 were already done. A3 (Node pin) closed by su-a5db9c79 (Brief 5). No agent build work remains. |
 | Fix six independent JS utility function bugs in the test fixtures<br/>`js-utility-fixture-fixes-2026-07-05` | todo 6 | Work the six items (P-001–P-006): for each, read the fixture, understand the bug, edit only the function body so its EXPECTED assertions hold, then mark the item done once the edit is written. |
+| Kettle supervision health<br/>`kettle-supervision-health` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
+| Learning tab visibility — surface the invisible self-learning features (cadence state, knowledge-pack review, frontier lanes, draft-revision loop)<br/>`learning-tab-visibility-2026-07-18` | done 6, todo 3, wip 1 | su-f8714 (or successor): P-008 → P-010 → P-009 (P-009 needs a storage design for per-stage cycle artifacts first — migration via the atomic allocator). Isolated verify shell left RUNNING on DISPLAY :91 / port 33900 / br… |
 | Rubrics v1 — bundle first-party rubrics locally (templates-v1 design, cupboard-ready v2)<br/>`local-first-party-rubric-bundling-2026-07-07` | done 6 | Nothing in-flight — bbf8a may do a courtesy review of the rubric-store diff (offered); v2 items ride the dark flag papercusp-rubrics-marketplace. |
 | Lock/authority system test hardening (continuous loop)<br/>`lock-authority-test-hardening-2026-06-22` | — | DONE — loop ended (not padding, not crossing into integration-shaped/transport modules). To resume hardening, re-arm with BROADENED scope: operator-core whole-app coverage (whole-app-test-coverage-breadth / WI-338, coor… |
 | M4 DRAIN-mode battery: fixture backlog drain<br/>`m4-fixture-backlog-drain-2026-07-10` | done 4 | None — plan complete. Fixture cleanup terminal; leader su-945e7 owns any further wind-down of the broader WI-3752 8-item battery (dupes WI-3943/3944, dead WI-3945, owner-gated WI-3946 are ops-batch-0709 scope, not this… |
 | macOS desktop — PUBLIC-release readiness (beyond alpha)<br/>`mac-public-release-readiness-2026-06-25` | todo 7 | OWNER: (1) provide the Apple Developer ID Application cert + notarytool app-specific password (P-006, runbook ready) to sign+notarize the universal .dmg — THE public-release blocker; (2) stand up a pristine Mac, ideally… |
 | MCP host (:3070) availability — verify-before-cutover deploys + resilient client transport<br/>`mcp-host-availability-resilience-2026-06-22` | done 5, dropped 1 | ONLY remaining: P-006 (needs-human) — the OWNER-attended fleet-wide opt-in cutover to the MCP proxy (enable papercup-mcp-proxy.service + repoint ~/.claude.json :3070→:9071 + force-restart-survival e2e). All other items… |
 | MCP reliability hardening — kill the measured failure classes (evidence-based, 2026-07-11 investigation)<br/>`mcp-reliability-hardening-2026-07-11` | done 11 | ONE operational go-live remains (P-010 proxy side): `systemctl --user restart papercup-mcp-proxy` to activate 429-absorption on the live proxy fronting ~59 sessions — deferred (graceful-reconnect by design, but fleet-af… |
-| Cross-machine mem0 memory federation — shareable-flagged subset over the peer-log substrate (mirror the agent-facts F1-1 pattern)<br/>`mem0-cross-machine-federation-2026-07-10` | done 7, needs-human 2 | — |
+| Cross-machine mem0 memory federation — shareable-flagged subset over the peer-log substrate (mirror the agent-facts F1-1 pattern)<br/>`mem0-cross-machine-federation-2026-07-10` | done 8, needs-human 1 | — |
 | Memory delivery unification — injection pipeline for warm sessions + the fleet<br/>`memory-delivery-unification-2026-07-12` | done 8, todo 2 | Plan complete + live-verified. P-010 becomes evaluable as per-port telemetry accrues in memory_recall_stats (now unblocked by the 583 fix); P-006 resumes when the owner picks up the Claude-only compact-hook phase. |
 | Memory system: close the 4 durability/capacity gaps blocking public release<br/>`memory-public-release-hardening-2026-07-11` | done 7 | — |
 | Memory recall health (the SYSTEM half of recall quality — graded from telemetry, not transcripts)<br/>`memory-recall-health` | — | The Queen ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
+| Mobile app (Android + iOS) public-release readiness — voice pipeline, resilience, lifecycle, packaging<br/>`mobile-app-release-readiness` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
+| Mobile apps (Android + iOS) → build pipeline + releases page<br/>`mobile-apps-pipeline-releases-2026-07-13` | done 7 | Owner/coordination-gated only: (1) Android lands on the LIVE releases page when 0.0.9 is recorded from staging — coordinated with a1a71's in-flight 0.0.9 cut; (2) iOS downloadable build needs Apple Developer enrollment… |
+| Mobile apps: new papercup logo (both), voice-error diagnosis, Android VM launch<br/>`mobile-logo-voice-android-2026-07-13` | done 4 | Report complete to owner the owner: logo on both apps ✓, voice fixed + how-to-test, Android VM launched ✓, honest voice-testing capability answer (service verified; full conversation needs a real device). Disclose fullAgentEn… |
+| Mug/Pot placement and coordination health<br/>`mug-pot-coordination-health` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | Named SU agent fleets — persistent fleets with leader/member membership, psu admission, routing, bulk desktop terminals<br/>`named-su-agent-fleets-2026-06-29` | done 9, todo 1 | human reviews scope and lists Phase 1 items. |
 | Oddsmith profitability health (per-stream money scorecard)<br/>`oddsmith-profitability` | — | The Queen ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | psu→omp interactive parity hardening — durable model-provider provisioning, role-MCP launch hygiene, native-login parity<br/>`omp-psu-interactive-parity-hardening-2026-06-29` | done 7 | None — plan complete. Optional follow-ups (non-blocking): wire the /invoke route (spawn.ts) for per-role fidelity (its model is env-threaded, not a clean call-site var); the owner can re-login OMP's Anthropic token for… |
@@ -662,31 +120,40 @@ Plans are the durable record of project history — each `## Decisions` block is
 | ornith COMPREHENSION test — can IQ3_M fix a bug that requires understanding, not just a mechanical edit?<br/>`ornith-comprehension-test-2026-07-04` | todo 2 | Work both items: read each fixture, understand the bug, edit the fixture so its EXPECTED assertions all hold, then mark the item done — only after the edit is actually written. |
 | Ornith doc-resync batch — weak-model parallel test (owner-directed)<br/>`ornith-doc-resync-batch-2026-07-03` | done 4, dropped 1 | human reviews scope and lists Phase 1 items. |
 | Ornith fleet-LEADER test — decompose + delegate + supervise two mechanical edits<br/>`ornith-leader-test-2026-07-04` | todo 2 | Leader: create a fleet, launch a member to carry out the two edits, and supervise until both items are marked done — do NOT do the edits yourself. |
-| P2P live-federation crack: land the EI-8895 admit-after-connect fix, restore iMac hive membership, prove sustained cross-machine replication, then drain the drill + witness + GO/NO-GO blocked behind it<br/>`p2p-live-federation-crack-2026-07-10` | done 7 | Stay parked; let git-lane's WI-3896 drain fix + load relief land. Resume P-003 (su-d044afb5, parked on p2p:tower-cleared) → live verify + hive-git drill → GO when git-lane emits. Under AUTO: monitor loop 600s active; su… |
-| P-059 close-out + parity workstream lanes (10-member Sonnet fleet, owner-directed 2026-07-10)<br/>`p2p-parity-closeout-lanes-2026-07-10` | blocked 2, done 7, todo 1 | Fleet members: scheduler:get_next pulls P-006/P-008 now — P-006 (LIVE-1 five parity surfaces) first; leader wakes quiesced members and monitors. LIVE-2 (incl. MA-0..MA-5 multi-account legs, WI-3965) executes after LIVE-… |
+| Unified owner Inbox — capture every su owner-gate, answer from one pane, chat-grade session context<br/>`owner-inbox-single-pane-2026-07-17` | done 10 | Nothing — plan closed, fleet stood down. Residue tracked separately: EI-14380 (D-009 leader-unresponsive gap) + new bug filing on the leader loop-stall itself. |
+| Plans tab: simplified plan tracking — sidebar tab + read-first popup + per-plan session history/search<br/>`owner-plans-single-pane-2026-07-17` | done 8 | Nothing — plan complete. Auto-pipeline carries the commit → green gate → :3070 deploy. |
+| P2P live-federation crack: land the EI-8895 admit-after-connect fix, restore iMac hive membership, prove sustained cross-machine replication, then drain the drill + witness + GO/NO-GO blocked behind it<br/>`p2p-live-federation-crack-2026-07-10` | done 7 | Every item done — no open work. Candidate for closeout (plans:set-status shipped) by whichever lane owns plan hygiene. |
 | P2P coord parity — parallel lanes (fleet): wake-delivery fix, vm-rig hardening, fork guard, P-105 sandbox<br/>`p2p-parity-parallel-lanes-2026-07-09` | done 7 | — |
-| Shared-hive p2p — rest lanes to fully-working (data-plane convergence, membership lifecycle, work-distribution wiring, rig coverage, GO/NO-GO)<br/>`p2p-rest-lanes-2026-07-09` | done 9, todo 2 | su-cdb5637f (P-007 holder): re-check whether P-007's blocker (WI-3546/P-009) actually cleared now that P-009 passed — if so, resume P-007 then P-008. No other agent should self-select P-007/P-008 (owner-gated hard gate)… |
+| Two-machine per-part plan-federation merge proof (the real P-008) — tower + Avis-iMac concurrent different-part edits<br/>`p2p-part-merge-proof-2026-07-18` | done 3 | Tower leader: run convergence forensics (both edits on both machines, md5 identical, tower item:P-003 origin=remote, mac section:now origin=remote), record D-001, complete WI-5331, graduate the flag. Mac member (when yo… |
+| Shared-hive p2p — rest lanes to fully-working (data-plane convergence, membership lifecycle, work-distribution wiring, rig coverage, GO/NO-GO)<br/>`p2p-rest-lanes-2026-07-09` | done 9, dropped 2 | su-32944ed5 (P-011/WI-3548 holder): close WI-3548 citing shared-pot-release-testing/RELEASE-READINESS.md as already-satisfying evidence, or report why it is not yet satisfied. If su-32944ed5 is not live, any drain-fleet… |
+| Papercup chat public-release GRADE loop — drive the real desktop app (typed + voice), fix to all-healthy<br/>`papercup-chat-release-grade-loop-2026-07-16` | done 11 | None — grade loop ended. Re-arm only on owner redirect or if a TTFT lever lands (then pass-5 re-grade). |
+| Papercup chat (text + voice + cards + UI) public-release readiness<br/>`papercup-chat-release-readiness` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | papercup → papercusp: generalize the dev hive + migrate<br/>`papercup-to-papercusp-generalization-2026-06-19` | — | ONLY S6 (retire papercup) remains — 🔒 OWNER-GATED: the owner tests papercusp themselves, then explicitly OKs the drop. Nothing else to do autonomously; loop stopped. |
 | papercup → papercusp: finish the migration (papercusp fully replaces papercup)<br/>`papercup-to-papercusp-migration-2026-06-20` | done 4, dropped 1, todo 1 | OWNER-run quiescent window (phase5 P-007 dir mv / P-008 services / P-009 CONTRACT migration 394) per the handoff; THEN P-006 post-window cleanup — remove the papercup fallback once nothing resolves to it, then the grep-… |
 | Papercusp Bug Drain<br/>`papercusp-bug-drain-2026-07-09` | done 6 | DRAIN mission complete — P-001..P-006 all done. Residual 21 baseline bugs are either already-assigned to their owning lane, gated on cross-lane coordination (dark-flag watermark), or already fixed pending an unrelated a… |
 | Papercusp dogfood — make Papercusp collaborative-at-the-core (v5)<br/>`papercusp-dogfood-v5-2026-05-23` | — | Owner — treat identity/trust/Cupboard/profile/binding sections as live reference; for anything touching the cross-peer data layer follow Model B + the federation/revocation plans (papercusp-substrate-model-b-*, papercus… |
 | Persistent cross-platform env-bar as a separate "chrome" webview (durable: survives content navigation)<br/>`persistent-env-bar-chrome-webview-2026-06-30` | todo 4 | human reviews scope and lists Phase 1 items. |
 | Plan→Feature Pipeline Unification (v2)<br/>`plan-feature-pipeline-unification-2026-05-24` | — | Owner: re-validate the unified path with one fresh scoper `OUTPUT_MODE=plan` run on a live harness (e.g. papercup) — confirm it lands as a `source:scoper` draft plan + reviewer judges it — once the claude-token cap rese… |
-| Mug↔Kettle↔Blender↔Cup auto-loop sustainedly working (owner mission, D-015 bar)<br/>`pot-auto-loop-working-2026-07-09` | done 5, todo 1, wip 1 | su-3d03c: continue soak; P-006 METHOD.md 15-criteria edit; ping su-66488 re spawner-sidecar flag (durable restart-kill fix); triage remaining June recovering rows. |
-| Pot coordination health<br/>`pot-coordination-health` | — | The Queen ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
+| Mug↔Kettle↔Blender↔Cup auto-loop sustainedly working (owner mission, D-015 bar)<br/>`pot-auto-loop-working-2026-07-09` | done 5, todo 2 | su-3d03c: continue soak; P-006 METHOD.md 15-criteria edit; ping su-66488 re spawner-sidecar flag (durable restart-kill fix); triage remaining June recovering rows. |
+| Pot coordination health<br/>`pot-coordination-health` | — | — |
 | Presence/fleet roster must DERIVE from the authoritative session log, not self-registration<br/>`presence-derive-from-session-log-2026-06-22` | todo 5 | Owner review + prioritize Phase 1. Core fix (P-001/P-002): enrich foldFleetRoster/listFleetRoster with fetchWakeability + deriveSessionState (the enrichment assemblePresenceSnapshot already does), surface sessionState +… |
 | Production-readiness acceptance suite — full-app Tests-tab coverage<br/>`production-readiness-acceptance-2026-06-10` | done 34 | Pipeline/owner: advance anchor feature F-AUTO-MQ8UL9I7O9UB to passed via the pipeline path (validator PASS evidence is on the feature thread; runner correctly did not hand-flip). Keep this plan active as the standing pr… |
 | Production-readiness test coverage — audit + phased plan to a real, executing gate<br/>`production-readiness-test-coverage-2026-05-30` | done 31 | OWNER action to make the gate live: add the SUBMODULES_PAT repo secret (P-001's owner-half) so CI checks out the private submodules + runs the ~858-test suite; then convert the EI-52/EI-53 itLive-against-:3070 band to h… |
+| Production soak health<br/>`production-soak-health` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | PSU mode demo videos — one narrated virtual-desktop video per session mode (GRADE first)<br/>`psu-mode-demo-videos-2026-07-06` | done 8, needs-human 1, todo 5 | Owner reviews the GRADE test video (P-205) and settles the EL billing; on approval → Phase 3 (AUTO w/ auto-compaction capture per D-004, COLD AUTO, IDEATE, DRAIN), one video each via the same pipeline. |
 | pui dock consolidation — 6 panes → 2 (chat[operator\|brain] \| main[Apiary·Voice·Swarm]), Swarm tab absorbs dossier + comms<br/>`pui-dock-consolidation-2026-06-07` | — | human reviews scope and lists Phase 1 items. |
 | Quartermaster redesign: papercusp design system, sync-everywhere, per-row checkout prefs, spreadsheet workbench, filterable PO ledger<br/>`quartermaster-redesign-2026-07-04` | done 9, todo 1 | Owner: pick the normalize unblock path — (a) direct Anthropic creds for the sidecar, (b) gateway output_config passthrough, or (c) approve refactoring AnthropicLlmClient off output_config — and decide whether to deploy… |
 | Queen loop alignment — overnight autonomous hardening<br/>`queen-loop-alignment-2026-06-14` | done 5, dropped 1 | OWNER decisions remaining (both your gates): (1) arm `papercusp-queen-autonomy-armed` while awake if you want the live auto-revert net active. (2) Residual client-side polling-cadence bug behind EI-597 (the loopback `pa… |
 | Queen/Overwatch TUI-style read-only brain panes<br/>`queen-overwatch-tui-style-brain-panes-2026-06-25` | done 5, dropped 2, todo 2 | Restart/reopen any already-running dock windows to pick up the new binary. Existing `pui brain-view` processes launched before reinstall keep the old executable image in memory. Optional future work: typed tool/result t… |
 | Queue accuracy — fix the inflated "waiting on you" count + structural drift reconciliation<br/>`queue-pending-accuracy-and-drift-2026-06-16` | done 7 | Owner: (a) the deploy carries the fix — confirm the drop in the Tauri shell; (b) D-006 ext (2) — the resolve-on-thread queue-card affordance (the real close-at-decision UX) remains the one owner-gated design call (P-004… |
+| Quick Panel: tabbed shortcut popup — Saved Prompts (default) / Docs / Brainstorm<br/>`quick-panel-saved-prompts-2026-07-13` | done 12 | None — plan complete. Follow-ups live outside: EI-11530 (test-substrate fail-fast) in the improvements queue; D-006 deferrals await owner appetite. |
+| Quick Panel: reuse the AdvShell POT / AGENTS running pills in the popup header<br/>`quick-panel-status-pills-2026-07-13` | done 4 | Nothing — feature complete and live-verified. Edits are in the staging tree; git-sync will commit + the pipeline will deploy to :3070. No further action on this plan. |
 | Recall drill 2 — memory injection: fresh session + post-compaction re-prime<br/>`recall-drill-2-injection-2026-07-12` | done 1 | Member claims P-001's work item and runs the three-step protocol in order. |
 | Recall drill: fixture step + watchword report<br/>`recall-utilization-drill-2026-07-12` | done 1 | None. Drill closed: WI-4358 passed with both evidence values (script OK output + watchword mulberry-owl-7). |
 | Recipes — activate the dormant reuse + popular-surfacing loop (audit follow-up)<br/>`recipes-reuse-activation-2026-06-22` | done 5 | DONE. Optional follow-up (multi-DAY): re-measure harness_shared.code_recipe_runs.reused + tool_invocations recipes:search/recipes:run organic-call counts after a fleet window to quantify reuse-adoption uplift vs the bas… |
+| Release pipeline integrity<br/>`release-integrity-health` | — | The Mug ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | Verify the agent self-improvement loop (edit → auto-commit → main) in the Mac release build<br/>`release-selfimprove-canary-mac-2026-07-09` | blocked 1, done 3, wip 1 | — |
+| Drain non-P2P reliability, performance, robustness, and harnessing work<br/>`reliability-nonp2p-drain-2026-07-13` | done 4 | Once WI-5102 is resolved by the owner and the green-checkpoint gate clears, a fleet member should re-claim P-004 and run the deploy+parity leg (fresh checkpoint on latest staging SHA -> deploy :3070 -> verify parity ->… |
 | Remaining papercusp platform work — 14-lane agent hand-off<br/>`remaining-papercusp-platform-handoff-2026-06-29` | todo 14 | Owner assigns one agent per lane (claim the lane's source plan items via coord:orient + plans:set-status wip); each agent works its lane's source plans, not this coordination item. This plan is the index, not the work t… |
 | Resource-lock layer test hardening (continuous loop)<br/>`resource-locks-test-hardening-2026-06-22` | — | DONE — loop ended (pure surface exhausted; remaining modules are PG-backed/integration-shaped). To resume, re-arm on the next domain: the adjacent coordination layer (agent-tools/coordination/), the ledgers (decision-le… |
 | rubrics:propose loss-guards + per-criterion replication drills — never silently drop a testing procedure<br/>`rubric-loss-guards-2026-07-12` | done 7 | Deferred (own work-item): backfill copy-runnable replication drills for the other 21 su-agent-behavior criteria + set the rubric-level methodRef. Nothing blocking; plan closed. |
@@ -704,7 +171,9 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Unified work-item ledger — every piece of work becomes a tracked, cross-linked work-item<br/>`unified-work-item-ledger-2026-06-21` | blocked 1, done 8, needs-human 1, todo 1 | Owner: (1) resume the owner-gate walkthrough to choose which drive-set plans to plans:start (flag papercusp-plan-workitem-promotion is ON → promotion auto-fires) — that completes P-005's backfill. (2) optionally add the… |
 | Universal turn-end observations, rubric coverage + lifecycle, tool-health self-improvement rail, plan-template expansion<br/>`universal-observations-rubric-coverage-selfimprove-2026-06-21` | — | human reviews scope and lists Phase 1 items. |
 | Universal Schema — cross-marketplace product schema synthesis (Restart)<br/>`universal-schema-2026-05-30` | done 6, todo 1 | Owner-gated (NOT auto-run): the full autonomous Tier-1 RUN needs (a) `restart` booted as a live harness — it is `registered`, not instantiated, so running it = launching a committing fleet on the real Restart repo; (b)… |
-| Voice + TTS public-release readiness: fast Papercup front-end, detached deep brain, key-free wake word<br/>`voice-public-release-readiness-2026-07-12` | done 13, todo 4, wip 1 | su-f69a7 (post-compaction): re-run the voice suite (packages/operator-core/lib/voice-node/ + tts-synth + operator-voice-io + operator-voice-proxy) to confirm the agent-peer env-stub fix, then RE-FIRE the green-checkpoin… |
+| Update Center 3-platform test suite (public-release readiness)<br/>`update-center-3-platform-test-suite-2026-07-15` | done 15, needs-human 3 | HUMAN: one manual in-app-update GUI click-through pass on packaged macOS + Windows (VNC/console) to close P-022 + P-031/P-032. Windows on-VM E2E is now runnable (WI-5305 fixed) for a future agent with a rig window. No a… |
+| Voice + TTS public-release readiness: fast Papercup front-end, detached deep brain, key-free wake word<br/>`voice-public-release-readiness-2026-07-12` | blocked 1, done 14, todo 3 | OWNER (the owner): the sole remaining RELEASE bar is your live mic acceptance — point your app at :3070, hold PTT (or say 'hey papercup') + a command; confirm it REPLIES (not spins forever) and does NOT mis-hear its own TTS a… |
+| Desktop voice — thorough independent QA verification sweep for public release<br/>`voice-release-qa-sweep-2026-07-14` | done 21 | su-cb434 delivers go/no-go report to the owner; residual human-only gate = live mic-hardware acceptance (build plan voice-public-release-readiness-2026-07-12 P-010), de-risked by automated browser mic→whisper round-trip. |
 | Embed-429 retry/backoff + watchdog rate-limit classification & dedup-key sharpening<br/>`watchdog-embed-resilience-and-dedup-2026-06-17` | done 17 | P-010 dispatch gateway-routing carried by watchdog-and-exposed P-005 (on the 2m loop); P-012 notes resolved (P-004 satisfied, P-003 queued). |
 | Whole-app test-coverage breadth — drive every source module to a per-module unit/integration test<br/>`whole-app-test-coverage-breadth-2026-06-14` | done 15, dropped 1 | Verify Wave-D subagent output (re-run green + lint:tests, checkpoint), then keep deepening continuously: operator-core/lib handler branch coverage, then e2e route/flow specs via the dedicated-Xvfb-Tauri harness (P-014).… |
 | WI-644 — federation resilience: offline catch-up + operator-restart reconnect (EI-2757)<br/>`wi644-federation-resilience-2026-06-23` | blocked 1, todo 4 | CHEAP-POLL each 2m loop wake (don't spin expensively): run ONE query — `bash /tmp/fed.sh b sql "select feature_id,harness_slug from harness_shared.harness_features_consolidated where title ilike 'WI640-FEDTEST%A2B%' or… |
@@ -712,7 +181,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Windows desktop — PUBLIC-release readiness (beyond alpha)<br/>`windows-public-release-readiness-2026-06-25` | done 3, needs-human 1, todo 1 | OWNER (P-003, the one gate): buy an EV cert (instant SmartScreen trust; cloud-HSM e.g. Azure Key Vault + azuresigntool) or an OV .pfx (cheaper, reputation builds slowly), set the per-build env from the runbook, re-run b… |
 | Worktree discipline: enforce single shared staging tree (prompt rule + cross-client PreToolUse guard + clean up stray worktrees)<br/>`worktree-discipline-single-tree-enforcement-2026-06-30` | done 7 | human reviews scope and lists Phase 1 items. |
 
-## ready (126)
+## ready (132)
 
 | Plan | Items | Next action |
 |---|---|---|
@@ -720,10 +189,12 @@ Plans are the durable record of project history — each `## Decisions` block is
 | GRADE-mode run — score one recent agent delivery against the su-agent-behavior rubric<br/>`agent-behavior-grade-run-2026-07-06` | done 4 | Session complete — no further action; a future GRADE run should pick a delivery that exercises tool-discipline/engineering-discipline/routing-appropriateness more directly (e.g. a leader/fleet run, or one with a messier… |
 | Demo grade run v2 (Capture A fixture): Opus grader → visible Sonnet-5 gradee on mem0-federation P-007 privacy tests → GRADE mode vs su-agent-behavior → scorecard<br/>`agent-behavior-grade-run-2026-07-12` | done 5 | Run complete. Residual (NOT this plan): gradee su-5ca49 walled on aviynw10 session-limit until 4am with WI-4305 completion ceremony (PK/H6 follow-up + work_items:complete) unfinished — finding preserved on the WI-4305 c… |
 | Agent-chat-first onboarding<br/>`agent-first-onboarding-2026-07-03` | done 19 | Plan work complete. Remaining: (1) watch the 02:46 gate verdict → green pin + deploy; red → diagnose the NEW class. (2) Final report to owner. Standing follow-ups elsewhere: WI-2197 (mac/win shortcut parity), EI-7252, E… |
+| Agent inspector back navigation and fleet tool exposure<br/>`agent-inspector-back-and-fleet-tool-exposure-2026-07-16` | done 3 | Allow the normal git-sync and release pipeline to carry the verified staging changes; newly launched Codex sessions will receive the corrected overlay. |
 | Fleet/plan-free agent launch + session resume — capability:launch-agent (ad-hoc · resume · fork)<br/>`agent-launch-resume-primitives-2026-07-12` | done 16 | Plan is DONE — nothing outstanding. Next: the owner's queued mandate (fact `owner-mandate-queue-post-launch-agent`) — (1) full END-TO-END test of the update system, never done: cut a release via the standard LOCAL path,… |
-| Agent operability clarity — full session-audit fixes<br/>`agent-operability-clarity-full-audit-2026-07-13` | done 2, todo 12 | P-001, then P-002/P-003/P-004 by risk and dependency. Every item ships with a recurrence test and an evidence-bearing completion. |
 | Agentic docs-qa — "Ask a question" uses real docs:search tools instead of deterministic RAG<br/>`agentic-docs-qa-2026-07-06` | done 8 | P-008 (only remaining): verify on :3070 (what the owner hits). Code is on staging; it rides green-checkpoint->main->deploy (force-deploy ships the PIN not staging edits, so cannot shortcut). WHEN :3070 deploys: curl :30… |
+| Ambient semantic push: the agent's turn stream as a standing vector query (coord-layer awareness)<br/>`ambient-semantic-push-2026-07-14` | done 11, todo 1, wip 1 | — |
 | Templates — composable component+guidance+checks units; agent-composed apps on papercusp<br/>`app-templates-2026-07-04` | done 26, todo 4 | Decide with owner whether a round-3 builder is needed (round-2 sonnet:medium succeeded — remaining gaps were doc-polish; candidate: an agentic-desktop-app build to exercise ops-hives) or move to P-011 thin materializer… |
+| Autonomous loop → production: full reliability/perf audit + sonnet-5 trimmed gateway migration (owner directive 2026-07-02)<br/>`autonomous-loop-prod-audit-2026-07-02` | blocked 1, done 18, dropped 2 | Confirm gates green (bg task) → restart batches P-008 + layer-4 gym retry live → NOV-1 QD-guided ideation → federated Phase 0. Audit plan then COMPLETE on implementation items. |
 | Await timeout-fallback defaults — lower 4h→30min, consolidate, detect, re-arm guidance<br/>`await-timeout-fallback-defaults-2026-07-03` | done 6 | NONE for this plan — complete. Promotion staging->main is gated only by 2 PRE-EXISTING reds in lib/sync/hyperbee/ (outbox-drain-stall WI-2009 console.error hygiene; hive-epoch-read-cut-witness epoch-encryption) that are… |
 | Backend 100% reliable under fleet load<br/>`backend-reliability-100pct-2026-07-03` | done 8, todo 2 | NOTHING for su to auto-do: the only open items are P-003 (W1.1 zero-downtime deploy) + P-004 (W5 event-loop scale-out), both HARD-DEFERRED to an owner-attended session (:3170-only, high-stakes, never auto-flip). Owner:… |
 | Bee context efficiency — fresh-context warm-inject, precomputed work-item dossier, and work-item checkpoint (the bee translation of the Queen brief-cache wins)<br/>`bee-context-efficiency-2026-06-14` | done 16 | Optional follow-up (separate from WI-593, not blocking): bring up the bee-transcript-cap routine dry-run-first, then flip BEE_TRANSCRIPT_CAP (the last remaining dark flag on this plan; default-OFF + seeded INACTIVE). No… |
@@ -741,18 +212,21 @@ Plans are the durable record of project history — each `## Decisions` block is
 | bg-host freeze + event-loop stall (git-sync/memory): memory-leak→GC saturation→routinesTick/git-sync freeze→~11min watchdog restart-loop<br/>`bg-host-freeze-eventloop-stall-2026-06-30` | done 6 | Plan is complete — human to review and close/archive, or open a follow-up plan if new bg-host memory growth resumes above the 40G bound. |
 | Browser-automation demo — disposable inbox creation<br/>`browser-automation-tempmail-demo-2026-06-18` | needs-human 1, todo 7 | On owner's go, confirm parameters (count — default 4; service — default mail.tm; include the optional receive-flourish? default no), then run Phase 1. |
 | Caching layer — generic tag-based cache with ECA-rule invalidation (rules engine + invalidation-bus + projection-index; no Redis)<br/>`caching-layer-tag-eca-2026-06-22` | done 20 | None — caching plan fully done. mig 396 lands live via the deploy pipeline (boot-apply). The only noted non-plan follow remains: coarse/debounced invalidation for the 6 append-heavy logs (audit_log etc.), a future perf… |
+| Carry the idle plan backlog to completion — owner-directed drain (2026-07-17)<br/>`carry-idle-plans-to-completion-2026-07-17` | done 12 | — |
 | Clear papercusp non-terminal backlog (10-agent Sonnet-5 fleet)<br/>`clear-papercusp-backlog-2026-07-02` | done 1 | Canary-launch 1 sonnet member → verify boot+first turn → +2. Workers pull ONLY via scheduler:get_next {harness:papercusp}; already-fixed check first; fix+test+verify+complete, or close-with-reason, or block/release with… |
 | Stabilize conversations rendering and loading<br/>`conversations-render-and-load-stability-2026-07-10` | done 3 | — |
 | Conversations unified inbox redesign<br/>`conversations-unified-inbox-redesign-2026-07-11` | done 5 | — |
-| Coordination-layer unification + data-sync hardening<br/>`coordination-unification-data-sync-hardening-2026-06-23` | done 11, dropped 4 | Nothing outstanding — plan fully complete + verified. (The hive override re-seed propagated the prompt change to live su launches; a green-checkpoint run will confirm fleet-wide green.) |
 | Universal critical-process supervisor — probe-driven respawn + flap damping (EI-7021 design)<br/>`critical-process-supervisor-2026-07-04` | done 7 | P-001 (registry extension). P-002 (failed-unit reconciler) delivers the fastest live value: `papercup-live-federation-gate.service` sits `loaded failed failed` on the dev box right now and nothing notices. |
-| Cup-lexicon full rename — retire all bee/hive naming (backend ids + prompts + docs + site)<br/>`cup-lexicon-full-rename-2026-07-09` | done 8, dropped 1 | su-cc18dce3 executes P-011 (WI-3467); leader monitors, spot-verifies completion claims (don't trust self-report), confirms git-sync recovers before the deploy step lands, then loop:end once P-011 is genuinely done. |
+| Cup-lexicon full rename — retire all bee/hive naming (backend ids + prompts + docs + site)<br/>`cup-lexicon-full-rename-2026-07-09` | blocked 1, done 8, dropped 1 | su-cc18dce3 executes P-011 (WI-3467); leader monitors, spot-verifies completion claims (don't trust self-report), confirms git-sync recovers before the deploy step lands, then loop:end once P-011 is genuinely done. |
+| Cupboard app distribution — an "Apps" tab distributing both standalone products (Tauri apps like Oddsmith) and workspace-bundle apps<br/>`cupboard-app-distribution-2026-07-14` | done 8, todo 1 | OWNER (the owner) — approve the design (esp. D-001..D-004 and the three open questions in D-005), then I build Phase 1. Sequencing note: publishing Oddsmith itself as the first app listing (P-007) depends on Oddsmith's standa… |
 | defineTool token reduction — the uncovered output surfaces (shell / code:run) + an RTK-derived dedup shaper<br/>`definetool-token-reduction-uncovered-surfaces-2026-07-06` | done 14 | Nothing blocking — plan + extended scope (e2e + cross-platform) DONE. Auto-flowing to live: WI-3159 fix + positional flip via the deploy pipeline (~≤1h; watchable at /admin/git). Optional unclaimed follow-ups: WI-3164 s… |
 | defineTool usage-insights tab — tool_invocations analytics + token-optimization adoption dashboard<br/>`definetool-usage-insights-tab-2026-06-22` | done 5 | None — plan complete. The tab now surfaces ongoing token-opt signals; it immediately flagged plans:attention (~134GB/day) and plans:list (EI-2661, ~340GB/7d) as the top byte sinks — the real perf levers, far above any e… |
 | Bugs surfaced by the self-improvement demo shoot — headless sonnet:high lane<br/>`demo-shoot-bugs-2026-07-12` | done 3 | — |
 | Manual deploy trigger + gate-unblock tooling (so a gate-clean change isn't hostage to the auto-on-green pipeline)<br/>`deploy-trigger-and-gate-unblock-2026-06-21` | — | Owner/su-815e2 to decide: roll su-9d080 into Phase 3 (P-005 prompt-tree updates — owner's explicit deliverable; DEPLOY_PIPELINE_NOTE appears partially landed in built artifacts but the full prompt-tree + agent-insights… |
-| Desktop auto-update fully operational (manifest fixes → proxy → 2-cut E2E on win/mac/linux VMs)<br/>`desktop-auto-update-operational-2026-07-09` | done 7, dropped 1 | human reviews scope and lists Phase 1 items. |
+| Desktop auto-update fully operational (manifest fixes → proxy → 2-cut E2E on win/mac/linux VMs)<br/>`desktop-auto-update-operational-2026-07-09` | blocked 1, done 7 | human reviews scope and lists Phase 1 items. |
+| Desktop build speed — warm caches, sccache, gui-only, fast linker, profile tuning (tri-platform)<br/>`desktop-build-speed-2026-07-16` | blocked 1, done 9 | On cut completion: security-audit gate → masked r2 upload + record-release 0.0.12 (fixed window) → download page re-publish → append mac/win leg wall-clocks to the runbook + P-002/P-010 notes. Then the E2E install-verif… |
 | Deterministic commit ↔ work-item attribution (derived, agent-free)<br/>`deterministic-commit-workitem-attribution-2026-06-22` | done 6 | P-005 (doc-drift attribution consumer: join git_sync_commit_attribution in sweep-after-sync to enrich a drift flag with the work-item that changed the code) — the remaining build item; pairs with the doc-steward consume… |
+| Deterministic context carry: limit-derived thresholds, papercusp-owned compaction, system-owned tracking<br/>`deterministic-context-carry-2026-07-14` | done 28, dropped 1 | P-019 residual-pass per-class retirement rides organic evidence (n>=30 strict-zero → session:carry-drill op:retire per class). No active driving; any fleet anomaly the owner spots routes back here. |
 | Dummy demo: Caesar cipher module + tests<br/>`dummy-demo-caesar-cipher-2026-06-30` | done 3 | human reviews scope and lists Phase 1 items. |
 | Dummy demo plan — exercise the plan→implement flow end-to-end<br/>`dummy-demo-plan-2026-06-29` | done 3 | human reviews scope and lists Phase 1 items. |
 | Dummy demo plan — Roman numeral converter (planning-flow smoke test)<br/>`dummy-demo-roman-2026-06-29` | done 3 | human reviews scope and lists Phase 1 items. |
@@ -781,11 +255,10 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Impartial benchmark suite — proving the Papercusp Hive contribution fairly to third parties<br/>`impartial-benchmark-suite-2026-06-15` | done 29, needs-human 1, todo 3 | Owner: wait for mini-swe-agent run to complete, then grade via Grade button in Eval tab (dev shell :3055) + review the hive vs mini-swe-agent delta in Compare view. Agent work: P-008 (best-of-N live driver wiring) is op… |
 | Infra perf & reliability audit — round 3 (2026-06-19, post-cutover)<br/>`infra-perf-reliability-audit-round3-2026-06-19` | done 13, dropped 2 | Verify+land the regression rig (round4 P-013, dispatch-orphan-rate SLO detector that would've caught this 91% regression); then secondary items P-011 worker-offload, P-013 reaper, P-015 observability. Owner-gated (PgBou… |
 | Infra reliability — self-healing & supervision layer (complement to round-3)<br/>`infra-self-healing-supervision-2026-06-19` | done 12 | Owner (post-deploy verification, unchanged): drill a routine-engine freeze → confirm infra-liveness alarm + single-primary guard escalate; ARM the two default-OFF levers after a load check (PAPERCUSP_LAG_SELF_RESTART=1,… |
-| Learning quiet focus pass<br/>`learning-quiet-focus-pass-2026-07-12` | blocked 1, done 7 | Implement P-001 through P-006, add regression coverage, then verify the production build and live Tauri experience. |
 | Learning tab → align the UI with how the learning system actually works [owner 2026-07-13]<br/>`learning-tab-alignment-2026-07-13` | blocked 1, done 5 | P-005 (rubrics governance UI) deliberately SEQUENCED AFTER 6cfba's learning→knowledge-packs rename (cupboard-public-release P-001) so it builds on the renamed surface — 6cfba awaits gate plan:learning-tab-alignment-2026… |
 | Linking / subscription / event-family hardening: wake-vs-inject clarity, link semantics, verified emit defects, and the owner product forks<br/>`linking-notify-family-hardening-2026-07-11` | done 10 | — |
 | Live-configurability audit — pull hardcoded policy into runtime defineTool control endpoints<br/>`live-configurability-audit-2026-06-20` | done 25 | OWNER ACTIONS when you wake: (1) flip papercusp-auth-config-overrides ON to activate the P-019 + P-010 §G auth/tier dials (inert until ratified). (2) The whole plan is now SHIPPED — only the long-tail deferred sub-parts… |
-| Local concurrent inference — llama-server behind the gateway now, vLLM/AWQ lane next (many simultaneous local agents)<br/>`local-concurrent-inference-2026-07-02` | blocked 1, done 10, todo 4 | No un-gated, non-colliding work left for THIS session — loop ended 2026-07-02. Remaining: (1) P-014 (make recommend.ts read the hardware matrix as single source of truth) is un-gated but overlaps the LIVE wizard agent W… |
+| Local concurrent inference — llama-server behind the gateway now, vLLM/AWQ lane next (many simultaneous local agents)<br/>`local-concurrent-inference-2026-07-02` | blocked 1, done 11, todo 3 | No un-gated, non-colliding work left for THIS session — loop ended 2026-07-02. Remaining: (1) P-014 (make recommend.ts read the hardware matrix as single source of truth) is un-gated but overlaps the LIVE wizard agent W… |
 | Interval-recurring routines — engine-managed loops + scale to hundreds<br/>`loop-routines-interval-recurrence-2026-06-20` | blocked 1, done 3, dropped 3 | Deploy-verify (B-LOOP-FIN-3 task 3): when the deploy gate clears, confirm mig 323 boot-applies + the loop engine + arm/end/status verbs go live on :3070. Committed to staging @7cd17c863, not yet deployed. |
 | macOS desktop release readiness — build pipeline recovery, packaging + thorough test pass<br/>`mac-desktop-release-readiness-2026-06-11` | done 21, dropped 1 | Owner: back up the updater signing key off-box (sharpest risk — single copy), then the smoke-test-pot chat turn; D-010 ratification whenever ready. |
 | Fair A/B benchmark: memory recall on real corpus/queries — current stack vs AGE-augmented retrieval<br/>`memory-recall-age-ab-benchmark-2026-07-11` | done 5, todo 8 | When rerun-fair.sh completes: verify the w=0 identity PASSed, tabulate the .rrf sweep numbers, rewrite REPORT.md, re-issue the verdict against pre-registered D-001, update fact age-ab-benchmark-verdict + memory, close P… |
@@ -795,7 +268,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Native terminal desktop — a sibling native terminal window glued to the Tauri GUI (NO xterm.js)<br/>`native-terminal-desktop-2026-06-06` | done 16 | Genuinely blocked only: macOS SwiftTerm / Windows ConPTY embeds need their platforms' toolchains (the EmbeddedView seam is ready). Owner conveniences: restart the desktop to pick up the 3-pane dock + minimize/alt-tab be… |
 | Operator-vite UI consolidation: adopt shared RichGrid (virtualize+memo) + extract shared primitives<br/>`operator-vite-ui-consolidation-2026-06-16` | — | U1 #1 — convert the AdvConversationsTab coord feed (and its 3 rails) to RichGrid virtualMode + onLoadMore (highest perf ROI; the F-D1/F-D2 fix). Then migrate the remaining StatusPill/ListRow/Chip call-sites, and pick up… |
 | Ornith behaviour-test batch — real mixed-kind work for weak-model fleet test<br/>`ornith-behaviour-test-batch-2026-07-03` | done 12 | Plan complete — ready for drain or new items. |
-| Two-ornith comms probe ROUND 2 — on genuinely concurrent llama-server (Phase-1 exit gate for local-concurrent-inference)<br/>`ornith-comms-probe-r2-2026-07-02` | dropped 1, todo 1 | Each member: work_items:claim_next gives you a DISTINCT lane (P-001 producer / P-002 consumer). Do EXACTLY your lane's instructions, one coord:send, then stop. No loops, no edits. |
+| Two-ornith comms probe ROUND 2 — on genuinely concurrent llama-server (Phase-1 exit gate for local-concurrent-inference)<br/>`ornith-comms-probe-r2-2026-07-02` | done 1, dropped 1 | Each member: work_items:claim_next gives you a DISTINCT lane (P-001 producer / P-002 consumer). Do EXACTLY your lane's instructions, one coord:send, then stop. No loops, no edits. |
 | Ornith drift-fix, spoon-fed — remove named dead refs (comprehension-ceiling probe)<br/>`ornith-drift-spoonfed-2026-07-04` | todo 1 | human reviews scope and lists Phase 1 items. |
 | Ornith edit-competence baseline — one trivial mechanical edit<br/>`ornith-edit-baseline-2026-07-04` | done 1 | human reviews scope and lists Phase 1 items. |
 | Ornith Iter-6 — eval built-in DISABLED (structural fix) on the open-ended verify task<br/>`ornith-eval-disabled-2026-07-04` | done 1 | Plan body complete. |
@@ -807,11 +280,12 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Ornith Iter-4 — reproducibility of the verification-scaffolding win (same open-ended task, unchanged prompt)<br/>`ornith-verify-scaffold-rerun-2026-07-04` | todo 1 | human reviews scope and lists Phase 1 items. |
 | Owner ask batch — small platform tasks (2026-07-06)<br/>`owner-ask-batch-2026-07-06` | blocked 1, done 3 | Peer finishes WI-3265 (notes app). This plan's batch is otherwise complete. |
 | Owner-presence: record a human-turn signal so ownerPresent reflects owner-initiated turns (all backends)<br/>`owner-presence-human-turn-signal-2026-07-11` | done 5 | P-005 (stretch): touch presence from the /adv desktop-UI send channel (owner clicking Send in the webview — a socket-inject path that bypasses onStdin). Assess + implement or file as tracked follow-up. |
-| P2P git (hive-git) live activation: wire the replication plane, prove it on the 2-machine rig, run a real bridged hive<br/>`p2p-git-live-activation-2026-07-09` | blocked 1, done 15, todo 6, wip 3 | RESUME FROM HERE (no code work left — deploy + verify): (1) get WI-4241 onto the running VM packaged build (+ tower) — OPEN: L1 flagged "how WI-4241 reaches the VM packaged build"; receive-side pickup vs the no-tower-re… |
+| P2P git (hive-git) live activation: wire the replication plane, prove it on the 2-machine rig, run a real bridged hive<br/>`p2p-git-live-activation-2026-07-09` | done 21, todo 4, wip 2 | Owner-directed Leg A–G live drill is complete; awaiting owner steer on Phase 4 — start the P-402 soak, make the P-404 default-mode decision, or re-federate the tower for the physical freeze-failover. |
+| Shared-hive p2p → public release: remaining non-git, non-coordination lanes (data-plane convergence, work-distribution activation, attestation, mem0 witness, packaging + GO/NO-GO)<br/>`p2p-public-release-remaining-lanes-2026-07-16` | blocked 2, done 14, todo 4 | d93ac: WI-5321 (frames handed over, --keep-up). bce40: P-406 intake loop. 6ffd5: one federate-B→A repro run, then park. Leader: WI-5061 confirming probe; restart gate timer when WI-5321 lands. |
 | P2P work distribution: opt-in, pull-based hand-off across hive peers (one substrate for SU + queen-bee)<br/>`p2p-work-distribution-2026-07-02` | done 27, todo 2 | Owner: (1) the /res GPU-contribution a/b decision (recommend b = local inference server), and (2) sign-off on the foreign-work trust model to unblock WI-1937 executor spawn leg (needs P-105 sandbox first). Non-gated wir… |
 | papercup→papercusp Phase 5: physical rename (repo dir, package, schema, services)<br/>`papercup-physical-rename-phase5-2026-06-20` | done 4, dropped 3, todo 2 | OWNER: run ONE quiescent window per the handoff — Step A place+apply migration 394 via db:migrate → Step B repo-dir mv+symlink (P-007) → Step C systemd rename, dev-api LAST (P-008). All safe/reversible code already land… |
 | Unify presence / assignment / coord — one navigable model + discoverable history<br/>`presence-coord-unification-2026-07-01` | done 10, todo 1 | P-004 (retention reaper TTL + adv_sessions.launch_argv) is the last Phase-2 item; then P-010 rollout (checkpoint-run → deploy → verify :3070 + remediate in-flight agents) once the green-checkpoint/git-sync pipeline is h… |
-| Production test-readiness: trustworthy signal + green suite (wave 2)<br/>`production-test-readiness-2026-07-06` | done 12 | Pull the next scheduler item and work/close it with evidence. |
+| Production test-readiness: trustworthy signal + green suite (wave 2)<br/>`production-test-readiness-2026-07-06` | done 9, todo 2, wip 1 | Fleet leader should narrow/fix this member's scheduler claim spec or let a production-test-readiness item become unclaimed; su-310f5 loop is stopping to avoid spinning on peer-owned/out-of-plan items. |
 | psu --fork: tell the forked agent it is a fork (identity + ownership disclosure at first turn)<br/>`psu-fork-disclosure-2026-07-07` | — | P-001 — inject the fork-disclosure block into the forked session's first turn. |
 | PSU wrappers + plan-tracked terminal launch<br/>`psu-wrappers-and-plan-tracked-launch-2026-05-30` | — | human confirms phase ordering and the open questions in Decisions, then we kick off Phase A (rename + codex wrapper + bootstrap endpoint). |
 | Quartermaster — spreadsheet→research→approval→checkout desktop app<br/>`quartermaster-desktop-2026-07-03` | done 16, wip 2 | human reviews scope and lists Phase 1 items. |
@@ -826,7 +300,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Auto-release work-item claims when an agent session/console dies — event-driven primary + scheduled backstop<br/>`session-death-claim-release-2026-07-11` | done 3 | Plan complete — no further work queued. Suggest EI-9807 be marked resolved against this fix (owner/leader call, not mine to close). Reported to fleet leader su-b2188d6b via coord:send. |
 | Shared-hive production hardening — cross-layer audit findings + peer addressing + git-sync edges<br/>`shared-hive-hardening-2026-06-13` | done 18 | P-003 DONE — Phase 1 fully closed. Remaining real-hardware-gated items: P-008 (live cross-fork PR open, needs a real non-collaborator gh account + fork) and P-009 (cross-machine peer-log compaction replication, sub-plan… |
 | WI-259 — shared-hive cross-member content federation (membership-aware guard)<br/>`shared-hive-member-content-federation-2026-06-20` | done 6 | WI-971: confirm the live .deb runs SUBSTRATE_SIDECAR on/off; if sidecar — wire the outbox drain in the SIDECAR's rekey path (substrate-sidecar-host handleRekey, mirror handleBootHarness:322 ensureRelocatedSendSideWired)… |
-| Shared-hive P2P → public release: LOCAL-ONLY verification + hardening program (no Hetzner)<br/>`shared-hive-p2p-release-readiness-2026-07-03` | done 8, dropped 1, todo 2, wip 3 | Lane leaders drive their three plans in parallel; su-4d7a4 monitors all lanes and synthesizes the P-014 GO/NO-GO when they green. |
+| Shared-hive P2P → public release: LOCAL-ONLY verification + hardening program (no Hetzner)<br/>`shared-hive-p2p-release-readiness-2026-07-03` | done 9, dropped 5 | Candidate for closeout (plans:set-status shipped) by whichever lane owns plan hygiene — no further self-select work here; verify the successor plans (remaining-lanes-2026-07-16, COORDINATION su-18f2f) independently befo… |
 | Sonnet-5:medium agent behavior verification loop<br/>`sonnet5-medium-behavior-test-2026-07-05` | done 6 | ITERATION 1 COMPLETE (subject su-86e3ef73, sonnet-5[1m]:medium, default system account): 6/6 PASS on action evidence. S1 self-recall PASS (sessions:search self/verbatim->hybrid->list; honest "won't guess at a quote that… |
 | SU IDEATE/GRADE ← Blender/Scout learning substrate: close the loop (outcomes, lenses, grade→revise), raise file-time quality, mechanize pacing<br/>`su-ideate-learning-substrate-2026-07-10` | done 22 | DONE — no further executor action. Owner (the owner) report delivered; awaiting any owner follow-up (e.g. flip frontmatter status ready→shipped, or greenlight live grade-iter2 M-series batteries to exercise the P-015 IDEATE/G… |
 | SUBSTRATE_SIDECAR — full store-relocation into a sidecar (Corestore file-lock mandates it)<br/>`substrate-sidecar-store-relocation-2026-06-23` | done 6 | DONE — all P-001..P-006 complete. green-checkpoint runs the full suite before main; watch the gate for any default-ON substrate-boot fallout. No further action. |
@@ -838,31 +312,33 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Watchdog audit follow-through — fix the exposed system issues + harden the watchdog itself<br/>`watchdog-and-exposed-systems-improvement-2026-06-18` | done 15, dropped 1 | COMPLETE — no remaining Brief 6 work. WI-716 (dispatch context-overflow fix) awaits an observed/human session as it touches the fleet-critical auto-implement back-edge. Loop ended. |
 | Windows desktop feature parity — test surface + fix loop<br/>`windows-desktop-feature-parity-2026-07-02` | done 28, todo 3 | Owner (or a credentialed VM run) executes the final attended acceptance = P-030 functional click-through on a fresh VM snapshot: create pot+harness -> one live agent turn -> terminal launch -> coord wake -> P-023 'Focus… |
 | Windows desktop release readiness — build, package, E2E-verify, publish<br/>`windows-desktop-release-readiness-2026-06-11` | done 20, dropped 1, needs-human 1 | OWNER actions (4, all owner-walled): (1) provide an Authenticode code-signing cert (D-004) — the hard gate for public distribution / SmartScreen; (2) P-011: in-VM GitHub sign-in + Anthropic credential + one live agent t… |
-| Work-item dependency model + maintained readiness (+ owner-gated work-item unification) — the data-model foundation under the scheduler + cache<br/>`work-item-deps-and-readiness-2026-06-22` | done 9, todo 1 | AUTONOMOUS WORK COMPLETE. Remaining is owner/coord-owner-gated: (1) OWNER decide work_items PK workspace-scoping scheme (sentinel 'operator:'+ws keeping the PK, OR add workspace_id to the PK with FK changes) — latent cr… |
+| Work-item Chat: ride the claim-time context path (dossier-first persona + tools), retire the stale SPEC.md ritual<br/>`work-item-chat-context-modernize-2026-07-18` | done 6, todo 2 | Leader audits P-007 (Tauri e2e evidence) + P-008 (live :3170 timing) completions, flips P-008 plan item, sets plan shipped, final report to the owner. |
+| Work-item dependency model + maintained readiness (+ owner-gated work-item unification) — the data-model foundation under the scheduler + cache<br/>`work-item-deps-and-readiness-2026-06-22` | done 9, needs-human 1 | AUTONOMOUS WORK COMPLETE. Remaining is owner/coord-owner-gated: (1) OWNER decide work_items PK workspace-scoping scheme (sentinel 'operator:'+ws keeping the PK, OR add workspace_id to the PK with FK changes) — latent cr… |
 | Workspace data-isolation leaks — audit + remediation<br/>`workspace-data-isolation-leaks-2026-06-17` | done 6, needs-human 1 | Owner/su-9d080: complete cluster (a) — migrate coord/presence data off 'default' then flip the presence resolvers (P-002 coord-plane); separately, reconcile the residual plan_parts split (10929 papercusp rows still in '… |
 | DESIGN (owner review): workspace-scoped Queen/Overwatch/Scout/Sentinel + hive-scoped bees — cross-hive learning via one central brain<br/>`workspace-scoped-coordination-2026-06-20` | done 6 | OWNER: the brains run workspace-scoped behind the (ON) flag with the per-hive OFF path as kill-switch. When ready to make it permanent, graduate the flag default + schedule the per-hive-brain code deletion (separate cle… |
 | Zero (Rocicorp) decommission — remove the dead sync layer<br/>`zero-decommission-2026-06-20` | done 2 | Nothing required. Optional cosmetic-only: one phantom @rocicorp/zero orphan in root package-lock.json (extraneous block of the deleted libs/zero-harness workspace — installs nothing) prunes on the next clean `npm instal… |
 
-## draft (79)
+## draft (84)
 
 | Plan | Items | Next action |
 |---|---|---|
 | Account-aware rate governor + per-account in-process/Queen routing<br/>`account-aware-rate-governor-routing-2026-06-16` | — | Phase 1 (account-aware opus pause) then Phase 2 (route Queen-brain + in-process calls per-account). |
 | Auto-pin bee routing to a credential for prompt-cache affinity<br/>`account-cache-affinity-auto-pin-2026-06-16` | — | implement auto-pin in `selectAccountForSpawn` + persist the soft pin; add tests; verify a harness's bees co-locate on one credential until it nears its 5h cap. |
+| Account-disable graceful drain + at-risk detector (EI-15153)<br/>`account-disable-graceful-drain-2026-07-17` | — | None — plan complete. Only a BESPOKE account-disable auto-reaper with a dedicated grace window is deferred (D2 'graduate to auto later'), and it is largely redundant with the existing general reaper; revisit only if tha… |
 | Repair ADV conversation detail regressions<br/>`adv-conversation-detail-regressions-2026-07-10` | done 3 | — |
 | Traceability backstop gap: a standing objective (fleet/loop/GRADE) masks untracked edits of unrelated code<br/>`agent-change-traceability-discipline-2026-07-10` | done 3 | — |
-| Agent-ergonomics audit fixes: kill the silent-success + one-way-detector classes (WI-4529..WI-4538)<br/>`agent-ergonomics-audit-fixes-2026-07-13` | done 6, todo 4 | Resume at P-007 / WI-4532: watchdog red-test items must auto-RESOLVE after N consecutive greens, with the green run as completion evidence — a detector that raises an alarm but can never lower it manufactures false crit… |
+| Agent-ergonomics audit fixes: kill the silent-success + one-way-detector classes (WI-4529..WI-4538)<br/>`agent-ergonomics-audit-fixes-2026-07-13` | done 10 | su-00a91 resumes its parked lane WI-4518 (operator-vite SPA entry graph / ~200 server-only modules, latent white-page risk) — now unblocked since its checkpoint gated it on this plan completing. |
 | Agent-managed compaction — self-set soft limits (DB-tracked), projected instructions, watchdog backstop<br/>`agent-managed-compaction-2026-07-01` | done 7, todo 11 | su-60160 continuing (owner directive): REMAINING = P-018 (boot self-assert critical config + max-age fleet-member recycle) + the two D-009 awareness layers P-013 (banded gauge at the agent-mcp result-wrapper/applyPayloa… |
 | Implement the su-71d9f8a2 agent-operability audit fixes (EI-10946..EI-10952)<br/>`agent-operability-audit-fixes-2026-07-13` | — | Verify the final operator-core sweep is green, then complete EI-10946..EI-10952 with evidence and report to the owner. |
 | Agent tool delta — client integration + rollout (make the delta protocol actually used)<br/>`agent-tool-delta-client-rollout-2026-06-23` | done 5, dropped 1 | No further in-repo work: every buildable item is done; P-004 is terminal-blocked by the base-presence contract. The only remaining model-token win is EXTERNAL — the OMP/Meridian runtime importing @papercusp/tooldef and… |
 | Agents-running popup: inactive sessions (infinite scroll), transcript search, deep-link + highlight<br/>`agents-pill-inactive-search-2026-07-09` | done 6 | human reviews scope and lists Phase 1 items. |
-| Autonomous loop → production: full reliability/perf audit + sonnet-5 trimmed gateway migration (owner directive 2026-07-02)<br/>`autonomous-loop-prod-audit-2026-07-02` | done 2, todo 14 | Confirm gates green (bg task) → restart batches P-008 + layer-4 gym retry live → NOV-1 QD-guided ideation → federated Phase 0. Audit plan then COMPLETE on implementation items. |
+| Backlog drain — owner-directed 10-agent fleet (2026-07-16)<br/>`backlog-drain-2026-07-16` | — | Leader next wake: trust the members' self-reported windDown/parked state over raw verdict labels going forward — cross-check `parkedOn` before treating 0-claims as stalled. Watch for su-abe513ce's 3rd-cycle cooldown-bug… |
 | External-Bench Suite: GDPval (OpenAI economically-valuable knowledge work)<br/>`benchmark-suite-gdpval-2026-06-17` | blocked 2, done 8 | BLOCKED, not abandoned: P-008 (su/hive decomposition-lift arms) waits on the GAIA su/hive driver unblock (queen-model floor; same drivers) — D-007. P-009 (human/hosted-service calibration) is owner-gated spend — the Jud… |
 | Benchmark suite: MultiAgentBench / MARBLE — coordination benchmark integration<br/>`benchmark-suite-marble-2026-06-17` | — | human reviews the coordination fit + the new non-diff grader modality (this is the hard part), then lists Phase 1 items. |
 | Benchmark suite: MemoryArena — interdependent multi-session agent-memory integration<br/>`benchmark-suite-memoryarena-2026-06-17` | — | human reviews the **two blockers** (single-agent fit; UNLICENSED harness code) before scoping Phase 1. These may demote this suite below MARBLE. |
 | Benchmark integration: PaperBench (decomposable-deliverable suite #2 — THOROUGH)<br/>`benchmark-suite-paperbench-2026-06-17` | — | → #18: the TS paper-replication driver (_pb_hive_solve.ts) the HiveSolver shells to (drive the opus hive over the local paper dir → write /submission + reproduce.sh) — reuses the arm machinery (gate on the place_batch r… |
 | Benchmark integration: TheAgentCompany (non-coding / coordination suite #1 — THOROUGH)<br/>`benchmark-suite-theagentcompany-2026-06-17` | — | Remaining = the HOST-GATED live wiring (D-003): theAgentCompanyRunnerOps (real docker pull + init.sh + the opus arm driven via NEW RocketChat/GitLab/Plane/ownCloud workspace tools [P-003] + trajectory dump + teardown) a… |
-| Blender self-learning program: volume-triggered, delta-curated, rubric-seeded ideation over the full signal surface (owner-approved design discussion 2026-07-11/12)<br/>`blender-self-learning-2026-07-12` | done 9, todo 5, wip 1 | su-eb9b7: on gate-green wake verify main FF + deploy, complete WI-4320; then re-check su-ideate-ungraded fires after 07-13 00:00Z (P-014), then P-015 metrics gate. |
+| Blender self-learning program: volume-triggered, delta-curated, rubric-seeded ideation over the full signal surface (owner-approved design discussion 2026-07-11/12)<br/>`blender-self-learning-2026-07-12` | done 15 | Released. Monitor normal production scorecards for regression; P-011 (backlog signal lanes) stays post-release expansion. |
 | Compaction context loss: mechanical flush, structural rehydration, measured recovery<br/>`compaction-context-loss-2026-07-05` | done 5 | human reviews scope and lists Phase 1 items. |
 | Context trimming for short-window agents — compaction limits in model tiers, payload tiers (trimmed/standard/full), psu context dedup<br/>`context-trimming-tiers-2026-07-01` | done 28, dropped 2, todo 5 | Green run #2 → deploy to :3070 (then drop PAPERCUSP_OMP_TOOLS_EXCLUDE from omp launch recipes — sanitizer makes it moot) → finish P-029 verify. |
 | End-to-end testing of the agent coordination system (coord + locks + federation)<br/>`coord-system-e2e-testing-2026-06-10` | done 12, needs-human 1 | Owner: run the P-010 two-box verb sweep per runbook §3 (briefs/brief12-owner-runbooks-2026-06-10.md) — 30-45 min driving main-server as box B; everything else in the plan is done. |
@@ -872,9 +348,10 @@ Plans are the durable record of project history — each `## Decisions` block is
 | defineTool token-optimization adoption — pull it to the framework, not per-tool<br/>`definetool-token-optimization-adoption-2026-06-22` | done 6 | None — plan complete. Adjacent higher-value perf lever surfaced during P-004: EI-2661 (plans:list = ~340GB egress/7d). |
 | Desktop build hardening — reproducible, self-verifying releases across Linux / Mac / Windows<br/>`desktop-build-hardening-tri-platform-2026-07-11` | done 16 | Plan complete; su loop ending. Follow-ups (disclosed, NOT blocking): (1) D-001 cross-record the three release:* verify primitives on desktop-update-center so its release:cut composes them; (2) release-local.sh stale hea… |
 | Deterministic blueprints — migrate the bespoke work-loops into shareable blueprints<br/>`deterministic-blueprints-migration-2026-06-13` | done 20, todo 1 | Only P-142 remains: worker-chunk-loop → operator-hosted durable program sub-blueprint — STILL owner-gated (D-015/D-017/D-019), a staged multi-week re-architecture on the coding HOT PATH, not an unattended item. (Brief 5… |
-| DRAIN mode — a standing mission mode for backlog-to-terminal fleet leadership (owner-approved design, named by owner)<br/>`drain-mode-2026-07-03` | done 5, todo 1 | (1) Add P-003 client tests to apps/operator/lib/psu-launcher.test.ts (anchors found: parseArgs --auto test at line ~700 — add --mode=drain parse + --mode=foo throws; freshSuBootstrapBody auto tests at ~867-878 — add dra… |
+| DRAIN mode — a standing mission mode for backlog-to-terminal fleet leadership (owner-approved design, named by owner)<br/>`drain-mode-2026-07-03` | done 6 | (1) Add P-003 client tests to apps/operator/lib/psu-launcher.test.ts (anchors found: parseArgs --auto test at line ~700 — add --mode=drain parse + --mode=foo throws; freshSuBootstrapBody auto tests at ~867-878 — add dra… |
 | Dumb-agent execution reliability (per-run weak-model agent scorecard)<br/>`dumb-agent-execution` | — | The Queen ratifies a proposed rubric by promoting this plan to `active` (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data. |
 | Dummy demo: palindrome utility (plan→work-item→implement flow exercise)<br/>`dummy-demo-palindrome-2026-06-30` | todo 3 | human reviews scope and lists Phase 1 items. |
+| EI-578 repro scratch — plans:set-now next-arg investigation (throwaway)<br/>`ei-578-repro-scratch-2026-07-17` | — | Line one of the next action. Line two continues the thought. Line three: who should pick it up next. |
 | Federated scout↔gym learning: island-model QD over the hive substrate (more peers → more novelty, mechanically)<br/>`federated-scout-gym-learning-2026-07-02` | done 16 | Leader (su-cd47dc54) drives Lane A: P-012 (refused-op counters per source + WI-1564 workspace-resolver threading in the elite/fact writers + regression test), then P-014 (device-signed outcomes + per-source/per-niche ra… |
 | FEDWITNESS-20260625-173048 — live federation sentinel plan (safe to delete)<br/>`fedwitness-20260625-173048-2026-06-25` | — | human reviews scope and lists Phase 1 items. |
 | Fix templates:new-app 422 (compound-tool in-process TOON regression) + plan-capable template harness + E2E verify<br/>`fix-templates-new-app-compound-toon-2026-07-08` | todo 5 | Execute P-001 (root fix in _compound-dispatch.ts + harden unwrap + regression tests), then P-002..P-005 start-to-finish. |
@@ -884,7 +361,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Gateway reliability: harden around Rayobyte egress (no new IPs)<br/>`gateway-rayobyte-hardening-2026-07-02` | done 9 | DONE — plan complete 2026-07-01 ~23:20. Gate GREEN after 16h red (candidate 294c709f advanced + deployed to :3070; deployedBehindReady 0). Final soak (box-ip-only): 676 req, 5×429, ZERO bee-facing 503s, queue 0, 96.9% p… |
 | Greenfield 'Snippets' — P-008 template-validation build (fresh builder, official templates only)<br/>`greenfield-snippets-2026-07-05` | done 7 | Optional stretch: build the SPA (papergrid+dock-workbench+markdown preview) if continued. Otherwise this build has served its acceptance/friction-ledger purpose — hand off for review. |
 | Greenfield template-validation build #4 — WarrantyWatch (hardened prompt system)<br/>`greenfield-warrantywatch-2026-07-05` | blocked 2, done 3, needs-human 1, todo 1 | Owner-gated: relaunch ONE builder on P-004..P-006 (fleet:launch-on-plan, plan+items exist), then leader P-007 verification. Do not respawn without owner OK. |
-| Gym unwedge + scout novelty: close the outcome circuit so the ideator can learn (owner ask 2026-07-02)<br/>`gym-unwedge-scout-novelty-2026-07-02` | todo 6 | Monitor agent owns gym fire verdicts (5-layer fix stack armed). This plan closes when: one completed gym cycle + one outcome flip + lens tally shift observed (acceptance), then NOV-2/NOV-4 revisit. |
+| Gym unwedge + scout novelty: close the outcome circuit so the ideator can learn (owner ask 2026-07-02)<br/>`gym-unwedge-scout-novelty-2026-07-02` | done 6 | No open items remain. Owner/curator may set frontmatter status to shipped and archive; monitor agent continues owning gym fire verdicts per the original design. |
 | Generic seed-bundle: installer-shipped shared-hive snapshot + live-join delta catch-up<br/>`hive-seed-bundle-2026-07-04` | done 11 | NONE actionable headless. Closed a real release-doc defect this turn: the cut-seed-cli header comment AND papercusp-desktop/src-tauri/seed/README.md both told the owner to cut with --encrypt-key-hex (via=seed-key-op, NO… |
 | Hive vs Workspace — keep them separate (RLS boundary), ship the UI win, table the unification<br/>`hive-vs-workspace-model-decision-2026-06-17` | — | Nothing required — Phase 2 stays tabled unless the owner explicitly reopens it. Optional near-term diligence: a live Tauri-shell pass to visually confirm the shipped P-001…P-006 UI (verified by unit tests + typecheck on… |
 | Infra performance & reliability audit — round 2 (2026-06-19)<br/>`infra-perf-reliability-audit-2026-06-19` | done 11, dropped 2 | Implement Phase 1 — F1 (mem0 reliability) then F2 (connection sizing / PgBouncer). |
@@ -892,14 +369,18 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Lane 7 draft-PR proposal smoke<br/>`lane-7-draft-pr-proposal-smoke-2026-06-18` | todo 2 | Review and promote into features. |
 | Lane 7 pipeline test — add-item / set-status / promote<br/>`lane7-pipeline-test-2026-06-18` | done 1 | Add items, flip statuses, then promote into features. |
 | Legacy harness cleanup — finish the FS→PG / run-loop→operator migration<br/>`legacy-harness-cleanup-2026-06-15` | — | None — plan complete. The only deliberately-retained items (the @papercusp/papercup-db back-compat shim cut at v2; the features/issues→work_items long tail; plugin-catalog FS-walk) are tracked on their own separate trac… |
-| Own the memory lexical leg + the injection — one PG store, two legs, retire the ~/.claude dependency<br/>`memory-pg-lexical-own-injection-2026-07-13` | done 7, needs-human 1, todo 3 | su-02434: (1) collect run 7 — if the p50 penalty follows run ORDER, D-004 is fully met; (2) green-checkpoint verdict → main FF → release:deploy op:trigger → verify the release checkout has LEXICAL_MAX_TOKENS=32 + lex_ra… |
+| Own the memory lexical leg + the injection — one PG store, two legs, retire the ~/.claude dependency<br/>`memory-pg-lexical-own-injection-2026-07-13` | done 11 | DONE — no further action. Ongoing 48h health watch is carried by the automated recall-canary (WI-4526, live against hybrid-pg) + precision-alert; rollback lever = POST {"backend":"hybrid"} to :3070/api/user/memory/backe… |
 | Mobile apps revival + redesign (papercup-rust-mobile — Android + iOS, plans/inbox-centered)<br/>`mobile-apps-revival-redesign-2026-06-05` | — | OWNER-GATED (flag, don't hunt): (1) APNs .p8 + Key ID + Team ID for real iOS cloud push send (APNS_KEY_PATH/APNS_KEY_ID/APNS_TEAM_ID; needs Apple Developer enrollment - iOS routing + simulated deep-link already verified… |
+| Mobile apps revival v2 (papercup-rust-mobile Android + iOS) — monitoring-first<br/>`mobile-apps-revival-v2-2026-07-13` | done 9, needs-human 3, todo 2 | Owner decisions: (1) manually commit the 6 papercup-rust-mobile branding edits; (2) act on the needs-human tail (Apple enrollment for iOS push, re-pair phones to verify on-device); (3) greenlight optional P-011/P-012 if… |
 | Papercusp 2026 Engineering Offsite — research, budget & venue decision<br/>`offsite-planner-demo-2026-06-19` | todo 5 | Launch the plan to the offsite hive (plans:start / hive:wake) so the Queen decomposes P-001..P-004 into file-/topic-scoped briefs and places bees; the venue lane (P-001) raises the A/V-vs-budget escalation for the owner… |
+| On-desktop, direct-LAN mobile voice (replace ElevenLabs with the desktop's free local STT/brain/TTS)<br/>`on-desktop-direct-lan-voice-2026-07-14` | blocked 1, done 10 | OWNER residue: re-pair a real phone (/settings/mobile) and speak a turn end-to-end (desktop-local mode engages when EL is off/unconfigured; EL still wins when configured + mobileVoiceMode=auto). Desktop code rides git-s… |
+| Remove the zellij dock; revive the OperatorChatSidebar web chat (cards + options) on the modern Papercup brain<br/>`operator-chat-sidebar-revival-2026-07-13` | done 15, dropped 3 | 1) URGENT: fix operator-hindsight.test.ts type errors red-pinning the gate (peer 81c1a msg, WI-4721 sibling); 2) flip P-013 done; 3) final completion report to the owner. |
 | papercusp.com redesign + relaunch — self-improvement positioning<br/>`papercusp-com-redesign-2026-07-12` | done 15, todo 8 | Overhaul shipped. OPEN follow-ups to flag to owner: (1) P-021 3 fleet screenshots + the business market-research-desk shot are labeled placeholders — need real captures; (2) access form email backend is still placeholde… |
 | Papercusp dogfood — Phase 10 (Hyperdrive peer-mirror — optional opt-in)<br/>`papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24` | — | — |
 | App-wide persisted sync cache — reload hydrates ALL query data instantly from IndexedDB (stale-while-revalidate)<br/>`persisted-sync-cache-2026-07-07` | todo 6 | — |
 | Plans become harness-scoped, author-owned, fork-on-drag<br/>`plans-harness-scoped-2026-05-24` | — | — |
 | Prediction-Market Auto-Bettor (Kalshi + Polymarket)<br/>`prediction-market-auto-bettor-2026-06-23` | done 2, dropped 1, todo 20 | Owner action: dispatch B7 (OMS, fully unblocked) + B6 (ingestion) now; verify/relaunch B1 (foundational, owner may have ended); B10/B11 unblock as B4/B7/B8 land. Supervisor loop re-checks every ~2min: updates STATUS.md,… |
+| Unify agent-facing presence/liveness derivation — one oracle, one vocabulary<br/>`presence-derivation-unification-2026-07-17` | done 10 | Nothing — plan drained; tree awaits git-sync sweep (no manual commit). Any follow-up: consumers may migrate off fleet:assignments' legacy alive at leisure (heartbeatFresh + sessionState are authoritative). |
 | coord:presence + coord:orient hardening<br/>`presence-tool-hardening-2026-07-03` | done 6, dropped 3, todo 1 | P-010 LIVE-VERIFY after the pipeline deploys to :3070: (1) boot log shows keepAliveTimeout:61000; MCP POST resets stop. (2) coord:presence returns etag; since:<etag> returns ~100B unchanged; changed roster returns full.… |
 | Team-proxy witness pattern — substrate for cross-engineer verifiable LLM-side stats<br/>`proxy-witness-pattern-2026-05-24` | — | — |
 | Queen capacity-aware dispatch (dispatchBudget)<br/>`queen-capacity-aware-dispatch-2026-06-22` | done 6 | Operator pipeline deploy activates fleet:capacity + the brief Capacity panel fleet-wide. Plan complete — no open items. LLM behavioral scenario + full 429 burst-load-rig tracked under WI-670 (gateway-stability load rig)… |
@@ -911,7 +392,6 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Release pipeline resilience: surface, auto-remediate & de-flake the green gate<br/>`release-pipeline-resilience-2026-06-09` | done 16 | BEHAVIORAL live-verify (pending): watch the next periodic checkpoint (hourly at :15) FF main to the green prefix past a transient red tip — the runtime proof. OPTIONAL FOLLOW-UPS: (1) arm the MANUAL lever too — add --se… |
 | `restore-pot-lexicon-public-release-2026-07-04` | done 12, todo 6 | Phase 3 hardcoded-callsite sweep next: P-005 left-sidebar nav tabs (HivesTab/QueenTab/SentinelTab/SwarmTab/OverwatchTab) → route labels through useLexicon FIRST, then P-006 adv panels, P-007 palette/toasts/empty-states,… |
 | Scorecard→Blender pipeline: reliability + ledger + grading-loop + hygiene fixes (owner-directed 2026-07-11)<br/>`scorecard-blender-pipeline-fixes-2026-07-11` | done 4, todo 1, wip 1 | Verify watchdog + scout tick on fresh code → P-001 cycle reliability → P-003 ledger gap → P-004 hygiene. P-005 awaits owner design ruling. |
-| Rubric proposal: hive-coordination-health scorecard<br/>`scout-rubric-hive-coordination-health-scorecard-2026-06-26` | — | Queen reviews this proposal in the Queen↔Scout feedback loop: she promotes it to greenlight (ready), or `coord:send`s plan-keyed feedback to revise. Iterate while making good progress; if the premise will not reach read… |
 | Scout timeout-hierarchy inversion — capacity waits are being axed as "timeouts" (WI-4475 root cause)<br/>`scout-timeout-hierarchy-2026-07-13` | done 3 | su-eb9b7: P-007 — tell su-f69a7079 the timeout<->capacity RATIONALE folded into the ratified blender-release-readiness rubric was wrong (the DECISION, keep timeouts in the cycle-error-rate numerator, still stands); then… |
 | Session objective display — cross-client (CC/Codex/OMP)<br/>`session-objective-display-2026-06-22` | done 5 | P-001 — derive self.objective in glance.ts. |
 | Session-scope search: indexed transcripts, fused sessions:search, self-recall<br/>`session-search-scope-2026-07-05` | done 9 | Deploy-watch only: su playbook / compaction-strategy / harness-prompt edits go live on :3070 via staging→green→deploy (su playbooks serve from the release checkout). No further code work. Leader su-8dc11 holds final ver… |
@@ -927,7 +407,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Worker chunk-loop → operator-hosted deterministic op (P-142 staged re-architecture)<br/>`worker-chunk-loop-operator-hosted-2026-06-14` | done 6, dropped 1, todo 2, wip 1 | OWNER-ATTENDED: (1) stand up / pick a non-critical coding harness, set its `workerChunkLoop:true`, deploy the Brief-15 wiring, dispatch one real feature → op-path samples land in worker_chunk_loop_outcomes; (2) watch `d… |
 | Worker Seats — autonomous su member sessions on contributed machines (Model 2)<br/>`worker-seats-su-agents-2026-07-03` | — | Owner reviews the scope, the tier sequencing, and the three open questions at the bottom. On approval, the structured `P-NNN` items are added and **Tier 1 (same-owner)** starts. |
 
-## shipped (410)
+## shipped (437)
 
 | Plan | Items | Next action |
 |---|---|---|
@@ -942,7 +422,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Adopt the event-reaction + rules engines — codebase-wide declarative migration inventory<br/>`adopt-event-rules-engines-2026-06-04` | — | None — plan shipped. Residual declarative-adoption value, if any, lives in the slice plans (D-007: unify-agent-launches owns launch triggers); do NOT re-open this inventory. |
 | Eliminate dev:nohmr build-churn stranding (retain stale chunks)<br/>`adv-build-churn-retain-chunks-2026-06-03` | — | To go LIVE the vite watcher must reload the config — it runs under `papercup-dev.service`, and `dev:restart` only bounces `papercup-dev-api.service`, so a `systemctl --user restart papercup-dev.service` (reloads the Tau… |
 | ADV Harness Tab — port /harness queues into /adv<br/>`adv-harness-tab-migration-2026-05-30` | done 22, todo 1 | Only remaining P-022 piece: build /adv org/department-coordination parity (port DepartmentHarnessDashboard's inbox/outbox/departments/mandates UI) so the department /harness/$slug flavor + its HarnessDockShell can also… |
-| Sessions view — live all-psu-agent roster (heartbeat-backed)<br/>`adv-sessions-live-roster-2026-06-02` | done 13 | None — plan complete. On the next natural :3070 restart the dossier route + pidAlive activate automatically; no action required. (If desired later, a quick bridge re-check of one dossier's real Locks/Coord data after th… |
+| Sessions view — live all-psu-agent roster (heartbeat-backed)<br/>`adv-sessions-live-roster-2026-06-02` | done 11, todo 2 | None — plan complete. On the next natural :3070 restart the dossier route + pidAlive activate automatically; no action required. (If desired later, a quick bridge re-check of one dossier's real Locks/Coord data after th… |
 | Agent Action Registry — Implementation Plan v5 (final, implementation-ready)<br/>`agent-action-registry-plan-2026-05-03` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
 | Agent-backend refactor (omp / claude / codex) — handoff<br/>`agent-backend-refactor-handoff-2026-05-30` | — | Read §2 (the two-backend-systems model — the single most important orientation) and §6 (the open design forks) FIRST, then pick up (b-orchestrator) and (c). Both have a clear pattern to mirror from the work already land… |
 | Agent capability confinement — fleet agents hold no native tools; every capability is a policy-gated defineTool; own the permission system (keep the sandbox)<br/>`agent-capability-confinement-2026-06-13` | done 15 | DONE — arming complete. NOTE: flipping these flags does NOT fix the scoper 'Prompt is too long' crash (the BRIEF-A rationale) — disproven in code + empirically (flags already ON, scopers still fail); the envelope is a p… |
@@ -950,7 +430,11 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Agent launch unification — one spec, every backend, every surface<br/>`agent-launch-unification-2026-05-30` | — | Phase 5 (/adv role+feature+backend surfacing, per-surface model coupling, docs). Also unblocked: codex interactive role sessions (psu --role on codex — the CODEX_HOME machinery now exists; currently 400'd in bootstrap-r… |
 | Successor brief — agent-launch-unification: live e2e + deferred follow-ups (record)<br/>`agent-launch-unification-e2e-handoff-2026-05-31` | — | None — historical record. |
 | Agent liveness hardening — psu supervisor heartbeats, dispatch-level presence beats, mid-turn stream signals<br/>`agent-liveness-heartbeat-hardening-2026-06-12` | done 14, dropped 1 | Owner: decide P-010 (wedged-bee policy: display-only / auto-reap behind a flag / Queen-mediated) — recommendation: display-only for a few days, then auto-reap with a conservative threshold; flip with a D-006 decision. E… |
+| Agent operability clarity — full session-audit fixes<br/>`agent-operability-clarity-full-audit-2026-07-13` | done 14 | No implementation remains; retain the targeted tests and live Tauri smoke as recurrence guards. |
+| Agent operability improvements implementation<br/>`agent-operability-improvements-implementation-2026-07-13` | done 24, dropped 1 | — |
+| Agent operability follow-up — authoritative liveness and Codex integrity<br/>`agent-operability-liveness-followup-2026-07-13` | done 2 | No remaining work. Preserve D-002 as the lifecycle-source convention for future liveness checks. |
 | Agent plan tracking — a markdown-canonical plan system for SU agents<br/>`agent-plan-tracking-2026-05-20` | done 40 | nothing — every phase is `done`. The `plans:*` tool surface is complete: 13 tools (4 read, 5 assisted-write, lint, new, + Phase-5 set-content/set-frontmatter, + the Q3 history/diff pair tracked under the plans-admin-ui… |
+| Agent/fleet report cards in the Inbox — ReportBlock payload on coord:send<br/>`agent-report-cards-2026-07-17` | done 5 | Confirm npm run test:affected green, flip P-005 done + plan shipped, send the completion report. |
 | Agent tool delta protocol — avoid repeated snapshot replay into LLM context<br/>`agent-tool-delta-protocol-2026-06-22` | done 16 | Owner: at the account un-pause window run the live S23/S24/S25 scenarios (delta-gate.ts records the verdict); when green, flip papercusp-tool-delta-protocol + papercusp-state-snapshot-deltas on and remove their KNOWN_DA… |
 | Agent tooling: stop failed calls & wasted round-trips (validation limits, code:run, orient dedup)<br/>`agent-tooling-token-efficiency-2026-06-25` | done 11 | Plan complete — review on wake. Non-blocking follow-ups (noted, not done): re-seed the hive-instance override (papercup-hive.su.md edited at source, needs setHiveInstancePromptOverride to go live); EI-3693's shared-tier… |
 | Agent-tools deny-by-default workspace isolation (P-062) — harness_app + RLS rollout + tooldef-http choke point<br/>`agent-tools-workspace-isolation-2026-06-01` | done 5 | P-062 is done. Separate follow-up (owner-requested, in progress): fix the PRE-EXISTING agent-mcp tsc breakage — generated.ts timestamp({mode:'number'}) invalid in drizzle-orm 0.45 (8 cols) + ~10 lagging consumer casts f… |
@@ -968,8 +452,10 @@ Plans are the durable record of project history — each `## Decisions` block is
 | await-event — the universal subscription primitive (source-resolved audience, liveness-adaptive delivery, no more polling)<br/>`await-event-primitive-2026-06-05` | done 18 | Nothing in-plan. Post-deploy: re-verify the fleet picks up events:* on :3070, then do the gated playbook rewrite (prompt-updates-pending item 7). |
 | Backend connection scaling: thousands of concurrent agents without connection exhaustion<br/>`backend-connection-scaling-2026-06-17` | done 4, dropped 1 | None required. Optional: a coordinated staging/bg-host restart to activate the listen-hub default-on immediately (else it activates on the next restart/deploy). Kill-switches if any regression: PAPERCUSP_LISTEN_HUB=0 ·… |
 | Bee capability expansion — the engineering tool surface (intel/locks/docs:write/issues:read) + the plans:write decision<br/>`bee-capability-expansion-2026-06-08` | done 4 | Done — Wave 1 closed. Optional follow-ups (filed separately, not blocking): the SU_ROLES/COORD_ROLES duplication + inert-cap fragility (a new tool author copying [...SU_ROLES] silently re-excludes bee) is captured as a… |
+| Behavior probe (medium) 2026-07-15<br/>`behavior-probe-medium-2026-07-15` | todo 1 | — |
 | Full Evaluation UI — run, monitor, compare & export the impartial benchmark from the operator<br/>`benchmark-evaluation-ui-2026-06-16` | done 15 | mini-swe-agent baseline (the headline comparison arm) is RUNNING on the Max-OAuth gateway (per owner: let it grind through rate-limit contention); on completion → grade with the official swe_bench_pro_eval (docker) + im… |
 | Bespoke card-system improvements — 2026-05-13 (v2)<br/>`bespoke-card-improvements-2026-05-13` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
+| Blender live regression repair<br/>`blender-live-regression-repair-2026-07-13` | done 3 | — |
 | Blueprint-aware harness/hive UI — schema-driven settings, work_items port, prompt studio<br/>`blueprint-aware-harness-ui-2026-06-09` | done 7 | Nothing pending for agents. Owner-optional: D-007 params-schema-shape steer (as-built follows the D-007 proposal; record/explicit-params forks) — queued in the 2026-06-10 owner decision queue. |
 | Blueprint role-bundling — self-contained blueprints, base as the role library, delete global prompts/<br/>`blueprint-role-bundling-2026-06-15` | done 7 | Optional: add the P-006 marketplace round-trip test (install a blueprint into a clean host → it spawns its roles from own+base) — install-closure (P-007) + resolution (Phase 5) are each tested + green, so this is increm… |
 | Bulk-endpoint standardization - keyed-array I/O on every repeated-call agent tool<br/>`bulk-endpoint-standardization-2026-06-21` | done 8 | None. Treat future bulkable tools as follow-on work that must satisfy the existing `_bulk` guard and P-008 internal-caller sweep rule. |
@@ -1001,10 +487,14 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Coordination ops as blueprint primitives — composable coord verbs the spine invokes (Option B)<br/>`coordination-ops-as-blueprint-primitives-2026-06-04` | — | Defer the live coord:vote re-run to a CLEAN, supervised release: once git-sync's push recovers (my change reaches origin) and the operator is intentionally advanced off the pinned papercup-release checkout (reconciling… |
 | Coordination substrate — universal subscribe→inject (foundation + architecture spine)<br/>`coordination-substrate-2026-06-03` | — | Optional: migrate conversations-core + issues-engineer onto fanoutForObject(…, {excludeId}) for one seam (their inline versions are already correct). Otherwise substrate work is complete. |
 | Coordination-system test suite — adversarial, multi-session, real-seam coverage (motivated by the EI-152/EI-153 escapes)<br/>`coordination-test-suite-2026-06-08` | done 12 | Done — suite is green in the affected-test walker. Optional follow-up: EI-155 (interactive-SU per-session claude config dir, credential-symlink dance). |
+| Coordination-layer unification + data-sync hardening<br/>`coordination-unification-data-sync-hardening-2026-06-23` | done 11, dropped 4 | Nothing outstanding — plan fully complete + verified. (The hive override re-seed propagated the prompt change to live su launches; a green-checkpoint run will confirm fleet-wide green.) |
 | Cross-backend agent cost capture (claude / codex / omp) — make spend real for ALL backends<br/>`cross-backend-cost-capture-2026-06-01` | done 6 | Nothing required — shipped. The new tool/columns reach the desktop's green :3070 already (deployed via this session's restart) + apply on any fresh boot (mig 170 ledgered). Owner decision open per D-005: whether fleet a… |
 | Cross-Hive boundary — mediated Hive→Hive ask/answer + work-request (sovereign domains)<br/>`cross-hive-boundary-2026-06-08` | done 6 | DONE — no remaining work. The single non-blocking follow-on (boot auto-invocation of the cross-Hive boundary per published Hive) is deferred by design alongside cross-Hive's gating; it does not gate this plan. |
 | Cupboard abuse-surface review (pre-public-launch)<br/>`cupboard-abuse-surface-review-2026-06-02` | — | before any public (non-papercupai) launch, work the "Pre-public-launch checklist" below. For now, items 1 (channel-2 attribution) + 2 (publisher signal, shipped) are the active hardening. |
+| Full cupboard functionality via agent defineTools — end users publish/install/browse/delist every cupboard type by asking an agent<br/>`cupboard-agent-tool-coverage-2026-07-14` | done 11 | Plan complete — no further action. NOT done here (deliberately deferred, needs owner): a destructive publish→install→unpublish round-trip against the LIVE public storefront (cupboard.papercusp.com writes) is best run wi… |
 | Cupboard provisional-listing trust: discoverability vs squatting<br/>`cupboard-provisional-listing-trust-2026-06-02` | — | optional hardening (channel-2 publisher attribution; a publisher-permission signal on the card) if/when Cupboard opens beyond dogfood. None blocking today. |
+| Cupboard public release — knowledge-packs rename, templates unification, packs v2 (tools + event deps), storefront hygiene, release gate<br/>`cupboard-public-release-2026-07-12` | done 16 | OWNER (the owner): (1) P-012 — name who moderates blueprint/knowledge-pack kinds post-launch; (2) answer the KP-v2 design questions (scope of surfaces, insights destination, rubrics, release sequencing) so the packs-v2 plan c… |
+| Close the deterministic curation digest's signal gaps (blocked WIs, system-health, recovery close-the-loop)<br/>`curation-signal-gaps-2026-07-17` | done 6 | Nothing — plan terminal. Follow-on rendering discussion (cards/Inbox deep-links, D-003) remains a separate pending owner decision. |
 | Curator-operator — one operator the user talks to; the fleet reports up; it decides what to surface<br/>`curator-operator-2026-06-04` | done 7 | DONE — nothing outstanding. The loop is live on the operator; curated fleet status surfaces into the operator chat (desktop + pui pane) on cadence + urgent wake, and curation:feed powers the pui Fleet curated view. To p… |
 | Data-sync: finish polling→push + fix sync-library gaps<br/>`data-sync-push-completion-2026-06-23` | done 12, dropped 2 | Do the safe server-side bridge gaps next: P-002 (schedule-write invalidation — confirm notifySyncInvalidate's broadcast semantics or bridge plan_schedules) + P-003 (design-write invalidation). Then the existing-resolver… |
 | Drizzle migration — post-migration unlocks plan<br/>`db-unlocks-plan-2026-05-11` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
@@ -1027,9 +517,11 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Desktop IPC transport — completion + extension to all webview traffic<br/>`desktop-ipc-transport-completion-2026-05-20` | — | Desktop-ipc transport arc is done. Resumability remains deferred (user's call). The owner needs to push the desktop (bdd3758) + operator (c61096d3e, 1709843bb) + libs/desktop-ipc commits to the org remote. |
 | Desktop-native transport for the endpoint system<br/>`desktop-native-transport-2026-05-12` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
 | Desktop: launch pui workbench from the OPS header<br/>`desktop-pui-launch-button-2026-06-05` | done 7 | Optional: capture a Tauri-shell screenshot of the PUI button next to OPS via an isolated Xvfb desktop instance, and/or fold console-launch.ts onto the shared terminal-spawn helper (D-002 follow-up). |
+| Prevent desktop logout from stale PID cleanup<br/>`desktop-session-logout-stale-pid-hardening-2026-07-16` | done 4 | — |
 | Fold papercusp-desktop into papercup as a git submodule<br/>`desktop-submodule-of-papercup-2026-06-09` | done 8 | Nothing actionable — implementation + verification complete. Live :3070 deploy auto-lands when the fleet's staging next goes green (watch scheduled ~01:28 to confirm-and-ship). For the owner: click the launcher to confi… |
 | Desktop 3-pane workbench (dockview) + setup-wizard live preview<br/>`desktop-workbench-shell-2026-06-05` | blocked 1, done 7, todo 1 | None — plan complete. Terminal-in-desktop work continues in native-terminal-desktop-2026-06-06. |
 | Deterministic onboarding tutorial (script-driven; agent only for questions) + gate not-ready features + Mac delivery<br/>`deterministic-onboarding-tutorial-2026-07-04` | done 9 | Owner: open the dmg → drag 'Papercusp GUI' to Applications → Gatekeeper bypass (right-click Open, or `xattr -cr /Applications/Papercusp\\ GUI.app`; the app is updater-signed but NOT Apple-notarized) → launch → fresh onbo… |
+| Deterministic status messages → cards (curator chat surface + audit)<br/>`deterministic-status-cards-2026-07-17` | done 3, dropped 1, todo 2 | Confirm operator tsc clean, live-verify the card renders in the Tauri chat, then P-006. |
 | Dev-only admin sidebar — flags · run · health · deploy-state · fleet<br/>`dev-admin-sidebar-2026-06-05` | done 9 | Done — the only remaining step is a deliberate release-gate **deploy** (the release-manager's job) to carry the new `dev.*` resolvers to the green `:3070` host, so the glance panels show live data in the desktop (the sh… |
 | Directed-wake honesty + spawn-handoff hydration<br/>`directed-wake-honesty-and-spawn-handoff-2026-06-14` | done 21 | None — plan complete. NOTE (separate, NOT this plan): operator-core lint:tsc is at 466 vs baseline 450 (+16) from pre-existing peer drift — flagged to the fleet; owner of the tsc ratchet to fix or justify-bump. |
 | Distributed coordination across users in a shared harness — federated content + a per-harness lock authority<br/>`distributed-coordination-shared-harness-2026-06-04` | — | Remaining work is gated on real multi-machine hardware, peer-owned, or deferred-by-design — none testable on this single box (full list in D-016): authority endpoint route + addressing + live file-lock cutover (blocker… |
@@ -1043,6 +535,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Test suite — shared-harness dogfood / collaborative substrate<br/>`dogfood-test-suite-2026-06-01` | — | None — suite + both follow-ups shipped. **P-079 is no longer a manual-only step.** On 2026-06-02 it was run live **in-process with two genuinely distinct real GitHub identities** (`papercupai`#279242982 + `aviynw`#15670… |
 | Domain-generic agents: blueprint-owned bee+su personas, replace-the-Claude-base, hive-instance overrides<br/>`domain-generic-agent-personas-2026-06-17` | done 13, dropped 3 | OWNER: to realize SU_BLUEPRINT_PERSONA (the reusable su persona), write the papercup-hive su instance-override content — the Papercusp operational specifics (workspace map / :3070-:3170 / tool surface / named workflows)… |
 | Domain-generic hive architecture: work/coding blueprints, hardcoded roles + overlays, unified per-hive override, shared-hive interference audit<br/>`domain-generic-hive-architecture-2026-06-18` | done 29 | None — plan complete. Residual was the closeout bookkeeping (P-027/P-029→done + D-024), now done from su-6620a's session (role-d11cbf40's SU write surface was clamp-blocked; su-bdc3a owns that session-resolution fix). A… |
+| Drain claim-spec hardening — kind matches item_kind, states ride the spec<br/>`drain-claim-spec-hardening-2026-07-13` | done 3 | — |
 | Dummy demo plan — Luhn checksum validator (exercise plan → work-item → implement → verify)<br/>`dummy-demo-luhn-2026-06-29` | done 3 | human reviews scope and lists Phase 1 items. |
 | Dummy demo: Base64 codec (encode/decode) + node:test suite<br/>`dummy-fleet-base64-2026-06-30` | done 3 | None — demo complete. |
 | Dummy demo: Roman numeral toRoman/fromRoman (desktop fleet)<br/>`dummy-fleet-roman-numerals-2026-06-30` | done 3 | None — demo complete; plan shipped. |
@@ -1055,6 +548,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Event-key mismatch guard: declare-first pair-emit discipline + advisory near-miss detection<br/>`event-key-nearmiss-guard-2026-07-10` | done 7 | Nothing — plan complete. Edits ride the next git-sync auto-commit; interactive su renders pick up su.md live; autonomous spawns at next materialization. Optional: mark plan status shipped after owner ack. |
 | Event-reaction system — declarative "when X, fire Y" over the defineTool dispatcher<br/>`event-reaction-system-2026-06-04` | — | Operational only (no build work remains): to live-activate the durable path set PAPERCUSP_DBOS_REACTIONS=1 + restart :3070 (the in-process path is already the live default); all code is additive and loads on the next :3… |
 | Universal experiment API — a registered catalog of test Subjects + one invocation surface the self-learning system drives<br/>`experiment-registry-invocation-api-2026-06-14` | done 22, dropped 1 | Owner-gated only: (1) sign off P-061 (the API proposes+scores, never auto-applies, D-006); (2) post-deploy flip papercusp-scout-experiment-rail. All three live tiers (gym/instance/hive) are now bound + staged-behind-dep… |
+| Federation host-dossier drill (WI-5211): cross-machine profile + cross-check, natural-flow coordination<br/>`fed-drill-host-dossier-2026-07-17` | done 5 | Nothing — plan shipped. Follow-ups live outside this plan: the PLAN_PART_FEDERATION two-machine merge proof (owner-gated cutover; this rig is now a proven testbed) and native remote placement in fleet:launch-on-plan. |
 | File-locking improvements — SU-locks + FileLockQueue<br/>`file-locking-improvements-2026-05-20` | — | none — plan complete. |
 | Two file-locking systems in Papercusp — a comparison<br/>`file-locking-systems-comparison-2026-05-20` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
 | Ctrl+F find-in-page for the desktop (operator Vite SPA)<br/>`find-in-page-ctrl-f-2026-06-01` | done 10 | Optional: execute apps/operator/e2e/find-in-page.spec.ts under a real dev server next time the Playwright e2e suite runs (P-008 is written-not-executed); no other work remains. |
@@ -1073,6 +567,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Fumadocs To Starlight<br/>`fumadocs-to-starlight-2026-05-20` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
 | Generalize papercusp cores to libs/generic — one agent per lib, in parallel<br/>`generalize-libs-to-generic-2026-06-05` | — | Done — plan shipped. Going-forward discipline (D-005 generic-first lint + BORROWABLE auto-catalog) is live. Only optional residual: a single low-concurrency `test:affected` integration pass over the deferred PG suites (… |
 | Generic per-column filters for RichGrid panes<br/>`generic-column-filters-2026-06-14` | done 20 | Done — nothing required. Two non-blocking loose ends: (1) the uncommitted engine leftover in the Restart clone (`$HOME/Restart/libs/papergrid/grid-core`) should be reverted there once (cross-repo — pending… |
+| Publish Papercusp generic libraries while still coupled<br/>`generic-libraries-publication-2026-07-15` | done 3 | Deferred follow-up is registered, not started: WI-4973 owns decoupling; WI-4974 owns licensing, full-history secret audit, and repository governance. |
 | Generalize git-sync to any hive<br/>`git-sync-any-hive-2026-06-12` | done 12 | None — plan shipped. If EI-382 surfaces as real friction, fix it as its own backlog item (extend member enumeration to handle bare-link clones missing hive_slug). |
 | Revive a generic DBOS routines engine; automated git-sync is its first consumer<br/>`git-sync-auto-commit-2026-06-03` | done 16, todo 1 | Nothing outstanding — the plan is complete. Monitor the live routine; deactivate via the SET active=false switch if needed. (P-014's lock-registry SQL description is a frozen applied migration — left as-is; the agent-fa… |
 | git-sync pre-commit content guard + auto-fix resolver (broken docs never reach staging)<br/>`git-sync-content-guard-2026-06-13` | done 8 | Done — flag papercusp-git-sync-content-guard now explicitly ON via the PG override store (operator_flag_overrides, the host's runtime flag authority; flags:get → enabled:true, audit-logged). Literal PostHog-cloud regist… |
@@ -1116,9 +611,11 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Scrub internal reference harnesses (quartermaster/oddsmith/Restart) from the user-facing /internal/docs corpus<br/>`internal-docs-harness-scrub-2026-07-05` | done 5 | Only OWNER-PARKED items remain as future decisions (NOT in scope now): A = aviynw account-pool handle across ~11 inference-gateway insight pages; B = reference/plans-index.md Restart refs sourced from plan statuses. Bot… |
 | Plan-file inventory (2026-05-20)<br/>`inventory-2026-05-20` | — | P-302 consolidation can begin once Phase 1 read tools are wired; until then, this doc is the manifest. |
 | Isolated staging tier — :3170 auto-tracks committed staging branch<br/>`isolated-staging-tier-2026-06-21` | done 5 | Done. Live config of record: staging-sync cadence 5min; :3055 HMR enabled. (Both reversible — edit the timer/service units + daemon-reload.) |
+| Absorb the fleet-kickoff prompt into structure — auto-armed member loops, orient-first bootstrap, point-of-failure guards<br/>`kickoff-prompt-absorption-2026-07-17` | done 5 | Nothing — plan shipped. Future follow-on (deliberately out of scope): measure whether weak-model backends can go lean. |
 | Learning compactness and focus pass<br/>`learning-compact-focus-pass-2026-07-12` | done 24 | No implementation work remains. Normal git-sync and staging promotion own commit and deployment. |
 | Learning loop navigation and Work Queue data parity<br/>`learning-loop-work-queue-parity-2026-07-11` | done 4 | — |
 | Learning Packs — default hive learnings, hive-scoped memory, and Comb distribution<br/>`learning-packs-2026-06-11` | done 23 | Nothing pending — watch for the first organic community-pack publish landing in the pending moderation queue as the natural exercise of the flow. |
+| Learning quiet focus pass<br/>`learning-quiet-focus-pass-2026-07-12` | done 8 | Implement P-001 through P-006, add regression coverage, then verify the production build and live Tauri experience. |
 | Learning system — close the loops: consume the backlog, verify outcomes, measure progress<br/>`learning-system-audit-improvements-2026-06-09` | done 20 | Nothing left here — implement-lane re-enable is consume-edges P-013 (su-e9bc8, owner present); gym boot crash is EI-368. |
 | Learning visual grammar and page redesign<br/>`learning-visual-grammar-2026-07-11` | done 4 | — |
 | Legacy docs audit + revival — page-by-page verification of _retired/papercup/app/documentation into drift-tracked manual docs<br/>`legacy-docs-audit-revival-2026-06-06` | done 37 | Owner: post-hoc review of the 13 revived pages + the 2 merges (D-003 gate satisfied by the overnight finish-everything directive); optionally promote the known-hooks.ts re-point (documented in harness/hooks.mdx Open-que… |
@@ -1135,9 +632,11 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Memory scope — user + harness model<br/>`memory-harness-scope-2026-05-24` | — | — |
 | Memory settings page refresh — fix dead kind filter, add search, sync + nuqs compliance<br/>`memory-settings-page-refresh-2026-06-09` | done 13 | Owner: eyeball the page in the Tauri shell (Settings → Memory) and consider a follow-up for the memory:remember kind-enum mismatch; plan can flip to shipped once the sweep confirms green. |
 | Memory follow-ups — unify kind taxonomy; clear agent-tools/memory tsc debt; fix settings eslint parse gap<br/>`memory-taxonomy-and-debt-followups-2026-06-09` | done 6 | Owner: one visual check of the TUI Memory tab (wire restored per its documented contract, not visually confirmed overnight). Nothing else outstanding. |
+| Mobile app public-release readiness — handoff completion campaign<br/>`mobile-public-release-readiness-completion-2026-07-15` | done 7 | Remaining gaps are ALL owner-gated or peer-lane: (1) physical-device-coverage=broken — OWNER must attach a real Android phone + iPhone (real mic/speaker/BT/push/battery untested). (2) packaging-signing=degraded — iOS ne… |
 | Mug pane usability pass<br/>`mug-pane-usability-pass-2026-07-10` | done 5 | — |
 | Mug sidebar navigation redesign<br/>`mug-sidebar-navigation-redesign-2026-07-10` | done 4 | — |
 | Verify + test deterministic multi-account bee routing (right account, budget available, Queen-independent)<br/>`multi-account-routing-verification-2026-06-15` | done 4 | Hand to a psu agent: build the test layers (P-001..P-004), coordinating with su-df00939e on the accurate budget signal (P-004 dependency). |
+| Multi-window chat coherence + voice-turn persistence hardening (WI-4838 fix package)<br/>`multi-window-chat-coherence-2026-07-15` | done 11 | Nothing — plan complete; WI-4838 resolving with the completion record; deploy rides the normal staging→green pipeline. |
 | Named resource locks with drain semantics<br/>`named-resource-locks-drain-2026-06-02` | done 27 | Done. Nothing required. |
 | Native-scheduler lockout — agents schedule only through the harness (claude · omp · codex)<br/>`native-scheduler-lockout-2026-06-09` | done 12 | None for the shipped scheduler-lockout plan; use papercusp-diagnostics.json if a specific Codex session appears hookless. |
 | Brief — Next.js removal agent (coordination with host-architecture plan)<br/>`next-removal-agent-brief-2026-05-20` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
@@ -1149,6 +648,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | @papercusp/omp — power-user agent bundle<br/>`omp-power-user-bundle-2026-05-20` | — | — |
 | @papercusp/omp power-user bundle — end-to-end brief<br/>`omp-power-user-bundle-brief-2026-05-20` | — | — |
 | OMP profile system — per-profile tool gating and installer profiles<br/>`omp-profile-system-2026-05-24` | done 13 | No further action required. Plan shipped. |
+| Bound OMP local retry storms and make Claude default routing fail-closed<br/>`omp-retry-and-default-account-routing-hardening-2026-07-16` | done 3 | — |
 | OpenAPI surface — design spike<br/>`openapi-design-spike-2026-05-20` | — | dsgds |
 | Operator always-visible — persistent operator-chat dock (desktop + TUI)<br/>`operator-always-visible-2026-06-05` | done 8 | Nothing open — plan COMPLETE, reactive loop closed. The dock is proven to inherit Brief 38's cleaned report-free shared path on both surfaces. No further dependency: future chat-render changes flow through the one share… |
 | Operator arc plan — 2026-05-12<br/>`operator-arc-2026-05-12` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
@@ -1166,7 +666,9 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Overnight session wrap — 2026-05-24 (SU autonomous loop)<br/>`overnight-session-2026-05-24-su` | — | Human review + memo acceptance. |
 | Overview / dashboard view — the default landing surface (TUI + desktop)<br/>`overview-dashboard-2026-06-05` | done 16 | Nothing — shipped. Desktop visuals reach the green :3070 webview at the next release-gate deploy (standard lag; already live-verified against :3170/main). |
 | Overwatch role — autonomous system-health supervisor<br/>`overwatch-role-2026-06-15` | — | B-12 (OWNER): flip `papercusp-overwatch` ON + `overwatch:start` papercup-hive for the first live observe+nudge proof, then decide on autonomy. Owner escalation FILED (msg mqf0hz1b, 3 one-click options). Nothing else out… |
+| P-005 smoke: lean-kickoff fleet-member launch verification (scratch)<br/>`p005-kickoff-smoke-2026-07-17` | done 1 | The launched member flips P-001 done. |
 | P2P Hive Directory — network-shared hive list over the hyperbee substrate (create a hive → anyone on the network sees + joins it)<br/>`p2p-hive-directory-2026-06-06` | done 7 | Nothing blocking — optional polish only: dock rebuild-without-reload after Reset layout (D-009 nit), and a central Cupboard mirror for off-network browsing remains the deferred D-003 idea. |
+| P-059 close-out + parity workstream lanes (10-member Sonnet fleet, owner-directed 2026-07-10)<br/>`p2p-parity-closeout-lanes-2026-07-10` | done 10 | Nothing — plan drained (P-005/6/7 done). EI-13307/EI-13317 track the residual infra work under their own ids. |
 | P2P performance suite — three-tier benchmarks for the hyperbee substrate (local benches → WAN simulation → real Latitude frames)<br/>`p2p-performance-suite-2026-06-07` | done 15 | Plan complete. Optional follow-ons: raise the Latitude VM quota for a true cross-region Tier-3 run; promote the advisory comparator to a CI gate after a week of nightlies (D-005); activate the announce-volume hook when… |
 | Get Papercusp green across the test surface<br/>`papercup-test-suite-green-2026-06-02` | — | None — plan complete; any new red tests route through the improvement-watchdog → papercusp-full-app-audit-2026-06-09 Phase 9. |
 | Papercusp dogfood — Phase 11 (multi-engineer dogfood)<br/>`papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-26` | done 4 | P-079 — run the 2-engineer cross-machine smoke test (Q-2's same-laptop surrogate is acceptable first pass). Requires opening ShareWizard on the papercup harness (P-077) so a `.harness/shared.json` actually exists. Bravo… |
@@ -1201,7 +703,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Personalization — Theme selector, black theme & custom themes<br/>`personalization-theme-selector-2026-05-30` | — | Phase 5's **mechanical, frost-safe-by-construction** cleanup is DONE (batches 1–5, ~1740 conversions). Every batch maps a sky-300/400/cool reference to its semantic token (`--accent-strong`/`--accent`/`--accent-cool`);… |
 | Endpoint system — Phase 4+ implementation<br/>`phase-4-endpoint-system-2026-05-12` | — | Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20). |
 | Plans as launchable context — revision spine and agent runs<br/>`plan-agent-launch-2026-05-21` | done 28 | none — the plan is shipped. Operational follow-ups not counted as new plan items: the local commits (one-and-a-half dozen ahead of origin/main) need pushing; the live e2e spec requires the user to run the dev server wit… |
-| Plan federation re-grain — per-item/decision/section LWW (kills the whole-document clobber)<br/>`plan-federation-regrain-2026-06-13` | done 10 | DONE for this plan — feature shipped + live + verified single-box/real-frame/live-fleet. Only follow-up: EI-504 (cross-machine federation test harness migration to the hive model) unlocks the live 2-machine per-part mer… |
+| Plan federation re-grain — per-item/decision/section LWW (kills the whole-document clobber)<br/>`plan-federation-regrain-2026-06-13` | done 10 | WI-5331 (su-18f2f, in flight 2026-07-17) runs the real P-008 on the tower↔mac rig: flag ON via override on BOTH machines (D-004: peers must agree), concurrent different-part app-path edits, assert merge-not-clobber + by… |
 | Plan-item assignment, claim & liveness — durable assignment (federated) + authority-mediated claims<br/>`plan-item-assignment-claim-liveness-2026-06-04` | — | Owner: review. Only OTHER-TEAM-lane items remain (surfaced, not dropped, none buildable in plan-items without colliding with active peers): (1) LIVE cross-machine claim RPC is gated on the SHARED mesh-addressing wiring… |
 | Auto-render PG plans to on-disk markdown — incremental, coalesced, settle-guarded (a read-only projection)<br/>`plan-markdown-auto-render-2026-06-06` | done 7 | Owner: decide whether the mirror stays gitignored (local-only) or becomes tracked again (drop the .gitignore line) for git-visible plan diffs. |
 | v2: plan templates + rubric-as-a-plan (+ auto-crystallization, versioning, trend, hardening) — grounded in a plan-interface audit<br/>`plan-templates-and-rubric-v2-2026-06-20` | done 14 | OWNER (optional, non-blocking): flip SCOUT_RUBRIC_RAIL (papercusp-scout-rubric-rail) ON via /admin/features once you've observed rubric-gap-detection quality — it activates Scout's autonomous rubric-draft AUTHORING (det… |
@@ -1222,6 +724,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Progress tab (/adv harnesses) design polish — overnight completion<br/>`progress-tab-design-polish-2026-06-11` | done 7 | Nothing — plan complete; flip to shipped. |
 | Project-centric harness rethink (RFC) — plan items are the unit; blueprints are a tool agents reach for<br/>`project-centric-harness-rethink-2026-06-04` | — | Draft companion plan #2 (assignment + claim + liveness), carrying the claims-federation resolution as its founding decision; then #1 (start-a-plan = plan + tools) coordinating with the blueprint owner on 1:N. |
 | Let a promote wave spawn a child harness (wave-level spawn_child)<br/>`promote-spawn-child-harness-2026-05-31` | done 6 | Nothing — plan complete. |
+| psu cross-backend session port — Claude history into Codex or OMP<br/>`psu-cross-backend-session-port-2026-07-14` | done 25 | No remaining work. Evidence: 776 focused tests across 20 files; typecheck ratchet green (225 <= 231); migration drift in sync; staging :3170 healthy; Claude #12590 → Codex #12597 and OMP #12601 delivered and later resum… |
 | Ship psu (superuser CLI) in the Windows + Mac desktop builds<br/>`psu-in-desktop-builds-2026-06-23` | todo 8 | None - shipped. Owner can test the mac app (SPICE :5930) and the deployed operator picks up the flags on next deploy. |
 | psu prompt isolation<br/>`psu-isolation-and-blueprint-aware-harness-ui-2026-06-09` | done 5 | none — Phase A is done. Phase B continues in [[blueprint-aware-harness-ui-2026-06-09]]. |
 | psu-only launch unification — retire the *-su wrappers, one launch spec for su + roles<br/>`psu-only-launch-unification-2026-05-31` | done 20 | No launch-unification work remains; if a specific Codex session lacks hooks, fix the local hook install rather than reopening the retired wrapper path. |
@@ -1239,6 +742,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | DESIGN (owner review): Queen↔Scout feedback-iteration loop — ride on existing coord+wake<br/>`queen-scout-feedback-loop-2026-06-20` | done 5, dropped 1 | Live-verify one round-trip (Queen feedback → Scout revises → ping-back → re-review) once Scout transport-death is fixed (separate dep). Heads-up: EI-1861 (3 scout test fakes missing the new required StateOfHiveReaders.o… |
 | Queen wave dispatch — reuse the ## Promote format for declarative brief handoff via one shared frontier<br/>`queen-wave-dispatch-2026-06-13` | done 11 | Owner ratify + mark the plan shipped — no remaining work-items (all 11 done). |
 | Queue UI redesign — authorizer-split + Queen decision log (A1 + B1)<br/>`queue-authorization-redesign-2026-06-14` | done 9 | Owner: visually verify in the Tauri shell at /admin/plans?view=queue (the one DEFERRED check — Tauri-shell e2e wasn't run unattended; see EI-604 for the design-phase/theming note). Flag is default-ON so nothing to flip;… |
+| Quick Panel prompts outline → full Workflowy clone<br/>`quick-panel-workflowy-clone-2026-07-14` | done 10 | — |
 | Shared rate-limit layer v2 — activate + complete the governor's top half<br/>`rate-limit-layer-v2-2026-06-05` | done 23 | Nothing required. Passive residue: buckets on :3070/:3170 populate on the first governed agent turn (lazy); the NEW tool/route/UI reach the desktop's green :3070 at the next release-gate deploy (standard two-host lag);… |
 | Reflexive platform: extensibility (new tools + first-class datatypes) + self-improvement closure<br/>`reflexive-platform-extensibility-datatypes-2026-06-24` | done 13 | Draft / gated. **(1)** Build the framework — meta-endpoints + confinement substrate + registry + blueprint `dependencies.datatypes` (Phase 1). **(2)** Prove it by making **oddsmith the first user**: `bet`, `wager`, `for… |
 | Release gating — a green `ready` branch the restart script deploys (decouple what-runs from the churning tree)<br/>`release-gate-ready-branch-2026-06-04` | — | None — plan complete; the one formerly-deferred item (the cutover) is verifiably done. Pipeline operations live with staging-branch-pipeline-2026-06-06 (watch /admin/git). |
@@ -1249,6 +753,8 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Revive the plugin system — runtime regressions + a TUI plugin surface<br/>`revive-plugin-system-2026-06-04` | — | Plan complete. Remaining are non-blocking follow-ups owned elsewhere: su-ad289ef0 verifies the pui Plugins-tab end-to-end render; optional registerPluginTools parallelize + register-static-first (cold-start UX). |
 | Route audit — Phase 4 opening deliverable<br/>`route-audit-2026-05-20` | — | — |
 | DESIGN (owner review): rubric-driven observations — structured assessments against shared rubrics (v1)<br/>`rubric-driven-observations-2026-06-20` | done 6, todo 1 | Owner on wake: review v1 (it's built+green+e2e-verified) + discuss v2. Deploy lands automatically when the shared green-gate clears. No owner action needed to complete v1. |
+| Rubric system and auto-loop public-release profile hardening<br/>`rubric-system-and-auto-loop-release-profile-2026-07-15` | done 11 | On explicit resume, continue with P-004: make checkpoint awaits candidate/run-bound and prove stale verdict deliveries cannot authorize a deploy; then proceed through P-005–P-011 in dependency order. |
+| Rubric-system hardening: structured grading windows, generation stamps, staleness watchdog, derived verdicts, blender rubric v2 [owner 2026-07-14]<br/>`rubric-system-hardening-2026-07-14` | done 9 | Release drive continues OUTSIDE this plan under su-33019 (AUTO+GRADE, loop armed): fix EI-12940 (gateway-pool fallback for the stateless LLM path) -> clean post-fix watermark window -> cycle-error-rate green; lens-rotat… |
 | A generic ECA rules-engine shared library (@papercusp/rules)<br/>`rules-engine-shared-lib-2026-06-04` | — | Optional P1/P3: a standalone Events-file loader (parseSerializableRules already covers data-form rules) + a SECOND consumer to prove genericity (the events system already exercises the generic path). No further work is… |
 | Wrap mingo as the @papercusp/rules condition evaluator (keep the MatchMap surface)<br/>`rules-engine-wrap-mingo-2026-06-05` | — | Done — no action. (Live :3070 picks up the additive mingo dep on its next restart; not forced, to avoid disrupting in-flight peers + the concurrent companion plan adopt-event-rules-engines.) |
 | Formalize "runbook" as a named genre within agent-insights (definition + tag/naming convention + self-classifying tooling)<br/>`runbook-genre-formalization-2026-07-11` | done 5 | Nothing — plan complete. Opportunistic follow-up (per the definition doc, not scheduled): tag other procedural insights `runbook` when next touched; if the corpus outgrows lexical search, add a tag-aware filter in packa… |
@@ -1258,7 +764,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Scheduled & recurring plans (routines)<br/>`scheduled-recurring-plans-2026-06-16` | done 30 | Owner: verify the Calendar / Queen pane / plan-list / Runs UI in the Tauri shell (cd papercusp-desktop && npm run dev). Nothing left to build — the plan is fully delivered. |
 | Scout/SSE convergence — papercup-side loose ends<br/>`scout-convergence-papercup-2026-05-30` | done 5 | nothing required — the brief is fully discharged. Unrelated follow-ups left for their owners: the `operator-state-snapshot.test.ts` `@papercusp/backup` mock gap (`workspacesRoot`), and rewiring the 33 `plan-parser` shim… |
 | Scout loop test plan — verifying novel-idea generation end to end<br/>`scout-loop-test-plan-2026-06-11` | done 16 | None — plan shipped; all follow-ons closed except EI-329 (insight-capture gate, resolving on the S12 validation result). Standing artifacts: live-cycle-1.baseline.json is the P-015 watermark; SCOUT_LIVE_REUSE=1 re-judge… |
-| Drill scratch 2026-07-03 — two one-message confirm items (allocation P-006 verify)<br/>`seat-drill-p006-scratch-2026-07-03` | todo 1, wip 1 | Each member claims one unclaimed item, sends the leader one confirmation message, flips it done, and ends its turn. |
+| Drill scratch 2026-07-03 — two one-message confirm items (allocation P-006 verify)<br/>`seat-drill-p006-scratch-2026-07-03` | dropped 1, todo 1 | Each member claims one unclaimed item, sends the leader one confirmation message, flips it done, and ends its turn. |
 | Self-contained migration baseline + ensure-schema removal + integration-test tier<br/>`self-contained-migration-baseline-2026-06-02` | done 16 | Owner-supervised follow-ups only (both needs-human, non-blocking): P-010 Tauri desktop boot smoke under Xvfb (DISPLAY=:99); P-012 drizzle regen via pull-schema.mjs against a clean baseline-built DB + review the generate… |
 | Self-improvement system — close the consume edges (2026-06-12 audit follow-up)<br/>`self-improvement-consume-edges-2026-06-12` | done 15 | Frontier P-001 arming gate (owner-ratified): flip frontier P-001 + emit frontier:P-001:closed → the parked frontier lanes self-arm; the per-lane arming runbooks (flag ON + routine active + OWNER-set governor budgets) ar… |
 | Self-improvement stack reconciliation — one eval-battery engine (gym/Apiary as Subjects), one genome/instance surface, Scout as the variation source<br/>`self-improvement-stack-reconciliation-2026-06-09` | done 6 | Ship — no remaining items, all 6 done. Note: the prior Now section was stale ("P-002 back to todo") — D-009+D-010 confirm both completed by su-ca91b on 2026-06-14. |
@@ -1323,6 +829,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Make bug-filing unconditional in all agent prompts (close the "transient, moving on" hole)<br/>`unconditional-bug-filing-prompt-hardening-2026-07-11` | done 6 | None — plan shipped. git-sync auto-commits the tree (submodule su.md + orchestrator + operator-core) on schedule; new interactive su launches read the edited base immediately, autonomous fleet .materialized copies regen… |
 | Unify agent launches as blueprints — every repeatable routine launch is a blueprint<br/>`unify-agent-launches-as-blueprints-2026-06-04` | done 9 | Nothing on this plan — it ships. Follow-on work lives on EI-419 / EI-420 / EI-421; the scanner teardown (EI-419) stays owner-gated behind a live-verified scan blueprint. |
 | Unify agent spawns on one chokepoint — brain-decided admission, a deterministic floor, durable delivery<br/>`unify-agent-spawn-chokepoint-2026-06-06` | done 18 | Nothing — plan closed. (Cross-plan: D-004 over-ceiling slot-wait fairness lands via unify-watch-primitive; a synthetic kill-mid-durableSpawnFire would first need a dedicated DBOS system DB per D-015's residual note, onl… |
+| Unify the orphaned `default` workspace backlog into `papercusp-workspace`<br/>`unify-default-workspace-backlog-2026-07-17` | done 9 | — |
 | Unify agent-launch mechanics — one launch-spec for bees, Queen, sentinel + the pot→hive rename, preserving the wake/coord invariants<br/>`unify-launch-mechanics-2026-06-09` | done 10 | Done — plan + all surfaced follow-ons complete. No remaining work. (Migration 198 applies on the next operator restart / deploy, fail-soft both sides. Incidentally reconciled the concurrent snapshot-retirement's loose e… |
 | Unify await + subscribe into one watch primitive — wake/once/min-sleep/urgency as knobs<br/>`unify-watch-primitive-2026-06-06` | done 14 | Done. Optional follow-on once the deploy gate is green: a cosmetic rename of the (additive-generalized) `event_awaits` table → `event_watches`, and converting any hot recurring `events:await` callers to standing `watch{… |
 | Unify issues + features + work_items into one `work_item` type (kind discriminator)<br/>`unify-work-items-2026-06-04` | — | Owner: every remaining item has a confirmed external gate (federation→su-584a8 operator-scope design; re-id→your supervised drain; retire-surfaces→peers depend on issues:* live; prompt rewrite→your own WAIT directive).… |
@@ -1342,7 +849,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Working tab (ex-Progress): rename + panel design pass + resizable grid columns + themed inputs<br/>`working-tab-panels-2026-06-11` | done 4 | Nothing — plan complete and verified on prod. Possible follow-up only if wanted: persisted RichGrid column widths (currently per-mount). |
 | Workspace-scoped localStorage isolation (corrected)<br/>`workspace-localstorage-isolation-2026-05-27` | — | human sign-off on D-001 (workspace-id source). Phase 1 is the prerequisite for every later phase — nothing else is correct until the browser can reliably name its workspace. |
 
-## superseded (65)
+## superseded (116)
 
 | Plan | Items | Next action |
 |---|---|---|
@@ -1360,6 +867,56 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Close + enable the self-improvement loop (the back-edge, the hard feed-in, careful arming)<br/>`close-the-self-improvement-loop-2026-06-05` | — | Nothing here — the arming decision lives on learning-system-audit-improvements-2026-06-09 P-012 (owner-gated). |
 | Collaborative plans — initiatives as the grouping primitive<br/>`collaborative-plans-initiatives-2026-05-27` | — | human sign-off on the model (D-001…D-004 especially), then resolve the blocked-by on `plans-harness-scoped-2026-05-24` before scheduling Phase 1. |
 | Collaborative plans — per-user branches, contribute model, build dropdown<br/>`collaborative-plans-multi-branch-2026-05-27` | — | Begin Phase 1 — branch model + worktree provisioning (P-001 through P-006). |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784241963690` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784244243583` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784245143573` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784246073570` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784247033068` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784247960940` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784248862296` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784249791883` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784250694091` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784251651841` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784252588082` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784253512525` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784254412636` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784255317476` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784256243034` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784257182175` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784258106797` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784259067798` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784259993340` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784261225576` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784262161039` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784263119770` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784264079217` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784265022142` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784265996090` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784266924383` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784268169747` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784269116203` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784270109608` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784271039293` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784272029072` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784273044065` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784274023599` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784275077775` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784276077960` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784280906845` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784281869265` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784282793956` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784283814126` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784284725227` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784285673967` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784286576277` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784287481098` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784288434907` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784289334355` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784290247120` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784291251601` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784292190130` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784293140874` | — | — |
+| Alert on new critical-severity work items in papercusp<br/>`critical-severity-alert-2026-07-06@run-1784294045075` | — | — |
 | Daily digest — open papercusp-improvement work items<br/>`daily-improvement-digest-2026-07-06` | — | the run agent executes the steps above and sends the digest, then the run ends. Nothing to claim between runs — this plan has no standing work-items; its own scheduled firing IS the job. |
 | Adopt DBOS Transact for durable background jobs + orchestrator durability<br/>`dbos-durable-jobs-2026-05-31` | done 11, dropped 7 | Nothing — superseded. Future DBOS work tracks under the four shipped dbos-* plans; this doc is historical. |
 | DBOS orchestrator durability — Phase 3 integration (P-015→P-017)<br/>`dbos-orchestrator-durability-2026-05-31` | done 9, dropped 4 | Nothing — superseded. The remaining human-owned rollout knobs (opt a real harness into PAPERCUSP_DBOS_DISPATCH_HARNESSES; harden the spawn-mcp DSN per D-017 BUG-2) are operational, not plan work; track future DBOS work… |
@@ -1403,6 +960,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Multi-agent coding platforms (the Hive) resolve recurring failures as fresh incidents each time. The close-path has no structural memory: a plans:set-status error fixed on Monday can reopen Friday, a<br/>`scout-multi-agent-coding-platforms-the-hive-resolve-recurring-fail-2026-06-11` | — | Queen reviews this proposal; promote to `ready` to greenlight, or drop it. |
 | Multi-agent fleets produce zero coordination even when agents are explicitly instructed to coordinate, because coordination is a voluntary discipline that collapses under cognitive load — agents optim<br/>`scout-multi-agent-fleets-produce-zero-coordination-even-when-agent-2026-06-13` | — | Queen reviews this proposal; promote to `ready` to greenlight, or drop it. |
 | Plans in the Hive sleep for days on human 'owner ratifies' steps that are functionally rubber-stamps — not because the decision is dangerous, but because 'humanness' is the current proxy for authoriza<br/>`scout-plans-in-the-hive-sleep-for-days-on-human-owner-ratifies-ste-2026-06-11` | — | Queen reviews this proposal; promote to `ready` to greenlight, or drop it. |
+| Rubric proposal: hive-coordination-health scorecard<br/>`scout-rubric-hive-coordination-health-scorecard-2026-06-26` | — | Queen reviews this proposal in the Queen↔Scout feedback loop: she promotes it to greenlight (ready), or `coord:send`s plan-keyed feedback to revise. Iterate while making good progress; if the premise will not reach read… |
 | The Hive's deferral queue never drains because it treats all judgment calls identically — a flag-default sign-off and a destructive schema drop both become [needs-human] stalls. The bottleneck isn't h<br/>`scout-the-hive-s-deferral-queue-never-drains-because-it-treats-all-2026-06-12` | — | Queen reviews this proposal; promote to `ready` to greenlight, or drop it. |
 | Scout draft (P-012 triage E2E): In multi-agent coding platforms, 'needs-human' deferrals block downstream work because agents surface abstra<br/>`scout-triage-e2e-needs-human-deferrals-2026-06-11` | — | Queen reviews this proposal; promote to `ready` to greenlight, or drop it. |
 | SU / fleet autonomy envelope — a third autonomy:decide branch (owner-gated)<br/>`su-autonomy-envelope-2026-07-03` | todo 3 | human reviews scope and lists Phase 1 items. |
