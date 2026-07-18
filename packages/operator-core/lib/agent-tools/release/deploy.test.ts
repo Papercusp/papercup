@@ -66,6 +66,8 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
       lastFixerStatus: null,
       lastFixerCandidate: null,
       flakyWorkspaces: [],
+      failingTests: [],
+      lastVerdict: null,
     },
     deploy: {
       deployedSha: 'deployed0',
