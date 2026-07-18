@@ -233,7 +233,7 @@ export default function FeaturesAdmin() {
             <div className="fa-master-blurb">
               {testingOn
                 ? 'Papercusp is phoning home to flags.papercuspai.com. Per-flag toggles below are live.'
-                : 'Papercusp is using bundled defaults (all flags off). PostHog is not being contacted.'}
+                : 'Papercusp is using bundled defaults (most finished flags on by default). PostHog is not being contacted.'}
               <br />
               <span className="fa-source">Config source: {state.source}</span>
             </div>

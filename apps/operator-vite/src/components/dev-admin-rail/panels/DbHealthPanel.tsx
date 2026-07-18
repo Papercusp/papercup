@@ -69,14 +69,19 @@ export default function DbHealthPanel({ active }: { active: boolean }) {
         </div>
       )}
       <div className="pcdar-panel__bar" style={{ marginTop: 4 }}>
-        <span className="pcdar-panel__bar-label">Active queries ({rows.length})</span>
+        <span className="pcdar-panel__bar-label">Connections ({rows.length})</span>
       </div>
       {rows.length === 0 ? (
         <div className="pcdar-panel__empty">No active queries.</div>
       ) : (
         rows.map((q) => {
           const idleInTx = q.state === 'idle in transaction';
-          const slow = q.duration_seconds > 5;
+          // EI-1536: `duration_seconds` is time-since-query_start for EVERY row, not
+          // just running ones — for a non-active conn (idle, incl. long-lived LISTEN
+          // listeners) query_start is when its LAST (already-finished) query started,
+          // so it's "time since it last ran anything", not a running-query duration.
+          // Only an `active` row has a query genuinely in flight that can be slow.
+          const slow = q.state === 'active' && q.duration_seconds > 5;
           return (
             <div key={q.pid} className="pcdar-row">
               <span

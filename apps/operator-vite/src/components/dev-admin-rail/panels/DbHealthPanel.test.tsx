@@ -67,11 +67,11 @@ describe('<DbHealthPanel>', () => {
     expect(screen.getByText('16.2')).toBeTruthy();
   });
 
-  it('shows the active-queries count header and the empty state when none', () => {
+  it('shows the connections count header and the empty state when none', () => {
     seed('dev.pgHealth', { data: [HEALTH()] });
     seed('dev.pgActiveQueries', { data: [] });
     render(<DbHealthPanel active={true} />);
-    expect(screen.getByText('Active queries (0)')).toBeTruthy();
+    expect(screen.getByText('Connections (0)')).toBeTruthy();
     expect(screen.getByText('No active queries.')).toBeTruthy();
   });
 
@@ -79,7 +79,7 @@ describe('<DbHealthPanel>', () => {
     seed('dev.pgHealth', { data: [HEALTH()] });
     seed('dev.pgActiveQueries', { data: [QUERY({ pid: 100, duration_seconds: 0.25 })] });
     const { container } = render(<DbHealthPanel active={true} />);
-    expect(screen.getByText('Active queries (1)')).toBeTruthy();
+    expect(screen.getByText('Connections (1)')).toBeTruthy();
     expect(container.querySelector('.pcdar-dot.is-up')).toBeTruthy();
     expect(container.querySelector('.pcdar-pill')).toBeNull();
     // 0.25s → 250ms
@@ -103,6 +103,19 @@ describe('<DbHealthPanel>', () => {
     expect(pill.className).toContain('is-warn');
     // 12.3s → "12.3s"
     expect(screen.getByText(/pid 300 · active · 12\.3s/)).toBeTruthy();
+  });
+
+  it('EI-1536: a long-IDLE row (>5s since query_start, state=idle) is NOT flagged "slow" — only `active` rows can be slow', () => {
+    seed('dev.pgHealth', { data: [HEALTH()] });
+    // a LISTEN listener: idle for 808 minutes (48480s) — long time-since-last-query,
+    // but no query is actually running, so it must render as normal (is-up), no pill.
+    seed('dev.pgActiveQueries', {
+      data: [QUERY({ pid: 999, state: 'idle', duration_seconds: 48480, query: 'LISTEN "sync_invalidate"' })],
+    });
+    const { container } = render(<DbHealthPanel active={true} />);
+    expect(container.querySelector('.pcdar-dot.is-up')).toBeTruthy();
+    expect(container.querySelector('.pcdar-pill')).toBeNull();
+    expect(screen.queryByText('slow')).toBeNull();
   });
 
   it('fmtDur minutes branch (≥60s) renders as Nm', () => {
