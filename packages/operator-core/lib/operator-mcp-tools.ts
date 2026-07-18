@@ -147,7 +147,23 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // The D-004 delegation write (agent-allocation-framework P-002): hand a fleet
   // an account pool / GPU (share-%) or agent seats (agent_slot, count-capped) —
   // "join fleet X and assign 5 xhigh opus seats" runs through THIS one tool.
+  // This is the DONATE verb of the pot-seat-pools-prose-ux-2026-07-18 D-004
+  // donate/spend/debug prose set ("offer two sonnet seats to the design pot").
   'mcp__agentmcp__resource:delegate',
+  // pot-seat-pools-prose-ux-2026-07-18 P-006/D-004 — the rest of the
+  // donate/spend/debug verb set the prose-first UX needs on the chat surface
+  // (previously agent-reachable but NOT exposed here, so the brain could never
+  // actually call them for a user's "launch on remote seats" / "why hasn't the
+  // remote member arrived" request):
+  //   donate (create the receiving fleet first) -> fleet:create
+  //   spend  (cross-machine launch from a delegated seat-offer) -> fleet:request_remote_spawn
+  //   debug  (why a refused/silent cross-peer action didn't run) -> p2p:trace
+  // Each ships with its own per-tool `guidance` (when/notWhen/chaining) on the
+  // tool definition itself (fleet_registry/create.ts, request-remote-spawn.ts,
+  // p2p/trace.ts) — this array only decides chat-surface REACHABILITY.
+  'mcp__agentmcp__fleet:create',
+  'mcp__agentmcp__fleet:request_remote_spawn',
+  'mcp__agentmcp__p2p:trace',
 
   // Tool introspection — answers "what can I call?". Companion to
   // tools/list with role+capability+quota metadata that the standard
