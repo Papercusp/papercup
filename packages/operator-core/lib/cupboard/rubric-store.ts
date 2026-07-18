@@ -221,36 +221,120 @@ export function readLocalRubricMethod(r: Pick<LocalRubric, 'dir'>): string | nul
  *  without an import cycle; rubrics.ts re-exports it. */
 export const FIRST_PARTY_RUBRIC_SEED_OWNER = 'first-party-bundle';
 
+/** The bundle-sourced subset of a validated rubric's `template_data`, as the seed decision
+ *  core sees it — passed in by the caller (rubrics.ts owns the Zod schema/parse) for a
+ *  `valid` row, so `rubricsNeedingSeed` can detect first-party-bundle content drift
+ *  (EI-12932) without importing the plan-schema types here. Structurally a subset of
+ *  RubricTemplateData; a caller may pass the full validated object (extra fields like
+ *  releaseGating/proposedBy/ratifiedBy are simply ignored by the comparison). */
+export interface SeedableTemplateData {
+  characteristic: string;
+  criteria: unknown[];
+  ratingScale: string[];
+  methodRef?: string | null;
+  description?: string;
+  /** Recorded by a PRIOR seed/upgrade write (see seedContentHash below); absent for a row
+   *  seeded before this field existed, or one the seeder never wrote. */
+  seedContentHash?: string;
+}
+
 /** An existing workspace rubric plan row, as the seed decision core sees it. `valid` is
  *  whether template_data parses against rubricTemplateDataSchema — computed by the
- *  caller (rubrics.ts owns the schema). */
+ *  caller (rubrics.ts owns the schema). `templateData` is present only when `valid`. */
 export interface ExistingRubricRow {
   rubricId: string;
   owner: string | null;
   valid: boolean;
+  templateData?: SeedableTemplateData | null;
+}
+
+type SeedComparableSource = Pick<
+  SeedableTemplateData,
+  'characteristic' | 'criteria' | 'ratingScale' | 'methodRef' | 'description'
+>;
+
+function comparableSeedFields(f: SeedComparableSource): Record<string, unknown> {
+  return {
+    characteristic: f.characteristic,
+    criteria: f.criteria,
+    ratingScale: f.ratingScale,
+    ...(f.methodRef ? { methodRef: f.methodRef } : {}),
+    ...(f.description ? { description: f.description } : {}),
+  };
+}
+
+/** Recursively key-sorted JSON serialization — object property order (source dir authoring
+ *  order, jsonb round-tripping) must never affect the hash below; arrays keep their order
+ *  (a criteria reorder IS a content change). */
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const obj = v as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
 }
 
 /**
- * The seed's PURE decision core (unit-tested without a DB): which bundled rubrics need
- * seeding into the workspace store. No-clobber: any rubricId already present in the
- * workspace (any status — active, proposed, retired, even a half-authored row) always
- * wins, so a re-run against a seeded store returns [] (idempotence).
+ * A stable content hash over a rubric's bundle-sourced fields (EI-12932 first-party-rubric
+ * upgrade path). Recorded as `seedContentHash` in template_data by every seed/upgrade
+ * write, then recomputed against the LIVE stored fields on a later pass to distinguish
+ * "identical to what the seeder last wrote — only the BUNDLE has since changed" (safe to
+ * upgrade) from "diverged since the seeder last wrote this" (a local edit; leave it).
+ */
+export function seedContentHash(f: SeedComparableSource): string {
+  return hashPlanContent(stableStringify(comparableSeedFields(f)));
+}
+
+/**
+ * The seed's PURE decision core (unit-tested without a DB): which bundled rubrics need a
+ * seed/upgrade WRITE. No-clobber is the baseline: any rubricId under a REAL owner (any
+ * status — active, proposed, retired, even a half-authored row) always wins and is never
+ * touched.
  *
- * The ONE exception (WI-3617 wedge, 2026-07-17): a row that is BOTH seeder-owned
- * (owner=FIRST_PARTY_RUBRIC_SEED_OWNER) AND invalid (template_data fails the schema)
- * is reclaimed — it can only be a wedged placeholder (a raced rename, a broken
- * restore), it holds no ratified content to lose, it is invisible to reads
- * (planRowToRubric nulls it), and left in place it blocks its own repair forever.
- * A half-authored row under any REAL owner still blocks, invalid or not.
+ * Two exceptions, both scoped to owner=FIRST_PARTY_RUBRIC_SEED_OWNER rows only:
+ *
+ *   1. WI-3617 wedge (2026-07-17): a row that is BOTH seeder-owned AND invalid (template_data
+ *      fails the schema) is reclaimed — it can only be a wedged placeholder (a raced rename,
+ *      a broken restore), it holds no ratified content to lose, it is invisible to reads
+ *      (planRowToRubric nulls it), and left in place it blocks its own repair forever.
+ *
+ *   2. EI-12932 content-drift upgrade: a VALID seeder-owned row is upgraded IN PLACE when the
+ *      current bundle's content differs from what was last seeded — but ONLY when the row's
+ *      live content still matches its recorded `seedContentHash` (or, for a row seeded before
+ *      that field existed, its own current content — trusted once as the unknown baseline
+ *      rather than blocking upgrades forever). A row whose live content has since diverged
+ *      from that recorded state — e.g. `amendRubric` patched one criterion field while
+ *      falling back to the seed owner identity because no explicit `by` was given — is left
+ *      untouched: the same no-clobber guarantee every other row gets, extended to a row that
+ *      merely INHERITED the seed owner rather than being genuinely unmodified since seeding.
+ *
+ * Idempotent: a re-run against a fully up-to-date store (or one with no bundle changes)
+ * returns [].
  */
 export function rubricsNeedingSeed(
   bundled: LocalRubric[],
   existing: readonly ExistingRubricRow[],
 ): LocalRubric[] {
-  const blocking = new Set(
-    existing
-      .filter((e) => e.valid || e.owner !== FIRST_PARTY_RUBRIC_SEED_OWNER)
-      .map((e) => e.rubricId),
-  );
-  return bundled.filter((r) => !blocking.has(r.rubricId));
+  const byId = new Map(existing.map((e) => [e.rubricId, e] as const));
+  const out: LocalRubric[] = [];
+  for (const r of bundled) {
+    const row = byId.get(r.rubricId);
+    if (!row) {
+      out.push(r); // brand new — nothing blocks it
+      continue;
+    }
+    if (row.owner !== FIRST_PARTY_RUBRIC_SEED_OWNER) continue; // a real owner always blocks
+    if (!row.valid) {
+      out.push(r); // WI-3617: a wedged seeder-owned placeholder is reclaimed
+      continue;
+    }
+    if (!row.templateData) continue; // caller didn't supply comparable fields — stay safe, skip
+    const liveHash = seedContentHash(row.templateData);
+    const trustedBaseline = row.templateData.seedContentHash ?? liveHash;
+    if (trustedBaseline !== liveHash) continue; // diverged since the last seed write — a local edit, leave it
+    if (seedContentHash(r) !== liveHash) out.push(r); // the bundle has changed since — upgrade
+  }
+  return out;
 }

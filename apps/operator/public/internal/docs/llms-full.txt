@@ -16971,6 +16971,121 @@ The fixture used to validate this lane was not synthetic: it is the **real pre-f
 * **A flake that only reproduces under load is still a real red** — “it passes in isolation” is a description of the *detector’s* blind spot, not a property of the test.
 * **When a peer reports RED and you get green, believe the peer** until you have reproduced *their* conditions. The asymmetry is brutal: a false green costs the whole fleet, a false red costs one investigation.
 
+# A local test pass is not evidence about a candidate SHA
+
+> Why re-running a red gate's named test on the shared checkout can "prove" a failure is stale when it is real — and the git status check that disqualifies the false evidence.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+The standard triage move for a red release gate is: **re-run the named failing test on current staging HEAD before you touch anything** — because the checkpoint log records a candidate SHA that no longer exists and its named failures are often already fixed by peers (EI-10902).
+
+That move is correct and still stands. But it carries a caveat that, left unstated, inverts the conclusion:
+
+> `npm run test:file` / `npx vitest run` execute against the **WORKING TREE**, not against the committed candidate SHA.
+
+On this shared checkout the whole fleet edits that tree concurrently, and every peer’s edits sit **uncommitted** until the next git-sync tick. So a local pass can be produced *entirely by a peer’s in-flight fix that is not in the candidate SHA at all*. You measured your working copy. You did not measure a SHA.
+
+## What it cost (EI-15900, 2026-07-18)
+
+[Section titled “What it cost (EI-15900, 2026-07-18)”](#what-it-cost-ei-15900-2026-07-18)
+
+The `css-tokens` gate red was **real** and needed a code fix: `AnalyzePanel.tsx` used `var(--ok)`, which is undefined — absent from `RUNTIME_TOKENS` — and the fix (`var(--ok)` → `var(--good)`) landed as `216c5722`.
+
+An agent (me) ran the named test twice, saw it pass both times, and concluded the `failingTests` list was a stale artifact — then asserted a **fact** carrying the derived rule *“the cure is a fresh checkpoint-run, not a fix.”* Facts fold verbatim into every agent’s `coord:orient`, so that rule became binding context fleet-wide and cost hours of re-running instead of reading the one named failing test.
+
+The peer’s fix was sitting uncommitted in the tree during both runs. Timeline: `216c5722` committed 05:43:22, the two local runs at 05:43:20 and 05:43:45, the fact asserted 05:44:26. Even the run that *preceded* the commit would have passed.
+
+The disconfirming evidence was already in hand: that same session’s notes recorded `AnalyzePanel.tsx` as uncommitted `M` — a peer’s in-flight edit — and the connection to the passing test was never made.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+* Before calling a gate red **stale**, run `git status --short <the named file>`. **Any `M` disqualifies the local pass as evidence** — you are testing a peer’s uncommitted work, not the candidate.
+* To reason about a candidate SHA: test **the SHA**, or diff `candidate..tip` and attribute the fix to a specific commit.
+* Believe the gate’s own `retriage.classification` over any peer’s generalized rule — including one that arrives via a fact in your orient.
+
+## The same trap on a different surface: a grep hit is not evidence about semantics
+
+[Section titled “The same trap on a different surface: a grep hit is not evidence about semantics”](#the-same-trap-on-a-different-surface-a-grep-hit-is-not-evidence-about-semantics)
+
+Within the hour, the author of this page committed the identical error on an unrelated surface — **while writing this page and citing it.** Recorded because it is the strongest available evidence that the trap is structural, not a lapse that resolve-to-be-careful fixes.
+
+The claim: “`gen:doc-insights-index:check` is a **gating** CI check, so `docs:author` leaves the tree CI-red and can freeze fleet deploys.” Filed as `major` (EI-15927). The method: `grep` for the command, get a hit at `.github/workflows/test.yml:142`, assert “gating.”
+
+The hit was real. The conclusion was false. Line 142 sits inside:
+
+```yaml
+- name: Check generated reference pages (informational — does not gate)
+  if: always()
+  continue-on-error: true
+```
+
+The step name says it doesn’t gate, and `continue-on-error: true` is two lines above the hit. The insights index is deliberately non-gating because the fleet writes insights continuously and it is *expected* to be stale between regenerations (D-002).
+
+**A grep hit is evidence that a string appears. It is not evidence about the enclosing construct’s behavior.** Same shape as the SHA case: the measurement was accurate, the object was wrong. Whenever a grep result is about to become a claim about *semantics* — is it gating, is it reachable, is it enforced, does it run — read the enclosing block before asserting.
+
+## A truncated search cannot establish absence
+
+[Section titled “A truncated search cannot establish absence”](#a-truncated-search-cannot-establish-absence)
+
+Third instance, same session. Claim: a sha named in a green broadcast “exists in no repo on this box.” Filed `major` as a phantom release signal (EI-15925). The sha was real — it belonged to a **co-hosted pot** (oddsmith), whose green-checkpoint broadcasts to the shared `*` audience without naming the pot.
+
+The supporting evidence looked thorough — `git cat-file` against the superproject, every submodule, the release checkout, and then:
+
+```bash
+for r in $(find /home/marsh-office -maxdepth 5 -name .git | head -60); do ...
+```
+
+There are **357** `.git` directories at that depth. `head -60` reduced it to a **17% sample**; the repo holding the sha was **#325**, never examined. The report said “deep scan of \~60 git repos → found nowhere.”
+
+The `head -60` was added for output hygiene. It silently changed the claim’s **logical type** — from “not present” to “not present in the first 60 of 357” — and the write-up asserted the first.
+
+**When a search backs a claim of absence, drop the cap, or state examined-vs-total explicitly.** If you cannot examine every candidate, the finding is “not found in N of M,” never “does not exist.” Absence claims need exhaustiveness; presence claims need only one hit — they are not symmetric, and a pipeline written for readable output quietly optimizes for the wrong one.
+
+A related trap in the same incident: the write-up *did* carry a caveat — “I can only prove absence on this box” — and it was **aimed at the wrong axis**. The sha *was* on that box, in a path the truncated scan skipped. A caveat pointed at the wrong risk is worse than no caveat: it makes a claim feel careful without making it correct, and it buys credence the claim has not earned.
+
+## Check hardest when the claim flatters someone
+
+[Section titled “Check hardest when the claim flatters someone”](#check-hardest-when-the-claim-flatters-someone)
+
+The false gating claim also **credited the peer who reported the underlying issue**, inflating a minor DX nit into a fleet-freezing bug. That is not incidental to how it survived: a claim that flatters its recipient gets less scrutiny from *both* ends — the recipient is disinclined to attack it, and the author is pleased to make it.
+
+It was caught because su-d838f applied the correct discipline and said so:
+
+> “I checked the gating claim before accepting it, because it credited me and that’s exactly when I should check hardest.”
+
+Generalize it: **flattery is a scrutiny-suppressant on both sides of a message.** When a finding makes you (or the person you’re sending it to) look good, that is a signal to verify harder, not a reason to relax. The same applies to a claim that conveniently justifies work you already wanted to do.
+
+## The generalizable failure
+
+[Section titled “The generalizable failure”](#the-generalizable-failure)
+
+A **correct measurement of the wrong object**, promoted from a time-bound *observation* into a propagating *rule*, is how a confident “I verified it myself” mints a wrong fact.
+
+Be reluctant to promote an observation to a rule. And prefer `memory:remember` over `facts:assert` for this class: a fact **broadcasts** to every agent’s orient until retracted, so a wrong one scales its own blast radius. Fact-spam about a single incident is itself the anti-pattern EI-15900 names — there were already four overlapping facts about this one gate red.
+
+**The unifying reflex: verify the OBJECT, not the claim.** Four instances in one session, one author, all the same error — and the last three were committed *while writing this page*:
+
+| Claim                                   | Measured                | Should have measured                     |
+| --------------------------------------- | ----------------------- | ---------------------------------------- |
+| ”the gate red is stale, it passes”      | the working copy        | the candidate SHA                        |
+| ”this check gates CI” (EI-15927)        | that the string appears | the enclosing step’s `continue-on-error` |
+| ”this sha exists in no repo” (EI-15925) | 60 of 357 repos         | all 357 — or state the ratio             |
+| ”the doc is published”                  | the tool’s `{ok:true}`  | whether the index actually regenerated   |
+
+The mechanical guards, by claim type:
+
+* about a **test result** → `git status --short <file>`; any `M` disqualifies it
+* about a **SHA** → `git cat-file -t <sha>`, plus `release:trace`
+* about **semantics**, from a grep → read the **enclosing block**, never the matched line
+* about **absence** → remove the cap, or report examined-vs-total
+* about a **tool’s effect** → verify the side-effect landed, don’t trust `ok:true`
+
+These are checks, not resolutions. The author of this page held the lesson consciously in mind and repeated the error three more times inside two hours, which is the evidence that intent does not prevent it. Run the check.
+
 # Locating a live session by ownerId: process, DB, and session-dir routes
 
 > Given a coord ownerId (or a fresh spawn you just launched), how to find its live claude pid, its session directory, and its transcript jsonl — the three routes (psu-pty discovery file, tool_invocations/adv_sessions DB rollup, session-claude directory walk) and the gotchas in each, so the next agent doesn't re-derive this from scratch.
@@ -31427,6 +31542,103 @@ All timestamps render in EDT via `AT TIME ZONE 'America/New_York'` — DB timest
 * EVERY criterion must appear (the completeness gate rejects partials). For a scoped drill, list the untouched criteria in **`notExercised`** — each expands server-side to an `idle:`-tagged unknown the staleness detector excludes. Do not hand-write “not exercised” evidence; the shorthand exists so the idle convention is applied for you.
 * Evidence per rating is mandatory and should cite the query/result it came from. `unknown` beats invented.
 * `linkTo` the drill WI at file time — a scorecard orphaned from the work it graded is much harder to audit later.
+
+# A workspace domain resolving to a wrong IP in the su Bash tool is a LOCAL DNS hijack, not a sandbox feature — verify via an external path before ever reporting an outage
+
+> EI-12952: an su session diagnosed a total DNS/production outage of papercusp.com from inside its own Bash tool — dig/curl/python all agreed, and every resolver (1.1.1.1, 8.8.8.8, even the zone's own authoritative NS) 'confirmed' it. The domain was never down. Root cause verified live: this dev box's LAN silently HIJACKS plain UDP:53 answers for papercusp.com (and only papercusp.com — google.com/example.com/sqlite.org resolve correctly over the same path) to a stale/wrong IP, while TCP:53 and any externally-routed check (WebFetch) return the true, healthy Cloudflare-proxied answer. Never trust in-sandbox DNS for a workspace-owned domain as your only signal — verify externally before reporting an outage or touching DNS records.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+An su session ran the obvious diagnostics for “is papercusp.com down?” from inside its own `Bash` tool and got a *unanimous, internally-consistent* picture of total failure:
+
+```plaintext
+dig papercusp.com A @1.1.1.1     -> 18.204.152.241 (x2, duplicated in one ANSWER section)
+dig www.papercusp.com A @1.1.1.1 -> 18.204.152.241 (x2)
+dig papercusp.com AAAA           -> ::
+curl -sv http://18.204.152.241/  -> HTTP 204, Server: nginx, ~0.5s
+curl -sv https://18.204.152.241/ -> hangs, times out on :443
+```
+
+Every normal sanity control **passed and reinforced the false conclusion**: `google.com`, `github.com`, `debian.org`, and obscure-but-real domains (`sqlite.org`, `lwn.net`) all resolved *correctly* over the exact same path. Querying the zone’s own authoritative nameserver directly gave the *same wrong answer*. python’s `socket.getaddrinfo` agreed. The session came within one owner approval of requesting Cloudflare dashboard access to “fix” DNS records that were never broken — which would have **broken a healthy production zone**.
+
+Never conclude a production outage from in-sandbox DNS alone
+
+If dig/curl/python inside your own Bash tool says a **workspace-owned** domain is down, that is not sufficient evidence. Verify via a path that does NOT share this box’s network stack (below) before writing an incident report, before proposing a DNS change, and *especially* before requesting DNS/CDN dashboard credentials.
+
+## What it actually was (verified live, 2026-07-18) — NOT a sandbox feature
+
+[Section titled “What it actually was (verified live, 2026-07-18) — NOT a sandbox feature”](#what-it-actually-was-verified-live-2026-07-18--not-a-sandbox-feature)
+
+The original hypothesis (filed as EI-12952) was that the **su Bash sandbox itself synthesizes DNS answers** for non-allowlisted hosts — i.e. a designed network-isolation feature in the agent runtime returning plausible-looking fake records instead of failing closed. That would point the fix at papercusp’s own sandboxing code.
+
+**Live re-investigation found a different, more mundane root cause: this specific dev box’s LAN is hijacking plain UDP port-53 answers for `papercusp.com` (and its subdomains) to a stale/wrong IP — while TCP DNS and any externally-routed lookup return the true answer.** This is not a papercusp-authored sandbox behavior at all; there is no code in this repo that implements DNS interception for the `su` Bash tool’s network path (the one adjacent mechanism, `p2p/sandbox/network-egress.ts`, is an nft port-egress allow/denylist for **foreign P2P fleet isolation** and is not wired into any production spawn path — unrelated).
+
+The tell that separates “designed sandbox synthesis” from “local network hijack” is **UDP vs TCP**:
+
+```bash
+# UDP (default) — WRONG, hijacked:
+$ dig +short papercusp.com A @1.1.1.1
+18.204.152.241
+18.204.152.241
+
+
+# TCP (bypasses the hijack) — CORRECT, matches the real Cloudflare-proxied zone:
+$ dig +short +tcp papercusp.com A @1.1.1.1
+172.67.145.145
+104.21.73.140
+```
+
+And it is **domain-specific**, not a general TCP-vs-UDP artifact — `example.com` and `sqlite.org` resolve identically over UDP and TCP on the same box, at the same time:
+
+```bash
+$ dig +short example.com A @1.1.1.1        # UDP
+172.66.147.243
+104.20.23.154
+$ dig +short +tcp example.com A @1.1.1.1   # TCP — same answer, order differs
+104.20.23.154
+172.66.147.243
+```
+
+Querying the LAN router directly (`@192.168.40.1`) reproduces the same wrong answer, and a machine-local `systemd-resolved` drop-in (`/etc/systemd/resolved.conf.d/papercusp-fallback-dns.conf`, added 2026-07-01 for an unrelated “router DNS degraded” incident) does not explain it either — it only adds fallback servers, used when the primary is unresponsive. The most likely explanation is a stale DNS override or security-appliance sinkhole rule somewhere on this box’s LAN, targeting `papercusp.com` specifically (possibly a leftover from old infra pointing at a since-retired Heroku IP, predating the current Cloudflare-fronted setup) — this is host/network infrastructure outside papercusp’s own git tree and outside this doc’s scope to fix; see “What was NOT fixed” below.
+
+## The reliable check — verify via a path that skips this box’s network entirely
+
+[Section titled “The reliable check — verify via a path that skips this box’s network entirely”](#the-reliable-check--verify-via-a-path-that-skips-this-boxs-network-entirely)
+
+**`WebFetch`** does not share the sandbox’s local network stack (it fetches server-side, via Anthropic’s own infrastructure), so it is immune to a box-local hijack by construction — not because it is “more careful” about DNS, but because it never touches this box’s compromised path at all:
+
+```plaintext
+WebFetch https://dns.google/resolve?name=<host>&type=A
+```
+
+`dig +tcp` is a fast **local corroborating signal** (works from inside the Bash tool, no extra round-trip) but is weaker evidence than an externally-routed check — a sufficiently capable on-path interceptor could in principle also hijack TCP:53; the UDP-only behavior observed here is consistent with a common, simpler class of DNS interceptor (many consumer/SMB filtering appliances and “safe DNS” hijacks only intercept UDP:53, which is connectionless and easy to spoof/redirect, and skip TCP:53, which requires full connection proxying).
+
+cloudflare-dns.com needs a header WebFetch can't send
+
+`https://cloudflare-dns.com/dns-query` returns HTTP 400 via `WebFetch` because it requires an `Accept: application/dns-json` header that WebFetch does not send. Use `https://dns.google/resolve?name=<host>&type=<A|AAAA>` instead.
+
+## What to do when you see this
+
+[Section titled “What to do when you see this”](#what-to-do-when-you-see-this)
+
+1. **Do not conclude an outage, and do not propose or make a DNS/CDN change**, on the basis of an in-sandbox measurement (`dig`, `curl`, `python socket.getaddrinfo`, or even querying the zone’s own authoritative NS from inside the Bash tool) alone.
+2. Cross-check with `WebFetch https://dns.google/resolve?name=<host>&type=A` (and `type=AAAA`). If it disagrees with your in-sandbox `dig`, the in-sandbox path is the one that’s wrong.
+3. `dig +tcp <host> @1.1.1.1` as a fast local corroborating signal — if it already agrees with the external check while plain UDP `dig` doesn’t, that’s the same box-local-hijack signature described here, not a fresh incident.
+4. If the domain genuinely IS down (external check agrees with the bad in-sandbox reading), that’s real — proceed normally.
+
+## What was NOT fixed here (and why)
+
+[Section titled “What was NOT fixed here (and why)”](#what-was-not-fixed-here-and-why)
+
+The original item’s “preferred” fixes — make the sandbox’s DNS layer fail loudly instead of synthesizing, or allowlist the workspace’s own domains in the sandbox network policy — target a **designed sandbox network-isolation feature**. Live investigation found no such feature in papercusp’s own code governing the `su` Bash tool’s network path; the observed behavior is consistent with **this specific dev box’s local network** (router-level DNS interception or a stale override), which is:
+
+* outside papercusp’s git tree (no code here implements it),
+* specific to this one machine’s network environment (not guaranteed to reproduce, or to be fixable the same way, on a different host), and
+* not something an su session has the authority or the right vantage point to fix (it would mean reconfiguring a LAN router or an upstream network security appliance, not this codebase).
+
+The durable, host-independent fix that IS in scope — and that ships alongside this doc — is the standing habit above (verify externally before trusting an in-sandbox DNS reading for a workspace domain) plus a small reusable, tested pure-decider (`packages/operator-core/lib/dns-truth-divergence.ts`) any future health check or agent tooling can call to compare an in-sandbox resolution against an externally-supplied truth and flag exactly this divergence pattern, instead of every agent re-deriving the UDP/TCP tell from scratch.
 
 # The su-ideate learning loop: file → grade → wake → revise → outcome → priming
 
@@ -60063,9 +60275,9 @@ The gating sites are the documentation.
 
 The **agent-insights** are the fleet’s procedural runbook — one short page per hard-won, non-obvious fact (a confusing failure’s root cause, a subtle invariant, a library quirk). Written one-per-page; this is the generated landing index.
 
-**543 insights.** By status: active (459), current (21), superseded (20).
+**544 insights.** By status: active (460), current (21), superseded (20).
 
-**Top tags:** `testing` 55 · `federation` 50 · `postgres` 41 · `desktop` 38 · `runbook` 36 · `fleet` 29 · `vitest` 29 · `coordination` 27 · `gotcha` 27 · `inference-gateway` 27 · `debugging` 26 · `pot` 26 · `tauri` 26 · `memory` 24 · `mcp` 21 · `rate-limit` 21 · `release` 21 · `watchdog` 21 · `dbos` 20 · `shared-pot` 20 · `mug` 19 · `deploy` 18 · `dogfood` 18 · `hyperbee` 18 · `operator` 17
+**Top tags:** `testing` 56 · `federation` 50 · `postgres` 41 · `desktop` 38 · `runbook` 36 · `fleet` 29 · `vitest` 29 · `coordination` 27 · `gotcha` 27 · `inference-gateway` 27 · `debugging` 26 · `pot` 26 · `tauri` 26 · `memory` 24 · `mcp` 21 · `rate-limit` 21 · `release` 21 · `watchdog` 21 · `dbos` 20 · `shared-pot` 20 · `mug` 19 · `deploy` 18 · `dogfood` 18 · `hyperbee` 18 · `operator` 17
 
 ## All insights
 
@@ -60121,6 +60333,7 @@ The **agent-insights** are the fleet’s procedural runbook — one short page p
 | [A headless spawn that omits —account silently bypasses the gateway](/internal/docs/agent-insights/headless-spawn-without-account-bypasses-the-gateway)                                                                                                | `account-routing` `inference-gateway` `psu-launcher` `headless` `benchmark`                                                                                                                                                   | active     | 2026-07-17 | Omitting —account on a psu-launcher spawn routes it in ‘default’ mode (single CLI credential, no failover), which starves a batch spawner into silent all-null cells while the gateway pool sits idle.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | [A JSX component test’s “React is not defined” flake: put jsx:react-jsx in the package tsconfig, not only in vitest.config esbuild](/internal/docs/agent-insights/jsx-runtime-belongs-in-package-tsconfig-not-only-vitest-esbuild)                     | `testing` `vitest` `jsx` `esbuild` `flake`                                                                                                                                                                                    | active     | 2026-07-13 | Component tests that omit `import React` pass under a package’s vitest.config esbuild override but fail intermittently with “React is not defined” under any run that uses the base @papercusp/test-config. Fix: add jsx:react-jsx to the package tsconfig so the automatic runtime is config-path-independent.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | [A literal workspace\_id DEFAULT on a consolidated view silently mis-tenants every write](/internal/docs/agent-insights/consolidated-view-literal-workspace-default)                                                                                   | —                                                                                                                                                                                                                             | —          | —          | Why a per-harness view’s `ALTER COLUMN workspace_id SET DEFAULT 'default'` makes writes succeed with the wrong tenant — and why the UI showed an eternal spinner instead of an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| [A local test pass is not evidence about a candidate SHA](/internal/docs/agent-insights/local-test-pass-is-not-evidence-about-a-sha)                                                                                                                   | `release-gate` `triage` `shared-checkout` `testing`                                                                                                                                                                           | active     | 2026-07-18 | Why re-running a red gate’s named test on the shared checkout can “prove” a failure is stale when it is real — and the git status check that disqualifies the false evidence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | [A migration+code-flip “lockstep” is NOT atomic when two operators share one DB](/internal/docs/agent-insights/lockstep-migration-not-atomic-across-shared-db-operators)                                                                               | `release` `deploy` `migration` `lockstep` `shared-db` `two-port` `health-probe` `workspace-identity`                                                                                                                          | active     | 2026-06-16 | WI-148 moved papercup data ‘default’→‘papercusp-workspace’ in lockstep with a resolver code-flip, “atomic on the :3070 deploy”. But :3170 (staging) shares :5432/papercusp with :3070, so :3170‘s boot applied the migration to the shared DB AHEAD of the :3070 flip → a transient move-without-flip window where :3070 read empty. Plus the deploy health-probe never does a consumer read, so auto-rollback can’t catch it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | [A minimal CREATE TABLE IF NOT EXISTS stub silently shadows a fuller later definition](/internal/docs/agent-insights/fixture-subset-stub-shadows-fuller-create-table)                                                                                  | `testing` `postgres` `ddl` `integration-tests` `fixtures`                                                                                                                                                                     | active     | 2026-07-11 | Why an integration test dies with “column does not exist” at a CREATE TRIGGER even though the table’s fuller DDL declares that column — the shared-fixture subset-stub trap (D-014), and how to fix it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | [A native Napi::Error/SIGABRT on process exit needs a no-cleanup hard exit, not a teardown-skip](/internal/docs/agent-insights/native-sigabrt-on-exit-needs-a-no-cleanup-hard-exit)                                                                    | `host-recycle` `napi` `sigabrt` `memory-watchdog` `native-addons`                                                                                                                                                             | active     | 2026-07-13 | Why skipping the P2P substrate close never stopped the host-recycle SIGABRT (exit 134), and the reliable fix: SIGKILL self after the drain so Node’s env teardown — where the native addon actually throws — never runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -77755,14 +77968,16 @@ On a busy tree, a bare isolated instance used to reuse the SHARED `apps/operator
 
 **One residual gap:** if `apps/operator-vite/dist/` hasn’t been built yet (fresh checkout / never ran `npm run build` there), the script logs a WARNING and falls through to the shared, watcher-exposed dist as before — build operator-vite first for a genuinely isolated run. If you ever land in that fallback (or are driving the shell manually per the “manual recipe” below, which has no snapshot at all), fall back to the pre-EI-10364 resilience pattern: structure the drive as **one assertion per fresh page load** (state via nuqs URL params, which the operator already supports for exactly this) and retry on `Importing a module script failed` — a fresh load always fetches current chunks, and that error must never be read as a failure of the feature under test.
 
-The instance shares the LIVE database — writes are REAL (EI-10387)
+Default mode shares the LIVE database — writes are REAL (EI-10387)
 
-“Isolated” here means the **X display, the devUrl port, the pty port, and the sidecar process**. It does **not** mean isolated state: the sidecar inherits the ambient env, so `DATABASE_URL` / `PAPERCUSP_HOME` / `PAPERCUSP_WORKSPACE` all point at the **live** system. (The script’s header used to claim an “own embedded-PG, own workspace state” — that claim was false and has been corrected.)
+“Isolated” by **default** (`VERIFY_TAURI_ISOLATED_DB` unset) means only the **X display, the devUrl port, the pty port, and the sidecar process**. It does **not** mean isolated state: the sidecar inherits the ambient env, so `DATABASE_URL` / `PAPERCUSP_HOME` / `PAPERCUSP_WORKSPACE` all point at the **live** system. (The script’s header used to claim an “own embedded-PG, own workspace state” unconditionally — that claim was false in this default mode and has been corrected.)
 
 * **READ paths are safe.** Drive the UI, assert the DOM, read anything.
 * **WRITE paths are NOT.** A Mug steering click mutates the owner’s real steering *and* calls `requestUrgentHiveWake()` — waking the real Mug and burning real tokens. A routine toggle really toggles it (git-sync included).
 
-To exercise a write path safely, **intercept it in the webview instead of letting it reach the backend** — the method used for the 2026-07-12 Mug/Kettle/Papercup button sweep:
+**To exercise write paths safely, pass `VERIFY_TAURI_ISOLATED_DB=1`.** The script then boots a throwaway, fully-migrated, per-run embedded Postgres (its own datadir + port), scopes `PAPERCUSP_HOME`/`PAPERCUSP_WORKSPACE` to the run, and *asserts at boot* — reading the real sidecar’s own `/proc/<pid>/environ`, not just its own env construction — that the resolved DB actually differs from the live one, refusing to proceed otherwise. Every write in that mode is safe: it lands in the throwaway DB (discarded at teardown), and the instance boots into the normal empty first-run onboarding flow rather than the owner’s real pots/plans. Tradeoff: no pre-existing state to read/exercise, and boot is slower (a from-scratch `initdb` + full migration replay, \~10–30s). Stay on the shared default when you need to read/exercise real live state instead.
+
+For write-path testing when neither the isolated-DB boot cost nor its empty onboarding state fits, **intercept the write in the webview instead of letting it reach the backend** — the method used for the 2026-07-12 Mug/Kettle/Papercup button sweep:
 
 1. Stub `window.fetch` for `POST /api/agent-mcp/run-tool`; let reads through, and for writes push the parsed body onto a capture array and return a synthetic `{ ok:true, result:{ content:[{ text:'{"ok":true}' }] } }`.
 2. Click every control; assert zero `error` / `unhandledrejection` events.

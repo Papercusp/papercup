@@ -40,6 +40,7 @@
     "@papercusp/model-pricing": "*",
     "@papercusp/orchestrator": "*",
     "@papercusp/p2p-voice": "*",
+    "@papercusp/plan-parser": "*",
     "@papercusp/resource-profile": "*",
     "@papercusp/result-encoding": "*",
     "@papercusp/rules": "*",

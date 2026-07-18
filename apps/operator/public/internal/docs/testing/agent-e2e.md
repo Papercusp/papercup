@@ -273,21 +273,36 @@ current chunks, and that error must never be read as a failure of the feature
 under test.
 :::
 
-:::danger\[The instance shares the LIVE database — writes are REAL (EI-10387)]
-"Isolated" here means the **X display, the devUrl port, the pty port, and the
-sidecar process**. It does **not** mean isolated state: the sidecar inherits the
-ambient env, so `DATABASE_URL` / `PAPERCUSP_HOME` / `PAPERCUSP_WORKSPACE` all
-point at the **live** system. (The script's header used to claim an "own
-embedded-PG, own workspace state" — that claim was false and has been corrected.)
+:::danger\[Default mode shares the LIVE database — writes are REAL (EI-10387)]
+"Isolated" by **default** (`VERIFY_TAURI_ISOLATED_DB` unset) means only the **X
+display, the devUrl port, the pty port, and the sidecar process**. It does
+**not** mean isolated state: the sidecar inherits the ambient env, so
+`DATABASE_URL` / `PAPERCUSP_HOME` / `PAPERCUSP_WORKSPACE` all point at the
+**live** system. (The script's header used to claim an "own embedded-PG, own
+workspace state" unconditionally — that claim was false in this default mode
+and has been corrected.)
 
 * **READ paths are safe.** Drive the UI, assert the DOM, read anything.
 * **WRITE paths are NOT.** A Mug steering click mutates the owner's real
   steering *and* calls `requestUrgentHiveWake()` — waking the real Mug and
   burning real tokens. A routine toggle really toggles it (git-sync included).
 
-To exercise a write path safely, **intercept it in the webview instead of
-letting it reach the backend** — the method used for the 2026-07-12
-Mug/Kettle/Papercup button sweep:
+**To exercise write paths safely, pass `VERIFY_TAURI_ISOLATED_DB=1`.** The
+script then boots a throwaway, fully-migrated, per-run embedded Postgres (its
+own datadir + port), scopes `PAPERCUSP_HOME`/`PAPERCUSP_WORKSPACE` to the run,
+and *asserts at boot* — reading the real sidecar's own `/proc/<pid>/environ`,
+not just its own env construction — that the resolved DB actually differs from
+the live one, refusing to proceed otherwise. Every write in that mode is safe:
+it lands in the throwaway DB (discarded at teardown), and the instance boots
+into the normal empty first-run onboarding flow rather than the owner's real
+pots/plans. Tradeoff: no pre-existing state to read/exercise, and boot is
+slower (a from-scratch `initdb` + full migration replay, \~10–30s). Stay on the
+shared default when you need to read/exercise real live state instead.
+
+For write-path testing when neither the isolated-DB boot cost nor its empty
+onboarding state fits, **intercept the write in the webview instead of letting
+it reach the backend** — the method used for the 2026-07-12 Mug/Kettle/Papercup
+button sweep:
 
 1. Stub `window.fetch` for `POST /api/agent-mcp/run-tool`; let reads through,
    and for writes push the parsed body onto a capture array and return a
