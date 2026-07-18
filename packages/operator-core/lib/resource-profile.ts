@@ -47,8 +47,12 @@ import { backgroundWorkersEnabled, utilityHostEnabled } from './background-worke
  *  connection string. Verified live on the 128-core dev box: the old check
  *  misclassified it embeddedPg=true (and, downstream, backgroundInProcess=true)
  *  while pg-autotune (a SEPARATE, correctly-scoped classifier) tuned shared_buffers
- *  at the dedicated 0.25 ratio — the two disagreed on the exact same box. */
-function detectEmbeddedPg(): boolean {
+ *  at the dedicated 0.25 ratio — the two disagreed on the exact same box.
+ *
+ *  Exported (not module-private) so it is directly unit-testable against a
+ *  mocked `getHarnessAdminUrlWithSource` without fighting `getResourceProfile`'s
+ *  own one-shot memoization — see resource-profile.test.ts. */
+export function detectEmbeddedPg(): boolean {
   return getHarnessAdminUrlWithSource().source === 'discovery-file';
 }
 

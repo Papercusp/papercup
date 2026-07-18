@@ -123,6 +123,12 @@ const ALLOW = new Set([
   'PAPERCUSP_DOORS_CONFIG_OFF', 'PAPERCUSP_FULL_HEAP_SNAPSHOT', 'PAPERCUSP_HEAP_SNAPSHOT',
   'PAPERCUSP_HEAP_SNAPSHOT_REPEAT', 'PAPERCUSP_INJECTION_DOOR_OFF', 'PAPERCUSP_OMP_RESUME_VIA_PTY',
   'PAPERCUSP_PROVISION_ENV_OPERATORS', 'PAPERCUSP_RESULT_DOOR_OFF', 'PAPERCUSP_TUTORIAL_NO_ANIM',
+  // ── EI-2390: surfaced by the new "assign-then-compare" 2nd-pass scan (this same audit's
+  //    detection-gap fix) — all 3 are default-OFF ops/perf/security kill-switches, not
+  //    user-facing capabilities. ──
+  'PAPERCUSP_FLEET_SANDBOX_DENY_ALL_EGRESS', // sandbox LOCKDOWN switch (stricter, not a feature to promote)
+  'PAPERCUSP_HTTP_BACKPRESSURE', // default-OFF perf: caller-marked load shedding
+  'PAPERCUSP_HTTP_HANDLER_DEADLINE', // default-OFF perf: per-handler deadline enforcement
 ]);
 
 // Real default-OFF CAPABILITIES deliberately kept on an env gate (infra routing /
@@ -176,6 +182,10 @@ const KNOWN_ENV_CAPABILITY_GATES = {
   PAPERCUSP_MEMORY_DEDUP: {
     reviewBy: '2026-07-31',
     reason: "Memory dedup-on-remember (top-k similarity, checked === 'on'). Built, OFF. DECIDE: enable or migrate to a FLAG.",
+  },
+  PAPERCUSP_AMBIENT_CURSOR: {
+    reviewBy: '2026-08-15',
+    reason: 'Ambient-semantic-push P-002: adds each active agent\'s lexical cursor (data, not directive) to coord presence + wake teasers. Built + extensively wired (topic/dead-end/collision/adjacency matchers, presence-cursor overlay, wake-executor teaser). Default-OFF, opt-in. Surfaced by the EI-2390 2026-07-18 audit (assign-then-compare detection-gap fix). DECIDE: enable or migrate to a FLAG.',
   },
 };
 

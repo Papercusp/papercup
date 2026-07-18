@@ -5,6 +5,7 @@
 // SSR pages may inject the initial payload via window.__PAPERCUSP_FLAGS__.
 // Live updates arrive on /api/flags/stream (SSE).
 
+import { useSyncExternalStore } from "react";
 import {
   createResilientEventSource,
   type ResilientEventSourceStatus,
@@ -43,8 +44,24 @@ function readInitialPayload(): FlagPayload {
   };
 }
 
+/**
+ * EI-2425 fix A: a REACTIVE flag read. Before this, `useFlag` was a plain
+ * function reading the module-level `current` snapshot — it read the value
+ * once at render time but never re-rendered a consumer when `setFlagPayload`
+ * later updated `current` (a flag flip via flags:set, or an SSE
+ * `flag_changed` push once fix B wires the stream). `useSyncExternalStore`
+ * over the existing `subscribe`/`current` primitives makes every `useFlag`
+ * consumer re-render the instant the flag changes, with no extra wiring per
+ * call site. `getServerSnapshot` falls back to FLAG_DEFAULTS — matches
+ * `readInitialPayload`'s own no-window fallback, so an SSR/non-browser
+ * evaluation never throws for lack of `subscribe`.
+ */
 export function useFlag(key: FlagKey): boolean {
-  return current.flags[key] ?? FLAG_DEFAULTS[key];
+  return useSyncExternalStore(
+    (onStoreChange) => subscribe(() => onStoreChange()),
+    () => current.flags[key] ?? FLAG_DEFAULTS[key],
+    () => FLAG_DEFAULTS[key],
+  );
 }
 
 export function getFlagSnapshot(): FlagPayload {
