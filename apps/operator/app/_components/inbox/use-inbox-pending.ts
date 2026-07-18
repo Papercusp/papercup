@@ -47,7 +47,25 @@ export interface InboxAttention {
 export function useInboxAttention(enabled = true): InboxAttention {
   const q = usePlanAttention({ enabled });
   const groups = q.data?.groups;
-  const items = useMemo(() => (groups ?? []).flatMap((g) => g.items), [groups]);
+  const items = useMemo(() => {
+    // Dedupe by id: a non-plan-scoped attention item (owner-wall, loop-carry-
+    // note, an alert that isn't tied to one plan) appears in MULTIPLE plan
+    // groups, so a bare `groups.flatMap(g => g.items)` emits it once per group
+    // → the inbox renders the same row 2-5x with duplicate React keys, and the
+    // chip "Needs you"/"All" counts disagree with the visible list (WI-5337).
+    // Keep first occurrence; every consumer (badge, filter, plans-needing-you)
+    // reads this, so deduping here fixes all of them at once.
+    const seen = new Set<string>();
+    const out: AttentionItem[] = [];
+    for (const g of groups ?? []) {
+      for (const it of g.items) {
+        if (seen.has(it.id)) continue;
+        seen.add(it.id);
+        out.push(it);
+      }
+    }
+    return out;
+  }, [groups]);
   return { items, loading: q.loading, error: q.error, refresh: q.refresh };
 }
 

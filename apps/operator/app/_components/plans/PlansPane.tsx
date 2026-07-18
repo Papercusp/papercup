@@ -219,9 +219,18 @@ export default function PlansPane() {
         <div className="plans-pane__empty">
           {debouncedQuery.trim()
             ? 'No plans match the search.'
-            : showFinished
-              ? 'No plans yet.'
-              : 'No active plans — everything is finished. 🎉'}
+            : !plans || plans.length === 0
+              ? // Feed not yet hydrated (or a genuinely empty workspace) — NEVER
+                // the celebratory "all finished" here. On a cold/slow load
+                // `plans` is briefly empty (sometimes with loading already
+                // false), which used to flash "everything is finished 🎉" over
+                // ~466 real active plans before the list populated (WI-5338).
+                planList.loading
+                ? 'Loading plans…'
+                : 'No plans yet.'
+              : showFinished
+                ? 'No plans yet.'
+                : 'No active plans — everything is finished. 🎉'}
         </div>
       ) : (
         <ul className="plans-pane__list" aria-label="Plans">
