@@ -100,7 +100,14 @@ function spawnShell(
   sandboxEnabled = false,
 ): ChildProcess {
   const spawnPath = augmentedSpawnPath();
-  const inheritedEnv = normalizeInheritedOperatorUrl(stripHostX(process.env));
+  // EI-1617: scrubExecEnv replaces the old stripHostX-only passthrough — an
+  // ALLOWLIST (PATH/HOME/locale/toolchain vars + the couple of Papercusp
+  // plumbing vars this path needs), not a denylist, so the operator's OWN
+  // secrets (DB creds, webhook/JWT secrets, session keys, …) never reach a
+  // bee's shell command. DISPLAY/XAUTHORITY/WAYLAND_DISPLAY are dropped too
+  // (not in the allowlist) — strictly narrower than stripHostX, so the old
+  // host-X isolation still holds.
+  const inheritedEnv = normalizeInheritedOperatorUrl(scrubExecEnv(process.env));
   const decision = buildCapabilitySandboxCommand(
     { cmd: [resolveBin('bash', spawnPath), '-c', command], cwd },
     { enabled: sandboxEnabled },

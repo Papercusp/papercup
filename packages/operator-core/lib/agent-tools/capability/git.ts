@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
-import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled } from './exec-sandbox';
+import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled, scrubExecEnv } from './exec-sandbox';
 
 const REFUSED_SUBCOMMANDS = new Set(['push']);
 
@@ -94,7 +94,11 @@ function runGit(
     }
     const child = childSpawn(decision.binary, decision.argv, {
       cwd,
-      env: { ...process.env, PATH: spawnPath },
+      // EI-1617: allowlist, not a full process.env passthrough — this subprocess
+      // previously inherited every operator secret (DB creds, webhook/JWT
+      // secrets, session keys, …) for no reason a `git status`/`diff`/`commit`
+      // needs. See exec-sandbox.ts's scrubExecEnv.
+      env: { ...scrubExecEnv(process.env), PATH: spawnPath },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';

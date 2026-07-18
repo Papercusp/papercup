@@ -30,12 +30,12 @@ import {
   assertSandboxDisplay,
   captureCommand,
   planAction,
-  stripHostX,
   xdotoolCommand,
   type ComputerActionInput,
   type DesktopTarget,
 } from './desktop-driver';
 import { hiveDesktop } from './desktop-lease';
+import { scrubExecEnv } from '../capability/exec-sandbox';
 
 /** The canonical computer-use resolution (best model grounding accuracy). */
 const DEFAULT_W = 1024;
@@ -58,11 +58,15 @@ export type ComputerExec = (
 const realExec: ComputerExec = (bin, args, opts) =>
   new Promise((resolveExec, reject) => {
     const child = spawn(bin, args, {
-      // ISOLATION (2026-06-19 keystroke-leak fix): strip the operator's host X
-      // session (DISPLAY=:0 / gdm XAUTHORITY) before binding the sandbox display in
-      // opts.env, so xdotool/import can ONLY reach the leased sandbox — never the
-      // operator's real :0 where the live fleet's agent TUIs run.
-      env: { ...stripHostX(process.env), ...(opts.env ?? {}) },
+      // ISOLATION (2026-06-19 keystroke-leak fix + EI-1617 secrets-leak fix):
+      // scrubExecEnv is an ALLOWLIST (strictly narrower than the old
+      // stripHostX-only denylist) — it drops the operator's host X session
+      // (DISPLAY=:0 / gdm XAUTHORITY, same as before: neither is allowlisted)
+      // AND every operator secret (DB creds, webhook/JWT secrets, session
+      // keys, …) that a desktop-driving xdotool/import call has no business
+      // seeing. opts.env (the leased sandbox DISPLAY) is spread AFTER, so it
+      // always wins regardless of the allowlist.
+      env: { ...scrubExecEnv(process.env), ...(opts.env ?? {}) },
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
     const out: Buffer[] = [];
