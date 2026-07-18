@@ -165,6 +165,25 @@ export interface ScoutCadenceState {
   watermarkAt: string | null;
 }
 
+/**
+ * One broad-scope routed idea joined to the draft plan it became (P-005,
+ * learning-tab-visibility 2026-07-18) — makes the Queen↔Scout revision loop
+ * watchable: `planVersion` > 1 means the draft has been revised since Scout
+ * wrote it (the typed-revision loop turning).
+ */
+export interface ScoutDraftIteration {
+  ideaId: string;
+  planSlug: string;
+  title: string | null;
+  routedAt: string | null;
+  /** The draft plan's current lifecycle status (draft | ready | active | …), null when the plan row is gone. */
+  planStatus: string | null;
+  planVersion: number | null;
+  planUpdatedAt: string | null;
+  /** version > 1 — at least one revision landed after the initial draft. */
+  revised: boolean;
+}
+
 export interface ScoutSnapshot {
   totalRouted: number;
   railCounts: ScoutRailCount[];
@@ -204,6 +223,12 @@ export interface ScoutSnapshot {
    * null when the accumulator table is missing or the read degrades.
    */
   cadence: ScoutCadenceState | null;
+  /**
+   * Drafts in iteration (learning-tab-visibility P-005): the newest rail='plan'
+   * routed ideas joined to their draft plans — the Queen↔Scout revision loop,
+   * watchable. Empty when none routed or the read degrades.
+   */
+  drafts: ScoutDraftIteration[];
 }
 
 const UNDEFINED_TABLE = '42P01';
@@ -572,6 +597,50 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
+  // Drafts-in-iteration leg (learning-tab-visibility P-005): the newest
+  // rail='plan' ledger rows joined to the draft plans they became, so the
+  // Queen↔Scout revision loop is watchable (version > 1 = revised). The join
+  // is workspace-scoped (harness_plans is multi-tenant on workspace+harness —
+  // never a bare-slug read); the newest plan row per slug wins. Best-effort.
+  let drafts: ScoutDraftIteration[] = [];
+  try {
+    const draftRows = (await sql`
+      SELECT DISTINCT ON (r.idea_id)
+             r.idea_id, r.title, r.routed_at,
+             substring(r.routed_ref from 'plan:(.*)') AS plan_slug,
+             p.status AS plan_status, p.version AS plan_version, p.updated_at AS plan_updated_at
+        FROM harness_shared.scout_routed_ideas r
+        LEFT JOIN harness_shared.harness_plans p
+          ON p.workspace_id = r.workspace_id
+         AND p.plan_slug = substring(r.routed_ref from 'plan:(.*)')
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.rail = 'plan'
+         AND r.routed_ref LIKE 'plan:%'
+       ORDER BY r.idea_id, p.updated_at DESC NULLS LAST
+    `) as Array<Record<string, unknown>>;
+    drafts = draftRows
+      .map((r) => {
+        const planVersion = r.plan_version == null ? null : Number(r.plan_version);
+        return {
+          ideaId: String(r.idea_id ?? ''),
+          planSlug: String(r.plan_slug ?? ''),
+          title: typeof r.title === 'string' && r.title ? r.title : null,
+          routedAt: toIso(typeof r.routed_at === 'string' ? Number(r.routed_at) : r.routed_at),
+          planStatus: typeof r.plan_status === 'string' && r.plan_status ? r.plan_status : null,
+          planVersion: planVersion != null && Number.isFinite(planVersion) ? planVersion : null,
+          planUpdatedAt: toIso(r.plan_updated_at),
+          revised: planVersion != null && Number.isFinite(planVersion) && planVersion > 1,
+        };
+      })
+      .filter((d) => d.planSlug)
+      .sort((a, b) => (b.routedAt ?? '').localeCompare(a.routedAt ?? ''))
+      .slice(0, 12);
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] drafts read failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   const health = evaluateIdeasDriftMarkers({ ticks, recent, scoutLensSample });
-  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles, cadence };
+  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles, cadence, drafts };
 }

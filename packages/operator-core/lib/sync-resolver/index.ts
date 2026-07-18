@@ -3837,6 +3837,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             lensWeights: null,
             groundingTitles: {},
             cadence: null,
+            drafts: [],
           },
         ];
       }

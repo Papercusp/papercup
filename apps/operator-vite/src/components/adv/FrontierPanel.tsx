@@ -119,9 +119,9 @@ export function FrontierPanel({
   return (
     <section className="pc-learning__section pc-frontier" aria-label="Frontier learning lanes">
       <LearningPageHeader
-        icon={<Radar size={14} aria-hidden />}
+        icon={Radar}
         title="Frontier lanes"
-        subtitle="Every workspace-singleton learning loop and its three gates — routine liveness, feature flag, governor budget (read-only). A loop is genuinely live only when all three are open."
+        question="Which learning loops are actually alive — routine firing, flag ON, budget set?"
         action={
           <button
             type="button"
@@ -135,9 +135,15 @@ export function FrontierPanel({
         }
       />
       {sync.error ? (
-        <LearningVisualError message="The frontier read failed — reload, or check the operator log." />
+        <LearningVisualError
+          title="The frontier read failed"
+          onRetry={() => sync.invalidate()}
+        />
       ) : lanes.length === 0 ? (
-        <LearningVisualEmpty message="No learning-loop rows yet — the singleton materializer has not run on this workspace." />
+        <LearningVisualEmpty
+          icon={Radar}
+          title="No learning-loop rows yet — the singleton materializer has not run on this workspace."
+        />
       ) : (
         <div className="pc-frontier__scroll">
           <table className="pc-frontier__grid">

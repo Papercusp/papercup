@@ -37,6 +37,7 @@ import {
   GitBranch,
   Beaker,
   Search,
+  Telescope,
 } from "lucide-react";
 import type {
   ImprovementDigest,
@@ -58,6 +59,8 @@ import { BenchmarkTrend, type BenchmarkTrendInstance } from "./BenchmarkTrend";
 import type { BakeoffTrendRow } from "@papercusp/operator-core/lib/pot-eval/bakeoff-trend";
 import { EkgPanel } from "./EkgPanel";
 import { RedQueenPanel } from "./RedQueenPanel";
+import { FrontierPanel } from "./FrontierPanel";
+import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { MugWakeEfficiencyPanel } from "./MugWakeEfficiencyPanel";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Select } from "@/app/harness/Select";
@@ -97,6 +100,7 @@ const LVIEWS = [
   "ekg",
   "red-queen",
   "experiments",
+  "frontier",
   "throughput",
   "learnings",
 ] as const;
@@ -161,6 +165,7 @@ const STAGES: ReadonlyArray<{
       { id: "ekg", label: "EKG", icon: Activity },
       { id: "red-queen", label: "Red Queen", icon: Radar },
       { id: "experiments", label: "Experiments", icon: Beaker },
+      { id: "frontier", label: "Frontier", icon: Telescope },
     ],
   },
   {
@@ -531,6 +536,7 @@ function LearningViewContent({
     return <RedQueenPanel onStatus={reportViewStatus} />;
   if (view === "experiments")
     return <ExperimentsPanel onStatus={reportViewStatus} />;
+  if (view === "frontier") return <FrontierPanel onStatus={reportViewStatus} />;
   if (view === "throughput") {
     return <ThroughputView onStatus={reportViewStatus} />;
   }
@@ -3502,6 +3508,12 @@ function LearningsView({
             </div>
           }
         />
+
+        {/* Fleet-lessons candidate review (learning-tab-visibility P-002): the
+            retention loop's human gate — cross-hive recurring lessons staged by
+            the recurrence-escalation sweep, awaiting owner adopt/dismiss into
+            the fleet-lessons pack. Self-labeling; renders nothing when empty. */}
+        <KnowledgePackCandidates />
 
         {rows.length > 0 ? (
           <div className="pc-learning__sectionhead">
