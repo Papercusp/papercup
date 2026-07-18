@@ -6,19 +6,16 @@
  * `::text::jsonb`, the postgres-js `sql.json()`/`pgJson()` helper forms, and
  * non-jsonb casts untouched.
  */
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { describe, it } from 'vitest';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// npm workspaces hoists `eslint` to the repo-root node_modules — a plain
+// require('eslint') resolves it via normal Node module-resolution walk-up
+// (EI-10445: the previous node_modules/.pnpm/eslint@… scan never resolved in
+// this npm-only repo — no pnpm store exists here at all — so this test file
+// silently ran 0 tests, ENOENT'ing before RuleTester.run ever executed).
 const require = createRequire(import.meta.url);
-
-const pnpmDir = path.join(__dirname, '..', '..', '..', 'node_modules', '.pnpm');
-const eslintPkg = readdirSync(pnpmDir).find((d) => d.startsWith('eslint@'));
-const eslintModule = path.join(pnpmDir, eslintPkg, 'node_modules', 'eslint');
-const { RuleTester } = require(eslintModule);
+const { RuleTester } = require('eslint');
 
 const rule = require('../no-bare-jsonb-cast.js');
 

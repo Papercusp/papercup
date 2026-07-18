@@ -505,6 +505,39 @@ if grep -qE "EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null; then
   exit 1
 fi
 
+# EI-10387 recurrence guard: when isolation was requested, verify GROUND TRUTH —
+# the REAL running sidecar's own /proc/<pid>/environ — not just that we set the
+# env var somewhere upstream. This is the check that would have caught the
+# original bug (the header's isolation claim was false; the intervening chain
+# — .env.local, DEFAULT_DEV_CMD's own env layer — is exactly the kind of thing
+# that silently re-breaks this). Fail loudly rather than "verifying" against the
+# live DB under a false isolated banner.
+if [ "$ISOLATED_DB" = "1" ]; then
+  SIDECAR_PID=""
+  for _ in $(seq 1 10); do
+    SIDECAR_PID="$(pgrep -f "bin/hono-host.ts" 2>/dev/null | while read -r p; do
+      env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
+      grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"$env_p" && echo "$p"
+    done | head -1)"
+    [ -n "$SIDECAR_PID" ] && break
+    sleep 1
+  done
+  [ -n "$SIDECAR_PID" ] || {
+    echo "FATAL: VERIFY_TAURI_ISOLATED_DB=1 but no bin/hono-host.ts process carries OPERATOR_DEV_PORT=$DEV_PORT — cannot verify isolation took effect. Refusing to proceed under a false isolated banner." >&2
+    exit 1
+  }
+  SIDECAR_ENVIRON="$(tr '\0' '\n' < "/proc/$SIDECAR_PID/environ" 2>/dev/null)"
+  SIDECAR_ADMIN_URL="$(sed -n 's/^HARNESS_ADMIN_DATABASE_URL=//p' <<<"$SIDECAR_ENVIRON")"
+  if [ "$SIDECAR_ADMIN_URL" != "$ISOLATED_ADMIN_URL" ]; then
+    echo "FATAL: EI-10387 isolation check failed — the running sidecar's own HARNESS_ADMIN_DATABASE_URL" >&2
+    echo "       does not match the isolated PG we booted (sidecar saw: '${SIDECAR_ADMIN_URL:-<unset>}'," >&2
+    echo "       expected the isolated URL on :$ISOLATED_PG_PORT). Refusing to proceed — this would silently" >&2
+    echo "       hand back a webview pointed at the LIVE database under a false isolated-DB banner." >&2
+    exit 1
+  fi
+  log "EI-10387 isolation VERIFIED: sidecar pid=$SIDECAR_PID resolved HARNESS_ADMIN_DATABASE_URL to our isolated PG on :$ISOLATED_PG_PORT"
+fi
+
 # Resolve the ACTUAL webview process's pid (the setsid/tauri-dev wrapper pid is
 # not always the bridge owner) by matching BOTH our unique DISPLAY and our
 # OPERATOR_DEV_PORT against each candidate's real environ — agent-e2e.mdx §1.3's
