@@ -160,16 +160,54 @@ req = urllib.request.Request(
     },
     method='POST',
 )
-try:
-    urllib.request.urlopen(req, timeout=10).read()
+
+
+# EI-1400: a single-shot release used to give up instantly on ANY transport
+# error (including a transient connection-refused during the :3070 restart
+# window that follows a lib/** edit — the host has no hot-reload, so an
+# operator-code change forces exactly this few-second refuse-then-accept
+# window per repo-conventions' two-port model). Silently dropping the
+# release there strands the lock SERVER-SIDE for the full 1200s acquire TTL
+# (ttl_sec=1200 in the matching PreToolUse hook) even though the edit itself
+# finished instantly — to a second agent editing a disjoint file in the same
+# directory this reads as prolonged "coarse" blocking on a specific file,
+# not a one-off miss. Mirror the PreToolUse hook's own bounded
+# connection-refused retry (same backoff shape) so a short restart window
+# doesn't turn into a ~20-minute stray lock. Any non-refused error still
+# fails open immediately (best-effort; TTL still covers a genuine miss).
+def _is_conn_refused(exc):
+    if isinstance(exc, ConnectionRefusedError):
+        return True
+    if isinstance(getattr(exc, 'reason', None), ConnectionRefusedError):
+        return True
+    s = str(exc)
+    return 'Connection refused' in s or 'Errno 111' in s
+
+
+RETRY_BACKOFFS = (0.4, 0.8, 1.2)
+_last_exc = None
+_released = False
+for _attempt in range(len(RETRY_BACKOFFS) + 1):
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+        _released = True
+        break
+    except Exception as e:
+        _last_exc = e
+        if _is_conn_refused(e) and _attempt < len(RETRY_BACKOFFS):
+            time.sleep(RETRY_BACKOFFS[_attempt])
+            continue
+        break
+
+if _released:
     value = {'ts': now_iso(), 'owner': owner}
     write_marker('last-success.json', value)
     write_marker(owner_marker_name('success'), value)
-except Exception as e:
+else:
     # Best-effort; TTL covers a missed release. Record for /coord health.
     value = {
         'ts': now_iso(), 'handler': 'posttooluse', 'phase': 'connect',
-        'detail': str(e)[:200], 'operator_url': operator_url,
+        'detail': str(_last_exc)[:200], 'operator_url': operator_url,
         'owner': owner,
     }
     write_marker('last-error.json', value)
