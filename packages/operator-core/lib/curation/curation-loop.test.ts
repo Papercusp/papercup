@@ -470,6 +470,18 @@ describe('status cards — deterministic-status-cards P-002/P-003', () => {
     expect('ref' in item).toBe(false);
   });
 
+  it('sets a card ref ONLY for an open-escalation ref — cleared/health/wi refs get NO Open button (no dead drill-in)', () => {
+    // Open escalation (any kind derived from it) → resolvable inbox item → ref set.
+    expect(signalToReportItem(cs({ id: 'e', kind: 'blocker', title: 'x', ref: 'escalation:m1' }), now).ref).toBe('escalation:m1');
+    expect(signalToReportItem(cs({ id: 'e', kind: 'escalation', title: 'x', ref: 'escalation:m2' }), now).ref).toBe('escalation:m2');
+    // Cleared = resolved escalation → no inbox row → NO ref, even though its ref is `escalation:`.
+    expect('ref' in signalToReportItem(cs({ id: 'c', kind: 'cleared', title: 'x', ref: 'escalation:m3' }), now)).toBe(false);
+    // Blocker (wi:), health (health:), completion (wi:) → no clean inbox target → NO ref.
+    expect('ref' in signalToReportItem(cs({ id: 'b', kind: 'blocker', title: 'x', ref: 'wi:pc#F-1' }), now)).toBe(false);
+    expect('ref' in signalToReportItem(cs({ id: 'h', kind: 'health', title: 'x', ref: 'health:panel-1' }), now)).toBe(false);
+    expect('ref' in signalToReportItem(cs({ id: 'k', kind: 'completion', title: 'x', ref: 'wi:pc#F-2' }), now)).toBe(false);
+  });
+
   it('buildSurfaceReport → one Fleet status plan, one item per signal, refs preserved', () => {
     const report = buildSurfaceReport(
       [

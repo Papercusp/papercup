@@ -148,14 +148,28 @@ export function formatSignalLine(c: ClassifiedSignal, now: () => number = Date.n
   return line;
 }
 
+/** A signal ref that the chat card can turn into a WORKING inbox drill-in
+ *  (P-003/D-004). Only OPEN escalations map to a live inbox item
+ *  (`coord-escalation:<msgId>`, see drillInRefToInbox); a `cleared:` signal is a
+ *  RESOLVED escalation (no inbox row) and every other kind (blocker `wi:`,
+ *  health `health:`, completion) has no inbox target — so those get NO card ref
+ *  (⇒ no dead "Open" button), while their info still rides the row text. */
+function refDrillsToInbox(c: ClassifiedSignal): boolean {
+  return (
+    typeof c.signal.ref === 'string' &&
+    c.signal.ref.startsWith('escalation:') &&
+    c.signal.kind !== 'cleared'
+  );
+}
+
 /** One card ROW for a signal — the structured counterpart of formatSignalLine
  *  (P-002). `status` drives the glyph/tone; `ref` becomes the row's actionable
- *  drill-in (P-003/D-004) instead of the dead monospace `drill in: \`…\``. */
+ *  drill-in (P-003/D-004) — set ONLY when it resolves to an open inbox item. */
 export function signalToReportItem(c: ClassifiedSignal, now: () => number = Date.now): ReportItem {
   return {
     text: signalBody(c, now),
     status: KIND_STATUS[c.signal.kind] ?? c.signal.kind,
-    ...(c.signal.ref ? { ref: c.signal.ref } : {}),
+    ...(refDrillsToInbox(c) ? { ref: c.signal.ref } : {}),
   };
 }
 

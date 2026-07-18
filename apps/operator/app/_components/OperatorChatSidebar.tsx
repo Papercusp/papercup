@@ -25,7 +25,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
 import { ChevronLeft, ChevronRight, ClipboardList, Inbox as InboxIcon, Volume2, VolumeX } from 'lucide-react';
-import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { drillInRefToInbox } from './chat/curator-card-drill-in';
 import { PotHealthPane } from './PotHealthPane';
@@ -295,22 +295,25 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const plansOpen = view === 'plans';
   // deterministic-status-cards-2026-07-17 P-003: a curator status card's
   // drill-in opens the inbox (opcv=inbox), switches to the 'all' filter, and
-  // selects the referenced item (opcis). The 'all' filter is REQUIRED: the
-  // inbox defaults to 'needs' (decision-tier only), so an operational/alert
+  // selects the referenced item (opcis) — ALL THREE in ONE atomic write via
+  // useQueryStates (the codebase's required pattern for multi-key nav; three
+  // separate same-tick setters is the CreateHarnessPicker footgun — see
+  // nuqs-two-write-race.router-integration.test). The 'all' filter is REQUIRED:
+  // the inbox defaults to 'needs' (decision-tier only), so an operational/alert
   // escalation — the dominant curator signal — has the right id but is filtered
-  // OUT of the visible list, leaving the selection with no row to land on (the
-  // owner's "just opens the inbox page" bug). Owned here (this component holds
-  // the nuqs view state) and passed into OperatorChat, which stays provider-free.
-  const [, setInboxSel] = useQueryState('opcis', parseAsString);
-  const [, setInboxFilter] = useQueryState('opci', parseAsString);
+  // OUT of the visible list, so the selection lands on no row (the owner's "just
+  // opens the inbox page" bug).
+  const [, setDrillNav] = useQueryStates({
+    opcv: parseAsString,
+    opci: parseAsString,
+    opcis: parseAsString,
+  });
   const handleCardDrillIn = useCallback(
     (ref: string) => {
       const sel = drillInRefToInbox(ref);
-      void setView('inbox');
-      if (sel) void setInboxFilter('all');
-      void setInboxSel(sel);
+      void setDrillNav({ opcv: 'inbox', opci: sel ? 'all' : null, opcis: sel });
     },
-    [setView, setInboxFilter, setInboxSel],
+    [setDrillNav],
   );
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;
