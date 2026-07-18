@@ -237,6 +237,13 @@ export const rubricTemplateDataSchema = z
       .describe(
         'ownerId that ratified this rubric (EI-10751: projecting the plan owner as ratifier fabricated the self-ratification record D-012 forbids). Written by ratifyRubric in the same locked write that activates; cleared by any re-propose (a revision needs re-ratification)',
       ),
+    seedContentHash: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'EI-12932 first-party-bundle upgrade tracking: a stable hash of this rubric\'s bundle-sourced fields (characteristic/criteria/ratingScale/methodRef/description) as of the last first-party seed/upgrade write. Absent for a rubric never touched by the seeder, or one seeded before this field existed. Compared against a freshly computed hash of the LIVE stored fields to detect drift since that write — see rubricsNeedingSeed (cupboard/rubric-store.ts) for the decision core this guards.',
+      ),
   })
   .strict();
 

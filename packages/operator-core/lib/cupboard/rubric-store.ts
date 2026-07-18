@@ -28,6 +28,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { hashPlanContent } from '@papercusp/plan-parser';
 import { papercuspPath } from '../papercusp-root';
 import {
   bundledDirFromEnv,
