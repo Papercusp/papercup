@@ -2004,10 +2004,6 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     modelsYml = null,
     clientId = null,
     backendWindow = null,
-    // DETERMINISTIC CARRY cutover (deterministic-context-carry P-017, WI-4845) —
-    // DEFAULT-ON by explicit owner release direction 2026-07-15. The env is now
-    // an emergency opt-OUT; tests can still override directly via opts.
-    carryCompaction = process.env.PAPERCUSP_OMP_CARRY_COMPACTION !== '0',
     // P-019 residual sampler (D-010): the launcher is the ONLY layer that knows
     // whether this session is interactive (headless members / piped launches are
     // not) — thread the truthful bit so the gateway's sampler honors the
@@ -2078,17 +2074,14 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     const gwp = Number(process.env.PAPERCUSP_GATEWAY_PORT);
     const gwPort = Number.isFinite(gwp) && gwp > 0 ? gwp : 8788;
     // DETERMINISTIC CARRY cutover (deterministic-context-carry P-017, WI-4845;
-    // DEFAULT-ON, PAPERCUSP_OMP_CARRY_COMPACTION=0 is the emergency opt-out): append
+    // P-022/WI-4998 removed the PAPERCUSP_OMP_CARRY_COMPACTION emergency opt-out —
+    // native compaction is retired, so there is nothing to opt back INTO): append
     // ?carryOwner=<coord ownerId>
     // [&carryWindow=<probed backend tokens>] so the gateway answers the compaction from the
-    // deterministic carry-doc builder instead of the LLM oneshot. Needs BOTH sides live —
-    // the gateway must carry the query-param route AND FLAGS.GATEWAY_MAINTENANCE_CARRY ON
-    // (an OLDER gateway 404s this POST and omp THROWS on a remoteEndpoint failure with no
-    // local fallback, so the gateway leg deploys first; a flag-OFF current gateway just
-    // ignores the params — plain LLM lane). Requires the per-session coord ownerId
-    // (opts.clientId): without it there is no owner to build a carry doc for, so the
-    // cutover stays inert.
-    const carryOptIn = !!(carryCompaction && clientId);
+    // deterministic carry-doc builder instead of the LLM oneshot. Requires the per-session
+    // coord ownerId (opts.clientId): without it there is no owner to build a carry doc
+    // for, so the session runs the mechanical `shake` strategy instead (below).
+    const carryOptIn = !!clientId;
     const carryBw = Number(backendWindow);
     // &carryInteractive=1 (P-019, D-010): threads the launcher's truthful
     // interactivity knowledge to the gateway's residual sampler — headless /
@@ -2098,54 +2091,47 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
       ? `?carryOwner=${encodeURIComponent(clientId)}${Number.isFinite(carryBw) && carryBw > 0 ? `&carryWindow=${carryBw}` : ''}${interactive ? '&carryInteractive=1' : ''}`
       : '';
     const remoteEndpointLine = `  remoteEndpoint: "http://127.0.0.1:${gwPort}/maintenance/summarize${carryParams}"\n`;
-    if (localModel) {
-      cfg = cfg
-        .replace(/^compaction:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
-        .replace(/^compaction\.[A-Za-z.]+:.*\n?/gm, '');
-      if (!cfg.endsWith('\n')) cfg += '\n';
-      // Threshold (P-007): when the LIVE backend window was probed (P-005), shake fires at the
-      // DERIVED hard tier — window − maxTurn, one full doored hop of headroom by construction
-      // (Ornith → 96; the P-006 doors bound what a hop can add, and omp ≥16.3.3's pre-flight
-      // guard fail-louds a doomed send as the wall backstop). Derived from the SAME
-      // effectiveWindow = min(configured, backend) the registry copy below clamps to — omp
-      // measures its % against that clamped contextWindow, so a percent from the raw probe
-      // would under-reserve when the configured limit is deliberately smaller. No probe
-      // (gateway down / hosted sibling) → the conservative pre-P-007 constant 70, since
-      // nothing then bounds the hop.
-      let shakePct = 70;
-      const shakeBw = Number(backendWindow);
-      if (Number.isFinite(shakeBw) && shakeBw > 0) {
-        let shakeWindow = shakeBw;
-        try {
-          const srcYml = join(srcAgent, 'models.yml');
-          const configured = existsSync(srcYml)
-            ? readModelsYmlContextWindow(readFileSync(srcYml, 'utf8'), bareOmpModelId(effModel || ''))
-            : null;
-          if (configured) shakeWindow = Math.min(configured, shakeBw);
-        } catch {
-          /* fail-soft: the raw probed window still yields a sane hard tier */
-        }
-        shakePct = computeCompactionThresholdPercents(shakeWindow).hardPct;
+    // P-022 (WI-4998, owner terminal state 2026-07-14 "remove the compact call
+    // entirely"): EVERY omp session — local, gateway-routed, AND direct-API
+    // hosted — gets the papercusp compaction block; omp's native strategies
+    // (snapcompact et al.) are retired fleet-wide. This supersedes the P-001
+    // "never force shake on a hosted model" decision. Strip any inherited
+    // block, then append the canonical one:
+    //   • carry-opted (clientId present): `context-full` + remoteEndpoint with
+    //     carryOwner params — the summarize call is answered DETERMINISTICALLY
+    //     by the gateway's carry-doc builder (P-017), never an LLM oneshot.
+    //   • no clientId: mechanical `shake` (no LLM call, no endpoint line) — no
+    //     gateway hard-dependency is introduced where none existed (omp THROWS
+    //     on a remoteEndpoint failure with no local fallback).
+    cfg = cfg
+      .replace(/^compaction:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
+      .replace(/^compaction\.[A-Za-z.]+:.*\n?/gm, '');
+    if (!cfg.endsWith('\n')) cfg += '\n';
+    // Threshold (P-007): when the LIVE backend window was probed (P-005), the cut fires at the
+    // DERIVED hard tier — window − maxTurn, one full doored hop of headroom by construction
+    // (Ornith → 96; the P-006 doors bound what a hop can add, and omp ≥16.3.3's pre-flight
+    // guard fail-louds a doomed send as the wall backstop). Derived from the SAME
+    // effectiveWindow = min(configured, backend) the registry copy below clamps to — omp
+    // measures its % against that clamped contextWindow, so a percent from the raw probe
+    // would under-reserve when the configured limit is deliberately smaller. No probe
+    // (gateway down / hosted model) → the conservative pre-P-007 constant 70, since
+    // nothing then bounds the hop.
+    let shakePct = 70;
+    const shakeBw = Number(backendWindow);
+    if (Number.isFinite(shakeBw) && shakeBw > 0) {
+      let shakeWindow = shakeBw;
+      try {
+        const srcYml = join(srcAgent, 'models.yml');
+        const configured = existsSync(srcYml)
+          ? readModelsYmlContextWindow(readFileSync(srcYml, 'utf8'), bareOmpModelId(effModel || ''))
+          : null;
+        if (configured) shakeWindow = Math.min(configured, shakeBw);
+      } catch {
+        /* fail-soft: the raw probed window still yields a sane hard tier */
       }
-      // Opted-in carry sessions run `context-full` (an LLM-capable strategy) instead of the
-      // mechanical `shake` so the compaction actually exercises remoteEndpoint — where the
-      // gateway answers deterministically (P-017). Default stays shake (P-001, byte-identical).
-      cfg += `compaction:\n  strategy: ${carryOptIn ? 'context-full' : 'shake'}\n  thresholdPercent: ${shakePct}\n` + remoteEndpointLine;
-    } else if (String(effModel || '').trim().toLowerCase().startsWith('papercusp-gateway/')) {
-      // Gateway-routed hosted model: inject the endpoint ONLY, preserving whatever
-      // compaction settings the copied config carries — never force shake on a hosted
-      // model (deterministic-context-carry P-001 decision).
-      cfg = cfg.replace(/^compaction\.remoteEndpoint:.*\n?/gm, '');
-      const blockRe = /^compaction:[ \t]*\n((?:[ \t]+\S.*\n?)*)/m;
-      const blockMatch = cfg.match(blockRe);
-      if (blockMatch) {
-        const body = blockMatch[1].replace(/^[ \t]+remoteEndpoint:.*\n?/gm, '');
-        cfg = cfg.replace(blockRe, () => 'compaction:\n' + body + remoteEndpointLine);
-      } else {
-        if (!cfg.endsWith('\n')) cfg += '\n';
-        cfg += 'compaction:\n' + remoteEndpointLine;
-      }
+      shakePct = computeCompactionThresholdPercents(shakeWindow).hardPct;
     }
+    cfg += `compaction:\n  strategy: ${carryOptIn ? 'context-full' : 'shake'}\n  thresholdPercent: ${shakePct}\n${carryOptIn ? remoteEndpointLine : ''}`;
     writeFileSync(join(dstAgent, 'config.yml'), cfg, { mode: 0o600 });
     // Faithful model registry + auth so model resolution + provider baseUrls survive the
     // relocation (the data root collapses onto the relocated configRoot; missing registry ⇒
