@@ -124,6 +124,66 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(runCount[0].n).toBe(1);
   });
 
+  // EI-1386 — the overlap policy (D-014) was authored (set-schedule → routines.concurrency)
+  // but nothing at fire time ever read it. beforeEach's default materialize omits
+  // `concurrency`, which materializePlanSchedule defaults to 'skip'.
+  it("concurrency='skip' (default): a fire is skipped while a prior run of the same template is still 'running' (EI-1386)", async () => {
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const first = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(first!.replayed).toBe(false);
+    expect(first!.minted).toBeGreaterThan(0);
+
+    // Second fire: a DIFFERENT claim token (so it is not just a replay no-op), while the
+    // first run's plan_runs row is still 'running'.
+    await stampClaim(new Date('2026-06-17T09:00:00.000Z'));
+    const second = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(second!.skippedForConcurrency).toBe(true);
+    expect(second!.minted).toBe(0);
+    expect(second!.replayed).toBe(false); // a distinct outcome from replay, not conflated with it
+
+    // Only ONE plan_runs row exists — the skip genuinely prevented a second mint, not just
+    // a display-layer suppression.
+    const runCount = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    expect(runCount[0].n).toBe(1);
+  });
+
+  it("concurrency='skip': once the prior run settles (status != 'running'), the next fire mints normally", async () => {
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const first = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    await sql`UPDATE harness_shared.plan_runs SET status = 'done' WHERE id = ${first!.runId}`;
+
+    await stampClaim(new Date('2026-06-17T09:00:00.000Z'));
+    const second = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(second!.skippedForConcurrency).toBeFalsy();
+    expect(second!.minted).toBeGreaterThan(0);
+    expect(second!.runSeq).toBe(1);
+  });
+
+  it("concurrency='queue': mints anyway even while a prior run is still 'running' (unchanged default DB-column behavior)", async () => {
+    // Re-materialize this template with an EXPLICIT 'queue' policy (overrides beforeEach's
+    // app-layer 'skip' default).
+    await materializePlanSchedule({
+      workspaceId: WS, harnessSlug: HARNESS, templateSlug: TEMPLATE,
+      schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z' },
+      concurrency: 'queue', sql,
+    });
+
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const first = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(first!.minted).toBeGreaterThan(0);
+
+    await stampClaim(new Date('2026-06-17T09:00:00.000Z'));
+    const second = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(second!.skippedForConcurrency).toBeFalsy();
+    expect(second!.minted).toBeGreaterThan(0);
+    expect(second!.runSeq).toBe(1);
+
+    const runCount = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    expect(runCount[0].n).toBe(2);
+  });
+
   it('run-now (manual) mints a fresh run after a scheduled fire — never replay-no-ops (EI-1369)', async () => {
     // A scheduled fire stamps last_fired_at (the replay-stable token for the cadence path).
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));

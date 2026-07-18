@@ -209,4 +209,20 @@ describe('flags:set (bulk keyed-array, P-006)', () => {
   // recordFlagAudit's best-effort "never throws even on a write failure"
   // contract is covered against a real dead connection in
   // flag-audit.integration.test.ts (it's mocked here).
+
+  // EI-1168: same treatment as flags:get — `key` is a plain string, so an
+  // unknown key fails only itself (never a stale-enum argument rejection),
+  // never touches setFlag, and never publishes a flag-change for it.
+  it('an unknown key fails ONLY that item with a clear message and never calls setFlag/publishFlagChange (EI-1168)', async () => {
+    const { default: tool } = await import('../set');
+    const b = parseEnvelope(
+      await tool.handler({ key: 'papercusp-totally-made-up-flag', enabled: true, reason: 'testing EI-1168' }, MAKE_CTX()) as never,
+    );
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, key: 'papercusp-totally-made-up-flag' });
+    expect(b.results[0].error).toMatch(/unknown flag key/i);
+    expect(setFlag).not.toHaveBeenCalled();
+    expect(publishFlagChange).not.toHaveBeenCalled();
+  });
 });

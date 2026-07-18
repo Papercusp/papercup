@@ -56,6 +56,9 @@ export interface ScheduledPlanFireResult {
   minted: number;
   /** true when this fire was a replay no-op (instance already existed). */
   replayed: boolean;
+  /** true when this fire was skipped because a prior run of the same template was
+   *  still 'running' and the schedule's concurrency policy is 'skip' (EI-1386). */
+  skippedForConcurrency?: boolean;
 }
 
 /**
@@ -102,8 +105,8 @@ export async function runScheduledPlanFire(
   //    DBOS replay, so it ALWAYS takes a FRESH token — otherwise, once the routine has fired even
   //    once, every run-now would recompute the SAME slug and replay-no-op instead of minting a new
   //    run (EI-1369).
-  const rt = await sql<Array<{ last_fired_at: Date | null }>>`
-    SELECT last_fired_at FROM harness_shared.routines
+  const rt = await sql<Array<{ last_fired_at: Date | null; concurrency: string | null }>>`
+    SELECT last_fired_at, concurrency FROM harness_shared.routines
      WHERE install_slug = ${installSlug} AND name = ${planScheduleRoutineName(templateSlug)}
   `;
   const token =
@@ -123,6 +126,34 @@ export async function runScheduledPlanFire(
   if (existing[0]) {
     console.log(`[plan-run] ${instanceSlug} already minted (replay) — skip`);
     return { instanceSlug, runId: -1, runSeq: existing[0].run_seq ?? -1, minted: 0, replayed: true };
+  }
+
+  // 3b. EI-1386 — overlap policy (D-014). The schedule's `concurrency` was authored
+  // (set-schedule → materializePlanSchedule → routines.concurrency) but nothing at
+  // fire time ever read it, so an overrunning template accumulated overlapping runs
+  // regardless of policy. 'queue' (default at the DB column, though the app layer
+  // defaults new schedules to 'skip') mints unconditionally — unchanged, no check
+  // needed. 'skip' now actually skips when a prior run of the SAME template is still
+  // 'running'. 'cancel-prev' is intentionally NOT handled here — settling a prior
+  // run's still-open work_items needs its own careful design (what happens to
+  // in-flight worker output) and is tracked separately; a 'cancel-prev'-authored
+  // schedule currently behaves like 'queue' (mints anyway) rather than silently
+  // dropping fires, which is the safer of the two unimplemented behaviors.
+  const concurrency = rt[0]?.concurrency ?? 'queue';
+  if (concurrency === 'skip') {
+    const inFlight = await sql<Array<{ id: number }>>`
+      SELECT id FROM harness_shared.plan_runs
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+         AND plan_slug = ${templateSlug} AND status = 'running'
+       LIMIT 1
+    `;
+    if (inFlight[0]) {
+      console.log(
+        `[plan-run] ${installSlug}: skipping fire of '${templateSlug}' — prior run ` +
+          `${inFlight[0].id} still 'running' (concurrency='skip')`,
+      );
+      return { instanceSlug, runId: -1, runSeq: -1, minted: 0, replayed: false, skippedForConcurrency: true };
+    }
   }
 
   // 4. run_seq = count of prior runs of this template (display ordinal, D-003).
