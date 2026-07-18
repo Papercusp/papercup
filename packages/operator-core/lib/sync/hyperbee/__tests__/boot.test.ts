@@ -34,6 +34,7 @@ import {
   sampleReplicationLiveness,
   dropReplicationLogState,
 } from '../replication-liveness';
+import * as replicationStallEi from '../replication-stall-ei';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
  *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns
@@ -2202,6 +2203,101 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     await fireEpisodeAndDrain();
     expect(exhaustedEvents()).toHaveLength(1); // unchanged — cooldown gates it
     expect(leaveSpy).toHaveBeenCalledTimes(1); // unchanged
+  });
+
+  // WI-5332: `repairAttempts` is a per-process-lifetime Map — under
+  // restart-cadence disruption (a real sidecar restart, or the live-fed-gate
+  // rig's restart_durability/reconnect_catchup scenarios) it resets to 0
+  // before ever reaching REPAIR_MAX_ATTEMPTS_PER_LOG, so the forced-rejoin
+  // escalation above is structurally unreachable exactly when the condition
+  // is chronic (gate run 211750/223011: "attempt 1/3" repeating forever,
+  // never 2/3 or 3/3). This covers the fix: on a FRESH process's very FIRST
+  // episode for a log (attempts===0, simulating "just restarted"), a durable
+  // EI already open for this exact (harness, log, kind) — proving a PRIOR
+  // process already stalled on the SAME zombie and it never recovered —
+  // skips straight to the forced rejoin instead of re-running a fresh
+  // 3-attempt budget the next restart would just reset again.
+  it('WI-5332: an already-open durable EI for this exact log (proof of a prior-process chronic zombie) escalates to forced rejoin on the FIRST episode this process sees — no 3-attempt wait', async () => {
+    const workspaceId = 'ws-repair-chronic-5332';
+    const harnessSlug = 's-repair-chronic-5332';
+    const keyHex = 'cc'.repeat(32);
+
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh = fakeCloseableRemoteLog(k);
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    const leaveSpy = vi.fn(() => {});
+    const joinSpy = vi.fn(() => ({ flushed: async () => {}, refresh: () => {} }));
+    const swarm: HyperswarmLike = {
+      join: joinSpy,
+      leave: leaveSpy,
+      on: () => {},
+      off: () => {},
+      connections: [],
+    };
+
+    // Simulate "a prior process instance already escalated for this exact
+    // (harness, log, kind) and got restarted before it could recover" —
+    // hasOpenReplicationStallEi is the cross-restart signal boot.ts checks;
+    // mock it directly rather than actually filing/reading a real EI (that
+    // machinery is covered by episodic-ei.test.ts / replication-stall-ei's
+    // own dedup logic — this test only needs to prove boot.ts's WIRING).
+    const hasOpenSpy = vi
+      .spyOn(replicationStallEi, 'hasOpenReplicationStallEi')
+      .mockResolvedValue(true);
+    cleanups.push(() => hasOpenSpy.mockRestore());
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+      swarmBinding: { kind: 'topic', topic_hex: 'de'.repeat(32) },
+      swarmOverride: swarm,
+    });
+    cleanups.push(() => handle.close());
+
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    function exhaustedEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair_exhausted' as BootHistoryKind],
+      });
+    }
+
+    // ONE episode — this process's first ever for this log.
+    sampleReplicationLiveness(
+      workspaceId,
+      harnessSlug,
+      { keyHex, knownLength: 0, swarmConnections: 1 },
+      { graceMs: 0 },
+    );
+    await handle.mergeNow();
+
+    // The chronic-check fires as a fire-and-forget async IIFE off the
+    // (synchronous) repair handler — give its microtask/await chain a tick
+    // to resolve before asserting.
+    await vi.waitFor(() => expect(hasOpenSpy).toHaveBeenCalledTimes(1));
+    expect(hasOpenSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug, logKeyHex: keyHex, kind: 'connected_never_replicated' }),
+    );
+    await vi.waitFor(() => expect(exhaustedEvents()).toHaveLength(1));
+    expect(exhaustedEvents()[0]!.message).toContain('chronic zombie');
+    expect(exhaustedEvents()[0]!.message).toContain('WI-5332');
+    expect(leaveSpy).toHaveBeenCalledTimes(1); // forceRejoin fired
+    expect(joinSpy).toHaveBeenCalledTimes(1);
+
+    // The ordinary in-budget session re-attach ALSO still happened alongside
+    // (harmless — a redundant close+reopen never blocks on the async check).
+    expect(sessions).toHaveLength(1);
   });
 });
 

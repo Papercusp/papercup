@@ -1670,6 +1670,42 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // severed-link cadence rather than inventing a new constant.
   const REJOIN_ESCALATION_COOLDOWN_MS = DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS;
   let lastRejoinEscalationMs = 0;
+  // Escalate to the heavier topic-level forced rejoin (swarm.ts's
+  // SwarmHandle.forceRejoin — the same lever rung (a)'s severed-link
+  // escalation uses, triggered here off REPLICATION liveness instead of
+  // zero-live-peers, which this failure shape never trips). Rate-limited
+  // HARNESS-WIDE (not per-log — several admitted logs on the same topic can
+  // stall together, and a topic-level rejoin already covers all of them at
+  // once). `swarmHandle` is declared later in this function scope (assigned
+  // once the join resolves) but by the time an episode can fire — mid a
+  // merge pass, which requires the join to have already happened — it is
+  // always set; same forward-reference pattern already used for
+  // `swarmHandle?.liveConnectionCount` in the replication-liveness sampler
+  // below. Shared by two callers (WI-5332): the in-process budget-exhausted
+  // path below, and the cross-restart chronic-zombie path.
+  function escalateToForcedRejoin(logKeyHex: string, kind: string, eventMessage: string): void {
+    const now = Date.now();
+    if (now - lastRejoinEscalationMs < REJOIN_ESCALATION_COOLDOWN_MS) return;
+    lastRejoinEscalationMs = now;
+    recordBootEvent(opts.workspaceId, opts.harnessSlug, 'replication_repair_exhausted', eventMessage);
+    // console.info (not .error/.warn) — matches the repair-on-detect success
+    // log just below (drainRepairQueue) which is also unguarded: this file's
+    // vitest suite runs under vitest-fail-on-console (shouldFailOnError/Warn),
+    // and this diagnostic is meant to be always-on/grep-able in production
+    // logs (same rationale as that line), not a test-suppressed console.error.
+    console.info(
+      `[replication-liveness] repair-exhausted: forcing topic rejoin ` +
+        `log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${kind}`,
+    );
+    void swarmHandle?.forceRejoin().catch((e) => {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'replication_repair_rejoin_failed',
+        `${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+  }
   setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
     if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
     const attempts = repairAttempts.get(episode.logKeyHex) ?? 0;
@@ -1677,45 +1713,55 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Session-level re-attach is exhausted for this log and it has STILL
       // re-stalled (the gate-run-050615 shape: swarm re-pairs repeatedly,
       // content replication never re-attaches — a per-log Corestore session
-      // swap alone didn't fix it). Escalate to the heavier topic-level forced
-      // rejoin (swarm.ts's SwarmHandle.forceRejoin — the same lever rung (a)'s
-      // severed-link escalation uses, triggered here off REPLICATION liveness
-      // repair-exhaustion instead of zero-live-peers, which this failure shape
-      // never trips). `swarmHandle` is declared later in this function scope
-      // (assigned once the join resolves) but by the time an episode can fire
-      // — mid a merge pass, which requires the join to have already happened —
-      // it is always set; same forward-reference pattern already used for
-      // `swarmHandle?.liveConnectionCount` in the replication-liveness sampler
-      // below.
-      const now = Date.now();
-      if (now - lastRejoinEscalationMs < REJOIN_ESCALATION_COOLDOWN_MS) return;
-      lastRejoinEscalationMs = now;
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'replication_repair_exhausted',
+      // swap alone didn't fix it).
+      escalateToForcedRejoin(
+        episode.logKeyHex,
+        episode.kind,
         `${peerLabel(episode.logKeyHex)} repair budget exhausted ` +
           `(${REPAIR_MAX_ATTEMPTS_PER_LOG}/${REPAIR_MAX_ATTEMPTS_PER_LOG}) and re-stalled ` +
           `(${episode.kind}) — forcing topic rejoin`,
       );
-      // console.info (not .error/.warn) — matches the repair-on-detect success
-      // log just below (drainRepairQueue) which is also unguarded: this file's
-      // vitest suite runs under vitest-fail-on-console (shouldFailOnError/Warn),
-      // and this diagnostic is meant to be always-on/grep-able in production
-      // logs (same rationale as that line), not a test-suppressed console.error.
-      console.info(
-        `[replication-liveness] repair-exhausted: forcing topic rejoin ` +
-          `log=${episode.logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${episode.kind}`,
-      );
-      void swarmHandle?.forceRejoin().catch((e) => {
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'replication_repair_rejoin_failed',
-          `${e instanceof Error ? e.message : String(e)}`,
-        );
-      });
       return;
+    }
+    // WI-5332: this process's FIRST episode for this log — check whether a
+    // durable EI is ALREADY open for this exact (harness, log, kind). Open
+    // means a PRIOR process instance already stalled on this same zombie and
+    // no recovery has been observed since (an EI only clears on genuine
+    // ingest/replicator recovery — see replication-liveness.ts) — i.e. this
+    // is not a fresh stall, it is the SAME chronic zombie surviving a process
+    // restart. `repairAttempts` is a per-process-lifetime Map (mechanism (a)
+    // in the item body): under restart-cadence disruption (a real sidecar
+    // restart, or the live-fed-gate rig's restart_durability /
+    // reconnect_catchup scenarios) it resets to 0 before ever reaching
+    // REPAIR_MAX_ATTEMPTS_PER_LOG, so without this check the forced-rejoin
+    // escalation above is structurally unreachable exactly when the
+    // condition is chronic (every restart amnesties the budget). Best-effort
+    // and fire-and-forget — never blocks the ordinary in-budget repair
+    // enqueued below; a check failure/timing miss just falls back to the
+    // ordinary per-process ladder for this cycle.
+    if (attempts === 0) {
+      void (async () => {
+        let alreadyChronic = false;
+        try {
+          const m = await import('./replication-stall-ei');
+          alreadyChronic = await m.hasOpenReplicationStallEi(episode);
+        } catch {
+          /* best-effort — falls back to the ordinary per-process ladder */
+        }
+        if (!alreadyChronic) return;
+        // The local budget is moot for a proven-chronic zombie — mark it
+        // exhausted too so a same-process re-stall after this also escalates
+        // immediately instead of waiting through another 3-attempt cycle.
+        repairAttempts.set(episode.logKeyHex, REPAIR_MAX_ATTEMPTS_PER_LOG);
+        escalateToForcedRejoin(
+          episode.logKeyHex,
+          episode.kind,
+          `${peerLabel(episode.logKeyHex)} chronic zombie (${episode.kind}): a durable EI for ` +
+            `this exact log is already open from a PRIOR process instance — restart-cadence ` +
+            `disruption would otherwise amnesty the session-repair budget every restart ` +
+            `(WI-5332) — forcing topic rejoin without re-running it`,
+        );
+      })();
     }
     repairAttempts.set(episode.logKeyHex, attempts + 1);
     if (!repairQueue.includes(episode.logKeyHex)) repairQueue.push(episode.logKeyHex);
