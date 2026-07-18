@@ -30,6 +30,12 @@ const reanchorMock = vi.hoisted(() =>
     owner: 'su-resp-owner',
   })),
 );
+const reanchorByOwnerMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ reanchored: boolean; owner: string | null }> => ({
+    reanchored: true,
+    owner: 'su-interactive-owner',
+  })),
+);
 const clearContextUsageMock = vi.hoisted(() => vi.fn());
 const clearContextAnchorMock = vi.hoisted(() => vi.fn());
 
@@ -45,6 +51,7 @@ vi.mock('../../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () 
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => false),
   reanchorAdvSessionNativeId: reanchorMock,
+  reanchorAdvSessionNativeIdByOwner: reanchorByOwnerMock,
 }));
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
@@ -63,6 +70,7 @@ vi.mock('../../../compaction-usage', () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' });
+  reanchorByOwnerMock.mockResolvedValue({ reanchored: true, owner: 'su-interactive-owner' });
 });
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -111,12 +119,24 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     expect(await res.json()).toEqual({ ok: true, reanchored: false });
   });
 
-  it('400s on a missing / non-positive / non-integer advSessionId', async () => {
+  it('400s on a missing / non-positive / non-integer advSessionId when no coordOwnerId rides along', async () => {
     for (const advSessionId of [undefined, 0, -3, 1.5, '42']) {
       const res = await postRespawned({ advSessionId, sessionId: FRESH_ID });
       expect(res.status).toBe(400);
     }
     expect(reanchorMock).not.toHaveBeenCalled();
+    expect(reanchorByOwnerMock).not.toHaveBeenCalled();
+  });
+
+  it('a successful adv-id re-anchor never falls through to the owner-keyed path', async () => {
+    const res = await postRespawned({
+      advSessionId: 42,
+      coordOwnerId: 'su-interactive-owner',
+      sessionId: FRESH_ID,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, reanchored: true });
+    expect(reanchorByOwnerMock).not.toHaveBeenCalled();
   });
 
   it('400s on a missing or non-UUID sessionId — a corrupted report must never poison the mapping', async () => {
@@ -131,5 +151,64 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     const res = await postRespawned({ advSessionId: 7, sessionId: `  ${FRESH_ID}  ` });
     expect(res.status).toBe(200);
     expect(reanchorMock).toHaveBeenCalledWith(7, FRESH_ID);
+  });
+});
+
+describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv id in env)', () => {
+  it('re-anchors by coordOwnerId alone and clears both gauge caches for that owner', async () => {
+    const res = await postRespawned({ coordOwnerId: 'su-interactive-owner', sessionId: FRESH_ID });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, reanchored: true });
+    expect(reanchorMock).not.toHaveBeenCalled();
+    expect(reanchorByOwnerMock).toHaveBeenCalledWith('su-interactive-owner', FRESH_ID);
+    expect(clearContextUsageMock).toHaveBeenCalledWith('su-interactive-owner');
+    expect(clearContextAnchorMock).toHaveBeenCalledWith('su-interactive-owner');
+  });
+
+  it('falls back to the owner-keyed path when the adv-id re-anchor touched no row', async () => {
+    reanchorMock.mockResolvedValue({ reanchored: false, owner: null });
+    const res = await postRespawned({
+      advSessionId: 42,
+      coordOwnerId: 'su-interactive-owner',
+      sessionId: FRESH_ID,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, reanchored: true });
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID);
+    expect(reanchorByOwnerMock).toHaveBeenCalledWith('su-interactive-owner', FRESH_ID);
+  });
+
+  it('a no-op fallback keeps the adv path’s resolved owner for the gauge clears', async () => {
+    reanchorMock.mockResolvedValue({ reanchored: false, owner: 'su-resp-owner' });
+    reanchorByOwnerMock.mockResolvedValue({ reanchored: false, owner: null });
+    const res = await postRespawned({
+      advSessionId: 42,
+      coordOwnerId: 'su-interactive-owner',
+      sessionId: FRESH_ID,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, reanchored: false });
+    expect(clearContextUsageMock).toHaveBeenCalledWith('su-resp-owner');
+    expect(clearContextAnchorMock).toHaveBeenCalledWith('su-resp-owner');
+  });
+
+  it('400s when NEITHER advSessionId nor coordOwnerId is usable', async () => {
+    for (const body of [
+      { sessionId: FRESH_ID },
+      { coordOwnerId: '', sessionId: FRESH_ID },
+      { coordOwnerId: '   ', sessionId: FRESH_ID },
+      { coordOwnerId: 42, sessionId: FRESH_ID },
+    ]) {
+      const res = await postRespawned(body);
+      expect(res.status).toBe(400);
+    }
+    expect(reanchorMock).not.toHaveBeenCalled();
+    expect(reanchorByOwnerMock).not.toHaveBeenCalled();
+  });
+
+  it('still 400s on a non-UUID sessionId with a coordOwnerId present', async () => {
+    const res = await postRespawned({ coordOwnerId: 'su-interactive-owner', sessionId: 'nope' });
+    expect(res.status).toBe(400);
+    expect(reanchorByOwnerMock).not.toHaveBeenCalled();
   });
 });

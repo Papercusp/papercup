@@ -3941,12 +3941,39 @@ describe('reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
     expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 42, sessionId: freshId });
   });
 
-  it('no adv row id OR no fresh native id → no request (nothing to re-anchor)', async () => {
+  it('no identity key (neither adv row id nor coordOwnerId) OR no fresh native id → no request', async () => {
     const calls: unknown[] = [];
     const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { ok: true }; };
     await reportSessionRespawned(null, freshId, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
     await reportSessionRespawned('42', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    await reportSessionRespawned(null, null, { coordOwnerId: 'su-abc', fetchImpl, operatorUrl: 'http://op:1', token: 't' });
     expect(calls).toHaveLength(0);
+  });
+
+  it('interactive/`psu --resume` cohort: no adv id but a coordOwnerId → POSTs { coordOwnerId, sessionId }', async () => {
+    const calls: Array<{ url: string; opts: { body: string } }> = [];
+    const fetchImpl = async (url: string, opts: never) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionRespawned(null, freshId, {
+      coordOwnerId: 'su-57b6247d-ecdb-4fe1-9734-f91c3b6d0f89',
+      fetchImpl, operatorUrl: 'http://op:1', token: 't',
+    });
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      coordOwnerId: 'su-57b6247d-ecdb-4fe1-9734-f91c3b6d0f89',
+      sessionId: freshId,
+    });
+  });
+
+  it('adv-spawned cohort: sends BOTH keys so the server can heal a stale adv-id mapping through the owner', async () => {
+    const calls: Array<{ url: string; opts: { body: string } }> = [];
+    const fetchImpl = async (url: string, opts: never) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionRespawned('42', freshId, {
+      coordOwnerId: 'su-abc', fetchImpl, operatorUrl: 'http://op:1', token: 't',
+    });
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      advSessionId: 42, coordOwnerId: 'su-abc', sessionId: freshId,
+    });
   });
 
   it('swallows transport failures — a respawn must never wait on or fail from the re-anchor', async () => {

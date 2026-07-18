@@ -2268,7 +2268,9 @@ const sessionRespawned = defineTool({
       // stale/mismatched adv id that touched no row heals through the same path.
       // Both updates are idempotent per native id, so chaining cannot double-write.
       if (!reanchored && coordOwnerId) {
-        ({ reanchored, owner } = await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId));
+        const fallback = await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId);
+        reanchored = fallback.reanchored;
+        owner = fallback.owner ?? owner;
       }
       // Frozen-gauge fix: the successor keeps the coord ownerId, so the
       // in-process context-usage cache still holds the DEAD predecessor's

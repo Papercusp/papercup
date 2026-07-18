@@ -4476,15 +4476,24 @@ export async function reportSessionResumed(
  * keeps naming the dead predecessor, and every owner→transcript consumer (the
  * compaction watchdog's context estimate above all) stays pinned to the
  * predecessor's over-limit transcript — the successor-kill loop of 2026-07-15/16.
- * Fire-and-forget, bounded, never rejects — a respawn must never wait on it.
- * Exported with injectables for tests.
+ * Keyed by advSessionId when the env carries one, by coordOwnerId otherwise —
+ * an interactive `psu` / `psu --resume` launch has NO adv id, and gating the
+ * report on one silently exempted that whole cohort from the re-anchor (the
+ * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
+ * rejects — a respawn must never wait on it. Exported with injectables for tests.
  */
 export async function reportSessionRespawned(
   advSessionId,
   sessionId,
-  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 2_000 } = {},
+  {
+    coordOwnerId = null,
+    fetchImpl = fetch,
+    operatorUrl = OPERATOR_URL,
+    token = null,
+    timeoutMs = 2_000,
+  } = {},
 ) {
-  if (!advSessionId || !sessionId) return;
+  if (!sessionId || (!advSessionId && !coordOwnerId)) return;
   try {
     const tok = token ?? readToken();
     await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-respawned', {
@@ -4494,7 +4503,11 @@ export async function reportSessionRespawned(
         'content-type': 'application/json',
         ...(tok ? { authorization: `Bearer ${tok}` } : {}),
       },
-      body: JSON.stringify({ advSessionId: Number(advSessionId), sessionId: String(sessionId) }),
+      body: JSON.stringify({
+        ...(advSessionId ? { advSessionId: Number(advSessionId) } : {}),
+        ...(coordOwnerId ? { coordOwnerId: String(coordOwnerId) } : {}),
+        sessionId: String(sessionId),
+      }),
     });
   } catch {
     /* best-effort — never surface */
@@ -5023,8 +5036,11 @@ function runWrapper({
           // mapping. recordSessionOwner only writes the file-based native→owner
           // index; resolveSessionRef / the compaction watchdog's estimate read
           // adv_sessions.session_id, which otherwise keeps naming the dead
-          // predecessor — the P-018 successor-kill loop.
-          void reportSessionRespawned(env.PAPERCUSP_ADV_SESSION_ID || null, freshId);
+          // predecessor — the P-018 successor-kill loop. coordOwnerId rides along
+          // so an interactive/resumed launch (no adv id in env) re-anchors too.
+          void reportSessionRespawned(env.PAPERCUSP_ADV_SESSION_ID || null, freshId, {
+            coordOwnerId: ownerId,
+          });
         },
         onExit: (code) => {
           void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code).finally(() =>
