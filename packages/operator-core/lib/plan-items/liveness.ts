@@ -155,10 +155,21 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
   let viaAssignment = false;
   if (assignment?.assigneeName) {
     // Assigned → only the assignee-NAME may claim, even when currently unclaimed/lapsed (D-004).
-    if (!opts.ownerName || opts.ownerName !== assignment.assigneeName) {
+    // EI-2299: `assigneeName` is not always a genuinely-ADOPTED stable name — a push
+    // assignment made programmatically (a coordinator loop, plan_items:assign called
+    // with a target's raw ownerId as `assignee`) stores that raw ownerId AS the
+    // "name", since the assigner has no other handle on the target. The assignee's
+    // OWN session, having never called plan_items:adopt_name, then resolves
+    // opts.ownerName === null and is refused claiming an item that is unambiguously
+    // theirs. So a caller matches the assignment on EITHER identity axis: their
+    // adopted name (the intended, stable path) OR their raw ownerId (the fallback
+    // that makes "assigned to ownerId X" and "claimed by ownerId X" the same
+    // identity, which is what an ownerId-keyed assignment always meant in practice).
+    const acting = [opts.ownerName, opts.owner].filter((n): n is string => !!n);
+    if (!acting.includes(assignment.assigneeName)) {
       return {
         status: 'refused',
-        reason: `plan item ${opts.itemId} is assigned to '${assignment.assigneeName}' — only that agent-name may claim it`,
+        reason: `plan item ${opts.itemId} is assigned to '${assignment.assigneeName}' — only that agent-name (or that ownerId) may claim it`,
         assignee: assignment.assigneeName,
       };
     }
