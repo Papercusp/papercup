@@ -17,21 +17,16 @@
  */
 import {
   handleHttpToolRequest,
-  type HttpToolHostExtras,
   defineTool,
   type RouteContext,
 } from '@papercusp/agent-mcp';
 // Side-effect: register the operator-side first-party tools (issues:* / topics:* /
 // conversations:* included). Same import admin/coord + admin/plans use.
 import '../../../agent-tools/index';
-import { PROJECTED_DEPS } from '../../../projected-tool-deps';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
-
-const HOST_EXTRAS: HttpToolHostExtras = {
-  deps: PROJECTED_DEPS,
-  log: () => {},
-  validateSuperuser: () => true,
-};
+// WI-5364: shared extras carry the runScoped seam so proxied handlers that use
+// ctx.tx (sessions:list was the first) get a real DB handle instead of 500ing.
+import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
 
 // The coordination tool surface the admin UI may proxy. Allowlisted so the admin
 // mount can't be used to reach arbitrary tools.

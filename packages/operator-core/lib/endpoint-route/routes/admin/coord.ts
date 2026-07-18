@@ -25,11 +25,13 @@
  *   (wake:true fires their inbox-wake). Sender is the admin UI owner.
  */
 
-import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent-mcp';
+import { handleHttpToolRequest } from '@papercusp/agent-mcp';
 // Side-effect: register operator-side first-party tools (the coord:* tools
 // included). Same import the agent-tools catch-all + admin/plans use.
 import '../../../agent-tools/index';
-import { PROJECTED_DEPS } from '../../../projected-tool-deps';
+// WI-5364: shared extras carry the runScoped seam so proxied handlers that use
+// ctx.tx get a real DB handle instead of 500ing "ctx.tx is not a function".
+import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
