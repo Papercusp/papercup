@@ -3968,17 +3968,17 @@ export function LearningStyles() {
 
       /* Tick-economics strip (learning-tab-alignment P-002) — one cell per scout
          tick: when · gen→routed funnel · stop reason · spend · lens chips. */
-      .pc-learning__tickstrip { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+      .pc-learning__tickstrip { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
       .pc-learning__tick {
-        display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
-        padding: 4px 9px; font-size: 10.5px; font-weight: 600; border-radius: 999px;
+        display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+        padding: 3px 7px; font-size: 10.5px; font-weight: 600; border-radius: 999px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
         cursor: default; white-space: nowrap;
       }
       .pc-learning__tick em { font-style: normal; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
       .pc-learning__tick strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
-      .pc-learning__tickstop { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); max-width: 132px; overflow: hidden; text-overflow: ellipsis; }
+      .pc-learning__tickstop { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
       .pc-learning__tickspend { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
       .pc-learning__ticklens {
         font-style: normal; font-size: 9px; font-weight: 700; padding: 1px 5px;
