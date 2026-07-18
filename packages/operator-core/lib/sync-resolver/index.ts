@@ -2707,7 +2707,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         recurringSignatureCount: digest.recurringSignatures.length,
         dispatchStats,
       });
-      return [{ ...digest, flow }];
+      // Wire slimming (WI-5412): the ranked humanQueue items each carry a ~1KB
+      // `rank` breakdown + `impact` struct that NO Learning-tab consumer
+      // renders — across ~380 items that was ~65% of a 479KB payload. The
+      // ORDER the ranker produced is preserved; the per-feature "why" stays on
+      // the improvements:digest tool for consumers that want it.
+      const humanQueue = digest.humanQueue.map((item) => {
+        const { impact: _impact, rank: _rank, ...slim } = item as typeof item & {
+          impact?: unknown;
+          rank?: unknown;
+        };
+        return slim;
+      });
+      return [{ ...digest, humanQueue, flow }];
     },
   },
 
@@ -3042,16 +3054,93 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
-      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace } = await import('../gym/control-plane');
+      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace, listScoutArchiveSeeds } = await import(
+        '../gym/control-plane'
+      );
       const ws = activeWorkspaceId();
       const harnessSlug = a.hive || undefined;
       return await routeWithWorkspace(async (tx) => {
-        const [proposals, autoloops] = await Promise.all([
+        const [proposals, autoloops, archiveSeeds] = await Promise.all([
           listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50, ...(harnessSlug ? { harnessSlug } : {}) }),
           listAutoloopsForWorkspace(tx, { workspaceId: ws, ...(harnessSlug ? { harnessSlug } : {}) }),
+          // WI-5412 item 4: the Scout-seeded MAP-Elites niches — where the
+          // Ideas view's gym-rail pills (`gym:SP-…`) actually land. Best-effort:
+          // a missing archive table degrades to an absent section, never a 500.
+          listScoutArchiveSeeds(tx, { workspaceId: ws, ...(harnessSlug ? { harnessSlug } : {}) }).catch((err) => {
+            console.warn('[learning.gym] archive-seed read failed:', err instanceof Error ? err.message : err);
+            return [];
+          }),
         ]);
-        return [{ proposals, autoloops }];
+        return [{ proposals, autoloops, archiveSeeds }];
       });
+    },
+  },
+
+  // ── learning.retain — the Retain view's "everything else the colony keeps" ──
+  //
+  // (WI-5412, owner ask 2026-07-18): the banked-this-week strip counts + the
+  // retained learning the memory pool doesn't hold — ideator lens weights,
+  // recently-updated rubrics, newest agent-insight runbooks, and code recipes.
+  // One slim snapshot; every leg degrades independently (learning-retain-read).
+  // NOT table-backed — refreshes on mount + the panel's manual invalidate().
+  'learning.retain': {
+    argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
+    resolve: async (args) => {
+      const a = (args ?? {}) as { hive?: string };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readRetainExtras, readRecentInsightDocs } = await import('./learning-retain-read');
+      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      const ws = activeWorkspaceId();
+      const { sql } = getOrgPg();
+      // P-040-style hive lens: resolve the Hive → member-harness scopes for the
+      // banked counts; a registry failure degrades to the workspace-wide count.
+      let harnessScopes: string[] | undefined;
+      if (a.hive) {
+        try {
+          const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
+          const reg = await loadHarnessRegistry();
+          harnessScopes = hiveMemberHarnessScopes(reg.projects, a.hive);
+        } catch (err) {
+          console.warn('[learning.retain] hive scope resolution failed:', err instanceof Error ? err.message : err);
+        }
+      }
+      const snapshot = await readRetainExtras(
+        sql,
+        ws,
+        {
+          listRubrics: async () => {
+            const { listRubrics } = await import('../rubrics');
+            return (await listRubrics()).map((r) => ({
+              slug: r.rubricId,
+              title: r.title,
+              status: r.status,
+              updatedAt: r.updatedAt,
+            }));
+          },
+          listRecipes: async () => {
+            const { listRecipes } = await import('../code-recipes-store');
+            return (await listRecipes(sql, { limit: 8 })).map((r) => ({
+              id: r.id,
+              title: r.title,
+              runCount: r.runCount,
+              lastRunAt: r.lastRunAt,
+            }));
+          },
+          readLensWeights: async () => {
+            const { readScoutLensWeights } = await import('../scout/routed-ledger');
+            return (await readScoutLensWeights({ workspaceId: ws, sql })) as Record<string, number>;
+          },
+          readInsightDocs: () => readRecentInsightDocs(`${DOCS_CONTENT_ROOT}/agent-insights`),
+        },
+        {
+          ...(harnessScopes ? { harnessScopes } : {}),
+          ...(harnessScopes
+            ? { memberSlugs: harnessScopes.map((s) => (s.startsWith('harness:') ? s.slice('harness:'.length) : s)) }
+            : {}),
+        },
+      );
+      return [snapshot];
     },
   },
 

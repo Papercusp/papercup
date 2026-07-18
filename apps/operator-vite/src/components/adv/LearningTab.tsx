@@ -55,6 +55,7 @@ import type {
   ScoutCadenceState,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-read";
+import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-retain-read";
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
 import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
 import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
@@ -1426,18 +1427,78 @@ function GymView({
           title="Gym unavailable"
           onRetry={() => sync.invalidate()}
         />
-      ) : proposals.length === 0 ? (
+      ) : proposals.length === 0 && archiveSeeds.length === 0 ? (
         <LearningVisualEmpty icon={Dumbbell} title="No gym experiments" />
       ) : (
         <>
-          <div className="pc-learning__sectionhead">
-            <h2>Recent challengers</h2>
-          </div>
-          <ul className="pc-learning__list">
-            {proposals.map((p) => (
-              <GymProposalRow key={p.id} p={p} />
-            ))}
-          </ul>
+          {proposals.length > 0 ? (
+            <>
+              <div className="pc-learning__sectionhead">
+                <h2>Recent challengers</h2>
+              </div>
+              <ul className="pc-learning__list">
+                {proposals.map((p) => (
+                  <GymProposalRow key={p.id} p={p} />
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {/* WI-5412 item 4: the gym-rail pills in Ideas reference Scout-SEEDED
+              archive niches (`gym:SP-…`), a different dataset from the
+              prompt-optimization challengers above — this section is where
+              those pills actually land. A seed absent here was superseded by a
+              stronger candidate (its niche shows the winner). */}
+          {archiveSeeds.length > 0 ? (
+            <>
+              <div className="pc-learning__sectionhead">
+                <h2>Archive seeds</h2>
+                <span
+                  className="pc-learning__muted"
+                  title="Scout-routed testable ideas are inserted straight into the MAP-Elites quality-diversity archive as niche seeds — they open unexplored idea territory rather than challenging a live prompt."
+                >
+                  Scout-seeded quality-diversity niches
+                </span>
+              </div>
+              <ul className="pc-learning__list">
+                {archiveSeeds.map((s) => (
+                  <li
+                    key={`${s.harnessSlug}:${s.nicheKey}`}
+                    className="pc-learning__row pc-learning__row--gym"
+                    title={s.rationale ?? undefined}
+                  >
+                    <span
+                      className="pc-learning__sev"
+                      style={{ background: "var(--accent, #7dd3fc)" }}
+                      aria-hidden
+                    />
+                    <span className="pc-learning__id">{s.candidateId}</span>
+                    <span className="pc-learning__title">
+                      {s.rationale || (
+                        <em className="pc-learning__muted">(no rationale)</em>
+                      )}
+                    </span>
+                    <span className="pc-learning__meta">
+                      <span
+                        className="pc-learning__chip pc-learning__chip--idea"
+                        title="The MAP-Elites niche this seed holds (scope | domain | risk)"
+                      >
+                        {s.nicheKey}
+                      </span>
+                      <span
+                        className="pc-learning__chip"
+                        title="Seed fitness prior — higher holds the niche against challengers"
+                      >
+                        fit {s.fitness.toFixed(2)}
+                      </span>
+                      <span className="pc-learning__age">
+                        {whenLabel(s.updatedAt)}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
         </>
       )}
     </section>
@@ -3564,9 +3625,11 @@ function learningProvenance(
 
 function LearningsView({
   hive,
+  hiveReady,
   onStatus,
 }: {
   hive: string;
+  hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
 }) {
   const t = useLexicon();
@@ -3576,13 +3639,41 @@ function LearningsView({
   );
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [, setLviewNav] = useQueryState("lview", parseAsString);
+  const [, setTabNav] = useQueryState("tab", parseAsString);
+  const [, setCreateViewNav] = useQueryState("view", parseAsString);
 
   const sync = useSyncQuery<HiveLearningsSnapshot>({
     queryName: "learning.hive",
     args: { hive },
-    enabled: hive.length > 0,
+    enabled: hiveReady && hive.length > 0,
     staleTime: 30_000,
   });
+  // The rest of what the colony keeps (WI-5412, owner ask: lens weights,
+  // rubric changes, insight docs, and recipes are retained learning too) +
+  // the banked-this-week strip counts. One slim read; every leg degrades
+  // independently server-side.
+  const extras = useSyncQuery<RetainExtrasSnapshot>({
+    queryName: "learning.retain",
+    args: hive ? { hive } : {},
+    enabled: hiveReady,
+    staleTime: 60_000,
+  });
+  const extrasSnap = extras.data?.[0];
+  // Same share-of-total render as the Ideas view's lens strip — one visual
+  // language for "how the ideator will lean".
+  const retainLensEntries = useMemo<Array<[string, number]>>(() => {
+    const w = extrasSnap?.lensWeights;
+    if (!w) return [];
+    const entries = Object.entries(w).filter(
+      ([, v]) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+    );
+    const sum = entries.reduce((s, [, v]) => s + v, 0);
+    if (entries.length === 0 || sum <= 0) return [];
+    return entries
+      .map(([k, v]) => [k, Math.round((v / sum) * 100)] as [string, number])
+      .sort((a, b) => b[1] - a[1]);
+  }, [extrasSnap]);
   const snap = sync.data?.[0];
   const rows = snap?.rows ?? [];
   const filtered = searchQuery.trim()
@@ -3726,9 +3817,12 @@ function LearningsView({
       {confirmEl}
       {promptEl}
       <section className="pc-learning__section">
+        {/* WI-5412 item 5: ONE concept, one heading — the page was titled
+            "Shared learnings" over a list headed "Shared memory", two names
+            for the same store. */}
         <LearningPageHeader
           icon={Brain}
-          title="Shared learnings"
+          title="Shared memory"
           signal={snap ? `${rows.length} retained` : undefined}
           tone={rows.length > 0 ? "good" : "neutral"}
           action={
@@ -3778,11 +3872,42 @@ function LearningsView({
             the fleet-lessons pack. Self-labeling; renders nothing when empty. */}
         <KnowledgePackCandidates />
 
-        {rows.length > 0 ? (
-          <div className="pc-learning__sectionhead">
-            <h2>Shared memory</h2>
-          </div>
-        ) : null}
+        {/* "What stuck?" — the banked-this-week strip (WI-5412, owner: "add
+            this"). Counts + link-outs only; never a queue duplicate. */}
+        <div className="pc-learning__flow" aria-label="Banked this week">
+          <span
+            className="pc-learning__flowchip"
+            title={`Rows in this ${t("pot", { lower: true })}'s shared memory pool — every agent recalls these while working.`}
+          >
+            <Brain size={11} aria-hidden />
+            <strong>{rows.length}</strong> learnings retained
+          </span>
+          <button
+            type="button"
+            className="pc-learning__flowchip pc-learning__flowchip--link"
+            title="Improvements filed in the trailing 7 days — open the Improvements backlog."
+            onClick={() => void setLviewNav("improvements")}
+          >
+            <Sparkles size={11} aria-hidden />
+            <strong>{extrasSnap?.banked.improvementsFiled7d ?? "—"}</strong>{" "}
+            improvements filed
+            <em>7d</em>
+          </button>
+          <button
+            type="button"
+            className="pc-learning__flowchip pc-learning__flowchip--link"
+            title="Plans drafted in the trailing 7 days — open the Plans board."
+            onClick={() => {
+              void setCreateViewNav("plans");
+              void setTabNav("plans");
+            }}
+          >
+            <GitBranch size={11} aria-hidden />
+            <strong>{extrasSnap?.banked.plansDrafted7d ?? "—"}</strong> plans
+            drafted
+            <em>7d</em>
+          </button>
+        </div>
 
         {hive === "" ? (
           <div className="pc-learning__quietempty" role="status">
@@ -3863,6 +3988,140 @@ function LearningsView({
             ) : null}
           </div>
         )}
+
+        {/* Everything ELSE the colony keeps (WI-5412, owner: "add these there
+            too") — lens weights, rubric changes, insight runbooks, recipes.
+            Compact disclosures: Retain answers "what does the system know?",
+            it never duplicates the stores' own management surfaces. */}
+        {extrasSnap ? (
+          <>
+            <div className="pc-learning__sectionhead">
+              <h2>Also retained</h2>
+              <span
+                className="pc-learning__muted"
+                title="Learning the loop keeps outside the shared memory pool: lens steering, rubric changes, agent-insight runbooks, and code recipes."
+              >
+                other things the loop has learned
+              </span>
+            </div>
+            {retainLensEntries.length > 0 ? (
+              <LearningDisclosure
+                label="Lens weights"
+                count={retainLensEntries.length}
+              >
+                <div
+                  className="pc-learning__flow"
+                  aria-label="Lens sampling weights"
+                >
+                  <span
+                    className="pc-learning__flowchip"
+                    title={`${t("scout")} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades.`}
+                  >
+                    <Sparkles size={11} aria-hidden />
+                    the loop learns which lenses win
+                  </span>
+                  {retainLensEntries.map(([lens, share]) => (
+                    <span
+                      key={lens}
+                      className="pc-learning__lens"
+                      title={`${lens}: ${share}% of next cycle's lens sampling.`}
+                    >
+                      <em>{lens}</em>
+                      <span className="pc-learning__lensbar" aria-hidden>
+                        <span style={{ width: `${share}%` }} />
+                      </span>
+                      <strong>{share}%</strong>
+                    </span>
+                  ))}
+                </div>
+              </LearningDisclosure>
+            ) : null}
+            {extrasSnap.rubricChanges.length > 0 ? (
+              <LearningDisclosure
+                label="Rubric changes"
+                count={extrasSnap.rubricChanges.length}
+              >
+                <ul
+                  className="pc-learning__retainextras"
+                  aria-label="Recently updated rubrics"
+                >
+                  {extrasSnap.rubricChanges.map((r) => (
+                    <li key={r.slug}>
+                      <Gauge size={11} aria-hidden />
+                      <strong title={r.slug}>{r.title}</strong>
+                      <span
+                        className="pc-learning__chip"
+                        title="Rubric lifecycle status"
+                      >
+                        {r.status}
+                      </span>
+                      <span className="pc-learning__age">
+                        {whenLabel(Date.parse(r.updatedAt))}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </LearningDisclosure>
+            ) : null}
+            {extrasSnap.insightDocs.length > 0 ? (
+              <LearningDisclosure
+                label="Agent insights"
+                count={extrasSnap.insightDocs.length}
+              >
+                <ul
+                  className="pc-learning__retainextras"
+                  aria-label="Newest agent-insight runbooks"
+                >
+                  {extrasSnap.insightDocs.map((d) => (
+                    <li key={d.slug}>
+                      <BookOpen size={11} aria-hidden />
+                      <strong title={`/internal/docs/agent-insights/${d.slug}`}>
+                        {d.title}
+                      </strong>
+                      {d.discovered ? (
+                        <span
+                          className="pc-learning__age"
+                          title="Discovered date from the runbook's frontmatter"
+                        >
+                          {d.discovered}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </LearningDisclosure>
+            ) : null}
+            {extrasSnap.recipes.length > 0 ? (
+              <LearningDisclosure
+                label="Recipes"
+                count={extrasSnap.recipes.length}
+              >
+                <ul
+                  className="pc-learning__retainextras"
+                  aria-label="Most-recently-run code recipes"
+                >
+                  {extrasSnap.recipes.map((r) => (
+                    <li key={r.id}>
+                      <FlaskConical size={11} aria-hidden />
+                      <strong title={r.id}>{r.title}</strong>
+                      <span
+                        className="pc-learning__chip"
+                        title="Total recorded runs"
+                      >
+                        ×{r.runCount}
+                      </span>
+                      {r.lastRunAt ? (
+                        <span className="pc-learning__age">
+                          {whenLabel(Date.parse(r.lastRunAt))}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </LearningDisclosure>
+            ) : null}
+          </>
+        ) : null}
       </section>
     </>
   );
@@ -4052,6 +4311,17 @@ export function LearningStyles() {
       }
       .pc-learning__flowchip strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
       .pc-learning__flowchip em { font-style: normal; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__flowchip--link { cursor: pointer; }
+      .pc-learning__flowchip--link:hover { border-color: color-mix(in srgb, var(--accent, #7dd3fc) 45%, transparent); color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__gradednote { margin: 2px 2px 6px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__retainextras { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+      .pc-learning__retainextras li {
+        display: flex; align-items: center; gap: 7px; padding: 4px 9px;
+        border-radius: 6px; font-size: 11.5px; color: var(--fg-dim, #b9d4e8);
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+      }
+      .pc-learning__retainextras li strong { font-weight: 620; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+      .pc-learning__retainextras li .pc-learning__age { margin-left: auto; flex-shrink: 0; }
       .pc-learning__flownet { display: inline-flex; align-items: center; gap: 1px; font-weight: 740; font-variant-numeric: tabular-nums; }
       .pc-learning__flownet--good { color: var(--good); }
       .pc-learning__flownet--warn { color: var(--warn); }
