@@ -804,7 +804,10 @@ async function defaultReadAutoloopFireRows(ws: string): Promise<AutoloopFireRow[
   }
 }
 
-async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
+/** Exported (not module-private) so the EI-10060 route leg is directly
+ *  unit-testable against mocked notifyAttention/broadcastSevereEvent — see
+ *  liveness-alarm-route.test.ts. */
+export async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
   try {
     await notifyAttention({
       kind: 'intervention',
