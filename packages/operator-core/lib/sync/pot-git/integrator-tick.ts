@@ -63,6 +63,21 @@ export interface IntegratorTickInput {
   /** The caller-persisted per-epoch advance counter (0 before the first
    *  publish in this epoch). This tick signs `priorSeq + 1` on advance. */
   priorSeq: number;
+  /**
+   * The staging sha of the last EMITTED/ACCEPTED announcement (prod: the
+   * caller's persisted `worktree_bridge.stagingSha` watermark), or null when
+   * nothing was ever announced. Announcement firing is judged against THIS,
+   * not merely against whether the merge moved the integrator's namespace ref
+   * this pass — because own-head-publish (G-2a) writes the very same
+   * `ns/<integrator>/refs/heads/staging` ref whenever the integrator machine's
+   * checked-out branch IS `staging` (the normal git-sync case), integration's
+   * base is then always pre-advanced to the member head, `advanced` stays
+   * false forever, and NO announcement ever fires even though canonical
+   * logically moved (live-caught on the hello-world-3-pot canary: member head
+   * 8 commits ahead, integrator green, zero announcements). `undefined` keeps
+   * the legacy advanced-only behavior (existing tests/callers unaffected).
+   */
+  lastAnnouncedStagingSha?: string | null;
   /** Device signer seam (prod: `bytes => signWithDeviceKey(keychainId, bytes)`). */
   sign: (bytes: Buffer) => Promise<Buffer>;
   /** Comms-trust seam (prod: `resolveAuthorCommsTier(...).then(r => r.tier)`). */
@@ -189,8 +204,16 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
   }
 
   // 5. G-5d: sign + return the announcement on advance (caller emits + persists).
+  // "Advance" is judged against the last ANNOUNCED staging when the caller
+  // provides it (see lastAnnouncedStagingSha) — the per-pass ref motion alone
+  // misses the integrator-is-also-the-author case, where own-head-publish
+  // pre-advances the integration base every tick and `advanced` never trips.
+  const announcedBehind =
+    input.lastAnnouncedStagingSha !== undefined &&
+    integration.staging !== null &&
+    integration.staging !== input.lastAnnouncedStagingSha;
   let announcement: SignedStagingAdvance | null = null;
-  if (integration.advanced && integration.staging) {
+  if ((integration.advanced || announcedBehind) && integration.staging) {
     try {
       announcement = await signStagingAdvance(
         {

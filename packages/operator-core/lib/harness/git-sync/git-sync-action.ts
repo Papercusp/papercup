@@ -1982,7 +1982,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     const rows = await sql<
       {
         integrator: { epoch: number; seq: number } | null;
-        worktree_bridge: { epochSeq: EpochSeq | null } | null;
+        worktree_bridge: { epochSeq: EpochSeq | null; stagingSha?: string | null } | null;
       }[]
     >`
       SELECT metadata->'integrator' AS integrator, metadata->'worktree_bridge' AS worktree_bridge
@@ -2014,6 +2014,12 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       integratorDevicePubkeyBase64: actor.devicePubkey,
       epoch,
       priorSeq,
+      // Announcement watermark (see IntegratorTickInput.lastAnnouncedStagingSha):
+      // the worktree-bridge acceptance record is the persisted "last announced +
+      // accepted" staging on this machine; comparing against it (not just the
+      // per-pass ref motion) is what makes the integrator-is-the-author case
+      // announce at all. Null (never accepted) ⇒ the first integration announces.
+      lastAnnouncedStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
       sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
       resolveTier: async (devicePubkeyBase64) =>
         (await resolveAuthorCommsTier({ workspaceId, potHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
