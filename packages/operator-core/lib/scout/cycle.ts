@@ -308,11 +308,27 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
     if (deps.deadlineMs === undefined || !Number.isFinite(deps.deadlineMs)) return undefined;
     return Math.max(0, deps.deadlineMs - Date.now());
   };
+  // WI-5391: how much of the cycle budget is reserved for CONCLUDING after the last
+  // retry bails — the phase must still return, the tick classify + persist. 10s is
+  // generous for bookkeeping while costing <2% of the default 600s cycle budget.
+  const RETRY_LADDER_DEADLINE_MARGIN_MS = 10_000;
   const recordingLlm: ScoutLlmCall = async (opts) => {
     const budget = opts.governorMaxWaitMs ?? admissionBudgetMs();
+    // WI-5391: bound the transport's transient-RETRY ladder by the cycle deadline too.
+    // governorMaxWaitMs caps one admission wait, but the ladder (8 attempts + backoff)
+    // was deadline-blind — under a mid-cycle pool pause it outlived the cycle's 600s
+    // timer, which then recorded "Scout cycle timed out during phase ideate" (a hard
+    // error tick) instead of the honest, capacity-classifiable 429/529. The margin keeps
+    // the true error arriving while the phase can still conclude and the tick record it.
+    const retryDeadline =
+      opts.retryDeadlineMs ??
+      (deps.deadlineMs !== undefined && Number.isFinite(deps.deadlineMs)
+        ? deps.deadlineMs - RETRY_LADDER_DEADLINE_MARGIN_MS
+        : undefined);
     const result = await deps.llmCall({
       ...opts,
       ...(budget !== undefined ? { governorMaxWaitMs: budget } : {}),
+      ...(retryDeadline !== undefined ? { retryDeadlineMs: retryDeadline } : {}),
     });
     calls.push({
       step: currentStep,
