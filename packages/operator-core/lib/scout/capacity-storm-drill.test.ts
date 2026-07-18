@@ -109,6 +109,17 @@ describe('runCapacityStormDrill — the storm through the real scheduler', () =>
     // The timeout row carries the real wrapper's timeout detail.
     const timeoutRow = rows.find((r) => (r.detail?.cycleId as string)?.endsWith('-timeout'));
     expect(typeof timeoutRow?.detail?.timeoutMs).toBe('number');
+    // Provenance stamp parity (2026-07-18): the timeout leg's error string is minted by
+    // the DEPLOYED timeout wrapper without the drill: prefix the other legs throw with —
+    // unstamped it reads as ORGANIC to any prefix-based consumer. The drill must stamp it
+    // at persist time; every persisted drill error string carries the prefix.
+    for (const row of rows) {
+      if (typeof row.detail?.error === 'string') {
+        expect(row.detail.error.startsWith('drill:')).toBe(true);
+      }
+    }
+    expect(String(timeoutRow?.detail?.error)).toContain(`drill:${result.drillId} `);
+    expect(String(timeoutRow?.detail?.error)).toContain('timed out');
     // The defect row's prose WOULD match the legacy classifier — proving the
     // versioned-row boundary is what kept it out of the capacity bucket.
     const defectRow = rows.find((r) => (r.detail?.cycleId as string)?.endsWith('-defect'));

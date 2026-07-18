@@ -396,6 +396,62 @@ describe('runScoutTick — tick observability (P-034)', () => {
     });
   });
 
+  describe('cross-provider fallback trail on tick detail (WI-5391 item 3)', () => {
+    const fallbackEvent = {
+      from: 'claude-opus-4-8',
+      to: 'chatgpt:5.5:low',
+      succeeded: true,
+      via: 'http-429',
+      reason: 'provider-429',
+    };
+
+    it('persists capacityFallbacks from a returned cycle on the ran-tick detail', async () => {
+      const { deps, calls } = makeDeps({
+        runCycle: async () => ({ ...fakeCycle(), capacityFallbacks: [fallbackEvent] }),
+      });
+      await runScoutTick(deps);
+      expect(calls.ticks[0].status).toBe('ran');
+      expect(calls.ticks[0].detail).toMatchObject({ capacityFallbacks: [fallbackEvent] });
+    });
+
+    it('omits the key entirely when no fallback happened', async () => {
+      const { deps, calls } = makeDeps();
+      await runScoutTick(deps);
+      expect(calls.ticks[0].detail ?? {}).not.toHaveProperty('capacityFallbacks');
+    });
+
+    it('persists capacityFallbacks riding a THROWN capacity denial on the gated tick detail', async () => {
+      // A throwing cycle can't return its trail — the runner attaches it to the error.
+      const denial = Object.assign(new Error('pool exhausted'), {
+        admissionDenial: { reason: 'all-accounts-paused' as const, via: 'governor' as const },
+        capacityFallbacks: [{ ...fallbackEvent, succeeded: false, via: 'governor', reason: 'all-accounts-paused' }],
+      });
+      const { deps, calls } = makeDeps({ runCycle: async () => { throw denial; } });
+      const r = await runScoutTick(deps);
+      expect(r.reason).toBe('no-capacity');
+      expect(calls.ticks[0]).toMatchObject({
+        status: 'gated',
+        gate: 'no-capacity',
+        detail: {
+          capacityFallbacks: [{ ...fallbackEvent, succeeded: false, via: 'governor', reason: 'all-accounts-paused' }],
+        },
+      });
+    });
+
+    it('persists capacityFallbacks riding a THROWN plain error on the error tick detail', async () => {
+      const err = Object.assign(new Error('llm exploded after fallback'), {
+        capacityFallbacks: [{ ...fallbackEvent, succeeded: false }],
+      });
+      const { deps, calls } = makeDeps({ runCycle: async () => { throw err; } });
+      const r = await runScoutTick(deps);
+      expect(r.reason).toBe('cycle-error');
+      expect(calls.ticks[0]).toMatchObject({
+        status: 'error',
+        detail: { capacityFallbacks: [{ ...fallbackEvent, succeeded: false }] },
+      });
+    });
+  });
+
   it('records an error tick, aborts the cycle, and releases the fire as error when the cycle times out', async () => {
     let cycleSignal: AbortSignal | undefined;
     const { deps, calls } = makeDeps({
