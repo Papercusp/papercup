@@ -152,6 +152,41 @@ export interface LockAuthorityDeps {
    * PostHog round-trip. `undefined` (default) → read the live flag.
    */
   useHrwRendezvous?: boolean;
+  /**
+   * WI-5395: capability-gated candidacy. When set, a PEER presence row whose
+   * `device_pubkey` is NOT in this allowlist is excluded from authority
+   * candidacy (merged into the eviction exclusions), so a scope's authority can
+   * never land on a peer the caller knows to be INCAPABLE of serving it — the
+   * canary failure this fixes was the hive-wide integrator lease landing on a
+   * machine with no bare store for the repo, stalling integration hive-wide
+   * while every capable member correctly declined as non-authority.
+   *
+   * Only PEER candidacy is constrained: SELF is still auto-added by the
+   * selectors, because self-capability is the caller's own check (it can read
+   * its own store directly; peers it can only judge from local evidence, e.g.
+   * which device namespaces exist in the local bare store). A caller that
+   * knows itself incapable must not call for election at all.
+   *
+   * Omit → today's behavior (presence + staleness + eviction only).
+   */
+  eligibleDevices?: ReadonlySet<string>;
+}
+
+/**
+ * WI-5395: fold the capability allowlist into the exclusion set. Any presence
+ * row's device not in `eligible` is excluded from candidacy, merged WITH (never
+ * instead of) the eviction monitor's exclusions. `eligible` undefined → the
+ * eviction set passes through untouched.
+ */
+function withEligibility(
+  rows: LivePeerRow[],
+  excluded: ReadonlySet<string> | undefined,
+  eligible: ReadonlySet<string> | undefined,
+): ReadonlySet<string> | undefined {
+  if (!eligible) return excluded;
+  const merged = new Set<string>(excluded ?? []);
+  for (const r of rows) if (r.device_pubkey && !eligible.has(r.device_pubkey)) merged.add(r.device_pubkey);
+  return merged;
 }
 
 /**
@@ -360,7 +395,7 @@ export async function lockAuthorityFor(
     resolveUseHrwRendezvous(deps),
   ]);
   const nowMs = now();
-  const excluded = evictionExclusions(harnessSlug, rows, self, nowMs, deps);
+  const excluded = withEligibility(rows, evictionExclusions(harnessSlug, rows, self, nowMs, deps), deps.eligibleDevices);
   if (useHrw) {
     return selectAuthorityRendezvous(
       rows as RendezvousPeerRow[],
@@ -429,7 +464,7 @@ export async function lockAuthorityForHive(
     resolveUseHrwRendezvous(deps),
   ]);
   const nowMs = now();
-  const excluded = evictionExclusions(potSlug, rows, self, nowMs, deps);
+  const excluded = withEligibility(rows, evictionExclusions(potSlug, rows, self, nowMs, deps), deps.eligibleDevices);
   if (useHrw) {
     return selectAuthorityRendezvous(
       rows as RendezvousPeerRow[],
