@@ -16,6 +16,15 @@ import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
  * page resolves to *something* rather than spinning forever.
  */
 export const META_FETCH_TIMEOUT_MS = 20_000;
+
+/**
+ * Default row window for the Memory settings page (EI-12937). Measured live:
+ * the full corpus was 1,140 rows / 2.02MB — 300 rows keeps the common "browse
+ * recent memories" load bounded and small while still showing enough history
+ * to be useful. The `full=true` URL param (the "Show all" toggle) bypasses
+ * this and reproduces the exact pre-fix unbounded fetch.
+ */
+export const DEFAULT_MEMORY_PAGE_LIMIT = 300;
 import { Select } from '@/app/harness/Select';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
@@ -210,9 +219,14 @@ export default function MemoryPage() {
   // appear here live without manual refresh (P-008).
   const { data: rows, loading: rowsLoading } = useSyncQuery<MemoryRow>({
     queryName: 'userMemory.list',
-    args: { userId: userId ?? '' },
+    // EI-12937: bounded by default; `showAll` (the "Show all" toggle, ?full=true)
+    // omits `limit` entirely, reproducing the exact pre-fix unbounded fetch.
+    args: { userId: userId ?? '', ...(showAll ? {} : { limit: DEFAULT_MEMORY_PAGE_LIMIT }) },
     enabled: !!userId,
   });
+  // Row-count context for the "Show all" affordance — only meaningful while limited
+  // (rows.length hitting the limit exactly is the signal there may be more).
+  const possiblyMoreThanShown = !showAll && rows.length >= DEFAULT_MEMORY_PAGE_LIMIT;
   const loading = !metaLoaded || (!!userId && rowsLoading);
 
   // Write-ahead journal status (memory-write-journal-auto-recovery P-006):
@@ -894,7 +908,11 @@ export default function MemoryPage() {
           type="search"
           value={q}
           onChange={(e) => void setQ(e.target.value || null)}
-          placeholder={`Search ${rows.length} memories…`}
+          // EI-12937: when limited, be honest that search only covers the LOADED
+          // window (rows.length), not the whole corpus — "Search 300 memories…"
+          // reads very differently from "Search all memories…" and a user typing
+          // a query expecting full-history coverage deserves to know which they get.
+          placeholder={possiblyMoreThanShown ? `Search your ${rows.length} most recent memories…` : `Search ${rows.length} memories…`}
           aria-label="Search memories"
           style={{
             padding: '8px 12px', borderRadius: 6,
@@ -902,6 +920,36 @@ export default function MemoryPage() {
             color: 'var(--fg)', fontSize: 13, flex: 1,
           }}
         />
+        {possiblyMoreThanShown && (
+          <Tooltip label="You're viewing your most recent memories only. Load everything to search/filter your full history (bigger download).">
+            <button
+              type="button"
+              onClick={() => void setShowAll(true)}
+              style={{
+                padding: '8px 12px', borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-2)',
+                cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+              }}
+            >
+              Show all
+            </button>
+          </Tooltip>
+        )}
+        {showAll && (
+          <Tooltip label="Back to the fast, bounded recent-memories view.">
+            <button
+              type="button"
+              onClick={() => void setShowAll(false)}
+              style={{
+                padding: '8px 12px', borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-2)',
+                cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+              }}
+            >
+              Show recent only
+            </button>
+          </Tooltip>
+        )}
         <Tooltip label="Rank by semantic relevance (the same hybrid search agents use) instead of substring match."><button
           type="button"
           onClick={() => void setSemantic(!semantic)}
