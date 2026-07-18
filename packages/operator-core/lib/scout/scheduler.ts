@@ -32,6 +32,7 @@ import { refreshScoutOutcomes } from './routed-ledger';
 import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
 import { admissionDenialFrom, CAPACITY_CLASSIFIER_SCHEMA_VERSION, isCapacityError } from './capacity-errors';
+import type { ScoutPoolSnapshot } from './capacity-probe';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
@@ -167,6 +168,16 @@ export interface ScoutTickDeps {
   ackQueenFeedback?: (items: QueenFeedbackItem[]) => Promise<void>;
   /** Mint a cycle id; default `scout-<nowMs>`. */
   newCycleId?: (nowMs: number) => string;
+  /**
+   * Read the gateway pool snapshot at failure-record time (WI-5391 Part B). Consulted
+   * ONLY when a gateway-attested capacity denial (`via:'http-429'`) is about to be
+   * excluded from the error rate: a 429 recorded while the gateway's OWN `/stats`
+   * reports healthy accounts is the WI-4541 admission-defect signature and stays a
+   * LOUD error (`capacityContradicted:true`). Best-effort by contract — a probe
+   * failure or an unwired dep (the hermetic unit-test default) means no contradiction
+   * evidence: the attestation is trusted and the snapshot simply absent from detail.
+   */
+  readPoolSnapshot?: () => Promise<ScoutPoolSnapshot | undefined>;
 }
 
 export interface ScoutTickOptions {
@@ -410,18 +421,55 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     // stay status:'error', which is what the <5% bar should have been measuring all along.
     const admissionDenial = admissionDenialFrom(e);
     if (isCapacityError(e)) {
+      // WI-5391 Part B record-time discrimination: a gateway-attested denial
+      // (via:'http-429') is cross-checked against the gateway's OWN pool stats before
+      // it may be excluded from the error rate — the gateway can itself be the broken
+      // component (WI-4541 serialized the whole fleet through one admission slot with
+      // 9-10 of 12 accounts idle), and its 429 while /stats reports healthy accounts
+      // is that defect's signature, not capacity. Governor-attested denials are NOT
+      // cross-checked: the governor's wall is its own pool's authoritative state (the
+      // direct-egress path), and gateway stats describe a different pool. The snapshot
+      // is persisted either way so every exclusion is retro-auditable.
+      let poolSnapshot: ScoutPoolSnapshot | undefined;
+      if (admissionDenial?.via === 'http-429') {
+        try {
+          poolSnapshot = await deps.readPoolSnapshot?.();
+        } catch {
+          /* best-effort — no snapshot ⇒ no contradiction evidence, trust the attestation */
+        }
+      }
+      const capacityContradicted =
+        admissionDenial?.via === 'http-429' &&
+        typeof poolSnapshot?.healthyAccounts === 'number' &&
+        poolSnapshot.healthyAccounts > 0;
+      if (!capacityContradicted) {
+        await note({
+          status: 'gated',
+          gate: 'no-capacity',
+          detail: {
+            cycleId,
+            error,
+            capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+            ...(admissionDenial ? { admissionDenial } : {}),
+            ...(poolSnapshot ? { poolSnapshot } : {}),
+            ...timeoutDetail,
+          },
+        });
+        return { fired: false, reason: 'no-capacity', cycleId, error };
+      }
       await note({
-        status: 'gated',
-        gate: 'no-capacity',
+        status: 'error',
         detail: {
           cycleId,
           error,
           capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
           ...(admissionDenial ? { admissionDenial } : {}),
+          capacityContradicted: true,
+          ...(poolSnapshot ? { poolSnapshot } : {}),
           ...timeoutDetail,
         },
       });
-      return { fired: false, reason: 'no-capacity', cycleId, error };
+      return { fired: false, reason: 'cycle-error', cycleId, error };
     }
     await note({
       status: 'error',
@@ -682,6 +730,11 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     },
     async refreshOutcomes() {
       await refreshScoutOutcomes({ harnessSlug, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });
+    },
+    async readPoolSnapshot() {
+      // Lazy import keeps the pure core free of the gateway-HTTP edge (module pattern).
+      const { readScoutPoolSnapshot } = await import('./capacity-probe');
+      return readScoutPoolSnapshot();
     },
     async readQueenFeedback(): Promise<QueenFeedbackItem[]> {
       // P-001: the Queen→Scout feedback channel — coord:inbox messages addressed

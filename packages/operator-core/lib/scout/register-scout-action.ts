@@ -29,6 +29,7 @@
  */
 
 import { type ScoutCycleRunner } from './scout-cycle-action';
+import { readScoutPoolSnapshot } from './capacity-probe';
 import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
 import { createScoutPlanDraft } from './scout-plan-draft';
@@ -93,30 +94,19 @@ export const SCOUT_CODEX_FALLBACK_MODEL = DEFAULT_SCOUT_CODEX_FALLBACK_MODEL;
  * ChatGPT-subscription bridge is reported by `/admin/config.providers.codex.cliAccountCount`;
  * bearer-backed Codex deployments are covered by `configured`. If either probe is unavailable,
  * fail closed to the historical Claude route rather than sending Scout into an unknown provider.
+ *
+ * ROUTING booleans only — the audit path (scheduler record-time discrimination, WI-5391
+ * Part B) reads the raw {@link readScoutPoolSnapshot} instead, whose probe-failure is a
+ * tristate `undefined`, never this function's fail-open "available".
  */
 export async function readScoutProviderCapacity(fetchImpl: typeof fetch = fetch): Promise<ScoutProviderCapacity> {
-  const base = `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788}`;
-  try {
-    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1_000) : undefined;
-    const [statsRes, configRes] = await Promise.all([
-      fetchImpl(`${base}/stats`, signal ? { signal } : undefined),
-      fetchImpl(`${base}/admin/config`, signal ? { signal } : undefined),
-    ]);
-    if (!statsRes.ok || !configRes.ok) return { claudeAvailable: true, codexAvailable: false };
-    const stats = (await statsRes.json()) as { healthyAccounts?: unknown; codexHealthyAccounts?: unknown };
-    const config = (await configRes.json()) as {
-      providers?: { codex?: { configured?: unknown; cliAccountCount?: unknown } };
-    };
-    const codex = config.providers?.codex;
-    const cliAccountCount = typeof codex?.cliAccountCount === 'number' ? codex.cliAccountCount : 0;
-    const codexHealthyAccounts = typeof stats.codexHealthyAccounts === 'number' ? stats.codexHealthyAccounts : 0;
-    return {
-      claudeAvailable: typeof stats.healthyAccounts === 'number' && stats.healthyAccounts > 0,
-      codexAvailable: codex?.configured === true && (cliAccountCount > 0 || codexHealthyAccounts > 0),
-    };
-  } catch {
-    return { claudeAvailable: true, codexAvailable: false };
-  }
+  const snapshot = await readScoutPoolSnapshot(fetchImpl);
+  if (!snapshot) return { claudeAvailable: true, codexAvailable: false };
+  return {
+    claudeAvailable: typeof snapshot.healthyAccounts === 'number' && snapshot.healthyAccounts > 0,
+    codexAvailable:
+      snapshot.codexConfigured && ((snapshot.codexCliAccountCount ?? 0) > 0 || (snapshot.codexHealthyAccounts ?? 0) > 0),
+  };
 }
 
 /** Cache the paired gateway probes so Scout's parallel ideators do not fan out diagnostics calls. */

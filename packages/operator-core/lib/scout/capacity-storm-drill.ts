@@ -32,6 +32,11 @@
  *                           exact shape an evidence-free prose-inferring mint site
  *                           would produce. MUST stay status:'error' on BOTH paths:
  *                           the evidence-required fail-closed rule (WI-5391 Part B).
+ *   5. `contradicted-capacity` — a gateway-attested 429 (via:'http-429') while the
+ *                           injected pool snapshot reports HEALTHY accounts — the
+ *                           live WI-4541 signature. MUST record status:'error' with
+ *                           capacityContradicted:true, and the read path must NOT
+ *                           re-exclude it (the relabeling-can't-green-the-metric rule).
  *
  * After the legs run, the persisted rows are READ BACK from the ledger and
  * re-classified with {@link isPersistedCapacityError} — proving the write path and
@@ -70,7 +75,7 @@ export const CAPACITY_STORM_TICK_ORIGIN = 'drill';
 /** How long the hung-cycle timeout leg waits before the deployed wrapper kills it. */
 export const CAPACITY_STORM_TIMEOUT_LEG_MS = 80;
 
-export type CapacityStormLeg = 'capacity' | 'timeout' | 'admission-defect' | 'unattested-capacity';
+export type CapacityStormLeg = 'capacity' | 'timeout' | 'admission-defect' | 'unattested-capacity' | 'contradicted-capacity';
 
 export interface CapacityStormLegResult {
   leg: CapacityStormLeg;
@@ -105,7 +110,11 @@ export interface CapacityStormEvidence {
   unattestedStaysError: boolean;
   /** Leg 4 read path: the persisted unattested row is NOT reclassified as capacity. */
   unattestedReadStaysError: boolean;
-  /** All four legs landed persisted origin='drill' rows. */
+  /** Leg 5 write path: an http-429 denial contradicted by a healthy pool snapshot stayed status:'error' + capacityContradicted. */
+  contradictedStaysError: boolean;
+  /** Leg 5 read path: the contradicted row is NOT re-excluded despite its attested denial. */
+  contradictedReadStaysError: boolean;
+  /** All five legs landed persisted origin='drill' rows. */
   allLegsPersisted: boolean;
   /** Ticks carrying this drill's cycle ids OUTSIDE origin='drill' (must be 0). */
   organicTickLeaks: number;
@@ -136,6 +145,8 @@ export function evaluateCapacityStormEvidence(
     [evidence.defectReadStaysError, 'the read path let legacy-looking prose reclassify a versioned no-free-slot row as capacity'],
     [evidence.unattestedStaysError, 'an evidence-free capacity-reason denial (no via stamp) was excluded at write time (fail-closed violation)'],
     [evidence.unattestedReadStaysError, 'the read path reclassified the persisted unattested-denial row as capacity'],
+    [evidence.contradictedStaysError, 'an http-429 denial contradicted by a healthy pool snapshot was excluded at write time (WI-4541 signature swallowed)'],
+    [evidence.contradictedReadStaysError, 'the read path re-excluded the capacityContradicted row (relabeling greened the metric)'],
     [evidence.allLegsPersisted, "not every storm leg landed a persisted origin='drill' tick row"],
     [evidence.organicMetricsUnchanged, "a storm tick leaked outside origin='drill'"],
   ];
@@ -233,7 +244,24 @@ export async function runCapacityStormDrill(
         );
       },
     },
+    {
+      leg: 'contradicted-capacity',
+      cycleId: `${drillId}-contradicted`,
+      runCycle: async () => {
+        // A gateway-attested 429 while the (injected) pool snapshot reports healthy
+        // accounts — the WI-4541 signature. The record-time discrimination must keep
+        // it a loud error with capacityContradicted evidence.
+        throw Object.assign(
+          new Error(`drill:${drillId} 429 from gateway while pool reports healthy accounts (synthetic WI-4541 signature)`),
+          { admissionDenial: { reason: 'provider-429', via: 'http-429' } },
+        );
+      },
+    },
   ];
+  // Injected snapshot for the contradicted-capacity leg: the gateway "reports" healthy
+  // accounts at record time. Only via:'http-429' denials consult it, so the governor-
+  // attested capacity leg still gates deterministically whatever the live gateway says.
+  const drillPoolSnapshot = { probedAtMs: nowMs, healthyAccounts: 3, codexConfigured: false };
 
   const legResults: CapacityStormLegResult[] = [];
   for (const leg of legs) {
@@ -252,6 +280,7 @@ export async function runCapacityStormDrill(
             workspaceId,
           }),
         newCycleId: () => leg.cycleId,
+        readPoolSnapshot: async () => drillPoolSnapshot,
       },
       leg.cycleTimeoutMs !== undefined ? { cycleTimeoutMs: leg.cycleTimeoutMs } : {},
     );
@@ -280,11 +309,12 @@ export async function runCapacityStormDrill(
     result.readClassifiedCapacity = isPersistedCapacityError(row.detail);
   }
 
-  const [capacity, timeout, defect, unattested] = legResults;
+  const [capacity, timeout, defect, unattested, contradicted] = legResults;
   const capacityRow = rowByCycleId.get(capacity.cycleId);
   const timeoutRow = rowByCycleId.get(timeout.cycleId);
   const defectRow = rowByCycleId.get(defect.cycleId);
   const unattestedRow = rowByCycleId.get(unattested.cycleId);
+  const contradictedRow = rowByCycleId.get(contradicted.cycleId);
   const organicTickLeaks = await countForeign(
     workspaceId,
     legResults.map((l) => l.cycleId),
