@@ -128,7 +128,7 @@ export async function readFrontierSnapshot(sql: Sql, workspaceId: string): Promi
   let governorRows: FrontierGovernorInfo[] = [];
   try {
     const { listLearningLoops } = await import('../learning-governor/store');
-    const regs = await listLearningLoops(sql, workspaceId);
+    const regs = await listLearningLoops(sql, { workspaceId });
     governorRows = regs.map((r) => ({
       loopId: r.loopId,
       budgetUsd: r.budgetUsd,

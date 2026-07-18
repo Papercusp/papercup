@@ -117,6 +117,9 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
     lensWeights: { analogical: 0.4, reframing: 0.6 },
     // P-004 (pipeline trace): titles for the OPAQUE `wi:` grounding refs, keyed by the FULL ref.
     groundingTitles: { 'wi:EI-100': 'coord invariant: wake-queue depth growth' },
+    // learning-tab-visibility P-001/P-005: live firing state + drafts-in-iteration.
+    cadence: null,
+    drafts: [],
   };
 
   it('returns the reader snapshot as a 1-element array, scoped to the active workspace', async () => {
