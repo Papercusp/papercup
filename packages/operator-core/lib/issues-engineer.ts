@@ -902,11 +902,25 @@ export async function updateIssue(
  *  assigned_at: the implement lane's stale-claim reclaim (plan-implement.ts inFlight)
  *  ages claims off it — a claim without assigned_at reads as in-flight FOREVER and
  *  wedges the auto lane. */
-export async function claimIssue(id: string, assignee: string): Promise<EngineerIssue | null> {
+export async function claimIssue(
+  id: string,
+  assignee: string,
+  opts: {
+    /**
+     * EI-1545: an explicit, ALREADY-RESOLVED issue-scope workspace — pass the SAME
+     * value the caller used for its own pre-claim family/existence check (e.g.
+     * `resolveIssuesScopeWorkspace()` captured once in `claimWorkItem`). Omitted ⇒
+     * byte-identical legacy behavior (re-derives via `issuesScopeWorkspace()` here).
+     * See the workspaceId param on {@link claimWorkItem} for the full rationale.
+     */
+    workspaceId?: string;
+  } = {},
+): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? issuesScopeWorkspace();
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+     WHERE workspace_id = ${ws} AND issue_id = ${id}
        AND (assignee IS NULL OR assignee = '' OR assignee = ${assignee})
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;

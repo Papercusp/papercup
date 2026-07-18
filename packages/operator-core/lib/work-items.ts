@@ -715,7 +715,16 @@ export async function getWorkItem(id: string, harness?: string): Promise<WorkIte
   // Issue-family ids (EI-* or a WI-* that lives in engineer_issues) are globally unique.
   const issue = await getIssue(id);
   if (issue) return issueToWorkItem(issue);
+  return getFeatureWorkItemOnly(id, harness);
+}
 
+/**
+ * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare
+ * `getIssue`/`getIssueInWorkspace` call) — split out (EI-1545) so `claimWorkItem`
+ * can reuse it directly instead of re-invoking the full `getWorkItem` (which would
+ * redundantly re-run the issue-family lookup a claimer has already resolved).
+ */
+async function getFeatureWorkItemOnly(id: string, harness?: string): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // F-B3 (workspace-data-isolation-leaks): a bare WI/F id is unique only within a
   // (workspace, harness), not globally — scope to the active workspace so an id
@@ -2019,13 +2028,30 @@ export async function claimWorkItem(
   assignee: string,
   opts: { harness?: string } = {},
 ): Promise<WorkItem | null> {
-  const wi = await getWorkItem(id, opts.harness);
-  if (!wi) return null;
+  // EI-1545: resolve the issue-scope workspace ONCE, up front, and reuse that SAME
+  // value for both the existence/family check below AND the actual claimIssue()
+  // write. resolveIssuesScopeWorkspace()/issuesScopeWorkspace() re-derive their
+  // answer on every call (a cached ISSUES_PER_WORKSPACE flag that self-heals on a
+  // 3s TTL via a fire-and-forget refresh, layered on activeWorkspaceId()'s own
+  // request-scope-dependent resolution — see its WI-5261 doc comment). Calling it
+  // TWICE in one claim — once here via getIssueInWorkspace, once more inside a
+  // bare claimIssue() — let the two calls legitimately disagree a few ms apart:
+  // the pre-check would find the row under one resolved workspace while the
+  // UPDATE (and, upstream in work_items:claim, the post-failure re-read) used a
+  // DIFFERENT one, missing a row that plainly exists — reported as a bare "not
+  // found" for an item `work_items:get`/`work_items:complete` (each a single,
+  // standalone lookup) still resolve fine. Already fixed for the self-select path
+  // (claimNextIssueWorkItem, EI-6480/WI-5261's explicitActiveWorkspaceId); this
+  // applies the same one-resolve-per-operation discipline to the by-id path.
+  const issueWs = resolveIssuesScopeWorkspace();
+  const issue = await getIssueInWorkspace(issueWs, id);
   let claimed: WorkItem | null;
-  if (wi.family === 'issue') {
-    const updated = await claimIssue(id, assignee);
+  if (issue) {
+    const updated = await claimIssue(id, assignee, { workspaceId: issueWs });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
+    const wi = await getFeatureWorkItemOnly(id, opts.harness);
+    if (!wi) return null;
     const { sql } = getOrgPg();
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
