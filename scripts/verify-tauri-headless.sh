@@ -205,7 +205,7 @@ done
 log "display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT work=$WORK"
 
 # ── teardown (always runs; scoped to exactly what THIS invocation started) ──
-XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID=""
+XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID="" ISOLATED_PG_PID=""
 write_stop_script() {
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
@@ -218,6 +218,9 @@ write_stop_script() {
 [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
 [ -n "$XVFB_PID" ] && kill -9 $XVFB_PID 2>/dev/null
 pkill -9 -f "Xvfb :$DISPLAY_NUM " 2>/dev/null
+# EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
+# booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
+[ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
 echo "stopped (display :$DISPLAY_NUM, port $DEV_PORT)"
 STOP
   chmod +x "$WORK/stop.sh"
@@ -257,6 +260,10 @@ teardown() {
   "$WORK/stop.sh" >/dev/null 2>&1 || true
   wait_owned_ports_free   # EI-11559: hold the advisory lock until our sidecar releases the port
   fed_release_port_locks
+  # EI-10387: the isolated-DB datadir can be sizeable (a full migrated cluster) —
+  # remove it now rather than leaking it into $TMPDIR across repeated runs. Best
+  # effort: stop.sh above already SIGTERM'd the postmaster.
+  [ -n "$ISOLATED_PG_PID" ] && [ -n "${ISOLATED_PG_DATA_DIR:-}" ] && rm -rf "$ISOLATED_PG_DATA_DIR" 2>/dev/null
   exit "$ec"
 }
 

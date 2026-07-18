@@ -33,7 +33,6 @@ import flagsSet from './flags/set';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
 import flagsDashboardUrl from './flags/dashboard-url';
-import operatorBudgetTiers from './operator/budget-tiers';
 import operatorStateSnapshot from './operator/state-snapshot';
 import operatorSettingsByKey from './operator/settings-by-key';
 import operatorRateLimitConfig from './operator/rate-limit-config';

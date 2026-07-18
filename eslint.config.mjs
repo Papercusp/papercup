@@ -89,4 +89,28 @@ export default [
       'papercusp/no-bare-jsonb-cast': 'error',
     },
   },
+  {
+    // EI-10445: sql.json(x) throws under every canonical db-org client
+    // (getOrgPg/getOrgPgApp/getHarnessPg — prepare:false mis-binds it), a
+    // trap at least a dozen files independently rediscovered and hand-
+    // documented instead of a mechanical guard catching it. Self-scoping (the
+    // rule only fires in a file that actually imports one of those throwing
+    // accessors from @papercusp/db-org — a DIFFERENT pool, e.g. dock-layouts.ts's
+    // own fresh postgres() client, is correctly never flagged), so this is wired
+    // broadly across every dir observed importing @papercusp/db-org rather than
+    // a narrow allowlist. See `tools/eslint-rules/no-org-pool-sql-json.js` +
+    // agent-insights/postgres-js-jsonb-binding.
+    files: [
+      'packages/**/*.ts',
+      'apps/operator/**/*.ts',
+      'libs/papercusp/libs/db/src/**/*.ts',
+      'libs/generic/sync/src/**/*.ts',
+    ],
+    plugins: {
+      papercusp: papercuspRules,
+    },
+    rules: {
+      'papercusp/no-org-pool-sql-json': 'error',
+    },
+  },
 ];

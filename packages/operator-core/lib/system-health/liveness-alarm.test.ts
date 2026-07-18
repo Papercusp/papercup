@@ -800,6 +800,69 @@ describe('runLivenessAlarmTick — EI-9939 flap-episode suppression', () => {
   });
 });
 
+describe('runLivenessAlarmTick — EI-10060 needsHumanRoute meta stamp', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  function makeStore() {
+    const opens: Array<EscalationRecord & { meta?: Record<string, unknown> }> = [];
+    return {
+      escalate: async (input: { severity: string; summary: string; meta?: Record<string, unknown> }) => {
+        const rec = {
+          ts: new Date().toISOString(),
+          msg_id: `esc-${opens.length + 1}`,
+          from: 'system:infra-liveness-alarm',
+          to: ['human'],
+          kind: 'escalation',
+          severity: input.severity,
+          summary: input.summary,
+          resolved: null,
+          meta: input.meta,
+          ...(input.meta ?? {}),
+        } as unknown as EscalationRecord & { meta?: Record<string, unknown> };
+        opens.push(rec);
+        return rec;
+      },
+      listOpen: async (): Promise<EscalationRecord[]> => [],
+      resolve: async () => {},
+      opens,
+    };
+  }
+
+  it('a REGISTERED signal (dead-routines) stamps needsHumanRoute:false — @role:mug is on the hook', async () => {
+    const store = makeStore();
+    const sick = mkHealth({ panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    await runLivenessAlarmTick('ws', {
+      readLast: () => sick,
+      computeHealth: async () => sick,
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async () => {},
+      now: () => 100 * 60_000,
+      snapshotStaleMs: 6 * 60_000,
+    });
+    expect(store.opens).toHaveLength(1);
+    expect(store.opens[0]!.meta).toMatchObject({ needsHumanRoute: false, livenessSignature: 'dead-routines' });
+  });
+
+  it('an UNREGISTERED signal (accounts-starved) stamps needsHumanRoute:true — nobody is on the hook', async () => {
+    const store = makeStore();
+    const sick = mkHealth({ panels: { tokens: { data: { accountsTotal: 8, accountsAvailable: 0 } } } });
+    await runLivenessAlarmTick('ws', {
+      readLast: () => sick,
+      computeHealth: async () => sick,
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async () => {},
+      now: () => 100 * 60_000,
+      snapshotStaleMs: 6 * 60_000,
+    });
+    expect(store.opens).toHaveLength(1);
+    expect(store.opens[0]!.meta).toMatchObject({ needsHumanRoute: true, livenessSignature: 'accounts-starved' });
+  });
+});
+
 describe('deriveSignatureFromSummary (legacy classifier)', () => {
   it('maps each known signal summary back to its signature', () => {
     expect(deriveSignatureFromSummary('[infra-liveness] system-health tick stale for 10m — ...')).toBe('health-tick-stale');

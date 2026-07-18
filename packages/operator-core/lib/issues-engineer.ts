@@ -336,10 +336,45 @@ function toIssue(r: IssueRowDb): EngineerIssue {
   };
 }
 
-const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
+// EI-10489: exported (was module-private) so issue-cols-parity.test.ts can assert this
+// stays in sync with IssueRowDb — see ISSUE_ROW_DB_KEYS below for the full rationale.
+export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
   terminal_completion_ref, feature_order, created_at, updated_at`;
+
+/**
+ * EI-10489: ISSUE_COLS (the runtime SELECT allowlist above) and IssueRowDb (its TS shape)
+ * are two independently hand-maintained lists of the SAME 26 columns — nothing tied them
+ * together, so a column added to one without the other silently degraded a real field to
+ * `undefined` at runtime (no compile error, no test failure). Two layers close that gap:
+ *
+ *  1. COMPILE-TIME: this tuple is a literal list of IssueRowDb's own keys. The assertions
+ *     right below FAIL TO TYPECHECK the moment IssueRowDb gains or loses a key this tuple
+ *     doesn't also have (both directions) — `npx tsc --noEmit` catches an interface change
+ *     that forgot to update the tuple.
+ *  2. RUNTIME: issue-cols-parity.test.ts parses ISSUE_COLS and asserts it names exactly
+ *     this tuple's columns — so a change to ISSUE_COLS alone (without touching this
+ *     compile-time-locked tuple) also fails, loudly, at test time instead of silently
+ *     returning undefined.
+ *
+ * Together: ISSUE_COLS <-runtime test-> ISSUE_ROW_DB_KEYS <-compile-time-> IssueRowDb.
+ */
+export const ISSUE_ROW_DB_KEYS = [
+  'issue_id', 'kind', 'scope', 'title', 'body', 'severity', 'source', 'state', 'assignee',
+  'assigned_by', 'assigned_at', 'last_progress_at', 'payload', 'origin', 'found_during',
+  'linked_feature_id', 'created_by', 'signal_origin', 'assignee_rank', 'rank_writer',
+  'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'feature_order',
+  'created_at', 'updated_at',
+] as const;
+type IssueRowDbKeysUnion = (typeof ISSUE_ROW_DB_KEYS)[number];
+type MissingFromTuple = Exclude<keyof IssueRowDb, IssueRowDbKeysUnion>;
+type ExtraInTuple = Exclude<IssueRowDbKeysUnion, keyof IssueRowDb>;
+type AssertNoMissingFromTuple = MissingFromTuple extends never ? true : { ISSUE_ROW_DB_KEYS_is_missing: MissingFromTuple };
+type AssertNoExtraInTuple = ExtraInTuple extends never ? true : { ISSUE_ROW_DB_KEYS_has_extra: ExtraInTuple };
+// Referenced only for its type-level effect — a real value keeps this from being
+// tree-shaken away and dead-code-eliminated before tsc ever sees the assertion.
+export const _issueRowDbKeysParityAssertion: [AssertNoMissingFromTuple, AssertNoExtraInTuple] = [true, true];
 
 function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
   return evidence && Object.keys(evidence).length > 0
