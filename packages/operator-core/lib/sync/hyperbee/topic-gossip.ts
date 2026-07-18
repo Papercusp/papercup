@@ -183,6 +183,59 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
   const pairedMuxers = new WeakSet<object>();
 
   /**
+   * WI-5355 (EI-13317 downstream): which topics EACH currently-connected
+   * socket has a live paired channel for, right now. Populated on a channel's
+   * `onopen` (paired), pruned on `onclose` (unpaired) — see openTopicChannel
+   * below. This is what lets the severed-link escalation tell "a socket that
+   * is genuinely dead weight for THIS gossip instance" (zero entries here)
+   * apart from "a socket that's fine, just not on the one severed topic" (a
+   * socket paired on some OTHER topic must never be touched — it's a shared
+   * A↔B connection per the module header).
+   */
+  const socketTopics = new WeakMap<object, Set<string>>();
+
+  /**
+   * WI-5355: true when `socket` currently holds ZERO live paired channels
+   * across every topic this gossip instance manages — i.e. Hyperswarm still
+   * thinks it's "connected" to this peer, but it isn't doing anything for us.
+   * That is precisely the zombie-connection shape traced into
+   * node_modules/hyperswarm's `_handlePeer` (client-side rediscovery no-ops
+   * when `_allConnections.has(peer.publicKey)` is already true, with no
+   * liveness re-check) — see the WI-5355 comment thread for the full trace.
+   * A plain `leave()+join()` DHT rejoin can't fix that: Hyperswarm never even
+   * attempts a fresh connection to a peer it still believes is live.
+   */
+  const isSocketIdleAcrossAllTopics = (socket: unknown): boolean => {
+    const set = socketTopics.get(socket as object);
+    return !set || set.size === 0;
+  };
+
+  /**
+   * WI-5355: best-effort evict a zombie socket — one Hyperswarm still counts
+   * as "connected" but that carries zero live gossip pairing anywhere — so
+   * the NEXT `leave()+join()` DHT rejoin can actually result in a fresh
+   * connection attempt instead of silently no-op'ing against a stale
+   * `_allConnections` entry. Duck-typed `.destroy()` (the standard
+   * Duplex/NoiseSecretStream method Hyperswarm's own duplicate-connection
+   * handling uses internally — see `_handleServerConnection`'s
+   * `existing.destroy(...)` in the installed hyperswarm package). Never
+   * touches a socket that still carries a live channel on ANY topic — this
+   * gossip instance's sockets are shared A↔B connections (module header), so
+   * evicting one still serving another healthy topic would be a regression,
+   * not a fix.
+   */
+  const evictIdleZombieSocket = (socket: unknown): void => {
+    try {
+      (socket as { destroy?: (err?: Error) => void }).destroy?.(
+        new Error('papercusp: WI-5355 zombie-socket eviction on severed-link escalation'),
+      );
+    } catch {
+      /* best-effort — a socket that can't be destroyed is left for Hyperswarm's own cleanup */
+    }
+    sockets.delete(socket);
+  };
+
+  /**
    * One shared muxer per socket + the LAZY-ACCEPT pair-notifier. Without the
    * notifier, protomux REJECTS a remote's channel-open for a topic we haven't
    * opened a channel for yet on that socket — and the remote never re-opens, so

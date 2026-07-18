@@ -482,7 +482,13 @@ const messagesRoute = defineTool({
           for await (const ev of dispatchProjectedToolStream(
             tool,
             'agent_chats:chat',
-            { promptText: assembled.text, cwd: projectDir ?? undefined },
+            // P-004: `harness` scopes + attaches the read-mostly agentmcp
+            // surface (work_items:get/list, plans:get, docs:search,
+            // memory:search — mcp-config.ts) to the item's OWN harness
+            // (itemHarness.harness, per P-003 scoping — NOT the cross-harness
+            // queue-view `slug`). Best-effort on the tool side: an
+            // unprovisioned build silently runs with no attached MCP tools.
+            { promptText: assembled.text, cwd: projectDir ?? undefined, harness: itemHarness.harness },
             dispatchCtx as never,
             {},
           )) {
@@ -491,6 +497,9 @@ const messagesRoute = defineTool({
                 const text = (ev.data as { text?: string })?.text ?? '';
                 assistantText += text;
                 sink.event('delta', { text });
+              } else if (ev.name === 'tool_call') {
+                const d = ev.data as { name?: string; input?: unknown };
+                if (d.name) sink.event('tool_call', { name: d.name, input: d.input });
               } else if (ev.name === 'error') {
                 const d = ev.data as { message?: string; stderr?: string };
                 lastErrorMessage = d.message ?? 'unknown error';
