@@ -2414,9 +2414,25 @@ export function realCheckpointDeps(
     },
     async broadcast(summary, body) {
       const { sendMessage } = await import('@papercusp/operator-core/lib/agent-tools/coordination/messages');
+      // EI-15925: EVERY co-hosted pot runs its own green-checkpoint against its own
+      // integrationRoot, and they all broadcast to the SAME audience `*` in the shared
+      // workspace. Unlabelled, "`main` advanced to <sha>" from the oddsmith pipeline is
+      // indistinguishable from papercusp's — on 2026-07-18 oddsmith's real 439b4037 was
+      // read fleet-wide as a papercusp PHANTOM sha (it resolves in no papercusp repo),
+      // during an open release decision where an executor resolves "the current green
+      // sha" at cut time. An unattributable release broadcast can misdirect a cut into
+      // a different product's commit. The event payload already carries `pipeline`
+      // (see emitEvent above); the human/agent-facing message did not — it does now.
+      const pipeline = pipelineName(cfg.integrationRoot);
       await sendMessage(
-        { ownerId: 'green-checkpoint', ownerLabel: 'green-checkpoint', source: 'static-client', workspaceId: null, userId: null },
-        { to: ['*'], summary, body, category: 'service-health' },
+        {
+          ownerId: 'green-checkpoint',
+          ownerLabel: `green-checkpoint[${pipeline}]`,
+          source: 'static-client',
+          workspaceId: null,
+          userId: null,
+        },
+        { to: ['*'], summary: `[${pipeline}] ${summary}`, body, category: 'service-health' },
       );
     },
     // P-002: durable human-facing escalation surface for a held gate. Tagged

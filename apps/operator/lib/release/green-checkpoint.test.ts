@@ -1910,3 +1910,30 @@ describe('pipelineName (EI-7646 — the pipeline-scoped verdict-key segment)', (
     expect(pipelineName('/weird/dir with spaces!')).toBe('dir-with-spaces-');
   });
 });
+
+describe('EI-15925 — the advance broadcast is attributable to its pipeline', () => {
+  // Every co-hosted pot broadcasts to the SAME audience `*`. An unlabelled
+  // "`main` advanced to <sha>" is indistinguishable between pipelines, and on
+  // 2026-07-18 oddsmith's real 439b4037 was read fleet-wide as a papercusp
+  // PHANTOM sha mid-release-decision. The label is what makes a release
+  // broadcast safe to resolve a cut target from.
+  it('prefixes the summary with the pipeline name and labels the sender', async () => {
+    const sent: Array<{ summary: string; label: string }> = [];
+    vi.doMock('@papercusp/operator-core/lib/agent-tools/coordination/messages', () => ({
+      sendMessage: async (identity: { ownerLabel: string }, msg: { summary: string }) => {
+        sent.push({ summary: msg.summary, label: identity.ownerLabel });
+      },
+    }));
+    const deps = realCheckpointDeps(cfg());
+    await deps.broadcast('🟩 green-checkpoint: `ready` advanced to 439b4037 (green, deployable)');
+
+    // `repo` is the mkdtemp integration root, so the pipeline is its basename.
+    const pipeline = pipelineName(repo);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.summary).toBe(
+      `[${pipeline}] 🟩 green-checkpoint: \`ready\` advanced to 439b4037 (green, deployable)`,
+    );
+    expect(sent[0]!.label).toBe(`green-checkpoint[${pipeline}]`);
+    vi.doUnmock('@papercusp/operator-core/lib/agent-tools/coordination/messages');
+  });
+});
