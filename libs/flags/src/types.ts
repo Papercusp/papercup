@@ -351,15 +351,16 @@ export const FLAGS = {
   // unaffected, and the P-006 reconciler is separately gated by this flag).
   SESSION_ARCHIVE_AT_END: "papercusp-session-archive-at-end",
   // agent-managed-compaction-2026-07-01 P-012 (L2 mechanical backstop): the
-  // compaction-compliance watchdog's FORCE-COMPACT rung. When ON, a limit-carrying
-  // session that ran PAST its soft compaction limit WITHOUT self-compacting gets
-  // /compact typed into its own live psu-pty TUI (idle-gated: runs after the current
-  // turn, dedup'd per crossing) — the sanctioned backstop for the 2026-07-04 incident
-  // (sonnet[1m] fleet members drifted to 836k because nothing mechanical caught the
-  // ones that ignored every reminder). DEFAULT ON (not in DARK_FLAGS — the owner
-  // directed this fix); OFF disables ONLY this rung (seeding + estimate caching +
-  // context-death detection keep running) ⇒ warn-only, byte-identical to pre-P-012.
-  // The kill-switch if the force-inject ever misfires.
+  // compaction-compliance watchdog's FORCE rung. When ON, a limit-carrying
+  // session that ran PAST its soft compaction limit WITHOUT self-cutting gets a
+  // forced CARRY-RESPAWN (P-022, 2026-07-18: the host kills the CLI at a clean
+  // boundary and relaunches it on a deterministic carry document — the old
+  // /compact typing is retired) — the sanctioned backstop for the 2026-07-04
+  // incident (sonnet[1m] fleet members drifted to 836k because nothing
+  // mechanical caught the ones that ignored every reminder). DEFAULT ON (not in
+  // DARK_FLAGS — the owner directed this fix); OFF disables ONLY this rung
+  // (seeding + estimate caching + context-death detection keep running) ⇒
+  // warn-only. The kill-switch if the force-respawn ever misfires.
   COMPACTION_WATCHDOG_FORCE_COMPACT: "papercusp-compaction-watchdog-force-compact",
   // agent-managed-compaction P-013 (D-009 ambient awareness): when ON, a BANDED
   // context-usage gauge ("context: N/L (X%)", silent <65% / quiet 65-80% / loud ⚠

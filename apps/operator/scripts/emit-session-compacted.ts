@@ -1,12 +1,12 @@
 /**
  * emit-session-compacted.ts — the bridge CLI that fires `session:compacted:<owner>`
- * after a psu /compact completes (event-await-discoverability-and-coverage-2026-07-03
+ * after a psu session's context is cut (event-await-discoverability-and-coverage
  * P-103; the linchpin of the host wire — without it the host's spawn is a fail-soft
  * no-op and NO session-compacted event ever fires).
  *
  * WHO SPAWNS IT: apps/operator/scripts/psu-pty-host.mjs → fireSessionCompactedEvent
- * (step 4 of the mode:'compact' handler, once the output-idle busy-gate confirms the
- * compaction turn settled — never on the done.deferred drop). The host is a
+ * (since P-022: from recycleChild after a successful carry-respawn — the only
+ * context cut now that native /compact is retired). The host is a
  * deliberately-minimal standalone Node process (fs/net/pty only — NO PG pool, NO
  * operator HTTP client), so it CANNOT emit in-process; it spawns THIS short-lived,
  * detached `tsx` CLI, which DOES reach org-PG:
