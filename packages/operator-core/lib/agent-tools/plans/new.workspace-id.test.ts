@@ -57,13 +57,13 @@ beforeEach(() => {
 describe('plans:new workspaceId opt-in (EI-1543)', () => {
   it('omits workspaceId from withPlanLock opts when not passed (unchanged default behavior)', async () => {
     await call();
-    const opts = withPlanLockM.mock.calls[0]?.[1] as Record<string, unknown>;
+    const opts = withPlanLockM.mock.calls[0]?.[1] as unknown as Record<string, unknown>;
     expect(opts).not.toHaveProperty('workspaceId');
   });
 
   it('threads an explicit workspaceId through to withPlanLock so an unregistered harness can opt in', async () => {
     await call({ workspaceId: 'default' });
-    const opts = withPlanLockM.mock.calls[0]?.[1] as Record<string, unknown>;
+    const opts = withPlanLockM.mock.calls[0]?.[1] as unknown as Record<string, unknown>;
     expect(opts).toMatchObject({ workspaceId: 'default', harnessSlug: 'offsite-planner-demo' });
   });
 });
