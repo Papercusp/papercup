@@ -10,6 +10,7 @@ import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { proposeRubric, rubricCompleteness } from '../../rubrics';
+import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { rubricCriterionWindowSchema } from '../plans/rubric-template';
 
 const criterion = z.object({
@@ -42,7 +43,7 @@ export default defineTool({
   guidance: {
     when: 'You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria). Author each criterion: model + method + driftMarkers + its own replication drill (the copy-runnable testing procedure); methodRef points at the rubric-level long-form runbook.',
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
-    chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → rubrics:ratify (Mug/owner). The result reports `completeness` (criteria lacking a replication drill; missing methodRef) — fill the gaps.',
+    chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → rubrics:ratify (Mug/owner). The result reports `completeness` (criteria lacking a replication drill; missing methodRef) and `replicationSqlCheck` (embedded drill SQL that fails to parse/plan against live PG — a table/column that was renamed since the drill was written; EI-10514) — fill/fix the gaps.',
     seeAlso: [
       'rubrics:search (dedup before proposing)',
       'rubrics:get (fetch before revising — propose REPLACES the stored doc)',
@@ -106,8 +107,13 @@ export default defineTool({
     });
     // WI-4287: surface testing-procedure completeness on every revision (non-blocking).
     const completeness = rubricCompleteness(rubric);
+    // EI-10514: schema-validate embedded replication-drill SQL against live PG
+    // (non-blocking — see rubrics-replication-sql.ts for why this warns, never rejects).
+    const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness }) }],
+      content: [
+        { type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck }) },
+      ],
     };
   },
 });

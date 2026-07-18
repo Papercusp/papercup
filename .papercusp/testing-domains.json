@@ -1454,8 +1454,6 @@
           "id": "tools",
           "label": "tools",
           "globs": [
-            "tools/**/*.test.ts",
-            "tools/**/*.test.mjs",
             "tools/**/*.spec.ts"
           ]
         }

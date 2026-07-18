@@ -1178,9 +1178,22 @@ defineTestDomain({
         'packages/**/*.test.tsx',
         'packages/**/*.spec.ts',
       ] },
+    // ONLY the wdio spec glob. The `tools/**/*.test.ts` + `tools/**/*.test.mjs`
+    // globs were REMOVED (EI-10445 follow-up) because they PROMISED coverage no
+    // runner delivers: `tools/` is not an npm workspace, is absent from the root
+    // `workspaces[]`, and no vitest config includes it — so a Vitest-shaped test
+    // placed there can never execute. While those globs existed, lint-tests'
+    // orphan check (Forbidden #3) saw such a file as "matches a registry glob →
+    // visible in the Tests tab" and stayed green, which is exactly how three
+    // ESLint-rule guards sat in `tools/eslint-rules/__tests__/` never running —
+    // one of them ENOENT-broken (a stale `node_modules/.pnpm/eslint@…` path in
+    // this npm-only repo) and nobody could tell. They now live in
+    // `packages/operator-core/lib/eslint-rules/` where they actually run.
+    // With these globs gone, a future Vitest test under `tools/` is correctly
+    // reported as an [ORPHAN] instead of being silently blessed. Keep
+    // `*.spec.ts`: it covers tools/perf-test/wdio/specs/*, run by WebdriverIO
+    // (a real runner), not Vitest.
     { id: 'tools', label: 'tools', globs: [
-        'tools/**/*.test.ts',
-        'tools/**/*.test.mjs',
         'tools/**/*.spec.ts',
       ] },
   ],

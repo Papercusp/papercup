@@ -11,6 +11,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { amendRubric, rubricCompleteness, AMENDABLE_CRITERION_FIELDS } from '../../rubrics';
+import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 
 export default defineTool({
   name: 'rubrics:amend',
@@ -84,8 +85,12 @@ export default defineTool({
       };
     }
     const completeness = rubricCompleteness(rubric);
+    // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
+    const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness }) }],
+      content: [
+        { type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck }) },
+      ],
     };
   },
 });

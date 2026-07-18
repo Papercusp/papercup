@@ -36,8 +36,10 @@ import type { PluginSpawn } from '@papercusp/plugin-sdk';
  * is an inert no-op) outside the sidecar-launched runtime.
  */
 export function augmentedSpawnPath(): string {
+  // Prepended, not appended: the bundled runtime must win even when the ambient
+  // PATH already carries a (wrong-version) node bin dir (EI-2114).
+  const prepend = [process.env.PAPERCUSP_SIDECAR_BIN ?? ''];
   const extra = [
-    process.env.PAPERCUSP_SIDECAR_BIN ?? '', // packaged/dev-sidecar bundled bin dir (EI-2114)
     dirname(process.execPath), // the running node → its sibling npx/npm
     '/home/linuxbrew/.linuxbrew/bin',
     '/usr/local/bin',
@@ -45,7 +47,7 @@ export function augmentedSpawnPath(): string {
     process.env.HOME ? join(process.env.HOME, '.local/bin') : '',
   ];
   const seen = new Set<string>();
-  return [...(process.env.PATH ?? '').split(delimiter), ...extra]
+  return [...prepend, ...(process.env.PATH ?? '').split(delimiter), ...extra]
     .filter((d) => d && !seen.has(d) && (seen.add(d), true))
     .join(delimiter);
 }
