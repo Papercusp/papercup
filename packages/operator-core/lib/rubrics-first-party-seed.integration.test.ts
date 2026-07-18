@@ -123,7 +123,9 @@ describe('first-party rubric seed (bundled → workspace store, lazy on first re
 });
 
 describe('EI-12932: first-party bundle content-drift auto-upgrade', () => {
-  const RUBRIC_ID = 'test-upgrade-rubric';
+  // Each test uses its OWN rubricId (this describe shares one real DB across tests, no
+  // per-test reset) so one test's row can never leak state into another's assertions.
+  let RUBRIC_ID = '';
   const originalEnv = process.env.PAPERCUSP_RUBRICS_DIR;
   let scratch: string | null = null;
 
@@ -171,6 +173,7 @@ describe('EI-12932: first-party bundle content-drift auto-upgrade', () => {
   });
 
   it('upgrades an unmodified seeded row in place when the bundle changes, preserving ratifiedBy/status', async () => {
+    RUBRIC_ID = 'test-upgrade-rubric-1';
     writeBundleVersion([c1]);
     rubrics.__resetRubricSeedStateForTests();
     await rubrics.ensureFirstPartyRubricsSeeded();

@@ -42,6 +42,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS } from './presence';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
+import { SESSION_END_MARKER } from '../activity/lifecycle-markers';
 
 /**
  * Coordinator-facing session state.
@@ -250,7 +251,7 @@ export async function fetchWakeability(
     sql<{ owner_id: string; last_any: string | null; last_end: string | null }[]>`
       SELECT owner_id,
              max(created_at) AS last_any,
-             max(created_at) FILTER (WHERE kind = 'lifecycle' AND summary ILIKE '%end%') AS last_end
+             max(created_at) FILTER (WHERE kind = 'lifecycle' AND summary = ${SESSION_END_MARKER}) AS last_end
         FROM harness_shared.agent_activity
        WHERE owner_id = ANY(${ownerIds}::text[])
          AND created_at > now() - make_interval(secs => ${windowSec})
