@@ -423,7 +423,11 @@ export default function RubricsPanel({
         .pc-rubrics__pulse { display: grid; grid-template-columns: repeat(auto-fit, minmax(8px, 1fr)); align-items: end; gap: 3px; padding: 12px; overflow: hidden; }
         .pc-rubrics__pulse i { min-height: 18px; height: 34%; border-radius: 2px; background: color-mix(in srgb, var(--fg) 9%, transparent); }
         .pc-rubrics__pulse i.is-fresh { height: 86%; background: color-mix(in srgb, var(--accent) 68%, #34d399); }
-        .pc-rubrics__identity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+        /* flex + max-width (not inline-flex): an inline-flex keeps its intrinsic
+           content width inside a fixed-layout td, so a long title paints ACROSS
+           the neighboring Score cell (owner screenshot 2026-07-18). Block-level
+           flex constrained to the cell lets the strong/small ellipsis rules bite. */
+        .pc-rubrics__identity { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
         .pc-rubrics__identity > i { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--fg-mute); }
         .pc-rubrics__identity > i.is-ratified, .pc-rubrics__identity > i.is-active { background: #34d399; box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 12%, transparent); }
         .pc-rubrics__identity > i.is-awaiting { background: #fbbf24; box-shadow: 0 0 0 3px color-mix(in srgb, #fbbf24 15%, transparent); }
