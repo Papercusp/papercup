@@ -92,6 +92,18 @@ through the coding blueprint's spine. — `work-items.ts`
 terminal outcomes (`onDone` / `onEscalate`). —
 `blueprints/coding-factory/blueprint.yaml`
 
+**Fire path** · The path from a scheduled/queued trigger to the work actually
+*firing* (running): the routines engine → the fire (a loop wake via
+`fireLoopWake`, or a `tier:durable` routine's action) → the enqueued action
+executes. *Enqueued ≠ fired*: "fire-path down" = routines/loops tick but nothing
+runs (e.g. a DBOS engine freeze — EI-1607/1622), detectable by absent
+completions; "fire-path recovered" = firing resumed, proven by live completions
+(which contradict a stale "fire-path down" alarm). Distinct from **Dispatch**
+(the *when/what* runs policy) — the fire path is whether that dispatch reaches
+execution; the green-stall / git-sync-stall watchdogs exist to alarm when it
+silently stops. —
+`dbos/routines-workflow.ts`, `harness/routines/loop-fire.ts`
+
 **Ghost** · A deciding-agent output that fails to parse as a known decision
 verb; tracked as a rate and a health signal (`low_ghost_rate`). —
 `packages/operator-core/lib/harness-readers.ts`
