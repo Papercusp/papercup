@@ -304,6 +304,48 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.activation).toMatch(/dev:restart/);
   });
 
+  /* ---------------------------------------------------------------------- *
+   * EI-11120: `system:<action>` routine handlers (git-sync, scout-cycle,
+   * blueprint-run, ...) and the routinesTick dispatch machinery itself only
+   * execute when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host) — :3070/:3170 boot
+   * request-only and never run this code. Before this fix these paths fell
+   * through to the generic `packages/operator-core/lib` shared-caveat case,
+   * which only ever HINTED "restart one of those hosts" instead of naming the
+   * one true host — a landed+gated+deployed routine fix could look live and
+   * silently not be (WI-4475's scout timeout-hierarchy fix).
+   * ---------------------------------------------------------------------- */
+  it.each([
+    'packages/operator-core/lib/harness/routines/register-system-actions.ts',
+    'packages/operator-core/lib/harness/routines/system-actions.ts',
+    'packages/operator-core/lib/harness/routines/routine-host.ts',
+    'packages/operator-core/lib/harness/routines/git-sync-action.ts',
+    'packages/operator-core/lib/harness/routines/improvement-implement-action.ts',
+    'packages/operator-core/lib/blueprint/blueprint-run-action.ts',
+    'packages/operator-core/lib/scout/scout-cycle-action.ts',
+    'packages/operator-core/lib/scout/cycle.ts',
+    'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+    'packages/operator-core/lib/harness/git-sync/git-sync-eligibility.ts',
+  ])('EI-11120: %s → runs in bg-host only (routinesTick, BACKGROUND_WORKERS=1) — a deploy never carries it', (p) => {
+    const own = classifyRuntimeOwner(p)!;
+    expect(own.host).toBe('bg-host');
+    expect(own.releasePipelineApplies).toBe(false);
+    expect(own.restartTarget).toBe('bg-host');
+    expect(own.activation).toMatch(/dev:restart.*bg-host/s);
+  });
+
+  it('EI-11120: a *-action.ts TEST file under harness/routines/ is NOT misclassified (only the handler itself is bg-host-exclusive)', () => {
+    // git-sync-action.test.ts ends in `.test.ts`, not `-action.ts` — must not match.
+    const own = classifyRuntimeOwner('packages/operator-core/lib/harness/routines/git-sync-action.test.ts')!;
+    expect(own.host).toBe('operator-release');
+    expect(own.releasePipelineApplies).toBe(true);
+  });
+
+  it('EI-11120: other lib/blueprint/ files (used interactively by the operator API — catalog/authoring) stay release-pipeline-carried', () => {
+    const own = classifyRuntimeOwner('packages/operator-core/lib/blueprint/installed-blueprints.ts')!;
+    expect(own.host).toBe('operator-release');
+    expect(own.releasePipelineApplies).toBe(true);
+  });
+
   it.each([
     ['packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts'],
     ['packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts'],

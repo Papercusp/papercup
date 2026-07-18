@@ -167,6 +167,66 @@ const RUNTIME_OWNERS: { match: RegExp; own: RuntimeOwnership }[] = [
         'DBOS workflows / routines EXECUTE in bg-host, which runs `npx tsx bin/hono-host.ts` from THIS TREE (PAPERCUSP_BACKGROUND_WORKERS=1) — not from the release checkout. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. The :3070 deploy does not carry it.',
     },
   },
+  // EI-11120: `system:<action>` routine handlers (register-system-actions.ts's
+  // side-effect registry + every `*-action.ts` it wires in — git-sync, scout-cycle,
+  // blueprint-run, improvement-implement, ...) plus the dispatch machinery itself are
+  // driven EXCLUSIVELY by `routinesTick`, which only arms when
+  // `PAPERCUSP_BACKGROUND_WORKERS=1` (host-bootstrap.ts) — the operator API hosts
+  // (:3070 release, :3170 staging) boot with BACKGROUND_WORKERS=0 (request-only) and
+  // never execute this code at all. A fix here lands + gates + deploys to :3070 and is
+  // STILL inert until bg-host itself is restarted (the exact silent-inertness this
+  // classification exists to surface). Must be listed BEFORE the broad
+  // `packages/operator-core/lib/` fallthrough below.
+  {
+    match: /^packages\/operator-core\/lib\/harness\/routines\/(register-system-actions|system-actions|routine-host)\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is the routine-dispatch engine (routinesTick + the system-action registry) — it only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host); :3070/:3170 boot request-only (BACKGROUND_WORKERS=0) and never execute it. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (EI-11120).',
+    },
+  },
+  {
+    match: /^packages\/operator-core\/lib\/harness\/routines\/.*-action\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is a `system:<action>` routine handler, dispatched by routinesTick — which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host); :3070/:3170 boot request-only (BACKGROUND_WORKERS=0) and never invoke it. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (EI-11120).',
+    },
+  },
+  {
+    match: /^packages\/operator-core\/lib\/blueprint\/blueprint-run-action\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'The `system:blueprint-run` routine handler — the seam every deterministic-blueprint learning loop (scout, negative-space, red-queen, ...) fires through. Dispatched by routinesTick, which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (EI-11120).',
+    },
+  },
+  {
+    match: /^packages\/operator-core\/lib\/scout\//,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        "Scout's ideation cycle runs exclusively through the routine dispatch (the `scout` deterministic blueprint's `blender:cycle` step, fired via `system:blueprint-run`), which only executes when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host) — :3070/:3170 never run it. A deployed fix to this code is INERT until bg-host is restarted: dev:restart { target: \"bg-host\", confirm: true } (EI-11120 — this exact silent-inertness cost WI-4475 a wasted deploy-and-wait cycle).",
+    },
+  },
+  {
+    match: /^packages\/operator-core\/lib\/harness\/git-sync\//,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'The git-sync pipeline (run-git-sync + its eligibility/escalation/reconcile helpers) executes only from the `system:git-sync` routine handler, dispatched by routinesTick — which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host); :3070/:3170 never execute it. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (EI-11120).',
+    },
+  },
   {
     match: /^papercusp-desktop\/src-tauri\//,
     own: {
