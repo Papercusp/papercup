@@ -121,4 +121,14 @@ describe('PlansPane', () => {
     render(<PlansPane />);
     expect(screen.getByText(/everything is finished/i)).toBeTruthy();
   });
+
+  it('does NOT flash "everything is finished" on a cold load with an empty plan list (WI-5338)', () => {
+    // The plan feed has hydrated to an empty array before the real rows stream
+    // in (loading already false). This used to flash the celebratory empty
+    // state over hundreds of real active plans.
+    planListData.value = { plans: [] };
+    render(<PlansPane />);
+    expect(screen.queryByText(/everything is finished/i)).toBeNull();
+    expect(screen.getByText(/no plans yet/i)).toBeTruthy();
+  });
 });
