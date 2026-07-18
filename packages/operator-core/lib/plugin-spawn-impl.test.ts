@@ -172,6 +172,19 @@ describe('pluginSpawnImpl — PATH augmentation (the `spawn npx ENOENT` fix)', (
     expect(resolveBin(name, augmentedSpawnPath())).toBe(name);
   });
 
+  it('EI-2114: includes PAPERCUSP_SIDECAR_BIN first when set (packaged-desktop bundled runtime)', () => {
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', '/opt/PapercuspApp/sidecar/bin');
+    const dirs = augmentedSpawnPath().split(delimiter);
+    expect(dirs).toContain('/opt/PapercuspApp/sidecar/bin');
+    expect(dirs.indexOf('/opt/PapercuspApp/sidecar/bin')).toBeLessThan(dirs.indexOf(dirname(process.execPath)));
+  });
+
+  it('is a harmless no-op (no empty PATH entry) when PAPERCUSP_SIDECAR_BIN is unset', () => {
+    expect(process.env.PAPERCUSP_SIDECAR_BIN).toBeUndefined(); // sanity: not set in the test env
+    const dirs = augmentedSpawnPath().split(delimiter);
+    expect(dirs.every((d) => d.length > 0)).toBe(true);
+  });
+
   it('passes the augmented PATH (incl. node bin dir) to the spawned child env', async () => {
     const p = pluginSpawnImpl('repomix', [], {});
     const [, , opts] = spawnMock.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];

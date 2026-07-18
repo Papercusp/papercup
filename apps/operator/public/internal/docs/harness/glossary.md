@@ -100,6 +100,35 @@ verb; tracked as a rate and a health signal (`low_ghost_rate`). —
 **Harness** · One managed work pipeline (repo + work queue + runs),
 instantiated from a blueprint; slug-identified.
 
+**Pot home** · Which **Pot** (project) a harness belongs to — resolved by
+`potHomeSlugForHarness(ws, harnessSlug)` (a harness's own slug if it *is* the
+Pot's `kind:'hive'` home, else its registry `hive_slug` member pointer);
+shared by the topic re-key, admission, presence, and lock-authority seams.
+Code/DB still carry the pre-rename **`hive`** vocabulary in places
+(`hive_home_slug` / `hiveHomeSlugForHarness`, mig 185, partially renamed
+toward `pot_home_slug` by migs 557/565, `cup-lexicon-full-rename-2026-07-09`)
+— **"hive home" heard in fleet traffic is this same concept under its
+predecessor name, not a separate mechanism** (EI-1704: reviewed as a
+neologism-abstraction proposal and closed — the primitive already exists
+under this entry + the source below, so no new tool/table/routine was
+minted). —
+[pot-scoped-federation](/internal/docs/agent-insights/pot-scoped-federation)
+
+**Shared Pot** · A Pot the owner has published to the directory as
+`visibility: 'public'` or `'invite'` (`getOwnedHiveMeta(...).visibility`) —
+the gate that gives it a federated substrate (topic re-key, admission,
+presence) at all; a `private`/un-published Pot stays local-only and never
+announces on the DHT. Setup lives in `adoptSharedHiveIdentity()` /
+`goSharedHive()` (`SharedHiveState`,
+`packages/operator-core/lib/harness/papercusp-hive-share.ts`); exercised
+end-to-end by the `shared-hive-core` Tests-tab suite
+(`buildSharedHiveCoreChecks`). "Shared hive" in fleet
+traffic is this same primitive under its pre-rename name (EI-1705: reviewed
+as a neologism-abstraction proposal and closed — already named + covered by
+this entry, the `SharedHiveState` type, and the `shared-pot-*` insight-doc
+series, so no new tool/table/routine was minted). —
+[pot-scoped-federation](/internal/docs/agent-insights/pot-scoped-federation)
+
 **Pot blueprint** · The *orchestration* layer (`kind:'pot'`, `id: coding`,
 root-only, **never nested**): a **Mug** surveys the work frontier and *places*
 ranked `work_items` onto generic **cups** — **no spine**, self-declared wake

@@ -21,9 +21,23 @@ import type { PluginSpawn } from '@papercusp/plugin-sdk';
  * PATH with the running node's own bin dir + well-known locations, and
  * absolutize the basename so resolution never depends on the supervisor's
  * PATH. (Same absolute-path discipline as setup-pty-commands.ts.)
+ *
+ * EI-2114: in a PACKAGED Tauri desktop build, `process.execPath` is the
+ * Tauri/sidecar binary itself (not node), so `dirname(process.execPath)`
+ * resolves to the app-bundle dir — which has no node/npx — and
+ * `/home/linuxbrew/.linuxbrew/bin` never exists on an end-user host. Both of
+ * this function's dev-box contributors miss on that runtime, which would
+ * otherwise leave every basename spawn (repomix, git, npx, …) ENOENT on a
+ * packaged desktop. main.rs sets `PAPERCUSP_SIDECAR_BIN` to the bundled
+ * runtime's own bin dir (vendored `node` + vendored CLIs — see
+ * `packages/operator-core/lib/tool-path.ts`, the canonical tool-dir list) for
+ * every packaged/dev-sidecar boot, so include it here FIRST — before the
+ * dev-box contributors — as the packaged-runtime fix. It is unset (and this
+ * is an inert no-op) outside the sidecar-launched runtime.
  */
 export function augmentedSpawnPath(): string {
   const extra = [
+    process.env.PAPERCUSP_SIDECAR_BIN ?? '', // packaged/dev-sidecar bundled bin dir (EI-2114)
     dirname(process.execPath), // the running node → its sibling npx/npm
     '/home/linuxbrew/.linuxbrew/bin',
     '/usr/local/bin',
