@@ -7,7 +7,7 @@
  * the only real time is the short interval sleep).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { probeHealth, probeMemoryCanaryCheck } from './health-probe';
+import { probeHealth, probeMemoryCanaryCheck, probeDomainReadCheck } from './health-probe';
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(typeof body === 'string' ? body : JSON.stringify(body), {
@@ -301,5 +301,152 @@ describe('probeHealth + probeMemoryCanary (EI-10361)', () => {
     expect(r.healthy).toBe(true);
     expect(r.memoryCanary).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// EI-856: deploy-triggered consumer/domain-read canary probe.
+describe('probeDomainReadCheck', () => {
+  it('reports reachable + the verdict on a normal non-empty 200 response', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonRes(200, { ok: true, reachable: true, harnessSlug: 'papercusp', planCount: 12, empty: false }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeDomainReadCheck('http://x/api/internal/domain-read-canary');
+
+    expect(r.reachable).toBe(true);
+    expect(r.planCount).toBe(12);
+    expect(r.empty).toBe(false);
+  });
+
+  it('reports reachable:false (never throws) on a transport failure — PASS-WITH-NOTE', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeDomainReadCheck('http://x/api/internal/domain-read-canary');
+
+    expect(r.reachable).toBe(false);
+    expect(r.error).toMatch(/fetch failed/);
+  });
+});
+
+describe('probeHealth + probeDomainRead (EI-856)', () => {
+  function stubHealthAndDomainRead(domainBody: unknown, domainStatus = 200): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      if (url.includes('/domain-read-canary')) return jsonRes(domainStatus, domainBody);
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it("default 'block' policy: a REACHABLE but EMPTY domain read FAILS the probe — the exact WI-148 half-state signature", async () => {
+    stubHealthAndDomainRead({ ok: true, reachable: true, harnessSlug: 'papercusp', planCount: 0, empty: true });
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeDomainRead: true,
+    });
+
+    expect(r.healthy).toBe(false);
+    expect(r.error).toMatch(/WI-148 half-state signature/);
+    expect(r.domainRead?.empty).toBe(true);
+  });
+
+  it("default 'block' policy: an UNREACHABLE domain-read route FAILS the probe", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      if (url.includes('/domain-read-canary')) throw new TypeError('fetch failed');
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeDomainRead: true,
+    });
+
+    expect(r.healthy).toBe(false);
+    expect(r.error).toMatch(/unreachable/);
+    expect(r.domainRead?.reachable).toBe(false);
+  });
+
+  it("default 'block' policy: a REACHABLE, NON-EMPTY domain read never fails the probe", async () => {
+    stubHealthAndDomainRead({ ok: true, reachable: true, harnessSlug: 'papercusp', planCount: 3, empty: false });
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeDomainRead: true,
+    });
+
+    expect(r.healthy).toBe(true);
+    expect(r.domainRead?.planCount).toBe(3);
+  });
+
+  it("'report' policy: an EMPTY domain read is attached to the result but never fails the probe (from-scratch smoke rig opt-out)", async () => {
+    stubHealthAndDomainRead({ ok: true, reachable: true, harnessSlug: 'papercusp', planCount: 0, empty: true });
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeDomainRead: true,
+      domainReadPolicy: 'report',
+    });
+
+    expect(r.healthy).toBe(true);
+    expect(r.domainRead?.empty).toBe(true);
+  });
+
+  it('probeDomainRead defaults OFF — no domain-read call, no domainRead field', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      throw new Error(`unexpected URL (domain-read should not be called): ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', { timeoutMs: 5_000, intervalMs: 1, requestTimeoutMs: 50 });
+
+    expect(r.healthy).toBe(true);
+    expect(r.domainRead).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('composes with probeMemoryCanary: both run and both attach, an earlier memory-canary block still wins (no domain-read call needed after a block)', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      if (url.includes('/memory-canary')) {
+        return jsonRes(200, { ok: true, ran: true, status: 'degraded', rAt10: 0.2, delta: -0.3, zeroHitRate: 0.6 });
+      }
+      if (url.includes('/domain-read-canary')) {
+        return jsonRes(200, { ok: true, reachable: true, harnessSlug: 'papercusp', planCount: 3, empty: false });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMemoryCanary: true,
+      memoryCanaryPolicy: 'block',
+      probeDomainRead: true,
+    });
+
+    expect(r.healthy).toBe(false);
+    expect(r.error).toMatch(/memory recall canary degraded/);
+    // Both verdicts are still attached even though the memory canary is what blocked.
+    expect(r.memoryCanary?.status).toBe('degraded');
+    expect(r.domainRead?.planCount).toBe(3);
   });
 });

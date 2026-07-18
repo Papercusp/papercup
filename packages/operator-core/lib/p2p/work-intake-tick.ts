@@ -57,8 +57,9 @@ import { readP2pSettings } from './settings';
 import { PgFleetDirectory } from './fleet-directory';
 import { listHiveMembers, loadRevokedHivePubkeys } from '../hive-membership-store';
 import { currentGrantorEpoch } from './grant-store';
+import { hostAvailability as buildHostAvailability } from './host-availability';
 import { emitP2pReceipt, type EmitP2pReceiptResult } from './receipts';
-import { getFlag } from '../flags';
+import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
 /** The p2p WIRE-COMPATIBILITY version this host presents for C5 min-runtime
@@ -94,13 +95,19 @@ export interface WorkIntakeTickResult {
 export interface RunWorkIntakeTickOpts {
   sql?: Sql;
   host: WorkIntakeHostIdentity;
-  /** Injection seams (tests). */
+  /** Injection seams (tests) — every real IO edge this tick touches is
+   *  overridable, mirroring runForeignGitSyncTick's convention, so the
+   *  decision logic is unit-testable without a live PG. */
   listWorkOffers?: typeof listWorkOffers;
   emitReceipt?: (args: Parameters<typeof emitP2pReceipt>[0]) => Promise<EmitP2pReceiptResult>;
   pullAndExecute?: (
     input: PullEvaluationInput,
     ctx: PullAndExecuteContext,
   ) => Promise<PullAndExecuteResult>;
+  resolvePublisherSet?: PgFleetDirectory['resolvePublisherSet'];
+  resolveAttestedGithubUserId?: typeof resolveAttestedGithubUserId;
+  currentGrantorEpoch?: typeof currentGrantorEpoch;
+  hostAvailability?: typeof buildHostAvailability;
   log?: (m: string) => void;
   nowMs?: number;
 }
@@ -108,7 +115,7 @@ export interface RunWorkIntakeTickOpts {
 /** Fail-closed: no attested member owns this device pubkey (or it was
  *  revoked) ⇒ null, same convention as foreign-git-sync's
  *  resolveOriginCommitIdentity (an unattested id must never be trusted). */
-async function resolveAttestedGithubUserId(
+export async function resolveAttestedGithubUserId(
   workspaceId: string,
   potHomeSlug: string,
   devicePubkey: string,
@@ -153,6 +160,10 @@ export async function runWorkIntakeTick(
   ]);
   const maxRolloutTier: P2pEffectiveTier = resolveMaxRolloutTier({ flagEnabled });
   const directory = new PgFleetDirectory({ workspaceId, potSlug: potHomeSlug, sqlOverride: sql });
+  const resolvePubSet = opts.resolvePublisherSet ?? directory.resolvePublisherSet.bind(directory);
+  const resolveAttested = opts.resolveAttestedGithubUserId ?? resolveAttestedGithubUserId;
+  const epochReader = opts.currentGrantorEpoch ?? currentGrantorEpoch;
+  const availabilityReader = opts.hostAvailability ?? buildHostAvailability;
 
   for (const stored of offers) {
     const outcome = await processOneOffer(stored, {
@@ -162,7 +173,10 @@ export async function runWorkIntakeTick(
       settings: settingsLayers.effective,
       maxRolloutTier,
       nowMs,
-      directory,
+      resolvePublisherSet: resolvePubSet,
+      resolveAttestedGithubUserId: resolveAttested,
+      currentGrantorEpoch: epochReader,
+      hostAvailability: availabilityReader,
       sql,
       emitReceipt,
       pullExec,
@@ -180,7 +194,10 @@ interface ProcessCtx {
   settings: Awaited<ReturnType<typeof readP2pSettings>>['effective'];
   maxRolloutTier: P2pEffectiveTier;
   nowMs: number;
-  directory: PgFleetDirectory;
+  resolvePublisherSet: PgFleetDirectory['resolvePublisherSet'];
+  resolveAttestedGithubUserId: typeof resolveAttestedGithubUserId;
+  currentGrantorEpoch: typeof currentGrantorEpoch;
+  hostAvailability: typeof buildHostAvailability;
   sql: Sql;
   emitReceipt: (args: Parameters<typeof emitP2pReceipt>[0]) => Promise<EmitP2pReceiptResult>;
   pullExec: (input: PullEvaluationInput, ctx: PullAndExecuteContext) => Promise<PullAndExecuteResult>;
@@ -223,7 +240,7 @@ async function processOneOffer(
   // V1 boundary (module doc): the store schema carries no designation column
   // today, so every offer is undesignated — evaluatePull is always called
   // with designation: null. Steal/H9 are structurally unreachable from here.
-  const publisherSet = await ctx.directory.resolvePublisherSet({
+  const publisherSet = await ctx.resolvePublisherSet({
     kind: 'fleet',
     ownerGithubUserId: stored.publisherGithubUserId,
     slug: stored.fleetSlug,
@@ -237,9 +254,10 @@ async function processOneOffer(
     );
   }
 
-  const [attestedGithubUserId, ownerHighWaterEpoch] = await Promise.all([
-    resolveAttestedGithubUserId(ctx.workspaceId, ctx.potHomeSlug, authorship.devicePubkey, ctx.sql),
-    currentGrantorEpoch(ctx.workspaceId, ctx.potHomeSlug, publisherSet.ownerGithubUserId, ctx.sql),
+  const [attestedGithubUserId, ownerHighWaterEpoch, hostAvail] = await Promise.all([
+    ctx.resolveAttestedGithubUserId(ctx.workspaceId, ctx.potHomeSlug, authorship.devicePubkey, ctx.sql),
+    ctx.currentGrantorEpoch(ctx.workspaceId, ctx.potHomeSlug, publisherSet.ownerGithubUserId, ctx.sql),
+    ctx.hostAvailability({ workspaceId: ctx.workspaceId, hostRef: ctx.host.hostRef }, offer.fleetSlug, ctx.sql),
   ]);
 
   const input: PullEvaluationInput = {
@@ -255,7 +273,7 @@ async function processOneOffer(
       ownerHighWaterEpoch,
       host: { runtimeVersion: P2P_HOST_RUNTIME_VERSION, capabilities: [] },
     },
-    hostAvailability: { remote: null, local: null }, // recomputed for real inside productionOfferExecutorDeps at claim time
+    hostAvailability: hostAvail, // D-007: re-read again at spawn time inside productionOfferExecutorDeps — never a stale snapshot
     designation: null, // V1 boundary — see module doc.
     hostHighWaterEpoch: 0, // inert — never read (designation is always null here)
     hostHighWaterSeq: 0, // inert — never read (designation is always null here)
@@ -288,21 +306,12 @@ async function processOneOffer(
   if (outcome.outcome === 'skip') {
     return receiptSkip(ctx, stored, `puller:${outcome.decision.reason}`, outcome.decision.detail);
   }
+  // No receipt here on the WON path: executeClaimedOffer (offer-executor.ts)
+  // already receipts every step of its own pipeline fail-closed (P-004, M21) —
+  // emitting a second one here would be redundant, and P2P_RECEIPT_KINDS
+  // (receipts.ts) has no 'claimed'/'executed' kind to emit truthfully anyway
+  // (only 'refusal' | 'excused-breach' exist today). A distinct success-receipt
+  // kind is real product surface, out of D-004's scope — flagged, not invented.
   ctx.log(`offer ${stored.offerId}: EXECUTED (outcome=${outcome.decision.outcome}, resultOutcome=${outcome.execute.outcome}).`);
-  await ctx.emitReceipt({
-    workspaceId: ctx.workspaceId,
-    potSlug: ctx.potHomeSlug,
-    kind: 'refusal', // P2P_RECEIPT_KINDS is currently ['refusal','excused-breach'] only —
-    // an executed claim has no receipt KIND of its own yet; a 'claimed'/'executed'
-    // kind is real product surface, not this ticket's scope (D-004 boundary) —
-    // flagged as a follow-up rather than mis-typing this as a refusal receipt.
-    offerId: stored.offerId,
-    action: 'work-offer:intake-executed-marker',
-    refusal: { code: 'not-a-refusal-informational-only', detail: 'see module TODO: no executed-claim receipt kind exists yet.' },
-    requester: { kind: 'fleet', ref: stored.fleetSlug, githubUserId: stored.publisherGithubUserId },
-    responderGithubUserId: ctx.host.responderGithubUserId,
-    responderDevicePubkey: ctx.host.responderDevicePubkey,
-    actor: 'p2p:work-intake-tick',
-  }).catch(() => undefined); // best-effort informational marker only — never let this fail the tick
   return { offerId: stored.offerId, outcome: 'executed' };
 }

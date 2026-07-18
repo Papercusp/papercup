@@ -88,6 +88,31 @@ export interface ProbeOpts {
    * (PAPERCUSP_MEMORY_CANARY_POLICY=block), never the shipped default.
    */
   memoryCanaryPolicy?: 'report' | 'block';
+  /**
+   * After health (+MCP, if enabled; after the memory canary, if enabled) go
+   * green, POST the deploy-triggered consumer/domain-read canary (EI-856) —
+   * catches a lockstep data-move/code-flip half-state (WI-148 class) where
+   * `/api/health` stays green but every papercusp domain read 404s/empties.
+   * Read-only (one plans:list-equivalent read); never retried.
+   */
+  probeDomainRead?: boolean;
+  /** Base URL for the domain-read canary (defaults to url with /api/health
+   *  replaced by /api/internal/domain-read-canary). */
+  domainReadUrl?: string;
+  /**
+   * 'block' (default): an UNREACHABLE probe route OR a REACHABLE-but-EMPTY
+   * domain read (the exact WI-148 half-state signature — health green, zero
+   * papercusp plans resolvable) fails the probe (→ deploy rollback, while the
+   * DB snapshot is still clean). This is the one canary that defaults to
+   * blocking (unlike memoryCanaryPolicy) because an empty/unreachable domain
+   * read on the operator's OWN home harness is never a legitimate steady
+   * state — a fresh install ships seeded plans, and a running deploy target
+   * always has plan history.
+   * 'report': the verdict is attached + logged but never fails the probe —
+   * an explicit downgrade for an environment that genuinely has zero plans
+   * (e.g. a from-scratch smoke rig with no seed).
+   */
+  domainReadPolicy?: 'report' | 'block';
 }
 
 /**
@@ -230,12 +255,21 @@ export async function probeHealth(url: string, opts: ProbeOpts = {}): Promise<He
         }
       }
 
-      // Memory recall canary (EI-10361) — a ONE-SHOT check after health+MCP go
-      // green, never part of the retry loop above (a canary failure is not a
-      // "not ready yet" condition to poll through).
+      // One-shot checks after health(+MCP) go green — never part of the retry
+      // loop above (a canary/domain-read failure is not a "not ready yet"
+      // condition to poll through). The memory canary (EI-10361) and the
+      // domain-read canary (EI-856) are independent + additive: either,
+      // neither, or both may run, and each may (under its own explicit
+      // policy) fail the probe — accumulated into one `blockReason` so both
+      // verdicts are always attached to the result regardless of which one
+      // (if any) actually blocks.
+      let memoryCanary: MemoryCanaryProbeResult | undefined;
+      let domainRead: DomainReadProbeResult | undefined;
+      let blockReason: string | undefined;
+
       if (opts.probeMemoryCanary) {
         const canaryUrl = opts.memoryCanaryUrl || url.replace('/api/health', '/api/internal/memory-canary');
-        const memoryCanary = await probeMemoryCanaryCheck(canaryUrl, { log: opts.log });
+        memoryCanary = await probeMemoryCanaryCheck(canaryUrl, { log: opts.log });
         opts.log?.(
           `memory canary: reachable=${memoryCanary.reachable} ran=${memoryCanary.ran} status=${memoryCanary.status ?? '—'} ` +
             `r@10=${memoryCanary.rAt10 ?? '—'} zeroHit=${memoryCanary.zeroHitRate ?? '—'}`,
@@ -250,20 +284,55 @@ export async function probeHealth(url: string, opts: ProbeOpts = {}): Promise<He
           memoryCanary.ran &&
           memoryCanary.status === 'degraded'
         ) {
-          return {
-            healthy: false,
-            status: res.status,
-            body,
-            attempts,
-            elapsedMs: Date.now() - started,
-            error: `memory recall canary degraded (r@10=${memoryCanary.rAt10 ?? '—'}, zeroHitRate=${memoryCanary.zeroHitRate ?? '—'}) — memoryCanaryPolicy=block`,
-            memoryCanary,
-          };
+          blockReason = `memory recall canary degraded (r@10=${memoryCanary.rAt10 ?? '—'}, zeroHitRate=${memoryCanary.zeroHitRate ?? '—'}) — memoryCanaryPolicy=block`;
         }
-        return { healthy: true, status: res.status, body, attempts, elapsedMs: Date.now() - started, memoryCanary };
       }
 
-      return { healthy: true, status: res.status, body, attempts, elapsedMs: Date.now() - started };
+      if (opts.probeDomainRead) {
+        const domainUrl = opts.domainReadUrl || url.replace('/api/health', '/api/internal/domain-read-canary');
+        domainRead = await probeDomainReadCheck(domainUrl, { log: opts.log });
+        opts.log?.(
+          `domain read: reachable=${domainRead.reachable} harness=${domainRead.harnessSlug ?? '—'} ` +
+            `planCount=${domainRead.planCount ?? '—'} empty=${domainRead.empty ?? '—'}`,
+        );
+        // Defaults to 'block' (unlike memoryCanaryPolicy): an UNREACHABLE
+        // probe route or a REACHABLE-but-EMPTY domain read on the operator's
+        // own home harness is never a legitimate steady state (a fresh
+        // install ships seeded plans; a running deploy target has history) —
+        // this is the exact WI-148 half-state signature (health green, every
+        // papercusp read silently empty). An explicit 'report' downgrade
+        // exists for a from-scratch smoke rig that genuinely has zero plans.
+        if (!blockReason) {
+          const policy = opts.domainReadPolicy ?? 'block';
+          if (policy === 'block' && (!domainRead.reachable || domainRead.empty)) {
+            blockReason = domainRead.reachable
+              ? `domain-read canary found ZERO plans for harness '${domainRead.harnessSlug}' — WI-148 half-state signature (health green, papercusp reads empty) — domainReadPolicy=block`
+              : `domain-read canary route unreachable: ${domainRead.error ?? 'unknown'} — domainReadPolicy=block`;
+          }
+        }
+      }
+
+      if (blockReason) {
+        return {
+          healthy: false,
+          status: res.status,
+          body,
+          attempts,
+          elapsedMs: Date.now() - started,
+          error: blockReason,
+          ...(memoryCanary ? { memoryCanary } : {}),
+          ...(domainRead ? { domainRead } : {}),
+        };
+      }
+      return {
+        healthy: true,
+        status: res.status,
+        body,
+        attempts,
+        elapsedMs: Date.now() - started,
+        ...(memoryCanary ? { memoryCanary } : {}),
+        ...(domainRead ? { domainRead } : {}),
+      };
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
     }
