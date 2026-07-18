@@ -1,0 +1,155 @@
+/**
+ * Persistent in-app banner for the desktop supervisor's two TERMINAL states
+ * (WI-5392).
+ *
+ * The Rust supervisor has always emitted two webview events alongside its OS
+ * notifications — `operator-dead` (WI-1878: auto-respawn gave up past the cap)
+ * and `install-broken` (WI-5390: the install is missing its sidecar, so no
+ * amount of respawning can help). Both emit sites were written "for an in-app
+ * persistent banner"; that banner did not exist, so nothing in the tree ever
+ * called `listen()` for either event and the OS notification was the only
+ * channel that actually reached a user. This is that listener.
+ *
+ * WHY A BANNER AND NOT A TOAST. Both states are PERMANENT until the user acts,
+ * and an OS notification is transient — dismissed, missed while backgrounded,
+ * or suppressed entirely if notifications are muted/off. A sticky banner is the
+ * surface that still holds the message ten minutes later.
+ *
+ * PRECEDENCE. `install-broken` outranks `operator-dead` and is not
+ * downgradable: a broken install is the terminal explanation for the dead
+ * operator, and the two asks are contradictory ("wait, it's retrying" vs.
+ * "waiting cannot help — reinstall"). Once an install defect is latched, a
+ * later `operator-dead` must not overwrite it with the wait-it-out wording.
+ *
+ * NOT DISMISSABLE. There is no close button by design — the condition, not the
+ * user, clears this. `operator-dead` self-clears when the operator comes back
+ * (WI-3270 made give-up recoverable: respawns resume once the cap window
+ * drains, so a live transport is proof of recovery); `install-broken` never
+ * self-clears, because nothing short of a reinstall resolves it.
+ *
+ * STATE PLACEMENT. Deliberately `useState`, not nuqs: this is push-driven
+ * process-failure lifecycle, not user-meaningful navigation state. Putting it
+ * in the URL would let a user paste themselves a fake "your install is broken"
+ * banner, and would survive into a session where the condition is long gone —
+ * both worse than useState. (CLAUDE.md's nuqs rule lists error/loading
+ * lifecycle as the explicit useState case.)
+ *
+ * NO RESTART BUTTON. The copy says "restart the app" rather than offering a
+ * button because the desktop exposes no app-relaunch command to the webview —
+ * inventing one is a separate change, and a dead button is worse than a clear
+ * instruction. The wording matches the OS notification body so the two
+ * channels never disagree.
+ */
+'use client';
+
+import { useEffect, useState } from 'react';
+import { isDesktop } from '@papercusp/operator-core/lib/version-tauri';
+import { useSyncConnectivity } from '@papercusp/sync';
+
+/** Mirrors the Rust `OperatorDeadPayload` (main.rs). */
+interface OperatorDeadPayload {
+  reason: string;
+  respawns: number;
+  window_secs: number;
+}
+
+export function DesktopSupervisorBanner() {
+  const [dead, setDead] = useState<OperatorDeadPayload | null>(null);
+  // The install defect message, verbatim from Rust. Latched: once true it is
+  // never cleared by a subsequent event (see PRECEDENCE above).
+  const [installBroken, setInstallBroken] = useState<string | null>(null);
+  const [desktop, setDesktop] = useState(false);
+  const { offline } = useSyncConnectivity();
+
+  useEffect(() => {
+    setDesktop(isDesktop());
+  }, []);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+
+    const track = (fn: () => void) => {
+      if (cancelled) fn();
+      else unlisteners.push(fn);
+    };
+
+    void import('@tauri-apps/api/event')
+      .then(async ({ listen }) => {
+        // Registered together so neither event can land in the gap between two
+        // separate awaits — both fire exactly once per episode, so a missed
+        // one is missed for good.
+        track(
+          await listen<OperatorDeadPayload>('operator-dead', (e) => {
+            setDead(e.payload);
+          }),
+        );
+        track(
+          await listen<string>('install-broken', (e) => {
+            setInstallBroken(e.payload || 'Papercusp is missing part of its installation.');
+          }),
+        );
+      })
+      .catch(() => {
+        /* no event API (very old webview) — the OS notification remains the
+         * only channel, exactly as before this component existed. */
+      });
+
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((fn) => fn());
+    };
+  }, [desktop]);
+
+  // Recovery: a live transport means the operator answered, so a previously
+  // given-up respawn cycle has since succeeded. Only clears the RETRYING state
+  // — a broken install is terminal and stays latched even if some transport
+  // briefly reports healthy.
+  useEffect(() => {
+    if (!offline && dead) setDead(null);
+  }, [offline, dead]);
+
+  if (installBroken) {
+    return (
+      <div role="alert" style={{ ...banner, ...badTone }}>
+        <div style={{ flex: 1 }}>
+          <strong>Papercusp installation is incomplete.</strong>{' '}
+          {installBroken}{' '}
+          Reinstall Papercusp to fix this — waiting will not recover it.
+        </div>
+      </div>
+    );
+  }
+
+  if (dead) {
+    return (
+      <div role="alert" style={{ ...banner, ...warnTone }}>
+        <div style={{ flex: 1 }}>
+          <strong>Papercusp stopped responding.</strong>{' '}
+          Auto-restart is backing off after {dead.respawns} failed attempts in{' '}
+          {dead.window_secs}s ({dead.reason}). Retries continue in the background;
+          restart the app to recover immediately.
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// Positioned below HostCheckBanner's slot so the two can never overlap when a
+// shared host also hits a supervisor failure.
+const banner: React.CSSProperties = {
+  position: 'fixed', top: 56, left: 0, right: 0, zIndex: 1001,
+  display: 'flex', alignItems: 'center', gap: 16,
+  padding: '10px 16px', fontSize: 13,
+};
+const warnTone: React.CSSProperties = {
+  background: 'var(--warn-bg)', borderBottom: '1px solid var(--warn)', color: 'var(--warn)',
+};
+const badTone: React.CSSProperties = {
+  background: 'var(--bad-bg)', borderBottom: '1px solid var(--bad)', color: 'var(--bad)',
+};
+
+export default DesktopSupervisorBanner;

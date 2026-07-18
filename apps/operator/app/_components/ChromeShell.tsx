@@ -12,6 +12,7 @@ import { BrainMark, ResMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
+import { DesktopSupervisorBanner } from './DesktopSupervisorBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
 import ThemeSelector from './ThemeSelector';
 import BrandSwitcher from './BrandSwitcher';
@@ -319,6 +320,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
         </nav>
       </header>
       <HostCheckBanner />
+      <DesktopSupervisorBanner />
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
       <AutoLoginWelcomeToast />
