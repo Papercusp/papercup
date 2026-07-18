@@ -72,6 +72,11 @@ export interface SeatOfferPayload {
   accountScope: 'auto' | 'pinned';
   /** Friendly host label for the fleet owner's board ("B's machine"), or null. */
   hostLabel: string | null;
+  /** pot-seat-pools-prose-ux-2026-07-18 P-001/D-002: who in the record's potSlug
+   *  may draw on this offer ('trusted-members' | 'whole-pot'). Required (non-
+   *  null) iff the record is pot-scoped (potSlug set); null for a fleet-scoped
+   *  seat offer — audience is a pot-scoped concept only. */
+  audience: 'trusted-members' | 'whole-pot' | null;
 }
 
 /** P-009: a fleet owner's signed request that the host holding one seat-offer
@@ -106,8 +111,15 @@ export interface WorkOfferStoreRecord {
   offerId: string;
   /** The accountable publisher — a numeric GitHub user id (X9). */
   publisherGithubUserId: number;
-  /** The fleet channel the offer targets (H5 owner-prefixed at the scope layer). */
-  fleetSlug: string;
+  /** The fleet channel the offer targets (H5 owner-prefixed at the scope layer).
+   *  For kind 'seat' this is nullable — exactly one of fleetSlug/potSlug is set
+   *  (pot-seat-pools-prose-ux-2026-07-18 P-001). 'work'/'spawn_request' always
+   *  carry a non-null fleetSlug (potSlug must be null for those kinds). */
+  fleetSlug: string | null;
+  /** P-001: for kind 'seat', the pot-scoped grantee (the pot's hive topic —
+   *  ANY fleet in the pot may spend it, audience-gated) instead of one named
+   *  fleet. Null for 'work'/'spawn_request' and for a fleet-scoped seat offer. */
+  potSlug: string | null;
   kind: 'work' | 'seat' | 'spawn_request';
   status: OfferStoreStatus;
   /** Why a 'cancelled' record was cancelled (display/receipts), or null. */
@@ -155,7 +167,15 @@ function isPositiveInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 }
 
-function coerceSeatPayload(raw: unknown): { ok: true; seat: SeatOfferPayload } | { ok: false; error: string } {
+/**
+ * @param isPotScoped whether the OUTER record carries a non-null potSlug
+ *   (P-001) — audience is required (non-null) iff true, and must be null
+ *   otherwise (audience is a pot-scoped concept only).
+ */
+function coerceSeatPayload(
+  raw: unknown,
+  isPotScoped: boolean,
+): { ok: true; seat: SeatOfferPayload } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: 'record.seat must be a JSON object for kind \'seat\'' };
   }
@@ -176,9 +196,17 @@ function coerceSeatPayload(raw: unknown): { ok: true; seat: SeatOfferPayload } |
   if (label !== null && (typeof label !== 'string' || label.trim() === '' || label.length > HOST_LABEL_MAX)) {
     return { ok: false, error: `record.seat.hostLabel must be a non-empty string (≤${HOST_LABEL_MAX} chars) or null` };
   }
+  const audience = s.audience === undefined ? null : s.audience;
+  if (isPotScoped) {
+    if (audience !== 'trusted-members' && audience !== 'whole-pot') {
+      return { ok: false, error: "record.seat.audience must be 'trusted-members' or 'whole-pot' for a pot-scoped offer (P-001/D-002 — no silent default)" };
+    }
+  } else if (audience !== null) {
+    return { ok: false, error: 'record.seat.audience must be absent/null for a fleet-scoped offer (audience is a pot-scoped concept only)' };
+  }
   return {
     ok: true,
-    seat: { model: s.model, effort: s.effort, count: s.count, accountScope: s.accountScope, hostLabel: label },
+    seat: { model: s.model, effort: s.effort, count: s.count, accountScope: s.accountScope, hostLabel: label, audience },
   };
 }
 
@@ -246,11 +274,35 @@ export function coerceWorkOfferStoreRecord(
   if (!isPositiveInt(r.publisherGithubUserId)) {
     return { ok: false, error: 'record.publisherGithubUserId must be a positive integer (X9: numeric id, never a login)' };
   }
-  if (typeof r.fleetSlug !== 'string' || r.fleetSlug.length > FLEET_SLUG_MAX || !FLEET_SLUG_RE.test(r.fleetSlug)) {
-    return { ok: false, error: `record.fleetSlug must match ${FLEET_SLUG_RE} (≤${FLEET_SLUG_MAX} chars)` };
-  }
   if (r.kind !== 'work' && r.kind !== 'seat' && r.kind !== 'spawn_request') {
     return { ok: false, error: "record.kind must be 'work', 'seat' or 'spawn_request'" };
+  }
+  // P-001: the grantee. 'work'/'spawn_request' are always fleet-scoped
+  // (fleetSlug required, potSlug must be absent) — unchanged pre-P-001
+  // behavior. 'seat' generalizes to exactly one of fleetSlug/potSlug (a
+  // standing seat-offer may target a whole pot instead of one fleet).
+  const fleetSlugRaw = r.fleetSlug === undefined ? null : r.fleetSlug;
+  const potSlugRaw = r.potSlug === undefined ? null : r.potSlug;
+  const fleetSlugValid =
+    fleetSlugRaw === null ||
+    (typeof fleetSlugRaw === 'string' && fleetSlugRaw.length > 0 && fleetSlugRaw.length <= FLEET_SLUG_MAX && FLEET_SLUG_RE.test(fleetSlugRaw));
+  const potSlugValid =
+    potSlugRaw === null ||
+    (typeof potSlugRaw === 'string' && potSlugRaw.length > 0 && potSlugRaw.length <= FLEET_SLUG_MAX && FLEET_SLUG_RE.test(potSlugRaw));
+  if (r.kind !== 'seat') {
+    if (typeof r.fleetSlug !== 'string' || r.fleetSlug.length > FLEET_SLUG_MAX || !FLEET_SLUG_RE.test(r.fleetSlug)) {
+      return { ok: false, error: `record.fleetSlug must match ${FLEET_SLUG_RE} (≤${FLEET_SLUG_MAX} chars)` };
+    }
+    if (potSlugRaw !== null) {
+      return { ok: false, error: `record.potSlug must be absent/null for kind '${r.kind}' (only a 'seat' offer may be pot-scoped, P-001)` };
+    }
+  } else {
+    if (!fleetSlugValid || !potSlugValid) {
+      return { ok: false, error: `record.fleetSlug/potSlug must each match ${FLEET_SLUG_RE} (≤${FLEET_SLUG_MAX} chars) when present` };
+    }
+    if ((fleetSlugRaw !== null) === (potSlugRaw !== null)) {
+      return { ok: false, error: "exactly one of record.fleetSlug/record.potSlug is required for kind 'seat' (P-001)" };
+    }
   }
   if (typeof r.status !== 'string' || !OFFER_STORE_STATUSES.includes(r.status as OfferStoreStatus)) {
     return { ok: false, error: `record.status must be one of ${OFFER_STORE_STATUSES.join('|')}` };
@@ -301,7 +353,7 @@ export function coerceWorkOfferStoreRecord(
       return { ok: false, error: "record.workOffer/authorship must be absent/null for kind 'seat'" };
     }
     if (r.spawnRequest != null) return { ok: false, error: "record.spawnRequest must be absent/null for kind 'seat'" };
-    const s = coerceSeatPayload(r.seat);
+    const s = coerceSeatPayload(r.seat, potSlugRaw !== null);
     if (!s.ok) return s;
     seat = s.seat;
   } else {

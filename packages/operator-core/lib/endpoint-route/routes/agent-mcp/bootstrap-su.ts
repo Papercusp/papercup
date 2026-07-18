@@ -1968,6 +1968,15 @@ const post = defineTool({
     // reads those exact var names. Empty when no fleet was chosen (byte-identical).
     Object.assign(envelopeEnv, fleetPin.env);
 
+    // pot-seat-pools-prose-ux-2026-07-18 P-007/P-013/P-014: only the AUTO-OFF
+    // routing-gate text reads this (a human is present to be asked A/B/C), so
+    // skip the DB round-trip everywhere else. Fail-soft by contract (see
+    // remote-seat-inventory.ts) — an inventory-check error never blocks a launch.
+    const remoteSeats =
+      !autoMode && planSlug && !sessionPortContext
+        ? await resolveRemoteSeatInventory(workspace).catch(() => null)
+        : null;
+
     // improve-fleet-launch-autokickoff (EI-5503) + WI-1962 + fleet-auto-mode
     // (WI-1356): the first user turn the launcher seeds, so a scripted launch —
     // plan-bound, mission-brief (--launch-context), or AUTO — STARTS working
@@ -1987,6 +1996,7 @@ const post = defineTool({
           // the AUTO activation variant (block above — never assume armed).
           agent,
           loopAutoArmed: loopAutoArm?.armed === true,
+          remoteSeats,
         });
 
     const result: BootstrapSuResult = {
