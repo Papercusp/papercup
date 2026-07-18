@@ -22,6 +22,20 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => {
 vi.mock('@papercusp/flags', () => ({ FLAGS: { SCOUT_RUBRIC_RAIL: 'scout-rubric-rail' } }));
 vi.mock('./scout-plan-draft', () => ({ createScoutPlanDraft }));
 
+// WI-5367: this is a UNIT suite — it must NEVER touch the real box-canonical :5432.
+// buildScoutCycleDeps().readCorpus() (driven below) fires ~6 best-effort getOrgPg() read
+// legs (watchdog/gate/coord/tool-telemetry/curation health lanes) AND a
+// scout_digest_snapshots WRITE (persistDigestSnapshot, cycle_id 'cyc-deps-1'). Every leg is
+// wrapped in a fail-soft try/catch, so unmocked getOrgPg silently resolved the LIVE DB and
+// leaked fixture rows into it — poisoning readPreviousSnapshotRefs' newest-row read for the
+// next real scout cycle. Stub getOrgPg to an empty no-op `sql` so every leg reads [] / writes
+// nothing. (These lanes are incidental to what this suite pins — the assembly/ctx seam — which
+// is driven entirely by the injected fake stateOfHiveReaders.)
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: (..._args: unknown[]) => Promise.resolve([] as unknown[]) }),
+}));
+
 import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
 import { ScoutIdeatorsTransportError } from './ideators';
 import { resolveScoutConfig } from './config';
