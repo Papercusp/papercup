@@ -226,6 +226,7 @@ export async function publishSpawnRequest(
     offerId,
     publisherGithubUserId: actor.githubUserId,
     fleetSlug: opts.fleetSlug,
+    potSlug: null,
     kind: 'spawn_request',
     status: 'open',
     cancelReason: null,
