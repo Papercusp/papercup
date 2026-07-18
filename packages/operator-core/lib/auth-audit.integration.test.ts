@@ -94,4 +94,25 @@ describe('recordAuthEvent (PG)', () => {
       SELECT username, ip, user_agent, error_code, session_hmac, metadata FROM harness_shared.auth_audit_log`)[0]!;
     expect(Object.values(row).every((v) => v === null)).toBe(true);
   });
+
+  // Ported from the retired lib/auth-audit.test.ts (EI-16087) so deleting that
+  // redundant unit file loses no coverage. Strengthened while porting: the unit
+  // version admitted it could not actually provoke a failure ("PG will accept it
+  // actually — so we just verify the function never throws"), so it only ever
+  // exercised the SUCCESS path. Here the backend is made to genuinely fail.
+  it('is fail-soft: a backend error is swallowed, never propagated to the auth path', async () => {
+    const good = h.sql;
+    // recordAuthEvent warns on failure; fail-on-console would red the suite.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.sql = (() => {
+      throw new Error('simulated backend failure');
+    }) as unknown as postgres.Sql;
+    try {
+      await expect(recordAuthEvent({ kind: 'login_ok', ok: true })).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalled(); // it reports via console.warn rather than throwing
+    } finally {
+      h.sql = good;
+      warn.mockRestore();
+    }
+  });
 });

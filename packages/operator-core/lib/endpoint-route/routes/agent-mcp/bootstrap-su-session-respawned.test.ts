@@ -24,7 +24,12 @@ beforeAll(async () => {
   routes = mod.default as unknown as typeof routes;
 }, 30_000);
 
-const reanchorMock = vi.hoisted(() => vi.fn(async () => ({ reanchored: true, owner: 'su-resp-owner' })));
+const reanchorMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ reanchored: boolean; owner: string | null }> => ({
+    reanchored: true,
+    owner: 'su-resp-owner',
+  })),
+);
 const clearContextUsageMock = vi.hoisted(() => vi.fn());
 const clearContextAnchorMock = vi.hoisted(() => vi.fn());
 

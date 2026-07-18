@@ -28,6 +28,7 @@ import {
   isLoopArmOwnerRole,
   isRedQueenDrillRow,
   autoloopChronicFailureSweep,
+  shouldLogChronicOutcome,
   type AutoloopStateRow,
 } from './autoloop-chronic-failure';
 import { SANDBOX_HARNESS_SLUG } from '../../red-queen/types';
@@ -856,5 +857,51 @@ describe('autoloopChronicFailureSweep — WI-4632: escalation ALSO wakes overwat
     const results = await autoloopChronicFailureSweep();
 
     expect(results[0]).toMatchObject({ outcome: 'escalated', overwatchWaked: false });
+  });
+});
+
+describe('shouldLogChronicOutcome — EI-12968 (rate-limit the skip-family LOG LINE, not the decision)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('a non-skip outcome (escalated/error) is NEVER rate-limited — always logs, never touches claimWatchdogFire', async () => {
+    expect(await shouldLogChronicOutcome({ harnessSlug: 'papercusp', role: 'gym-cycle', outcome: 'escalated' })).toBe(true);
+    expect(await shouldLogChronicOutcome({ harnessSlug: 'papercusp', role: 'gym-cycle', outcome: 'error' })).toBe(true);
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
+  });
+
+  it('a skip-family outcome defers to claimWatchdogFire\'s atomic claim (true = first this window, log it)', async () => {
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    const ok = await shouldLogChronicOutcome({ harnessSlug: 'papercup', role: 'kettle', outcome: 'skipped-stale' });
+    expect(ok).toBe(true);
+    expect(claimWatchdogFire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-test',
+        installSlug: 'skipped-stale::papercup::kettle',
+        source: 'autoloop-chronic-skip-log',
+        windowHours: 1,
+      }),
+    );
+  });
+
+  it('a skip-family outcome already claimed within the window ⇒ false (suppress the duplicate log line)', async () => {
+    vi.mocked(claimWatchdogFire).mockResolvedValue(false);
+    const ok = await shouldLogChronicOutcome({ harnessSlug: 'papercup', role: 'kettle', outcome: 'skipped-stale' });
+    expect(ok).toBe(false);
+  });
+
+  it('every skip-family outcome (paused/drill/loop-arm) is covered, each keyed distinctly by outcome', async () => {
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    for (const outcome of ['skipped-paused', 'skipped-drill', 'skipped-loop-arm'] as const) {
+      await shouldLogChronicOutcome({ harnessSlug: 'h', role: 'r', outcome });
+      expect(claimWatchdogFire).toHaveBeenLastCalledWith(
+        expect.objectContaining({ installSlug: `${outcome}::h::r` }),
+      );
+    }
+  });
+
+  it('a custom windowHours overrides the 1h default', async () => {
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    await shouldLogChronicOutcome({ harnessSlug: 'h', role: 'r', outcome: 'skipped-stale' }, { windowHours: 4 });
+    expect(claimWatchdogFire).toHaveBeenCalledWith(expect.objectContaining({ windowHours: 4 }));
   });
 });

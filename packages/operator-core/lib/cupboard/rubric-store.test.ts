@@ -17,9 +17,11 @@ import {
   resolveLocalRubric,
   readLocalRubricMethod,
   rubricsNeedingSeed,
+  seedContentHash,
   FIRST_PARTY_RUBRIC_SEED_OWNER,
   type ExistingRubricRow,
   type RubricRoot,
+  type SeedableTemplateData,
 } from './rubric-store';
 import { rubricTemplateDataSchema } from '../agent-tools/plans/rubric-template';
 
@@ -191,6 +193,131 @@ describe('rubricsNeedingSeed (the seed decision core)', () => {
         row('su-agent-behavior', { owner: null, valid: false }),
       ]),
     ).toEqual([]);
+  });
+
+  describe('EI-12932: content-drift auto-upgrade of an already-seeded rubric', () => {
+    const seedRow = (rubricId: string, td: SeedableTemplateData): ExistingRubricRow => ({
+      rubricId,
+      owner: FIRST_PARTY_RUBRIC_SEED_OWNER,
+      valid: true,
+      templateData: td,
+    });
+
+    it('no templateData supplied ⇒ never auto-upgrades (safe default)', () => {
+      writeRubric(bundled, 'su-agent-behavior', {
+        manifest: manifest('su-agent-behavior', { criteria: [criterion('c-one'), criterion('c-two')] }),
+      });
+      const all = listLocalRubrics(roots);
+      expect(rubricsNeedingSeed(all, [row('su-agent-behavior', { owner: FIRST_PARTY_RUBRIC_SEED_OWNER })])).toEqual(
+        [],
+      );
+    });
+
+    it('a stale seeder-owned row (bundle changed, content untouched since last seed) upgrades', () => {
+      writeRubric(bundled, 'su-agent-behavior', {
+        manifest: manifest('su-agent-behavior', { criteria: [criterion('c-one'), criterion('c-two')] }),
+      });
+      const all = listLocalRubrics(roots);
+      // Simulate: the row was seeded when the bundle had only 'c-one', and nothing has
+      // touched it since (its recorded seedContentHash matches its own live content).
+      const staleFields: SeedableTemplateData = {
+        characteristic: 'agent-behavior',
+        criteria: [criterion('c-one')],
+        ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+        methodRef: null,
+        description: 'd',
+      };
+      const staleHash = seedContentHash(staleFields);
+      expect(
+        rubricsNeedingSeed(all, [
+          seedRow('su-agent-behavior', { ...staleFields, seedContentHash: staleHash }),
+        ]).map((r) => r.rubricId),
+      ).toEqual(['su-agent-behavior']);
+    });
+
+    it('bootstrap: a row seeded before seedContentHash existed (absent) trusts its current content as the baseline', () => {
+      writeRubric(bundled, 'su-agent-behavior', {
+        manifest: manifest('su-agent-behavior', { criteria: [criterion('c-one'), criterion('c-two')] }),
+      });
+      const all = listLocalRubrics(roots);
+      const legacyFields: SeedableTemplateData = {
+        characteristic: 'agent-behavior',
+        criteria: [criterion('c-one')],
+        ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+        methodRef: null,
+        description: 'd',
+        // no seedContentHash — a pre-EI-12932 seeded row
+      };
+      expect(
+        rubricsNeedingSeed(all, [seedRow('su-agent-behavior', legacyFields)]).map((r) => r.rubricId),
+      ).toEqual(['su-agent-behavior']);
+    });
+
+    it('already up to date (live content matches the bundle) ⇒ no-op, even with no recorded hash', () => {
+      writeRubric(bundled, 'su-agent-behavior', { manifest: manifest('su-agent-behavior') });
+      const all = listLocalRubrics(roots);
+      const bundledRubric = all[0]!;
+      const matchingFields: SeedableTemplateData = {
+        characteristic: bundledRubric.characteristic,
+        criteria: bundledRubric.criteria,
+        ratingScale: bundledRubric.ratingScale,
+        methodRef: bundledRubric.methodRef,
+        description: bundledRubric.description,
+      };
+      expect(rubricsNeedingSeed(all, [seedRow('su-agent-behavior', matchingFields)])).toEqual([]);
+    });
+
+    it('a row that diverged since its last recorded seed (a local amend under the seed owner) is left untouched', () => {
+      writeRubric(bundled, 'su-agent-behavior', {
+        manifest: manifest('su-agent-behavior', { criteria: [criterion('c-one'), criterion('c-two')] }),
+      });
+      const all = listLocalRubrics(roots);
+      // The seeder last wrote 'c-one' only (recorded hash reflects that) — but the LIVE
+      // content now also carries a locally-amended field on c-one (amendRubric can do this
+      // while still falling back to the seed owner identity when no `by` is given). The
+      // live content no longer matches the recorded seedContentHash, so — even though the
+      // bundle now also differs from live — this must NOT be treated as safe to upgrade.
+      const originallySeeded: SeedableTemplateData = {
+        characteristic: 'agent-behavior',
+        criteria: [criterion('c-one')],
+        ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+        methodRef: null,
+        description: 'd',
+      };
+      const recordedHash = seedContentHash(originallySeeded);
+      const locallyAmended: SeedableTemplateData = {
+        ...originallySeeded,
+        criteria: [{ ...criterion('c-one'), title: 'a human retitled this' }],
+        seedContentHash: recordedHash,
+      };
+      expect(rubricsNeedingSeed(all, [seedRow('su-agent-behavior', locallyAmended)])).toEqual([]);
+    });
+  });
+
+  describe('seedContentHash (EI-12932)', () => {
+    it('is stable regardless of object key order (jsonb round-tripping never causes a false drift signal)', () => {
+      const a = { characteristic: 'x', criteria: [criterion('c-one')], ratingScale: ['a', 'b'], description: 'd' };
+      const b = { description: 'd', ratingScale: ['a', 'b'], criteria: [criterion('c-one')], characteristic: 'x' };
+      expect(seedContentHash(a)).toBe(seedContentHash(b));
+    });
+
+    it('changes when the comparable content genuinely changes', () => {
+      const a = { characteristic: 'x', criteria: [criterion('c-one')], ratingScale: ['a', 'b'] };
+      const b = { characteristic: 'x', criteria: [criterion('c-two')], ratingScale: ['a', 'b'] };
+      expect(seedContentHash(a)).not.toBe(seedContentHash(b));
+    });
+
+    it('ignores empty-string methodRef/description (matching how buildRubricTemplateData omits them)', () => {
+      const withEmpties = {
+        characteristic: 'x',
+        criteria: [criterion('c-one')],
+        ratingScale: ['a', 'b'],
+        methodRef: '',
+        description: '',
+      };
+      const withoutEmpties = { characteristic: 'x', criteria: [criterion('c-one')], ratingScale: ['a', 'b'] };
+      expect(seedContentHash(withEmpties)).toBe(seedContentHash(withoutEmpties));
+    });
   });
 });
 
