@@ -29,6 +29,7 @@
  */
 
 import { type ScoutCycleRunner } from './scout-cycle-action';
+import { admissionDenialFrom, isCapacityError, type CapacityFallbackEvent } from './capacity-errors';
 import { readScoutPoolSnapshot } from './capacity-probe';
 import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
@@ -232,9 +233,43 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // use the available Codex bridge when the gateway proves the Claude pool is empty (WI-4475).
   // (LLM_TEST_BACKEND is unset on bg-host, so backendForLlmCall is model-derived — pinning
   // the model is sufficient.)
-  const llmCall: typeof rawLlmCall = (o) => {
+  // WI-5391 item 3 — cross-provider fallback-as-discriminator. `resolveScoutModel` above
+  // only reroutes when the pool was ALREADY empty at cycle start; a call whose pool walls
+  // MID-cycle dies with an attested capacity denial and the cycle rides it into a timeout.
+  // On such a denial, retry ONCE on the Codex bridge and record the attempt loudly:
+  // `succeeded:true` after a Claude denial is evidence the cycle had somewhere to go when
+  // the pool said no. Cross-PROVIDER recovery only — never read it as within-Claude-pool
+  // failover evidence (that is the poolSnapshot/contradiction path + WI-4475).
+  // `codexAvailable` is the cycle-start probe (codex availability is config, not load).
+  const capacityFallbacks: CapacityFallbackEvent[] = [];
+  const llmCall: typeof rawLlmCall = async (o) => {
     const model = resolveScoutModel(o.model, providerCapacity, backendForLlmCall, SCOUT_IDEATOR_MODEL) ?? SCOUT_IDEATOR_MODEL;
-    return rawLlmCall({ ...o, model, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
+    const callSignal = combineAbortSignals(signal, o.signal);
+    try {
+      return await rawLlmCall({ ...o, model, signal: callSignal, priority: 'scout' });
+    } catch (err) {
+      // Only an ATTESTED capacity denial may divert (the same evidence bar the classifier
+      // holds); anything else — including an evidence-free capacity-shaped message — rethrows.
+      if (!isCapacityError(err) || !providerCapacity.codexAvailable || backendForLlmCall(model) === 'codex') throw err;
+      const denial = admissionDenialFrom(err);
+      const event: CapacityFallbackEvent = {
+        from: model,
+        to: SCOUT_CODEX_FALLBACK_MODEL,
+        succeeded: false,
+        ...(denial?.via ? { via: denial.via } : {}),
+        ...(denial?.reason ? { reason: denial.reason } : {}),
+      };
+      capacityFallbacks.push(event);
+      try {
+        const res = await rawLlmCall({ ...o, model: SCOUT_CODEX_FALLBACK_MODEL, signal: callSignal, priority: 'scout' });
+        event.succeeded = true;
+        return res;
+      } catch {
+        // Both providers failed. Rethrow the ORIGINAL denial — it carries the attestation
+        // the classifier needs; the {succeeded:false} event records the Codex miss.
+        throw err;
+      }
+    }
   };
 
   // ── Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20) ──────────
@@ -294,7 +329,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     } catch {
       /* best-effort — a ping-back failure never fails the revision tick */
     }
-    return result;
+    return { ...result, ...(capacityFallbacks.length > 0 ? { capacityFallbacks } : {}) };
   }
 
   onPhase?.('resolve-archive');
@@ -349,7 +384,18 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     const result = await runScoutCycle(deps);
     // EI-13119: attach the ideate leg's per-slot outcomes so the scheduler persists
     // them on the 'ran' tick detail (a no-ideas streak becomes ledger-diagnosable).
-    return { ...result, ...(deps.lastIdeation ? { ideators: deps.lastIdeation } : {}) };
+    return {
+      ...result,
+      ...(deps.lastIdeation ? { ideators: deps.lastIdeation } : {}),
+      ...(capacityFallbacks.length > 0 ? { capacityFallbacks } : {}),
+    };
+  } catch (err) {
+    // A throwing cycle can't return its fallback trail — ride it on the error so the
+    // scheduler's error/gated tick detail still carries it (capacityFallbacksFrom).
+    if (capacityFallbacks.length > 0 && err && typeof err === 'object') {
+      (err as { capacityFallbacks?: CapacityFallbackEvent[] }).capacityFallbacks = capacityFallbacks;
+    }
+    throw err;
   } finally {
     // Persist scout seeds (P-012) even if the cycle threw mid-route.
     if (isFlushable(archive)) {

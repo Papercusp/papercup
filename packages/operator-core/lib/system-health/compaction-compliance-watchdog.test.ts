@@ -363,6 +363,9 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
           transcriptPath: '/tmp/live-session.jsonl',
           transcriptSourceKind: 'claude',
           boundaryDeliberate: true,
+          // Clean but NOT self-requested: the rendered carry doc must never claim
+          // the session flushed before a cut it did not ask for.
+          boundarySelfRequested: false,
         }),
       }),
     );

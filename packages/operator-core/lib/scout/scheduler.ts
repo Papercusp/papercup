@@ -31,7 +31,13 @@ import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
 import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
-import { admissionDenialFrom, CAPACITY_CLASSIFIER_SCHEMA_VERSION, isCapacityError } from './capacity-errors';
+import {
+  admissionDenialFrom,
+  CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+  capacityFallbacksFrom,
+  isCapacityError,
+  type CapacityFallbackEvent,
+} from './capacity-errors';
 import type { ScoutPoolSnapshot } from './capacity-probe';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
@@ -75,6 +81,14 @@ export interface ScoutCycleLike {
    * instead of requiring a live re-probe of the LLM path (the 07-14..16 outage class).
    */
   ideators?: readonly { lens: string; ok: boolean; raw: number; produced: number; error?: string; textHead?: string; textLen?: number; outputTokens?: number }[];
+  /**
+   * WI-5391 item 3: cross-provider fallback attempts the runner made after attested
+   * Claude-pool capacity denials (one retry each on the Codex bridge). Persisted on the
+   * tick detail as DISCRIMINATOR evidence — a `succeeded:true` event proves the cycle had
+   * cross-provider room when the Claude pool said no. On a THROWING cycle the runner
+   * attaches the same array to the thrown error instead (see capacityFallbacksFrom).
+   */
+  capacityFallbacks?: readonly CapacityFallbackEvent[];
 }
 
 /**
@@ -382,6 +396,10 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
           : {}),
         // EI-13119: per-ideator slot outcomes — see ScoutCycleLike.ideators.
         ...(cycle.ideators && cycle.ideators.length > 0 ? { ideators: cycle.ideators } : {}),
+        // WI-5391 item 3: cross-provider fallback trail — see ScoutCycleLike.capacityFallbacks.
+        ...(cycle.capacityFallbacks && cycle.capacityFallbacks.length > 0
+          ? { capacityFallbacks: cycle.capacityFallbacks }
+          : {}),
       },
     });
     return {
@@ -420,6 +438,9 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     // preserved verbatim in `error`. Genuine failures — transport death, 401s, timeouts —
     // stay status:'error', which is what the <5% bar should have been measuring all along.
     const admissionDenial = admissionDenialFrom(e);
+    // WI-5391 item 3: a throwing cycle can't return its fallback trail, so the runner
+    // attaches it to the thrown error — persist it on whichever tick this becomes.
+    const capacityFallbacks: CapacityFallbackEvent[] | undefined = capacityFallbacksFrom(e);
     if (isCapacityError(e)) {
       // WI-5391 Part B record-time discrimination: a gateway-attested denial
       // (via:'http-429') is cross-checked against the gateway's OWN pool stats before
@@ -452,6 +473,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
             capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
             ...(admissionDenial ? { admissionDenial } : {}),
             ...(poolSnapshot ? { poolSnapshot } : {}),
+            ...(capacityFallbacks ? { capacityFallbacks } : {}),
             ...timeoutDetail,
           },
         });
@@ -466,6 +488,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
           ...(admissionDenial ? { admissionDenial } : {}),
           capacityContradicted: true,
           ...(poolSnapshot ? { poolSnapshot } : {}),
+          ...(capacityFallbacks ? { capacityFallbacks } : {}),
           ...timeoutDetail,
         },
       });
@@ -478,6 +501,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         error,
         capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
         ...(admissionDenial ? { admissionDenial } : {}),
+        ...(capacityFallbacks ? { capacityFallbacks } : {}),
         ...timeoutDetail,
       },
     });

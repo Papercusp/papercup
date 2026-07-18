@@ -48,8 +48,51 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
     ...(denial.via === 'governor' || denial.via === 'http-429' ? { via: denial.via } : {}),
     ...(typeof denial.governorReason === 'string' ? { governorReason: denial.governorReason } : {}),
     ...(typeof denial.pausedAccounts === 'number' ? { pausedAccounts: denial.pausedAccounts } : {}),
+    ...(typeof denial.totalAccounts === 'number' ? { totalAccounts: denial.totalAccounts } : {}),
     ...(typeof denial.freeSlots === 'number' ? { freeSlots: denial.freeSlots } : {}),
   };
+}
+
+/**
+ * One cross-provider fallback attempt (WI-5391 item 3): a capacity-attested Claude-pool
+ * denial answered by ONE retry on the Codex bridge. Persisted on the tick detail as a
+ * DISCRIMINATOR, not a metric: `succeeded:true` after a Claude denial proves the cycle had
+ * somewhere to go when the pool said no — cross-PROVIDER recovery evidence. It is NOT
+ * within-Claude-pool failover evidence (that is the contradiction/snapshot path + WI-4475).
+ */
+export interface CapacityFallbackEvent {
+  /** The model the capacity-denied call was routed to. */
+  from: string;
+  /** The fallback model the one retry used. */
+  to: string;
+  /** Whether the fallback call returned (false = both providers failed the call). */
+  succeeded: boolean;
+  /** The original denial's attestation leg, copied for audit (`governor` | `http-429`). */
+  via?: string;
+  /** The original denial's typed reason. */
+  reason?: string;
+}
+
+/** Read persisted/attached cross-provider fallback events from an error object or tick
+ * detail. Shape-validated per entry — a malformed entry is dropped, never trusted. */
+export function capacityFallbacksFrom(input: unknown): CapacityFallbackEvent[] | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = (input as Record<string, unknown>).capacityFallbacks;
+  if (!Array.isArray(raw)) return undefined;
+  const out: CapacityFallbackEvent[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.from !== 'string' || typeof e.to !== 'string' || typeof e.succeeded !== 'boolean') continue;
+    out.push({
+      from: e.from,
+      to: e.to,
+      succeeded: e.succeeded,
+      ...(typeof e.via === 'string' ? { via: e.via } : {}),
+      ...(typeof e.reason === 'string' ? { reason: e.reason } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Read the persisted classifier boundary from a scout tick detail. */
