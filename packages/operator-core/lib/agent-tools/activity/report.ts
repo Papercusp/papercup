@@ -35,14 +35,21 @@ import { writeWatermark } from '../coordination/watermarks';
 import { isWorkspaceContended } from '../locks/contention-retry';
 import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
 import { buildActivityHookBundle } from './hook-bundle';
+import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
- *  hook sends '▶ session started' (SessionStart) and '■ session ended'
- *  (SessionEnd/Stop); key off the stable word, default to a no-op. */
+ *  hook sends exactly SESSION_START_MARKER (SessionStart) or SESSION_END_MARKER
+ *  (SessionEnd/Stop) — EXACT match only (EI-12979). This used to be an
+ *  unanchored `/start/i` / `/end/i` regex, so ANY lifecycle summary merely
+ *  CONTAINING "end" (e.g. "recommend", "extended", "appended") would
+ *  misfire as a session end and (wrongly) cancel the worker's inbox-wake
+ *  watch + force-release every lease/claim it holds (see the call site
+ *  below) — a live agent could be treated as dead from a substring
+ *  coincidence. Anything that is not the exact marker is a no-op. */
 function lifecyclePhase(summary?: string | null): 'start' | 'end' | null {
   if (!summary) return null;
-  if (/start/i.test(summary)) return 'start';
-  if (/end/i.test(summary)) return 'end';
+  if (summary === SESSION_START_MARKER) return 'start';
+  if (summary === SESSION_END_MARKER) return 'end';
   return null;
 }
 

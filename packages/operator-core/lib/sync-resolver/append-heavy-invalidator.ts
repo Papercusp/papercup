@@ -54,8 +54,19 @@ export interface AppendHeavyInvalidatorDeps {
    * checked HERE — not at boot — because getFlag is FRAGILE at host-bootstrap time (it can resolve
    * false before the flag backend is warm; see host-bootstrap's INFERENCE_GATEWAY note). Starting
    * unconditionally + gating the work per-tick avoids "detector silently never started".
+   *
+   * EI-13014: `boolean | Promise<boolean>` — the real host wiring passes `() =>
+   * getFlag(...)`, which is `async` (returns `Promise<boolean>`). A sync-only `()
+   * => boolean` type let that through host-bootstrap.ts's structural typing as a
+   * silent TS2322 that a narrower project-graph tsc run missed entirely; worse, a
+   * caller that DID satisfy the old sync signature by returning a Promise anyway
+   * (as this one always did) got `!deps.isEnabled()` evaluating `!<Promise
+   * object>` — a Promise is always truthy, so the negation is always `false` and
+   * the per-tick kill-switch checked below silently never disables anything. The
+   * union + the `await` in `tick()` below make the async case correct instead of
+   * merely type-checking.
    */
-  isEnabled?: () => boolean;
+  isEnabled?: () => boolean | Promise<boolean>;
   /** Read the table's current max(id). Returns null/undefined when empty. (postgres-js
    *  returns a bigint column as a string — BigInt() in the sweep accepts string|number|bigint.) */
   maxId: (table: string) => Promise<bigint | number | string | null | undefined>;

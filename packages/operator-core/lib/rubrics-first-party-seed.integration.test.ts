@@ -121,3 +121,125 @@ describe('first-party rubric seed (bundled → workspace store, lazy on first re
     expect(all.filter((r) => r.rubricId === 'su-agent-behavior')).toHaveLength(1);
   });
 });
+
+describe('EI-12932: first-party bundle content-drift auto-upgrade', () => {
+  const RUBRIC_ID = 'test-upgrade-rubric';
+  const originalEnv = process.env.PAPERCUSP_RUBRICS_DIR;
+  let scratch: string | null = null;
+
+  const c1 = {
+    key: 'c1',
+    title: 'Criterion one',
+    model: 'how it should work',
+    method: 'how to check',
+    driftMarkers: 'what broken looks like',
+  };
+  const c2 = {
+    key: 'c2',
+    title: 'Criterion two (added in the bundle upgrade)',
+    model: 'how it should work',
+    method: 'how to check',
+    driftMarkers: 'what broken looks like',
+  };
+
+  function writeBundleVersion(criteria: object[]): void {
+    scratch = scratch ?? mkdtempSync(join(tmpdir(), 'rubric-upgrade-'));
+    const dir = join(scratch, RUBRIC_ID);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'rubric.json'),
+      JSON.stringify({
+        rubricId: RUBRIC_ID,
+        title: 'Test upgrade rubric',
+        characteristic: 'test-upgrade',
+        description: 'd',
+        ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+        methodRef: null,
+        criteria,
+        version: '0.1.0',
+        source: 'first-party',
+      }),
+    );
+    process.env.PAPERCUSP_RUBRICS_DIR = scratch;
+  }
+
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.PAPERCUSP_RUBRICS_DIR;
+    else process.env.PAPERCUSP_RUBRICS_DIR = originalEnv;
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    scratch = null;
+  });
+
+  it('upgrades an unmodified seeded row in place when the bundle changes, preserving ratifiedBy/status', async () => {
+    writeBundleVersion([c1]);
+    rubrics.__resetRubricSeedStateForTests();
+    await rubrics.ensureFirstPartyRubricsSeeded();
+
+    const v1 = await rubrics.getRubric(RUBRIC_ID);
+    expect(v1, 'v1 must seed').not.toBeNull();
+    expect(v1!.criteria.map((c) => c.key)).toEqual(['c1']);
+    expect(v1!.createdBy).toBe(rubrics.FIRST_PARTY_RUBRIC_SEED_OWNER);
+
+    // Simulate a human setting ratifiedBy directly on the stored template_data (the
+    // plans:set-template-data path — a raw jsonb patch that never touches the plan
+    // owner column), WITHOUT touching the bundle-tracked fields. (releaseGating is
+    // deliberately not exercised here — it requires an instrumentKey per criterion, a
+    // field the bundle format doesn't carry at all; out of scope for this fix.)
+    await h.sql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = template_data || '{"ratifiedBy": "reviewer@x"}'::jsonb
+       WHERE plan_slug = ${RUBRIC_ID} AND template = 'rubric'`;
+    const patched = await rubrics.getRubric(RUBRIC_ID);
+    expect(patched!.ratifiedBy).toBe('reviewer@x');
+
+    // Now the bundle ships a v2: an added criterion, nothing else touched.
+    writeBundleVersion([c1, c2]);
+    rubrics.__resetRubricSeedStateForTests();
+    await rubrics.ensureFirstPartyRubricsSeeded();
+
+    const v2 = await rubrics.getRubric(RUBRIC_ID);
+    expect(v2!.criteria.map((c) => c.key), 'the upgrade must reach the store').toEqual(['c1', 'c2']);
+    expect(v2!.status).toBe('active');
+    expect(v2!.createdBy).toBe(rubrics.FIRST_PARTY_RUBRIC_SEED_OWNER);
+    // The provenance the bundle never carries survives the whole-document upgrade.
+    expect(v2!.ratifiedBy, 'ratifiedBy must survive the auto-upgrade').toBe('reviewer@x');
+
+    // Still exactly one row — an upgrade is an in-place upsert, never a duplicate.
+    const all = await rubrics.listRubrics({});
+    expect(all.filter((r) => r.rubricId === RUBRIC_ID)).toHaveLength(1);
+
+    // Idempotent: re-running against the now-current bundle makes no further write.
+    rubrics.__resetRubricSeedStateForTests();
+    await rubrics.ensureFirstPartyRubricsSeeded();
+    const v2Again = await rubrics.getRubric(RUBRIC_ID);
+    expect(v2Again!.criteria.map((c) => c.key)).toEqual(['c1', 'c2']);
+  });
+
+  it('never overwrites a row that diverged from its own recorded seed state, even under the seed owner', async () => {
+    writeBundleVersion([c1]);
+    rubrics.__resetRubricSeedStateForTests();
+    await rubrics.ensureFirstPartyRubricsSeeded();
+    expect((await rubrics.getRubric(RUBRIC_ID))!.criteria.map((c) => c.key)).toEqual(['c1']);
+
+    // Simulate the amendRubric-without-`by` edge case: a genuine local edit to c1's title
+    // lands under the SAME seed owner identity, but seedContentHash is left stale (still
+    // reflecting the pre-edit content) — exactly what a raw template_data patch (or a
+    // future amend bug) would produce.
+    await h.sql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{criteria,0,title}', '"a human retitled this"')
+       WHERE plan_slug = ${RUBRIC_ID} AND template = 'rubric'`;
+    const divergedTitle = (await rubrics.getRubric(RUBRIC_ID))!.criteria[0]!.title;
+    expect(divergedTitle).toBe('a human retitled this');
+
+    // The bundle now ships a v2 (an added criterion) — but the row's live content no
+    // longer matches what the seeder last recorded, so the auto-upgrade must not fire.
+    writeBundleVersion([c1, c2]);
+    rubrics.__resetRubricSeedStateForTests();
+    await rubrics.ensureFirstPartyRubricsSeeded();
+
+    const stillDiverged = await rubrics.getRubric(RUBRIC_ID);
+    expect(stillDiverged!.criteria.map((c) => c.key), 'the diverged row must be left untouched').toEqual(['c1']);
+    expect(stillDiverged!.criteria[0]!.title, 'the local edit must survive').toBe('a human retitled this');
+  });
+});
