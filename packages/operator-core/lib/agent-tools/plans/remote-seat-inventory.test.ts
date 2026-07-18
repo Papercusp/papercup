@@ -6,7 +6,8 @@
  * What a regression here breaks: the routing gate silently reverts to the
  * static "local fleet only" text on a shared pot with real donated seats
  * (P-007), or crashes/blocks a plan launch when the offer-store read errors
- * (the fail-soft contract).
+ * (the fail-soft contract), or double-counts a fleet-scoped offer that isn't
+ * actually spendable by the not-yet-created fleet this gate is about.
  *
  * Pure DI — no PG.
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/remote-seat-inventory.test.ts
@@ -19,21 +20,64 @@ import type { WorkOfferStoreRecord } from '../../p2p/offer-store-schema';
 const WS = 'ws-1';
 const HOME = 'hive-home';
 
-function seatOffer(over: {
-  publisherGithubUserId: number;
-  count: number;
-  fleetSlug?: string;
-}): StoredWorkOffer {
+/** A pot-scoped (potSlug set, fleetSlug null) standing seat-offer — P-001. */
+function potSeatOffer(over: { publisherGithubUserId: number; count: number; potSlug?: string }): StoredWorkOffer {
   const record: WorkOfferStoreRecord = {
     offerId: `seat-${over.publisherGithubUserId}`,
     publisherGithubUserId: over.publisherGithubUserId,
-    fleetSlug: over.fleetSlug ?? 'alpha',
+    fleetSlug: null,
+    potSlug: over.potSlug ?? HOME,
     kind: 'seat',
     status: 'open',
     cancelReason: null,
     workOffer: null,
     authorship: null,
-    seat: { model: 'haiku', effort: 'low', count: over.count, accountScope: 'auto' },
+    seat: {
+      model: 'haiku',
+      effort: 'low',
+      count: over.count,
+      accountScope: 'auto',
+      hostLabel: null,
+      audience: 'trusted-members',
+    },
+    spawnRequest: null,
+    recordVersion: 1,
+  };
+  return {
+    workspaceId: WS,
+    potHomeSlug: HOME,
+    publisherGithubUserId: record.publisherGithubUserId,
+    offerId: record.offerId,
+    record,
+    recordJson: JSON.stringify(record),
+    signerDevicePubkey: 'pk',
+    signature: 'sig',
+    recordVersion: 1,
+    fleetSlug: null,
+    potSlug: record.potSlug,
+    offerKind: record.kind,
+    status: record.status,
+    localDisposition: null,
+    fedHlc: null,
+    updatedAt: 1,
+  };
+}
+
+/** A fleet-SCOPED (fleetSlug set, potSlug null) offer — pre-P-001 shape, still
+ *  the norm for an offer donated to an already-existing fleet. Not spendable
+ *  by the not-yet-created fleet the routing gate is deciding about. */
+function fleetSeatOffer(over: { publisherGithubUserId: number; count: number; fleetSlug?: string }): StoredWorkOffer {
+  const record: WorkOfferStoreRecord = {
+    offerId: `seat-${over.publisherGithubUserId}-fleet`,
+    publisherGithubUserId: over.publisherGithubUserId,
+    fleetSlug: over.fleetSlug ?? 'alpha',
+    potSlug: null,
+    kind: 'seat',
+    status: 'open',
+    cancelReason: null,
+    workOffer: null,
+    authorship: null,
+    seat: { model: 'haiku', effort: 'low', count: over.count, accountScope: 'auto', hostLabel: null, audience: null },
     spawnRequest: null,
     recordVersion: 1,
   };
@@ -48,6 +92,7 @@ function seatOffer(over: {
     signature: 'sig',
     recordVersion: 1,
     fleetSlug: record.fleetSlug,
+    potSlug: null,
     offerKind: record.kind,
     status: record.status,
     localDisposition: null,
@@ -84,22 +129,42 @@ describe('resolveRemoteSeatInventory', () => {
     expect(listOffers).toHaveBeenCalledWith(WS, HOME, { kind: 'seat', status: 'open' });
   });
 
-  it('sums seats and dedupes donors across multiple offers (incl. different fleets — pot-wide, fleetSlug-agnostic)', async () => {
+  it('sums seats and dedupes donors across multiple pot-scoped offers', async () => {
     const resolveScope = vi.fn(async () => ({ kind: 'one' as const, homeSlug: HOME }));
     const rows = [
-      seatOffer({ publisherGithubUserId: 1, count: 3, fleetSlug: 'alpha' }),
-      seatOffer({ publisherGithubUserId: 2, count: 5, fleetSlug: 'beta' }),
+      potSeatOffer({ publisherGithubUserId: 1, count: 3 }),
+      potSeatOffer({ publisherGithubUserId: 2, count: 5 }),
       // same donor, a second offer (e.g. a different model/effort trio) — donor counted once
-      { ...seatOffer({ publisherGithubUserId: 1, count: 2, fleetSlug: 'alpha' }), offerId: 'seat-1-b' },
+      { ...potSeatOffer({ publisherGithubUserId: 1, count: 2 }), offerId: 'seat-1-b' },
     ];
     const listOffers = vi.fn(async () => rows);
     const out = await resolveRemoteSeatInventory(WS, { resolveScope, listOffers });
     expect(out).toEqual({ potShared: true, donorCount: 2, totalSeats: 10 });
   });
 
+  it('P-001: excludes fleet-scoped offers (potSlug null) — not spendable by the not-yet-created fleet', async () => {
+    const resolveScope = vi.fn(async () => ({ kind: 'one' as const, homeSlug: HOME }));
+    const rows = [
+      fleetSeatOffer({ publisherGithubUserId: 3, count: 9, fleetSlug: 'existing-fleet' }),
+      potSeatOffer({ publisherGithubUserId: 4, count: 2 }),
+    ];
+    const listOffers = vi.fn(async () => rows);
+    const out = await resolveRemoteSeatInventory(WS, { resolveScope, listOffers });
+    // only the pot-scoped donor (4) and their 2 seats count; the fleet-scoped
+    // donor (3)'s 9 seats are excluded.
+    expect(out).toEqual({ potShared: true, donorCount: 1, totalSeats: 2 });
+  });
+
+  it('a pot with ONLY fleet-scoped offers reads as an empty pot-scoped inventory (still potShared)', async () => {
+    const resolveScope = vi.fn(async () => ({ kind: 'one' as const, homeSlug: HOME }));
+    const listOffers = vi.fn(async () => [fleetSeatOffer({ publisherGithubUserId: 5, count: 4 })]);
+    const out = await resolveRemoteSeatInventory(WS, { resolveScope, listOffers });
+    expect(out).toEqual({ potShared: true, donorCount: 0, totalSeats: 0 });
+  });
+
   it('ignores a row with no parsed seat payload (junk/non-seat kind) rather than throwing', async () => {
     const resolveScope = vi.fn(async () => ({ kind: 'one' as const, homeSlug: HOME }));
-    const junk = { ...seatOffer({ publisherGithubUserId: 9, count: 1 }), record: null };
+    const junk = { ...potSeatOffer({ publisherGithubUserId: 9, count: 1 }), record: null };
     const listOffers = vi.fn(async () => [junk]);
     const out = await resolveRemoteSeatInventory(WS, { resolveScope, listOffers });
     expect(out).toEqual({ potShared: true, donorCount: 0, totalSeats: 0 });
