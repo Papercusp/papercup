@@ -3239,6 +3239,24 @@ describe('mintRecycleArgs (WI-1980 — a cold-loop RECYCLE respawn gets a FRESH 
     const out = mintRecycleArgs(src, { mintId });
     expect(out.nativeId).toBeNull();
     expect(out.args).toBe(src); // identity — nothing to rotate, respawn is byte-identical
+    // Even with an explicit non-claude agent hint the argv is untouched
+    // (--session-id is a claude flag).
+    expect(mintRecycleArgs(src, { mintId, agent: 'omp' }).args).toBe(src);
+  });
+
+  it('SYNTHESIZES a fresh --session-id for a RESUME-launched claude argv (agent hint, owner-reported 2026-07-18)', () => {
+    // A `psu --resume` session launches as `claude --resume <id>` with NO
+    // --session-id — before the fix its host could never mint carry-respawn
+    // argv, so the watchdog's forced cut failed argv-build on EVERY sweep
+    // ("carry-respawn requires a Claude --session-id launch" terminal spam) and
+    // the session ran unpoliced.
+    const { args, nativeId } = mintRecycleArgs(['claude', '--resume', UUID, '--add-dir=/d'], {
+      mintId,
+      agent: 'claude',
+    });
+    expect(nativeId).toBe(FRESH);
+    expect(args).toEqual(['claude', '--add-dir=/d', '--session-id', FRESH]);
+    expect(args).not.toContain(UUID); // the warm-resume target is gone — clean boot
   });
 
   it('defaults to a real randomUUID when no mintId is injected (fresh, well-formed, ≠ the old id)', () => {
@@ -3278,19 +3296,39 @@ describe('mintCarryRespawnArgs (P-018 deterministic successor launch context)', 
     expect(statSync(out.launchContextPath).mode & 0o777).toBe(0o600);
   });
 
-  it('fails before any respawn when the carry is empty or argv is not Claude-session-shaped', () => {
+  it('fails before any respawn when the carry is empty or the agent is not claude', () => {
     expect(() =>
       mintCarryRespawnArgs(['claude', '--session-id', UUID], {
         systemPromptAddendum: '  ',
         home,
       }),
     ).toThrow(/non-empty/);
+    // Carry-respawn is claude-only; a non-claude agent hint refuses (the argv
+    // alone no longer decides — a resume-launched claude has no --session-id).
     expect(() =>
       mintCarryRespawnArgs(['omp'], {
         systemPromptAddendum: 'carry',
         home,
+        agent: 'omp',
       }),
     ).toThrow(/--session-id/);
+  });
+
+  it('mints a successor for a RESUME-launched claude argv (no --session-id to rotate — synthesized)', () => {
+    // The owner-reported 2026-07-18 spam: `psu --resume` sessions could never be
+    // force-respawned because this threw on their `claude --resume <id>` argv.
+    const out = mintCarryRespawnArgs(['claude', '--resume', UUID, '--foo'], {
+      systemPromptAddendum: 'deterministic carry body',
+      ownerId: 'su-resumed',
+      mintId: () => FRESH,
+      home,
+    });
+    expect(out.nativeId).toBe(FRESH);
+    expect(out.args).toEqual([
+      'claude', '--foo', '--session-id', FRESH,
+      '--append-system-prompt-file', out.launchContextPath,
+    ]);
+    expect(out.args).not.toContain(UUID);
   });
 });
 

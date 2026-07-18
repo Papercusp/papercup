@@ -2553,8 +2553,8 @@ export function hostThroughPty(o) {
       let launchContextPath = null;
       try {
         const minted = systemPromptAddendum
-          ? mintCarryRespawnArgs(args, { systemPromptAddendum, ownerId })
-          : mintRecycleArgs(args);
+          ? mintCarryRespawnArgs(args, { systemPromptAddendum, ownerId, agent: env.PAPERCUSP_AGENT })
+          : mintRecycleArgs(args, { agent: env.PAPERCUSP_AGENT });
         recycleArgs = minted.args;
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;

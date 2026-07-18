@@ -1301,10 +1301,20 @@ export function nativeSessionIdFromLaunchArgs(args = []) {
  *
  * Pure — exported for tests. `mintId` is injectable for deterministic tests.
  */
-export function mintRecycleArgs(args = [], { mintId = () => randomUUID() } = {}) {
+export function mintRecycleArgs(args = [], { mintId = () => randomUUID(), agent = null } = {}) {
   const src = args.map((a) => String(a ?? ''));
   const hasSessionId = src.some((a) => a === '--session-id' || a.startsWith('--session-id='));
-  if (!hasSessionId) return { args, nativeId: null };
+  // A RESUME-launched Claude session (`claude --resume <id>`) has no --session-id
+  // to rotate — but a recycle/carry-respawn successor never wants the old
+  // transcript anyway (the carry document replaces it), so for claude we
+  // SYNTHESIZE a fresh --session-id instead of bailing. Before this, every
+  // `psu --resume`d session was un-respawnable: the watchdog's forced
+  // carry-respawn failed argv-build on EVERY sweep, spamming the terminal with
+  // "carry-respawn requires a Claude --session-id launch" and leaving the
+  // session unpoliced (owner-reported 2026-07-18). Non-claude argv is never
+  // touched here (--session-id is a claude flag).
+  const isClaude = String(agent ?? '').trim().toLowerCase() === 'claude';
+  if (!hasSessionId && !isClaude) return { args, nativeId: null };
   const freshId = mintId();
   const out = [];
   for (let i = 0; i < src.length; i++) {
@@ -1327,6 +1337,7 @@ export function mintRecycleArgs(args = [], { mintId = () => randomUUID() } = {})
     if (a === '--continue' || a === '--fork-session') continue;
     out.push(a);
   }
+  if (!hasSessionId) out.push('--session-id', freshId);
   return { args: out, nativeId: freshId };
 }
 
@@ -1343,11 +1354,15 @@ export function mintCarryRespawnArgs(
     ownerId = null,
     mintId = () => randomUUID(),
     home = homedir(),
+    agent = 'claude',
   } = {},
 ) {
   const text = String(systemPromptAddendum ?? '').trim();
   if (!text) throw new Error('carry-respawn requires a non-empty system-prompt addendum');
-  const rotated = mintRecycleArgs(args, { mintId });
+  // Carry-respawn is claude-only, so the mint may synthesize --session-id for a
+  // resume-launched argv (see mintRecycleArgs); nativeId can then only be null
+  // for a genuinely non-claude agent hint.
+  const rotated = mintRecycleArgs(args, { mintId, agent });
   if (!rotated.nativeId) throw new Error('carry-respawn requires a Claude --session-id launch');
   const dir = join(home, '.papercusp', 'launch-context');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
