@@ -334,6 +334,29 @@ async function completeOne(
     }
   }
 
+  // EI-12027: `completion.status` (defaults to 'done') is NOT the same field as the
+  // top-level `state` transition — an agent that sets `completion: { status: 'resolved' }`
+  // and omits `state` reads, to a human, exactly like "resolve this item", but the row
+  // stayed open (record-only by design, D-004) with only a POST-HOC `stateWarning` to
+  // catch it. That warning is easy to miss (it isn't `ok:false`), and the reporter had
+  // to make a second `work_items:complete`/`set_state` call to actually close.
+  //
+  // We do NOT blanket-auto-close (that would reopen the exact landmine D-004 avoided:
+  // `completion.status` DEFAULTS to 'done', so treating every default as "close it"
+  // would auto-close every bare completion ever made). Instead we infer ONLY when the
+  // caller's `completion.status` is an EXPLICIT, unambiguous issue-lifecycle word that
+  // can never arise from the schema default — the issue family's own native terminal
+  // vocabulary, 'resolved' | 'closed' (never 'done', which collides with the default;
+  // never feature-only 'passed'/'deprecated', which would risk stepping on the
+  // scoper→…→curator pipeline's own status semantics for feature-family items, exactly
+  // what D-004 was written to avoid). Scoped to `family === 'issue'` for the same reason.
+  const rawCompletionStatus = typeof it.completion.status === 'string' ? it.completion.status.trim().toLowerCase() : undefined;
+  const inferredCloseState =
+    !it.state && existing.family === 'issue' && (rawCompletionStatus === 'resolved' || rawCompletionStatus === 'closed')
+      ? rawCompletionStatus
+      : undefined;
+  const effectiveState = it.state ?? inferredCloseState;
+
   // Optional explicit terminal transition. A failed state write must NEVER lose the
   // completion record (EI-24): catch, report it as `stateError`, still record + emit.
   // Completion-integrity gate (WI-1403, contract C-1): a terminal `state` here rides
@@ -352,9 +375,9 @@ async function completeOne(
   let aliased: boolean | undefined;
   let requestedState: string | undefined;
   let appliedState: string | null | undefined;
-  if (it.state) {
+  if (effectiveState) {
     try {
-      const res = await setWorkItemStateWithAliasInfo(it.id, it.state, {
+      const res = await setWorkItemStateWithAliasInfo(it.id, effectiveState, {
         harness: it.harness,
         by: ident.ownerId,
         completionRef: it.completion.summary,

@@ -19,6 +19,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
+import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -500,10 +501,22 @@ const failedTaskNames = [];
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
   outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
+  // EI-11132: when this script declares --passWithNoTests AND the workspace
+  // genuinely has matching test files on disk, disable passWithNoTests for
+  // THIS run — a glob that stops matching those real files then fails LOUDLY
+  // (vitest's own default zero-match behavior) instead of silently passing.
+  const guardArgs = emptySuiteGuardArgs({
+    scriptText: t.ws.scripts[t.script] ?? '',
+    wsAbsDir: join(ROOT, t.ws.dir),
+    script: t.script,
+  });
+  if (guardArgs.length) {
+    outSync(`    (EI-11132 empty-suite guard: on-disk test files found — this run's --passWithNoTests is disabled)`);
+  }
   // Under retryFailed we must capture output to learn WHICH files failed; the
   // interactive path keeps stdio:'inherit' for live streaming.
   const run = (extraArgs = []) => {
-    const { cmd, argv, cwd, env } = spawnSpecFor(t, extraArgs);
+    const { cmd, argv, cwd, env } = spawnSpecFor(t, [...guardArgs, ...extraArgs]);
     if (!retryFailed) return spawnSync(cmd, argv, { cwd, env, stdio: 'inherit' });
     // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
     // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
