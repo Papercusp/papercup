@@ -535,7 +535,7 @@ export async function honorSpawnRequestFromProjection(
 
   // Gate 4: cap pre-check (consumeSeatAtBoot re-enforces atomically at boot).
   const availability = await availabilityForFleet(
-    { workspaceId: args.workspaceId, fleetSlug: record.fleetSlug },
+    { workspaceId: args.workspaceId, fleetSlug: args.row.fleet_slug },
     args.sql as OrgSql | undefined,
   );
   const resolution = resolveSeatLaunch({ availability, count: payload.count, seatRef: slot.ref });
@@ -588,7 +588,7 @@ export async function honorSpawnRequestFromProjection(
     spawn = await spawnMembers({
       workspaceId: args.workspaceId,
       potHomeSlug: args.potHomeSlug,
-      fleetSlug: record.fleetSlug,
+      fleetSlug: args.row.fleet_slug,
       planSlug: payload.planSlug,
       count: payload.count,
       seatRef: slot.ref,

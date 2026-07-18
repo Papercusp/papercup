@@ -55,6 +55,7 @@ function requestRecord(over: {
     offerId: 'spawnreq-0123456789abcdef',
     publisherGithubUserId: UID_A,
     fleetSlug: 'alpha',
+    potSlug: null,
     kind: 'spawn_request',
     status: over.status ?? 'open',
     cancelReason: null,

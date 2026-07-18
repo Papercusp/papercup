@@ -231,11 +231,12 @@ async function processOneOffer(
   ctx: ProcessCtx,
 ): Promise<{ offerId: string; outcome: 'executed' | 'skip' | 'unresolvable'; reason?: string }> {
   const record = stored.record;
-  if (!record || record.kind !== 'work' || !record.workOffer || !record.authorship) {
+  if (!record || record.kind !== 'work' || !record.workOffer || !record.authorship || !stored.fleetSlug) {
     ctx.log(`offer ${stored.offerId}: UNRESOLVABLE — pre-schema/junk or non-work record.`);
     return { offerId: stored.offerId, outcome: 'unresolvable', reason: 'malformed_or_non_work_record' };
   }
   const { workOffer: offer, authorship } = record;
+  const fleetSlug = stored.fleetSlug;
 
   // V1 boundary (module doc): the store schema carries no designation column
   // today, so every offer is undesignated — evaluatePull is always called
@@ -243,7 +244,7 @@ async function processOneOffer(
   const publisherSet = await ctx.resolvePublisherSet({
     kind: 'fleet',
     ownerGithubUserId: stored.publisherGithubUserId,
-    slug: stored.fleetSlug,
+    slug: fleetSlug,
   });
   if (!publisherSet.ownerAnchored || !publisherSet.ownerSignatureValid) {
     return receiptSkip(

@@ -166,10 +166,20 @@ LOG="$WORK/tauri.log"
 log() { printf '\n[verify-tauri-headless] %s\n' "$*" >&2; }
 
 # ── pick a free display + port pair (never the owner's real :0/:1 seat) ─────
+# A display counts as "taken" if EITHER a live X server answers there OR a
+# unix-socket file for it still exists under /tmp/.X11-unix — the latter case
+# is a STALE socket left by a Xvfb that died without cleanup (a leaked-Xvfb
+# lesson, WI-2115) rather than a live server, so xdpyinfo alone reports it as
+# "free" and Xvfb then fails to bind ("Cannot establish any listening
+# sockets") when this picker hands out that number. Checking the socket file
+# too makes the picker skip past the stale entry instead of colliding with it
+# — no attempt to clean up someone else's leaked socket, just don't reuse it.
 DISPLAY_NUM="${VERIFY_TAURI_DISPLAY_NUM:-}"
 if [ -z "$DISPLAY_NUM" ]; then
   DISPLAY_NUM=90
-  while DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1; do DISPLAY_NUM=$((DISPLAY_NUM + 1)); done
+  while DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || [ -S "/tmp/.X11-unix/X$DISPLAY_NUM" ]; do
+    DISPLAY_NUM=$((DISPLAY_NUM + 1))
+  done
 fi
 [ "$DISPLAY_NUM" -ge 2 ] || { echo "FATAL: refusing display :$DISPLAY_NUM — too close to a real seat" >&2; exit 1; }
 
