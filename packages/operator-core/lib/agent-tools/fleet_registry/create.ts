@@ -26,7 +26,11 @@ export default defineTool({
     when: 'Standing up a NEW named fleet — e.g. routing option (3), a new desktop fleet: fleet:create then capability:terminal { terminals: [...] } to launch the member windows.',
     notWhen:
       'Joining a fleet that already has members → fleet:join. Taking over an existing fleet to drive a plan → fleet:take-leadership (create does NOT seize an existing fleet from its leader).',
-    chaining: ROUTING_LADDER,
+    chaining:
+      ROUTING_LADDER +
+      " Donate/spend/debug prose set (D-004): the fleet must EXIST before it can receive seats — " +
+      "'launch on remote seats' with no fleet yet → fleet:create first, then resource:delegate (donate " +
+      "seats to it) or fleet:request_remote_spawn (spend a seat-offer already made to it).",
   },
   capability: 'fleet:create',
   requirePrincipal: false,

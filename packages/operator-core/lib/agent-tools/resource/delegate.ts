@@ -32,13 +32,24 @@
  * fires p2p/offer-store-publish.ts best-effort (set → open/paused, remove →
  * cancelled) so the fleet owner's operator sees this machine's seats; the
  * gateway account id itself never crosses the wire.
+ *
+ * pot-seat-pools-prose-ux-2026-07-18 P-001: the grantee generalizes from
+ * "always exactly one fleet" to "exactly one of fleetSlug/potSlug" — a
+ * pot-scoped allotment hands the resource to a whole pot (audience-gated:
+ * 'trusted-members' | 'whole-pot', REQUIRED for the pot form, D-002) instead
+ * of one named fleet. The store owns the xor + audience validation; this
+ * layer only threads the fields through (to setResourceAllotment /
+ * removeResourceAllotment / the seat-offer publish, which targets the pot's
+ * hive topic instead of the fleet owner when potSlug is set).
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
+  ALLOTMENT_AUDIENCES,
   removeResourceAllotment,
   setResourceAllotment,
+  type AllotmentAudience,
   type ResourceAllotment,
   type SetAllotmentArgs,
 } from '../../p2p/resource-allotments';
@@ -53,7 +64,12 @@ type StoreSetArgs = SetAllotmentArgs & { quantity?: number };
 export interface DelegateResourceInput {
   /** The caller's RESOLVED identity workspace (the store refuses unresolvable ones). */
   workspaceId: string | null | undefined;
-  fleetSlug: string;
+  /** The grantee — exactly one of fleetSlug/potSlug (pot-seat-pools-prose-ux-2026-07-18 P-001; the store refuses otherwise). */
+  fleetSlug?: string;
+  /** Pot-scoped grantee (P-001): hand this resource to a whole pot (audience-gated) instead of one named fleet. */
+  potSlug?: string;
+  /** Required iff potSlug is set (D-002 — no silent default at the tool boundary); refused alongside fleetSlug. */
+  audience?: AllotmentAudience;
   /** account | gpu | agent_slot — the store owns kind validation. */
   kind: string;
   /** account/gpu: the pool/GPU id (required by the store). agent_slot: optional — derived from the trio. */
@@ -150,6 +166,8 @@ export async function delegateResource(
         mod.publishSeatOfferForDelegationBestEffort({
           workspaceId: input.workspaceId,
           fleetSlug: input.fleetSlug,
+          potSlug: input.potSlug,
+          audience: input.audience,
           model: m,
           effort: e,
           account: a,
@@ -167,6 +185,7 @@ export async function delegateResource(
       {
         workspaceId: input.workspaceId,
         fleetSlug: input.fleetSlug,
+        potSlug: input.potSlug,
         resourceKind: input.kind,
         resourceRef,
       },
@@ -183,6 +202,8 @@ export async function delegateResource(
   const storeArgs: StoreSetArgs = {
     workspaceId: input.workspaceId,
     fleetSlug: input.fleetSlug,
+    potSlug: input.potSlug,
+    audience: input.audience,
     resourceKind: input.kind,
     resourceRef,
     // account/gpu: absent → NaN → the store's invalid_share_pct refusal (store-owned).
@@ -209,10 +230,10 @@ export default defineTool({
   name: 'resource:delegate',
   profile: 'engineer',
   description:
-    "Delegate this host's resources to a fleet (the /res board write, D-004): kind 'account'|'gpu' with a share-% cap (autonomous-loop capacity), or 'agent_slot' — N × model·effort agent seats on a gateway account (account 'AUTO' = draw from the fleet's allocated accounts). Re-delegating the same (fleet, kind, ref) UPDATES the cap (idempotent upsert); remove:true revokes. Allotments are LOCAL to this machine (M19); an agent_slot delegation ALSO auto-publishes a standing seat-offer to the fleet owner over P2P (D-005 offer store — best-effort, the account id stays local). Returns {ok, action, allotment|removed} or a typed store refusal.",
+    "Delegate this host's resources to a fleet OR a whole pot (the /res board write, D-004/P-001): kind 'account'|'gpu' with a share-% cap (autonomous-loop capacity), or 'agent_slot' — N × model·effort agent seats on a gateway account (account 'AUTO' = draw from the fleet's allocated accounts). Exactly one of fleetSlug/potSlug names the grantee; potSlug requires audience ('trusted-members'|'whole-pot' — no silent default). Re-delegating the same grantee+kind+ref UPDATES the cap (idempotent upsert); remove:true revokes. Allotments are LOCAL to this machine (M19); an agent_slot delegation ALSO auto-publishes a standing seat-offer over P2P — to the fleet owner (fleetSlug) or the pot's hive topic, audience-gated (potSlug) — best-effort, the account id stays local. Returns {ok, action, allotment|removed} or a typed store refusal.",
   guidance: {
     when:
-      "Handing a fleet capacity: 'join fleet X and assign 5 xhigh opus seats' → resource:delegate { fleetSlug:'x', kind:'agent_slot', model:'opus', effort:'xhigh', count:5 } (account omitted = AUTO). Account pools / GPUs take sharePct instead of count. Also the revoke path (remove:true — the /res chip's ×).",
+      "Handing a fleet capacity: 'join fleet X and assign 5 xhigh opus seats' → resource:delegate { fleetSlug:'x', kind:'agent_slot', model:'opus', effort:'xhigh', count:5 } (account omitted = AUTO). 'offer N seats to pot P, trusted members only' → resource:delegate { potSlug:'p', audience:'trusted-members', kind:'agent_slot', model, effort, count }. Account pools / GPUs take sharePct instead of count. Also the revoke path (remove:true — the /res chip's ×).",
     notWhen:
       'READING current allotments — the /res board or the p2p.allotments sync query. Spawning agents that CONSUME delegated seats — the Phase-2 launch path (fleet:launch-on-plan). Registering/editing gateway accounts themselves — accounts:*.',
     chaining:
@@ -222,7 +243,12 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
-    fleetSlug: z.string().min(1).describe('the fleet receiving the delegation'),
+    fleetSlug: z.string().min(1).optional().describe('the fleet receiving the delegation — exactly one of fleetSlug/potSlug required'),
+    potSlug: z.string().min(1).optional().describe('P-001: the whole POT receiving the delegation instead of one fleet — exactly one of fleetSlug/potSlug required; requires `audience`'),
+    audience: z
+      .enum(ALLOTMENT_AUDIENCES as unknown as [AllotmentAudience, ...AllotmentAudience[]])
+      .optional()
+      .describe("P-001/D-002: required iff potSlug is set (who in the pot may draw on it); refused alongside fleetSlug"),
     kind: z
       .enum(['account', 'gpu', 'agent_slot'])
       .describe("account|gpu = %-capped capacity; agent_slot = count-capped seats (D-002)"),
@@ -265,6 +291,8 @@ export default defineTool({
     const result = await delegateResource({
       workspaceId: ident.workspaceId,
       fleetSlug: args.fleetSlug,
+      potSlug: args.potSlug,
+      audience: args.audience,
       kind: args.kind,
       ref: args.ref,
       sharePct: args.sharePct,

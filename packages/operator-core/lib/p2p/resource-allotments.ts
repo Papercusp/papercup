@@ -29,6 +29,19 @@ import type { OrgSql } from '../work-items';
 export type ResourceKind = 'account' | 'gpu' | 'agent_slot';
 export type AllotmentStatus = 'active' | 'paused';
 
+/**
+ * pot-seat-pools-prose-ux-2026-07-18 D-002: who within a POT-scoped allotment's
+ * pot may draw on it. 'trusted-members' = this host's local trust list
+ * (checked at claim); 'whole-pot' = deliberate wider opt-in. Never set for a
+ * fleet-scoped row (grantee is a single named fleet, no audience narrowing).
+ */
+export type AllotmentAudience = 'trusted-members' | 'whole-pot';
+export const ALLOTMENT_AUDIENCES: readonly AllotmentAudience[] = ['trusted-members', 'whole-pot'];
+
+function isAllotmentAudience(v: unknown): v is AllotmentAudience {
+  return v === 'trusted-members' || v === 'whole-pot';
+}
+
 /** D-002 seat-count bounds: quantity must be an integer in [1, this]. */
 export const AGENT_SLOT_MAX_QUANTITY = 1000;
 
@@ -55,7 +68,12 @@ export function agentSlotRef(axis: Pick<AgentSlotAxis, 'model' | 'effort' | 'acc
 
 export interface ResourceAllotment {
   workspaceId: string;
-  fleetSlug: string;
+  /** The grantee — exactly one of fleetSlug/potSlug is non-null (P-001). */
+  fleetSlug: string | null;
+  /** Pot-scoped grantee (P-001): the shared-hive/pot slug this allotment targets. */
+  potSlug: string | null;
+  /** Required iff potSlug is set (D-002); null for a fleet-scoped row. */
+  audience: AllotmentAudience | null;
   resourceKind: ResourceKind;
   resourceRef: string;
   /** Share cap as a percent (0–100). Remote axis: % of pool budget; local axis: % of GPU time/slots. Stored 0 for agent_slot (count-capped). */
@@ -97,7 +115,9 @@ function isModelEffort(v: unknown): v is ModelEffort {
 
 interface AllotmentRow {
   workspace_id: string;
-  fleet_slug: string;
+  fleet_slug: string | null;
+  pot_slug: string | null;
+  audience: string | null;
   resource_kind: string;
   resource_ref: string;
   share_pct: number;
@@ -113,6 +133,8 @@ function rowToAllotment(r: AllotmentRow): ResourceAllotment {
   return {
     workspaceId: r.workspace_id,
     fleetSlug: r.fleet_slug,
+    potSlug: r.pot_slug,
+    audience: isAllotmentAudience(r.audience) ? r.audience : null,
     resourceKind: r.resource_kind as ResourceKind,
     resourceRef: r.resource_ref,
     sharePct: Number(r.share_pct),
@@ -131,11 +153,13 @@ export interface ListAllotmentsArgs {
   workspaceId: string | null | undefined;
   /** Restrict to one fleet (the P-202 claim-authority read). Omit for the whole board. */
   fleetSlug?: string;
+  /** Restrict to one pot-scoped grantee (P-001). Omit for the whole board. */
+  potSlug?: string;
   /** Include paused rows (default false — the board shows active contributions). */
   includePaused?: boolean;
 }
 
-/** Read allotments for the /res board (whole workspace) or one fleet (claim authority). */
+/** Read allotments for the /res board (whole workspace), one fleet, or one pot (claim authority). */
 export async function listResourceAllotments(
   args: ListAllotmentsArgs,
   sqlOverride?: OrgSql,
@@ -147,15 +171,23 @@ export async function listResourceAllotments(
     SELECT * FROM harness_shared.resource_allotments
      WHERE workspace_id = ${ws}
        ${args.fleetSlug ? sql`AND fleet_slug = ${args.fleetSlug}` : sql``}
+       ${args.potSlug ? sql`AND pot_slug = ${args.potSlug}` : sql``}
        ${args.includePaused ? sql`` : sql`AND status = 'active'`}
-     ORDER BY fleet_slug, resource_kind, resource_ref
+     ORDER BY fleet_slug, pot_slug, resource_kind, resource_ref
   `) as unknown as AllotmentRow[];
   return rows.map(rowToAllotment);
 }
 
 export interface SetAllotmentArgs {
   workspaceId: string | null | undefined;
-  fleetSlug: string;
+  /** The grantee — exactly one of fleetSlug/potSlug required (P-001). */
+  fleetSlug?: string;
+  /** Pot-scoped grantee (P-001): hand this resource to a whole pot (audience-
+   *  gated) instead of one named fleet. Mutually exclusive with fleetSlug. */
+  potSlug?: string;
+  /** Required iff potSlug is set (D-002 — no silent default); refused if set
+   *  alongside fleetSlug (audience is a pot-scoped concept only). */
+  audience?: AllotmentAudience;
   resourceKind: ResourceKind | string;
   /** Resource identity for account/gpu (required there). IGNORED for agent_slot — the ref is DERIVED from the axis trio (agentSlotRef). */
   resourceRef?: string;
@@ -252,9 +284,39 @@ export async function setResourceAllotment(
   if (!isResourceKind(args.resourceKind)) {
     return { ok: false, refusal: { code: 'invalid_resource_kind', detail: `resource_kind must be account|gpu|agent_slot (got '${String(args.resourceKind)}').` } };
   }
-  if (!args.fleetSlug?.trim()) {
-    return { ok: false, refusal: { code: 'fleet_required', detail: 'fleetSlug is required.' } };
+  // P-001 grantee: exactly one of fleetSlug/potSlug. Audience is required iff
+  // potSlug is set (D-002 — no silent default at the tool boundary) and
+  // refused if paired with fleetSlug (audience is a pot-scoped concept only).
+  const fleetSlug = args.fleetSlug?.trim() || undefined;
+  const potSlug = args.potSlug?.trim() || undefined;
+  if (!fleetSlug && !potSlug) {
+    return {
+      ok: false,
+      refusal: { code: 'grantee_required', detail: 'exactly one of fleetSlug/potSlug is required.' },
+    };
   }
+  if (fleetSlug && potSlug) {
+    return {
+      ok: false,
+      refusal: { code: 'grantee_conflict', detail: 'fleetSlug and potSlug are mutually exclusive — exactly one names the grantee.' },
+    };
+  }
+  if (potSlug && !isAllotmentAudience(args.audience)) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'audience_required',
+        detail: `a pot-scoped allotment requires audience ∈ ${ALLOTMENT_AUDIENCES.join('|')} (D-002 — no silent default); got ${JSON.stringify(args.audience ?? null)}.`,
+      },
+    };
+  }
+  if (fleetSlug && args.audience != null) {
+    return {
+      ok: false,
+      refusal: { code: 'audience_not_applicable', detail: 'audience only applies to a pot-scoped (potSlug) allotment, not a fleet-scoped one.' },
+    };
+  }
+  const audience: AllotmentAudience | null = potSlug ? (args.audience as AllotmentAudience) : null;
   // Per-kind cap discipline (D-002): account/gpu are share-capped (0–100 %),
   // agent_slot is count-capped (quantity 1..AGENT_SLOT_MAX_QUANTITY) with the
   // ref DERIVED from the validated axis trio.
@@ -293,31 +355,55 @@ export async function setResourceAllotment(
   // jsonb bind: getOrgPg's pooled sql THROWS on sql.json() (prepare:false mis-binds it —
   // see agent-governor-pg-store.ts / the usage-events integration test). Bind the axis
   // object as `${JSON.stringify(x)}::jsonb` instead. Do NOT "fix" this back to sql.json().
-  const rows = (await sql`
-    INSERT INTO harness_shared.resource_allotments
-      (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
-    VALUES
-      (${ws}, ${args.fleetSlug}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
-       ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
-    ON CONFLICT (workspace_id, fleet_slug, resource_kind, resource_ref)
-    DO UPDATE SET share_pct = EXCLUDED.share_pct,
-                  quantity = EXCLUDED.quantity,
-                  axis = EXCLUDED.axis,
-                  status = EXCLUDED.status,
-                  updated_at = now()
-    RETURNING *
-  `) as unknown as AllotmentRow[];
+  // The ON CONFLICT target differs per grantee kind (two partial unique indexes,
+  // mig 626 — a compound PK can't have a nullable column) so the insert branches.
+  const rows = (
+    potSlug
+      ? ((await sql`
+          INSERT INTO harness_shared.resource_allotments
+            (workspace_id, pot_slug, audience, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
+          VALUES
+            (${ws}, ${potSlug}, ${audience}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
+             ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
+          ON CONFLICT (workspace_id, pot_slug, resource_kind, resource_ref) WHERE pot_slug IS NOT NULL
+          DO UPDATE SET share_pct = EXCLUDED.share_pct,
+                        quantity = EXCLUDED.quantity,
+                        axis = EXCLUDED.axis,
+                        status = EXCLUDED.status,
+                        audience = EXCLUDED.audience,
+                        updated_at = now()
+          RETURNING *
+        `) as unknown as AllotmentRow[])
+      : ((await sql`
+          INSERT INTO harness_shared.resource_allotments
+            (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
+          VALUES
+            (${ws}, ${fleetSlug}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
+             ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
+          ON CONFLICT (workspace_id, fleet_slug, resource_kind, resource_ref) WHERE fleet_slug IS NOT NULL
+          DO UPDATE SET share_pct = EXCLUDED.share_pct,
+                        quantity = EXCLUDED.quantity,
+                        axis = EXCLUDED.axis,
+                        status = EXCLUDED.status,
+                        updated_at = now()
+          RETURNING *
+        `) as unknown as AllotmentRow[])
+  );
   return { ok: true, allotment: rowToAllotment(rows[0]) };
 }
 
 export interface RemoveAllotmentArgs {
   workspaceId: string | null | undefined;
-  fleetSlug: string;
+  /** Exactly one of fleetSlug/potSlug identifies the row to remove (P-001);
+   *  mirrors the set-form grantee. Neither validated loudly here (matches the
+   *  pre-P-001 remove behavior: an unmatched grantee is just `removed: 0`). */
+  fleetSlug?: string;
+  potSlug?: string;
   resourceKind: ResourceKind | string;
   resourceRef: string;
 }
 
-/** Remove an allotment (the /res chip's × — revokes the fleet's draw on this resource). Returns rows removed. */
+/** Remove an allotment (the /res chip's × — revokes the fleet's or pot's draw on this resource). Returns rows removed. */
 export async function removeResourceAllotment(
   args: RemoveAllotmentArgs,
   sqlOverride?: OrgSql,
@@ -325,10 +411,11 @@ export async function removeResourceAllotment(
   const ws = resolveAllotmentWorkspace(args.workspaceId);
   if (!ws) return { ok: true, removed: 0 };
   const sql = sqlOverride ?? getOrgPg().sql;
+  const potSlug = args.potSlug?.trim() || undefined;
   const rows = (await sql`
     DELETE FROM harness_shared.resource_allotments
      WHERE workspace_id = ${ws}
-       AND fleet_slug = ${args.fleetSlug}
+       AND ${potSlug ? sql`pot_slug = ${potSlug}` : sql`fleet_slug = ${args.fleetSlug ?? ''}`}
        AND resource_kind = ${args.resourceKind}
        AND resource_ref = ${args.resourceRef}
     RETURNING fleet_slug

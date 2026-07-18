@@ -45,7 +45,12 @@ import {
   type InstructionLintReport,
   type InstructionRuntimeContext,
 } from '../../../instruction-lint';
-import { deriveLaunchPromptText, kickoffGuardProfileForAgent } from '../../../agent-tools/plans/launch-prompt';
+import {
+  deriveLaunchPromptText,
+  kickoffGuardProfileForAgent,
+  type RemoteSeatSummary,
+} from '../../../agent-tools/plans/launch-prompt';
+import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
 import { rekeyCodexHome, writeSuCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import { resolveSuLaunchCwd } from '../../../su-launch-cwd';
@@ -753,6 +758,11 @@ export function deriveKickoffPrompt(opts: {
    *  for the one-line "already armed" notice. Omitted/false ⇒ the full self-arm
    *  instruction (the fallback path for a leader / unplanned / arm-failed boot). */
   loopAutoArmed?: boolean;
+  /** pot-seat-pools-prose-ux-2026-07-18 P-007/P-013/P-014: the pot-wide remote
+   *  seat-offer inventory (resolveRemoteSeatInventory at the call site — this
+   *  fn stays synchronous/pure). Only affects the AUTO-OFF routing-gate text;
+   *  omitted ⇒ today's static option (C) (no behavior change). */
+  remoteSeats?: RemoteSeatSummary | null;
 }): string | null {
   const base = opts.planSlug
     ? deriveLaunchPromptText(
@@ -763,6 +773,7 @@ export function deriveKickoffPrompt(opts: {
           harness: opts.harnessSlug ?? null,
         },
         kickoffGuardProfileForAgent(opts.agent),
+        opts.remoteSeats,
       )
     : opts.launchContextPath
       ? LAUNCH_CONTEXT_KICKOFF

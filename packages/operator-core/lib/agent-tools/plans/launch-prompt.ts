@@ -57,6 +57,61 @@ function orientArgs(plan: LaunchPlanRef): string {
 export type KickoffGuardProfile = 'full' | 'lean';
 
 /**
+ * pot-seat-pools-prose-ux-2026-07-18 P-007/P-013/P-014: a plain-data summary of
+ * this workspace's pot-wide standing remote seat-offer inventory, resolved by
+ * the (impure) caller via `plans/remote-seat-inventory.ts` and passed in here —
+ * this module stays dependency-free (no DB import), per the file-level
+ * discipline above.
+ */
+export interface RemoteSeatSummary {
+  /** This workspace resolves to exactly one shared Hive (the plan's pot IS
+   *  shared) — resolveWorkspaceHiveScope kind==='one'. False for none/many
+   *  (ambiguous or purely local — never guess). */
+  potShared: boolean;
+  /** Distinct GitHub-identity donors with an OPEN standing seat-offer visible
+   *  in this pot right now (fleet-scoped offers today; pot-scoped too once
+   *  P-001 lands — the read is fleetSlug-agnostic, so it needs no change). */
+  donorCount: number;
+  /** Sum of advertised seat counts across those open offers. */
+  totalSeats: number;
+}
+
+/**
+ * P-007 (named-verb discipline, sessions 9870/9865) + P-013 (seat-inventory
+ * disclosure, named donors/counts, empty-inventory is not a dead end) + P-014
+ * ("add your own slots?" ask) — ONE prompt-UX lane, folded into option (C)'s
+ * text. `remoteSeats` omitted/null/unshared-pot ⇒ byte-identical to the
+ * pre-P-007 static text (no regression for a local-only workspace).
+ */
+function remoteFleetOptionClause(remoteSeats?: RemoteSeatSummary | null): string {
+  if (!remoteSeats || !remoteSeats.potShared) {
+    return (
+      'launch a fleet of agents to parallelize it (executed in ONE call with the ' +
+      '`fleet:launch-on-plan` tool — never a hand-built psu command)'
+    );
+  }
+  if (remoteSeats.donorCount > 0) {
+    const slotWord = remoteSeats.totalSeats === 1 ? 'slot' : 'slots';
+    const peerWord = remoteSeats.donorCount === 1 ? 'peer' : 'peers';
+    return (
+      `launch a fleet — locally, or on the pot's remote seats (I see ${remoteSeats.totalSeats} agent ` +
+      `${slotWord} available from ${remoteSeats.donorCount} ${peerWord} in this pot) — executed in ONE ` +
+      "call with the `fleet:launch-on-plan` tool (`placement:'remote'` for the pot's seats; omit or " +
+      "`'local'` to stay on this machine — never a hand-built psu command). If they opt for remote, " +
+      "also ask whether they'd like to add their own agent slots to this fleet too (`resource:delegate`) " +
+      '— worth asking especially when the remote inventory is short. A refusal or non-arrival is ' +
+      'debuggable with `p2p:trace`.'
+    );
+  }
+  return (
+    "launch a fleet — locally (this pot has no standing remote seat offers yet, so remote placement " +
+    "isn't available right now; a peer would need to `resource:delegate` seats to this pot first, and " +
+    "you can offer to relay that ask) — executed in ONE call with the `fleet:launch-on-plan` tool — " +
+    'never a hand-built psu command'
+  );
+}
+
+/**
  * The backend → guard-profile mapping (P-004): 'lean' ONLY for `claude` — the
  * one backend whose installed hook layer carries the P-003b plans-read guard.
  * `omp` (ornith/local) is the weak-model family P-004 explicitly keeps on full
@@ -84,6 +139,11 @@ export function deriveLaunchPromptText(
    *  kickoffGuardProfileForAgent(agent). Lean applies only when a plan is bound
    *  (with no binding there is no orient target to point at instead). */
   guards: KickoffGuardProfile = 'full',
+  /** pot-seat-pools-prose-ux-2026-07-18 P-007/P-013/P-014: pot-wide remote
+   *  seat-offer inventory (resolved by the caller — see RemoteSeatSummary's
+   *  doc). Only affects the AUTO-OFF routing-gate branches below; omitted ⇒
+   *  today's static option (C) text (no behavior change for existing callers). */
+  remoteSeats?: RemoteSeatSummary | null,
 ): string {
   const trimmed = (note ?? '').trim();
   if (trimmed.length > 0) {
@@ -169,8 +229,7 @@ export function deriveLaunchPromptText(
       `\`## Now\` block + the next actionable item (\`plans:get\` ${plansGetArgs(plan)} for ` +
       'the full body). Then, BEFORE doing any work, go through your routing gate: outline ' +
       'the approach and present the execution options — (A) do it yourself, (B) hand it to ' +
-      'the Mug, or (C) launch a fleet of agents to parallelize it (executed in ONE call ' +
-      'with the `fleet:launch-on-plan` tool — never a hand-built psu command) — recommend ' +
+      `the Mug, or (C) ${remoteFleetOptionClause(remoteSeats)} — recommend ` +
       'one based on the plan size, and confirm with the owner which to use. Do not start ' +
       'editing until they choose.'
     );
@@ -189,7 +248,6 @@ export function deriveLaunchPromptText(
     'tools from INSIDE `eval` (the eval runtime has no `tools` object — that is a NameError). ' +
     'Then, BEFORE doing any work, go through your routing gate: outline the approach ' +
     'and present the execution options — (A) do it yourself, (B) hand it to the Mug, or (C) ' +
-    'launch a fleet of agents to parallelize it (executed in ONE call with the ' +
-    '`fleet:launch-on-plan` tool — never a hand-built psu command) — recommend one based on the ' +
+    `${remoteFleetOptionClause(remoteSeats)} — recommend one based on the ` +
     'plan size, and confirm with the owner which to use. Do not start editing until they choose.';
 }
