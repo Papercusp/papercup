@@ -25,8 +25,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
-import { buildCapabilitySandboxCommand } from './exec-sandbox';
-import { stripHostX } from '../computer/desktop-driver';
+import { buildCapabilitySandboxCommand, scrubExecEnv } from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
 
 /** Inline output cap (chars). Output beyond this spills to the scratch log and

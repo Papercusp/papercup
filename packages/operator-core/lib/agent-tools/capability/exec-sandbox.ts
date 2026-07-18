@@ -181,6 +181,88 @@ export function __resetCapabilitySrtSettings(): void {
   _srtSettingsByCwd.clear();
 }
 
+/**
+ * ENV ALLOWLIST for a capability-exec'd subprocess (EI-1617). `capability:bash` /
+ * `capability:git` / `capability:computer` spawn real subprocesses IN THE OPERATOR
+ * (Hono host) process, which previously forwarded its OWN FULL environment
+ * (`process.env`, or `stripHostX(process.env)` — which only removes DISPLAY /
+ * XAUTHORITY / WAYLAND_DISPLAY) to the child. The operator process env carries
+ * operator secrets that have nothing to do with running a shell command or build
+ * tool — DB creds, webhook/JWT secrets, session keys, … — so any bee's
+ * `capability:bash` could simply `echo $DATABASE_URL` and read them.
+ *
+ * Fix: switch from a passthrough-minus-denylist to an ALLOWLIST — keep only vars a
+ * shell / build / test tool plausibly needs (PATH, HOME, locale, terminal, the
+ * common language/package-manager toolchains, and the handful of Papercusp
+ * plumbing vars the exec path itself depends on — see
+ * `normalizeInheritedOperatorUrl` in bash-jobs.ts), drop everything else. This is
+ * the ENV-stripping leg exec-sandbox.ts's bwrap/srt containment deliberately
+ * deferred ("Containment is filesystem-level, not env-stripping" above) — the two
+ * are complementary, not alternatives.
+ *
+ * `extraAllow` lets an individual call site widen the set for a command that
+ * legitimately needs one more var (e.g. a caller-scoped token) without loosening
+ * the default for every capability-exec call.
+ */
+const EXEC_ENV_ALLOW_EXACT: ReadonlySet<string> = new Set([
+  // Core process/shell plumbing.
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'PWD', 'OLDPWD',
+  'TERM', 'TERMINFO', 'COLORTERM', 'EDITOR', 'VISUAL', 'PAGER',
+  'LANG', 'LC_ALL',
+  'TMPDIR', 'TMP', 'TEMP',
+  'CI',
+  // Native-build linkers (no secrets ride on a library search path).
+  'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH',
+  // Node/JS toolchain.
+  'NODE_ENV', 'NODE_OPTIONS', 'NODE_NO_WARNINGS',
+  // Python toolchain.
+  'PYTHONPATH', 'PYTHONUNBUFFERED', 'PYTHONDONTWRITEBYTECODE', 'VIRTUAL_ENV',
+  // Go toolchain.
+  'GOPATH', 'GOROOT', 'GOCACHE', 'GOMODCACHE', 'GOPROXY', 'GOSUMDB', 'GOFLAGS', 'GO111MODULE',
+  // Rust toolchain.
+  'CARGO_HOME', 'RUSTUP_HOME', 'RUSTFLAGS',
+  // JVM/Android toolchains.
+  'JAVA_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT',
+  // Papercusp exec-path plumbing (non-secret): the operator base URL a helper
+  // script may need to reach the operator itself, and the two workspace-root
+  // markers the hook/exec paths already resolve worktree roots from — none of
+  // these are credentials.
+  'PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_WORKSPACE_ROOT', 'PAPERCUSP_CANONICAL_TREE',
+]);
+
+/** Whole-namespace prefixes: build-tool config vars, none of which carry app
+ *  secrets by convention (verified against the 7 vars EI-1617's live repro
+ *  actually found leaking — DATABASE_URL, DEFGUARD_API_TOKEN,
+ *  ELEVENLABS_WEBHOOK_SECRET, MOBILE_JWT_SECRET,
+ *  NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN, STARSHIP_SESSION_KEY,
+ *  STOREWOLFPASSWORD — none match any prefix below). */
+const EXEC_ENV_ALLOW_PREFIXES: readonly string[] = [
+  'LC_', 'XDG_',
+  'NPM_CONFIG_', 'npm_config_', 'NPM_',
+  'YARN_', 'PNPM_',
+  'CARGO_', 'RUSTC_',
+  'PYENV_',
+];
+
+export function scrubExecEnv(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  extraAllow: readonly string[] = [],
+): Record<string, string> {
+  const extra = extraAllow.length > 0 ? new Set(extraAllow) : null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v == null) continue;
+    if (EXEC_ENV_ALLOW_EXACT.has(k) || extra?.has(k)) {
+      out[k] = v;
+      continue;
+    }
+    if (EXEC_ENV_ALLOW_PREFIXES.some((p) => k.startsWith(p))) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 /** `PAPERCUSP_CAPABILITY_SANDBOX_DENY_ALL_EGRESS=1` → `--unshare-net` (no network). */
 export function capabilitySandboxDenyAllEgress(): boolean {
   const v = (process.env.PAPERCUSP_CAPABILITY_SANDBOX_DENY_ALL_EGRESS ?? '').trim().toLowerCase();
