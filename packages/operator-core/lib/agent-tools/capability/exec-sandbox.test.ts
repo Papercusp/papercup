@@ -10,10 +10,14 @@
  * fail-CLOSES under the ro-root), the deny-all-egress lever, and credential-list
  * parity with the fleet sandbox.
  */
-import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it, expect, afterAll } from 'vitest';
 import { FLEET_SANDBOX_DENY_READ } from '@papercusp/orchestrator';
 import {
   buildCapabilitySandboxCommand,
+  capabilityBuildCacheWritePaths,
   CAPABILITY_SANDBOX_MASK_DIRS,
   scrubExecEnv,
   type BuildSandboxOpts,

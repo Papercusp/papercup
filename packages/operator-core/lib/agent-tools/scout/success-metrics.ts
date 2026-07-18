@@ -15,6 +15,14 @@
  *
  * Read-only. Never throws on an empty window: an empty denominator is reported as UNKNOWN,
  * which is NOT a pass — an unrun program must never certify itself done.
+ *
+ * EI-12146: the cycle-error-rate bar's DEFAULT evidence window is no longer a second,
+ * independent hardcode living next to the rubric's own structured `window` field — it now
+ * RESOLVES from the blender-release-readiness rubric's `cycle-error-rate` criterion
+ * (see {@link resolveRubricDefaultWindow}), so the rubric is the single authority a
+ * verdict is judged against. An explicit `sinceMs`/`watermarkRef` arg still overrides it
+ * (EI-12148); the assembly layer's own rolling fallback only applies when the rubric
+ * itself can't be read.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
@@ -44,7 +52,7 @@ export const successMetricsArgs = z
       .positive()
       .optional()
       .describe(
-        'ABSOLUTE epoch-ms floor for the tick window — judge only evidence at/after this instant (overrides the rolling 48h box). Mutually exclusive with watermarkRef; omit both for the default window.',
+        'ABSOLUTE epoch-ms floor for the tick window — judge only evidence at/after this instant (overrides the rubric-derived default window). Mutually exclusive with watermarkRef; omit both to let the release-readiness rubric\'s own declared window judge (EI-12146).',
       ),
     watermarkRef: z
       .string()
@@ -69,7 +77,7 @@ export const successMetricsArgs = z
       .max(5000)
       .optional()
       .describe(
-        'optional safety cap inside the default 48h scout_ticks time box. Omit to read the complete time box; this is not the release window definition.',
+        'optional safety cap inside the default scout_ticks time box (rubric-derived — EI-12146, 48h fallback). Omit to read the complete time box; this is not the release window definition.',
       ),
     maxErrorRate: z
       .number()
@@ -81,13 +89,55 @@ export const successMetricsArgs = z
   .strict();
 export type SuccessMetricsArgs = z.infer<typeof successMetricsArgs>;
 
-/** Window provenance echoed back when a NON-default window was requested (EI-12148) —
- *  a verdict must never be read without knowing which window judged it. Absent on the
- *  default read, so omitted args stay byte-identical to pre-EI-12148 output. */
+/** Window provenance echoed back whenever the window was resolved from something other
+ *  than the plain rolling default: an explicit caller override (EI-12148: 'sinceMs' /
+ *  `watermark:<ref>`), or the release-readiness rubric's own declared criterion window
+ *  (EI-12146: `rubric:<window|default|watermark-unresolved>` — the resolveCriterionWindow
+ *  provenance, so a verdict is never read without knowing whether the rubric's window
+ *  resolved cleanly). Absent only when the rubric itself could not be read at all, in
+ *  which case the read falls back to the pre-EI-12146 hardcoded default unchanged. */
 export interface ResolvedSuccessWindow {
   sinceMs: number;
   sinceIso: string;
-  source: 'sinceMs' | `watermark:${string}`;
+  source: 'sinceMs' | `watermark:${string}` | `rubric:${'window' | 'default' | 'watermark-unresolved'}`;
+}
+
+/** The rubric + criterion this instrument grades against (EI-12146). The DEFAULT window
+ *  (no sinceMs/watermarkRef arg) resolves from THIS criterion's structured `window` field
+ *  so the rubric stays the SINGLE authority for the bar's evidence window — an instrument
+ *  that keeps its own separate hardcode is exactly the two-authorities disagreement this
+ *  item was filed to close, even once that hardcode is "structured". */
+export const RELEASE_READINESS_RUBRIC_SLUG = 'blender-release-readiness';
+export const CYCLE_ERROR_RATE_CRITERION_KEY = 'cycle-error-rate';
+
+/**
+ * Resolve the DEFAULT window (no explicit sinceMs/watermarkRef arg) from the
+ * release-readiness rubric's cycle-error-rate criterion (EI-12146). Degrades to
+ * `undefined` — never throws — when the rubric, the criterion, or its structured
+ * `window` cannot be read: the caller then falls back to the assembly layer's own
+ * rolling default exactly as it did before this existed, so a rubric outage never
+ * blocks the done-check, it only loses the provenance.
+ */
+export async function resolveRubricDefaultWindow(): Promise<ResolvedSuccessWindow | undefined> {
+  try {
+    const rubric = await getRubric(RELEASE_READINESS_RUBRIC_SLUG);
+    const criterion = rubric?.criteria.find((c) => c.key === CYCLE_ERROR_RATE_CRITERION_KEY);
+    const window = criterion?.window;
+    if (!window) return undefined;
+    const watermarks: Record<string, number | null> = {};
+    if (window.kind === 'post-watermark' && window.watermarkRef) {
+      const wm = await resolveWatermarkRef(window.watermarkRef);
+      watermarks[window.watermarkRef] = wm.ok ? wm.ms : null;
+    }
+    const resolved = resolveCriterionWindow(window, { watermarks });
+    return {
+      sinceMs: resolved.sinceMs,
+      sinceIso: new Date(resolved.sinceMs).toISOString(),
+      source: `rubric:${resolved.source}`,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export async function runSuccessMetrics(
@@ -123,6 +173,12 @@ export async function runSuccessMetrics(
       };
     } else if (args.sinceMs != null) {
       resolvedWindow = { sinceMs: args.sinceMs, sinceIso: new Date(args.sinceMs).toISOString(), source: 'sinceMs' };
+    } else {
+      // EI-12146: no explicit override — resolve the DEFAULT from the rubric's own
+      // declared criterion window instead of leaving it to the assembly layer's
+      // independent hardcode. Falls back to that hardcode (resolvedWindow stays
+      // undefined) when the rubric itself can't be read.
+      resolvedWindow = await resolveRubricDefaultWindow();
     }
     const report = await buildProgramSuccessReport({
       ...(args.harnessSlug ? { harnessSlug: args.harnessSlug } : {}),
@@ -131,9 +187,11 @@ export async function runSuccessMetrics(
       ...(args.maxErrorRate != null ? { maxErrorRate: args.maxErrorRate } : {}),
       ...(resolvedWindow ? { sinceMs: resolvedWindow.sinceMs } : {}),
     });
-    // P-007 generation parity: an explicitly windowed judgment also carries the
-    // identity of the generation being judged. Keep the legacy/default read byte-
-    // identical by omitting this field when no window override was requested.
+    // P-007 generation parity: any judgment carrying a resolved window (explicit
+    // override, or the EI-12146 rubric-derived default) also carries the identity of the
+    // generation being judged. Omitted only in the rare fallback case where the rubric
+    // itself could not be read at all (resolvedWindow stays undefined, pre-EI-12146
+    // behavior).
     const runningGeneration = resolvedWindow
       ? await readRunningGeneration().catch(() => ({ sha: null, hostStartedAt: null }))
       : undefined;
@@ -150,14 +208,14 @@ export async function runSuccessMetrics(
 export default defineTool({
   name: 'blender:success-metrics',
   description:
-    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the default 48h window (or sinceMs/watermarkRef), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Explicit windows also return resolvedWindow + runningGeneration {sha, hostStartedAt} for parity evidence. verdict='pass' only when every bar passes; 'incomplete' when evidence is missing; 'fail' on a regression.",
+    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the release-readiness rubric's own declared window (default: its structured 48h-rolling `window`; or an explicit sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Every resolved window (rubric-derived or explicit) also returns resolvedWindow + runningGeneration {sha, hostStartedAt} for parity evidence — absent only if the rubric itself couldn't be read. verdict='pass' only when every bar passes; 'incomplete' when evidence is missing; 'fail' on a regression.",
   capability: 'curation:read',
   guidance: {
     when: 'Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.',
     notWhen:
       'Asking whether Scout ideas are getting BETTER over time (that is the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).',
     chaining:
-      "Read verdict and each bar's evidence/unknownReason. With sinceMs/watermarkRef, cite resolvedWindow + runningGeneration together.",
+      "Read verdict and each bar's evidence/unknownReason. Always cite resolvedWindow + runningGeneration alongside the verdict (EI-12146: the default window now comes from the rubric itself, not a fixed 48h) — an explicit sinceMs/watermarkRef only overrides which window judges it.",
     seeAlso: ['blender:ideation-feedback (your own graded-idea priming)', 'blender:grade-idea (grade one routed idea)'],
   },
   requirePrincipal: false,

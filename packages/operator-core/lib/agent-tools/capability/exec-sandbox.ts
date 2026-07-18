@@ -30,9 +30,9 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir, platform as osPlatform, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { srtBinOnPath, buildFleetSrtSettings, wrapSpawnWithSrt } from '@papercusp/orchestrator';
@@ -141,6 +141,53 @@ export interface BuildSandboxOpts {
 }
 
 /**
+ * EI-12725: BUILD-CACHE dirs that live OUTSIDE the repo tree, resolved to their REAL
+ * paths and made writable in BOTH backends.
+ *
+ * The sandbox's writable surface is the cwd + /tmp; everything else is under the
+ * read-only `/` bind. On this box the heavy Rust/Tauri caches are symlinked OUT of the
+ * repo onto the big disk (`~/.cargo-target` and `papercusp-desktop/src-tauri/target`
+ * → `/mnt/data/relocated-builds/…`, ~89G). The symlink NODE sits in the writable cwd,
+ * but a write follows it to `/mnt/data`, which is read-only in-sandbox — so
+ * `npm run tauri -- build` fails for an agent while succeeding in an unsandboxed
+ * shell. That divergence, not the box, is what made the AppImage "unbuildable by an
+ * agent"; the disk itself is rw (measured 2026-07-18).
+ *
+ * We therefore bind the RESOLVED targets rw. Rules, each load-bearing:
+ * - **realpath, not the symlink path** — binding the link node leaves the write going
+ *   through to a read-only target.
+ * - **skip what does not exist** — bwrap cannot create a mount point under the
+ *   read-only `/` bind (EROFS), so binding a missing path is fail-CLOSED and would
+ *   abort every command on a host without these caches (the WI-608 failure mode).
+ * - **skip anything already inside the cwd** — a stock checkout keeps `target/` in
+ *   the tree, where the cwd bind already covers it; re-binding it is a no-op at best.
+ *
+ * This widens WRITE only, and only to build caches — the credential masks, the
+ * read-only view of the rest of the host, and srt's egress allowlist are untouched.
+ */
+export function capabilityBuildCacheWritePaths(cwd: string, homeDir?: string): string[] {
+  const home = homeDir ?? homedir();
+  const candidates = [
+    process.env.CARGO_TARGET_DIR,
+    join(home, '.cargo-target'),
+    join(cwd, 'papercusp-desktop', 'src-tauri', 'target'),
+  ];
+  const out: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    let real: string;
+    try {
+      real = realpathSync(candidate);
+    } catch {
+      continue; // missing/unreadable ⇒ skip (binding it would fail-CLOSED)
+    }
+    if (real === cwd || real.startsWith(cwd + sep)) continue; // already writable via the cwd bind
+    if (!out.includes(real)) out.push(real);
+  }
+  return out;
+}
+
+/**
  * Per-cwd memo of the srt settings file (network egress allowlist + credential
  * denyRead, from `buildFleetSrtSettings`). Written once per cwd (the allowlist is
  * stable for the operator's lifetime), 0600, so capability:bash isn't writing a
@@ -170,7 +217,14 @@ export function capabilitySrtSettingsPathForCwd(cwd: string): string {
   // whole point is covering the real /tmp regardless of TMPDIR) to srt's
   // allowWrite so capability:bash's srt path is consistent with its own bwrap
   // fallback.
-  settings.filesystem.allowWrite = [...settings.filesystem.allowWrite, '/tmp'];
+  // EI-12725: plus the out-of-tree build caches (see capabilityBuildCacheWritePaths),
+  // keeping the srt path consistent with the bwrap fallback below — the SAME asymmetry
+  // EI-12389 fixed for /tmp, now for the cargo/Tauri target dirs.
+  settings.filesystem.allowWrite = [
+    ...settings.filesystem.allowWrite,
+    '/tmp',
+    ...capabilityBuildCacheWritePaths(cwd),
+  ];
   writeFileSync(path, JSON.stringify(settings), { mode: 0o600 });
   _srtSettingsByCwd.set(cwd, path);
   return path;
@@ -342,6 +396,12 @@ export function buildCapabilitySandboxCommand(
     '--die-with-parent',
     '--chdir', input.cwd,
   ];
+  // EI-12725: carve the out-of-tree build caches writable too (see
+  // capabilityBuildCacheWritePaths). AFTER the cwd bind: these resolve outside the
+  // cwd and outside /tmp, so they neither shadow nor are shadowed by those mounts.
+  for (const cache of capabilityBuildCacheWritePaths(input.cwd, home)) {
+    argv.push('--bind', cache, cache);
+  }
   // Mask credential paths. Applied AFTER the ro-bind of `/`, so the overlay wins.
   // Dirs read empty via a tmpfs overlay; file credentials (e.g. ~/.npmrc) read
   // empty via `--ro-bind /dev/null` (a tmpfs needs a DIRECTORY mount point, so a
