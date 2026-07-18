@@ -14,7 +14,12 @@ import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { CODEX_CLI_REF_PREFIX, parseCodexCliRef, type CodexCliAccount } from './codex-cli-bridge';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
-import { formatAtRiskAlertSuffix } from './affected-owners';
+import {
+  formatAtRiskAlertSuffix,
+  buildSelfDrainWake,
+  formatOrphanedClaimsSuffix,
+  type OrphanedClaim,
+} from './affected-owners';
 import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type AccountPool, type ActiveAccount, type InferenceGateway } from './gateway';
 import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 import type { LocalBackendRecord } from './local-backend-store';
@@ -265,11 +270,44 @@ function makeOrgDisallowedDeactivator(
       // broadcast so the alert says WHO to check. Empty when none → alert unchanged (purely additive).
       const atRiskOwners = affectedOwners ?? [];
       const atRiskSuffix = formatAtRiskAlertSuffix(atRiskOwners);
+      // EI-15153 P-004 (surface-only): look up each at-risk owner's still-held,
+      // NON-terminal claims so the disable alert hands the leader a CONCRETE reclaim
+      // list — faster + more precise than waiting out the periodic stale-claim
+      // reaper's grace window (reclaimStaleWorkItemClaims stays the auto-release
+      // backstop; we add NO new reaper). Read-only + best-effort: any lookup failure
+      // leaves the alert unchanged (empty suffix). The routing-ledger ownerId equals
+      // an su session's claim `taken_by`/`assignee`; a spawn-alias holder that doesn't
+      // match simply surfaces no claims here — the leader still has the named owner.
+      let orphanedClaims: OrphanedClaim[] = [];
+      if (atRiskOwners.length > 0) {
+        try {
+          const [{ listWorkItems }, { WORK_ITEM_NON_REQUEUE_STATES }] = await Promise.all([
+            import('../work-items'),
+            import('../work-items-stale-claims'),
+          ]);
+          const terminal = new Set(WORK_ITEM_NON_REQUEUE_STATES);
+          orphanedClaims = (
+            await Promise.all(
+              atRiskOwners.map(async (ownerId) => {
+                const held = await listWorkItems({ assignee: ownerId }).catch(() => []);
+                const claims = held
+                  .filter((i) => !terminal.has(i.state))
+                  .map((i) => ({ id: i.id, title: i.title }));
+                return { ownerId, claims };
+              }),
+            )
+          ).filter((o) => o.claims.length > 0);
+        } catch (e) {
+          log('warn', `org-disallowed orphaned-claim lookup for '${accountId}' failed: ${(e as Error).message}`);
+        }
+      }
+      const orphanSuffix = formatOrphanedClaimsSuffix(orphanedClaims);
       const summary = `Inference account '${accountId}' is org/subscription-DISABLED for Claude Code — removed from the pool`;
       const body =
         `Account '${accountId}' returned ${consecutive} consecutive org/subscription-disqualified 403s ("not allowed for this organization" / "subscription disabled for claude code") — a PERMANENT Anthropic-side disable, NOT a throttle. The gateway's 6h pause only lived in memory + reset on every restart, so the dead account kept re-entering rotation and failing spawns. It has now been PERSISTENTLY removed from the pool. ` +
         `To restore it: re-enable OAuth API / Claude Code access in that account's Anthropic organization, then re-register it (accounts:register).` +
-        atRiskSuffix;
+        atRiskSuffix +
+        orphanSuffix;
       // 1. PERSISTENTLY remove the dead account (survives gateway/bg-host restarts; the in-memory pause did not).
       try {
         const [{ loadAccountPool, saveAccountPool }, { removeAccount }] = await Promise.all([
@@ -298,7 +336,14 @@ function makeOrgDisallowedDeactivator(
             severity: 'blocker',
             summary,
             body,
-            meta: { source: 'account-org-disallowed', deadAccountId: accountId, consecutive, atRiskOwners },
+            meta: {
+              source: 'account-org-disallowed',
+              deadAccountId: accountId,
+              consecutive,
+              atRiskOwners,
+              // P-004 (surface-only): the leader's concrete reclaim list, structured.
+              orphanedClaims: orphanedClaims.map((o) => ({ ownerId: o.ownerId, claimIds: o.claims.map((c) => c.id) })),
+            },
           });
         }
       } catch (e) {
@@ -310,6 +355,25 @@ function makeOrgDisallowedDeactivator(
         await sendMessage(identity, { to: ['*'], summary, body, category: 'service-health' });
       } catch (e) {
         log('warn', `org-disallowed broadcast failed for '${accountId}': ${(e as Error).message}`);
+      }
+      // 4. EI-15153 P-003: best-effort DIRECTED self-drain wake to each still-live
+      // at-risk session. The dead account was removed in step 1, so a woken session's
+      // NEXT inference turn fails over to a HEALTHY account for one final turn — enough
+      // to checkpoint its carry-note + release its claims cleanly instead of cold-
+      // orphaning them. Directed (NOT the '*' broadcast) + no ambient category so it
+      // lands visibly in the recipient's inbox; wakeRecipients re-invokes a sleeping
+      // one. Harmless if the session is already dead (wake is a no-op) or cannot take
+      // a turn — the detector alert + the periodic stale-claim reaper still cover it.
+      const drain = buildSelfDrainWake(accountId, atRiskOwners);
+      if (drain) {
+        try {
+          const { sendMessage } = await import('../agent-tools/coordination/messages');
+          await sendMessage(identity, { to: drain.to, summary: drain.summary, body: drain.body });
+          const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+          await wakeRecipients(drain.to, { summary: drain.summary, source: 'account-disable-drain', workspaceId: ws });
+        } catch (e) {
+          log('warn', `org-disallowed self-drain wake failed for '${accountId}': ${(e as Error).message}`);
+        }
       }
     })();
   };
