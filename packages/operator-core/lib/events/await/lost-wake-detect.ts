@@ -174,8 +174,8 @@ export async function convictWithWitnesses(
 export async function readLostWakeRates(sql: Sql, sinceMs: number): Promise<LostWakeRateRow[]> {
   return (await sql`
     SELECT event_key,
-           count(*) FILTER (WHERE fired_reason = 'event')   AS fired_event,
-           count(*) FILTER (WHERE fired_reason = 'timeout') AS fired_timeout
+           count(*) FILTER (WHERE fired_reason = 'event')::int   AS fired_event,
+           count(*) FILTER (WHERE fired_reason = 'timeout')::int AS fired_timeout
     FROM harness_shared.event_awaits
     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
       AND fired_at >= now() - ${`${Math.round(sinceMs / 1000)} seconds`}::interval
