@@ -2624,6 +2624,8 @@ export function ScoutView({
   // learning-tab-visibility P-001: the live cadence/firing state. Pre-deploy
   // snapshots lack the field — the card simply doesn't render.
   const cadence = snap?.cadence ?? null;
+  // learning-tab-visibility P-005: drafts-in-iteration rows; same degrade rule.
+  const drafts = snap?.drafts ?? [];
 
   // Grading (P-006): the note popover's open-state is URL state (`?grade=<ideaId>`)
   // so agents can drive it; in-flight optimistic grades + errors are transient
@@ -3194,6 +3196,44 @@ export function ScoutView({
               </span>
             ))}
           </div>
+        </LearningDisclosure>
+      ) : null}
+
+      {/* Drafts in iteration (learning-tab-visibility P-005): broad-scope ideas
+          that became draft plans, with their revision state — the Queen↔Scout
+          typed-revision loop, watchable instead of invisible. */}
+      {drafts.length > 0 ? (
+        <LearningDisclosure label="Drafts in iteration" count={drafts.length}>
+          <ul className="pc-learning__draftlist" aria-label="Scout draft plans in iteration">
+            {drafts.map((d) => {
+              const upMs = d.planUpdatedAt ? Date.parse(d.planUpdatedAt) : NaN;
+              return (
+                <li key={d.ideaId} className="pc-learning__draftrow">
+                  <GitBranch size={11} aria-hidden />
+                  <strong title={d.title ?? d.planSlug}>{d.planSlug}</strong>
+                  {d.planStatus == null ? (
+                    <em title="The draft plan row no longer exists (superseded or deleted).">gone</em>
+                  ) : (
+                    <em title={`Draft plan lifecycle status.`}>{d.planStatus}</em>
+                  )}
+                  {d.planVersion != null ? (
+                    <span
+                      className={`pc-learning__flowchip${d.revised ? " pc-learning__flowchip--wd-good" : ""}`}
+                      title={
+                        d.revised
+                          ? `v${d.planVersion} — revised since ${t("scout", { lower: true })} drafted it: the grade/feedback → typed-revision loop has turned on this draft.`
+                          : "v1 — no revision yet; awaiting review/feedback."
+                      }
+                    >
+                      v{d.planVersion}
+                      {d.revised ? " · revised" : ""}
+                    </span>
+                  ) : null}
+                  {!Number.isNaN(upMs) ? <span className="pc-learning__draftwhen">{whenLabel(upMs)}</span> : null}
+                </li>
+              );
+            })}
+          </ul>
         </LearningDisclosure>
       ) : null}
 
@@ -3802,6 +3842,16 @@ export function LearningStyles() {
       .pc-learning__cadence-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width 300ms ease; }
       .pc-learning__cadence-fill--armed { background: var(--good, #34d399); }
       .pc-learning__cadence-lanes { display: flex; flex-wrap: wrap; gap: 4px; }
+
+      /* Drafts-in-iteration list (learning-tab-visibility P-005). */
+      .pc-learning__draftlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+      .pc-learning__draftrow {
+        display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px;
+        color: var(--fg-dim, #b9d4e8); padding: 2px 2px;
+      }
+      .pc-learning__draftrow strong { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
+      .pc-learning__draftrow em { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__draftwhen { font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
 
       /* Tick-economics strip (learning-tab-alignment P-002) — one cell per scout
          tick: when · gen→routed funnel · stop reason · spend · lens chips. */
