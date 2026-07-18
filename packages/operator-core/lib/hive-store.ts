@@ -281,6 +281,53 @@ export async function updateHiveMeta(
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
+/**
+ * Resolve the workspaceId a Hive's PERSISTED identity row + keypair actually live
+ * under, given the CALLER-supplied (ambient) workspaceId + its home slug.
+ *
+ * WI-5321/WI-5061 design constraint: a hive's row + `hive:<ws>:<slug>` keypair are
+ * minted under whatever workspace id was ACTIVE at create time. If the caller's
+ * ambient workspace later diverges from that (the ambient-'default' bug class —
+ * see WI-2381/WI-5125/WI-5061: a fresh/legacy install's real workspace was minted
+ * as the literal id "default", which WI-5321 now fixes going forward, but any hive
+ * created BEFORE that fix landed still has its row + key stamped 'default'), an
+ * ambient-workspace-scoped lookup (`getHiveBySlug(activeWorkspaceId(), slug)`)
+ * silently misses — the row exists, just under a different workspace_id — which
+ * `hive-policy-author.ts`'s keypair-ownership gate then reports as `not_owner_swarm`
+ * even though this Swarm genuinely holds the key (WI-5061 root cause, confirmed
+ * live: `keypair-hive_default_<slug>.enc` present, ambient lookup used the active
+ * post-fix workspace id).
+ *
+ * Fast path (the overwhelmingly common, correct case): a row exists at
+ * (ambientWorkspaceId, potHomeSlug) — return ambientWorkspaceId unchanged, zero
+ * extra queries beyond the one every caller already does.
+ *
+ * Fallback: no row at the ambient id. Search by home-slug ACROSS every workspace.
+ * If the slug resolves to EXACTLY ONE row workspace-wide, that row's own
+ * workspace_id is authoritative — return it (callers should use this resolved id
+ * for the keychain lookup AND the policy signature binding, consistently, so both
+ * agree with the historical id the key was actually minted under). Zero or
+ * MULTIPLE matches (a genuinely ambiguous slug collision across unrelated
+ * workspaces, or a genuine non-owner Swarm with no local row at all) fail CLOSED
+ * to the original ambientWorkspaceId — preserving today's `not_owner_swarm` for a
+ * real non-owner unchanged; this never widens who can pass the ownership gate,
+ * it only stops a false negative against the Swarm's OWN historical row.
+ */
+export async function resolveHiveWorkspaceId(
+  ambientWorkspaceId: string,
+  potHomeSlug: string,
+  sql?: Sql,
+): Promise<string> {
+  const direct = await getHiveBySlug(ambientWorkspaceId, potHomeSlug, sql);
+  if (direct) return ambientWorkspaceId;
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT DISTINCT workspace_id FROM harness_shared.pots WHERE pot_home_slug = $1 LIMIT 2`,
+    [potHomeSlug],
+  )) as unknown as Array<{ workspace_id: string }>;
+  return rows.length === 1 ? rows[0].workspace_id : ambientWorkspaceId;
+}
+
 /** Delete a Hive identity row (create-rollback + pot:dissolve). Idempotent. */
 export async function deleteHive(
   workspaceId: string,

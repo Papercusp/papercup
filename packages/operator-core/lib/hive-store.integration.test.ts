@@ -19,6 +19,7 @@ import {
   getHiveBySlug,
   insertHiveIfAbsent,
   listHives,
+  resolveHiveWorkspaceId,
   updateHiveMeta,
 } from './hive-store';
 
@@ -113,6 +114,38 @@ describe('hive-store (real PG, migration 184)', () => {
         sql,
       ),
     ).rejects.toThrow(/32 raw bytes/);
+  });
+
+  describe('resolveHiveWorkspaceId (WI-5321/WI-5061 ambient-workspace-mismatch fix)', () => {
+    it('fast path: a row exists at the ambient workspace — returns it unchanged', async () => {
+      const ws = 'ws-resolve-fast';
+      await insertHiveIfAbsent({ workspaceId: ws, homeSlug: 'fastslug', pubkeyBase64: pk(21), keychainId: 'k' }, sql);
+      expect(await resolveHiveWorkspaceId(ws, 'fastslug', sql)).toBe(ws);
+    });
+
+    it('fallback: no row at the ambient id, but exactly one elsewhere — resolves to the row\'s OWN workspace', async () => {
+      // Simulates the WI-5061 shape: the hive's row+key were minted under 'default'
+      // (a pre-WI-5321 install), but the caller's ambient workspace is now the real
+      // post-fix minted id — the ambient-scoped lookup misses.
+      await insertHiveIfAbsent(
+        { workspaceId: 'default', homeSlug: 'orphan-under-default', pubkeyBase64: pk(22), keychainId: 'hive:default:orphan-under-default' },
+        sql,
+      );
+      const resolved = await resolveHiveWorkspaceId('workspace-abc12345', 'orphan-under-default', sql);
+      expect(resolved).toBe('default');
+    });
+
+    it('ambiguous: the slug exists under TWO unrelated workspaces — fails CLOSED to the ambient id', async () => {
+      await insertHiveIfAbsent({ workspaceId: 'ws-amb-1', homeSlug: 'shared-slug', pubkeyBase64: pk(23), keychainId: 'k' }, sql);
+      await insertHiveIfAbsent({ workspaceId: 'ws-amb-2', homeSlug: 'shared-slug', pubkeyBase64: pk(24), keychainId: 'k' }, sql);
+      const resolved = await resolveHiveWorkspaceId('ws-amb-ambient-caller', 'shared-slug', sql);
+      expect(resolved).toBe('ws-amb-ambient-caller'); // unchanged — never guesses between two real owners
+    });
+
+    it('genuinely no local row anywhere — fails CLOSED to the ambient id (a real non-owner Swarm is unaffected)', async () => {
+      const resolved = await resolveHiveWorkspaceId('ws-resolve-none', 'nonexistent-slug', sql);
+      expect(resolved).toBe('ws-resolve-none');
+    });
   });
 
   it('RLS isolates a hive to its workspace (RLS-subject connection)', async () => {

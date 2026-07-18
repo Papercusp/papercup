@@ -89,6 +89,42 @@ describe('authorHivePolicy', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.code).toBe('not_owner_swarm');
   });
+
+  it('WI-5321/WI-5061: resolves the ambient workspaceId to the Hive\'s TRUE (historical) one before every other seam — keychain lookup, sign, AND the signature binding all agree', async () => {
+    const kp = generateEd25519KeypairDer();
+    const { writes, write } = writeCapture();
+    const TRUE_WS = 'default'; // the pre-WI-5321 workspace the row+key actually live under
+    const seen: { loadOwnerPubkey: string[]; readCurrent: string[]; sign: string[] } = {
+      loadOwnerPubkey: [], readCurrent: [], sign: [],
+    };
+
+    const res = await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {} }, {
+      resolveWorkspaceId: async (ambientWs, slug) => {
+        expect(ambientWs).toBe(WS); // resolver receives the RAW ambient id, unresolved
+        expect(slug).toBe(HOME);
+        return TRUE_WS;
+      },
+      loadOwnerPubkey: async (ws) => { seen.loadOwnerPubkey.push(ws); return kp.pubkeyBase64; },
+      readCurrent: async (ws) => { seen.readCurrent.push(ws); return null; },
+      sign: async (ws, _slug, bytes) => { seen.sign.push(ws); return signWithPrivateKeyDer(kp.privateKeyDer, bytes); },
+      write,
+    });
+
+    expect(res.ok).toBe(true);
+    // Every downstream seam got the RESOLVED (true) workspace, never the raw ambient one.
+    expect(seen.loadOwnerPubkey).toEqual([TRUE_WS]);
+    expect(seen.readCurrent).toEqual([TRUE_WS]);
+    expect(seen.sign).toEqual([TRUE_WS]);
+    expect(writes[0].workspaceId).toBe(TRUE_WS);
+    // The signature verifies over bytes bound to the RESOLVED workspaceId — consistent
+    // with what a member's projection will recompute against the row's own workspace_id.
+    const expectedBytes = hivePolicySignedBytes({
+      workspaceId: TRUE_WS, potHomeSlug: HOME, policyVersion: 1,
+      canonicalPolicyJson: canonicalizeHivePolicy({}),
+    });
+    expect(verifyEd25519(expectedBytes, kp.pubkeyBase64, Buffer.from(writes[0].signature, 'base64'))).toBe(true);
+  });
+
 });
 
 describe('mutateHivePolicy (EN-3 ban/takedown write accessor)', () => {
@@ -116,5 +152,33 @@ describe('mutateHivePolicy (EN-3 ban/takedown write accessor)', () => {
     expect(written.moderation?.bannedGithubIds).toEqual(['1', '2']);
     expect(written.futureKnob).toBe('keep'); // forward-compat preserved through the mutate
     expect(writes[0].policyVersion).toBe(3); // bumped from current 2
+  });
+
+  it('WI-5321/WI-5061: resolves the ambient workspaceId BEFORE its own readCurrent, and threads the resolved id into authorHivePolicy', async () => {
+    const kp = generateEd25519KeypairDer();
+    const { writes, write } = writeCapture();
+    const TRUE_WS = 'default';
+    const readCurrentSeen: string[] = [];
+
+    const res = await mutateHivePolicy({
+      workspaceId: WS, potHomeSlug: HOME,
+      mutate: (p) => ({ ...p, moderation: { ...p.moderation, takedownList: ['ref-1'] } }),
+    }, {
+      // Called twice (once by mutateHivePolicy itself, once inside the authorHivePolicy
+      // it delegates to) — mirror the real resolver's idempotent fast path: resolving
+      // an already-resolved id is a no-op, so both calls converge on TRUE_WS.
+      resolveWorkspaceId: async (ambientWs) => (ambientWs === WS ? TRUE_WS : ambientWs),
+      readCurrent: async (ws) => { readCurrentSeen.push(ws); return null; },
+      loadOwnerPubkey: async () => kp.pubkeyBase64,
+      sign: async (_ws, _slug, bytes) => signWithPrivateKeyDer(kp.privateKeyDer, bytes),
+      write,
+    });
+
+    expect(res.ok).toBe(true);
+    // Called twice (mutateHivePolicy's own read for `mutate()`'s input, then again
+    // inside authorHivePolicy's version-bump step) — BOTH with the resolved id, never
+    // the raw ambient one, else one of them would read the wrong (empty) policy row.
+    expect(readCurrentSeen).toEqual([TRUE_WS, TRUE_WS]);
+    expect(writes[0].workspaceId).toBe(TRUE_WS);
   });
 });

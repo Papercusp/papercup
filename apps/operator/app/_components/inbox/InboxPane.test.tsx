@@ -198,6 +198,32 @@ describe('<InboxPane>', () => {
     expect(rows).toEqual(['inbox-row-d1', 'inbox-row-act1']);
   });
 
+  // deterministic-status-cards-2026-07-17 P-003: the curator-card drill-in bug.
+  // A curator status card points at an OPERATIONAL/ALERT-tier escalation; under
+  // the DEFAULT 'needs' filter that row is hidden, so a deep-linked ?opcis lands
+  // on nothing ("Open just opens the inbox page"). The drill-in fix also writes
+  // ?opci=all, which is what actually makes the row visible + selectable.
+  it("an ALERT-tier escalation deep-linked WITHOUT ?opci=all is hidden (the bug) — nothing selected", () => {
+    seedAttention([
+      mkItem('coord-escalation:m9', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
+      mkItem('d1'),
+    ]);
+    renderPane('?opcis=coord-escalation:m9'); // default 'needs' filter
+    expect(screen.queryByTestId('inbox-row-coord-escalation:m9')).toBeNull(); // filtered out
+    expect(screen.queryByTestId('other-detail')).toBeNull(); // → no selection lands
+  });
+
+  it("?opci=all + ?opcis SELECTS the deep-linked alert escalation (the drill-in target)", () => {
+    seedAttention([
+      mkItem('coord-escalation:m9', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
+      mkItem('d1'),
+    ]);
+    renderPane('?opci=all&opcis=coord-escalation:m9');
+    const row = screen.getByTestId('inbox-row-coord-escalation:m9');
+    expect(row.getAttribute('aria-expanded')).toBe('true'); // selected
+    expect(screen.getByTestId('other-detail').getAttribute('data-item')).toBe('coord-escalation:m9');
+  });
+
   it('clicking a row writes ?opcis; the ?opcis-selected row hosts OtherDetail inline', async () => {
     seedAttention([mkItem('d1'), mkItem('d2')]);
     const { lastQuery } = renderPane('?opcis=d2');
