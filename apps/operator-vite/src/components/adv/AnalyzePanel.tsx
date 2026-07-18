@@ -155,7 +155,7 @@ export function AnalyzePanel({
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); font-size: 10px;
         color: var(--fg-mute, #7f9bb4); white-space: nowrap;
       }
-      .pc-analyze__chip.is-keep { color: var(--ok, #6ee7a2); border-color: color-mix(in srgb, var(--ok, #6ee7a2) 40%, transparent); }
+      .pc-analyze__chip.is-keep { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
       .pc-analyze__chip.is-moonshot { color: var(--accent, #7dd3fc); border-color: color-mix(in srgb, var(--accent, #7dd3fc) 45%, transparent); }
       .pc-analyze__chip.is-reject { opacity: 0.75; }
       .pc-analyze__scores { font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -168,7 +168,7 @@ export function AnalyzePanel({
       }
       .pc-analyze__exp b { font-weight: 650; }
       .pc-analyze__sources { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-      .pc-analyze__routedref { color: var(--ok, #6ee7a2); }
+      .pc-analyze__routedref { color: var(--good); }
       `}</style>
     </section>
   );
