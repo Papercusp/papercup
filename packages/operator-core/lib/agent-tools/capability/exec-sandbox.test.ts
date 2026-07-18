@@ -15,6 +15,7 @@ import { FLEET_SANDBOX_DENY_READ } from '@papercusp/orchestrator';
 import {
   buildCapabilitySandboxCommand,
   CAPABILITY_SANDBOX_MASK_DIRS,
+  scrubExecEnv,
   type BuildSandboxOpts,
 } from './exec-sandbox';
 
