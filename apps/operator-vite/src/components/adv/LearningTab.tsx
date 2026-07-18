@@ -48,6 +48,7 @@ import type {
   ScoutSnapshot,
   ScoutRoutedItem,
   ScoutTickEconomics,
+  ScoutCadenceState,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-read";
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
@@ -2507,6 +2508,87 @@ function ThroughputView({
   );
 }
 
+/**
+ * Cadence card (learning-tab-visibility P-001): the live volume-gate state.
+ * Score/threshold/lane counts arrive server-derived from the gate's own reader
+ * (never re-computed here); this renders them as a score bar + per-lane chips.
+ */
+function CadenceCard({
+  cadence,
+  scoutWord,
+}: {
+  cadence: ScoutCadenceState;
+  scoutWord: string;
+}) {
+  const pct =
+    cadence.threshold > 0
+      ? Math.min(100, Math.round((cadence.score / cadence.threshold) * 100))
+      : 0;
+  const armed = cadence.score >= cadence.threshold;
+  const quiet = cadence.score <= 0;
+  const wmMs = cadence.watermarkAt ? Date.parse(cadence.watermarkAt) : NaN;
+  const verdict = armed
+    ? "will fire on the next gate tick"
+    : quiet
+      ? "quiet — zero new signal, firing withheld (spend drops to zero)"
+      : "accumulating — fires on threshold or the heartbeat ceiling";
+  return (
+    <div
+      className="pc-learning__cadence"
+      role="group"
+      aria-label={`${scoutWord} firing state`}
+      title={`${scoutWord} fires on DATA VOLUME, not a clock: a 30s sweep recounts per-lane "new signal since the last successful cycle"; the weighted score (shown here, from the gate's own reader) fires a cycle at ≥${cadence.threshold}, a zero score withholds everything, and a heartbeat fires at least every ${Math.round(cadence.maxIntervalSec / 60)}m regardless.`}
+    >
+      <span className="pc-learning__cadence-head">
+        <Gauge size={12} aria-hidden />
+        <strong>
+          signal {Math.round(cadence.score * 10) / 10} / {cadence.threshold}
+        </strong>
+        <span
+          className="pc-learning__cadence-bar"
+          role="progressbar"
+          aria-valuenow={Math.round(cadence.score)}
+          aria-valuemin={0}
+          aria-valuemax={cadence.threshold}
+        >
+          <span
+            className={`pc-learning__cadence-fill${armed ? " pc-learning__cadence-fill--armed" : ""}`}
+            style={{ width: `${pct}%` }}
+          />
+        </span>
+        <em>{verdict}</em>
+      </span>
+      <span className="pc-learning__cadence-lanes">
+        {cadence.lanes
+          .filter((l) => l.count > 0)
+          .map((l) => (
+            <span
+              key={l.lane}
+              className="pc-learning__flowchip"
+              title={`${l.count} new ${l.lane.replace(/-/g, " ")} since the last cycle × weight ${l.weight} = ${l.count * l.weight} toward the score.`}
+            >
+              {l.lane.replace(/-/g, " ")} <strong>{l.count}</strong>
+              <em>×{l.weight}</em>
+            </span>
+          ))}
+        {cadence.lanes.every((l) => l.count === 0) ? (
+          <span className="pc-learning__flowchip" title="No lane has accumulated new signal since the last successful cycle.">
+            no new signal in any lane
+          </span>
+        ) : null}
+        {!Number.isNaN(wmMs) ? (
+          <span
+            className="pc-learning__flowchip"
+            title="The accumulator baseline — counts are 'new since this instant' (the last successful cycle)."
+          >
+            since {whenLabel(wmMs)}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
 // The ideation surface is mounted directly inside Improve → Ideas.
 export function ScoutView({
   onStatus,
@@ -2533,6 +2615,9 @@ export function ScoutView({
   // learning-scout-read.ts, never re-derived here). Pre-P-003 snapshots lack
   // the field — degrade to neutral.
   const health = snap?.health ?? { status: "neutral" as const, markers: [] };
+  // learning-tab-visibility P-001: the live cadence/firing state. Pre-deploy
+  // snapshots lack the field — the card simply doesn't render.
+  const cadence = snap?.cadence ?? null;
 
   // Grading (P-006): the note popover's open-state is URL state (`?grade=<ideaId>`)
   // so agents can drive it; in-flight optimistic grades + errors are transient
@@ -3684,6 +3769,27 @@ export function LearningStyles() {
       .pc-learning__flowdot--good { background: var(--good); box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
       .pc-learning__flowdot--warn { background: var(--warn); box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
       .pc-learning__flowdot--bad { background: var(--bad); box-shadow: 0 0 5px rgba(248, 113, 113, 0.6); }
+
+      /* Cadence card (learning-tab-visibility P-001) — live volume-gate state:
+         score bar vs threshold + per-lane pending-signal chips. */
+      .pc-learning__cadence {
+        display: flex; flex-direction: column; gap: 5px; padding: 7px 10px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 8px;
+        background: var(--bg-2, rgba(255, 255, 255, 0.03));
+      }
+      .pc-learning__cadence-head {
+        display: inline-flex; align-items: center; gap: 8px; font-size: 11px;
+        color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__cadence-head strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .pc-learning__cadence-head em { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-learning__cadence-bar {
+        flex: 0 1 140px; min-width: 60px; height: 5px; border-radius: 999px;
+        background: color-mix(in srgb, var(--fg-mute, #7f9bb4) 18%, transparent); overflow: hidden;
+      }
+      .pc-learning__cadence-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width 300ms ease; }
+      .pc-learning__cadence-fill--armed { background: var(--good, #34d399); }
+      .pc-learning__cadence-lanes { display: flex; flex-wrap: wrap; gap: 4px; }
 
       /* Tick-economics strip (learning-tab-alignment P-002) — one cell per scout
          tick: when · gen→routed funnel · stop reason · spend · lens chips. */
