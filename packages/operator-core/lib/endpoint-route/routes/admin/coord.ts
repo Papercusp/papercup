@@ -42,12 +42,6 @@ import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity
 const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
 const WRITE_VERBS = new Set(['resolve', 'ack', 'message-agent', 'send']);
 
-const HOST_EXTRAS: HttpToolHostExtras = {
-  deps: PROJECTED_DEPS,
-  log: () => {},
-  validateSuperuser: () => true,
-};
-
 function unwrap(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status === 200) {
     const body = toolResult.body as { content?: Array<{ type: string; text?: string }> };

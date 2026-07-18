@@ -26,12 +26,6 @@ import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 // being loopback-bound like every other /admin/* endpoint.
 const ADMIN_UI_CLIENT_ID = 'pc-admin-plans-ui';
 
-const HOST_EXTRAS: HttpToolHostExtras = {
-  deps: PROJECTED_DEPS,
-  log: () => {},
-  validateSuperuser: () => true,
-};
-
 async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   const url = new URL(req.url);
   const headerMap: Record<string, string | undefined> = {};

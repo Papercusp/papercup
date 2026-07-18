@@ -107,12 +107,6 @@ const WRITE_VERBS = new Set([
 // that ever synthesizes that URL.
 const ADMIN_UI_CLIENT_ID = 'pc-admin-plans-ui';
 
-const HOST_EXTRAS: HttpToolHostExtras = {
-  deps: PROJECTED_DEPS,
-  log: () => {},
-  validateSuperuser: () => true,
-};
-
 function unwrap(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status === 200) {
     const body = toolResult.body as { content?: Array<{ type: string; text?: string }> };
