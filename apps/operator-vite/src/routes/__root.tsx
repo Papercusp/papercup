@@ -36,6 +36,7 @@ import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
 import { HiveThemeBridge } from '@/app/_components/HiveThemeBridge';
 import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
 import DesktopConsoleLaunchBridge from '@/app/_components/DesktopConsoleLaunchBridge';
+import FlagStreamSubscriber from '@/app/_components/FlagStreamSubscriber';
 import TerminalDivider from '@/app/_components/TerminalDivider';
 import NativeTerminalGate from '@/app/_components/NativeTerminalGate';
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
@@ -186,6 +187,11 @@ function RootComponent() {
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
         <GlobalShortcutDispatcher />
+        {/* EI-2425 fix B: wire the live flag-flip SSE stream once at the app
+            root so a flag flip surfaces on an open desktop with no reload
+            (see FlagStreamSubscriber's own doc comment). Mounted app-wide,
+            before any flag-gated chrome below. */}
+        <FlagStreamSubscriber />
         {/* Dogfood clone-on-first-boot progress bar (desktop UI part A) — inside
             RootSyncProvider so it reads `hiveFromRepo.progress`; fixed at the top,
             overlays every route, self-hides when ready / no rows. */}

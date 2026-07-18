@@ -204,11 +204,55 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
 let timer: ManagedHandle | null = null;
 let waker: StallWaker | null = null;
 
+// EI-2432: the loop's only prior signal was `console.log` buried in the operator's
+// stdout — an agent (even su, full access) could not confirm it was running,
+// its poll cadence, or its recent activity without grepping host logs. Track a
+// small in-process summary (this loop lives in the OPERATOR process — same
+// process as every agent-tool handler — so a `dev:*` tool reads it directly, no
+// cross-process hop to the standalone gateway sidecar needed) and expose it via
+// {@link getStallWakerStatus}.
+let startedAt: number | null = null;
+let boundWorkspaceId: string | null = null;
+let tickCount = 0;
+let lastTickAt: number | null = null;
+let lastTickOk = true;
+let lastTickError: string | null = null;
+let wokenTotal = 0;
+let droppedTotal = 0;
+let unwedgedTotal = 0;
+
 /** Start the poll loop if not already running (idempotent — safe to call on every spawn). */
 export function ensureStallWakerLoop(workspaceId: string): void {
   if (timer) return;
   waker = new StallWaker(createStallWakerDeps(workspaceId));
-  timer = managedSetInterval('stall-waker-loop', POLL_MS, () => void waker!.tick(), { category: 'global-sweep' });
+  startedAt = Date.now();
+  boundWorkspaceId = workspaceId;
+  timer = managedSetInterval(
+    'stall-waker-loop',
+    POLL_MS,
+    () =>
+      void waker!
+        .tick()
+        .then((r) => {
+          tickCount++;
+          lastTickAt = Date.now();
+          lastTickOk = true;
+          lastTickError = null;
+          wokenTotal += r.woken.length;
+          droppedTotal += r.dropped.length;
+          unwedgedTotal += r.unwedged.length;
+        })
+        .catch((e: unknown) => {
+          // tick() itself is documented never to throw (each step is guarded) — this catch is a
+          // backstop so a genuinely unexpected throw still surfaces as `lastTickOk:false` instead
+          // of silently freezing lastTickAt with no visible signal.
+          tickCount++;
+          lastTickAt = Date.now();
+          lastTickOk = false;
+          lastTickError = e instanceof Error ? e.message : String(e);
+        }),
+    { category: 'global-sweep' },
+  );
   console.log(`[stall-waker] started (poll ${POLL_MS}ms, idle ${IDLE_SILENCE_MS}ms) for ${workspaceId}`);
 }
 
@@ -216,4 +260,43 @@ export function stopStallWakerLoop(): void {
   if (timer) timer.stop();
   timer = null;
   waker = null;
+  startedAt = null;
+  boundWorkspaceId = null;
+}
+
+/** Observability snapshot (EI-2432) — running?, since when, poll cadence, last-tick health, and the
+ *  waker's live counters, without grepping operator stdout. `running:false` when the loop was never
+ *  started (gateway off / no spawn yet) or was stopped; every other field is `null`/0 in that case. */
+export function getStallWakerStatus(): {
+  running: boolean;
+  workspaceId: string | null;
+  startedAt: number | null;
+  pollMs: number;
+  idleSilenceMs: number;
+  tickCount: number;
+  lastTickAt: number | null;
+  lastTickOk: boolean;
+  lastTickError: string | null;
+  pendingCount: number;
+  breadcrumbCount: number;
+  wokenTotal: number;
+  droppedTotal: number;
+  unwedgedTotal: number;
+} {
+  return {
+    running: timer !== null,
+    workspaceId: boundWorkspaceId,
+    startedAt,
+    pollMs: POLL_MS,
+    idleSilenceMs: IDLE_SILENCE_MS,
+    tickCount,
+    lastTickAt,
+    lastTickOk,
+    lastTickError,
+    pendingCount: waker?.pendingCount ?? 0,
+    breadcrumbCount: waker?.breadcrumbCount ?? 0,
+    wokenTotal,
+    droppedTotal,
+    unwedgedTotal,
+  };
 }
