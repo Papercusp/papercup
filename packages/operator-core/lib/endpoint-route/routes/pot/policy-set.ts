@@ -21,6 +21,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { resolveHiveWorkspaceId } from '../../../hive-store';
 import { loadHivePubkey } from '../../../identity/hive-keypair';
 import { deriveHiveFederationTopic, topicAsHex } from '../../../sync/hyperbee/derive-swarm-topic';
 import { resolveLocalGithubIdentity } from '../../../identity/resolve-local-github-identity';
@@ -243,7 +244,13 @@ const post = defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const potHomeSlug = ctx.params.id as string;
-    const workspaceId = activeWorkspaceId();
+    // WI-5321/WI-5061: resolve the caller's ambient workspaceId to whatever the
+    // Hive's row + keypair are ACTUALLY stamped with (fast path: unchanged when
+    // they already match) — same ambient-'default' family as authorHivePolicy's
+    // own gate; without this, the claim gate below (and the keypair lookup it
+    // falls back to) looks up a workspace-partition the Hive was never minted
+    // under and returns hive_unclaimed even for a genuinely claimed, owner-held Hive.
+    const workspaceId = await resolveHiveWorkspaceId(activeWorkspaceId(), potHomeSlug);
     const body = await req.json().catch(() => null);
     const result = await runSetPolicy(workspaceId, potHomeSlug, body, realDeps);
     return Response.json(result.body, { status: result.status });
@@ -256,7 +263,10 @@ const get = defineTool({
   auth: 'public',
   async handler(_req, ctx) {
     const potHomeSlug = ctx.params.id as string;
-    const workspaceId = activeWorkspaceId();
+    // WI-5321/WI-5061: same ambient-workspace resolution as the POST handler above —
+    // a read under the ambient (wrong) partition would silently return { policy: null }
+    // (permissive) instead of the Hive's real signed policy.
+    const workspaceId = await resolveHiveWorkspaceId(activeWorkspaceId(), potHomeSlug);
     try {
       const policy = await getHivePolicy(workspaceId, potHomeSlug);
       // null ⇒ no policy set (permissive). Return a stable shape for the GUI.
