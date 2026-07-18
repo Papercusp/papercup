@@ -58,14 +58,25 @@ Key details learned the hard way:
     **established** id as `client=` — not blindly `$PAPERCUSP_SID` — or you fork
     your own presence into two identities and peers see a stranger pick up your
     work. Both ids resolve via the bridge, so choose deliberately.
-  - **EI-1753 — the flap can happen DESPITE a correct `client=`:** during operator
-    blips the server-side identity resolution can still fall back to the BEARER's
-    default session even when you passed the right `client=`, so a claim/comment
-    lands on the WRONG su-id *silently*. Mitigation until the code fix lands: right
-    before any CRITICAL write (`issues:claim`, `*:resolve`, `work_items:set_state`,
-    `coord:declare-intent`), call `coord:whoami` and confirm it returns YOUR id;
-    if it flapped, re-issue. (Fix direction: fail-closed on an unresolvable
-    `client=` rather than silently using the bearer's session.)
+  - **EI-1753 — the flap that could happen DESPITE a correct `client=` — FIXED
+    (EI-7066, 2026-07-03):** during operator blips / a reconnect the server-side
+    identity resolution used to rank the per-CONNECTION `Mcp-Session-Id` transport
+    id ABOVE the explicit `?client=`/`x-papercusp-client` SID, so a claude session
+    that reconnected mid-life (a cold-loop RECYCLE respawn, a dropped MCP
+    transport) silently swapped to a fresh per-connection identity — a
+    claim/comment could land on the WRONG su-id even with the right `client=`
+    passed. Fixed in `_mcp-handler.ts`'s superuser branch: precedence is now
+    `x-papercusp-client` header > `?client=` > `Mcp-Session-Id` — an explicit
+    per-launch SID (header or param) ALWAYS outranks the transport id; the
+    transport id is used only when the caller supplied no SID at all. Covered by
+    a dedicated regression suite: `describe('su identity precedence (EI-7066:
+    explicit SID before Mcp-Session-Id)')` in
+    `mcp-handler-gating-matrix.test.ts` (unit) + `§12 per-session identity via
+    Mcp-Session-Id` in `su-locks-http-mcp.integration.test.ts` (live, asserts
+    "same `?client=`, different `Mcp-Session-Id` → SAME owner"). Still good
+    practice to `coord:whoami`-confirm before a critical write if you have any
+    doubt about which identity a given call resolved to — but this exact flap
+    class no longer reproduces.
 - **Pass `workspace`** in the URL (e.g. `workspace=papercusp-workspace`).
   Omitting it under `superuser=1` fails with
   `request_rejected: scoped_superuser_workspace_unresolved`.
