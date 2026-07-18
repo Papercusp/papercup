@@ -1220,6 +1220,10 @@ import './events/catalog';
 // / service:await-up / git-sync:await / plan-item:await / fleet:await-drained) that
 // resolve to events:await, sourcing key shapes from the catalog (D-002/D-005).
 import './events/sugar';
+// EI-10869 — events:lost-wake-check: read harness_shared.event_awaits and report awaitable
+// event keys whose live real-fire rate is degenerate, the direct analogue of
+// gates:degenerate-check (EI-10609) on the await-log sibling table.
+import './events/lost-wake-check';
 
 // event-reaction-system-2026-06-04 — the declarative "when tool X settles, fire
 // tool Y" layer over the dispatcher. Importing this registers the built-in

@@ -15,7 +15,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { pgReadQuery, PgReadQueryError } from './pg-read-query';
+import { pgReadQuery, explainReadQuery, PgReadQueryError } from './pg-read-query';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -93,5 +93,63 @@ describe('pgReadQuery (real PG)', () => {
     await expect(
       pgReadQuery('SELECT 1; SELECT 2', { client: db.adminSql }),
     ).rejects.toThrow(PgReadQueryError);
+  });
+});
+
+// EI-10514: EXPLAIN-only schema validation (parses/plans, never executes or writes) —
+// built for validateRubricReplicationSql to schema-check embedded rubric drill SQL.
+describe('explainReadQuery (real PG)', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('ok:true for a query against a real table/columns', async () => {
+    const r = await explainReadQuery('SELECT plan_slug, status FROM harness_shared.harness_plans LIMIT 5', {
+      client: db.adminSql,
+    });
+    expect(r).toEqual({ ok: true });
+  });
+
+  it('ok:false with the PG error info for an undefined table (42P01)', async () => {
+    const r = await explainReadQuery('SELECT * FROM harness_shared.this_table_does_not_exist', {
+      client: db.adminSql,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe('42P01');
+      expect(r.error.message).toMatch(/does not exist/i);
+    }
+  });
+
+  it('ok:false with the PG error info for an undefined column (42703) — the renamed-column repro shape', async () => {
+    // The literal EI-10514 repro: a drill authored from memory of the old column name.
+    const r = await explainReadQuery(
+      'SELECT ideas_count, created_at FROM harness_shared.scout_ticks LIMIT 1',
+      { client: db.adminSql },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe('42703');
+    }
+  });
+
+  it('never executes/materializes the query — an aggregate over a huge generate_series is instant', async () => {
+    const started = Date.now();
+    const r = await explainReadQuery('SELECT count(*) FROM generate_series(1, 100000000) AS n', {
+      client: db.adminSql,
+    });
+    expect(r).toEqual({ ok: true });
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  it('rejects a write statement (guard 1, same as pgReadQuery)', async () => {
+    const r = await explainReadQuery('DELETE FROM harness_shared.harness_plans', { client: db.adminSql });
+    expect(r.ok).toBe(false);
   });
 });
