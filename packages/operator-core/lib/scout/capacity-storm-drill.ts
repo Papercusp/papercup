@@ -13,8 +13,9 @@
  * through three synthetic failure legs against the LIVE tick ledger:
  *
  *   1. `capacity`         — the cycle throws with a typed AdmissionDenial
- *                           reason:'all-accounts-paused'. MUST be reclassified to
- *                           the 'no-capacity' GATE (not an error).
+ *                           reason:'all-accounts-paused' stamped via:'governor'.
+ *                           MUST be reclassified to the 'no-capacity' GATE (not an
+ *                           error).
  *   2. `timeout`          — the cycle genuinely times out through the deployed
  *                           withScoutCycleTimeout wrapper (a hung runCycle + a tiny
  *                           cycleTimeoutMs). MUST stay status:'error' — the
@@ -26,6 +27,11 @@
  *                           guard (an admission-path defect that merely LOOKS like
  *                           capacity must stay loud), and the versioned-row
  *                           boundary (typed evidence beats legacy prose).
+ *   4. `unattested-capacity` — the cycle throws with a capacity REASON
+ *                           ('provider-429') but NO `via` attestation stamp — the
+ *                           exact shape an evidence-free prose-inferring mint site
+ *                           would produce. MUST stay status:'error' on BOTH paths:
+ *                           the evidence-required fail-closed rule (WI-5391 Part B).
  *
  * After the legs run, the persisted rows are READ BACK from the ledger and
  * re-classified with {@link isPersistedCapacityError} — proving the write path and
@@ -64,7 +70,7 @@ export const CAPACITY_STORM_TICK_ORIGIN = 'drill';
 /** How long the hung-cycle timeout leg waits before the deployed wrapper kills it. */
 export const CAPACITY_STORM_TIMEOUT_LEG_MS = 80;
 
-export type CapacityStormLeg = 'capacity' | 'timeout' | 'admission-defect';
+export type CapacityStormLeg = 'capacity' | 'timeout' | 'admission-defect' | 'unattested-capacity';
 
 export interface CapacityStormLegResult {
   leg: CapacityStormLeg;
@@ -95,7 +101,11 @@ export interface CapacityStormEvidence {
   defectStaysError: boolean;
   /** Leg 3 read path: versioned row + legacy-looking prose still NOT capacity. */
   defectReadStaysError: boolean;
-  /** All three legs landed persisted origin='drill' rows. */
+  /** Leg 4 write path: a capacity-reason denial with NO `via` stamp stayed status:'error'. */
+  unattestedStaysError: boolean;
+  /** Leg 4 read path: the persisted unattested row is NOT reclassified as capacity. */
+  unattestedReadStaysError: boolean;
+  /** All four legs landed persisted origin='drill' rows. */
   allLegsPersisted: boolean;
   /** Ticks carrying this drill's cycle ids OUTSIDE origin='drill' (must be 0). */
   organicTickLeaks: number;
@@ -124,6 +134,8 @@ export function evaluateCapacityStormEvidence(
     [evidence.timeoutReadStaysError, 'the read path reclassified the persisted timeout row as capacity'],
     [evidence.defectStaysError, 'a no-free-slot admission-path defect was hidden as capacity at write time (WI-4541 inversion)'],
     [evidence.defectReadStaysError, 'the read path let legacy-looking prose reclassify a versioned no-free-slot row as capacity'],
+    [evidence.unattestedStaysError, 'an evidence-free capacity-reason denial (no via stamp) was excluded at write time (fail-closed violation)'],
+    [evidence.unattestedReadStaysError, 'the read path reclassified the persisted unattested-denial row as capacity'],
     [evidence.allLegsPersisted, "not every storm leg landed a persisted origin='drill' tick row"],
     [evidence.organicMetricsUnchanged, "a storm tick leaked outside origin='drill'"],
   ];
@@ -184,7 +196,7 @@ export async function runCapacityStormDrill(
       runCycle: async () => {
         throw Object.assign(
           new Error(`drill:${drillId} synthetic storm — every pool account paused/walled`),
-          { admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 12 } },
+          { admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 12 } },
         );
       },
     },
@@ -205,7 +217,19 @@ export async function runCapacityStormDrill(
         // versioned-row boundary must keep typed evidence authoritative.
         throw Object.assign(
           new Error(`drill:${drillId} rate limit exceeded (synthetic admission-path defect)`),
-          { admissionDenial: { reason: 'no-free-slot', freeSlots: 0 } },
+          { admissionDenial: { reason: 'no-free-slot', via: 'governor', freeSlots: 0 } },
+        );
+      },
+    },
+    {
+      leg: 'unattested-capacity',
+      cycleId: `${drillId}-unattested`,
+      runCycle: async () => {
+        // A capacity REASON with no `via` attestation — the shape an evidence-free
+        // prose-inferring mint site would produce. The fail-closed rule must keep it loud.
+        throw Object.assign(
+          new Error(`drill:${drillId} rate limit exceeded (synthetic unattested capacity claim)`),
+          { admissionDenial: { reason: 'provider-429' } },
         );
       },
     },
@@ -256,10 +280,11 @@ export async function runCapacityStormDrill(
     result.readClassifiedCapacity = isPersistedCapacityError(row.detail);
   }
 
-  const [capacity, timeout, defect] = legResults;
+  const [capacity, timeout, defect, unattested] = legResults;
   const capacityRow = rowByCycleId.get(capacity.cycleId);
   const timeoutRow = rowByCycleId.get(timeout.cycleId);
   const defectRow = rowByCycleId.get(defect.cycleId);
+  const unattestedRow = rowByCycleId.get(unattested.cycleId);
   const organicTickLeaks = await countForeign(
     workspaceId,
     legResults.map((l) => l.cycleId),
@@ -284,6 +309,12 @@ export async function runCapacityStormDrill(
       defect.persistedStatus === 'error' &&
       admissionDenialFrom(defectRow?.detail)?.reason === 'no-free-slot',
     defectReadStaysError: defectRow !== undefined && defect.readClassifiedCapacity === false,
+    unattestedStaysError:
+      unattested.tickReason === 'cycle-error' &&
+      unattested.persistedStatus === 'error' &&
+      admissionDenialFrom(unattestedRow?.detail)?.reason === 'provider-429' &&
+      admissionDenialFrom(unattestedRow?.detail)?.via === undefined,
+    unattestedReadStaysError: unattestedRow !== undefined && unattested.readClassifiedCapacity === false,
     allLegsPersisted: legResults.every((l) => l.persistedStatus !== undefined),
     organicTickLeaks,
     organicMetricsUnchanged: organicTickLeaks === 0,

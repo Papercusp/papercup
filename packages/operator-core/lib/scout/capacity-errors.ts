@@ -114,10 +114,26 @@ export function isLegacyCapacityError(input: unknown): boolean {
  *
  * The governor now carries WHY it withheld a permit (every account paused/walled = capacity;
  * no free slot while accounts sit idle = defect), so this module never infers intent from prose.
+ *
+ * EVIDENCE-REQUIRED (WI-5391 Part B): the reason alone is not enough — the denial must also
+ * carry its `via` attestation stamp ('governor' = the governor's own admission decision;
+ * 'http-429' = a real HTTP 429 status from the provider/gateway). Every live mint site stamps
+ * it; a denial WITHOUT the stamp is evidence-free (e.g. a future mint site pattern-matching
+ * prose) and fails CLOSED — counted as a loud error, per the asymmetry-of-harm tiebreak above.
  */
 export function isCapacityError(input: unknown): boolean {
-  const reason = admissionDenialFrom(input)?.reason;
-  return reason === 'all-accounts-paused' || reason === 'provider-429';
+  const denial = admissionDenialFrom(input);
+  if (!denial || (denial.via !== 'governor' && denial.via !== 'http-429')) return false;
+  return denial.reason === 'all-accounts-paused' || denial.reason === 'provider-429';
+}
+
+/** Read the record-time pool-snapshot contradiction flag from a persisted tick detail.
+ * Set by the scheduler when a capacity-shaped denial arrived while the gateway pool
+ * REPORTED healthy accounts — the WI-4541 signature (admission-path defect masquerading
+ * as capacity). */
+export function capacityContradictedFrom(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  return (input as Record<string, unknown>).capacityContradicted === true;
 }
 
 /**
@@ -125,8 +141,14 @@ export function isCapacityError(input: unknown): boolean {
  * historical row may fall back to the old provider-prose signatures. This
  * preserves the 48h release window across the schema transition without
  * letting a new untyped admission-path defect disappear into the capacity bucket.
+ *
+ * A row the WRITE path deliberately counted as an error because the pool snapshot
+ * contradicted the denial (`capacityContradicted:true`) is NEVER re-excluded here —
+ * otherwise the read path would silently undo the write path's discrimination and
+ * the metric could be greened by relabeling alone.
  */
 export function isPersistedCapacityError(input: unknown): boolean {
+  if (capacityContradictedFrom(input)) return false;
   if (isCapacityError(input)) return true;
   if (capacityClassifierVersionFrom(input) !== undefined) return false;
   return isLegacyCapacityError(input);

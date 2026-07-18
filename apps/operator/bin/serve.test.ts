@@ -342,6 +342,64 @@ describe("cold-start lock (singleton guard)", () => {
   });
 });
 
+// WI-5393 recurrence guard: found live on gate run 122147 (host load 96+) —
+// /proc/<pid>/cmdline can read EMPTY for a genuinely-alive process under
+// heavy load (the same race isPortAccepting's own docstring already warns
+// about), and the old reclaim check treated that ambiguous empty read as
+// proof-of-not-serve, unlinking a still-valid lock and spawning a SECOND
+// live serve.mjs beside the first. These inject `pidAlive`/`processCommandLine`
+// to simulate the race deterministically — a real live process's cmdline
+// can't be forced empty from a test.
+describe("cold-start lock: ambiguous cmdline reads must fail CLOSED (WI-5393)", () => {
+  afterEach(() => {
+    rmSync(lockFile(), { force: true });
+  });
+
+  it("does NOT reclaim when the owner is alive but its cmdline read empty (load-induced /proc race)", () => {
+    writeFileSync(lockFile(), "4242"); // an arbitrary "owner" pid
+    expect(
+      serve.acquireColdStartLock(false, {
+        pidAlive: () => true,
+        processCommandLine: () => "", // the load-induced empty /proc/<pid>/cmdline read
+      }),
+    ).toBe(false); // ambiguous, not proof of staleness — must not reclaim
+    // The lock is untouched — still owned by the original (simulated) pid.
+    expect(readFileSync(lockFile(), "utf8").trim()).toBe("4242");
+  });
+
+  it("still reclaims when the owner is alive but confirmed running an unrelated (non-serve) process (pid reuse)", () => {
+    writeFileSync(lockFile(), "4242");
+    expect(
+      serve.acquireColdStartLock(false, {
+        pidAlive: () => true,
+        processCommandLine: () => "/usr/bin/some-unrelated-daemon --flag",
+      }),
+    ).toBe(true); // genuinely a different, non-serve process — safe to reclaim
+    serve.releaseColdStartLock();
+  });
+
+  it("still refuses to reclaim when the owner is alive and its cmdline genuinely matches serve", () => {
+    writeFileSync(lockFile(), "4242");
+    expect(
+      serve.acquireColdStartLock(false, {
+        pidAlive: () => true,
+        processCommandLine: () => "/some/path/bin/node /some/path/serve.mjs --ensure",
+      }),
+    ).toBe(false);
+    expect(readFileSync(lockFile(), "utf8").trim()).toBe("4242");
+  });
+
+  it("still reclaims a lock whose owner pid is genuinely dead (unaffected by the new deps)", () => {
+    writeFileSync(lockFile(), "4242");
+    expect(
+      serve.acquireColdStartLock(false, {
+        pidAlive: () => false,
+      }),
+    ).toBe(true);
+    serve.releaseColdStartLock();
+  });
+});
+
 // WI-3287 recurrence guard: found live on the first real packaged-Linux
 // env-switcher verify (2026-07-07) — a bundled env-sidecar sibling
 // (env-operator-launcher.ts's `prod`/`staging`) re-execs this SAME serve.mjs

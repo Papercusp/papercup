@@ -514,8 +514,34 @@ export function exportResolvedPortEnv(
  * `wsl --terminate` / host reboot the distro's own init session occupies
  * it, and an unreleased lock then wedges every future boot — found live on
  * Windows 2026-06-11). Same guard sweepOrphanPostgres already uses.
+ *
+ * WI-5393: `/proc/<pid>/cmdline` can read EMPTY for a genuinely-LIVE process
+ * under heavy host load (the same race already documented on
+ * `isPortAccepting` above) — observed live on gate run 122147 (host load
+ * 96+): the env-sidecar "prod" lock's owner pid was alive and actually
+ * serving, but its cmdline read empty at the exact moment a restarting
+ * sibling checked it, so the old code below (which treated ANY non-matching
+ * cmdline — including an ambiguous empty read — as "not a serve process")
+ * unlinked the still-valid lock and spawned a SECOND live serve.mjs beside
+ * the first. Two live instances of the same env then fought over the shared
+ * embedded Postgres for the rest of that boot. An empty cmdline read is NOT
+ * proof the owner isn't a serve process — it is proof we couldn't tell — so
+ * it must fail CLOSED (treat as still-held, do not reclaim) rather than fail
+ * open (treat as stale, reclaim). The asymmetry is deliberate: a false
+ * "still held" costs one extra boot-retry once the load spike passes; a
+ * false "reclaim" produces a live duplicate process, which is the bug.
+ * `deps` lets a test simulate the empty-read race without needing a real
+ * process whose actual /proc/<pid>/cmdline happens to be empty.
  */
-export function acquireColdStartLock(retried = false): boolean {
+export function acquireColdStartLock(
+  retried = false,
+  deps: {
+    pidAlive?: (pid: number) => boolean;
+    processCommandLine?: (pid: number) => string | null;
+  } = {},
+): boolean {
+  const isAlive = deps.pidAlive ?? pidAlive;
+  const cmdlineOf = deps.processCommandLine ?? processCommandLine;
   try {
     // ~/.papercusp may not exist yet on a fresh machine, and this runs before
     // any other writer mkdir's it — create it owner-only first.
@@ -543,17 +569,22 @@ export function acquireColdStartLock(retried = false): boolean {
     // ~/.papercusp/operator.json` health probe (observed live: the probe's
     // own cmdline contains "papercusp" and occupied the reclaimed pid,
     // wedging boot exactly like the stale lock it was checking for).
+    const ownerAlive = isAlive(ownerPid);
+    const ownerCmdline = ownerAlive ? cmdlineOf(ownerPid) : null;
     const ownerIsServe =
-      pidAlive(ownerPid) &&
-      /serve\.(mjs|ts)/i.test(processCommandLine(ownerPid) ?? "");
+      ownerAlive && !!ownerCmdline && /serve\.(mjs|ts)/i.test(ownerCmdline);
     if (ownerIsServe) return false;
+    // WI-5393: alive but cmdline read as an EMPTY string (as opposed to
+    // `null`, which means the read failed outright / the pid is gone) is
+    // INCONCLUSIVE, not a negative — fail closed and refuse to reclaim.
+    if (ownerAlive && ownerCmdline === "") return false;
     if (retried) return false;
     try {
       unlinkSync(LOCK_PATH);
     } catch {
       /* someone else reclaimed */
     }
-    return acquireColdStartLock(true);
+    return acquireColdStartLock(true, deps);
   }
 }
 
