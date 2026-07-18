@@ -207,6 +207,13 @@ import './foreign-git-sync-action';
 // superviseForeignSessions liveness/orphan-ORIGIN sweep (foreign-supervision.ts),
 // which is a separate, still-unwired gap tracked apart from this one.
 import './sweep-orphaned-foreign-harnesses-action';
+// `system:p2p-work-intake` — p2p-public-release-remaining-lanes-2026-07-16
+// P-406 (D-004): the minimal production intake loop — lists open work
+// offers and ticks the WI-3629 evaluatePull->pullAndExecuteOffer seam.
+// Built + tested but NOT YET SEEDED anywhere (see work-intake-action.ts's
+// module doc — seeding needs an owner-configured host identity this module
+// has no seam to discover on its own).
+import './work-intake-action';
 // papercusp-dogfood-phase7-pr-lifecycle P-042 (un-vaporware, PR-1): `system:pr-poll`
 // — per-harness inbound-PR poll daemon (notice PR → track → trigger reviewer →
 // decideAutoReview → auto-approve/merge). Seeded INACTIVE; the pr-reviewer-settings

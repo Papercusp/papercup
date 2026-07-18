@@ -16,7 +16,8 @@ import type { StoredWorkOffer } from './offer-store';
 import type { WorkOffer } from './offer-budget';
 import type { OfferAuthorship } from './offer-authorship';
 import type { PublisherSet } from './offer-authorship';
-import type { PullAndExecuteResult } from './offer-pull-and-execute';
+import type { PullAndExecuteContext, PullAndExecuteResult } from './offer-pull-and-execute';
+import type { PullEvaluationInput } from './standing-puller';
 
 const HOST: WorkIntakeHostIdentity = {
   hostRef: 'host:self',
@@ -132,7 +133,9 @@ describe('runWorkIntakeTick (P-406/D-004 minimal intake loop)', () => {
 
   it('always calls evaluatePull with designation: null (the v1 no-steal boundary) and forwards the resolved inputs', async () => {
     const deps = baseDeps();
-    const pullAndExecute = vi.fn(async () => ({ outcome: 'skip', decision: { outcome: 'skip', reason: 'no_claim_authority', detail: 'no headroom' } }) satisfies PullAndExecuteResult);
+    const pullAndExecute = vi.fn(async (_input: PullEvaluationInput, _ctx: PullAndExecuteContext) =>
+      ({ outcome: 'skip', decision: { outcome: 'skip', reason: 'no_claim_authority', detail: 'no headroom' } }) satisfies PullAndExecuteResult,
+    );
     await runWorkIntakeTick('ws-1', 'papercusp', { ...deps, pullAndExecute });
     expect(pullAndExecute).toHaveBeenCalledTimes(1);
     const [input, execCtx] = pullAndExecute.mock.calls[0]!;
