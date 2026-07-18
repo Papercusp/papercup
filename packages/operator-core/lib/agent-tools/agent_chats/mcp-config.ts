@@ -95,8 +95,10 @@ export function buildAgentChatsMcpConfig(opts: {
   workspaceId?: string;
   readToken?: () => string;
 } = {}): AgentChatsMcpConfig | null {
-  const superuserToken = (opts.readToken ?? readSuperuserToken)();
-  if (!superuserToken) return null;
+  const superuserToken = (opts.readToken ?? readSuperuserToken)().trim();
+  // Same floor as readSuperuserToken() applies for the real file — enforced
+  // here too so an injected `readToken` (tests) can't accidentally bypass it.
+  if (superuserToken.length < 16) return null;
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const toolsParam = AGENT_CHATS_MCP_TOOLS.join(',');

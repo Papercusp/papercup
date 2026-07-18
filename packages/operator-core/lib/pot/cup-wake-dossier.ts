@@ -248,10 +248,21 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
       return body ? `${who}: ${body.slice(0, 200)}` : '';
     })
     .filter(Boolean);
-  const roster = await deps.listRoster(workspaceId).catch(() => [] as CupRosterPeer[]);
+
+  // P-008 (work-item-chat-context-modernize-2026-07-18, from D-003 ground truth):
+  // the roster read, the standing-facts fold, and the memory recall are three
+  // INDEPENDENT reads — none consumes another's output — yet were previously
+  // `await`ed one after another, so the total dossier latency was their SUM
+  // (measured live: 10.35s, vs the chat route's 3s budget — the memory recall
+  // alone routinely costs several seconds on a just-restarted operator, see
+  // op-deadline.ts MEMORY_INJECT_TIMEOUT_MS + mem0-client.ts's 1h client-TTL
+  // cache getting wiped every restart). Run them concurrently instead so the
+  // total is bounded by the SLOWEST leg, not their sum. Each stays fail-soft
+  // (its own .catch), so a slow/failed leg degrades only that section.
+  const rosterP = deps.listRoster(workspaceId).catch(() => [] as CupRosterPeer[]);
 
   // STANDING FACTS (L1c) — fail-soft: a facts outage never blocks the dossier.
-  const factsFold = await import('../agent-facts/store')
+  const factsFoldP = import('../agent-facts/store')
     .then(async (m) =>
       m.renderFactsFold(
         await m.foldFacts(
@@ -275,7 +286,7 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
   // instead of a bespoke raw-search leg. Queried on the work-item's own title +
   // summary so the recall is scoped to THIS task, not a generic harness pull.
   // Fail-soft + timeout-bounded internally; never blocks the dossier.
-  const memoryFold = await (async () => {
+  const memoryFoldP = (async () => {
     const { buildMemoryContextBlock } = await import('../memory/injection');
     const queryContext = [item.title, item.summary].filter(Boolean).join(' — ');
     if (!queryContext.trim()) return '';
@@ -288,6 +299,8 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
     });
     return block ?? '';
   })().catch(() => '');
+
+  const [roster, factsFold, memoryFold] = await Promise.all([rosterP, factsFoldP, memoryFoldP]);
 
   return renderCupDossier({
     item,

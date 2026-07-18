@@ -1660,8 +1660,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // log so a log flapping between the two classes can't double the budget.
   const repairQueue: string[] = [];
   const repairAttempts = new Map<string, number>();
+  // WI-5340: the episode `kind` that most recently drove a repair enqueue for
+  // this log — read back by drainRepairQueue to label the post-repair
+  // confirmation record (informational only; the confirmation JUDGES success
+  // generically via mergedPosition/peersCount, not by re-checking the kind).
+  const repairEpisodeKind = new Map<string, string>();
   const REPAIR_MAX_ATTEMPTS_PER_LOG = 3;
   const REPAIRABLE_EPISODE_KINDS = new Set(['connected_never_replicated', 'frozen']);
+  // WI-5340 (WI-5332 Direction #1): replication-liveness.ts's alarm latches
+  // (alarmedConnectedNever / alarmedFrozen) are EDGE-triggered — dispatchRepair
+  // fires once per false→true transition and the latch clears ONLY on a
+  // genuine observed recovery. If a re-attach does NOT actually fix the
+  // zombie, the latch stays set forever within this process's lifetime, so
+  // dispatchRepair — and therefore `enqueueRepairAttempt` below — never fires
+  // again for that log: `repairAttempts` gets stuck at 1 and the 3-attempt
+  // ladder is structurally unreachable via genuine in-process escalation.
+  //
+  // Fix: track a bounded "did the repair actually work" confirmation window
+  // per logKeyHex, stamped by `drainRepairQueue` right after it applies a
+  // re-attach. `checkRepairConfirmation` (called from the SAME per-log sample
+  // mergeOnePass already takes for `sampleReplicationLiveness`) judges it once
+  // the window elapses and, on failure, calls `enqueueRepairAttempt` DIRECTLY —
+  // bypassing replication-liveness.ts's edge-latch entirely, so a genuinely
+  // ineffective repair reaches attempt 2/3 within a single process lifetime
+  // instead of only via WI-5332's cross-restart durable-EI shortcut.
+  interface RepairConfirmation {
+    /** When the re-attach that this confirmation judges was applied. */
+    appliedAtMs: number;
+    /** mergedPosition observed at that moment — "did it advance since" is the test. */
+    baselinePosition: number;
+    kind: string;
+  }
+  const repairConfirmations = new Map<string, RepairConfirmation>();
   // EI-13317 rung (b): harness-level cooldown for the repair-exhaustion →
   // forced-rejoin escalation below (NOT per-log — several admitted logs on
   // the same topic can stall together, and a topic-level rejoin already

@@ -95,6 +95,8 @@ export function SignalsPanel({
       />
       {sync.error ? (
         <LearningVisualError title="The signals read failed" onRetry={() => sync.invalidate()} />
+      ) : sync.loading && !snap ? (
+        <p className="pc-learning__quietempty">Loading signal state…</p>
       ) : cadence == null && ranTicks.length === 0 ? (
         <LearningVisualEmpty icon={Rss} title="No signal state recorded yet — the accumulator sweep has not run on this workspace." />
       ) : (

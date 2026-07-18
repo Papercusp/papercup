@@ -718,6 +718,10 @@ export default function AdvShell({
         .pc-advshell__header-top {
           display: flex;
           align-items: center;
+          /* Wrap instead of colliding: at narrow panel widths the fixed-width
+             selector row used to draw OVER the clipped h1 (learning-tab-
+             visibility P-007 — owner-reported glitch 2026-07-18). */
+          flex-wrap: wrap;
           gap: 14px;
           min-width: 0;
           padding: 8px 12px;
@@ -738,6 +742,10 @@ export default function AdvShell({
           line-height: 1;
           letter-spacing: 0;
           color: var(--fg, #e7f7ff);
+          /* Never paint under a neighbor — truncate (P-007). */
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
         .pc-advshell__selector {
           display: flex;

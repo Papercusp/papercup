@@ -128,14 +128,22 @@ function fakeSwarm() {
   };
   return {
     swarm,
-    connect(): { userData?: FakeMux } {
-      const socket: { userData?: FakeMux } = {};
+    connect(): { userData?: FakeMux; destroy: (err?: Error) => void; destroyed: boolean } {
+      const socket = {
+        userData: undefined as FakeMux | undefined,
+        destroyed: false,
+        destroy(_err?: Error) {
+          socket.destroyed = true;
+          connections.delete(socket);
+        },
+      };
       connections.add(socket);
       handler?.(socket);
       return socket;
     },
     joined,
     left,
+    connections,
   };
 }
 
@@ -229,6 +237,72 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
     expect(f.left[0]).toBe(TOPIC);
     // The rejoin fires a fresh join call.
     expect(f.joined).toHaveLength(2);
+    await g.close();
+  });
+
+  it('WI-5355: evicts a zombie socket (idle across all topics) before rejoining on escalation', async () => {
+    // Traced root cause: node_modules/hyperswarm's client-side rediscovery
+    // (`_handlePeer`) no-ops whenever `_allConnections.has(peer.publicKey)`
+    // is already true — a plain leave()+join() alone never gets Hyperswarm to
+    // even ATTEMPT a fresh connection to a peer it still thinks is live. The
+    // escalation must evict the dead socket so the next rejoin can actually
+    // result in a new connection attempt.
+    const f = fakeSwarm();
+    const g = createTopicGossip<Frame>({
+      swarm: f.swarm,
+      protocol: 'papercusp/test-gossip',
+      onFrame: () => {},
+      getHelloFrames: () => [],
+      refreshMs: 50,
+      fastWindowMs: 200,
+      slowRefreshMs: 500,
+      severedEscalationMs: 1000,
+    });
+    g.joinTopic(TOPIC);
+    const socket = f.connect();
+    const ch = socket.userData!.channels[0];
+    ch.pairRemote();
+    ch.fireClose(); // genuinely severed — this socket now carries zero live channels anywhere
+    expect(socket.destroyed).toBe(false);
+    expect(f.connections.has(socket)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1100); // cross severedEscalationMs
+    expect(f.left).toHaveLength(1); // escalation fired (leave+rejoin)
+    expect(socket.destroyed).toBe(true); // WI-5355: the idle zombie socket was evicted
+    expect(f.connections.has(socket)).toBe(false);
+    await g.close();
+  });
+
+  it('WI-5355: never evicts a socket still paired on a DIFFERENT healthy topic', async () => {
+    // Sockets are shared A↔B connections across every topic this gossip
+    // instance manages (module header) — evicting one still serving another
+    // healthy topic would sever a working link, not fix a broken one.
+    const TOPIC2 = Buffer.alloc(32, 22);
+    const f = fakeSwarm();
+    const g = createTopicGossip<Frame>({
+      swarm: f.swarm,
+      protocol: 'papercusp/test-gossip',
+      onFrame: () => {},
+      getHelloFrames: () => [],
+      refreshMs: 50,
+      fastWindowMs: 200,
+      slowRefreshMs: 500,
+      severedEscalationMs: 1000,
+    });
+    g.joinTopic(TOPIC);
+    g.joinTopic(TOPIC2);
+    const socket = f.connect();
+    const chs = socket.userData!.channels;
+    const ch1 = chs.find((c) => c.id && c.id.equals(TOPIC))!;
+    const ch2 = chs.find((c) => c.id && c.id.equals(TOPIC2))!;
+    ch1.pairRemote();
+    ch2.pairRemote();
+    ch1.fireClose(); // only TOPIC severs; TOPIC2's channel on the SAME socket stays live
+
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(f.left).toHaveLength(1); // TOPIC's escalation fired
+    expect(socket.destroyed).toBe(false); // must survive — still serving TOPIC2
+    expect(g.openChannelCount(TOPIC2.toString('hex'))).toBe(1);
     await g.close();
   });
 

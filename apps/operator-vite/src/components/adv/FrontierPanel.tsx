@@ -139,6 +139,8 @@ export function FrontierPanel({
           title="The frontier read failed"
           onRetry={() => sync.invalidate()}
         />
+      ) : sync.loading && !snap ? (
+        <p className="pc-learning__quietempty">Loading frontier lanes…</p>
       ) : lanes.length === 0 ? (
         <LearningVisualEmpty
           icon={Radar}

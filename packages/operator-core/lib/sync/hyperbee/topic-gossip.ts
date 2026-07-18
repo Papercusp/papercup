@@ -319,6 +319,17 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           // sits at zero (a topic that's never paired yet may just have no
           // peer online, which the ladder should not act on).
           st.everPaired = true;
+          // WI-5355: record that THIS socket is live-paired on THIS topic, so
+          // the severed-link escalation can tell a genuinely-idle (zombie)
+          // socket apart from one still serving another shared topic.
+          {
+            let set = socketTopics.get(socket as object);
+            if (!set) {
+              set = new Set<string>();
+              socketTopics.set(socket as object, set);
+            }
+            set.add(topicHex);
+          }
           sendOurs();
         },
         onclose: () => {
@@ -326,6 +337,8 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           // Lost the topic's last peer → re-arm the FAST refresh window so
           // rediscovery/reconnection is snappy again.
           if (st.channels.size === 0) st.fastWindowStartMs = Date.now();
+          // WI-5355: this socket no longer carries a live channel for this topic.
+          socketTopics.get(socket as object)?.delete(topicHex);
         },
       });
       if (!channel) return; // already open for this (socket, topic) — idempotent
@@ -460,6 +473,22 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
                 opts.onSeveredLink?.(info);
               } catch {
                 /* diagnostic-only callback; swallow */
+              }
+              // WI-5355 (EI-13317 downstream): a plain DHT leave()+join() alone
+              // cannot heal this — traced into the installed hyperswarm's
+              // `_handlePeer`, the client-side rediscovery callback: it no-ops
+              // whenever `_allConnections.has(peer.publicKey)` is already true,
+              // with NO liveness re-check, so a peer Hyperswarm still counts as
+              // "connected" (even a dead/zombie socket post-restart) silently
+              // blocks every future rediscovery from ever attempting a fresh
+              // connection. Evict any socket that is idle across EVERY topic
+              // this gossip instance manages (never one still serving another
+              // healthy topic — sockets are shared A↔B connections, see the
+              // module header) BEFORE rejoining, so Hyperswarm's own
+              // `_allConnections`/`this.connections` bookkeeping no longer
+              // blocks `_handlePeer` on the next DHT-found event.
+              for (const socket of sockets) {
+                if (isSocketIdleAcrossAllTopics(socket)) evictIdleZombieSocket(socket);
               }
               void Promise.resolve(opts.swarm.leave(st.topic))
                 .then(() => {
