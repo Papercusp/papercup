@@ -17,9 +17,11 @@
  * affected-tests.mjs's side-effecting top-level CLI flow.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 import {
   scriptUsesPassWithNoTests,
@@ -152,4 +154,43 @@ describe('emptySuiteGuardArgs — the composed per-run decision', () => {
       }),
     ).toEqual(['--no-passWithNoTests']);
   });
+});
+
+/**
+ * The mechanism this whole fix depends on: appending `--no-passWithNoTests`
+ * AFTER a script's own baked-in `--passWithNoTests` must actually override
+ * it in the REAL installed vitest CLI (a raw cac/mri negation flag — see
+ * node_modules/cac/dist/index.js's mri2, "last occurrence wins"). This is
+ * the empirical end-to-end guard: if a future vitest/cac upgrade changes
+ * that parsing behavior, THIS test catches it directly against the real
+ * binary, not just against our own wrapper logic above.
+ */
+describe('the --no-passWithNoTests override against the REAL installed vitest binary (EI-11132)', () => {
+  const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const VITEST_BIN = resolve(REPO_ROOT, 'node_modules/.bin/vitest');
+
+  function runVitest(fixtureDir: string, extraArgs: string[]) {
+    return spawnSync(VITEST_BIN, ['run', '--root', fixtureDir, '--passWithNoTests', ...extraArgs], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+  }
+
+  it.skipIf(!existsSync(VITEST_BIN))(
+    'a zero-match workspace exits 0 under --passWithNoTests alone, and 1 once --no-passWithNoTests is appended after it',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'esg-real-vitest-'));
+      try {
+        writeFileSync(join(dir, 'vitest.config.mjs'), "export default { test: { include: ['**/*.test.ts'] } };\n");
+        // No test files at all — the "glob stopped matching" scenario.
+        const lenient = runVitest(dir, []);
+        expect(lenient.status, `expected exit 0 (lenient): ${lenient.stdout}${lenient.stderr}`).toBe(0);
+
+        const guarded = runVitest(dir, ['--no-passWithNoTests']);
+        expect(guarded.status, `expected exit 1 (guarded): ${guarded.stdout}${guarded.stderr}`).not.toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -548,15 +548,15 @@ async function completeOne(
   // `stateWarning` / `aliasNote`. Those callers did not ask to close, so we must not fail them.
   const landedState = workItem?.state ?? existing.state;
   const closeLanded = TERMINAL_WORK_ITEM_STATES.has(finalState);
-  const closeIntended = Boolean(it.state) && CLOSE_INTENT_STATES.has(String(it.state).trim().toLowerCase());
-  const stateWriteFailed = Boolean(it.state) && Boolean(stateError);
+  const closeIntended = Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  const stateWriteFailed = Boolean(effectiveState) && Boolean(stateError);
   const closeFailed = closeIntended && !closeLanded && !stateError;
   const stateNotApplied = stateWriteFailed || closeFailed;
   const stateFailure = !stateNotApplied
     ? undefined
     : stateError
       ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — it is still '${landedState}' and stays claimable. The state write failed: ${stateError}`
-      : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? it.state}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Pass a TERMINAL state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated').`;
+      : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? effectiveState}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Pass a TERMINAL state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated').`;
 
   const finish = closeLanded
     ? await synchronizeFinishWork({
@@ -583,6 +583,11 @@ async function completeOne(
     ...(aliased !== undefined ? { aliased, requestedState, appliedState } : {}),
     ...(aliasNote ? { aliasNote } : {}),
     ...(stateWarning ? { stateWarning } : {}),
+    ...(inferredCloseState
+      ? {
+          stateInferredFromCompletionStatus: `no top-level \`state\` was passed, but completion.status ('${inferredCloseState}') is this issue's own terminal vocabulary — inferred state:'${inferredCloseState}' and closed it (EI-12027). Pass top-level \`state\` explicitly to avoid relying on this inference.`,
+        }
+      : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
@@ -596,7 +601,7 @@ export default defineTool({
   description:
     "Finish one OR many work-items with a STRUCTURED completion record (whatLanded / migrations / tests / deferred) — the system renders + broadcasts it, so you never narrate in prose. A terminal `state` converges the whole finish: work-item state + linked plan-item + claim release + checkpoint cleanup. The `finish` receipt is idempotent; ok:false means a leg did not converge — re-call the SAME completion to resume it.",
   guidance: {
-    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE you MUST pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); `completion.status` alone records WITHOUT changing state, leaving the item claimable. `completion.verifiedHow` is a CLOSED ENUM — \'unit\'|\'integration\'|\'live-drove-ui\'|\'manual\'|\'already-passing\' — not free text; prose → testsRun/testResult. Duplicate? Set `completion.duplicateOf` to the surviving id (auto-links + notifies the prior assignee).',
+    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE you SHOULD pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'). `completion.status` is a freeform display verb (defaults \'done\') and generally does NOT change state — EXCEPT for issue-family items (bug/change), where `completion.status: \'resolved\'|\'closed\'` (the issue\'s own native terminal words) IS inferred as the close state when `state` is omitted (EI-12027); any other status value still records WITHOUT closing, leaving the item claimable. `completion.verifiedHow` is a CLOSED ENUM — \'unit\'|\'integration\'|\'live-drove-ui\'|\'manual\'|\'already-passing\' — not free text; prose → testsRun/testResult. Duplicate? Set `completion.duplicateOf` to the surviving id (auto-links + notifies the prior assignee).',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On terminal success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox (no release/checkpoint-clear/coord:send calls needed). Read the returned `reflect` step and file an improvements:capture if friction bit you.',
     seeAlso: [
