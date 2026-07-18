@@ -1949,6 +1949,18 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
     const { recordHealthHistory } = await import('./history');
     await recordHealthHistory(prev, health);
   } catch { /* history unavailable (migration pending) — tick proceeds */ }
+  // EI-12982: preserve a forensic perf-signals-v1 snapshot the moment the infra
+  // panel edge-transitions into `crit` (covers the "PER-THREAD WEDGE" verdict).
+  // The routine capture-perf-signals.sh rotation only keeps ~30 min of scheduled
+  // captures, so a flap investigated later (the common case — watchdog pages,
+  // root-cause happens on a later backlog pass) otherwise finds no evidence.
+  // Edge-triggered (not on every tick while it stays crit) + fail-soft.
+  try {
+    if (health.infra?.status === 'crit' && prev?.infra?.status !== 'crit') {
+      const { preserveIncidentCapture } = await import('./perf-budgets');
+      await preserveIncidentCapture('infra-crit');
+    }
+  } catch { /* incident-capture preservation must never break the tick */ }
   cache.set(ws, health);
   await notifySyncInvalidate('health.snapshot', undefined).catch(() => {});
   await notifySyncInvalidate('health.history', undefined).catch(() => {});

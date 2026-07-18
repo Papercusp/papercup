@@ -12,9 +12,10 @@
  * absolute budget. Budgeting on loadavg would lie on a many-core box.
  */
 import type { PanelStatus } from './types';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat, copyFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 
 /** The subset of Lane E's perf-signals-v1 record the budgets read. The MCP-merged
  *  signals (eventLoopLag, tool p95, pgConns) are null until an agent run keyed to
@@ -313,4 +314,77 @@ export async function readLatestPerfSignals(dir: string = PERF_BASELINES_DIR): P
     const parsed = JSON.parse(await readFile(newest.path, 'utf8')) as PerfSignalsV1;
     return parsed?.schemaVersion === 'perf-signals-v1' ? parsed : null;
   } catch { return null; }
+}
+
+/** Newest N `*-incident-*.json` files kept by {@link preserveIncidentCapture} —
+ *  bounded so a genuinely wedged host repeatedly re-triggering the edge (crit →
+ *  recover → crit) can't grow the dir unbounded. Generous vs. the routine
+ *  KEEP=15 scheduled-capture window because these are meant to survive a
+ *  root-cause pass that may happen days later. */
+const INCIDENT_CAPTURE_KEEP = 100;
+
+/**
+ * EI-12982: preserve the LATEST perf-signals-v1 capture as a durably-named
+ * incident snapshot when the infra panel edge-transitions into `crit` (a
+ * "PER-THREAD WEDGE" verdict, or any other infra-crit cause). Root-causing a
+ * self-recovered flap is realistically a LATER backlog pass (the watchdog
+ * pages, someone files an item, root-cause happens on the next drain) — but
+ * `capture-perf-signals.sh`'s routine rotation only retains the newest 15
+ * `*-scheduled.json` files (~30 min at the 2-min cadence), so by the time
+ * anyone looks the forensic evidence is already gone (confirmed empty for the
+ * 2026-07-16 03:33Z/19:45Z flaps this item was filed from). Copying (not
+ * moving — the scheduled rotation must stay untouched) the current capture to
+ * an `*-incident-<reason>-*.json` file exempts it from that rotation glob, so
+ * the NEXT such flap leaves something to root-cause instead of nothing.
+ * Fail-soft: never throws (callers run this from a tick's best-effort side
+ * effects, same pattern as the ack-sweep / history recording next to it).
+ */
+export async function preserveIncidentCapture(
+  reason: string,
+  dir: string = PERF_BASELINES_DIR,
+): Promise<{ preserved: boolean; path?: string }> {
+  try {
+    let entries: string[];
+    try { entries = await readdir(dir); } catch { return { preserved: false }; }
+    const jsons = entries.filter((f) => f.endsWith('.json') && !f.includes('-incident-'));
+    if (!jsons.length) return { preserved: false };
+    let newest: { path: string; mtimeMs: number } | null = null;
+    for (const f of jsons) {
+      try {
+        const st = await stat(join(dir, f));
+        if (!newest || st.mtimeMs > newest.mtimeMs) newest = { path: join(dir, f), mtimeMs: st.mtimeMs };
+      } catch { /* unreadable entry — skip */ }
+    }
+    if (!newest) return { preserved: false };
+    const safeReason = reason.replace(/[^a-zA-Z0-9_-]/g, '') || 'unlabeled';
+    // A short random suffix guards against a filename collision when this fires
+    // twice within the same millisecond (a fast box, or two edge-triggers in
+    // quick succession) — a collision would silently overwrite instead of
+    // preserving BOTH incidents.
+    const suffix = randomBytes(3).toString('hex');
+    const dest = join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-incident-${safeReason}-${suffix}.json`);
+    await copyFile(newest.path, dest);
+
+    // Bound the incident set the same way capture-perf-signals.sh bounds the
+    // scheduled set — keep only the newest INCIDENT_CAPTURE_KEEP.
+    try {
+      const all = await readdir(dir);
+      const incidents: { path: string; mtimeMs: number }[] = [];
+      for (const f of all) {
+        if (!f.endsWith('.json') || !f.includes('-incident-')) continue;
+        try {
+          const st = await stat(join(dir, f));
+          incidents.push({ path: join(dir, f), mtimeMs: st.mtimeMs });
+        } catch { /* unreadable — skip */ }
+      }
+      incidents.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const stale of incidents.slice(INCIDENT_CAPTURE_KEEP)) {
+        await unlink(stale.path).catch(() => {});
+      }
+    } catch { /* pruning is best-effort — never fail the preserve on it */ }
+
+    return { preserved: true, path: dest };
+  } catch {
+    return { preserved: false };
+  }
 }
