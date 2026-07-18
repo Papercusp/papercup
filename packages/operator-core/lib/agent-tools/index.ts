@@ -1055,6 +1055,7 @@ import './plans/run-transcript';
 import './plans/start';
 import './plans/pause';
 import './plans/set-priority';
+import './plans/set-archived';
 import './plans/launch';
 import './plans/resume';
 import './plans/runs-list';

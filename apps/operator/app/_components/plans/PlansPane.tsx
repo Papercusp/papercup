@@ -28,15 +28,18 @@
  * agent-driveable: `?plq` search, `?plf` show-finished, `?pplan` popup plan,
  * `?ppv` popup tab (see PlanPopupModal).
  */
-import { useMemo, useRef } from 'react';
-import { ClipboardList } from 'lucide-react';
+import { useCallback, useMemo, useRef } from 'react';
+import { Archive, ClipboardList } from 'lucide-react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import {
   bucketOf,
+  setPlanArchived,
   usePlanList,
   type PlanBucket,
   type PlanListRow,
@@ -190,6 +193,34 @@ export default function PlansPane() {
 
   const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
 
+  // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
+  // behind a confirm. Archiving flips the PG-canonical harness_plans.archived
+  // flag (plans:set-archived) — reversible, and the harness_plans trigger
+  // invalidates plans.list so the row leaves this list on its own (no local
+  // optimistic removal to drift).
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const onArchive = useCallback(
+    async (plan: PlanListRow) => {
+      const ok = await askConfirm({
+        title: 'Archive this plan?',
+        body: `“${plan.title ?? plan.slug}” will drop out of your plan lists. You can restore it later — archiving is reversible and never deletes anything.`,
+        confirmLabel: 'Archive',
+      });
+      if (!ok) return;
+      try {
+        const res = await setPlanArchived({ slug: plan.slug, archived: true, harness: plan.harness });
+        if ((res as { ok?: boolean }).ok === false) {
+          toast.error(`Could not archive: ${(res as { error?: string }).error ?? 'unknown error'}`);
+          return;
+        }
+        toast.success(`Archived “${plan.title ?? plan.slug}”.`);
+      } catch (e) {
+        toast.error(`Could not archive: ${e instanceof Error ? e.message : 'unknown error'}`);
+      }
+    },
+    [askConfirm],
+  );
+
   // Virtualize the row list (WI-5339): the active set is ~466 rows and up to
   // ~977 with Finished on — rendering them all unvirtualized made a ~89k-px DOM
   // and a ~600ms filter re-render in an always-visible sidebar. Only the rows
@@ -340,12 +371,32 @@ export default function PlansPane() {
                     </span>
                   ) : null}
                 </button>
+                {/* P-008 / EI-15304: one-click archive for a STALE row — the
+                    sprawl sweep. A SIBLING of the row button, never nested
+                    (a <button> inside a <button> is invalid HTML — the trap
+                    InboxPane already hit). Scoped to stale rows so the
+                    ~466-row list stays visually clean. */}
+                {!showFinished && isStale(plan.updated) ? (
+                  <Tooltip label="Archive this stale plan (reversible)">
+                    <button
+                      type="button"
+                      className="plans-pane__archive"
+                      onClick={() => void onArchive(plan)}
+                      aria-label={`Archive ${plan.title ?? plan.slug}`}
+                      data-testid={`plans-pane-archive-${plan.slug}`}
+                    >
+                      <Archive size={12} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                ) : null}
                 </div>
               );
             })}
           </div>
         </div>
       )}
+
+      {confirmEl}
 
       <PlanPopupModal
         planSlug={popupPlan}

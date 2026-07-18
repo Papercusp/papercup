@@ -117,6 +117,26 @@
   border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, transparent);
   background: color-mix(in srgb, var(--warn, #fbbf24) 12%, transparent);
 }
+/* One-click archive on a STALE row (P-008 / EI-15304). Sits over the row's
+   right edge as a SIBLING of the row button (never nested — invalid HTML).
+   Hidden until the row is hovered or the button itself is focused, so it never
+   competes with the badges; keyboard users reach it via :focus-visible. */
+.plans-pane__archive {
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
+  opacity: 0; pointer-events: none;
+  color: var(--fg-mute, #8a8a91); background: var(--bg-2, #17171a);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  transition: opacity 90ms ease-out, color 90ms ease-out, border-color 90ms ease-out;
+}
+[role='listitem']:hover > .plans-pane__archive,
+.plans-pane__archive:focus-visible { opacity: 1; pointer-events: auto; }
+.plans-pane__archive:hover {
+  color: #fcd34d;
+  border-color: color-mix(in srgb, var(--warn, #fbbf24) 55%, transparent);
+  background: color-mix(in srgb, var(--warn, #fbbf24) 14%, transparent);
+}
 
 /* ── PlanPopupModal ───────────────────────────────────────────────────── */
 .plan-popup { display: flex; flex-direction: column; }

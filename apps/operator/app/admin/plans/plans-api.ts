@@ -1116,6 +1116,22 @@ export function applyPlanBlock(args: { blockContent: string; harnessSlug?: strin
   );
 }
 
+/**
+ * Archive a plan (or restore it) — owner-plans-single-pane P-008 / EI-15304.
+ *
+ * Flips the PG-canonical `harness_plans.archived` flag via `plans:set-archived`.
+ * Archived plans drop out of every default plan list (the readers filter on the
+ * column) but stay readable via `includeArchived`, so this is reversible —
+ * pass `archived: false` to restore. The write invalidates `plans.list` through
+ * the harness_plans trigger, so the Plans face refreshes on its own.
+ */
+export function setPlanArchived(args: { slug: string; archived: boolean; harness?: string }) {
+  return postJson<WriteResult<{ slug: string; archived: boolean }>>(
+    'set-archived',
+    args as unknown as Record<string, unknown>,
+  );
+}
+
 /* ── Phase 3 write verbs (P-301 / P-302, D-011) ────────────────────── */
 
 /** Plan-frontmatter statuses that can be *written* — the parser-

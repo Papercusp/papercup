@@ -94,6 +94,9 @@ const WRITE_VERBS = new Set([
   'start', 'pause',
   // dbos-system-completion P-045: drag-to-reorder priority for the frontier dispatcher.
   'set-priority',
+  // owner-plans-single-pane P-008 / EI-15304: the Plans face's stale-plan
+  // sweep archives (or restores) a plan — plans:set-archived.
+  'set-archived',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/
