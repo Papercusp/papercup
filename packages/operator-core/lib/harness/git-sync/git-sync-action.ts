@@ -1893,25 +1893,55 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     ];
     if (memberDevicePubkeysBase64.length === 0) return void (await decline('no_attested_devices'));
 
+    // WI-5395: capability-gated election. Integration is per (hive, REPO), but
+    // the lease used to be elected per HIVE over raw presence — so a member
+    // with no bare store for THIS repo could win the lease and stall the repo
+    // hive-wide while every capable member correctly declined as non-authority
+    // (the canary's exact failure: the mac held the lease for
+    // hello-world-3-pot with no store or routine for it). Constrain candidacy
+    // to devices this machine can locally judge CAPABLE of integrating this
+    // repo: self iff the local store exists (checked here — a machine without
+    // the store never even runs an election), and a peer iff its device
+    // namespace exists in the local store (a device that has published a head
+    // for this repo demonstrably holds it). The judgment is local-knowledge
+    // only, so two capable members can transiently disagree during replication
+    // lag and both integrate — the FF-only + CAS + epoch fence resolves that
+    // noisily but safely (the documented accepted-risk posture, proven P-308);
+    // views converge with the stores.
+    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
+    const storeCheck = await defaultRunGit(['rev-parse', '--git-dir'], repoPath);
+    if (storeCheck.code !== 0) {
+      await decline('no_local_store', `no bare store at ${repoPath} — this device cannot integrate this repo`);
+      return;
+    }
+    const nsKeys = new Set(await listNamespaces(repoPath));
+    const eligibleDevices = new Set<string>([actor.devicePubkey]);
+    for (const pk of memberDevicePubkeysBase64) {
+      try {
+        if (nsKeys.has(deviceNamespaceKey(pk))) eligibleDevices.add(pk);
+      } catch {
+        /* junk pubkey in an attestation — not a candidate */
+      }
+    }
+
     // P-505: gate on the lease ONCE here (the tick's own default gate would
     // re-query presence) — only the current authority derives a grant; grant
     // derivation on a non-authority could wrongly seed its staging ref.
     let authority: Awaited<ReturnType<typeof lockAuthorityForHive>>;
     try {
-      authority = await lockAuthorityForHive(potHomeSlug);
+      authority = await lockAuthorityForHive(potHomeSlug, { eligibleDevices });
     } catch {
       // presence unreadable — the real authority still runs its own tick
       await decline('presence_unreadable');
       return;
     }
     if (!authority.isSelf) {
-      // The COMMON, healthy case (someone else holds the lease) — but also the
-      // shape of the canary stall, so name the holder: if canonical is stuck,
-      // the next question is always "can that machine actually integrate this
-      // repo?" (does it hold the bare store / run a git-sync routine for it).
+      // The COMMON, healthy case (someone else holds the lease) — named so a
+      // stuck canonical is a one-query diagnosis: the holder shown here is
+      // always a CAPABLE device now (eligibility-gated above).
       await decline(
         'not_authority',
-        `lease held by ${authority.peer?.machineLabel ?? 'unknown'} (${authority.peer?.devicePubkey?.slice(0, 12) ?? '?'}); liveCount=${authority.liveCount}`,
+        `lease held by ${authority.peer?.machineLabel ?? 'unknown'} (${authority.peer?.devicePubkey?.slice(0, 12) ?? '?'}); liveCount=${authority.liveCount}; eligible=${eligibleDevices.size}/${memberDevicePubkeysBase64.length}`,
       );
       return;
     }
@@ -1930,21 +1960,6 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     `;
     const prior = rows[0]?.integrator ?? null;
 
-    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
-    // We hold the lease but may not hold the REPO: a hive binds several repos
-    // and a member machine can legitimately have a bare store for only some of
-    // them. Electing such a machine integrator for a repo it lacks stalls that
-    // repo hive-wide with no other symptom (the canary's exact failure — the
-    // mac held the lease with no hello-world-3-pot.git). Loud + recorded: a
-    // capable member must take the lease, or this one must be seeded (G-8).
-    const storeOk = await defaultRunGit(['rev-parse', '--git-dir'], repoPath);
-    if (storeOk.code !== 0) {
-      console.warn(
-        `[git-sync] ${slug}: INTEGRATOR STALLED — this device holds the integrator lease for hive '${potHomeSlug}' but has no bare store at ${repoPath}; nothing will integrate this repo until it is seeded or the lease moves to a member that holds it`,
-      );
-      await decline('authority_without_store', `no bare store at ${repoPath}`);
-      return;
-    }
     const grant = await deriveIntegratorGrant({
       repoPath,
       selfDevicePubkeyBase64: actor.devicePubkey,

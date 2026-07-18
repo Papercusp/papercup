@@ -394,6 +394,73 @@ describe('lockAuthorityFor / lockAuthorityForHive — HRW rendezvous cutover (WI
   });
 });
 
+// ── WI-5395: capability-gated candidacy (eligibleDevices) ────────────────────
+describe('lockAuthorityForHive — eligibleDevices (WI-5395 capability-gated election)', () => {
+  // Live-shape regression: 'aaa' plays the mac (argmin AND HRW-competitive
+  // winner for the hive, but NOT capable of the repo — no bare store), 'zzz'
+  // plays the tower (capable, would lose the un-gated election).
+  const rows = [
+    { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'mac', last_seen_ms: NOW - 1000 },
+    { device_pubkey: 'zzz', github_user_id: 2, machine_label: 'tower', last_seen_ms: NOW - 1000 },
+  ];
+  const self = { githubUserId: 2, devicePubkey: 'zzz' };
+  const hiveDeps = (over: Partial<LockAuthorityDeps> = {}): LockAuthorityDeps => ({
+    now: () => NOW,
+    staleMs: 90_000,
+    fetchHivePresenceRows: async () => rows,
+    resolveSelf: async () => self,
+    useHrwRendezvous: false,
+    evictionMonitor: null,
+    ...over,
+  });
+
+  it('ungated (the pre-fix behavior): the incapable peer wins argmin and the capable member declines', async () => {
+    const r = await lockAuthorityForHive('hive', hiveDeps());
+    expect(r.isSelf).toBe(false);
+    expect(r.peer?.machineLabel).toBe('mac');
+  });
+
+  it('gated: an ineligible peer is excluded from candidacy, so the lease lands on a CAPABLE member', async () => {
+    const r = await lockAuthorityForHive('hive', hiveDeps({ eligibleDevices: new Set(['zzz']) }));
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('gated + HRW path: eligibility constrains the rendezvous candidate set the same way', async () => {
+    const r = await lockAuthorityForHive('hive', hiveDeps({ useHrwRendezvous: true, eligibleDevices: new Set(['zzz']) }));
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('all peers eligible → byte-identical to the ungated election (no churn on healthy hives)', async () => {
+    const gated = await lockAuthorityForHive('hive', hiveDeps({ eligibleDevices: new Set(['aaa', 'zzz']) }));
+    const ungated = await lockAuthorityForHive('hive', hiveDeps());
+    expect(gated).toEqual(ungated);
+  });
+
+  it('eligibility MERGES with eviction exclusions rather than replacing them', async () => {
+    const evictingMonitor = {
+      beforeSelect: () => new Set(['zzz']), // relay-confirmed dead
+    };
+    // 'aaa' ineligible (capability) + 'zzz' evicted (dead) → only self remains.
+    const r = await lockAuthorityForHive(
+      'hive',
+      hiveDeps({
+        resolveSelf: async () => ({ githubUserId: 3, devicePubkey: 'mmm' }),
+        eligibleDevices: new Set(['mmm', 'zzz']),
+        evictionMonitor: evictingMonitor as never,
+      }),
+    );
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('SELF candidacy is not constrained by the allowlist (self-capability is the caller\'s own check)', async () => {
+    // self 'zzz' not in the allowlist — still auto-added by the selector; the
+    // integrator leg guarantees self-capability before electing (store check).
+    const r = await lockAuthorityForHive('hive', hiveDeps({ eligibleDevices: new Set(['aaa']) }));
+    expect(r.isSelf).toBe(false);
+    expect(r.peer?.machineLabel).toBe('mac'); // 'aaa' eligible + argmin < self
+  });
+});
+
 describe('routeToAuthority — routing + fail-open (D-004)', () => {
   it('we are the authority → runs local, via local-authority', async () => {
     const res = await routeToAuthority('h', { local: async () => 'L' }, deps({ self: null, rows: [] }));
