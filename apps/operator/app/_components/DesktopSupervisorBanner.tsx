@@ -116,7 +116,9 @@ export function DesktopSupervisorBanner() {
   // transport DOWN since the event before treating a subsequent UP as recovery.
   const sawOffline = useRef(false);
   useEffect(() => {
-    if (!offline && dead) setDead(null);
+    if (!dead) return;
+    if (offline) sawOffline.current = true;
+    else if (sawOffline.current) setDead(null);
   }, [offline, dead]);
 
   if (installBroken) {
