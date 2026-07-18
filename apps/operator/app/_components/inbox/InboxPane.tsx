@@ -160,22 +160,36 @@ export default function InboxPane({ onDiscussInChat }: {
       .map((x) => x.item);
   }, [items, filter]);
 
-  // Scroll a freshly deep-linked selection into view once its row is in the DOM.
-  // Guarded so it fires only when `sel` CHANGES to a new value (not on every
-  // background list refresh) — otherwise it would yank the user back after they
-  // scroll away. `visible` in the deps retries after the async items load.
+  // Virtualize the row list (WI-5339): the inbox routinely holds hundreds of
+  // items (610 "needs you" / 1349 "all" observed) — rendering them all made a
+  // ~89k-px DOM and a ~600ms filter re-render in an always-visible sidebar.
+  // Rows are variable height (the selected row expands its OtherDetail inline),
+  // so heights self-correct via measureElement.
+  const rowVirtualizer = useVirtualizer({
+    count: visible.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 52,
+    overscan: 8,
+    getItemKey: (i) => visible[i]?.id ?? i,
+  });
+
+  // Scroll a freshly deep-linked selection (opcis) into view. Guarded so it
+  // fires only when `sel` CHANGES to a new value (not on every background list
+  // refresh) — otherwise it would yank the user back after they scroll away.
+  // Uses the virtualizer (the target row may be outside the mounted window);
+  // `visible` in the deps retries after the async items load.
   useEffect(() => {
     if (!sel) {
       lastScrolledSel.current = null;
       return;
     }
-    if (sel !== lastScrolledSel.current && selectedRowRef.current) {
-      // Guard: jsdom (unit tests) doesn't implement scrollIntoView; real
-      // browsers do. Never let a missing scroll API break selection.
-      selectedRowRef.current.scrollIntoView?.({ block: 'nearest' });
+    if (sel === lastScrolledSel.current) return;
+    const idx = visible.findIndex((i) => i.id === sel);
+    if (idx >= 0) {
+      rowVirtualizer.scrollToIndex(idx, { align: 'center' });
       lastScrolledSel.current = sel;
     }
-  }, [sel, visible]);
+  }, [sel, visible, rowVirtualizer]);
 
   return (
     <div className="op-inbox" data-testid="inbox-tab">
@@ -205,19 +219,30 @@ export default function InboxPane({ onDiscussInChat }: {
         </p>
       ) : null}
 
-      <ul className="op-inbox__list">
-        {visible.map((i) => {
-          const isSel = i.id === sel;
-          const tier = effectiveTier(i);
-          const meta = [i.ownerLabel ?? i.ownerAgentId, i.planSlug ?? i.harnessSlug]
-            .filter(Boolean)
-            .join(' · ');
-          return (
-            <li
-              key={i.id}
-              ref={isSel ? selectedRowRef : undefined}
-              className={`op-inbox__row${isSel ? ' is-selected' : ''}`}
-            >
+      <div className="op-inbox__list" ref={listRef}>
+        <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+          {rowVirtualizer.getVirtualItems().map((vi) => {
+            const i = visible[vi.index]!;
+            const isSel = i.id === sel;
+            const tier = effectiveTier(i);
+            const meta = [i.ownerLabel ?? i.ownerAgentId, i.planSlug ?? i.harnessSlug]
+              .filter(Boolean)
+              .join(' · ');
+            return (
+              <div
+                key={vi.key}
+                data-index={vi.index}
+                ref={rowVirtualizer.measureElement}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  paddingBottom: 4,
+                  transform: `translateY(${vi.start}px)`,
+                }}
+              >
+                <div className={`op-inbox__row${isSel ? ' is-selected' : ''}`}>
               {/* A `div` (not `button`) — the row now nests a real chat-launch
                   <button>, and nested interactive elements are invalid HTML /
                   silently mis-parsed by the browser. Same click+keyboard
@@ -275,10 +300,12 @@ export default function InboxPane({ onDiscussInChat }: {
                   <OtherDetail key={i.id} item={i} onResolved={refresh} onDiscuss={onDiscuss} />
                 </div>
               ) : null}
-            </li>
-          );
-        })}
-      </ul>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="op-inbox__foot">
         <button

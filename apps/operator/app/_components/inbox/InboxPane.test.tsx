@@ -27,6 +27,18 @@ const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, e
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
 }));
+// jsdom has no layout, so the real @tanstack/react-virtual renders zero rows
+// (WI-5339 virtualization) — mock it to render every item (same seam as
+// ChatConversation.test).
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: (opts: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: opts.count }, (_, i) => ({ index: i, key: `vk-${i}`, start: i * 52, size: 52 })),
+    getTotalSize: () => opts.count * 52,
+    measureElement: () => {},
+    scrollToIndex: () => {},
+  }),
+}));
 // OtherDetail is the Queue's own component — stub it to a marker that echoes
 // the hosted item id and exposes the onDiscuss seam (parity behavior is the
 // Queue suites' job).

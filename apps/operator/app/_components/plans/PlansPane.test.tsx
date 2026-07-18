@@ -9,6 +9,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
 
+// jsdom has no layout, so the real @tanstack/react-virtual renders zero rows
+// (WI-5339 virtualization) — mock it to render every item (same seam as
+// ChatConversation.test).
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: (opts: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: opts.count }, (_, i) => ({ index: i, key: `vk-${i}`, start: i * 52, size: 52 })),
+    getTotalSize: () => opts.count * 52,
+    measureElement: () => {},
+    scrollToIndex: () => {},
+  }),
+}));
+
 const { nuqs, setters, planListData, attentionItems, rosterData } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
