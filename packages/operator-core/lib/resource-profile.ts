@@ -34,10 +34,22 @@ import {
 import { getHarnessAdminUrlWithSource } from './embedded-pg-discovery';
 import { backgroundWorkersEnabled, utilityHostEnabled } from './background-workers';
 
-/** An embedded/desktop PG shares the box iff the admin URL resolved to anything
- *  other than the native-:5432 fallback (env or discovery-file ⇒ embedded). */
+/** An embedded/desktop PG shares the box iff the admin URL was resolved from the
+ *  DISCOVERY FILE (~/.papercusp/embedded-pg.json, written by the desktop's Tauri
+ *  main when its embedded PG comes up) — the only source that actually means
+ *  "an embedded Postgres shares this box's cores/RAM."
+ *
+ *  EI-2403: this used to be `source !== 'native-fallback'`, which ALSO counted the
+ *  `'env'` source (an explicitly-set HARNESS_ADMIN_DATABASE_URL / DATABASE_URL /
+ *  PAPERCUSP_PG_URL) as embedded. But a dedicated native-PG server (the dev box,
+ *  any production server) sets DATABASE_URL explicitly too — that is NOT an
+ *  embedded PG competing for the box's cores/RAM, it's a normal dedicated
+ *  connection string. Verified live on the 128-core dev box: the old check
+ *  misclassified it embeddedPg=true (and, downstream, backgroundInProcess=true)
+ *  while pg-autotune (a SEPARATE, correctly-scoped classifier) tuned shared_buffers
+ *  at the dedicated 0.25 ratio — the two disagreed on the exact same box. */
 function detectEmbeddedPg(): boolean {
-  return getHarnessAdminUrlWithSource().source !== 'native-fallback';
+  return getHarnessAdminUrlWithSource().source === 'discovery-file';
 }
 
 /** Map the background-workers gates onto the generic HostRole. */
