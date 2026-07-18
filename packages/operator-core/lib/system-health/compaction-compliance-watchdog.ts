@@ -285,28 +285,9 @@ async function escalateBootConfig(
   }
 }
 
-/** P-012 force-compact `/compact` FOCUS floor — the static preserve-hint used when
- *  the carry-brief read fails (mirrors session:request-compaction's DEFAULT_FOCUS).
- *  The primary focus is the session's carry brief (compaction-continuity-hardening
- *  P-003): the watchdog can't know the unit of work, but the brief names the
- *  session's REAL anchors (held item ids, armed loop, standing facts) as pointers. */
-const FORCE_COMPACT_FOCUS =
-  'keep the identity block, the active plan and its open items, unverified claims awaiting owner ' +
-  'confirmation, owner-gated walls, and any in-flight work-item checkpoint; drop resolved tool output ' +
-  'and superseded state.';
-
-/** P-003: resolve the force-compact focus from the owner's carry brief; static floor
- *  on any failure. Dynamic import mirrors the sweep's other lazy deps. */
-async function resolveForceCompactFocus(ownerId: string): Promise<string> {
-  try {
-    const { buildCarryBrief, renderCarryBriefFocus } = await import('../carry-brief');
-    const focus = renderCarryBriefFocus(await buildCarryBrief(ownerId)).trim();
-    if (focus.length > 0) return focus;
-  } catch {
-    /* static floor */
-  }
-  return FORCE_COMPACT_FOCUS;
-}
+// (The P-012 force-compact focus helpers lived here until P-022 retired native
+// /compact — a forced cut now delivers the full carry-doc addendum instead of a
+// summarizer focus hint, so no focus derivation is needed.)
 /** Which arm of `min(limit × 1.3, window − margin | limit × 1.2)` produced forceAt —
  *  the note must name the bound that actually bound (a fixed "≈ 1.3 × soft limit"
  *  gloss renders false math whenever the window cap wins, e.g. "~190k ≈ 1.3 × 400k";
@@ -478,29 +459,37 @@ async function maybeCarryRespawn(
 }
 
 /**
- * P-012 (agent-managed-compaction-2026-07-01) — the L2 mechanical FORCE-COMPACT
- * rung. An over-limit session has ignored the per-turn reminder (rendered since 85%),
- * crossed its own soft limit, AND run through the FORCE_COMPACT_FRACTION grace band
- * (owner 2026-07-04), so the watchdog TYPES `/compact` into its OWN live psu-pty TUI —
- * idle-gated by the host (mode:'turn'/'compact' runs AFTER the current turn ends), so
- * it is safe to fire mid-turn. This catches a non-self-managing session at ~130% of
- * its limit (window-capped) instead of letting it drift toward the model window (the
- * 2026-07-04 836k incident). Best-effort; returns true only when the inject actually
- * reached a live host.
+ * P-012 (agent-managed-compaction-2026-07-01) — the L2 mechanical FORCE rung,
+ * rebuilt under P-022 (WI-4998: native /compact retired). An over-limit session
+ * has ignored the per-turn reminder (rendered since 85%), crossed its own soft
+ * limit, run through the FORCE_COMPACT_FRACTION grace band (owner 2026-07-04),
+ * AND missed the polite soft-threshold carry-respawn above — so the watchdog
+ * FORCES the deterministic cut: it assembles the carry spec itself and queues a
+ * mode:'carry-respawn' on the session's live psu host (idle-gated — the cut runs
+ * AFTER the current turn ends, safe to fire mid-turn). Unlike the polite rung,
+ * a forced cut PROCEEDS over an open owner question — P-010 still holds because
+ * the open message rides as the successor's first prompt, never lost. This
+ * catches a non-self-managing session at ~130% of its limit (window-capped)
+ * instead of letting it drift toward the model window (the 2026-07-04 836k
+ * incident). Best-effort; returns true only when the inject actually reached a
+ * live carry-respawn-capable host.
  *
- * Flag-gated (COMPACTION_WATCHDOG_FORCE_COMPACT, default ON) — a runtime kill-switch
- * for this invasive rung. No live psu-pty host (a dead/beating session, or a non-psu
- * host) ⇒ false, no-op: the context-death detector (P-019) + the mechanical CC
- * autoCompactWindow cap (P-014, set at launch) cover those. Dynamic imports mirror
- * escalateContextDeath so the sweep stays dependency-light + the deps stay mockable.
+ * Flag-gated (COMPACTION_WATCHDOG_FORCE_COMPACT, default ON) — a runtime
+ * kill-switch for this invasive rung. No live capable host, or a failed spec
+ * build ⇒ false + retry next pass; the hard-wall death detector (improvements
+ * watchdog "Prompt is too long") is the terminal backstop — there is NO native
+ * /compact fallback anywhere anymore. Dynamic imports mirror escalateContextDeath
+ * so the sweep stays dependency-light + the deps stay mockable.
  */
-async function maybeForceCompact(
+async function maybeForceRespawn(
   ownerId: string,
   ownerLabel: string,
+  workspaceId: string,
+  effectiveWindowTokens: number,
   est: number,
   limit: number,
   /** The resolved force threshold (min(limit × 1.3, window − margin)) — named in the
-   *  continuation note so the compacted agent (and its owner) see the real numbers. */
+   *  successor's first prompt so the cut agent (and its owner) see the real numbers. */
   forceAt: number = limit * FORCE_COMPACT_FRACTION,
   /** Which arm produced forceAt — the note words each regime differently. */
   bound: ForceBound = 'fraction',
@@ -522,12 +511,12 @@ async function maybeForceCompact(
     if (!host) {
       // EI-9982: distinguish "no live psu-pty host" from the flag-off / grace-suppressed /
       // inject-failed silent-no-op paths — this is the dominant cause of a continuously-active
-      // session that crosses the FORCE threshold yet is never force-compacted.
+      // session that crosses the FORCE threshold yet is never force-cut.
       if (!noHostWarned.has(ownerId)) {
         noHostWarned.add(ownerId);
         console.warn(
           `[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold (~${est}/${limit} ` +
-            `tokens) but findLiveHost() found no live psu-pty host — force-compact silently no-ops here ` +
+            `tokens) but findLiveHost() found no live psu-pty host — force-respawn silently no-ops here ` +
             `(EI-9982). Likely a stale/missing discovery file at ~/.papercusp/psu-pty/<ownerId>.json, a ` +
             `dead pid, or a pidIsPsuHost() identity mismatch (the EI-9748 / WI-3455 discovery-file ` +
             `fragility class) — check that file + the recorded pid/socket for this owner.`,
@@ -535,38 +524,76 @@ async function maybeForceCompact(
       }
       return false;
     }
-    const focus = await resolveForceCompactFocus(ownerId);
-    // turn-provenance P-002: the forced continuation note is typed into the
-    // target's PTY as a prompt — tag it `watchdog` so the target's hook labels
-    // it machine-generated, not owner input. The bare `/compact <focus>`
-    // fallback is a slash COMMAND — never tagged. Fail-soft on any tag error.
-    const continuation = await (async () => {
-      const note = forceCompactContinueNote(est, limit, forceAt, bound);
-      try {
-        const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
-        return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: note }).taggedText;
-      } catch {
-        return note;
-      }
-    })();
-    const ok = hostSupports(host, 'compact')
-      ? await injectIntoHost(host.sock, {
-          mode: 'compact',
-          data: continuation,
-          focus,
+    if (!hostSupports(host, 'carry-respawn')) {
+      console.warn(
+        `[compaction-watchdog] ${ownerLabel} (${ownerId}) is at the FORCE threshold but its psu host ` +
+          `predates the carry-respawn capability (P-022: native /compact is retired, no fallback) — ` +
+          `the hard-wall death detector is the remaining backstop for this session.`,
+      );
+      return false;
+    }
+    const ref = await resolveSessionRef(ownerId);
+    if (ref && ref.agent != null && ref.agent !== 'claude') return false;
+    const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
+    const transcriptPath =
+      (ref?.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
+      newestTranscriptUnderOwner(ownerId);
+    const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
+    const spec = transcriptPath
+      ? await buildOwnerRespawnLaunchSpec(ownerId, {
+          effectiveWindowTokens,
+          buildOpts: {
+            workspaceId,
+            ownerLabel,
+            transcriptPath,
+            transcriptSourceKind: 'claude',
+            // A forced cut is NOT the clean deliberate boundary the polite rung
+            // waits for — mark it so the carry producers treat the tail as
+            // potentially mid-thought.
+            boundaryDeliberate: false,
+          },
         })
-      : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });
+      : null;
+    if (!spec) {
+      console.warn(
+        `[compaction-watchdog] force-respawn for ${ownerLabel} (${ownerId}) could not assemble the ` +
+          `carry spec (${transcriptPath ? 'builder failure' : 'no transcript'}) — will retry next pass; ` +
+          `the death detector is the terminal backstop.`,
+      );
+      return false;
+    }
+    // turn-provenance P-002: the forced first prompt is typed into the successor's
+    // PTY as a prompt — tag it `watchdog` so the hook labels it machine-generated,
+    // not owner input. An OPEN owner message wins instead (P-010) and rides
+    // verbatim/untagged — it IS owner text, delivered by the one shared kickoff
+    // source. Fail-soft on any tag error.
+    const firstPrompt =
+      spec.firstPrompt ??
+      (await (async () => {
+        const note = forceCompactContinueNote(est, limit, forceAt, bound);
+        try {
+          const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
+          return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: note }).taggedText;
+        } catch {
+          return note;
+        }
+      })());
+    const ok = await injectIntoHost(host.sock, {
+      mode: 'carry-respawn',
+      data: firstPrompt,
+      systemPromptAddendum: spec.systemPromptAddendum,
+    });
     if (ok) {
       console.warn(
-        `[compaction-watchdog] FORCE-COMPACTED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
+        `[compaction-watchdog] FORCE-RESPAWNED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
           `(${Math.round((est / limit) * 100)}% of the soft limit; force threshold ~${forceAt}) — ` +
-          `injected /compact after it exhausted the self-compaction band (soft limit → force threshold; P-012).`,
+          `queued the deterministic carry-respawn after it exhausted the self-cut band (P-012/P-022).`,
       );
     }
     return ok;
   } catch (e) {
     console.warn(
-      `[compaction-watchdog] force-compact inject failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+      `[compaction-watchdog] force-respawn inject failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
     );
     return false;
   }
@@ -989,7 +1016,16 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
             fractionAt <= capAt ? 'fraction' : window != null ? 'window' : 'overshoot';
           if (
             est >= forceAt &&
-            (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit, forceAt, bound))
+            (await maybeForceRespawn(
+              r.owner_id,
+              r.owner_label,
+              r.workspace_id,
+              carryWindow,
+              est,
+              r.compaction_limit,
+              forceAt,
+              bound,
+            ))
           ) {
             forceCompactedAt.set(r.owner_id, Date.now());
             out.forceCompacted.push(r.owner_id);

@@ -165,7 +165,9 @@ beforeEach(() => {
   hostSupportsMock.mockReturnValue(false);
   injectMock.mockResolvedValue(true);
   findTranscriptMock.mockResolvedValue('/tmp/live-session.jsonl');
-  newestTranscriptMock.mockReturnValue(null);
+  // P-022: the force rung builds the carry spec itself; with the default null
+  // session-ref it falls back to newest-transcript-under-owner, so give it one.
+  newestTranscriptMock.mockReturnValue('/tmp/live-session.jsonl');
   resolveSessionRefMock.mockResolvedValue(null);
   buildOwnerRespawnMock.mockResolvedValue({
     systemPromptAddendum: 'deterministic carry',
@@ -410,7 +412,7 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     expect(injectMock).not.toHaveBeenCalled();
   });
 
-  it('falls through to the existing hard backstop when the live host lacks carry-respawn', async () => {
+  it('P-022: a host without carry-respawn is neither cut NOR force-compacted — native /compact has no fallback; the death detector covers it', async () => {
     estimateMock.mockResolvedValue(195_000);
     specMock.mockResolvedValue('sonnet');
     getFlagMock.mockResolvedValue(true);
@@ -424,32 +426,37 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
 
     expect(out.carryRespawned).toEqual([]);
-    expect(out.forceCompacted).toEqual(['hot']);
-    expect(injectMock).toHaveBeenCalledTimes(1);
-    expect(injectMock.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ mode: 'compact' }),
-    );
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
   });
 });
 
-describe('force-compact rung (agent-managed-compaction P-012)', () => {
+describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)', () => {
   const seeded = [{ owner_id: 'hot', owner_label: 'su · hot', compaction_limit: 158_000 }];
 
-  it('force-compacts an over-limit session with a compact-capable live host (mode:compact)', async () => {
+  it('force-respawns an over-limit session with a carry-respawn-capable live host (mode:carry-respawn, addendum + bound-naming first prompt)', async () => {
     estimateMock.mockResolvedValue(200_000); // over 158k
-    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
     hostSupportsMock.mockReturnValue(true);
+    newestTranscriptMock.mockReturnValue('/tmp/live-session.jsonl');
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.overLimit).toEqual(['hot']);
     expect(out.forceCompacted).toEqual(['hot']);
     expect(injectMock).toHaveBeenCalledTimes(1);
     const [sock, payload] = injectMock.mock.calls[0] as unknown as [
       string,
-      { mode: string; data: string; focus?: string },
+      { mode: string; data: string; systemPromptAddendum?: string },
     ];
     expect(sock).toBe('/tmp/hot.sock');
-    expect(payload.mode).toBe('compact');
-    expect(payload.focus).toContain('identity block');
+    expect(payload.mode).toBe('carry-respawn');
+    expect(payload.systemPromptAddendum).toBe('deterministic carry');
+    // A forced cut is NOT a clean deliberate boundary — the spec build must say so.
+    expect(buildOwnerRespawnMock).toHaveBeenCalledWith(
+      'hot',
+      expect.objectContaining({
+        buildOpts: expect.objectContaining({ boundaryDeliberate: false }),
+      }),
+    );
     // Unknown window (no spec resolvable) ⇒ the overshoot bound set forceAt — the
     // note must name THAT, not claim "≈ 1.3 ×" (false math; owner 2026-07-05).
     expect(payload.data).toContain('conservative bound used when the model window is unknown');
@@ -457,15 +464,41 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(payload.data).not.toContain('≈ 1.3 ×');
   });
 
-  it('falls back to a plain /compact turn on a host without the compact capability', async () => {
+  it('P-022: no carry-respawn capability ⇒ NOT forced — native /compact has no fallback anymore', async () => {
     estimateMock.mockResolvedValue(200_000);
     findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock' });
     hostSupportsMock.mockReturnValue(false);
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('P-010 at force level: an OPEN owner message rides verbatim as the successor first prompt (never blocks the forced cut)', async () => {
+    estimateMock.mockResolvedValue(200_000);
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    newestTranscriptMock.mockReturnValue('/tmp/live-session.jsonl');
+    buildOwnerRespawnMock.mockResolvedValue({
+      systemPromptAddendum: 'deterministic carry',
+      firstPrompt: 'and also fix the login page',
+      budgetChars: 32_000,
+      openOwnerQuestion: { crossesOpenOwnerMessage: true },
+    });
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.forceCompacted).toEqual(['hot']);
     const [, payload] = injectMock.mock.calls[0] as unknown as [string, { mode: string; data: string }];
-    expect(payload.mode).toBe('turn');
-    expect(payload.data).toMatch(/^\/compact /);
+    expect(payload.mode).toBe('carry-respawn');
+    expect(payload.data).toBe('and also fix the login page');
+  });
+
+  it('a failed spec build (no transcript anywhere) ⇒ NOT forced this pass; retries later', async () => {
+    estimateMock.mockResolvedValue(200_000);
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    newestTranscriptMock.mockReturnValue(null); // ref is null too ⇒ no transcript at all
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
   });
 
   it('does NOT force-compact when the flag is OFF (warn-only, byte-identical to pre-P-012)', async () => {
@@ -479,7 +512,7 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(injectMock).not.toHaveBeenCalled();
   });
 
-  it('no live psu-pty host ⇒ over-limit but not force-compacted (context-death + P-014 cover it)', async () => {
+  it('no live psu-pty host ⇒ over-limit but not forced (the context-death detector covers it)', async () => {
     estimateMock.mockResolvedValue(200_000);
     findLiveHostMock.mockReturnValue(null);
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
