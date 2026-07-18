@@ -4,11 +4,16 @@
  * transcript-size path is exercised by integration; here we pin the pure guards:
  * unresolvable / non-Claude sessions must degrade to null, never throw.
  */
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { estimateContextTokens, newestTranscriptUnderOwner, tokensFromFileSize } from './compaction-usage';
+import {
+  estimateContextTokens,
+  fallbackTranscriptFresh,
+  newestTranscriptUnderOwner,
+  tokensFromFileSize,
+} from './compaction-usage';
 
 describe('estimateContextTokens (backend gating + degradation)', () => {
   it('returns null for a null sessionId', async () => {
@@ -165,5 +170,36 @@ describe('newestTranscriptUnderOwner (P-016 resume-rotation / dark-cohort fallba
   it('refuses a path-escaping owner id', () => {
     expect(newestTranscriptUnderOwner('../../etc', base)).toBeNull();
     expect(newestTranscriptUnderOwner('a/b', base)).toBeNull();
+  });
+});
+
+describe('fallbackTranscriptFresh (the P-016 fallback freshness gate)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compaction-fresh-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('accepts a recently-written transcript (the live stale-session_id case P-016 targets)', () => {
+    const p = join(dir, 'live.jsonl');
+    writeFileSync(p, 'x');
+    expect(fallbackTranscriptFresh(p)).toBe(true);
+  });
+
+  it('rejects a transcript frozen longer than the freshness window — a dead predecessor must not be read against its idle successor', () => {
+    const p = join(dir, 'dead-predecessor.jsonl');
+    writeFileSync(p, 'x'.repeat(1024));
+    const frozenAt = new Date(Date.now() - 11 * 60_000);
+    utimesSync(p, frozenAt, frozenAt);
+    expect(fallbackTranscriptFresh(p)).toBe(false);
+  });
+
+  it('a boundary-fresh file stays accepted under an injected clock', () => {
+    const p = join(dir, 'boundary.jsonl');
+    writeFileSync(p, 'x');
+    const mtime = statSync(p).mtimeMs;
+    expect(fallbackTranscriptFresh(p, mtime + 9 * 60_000)).toBe(true);
+    expect(fallbackTranscriptFresh(p, mtime + 11 * 60_000)).toBe(false);
+  });
+
+  it('fail-soft false on a missing path (never throws)', () => {
+    expect(fallbackTranscriptFresh(join(dir, 'nope.jsonl'))).toBe(false);
   });
 });

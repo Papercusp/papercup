@@ -202,16 +202,44 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
   }
 }
 
+/** How recently the P-016 fallback transcript must have been WRITTEN to be
+ *  trusted as the live session's. The two cases the fallback must separate:
+ *  a stale/rotated session_id with the live session appending to a
+ *  differently-named file (P-016's target — that file's mtime is seconds old),
+ *  versus a just-respawned successor with NO transcript yet, where the newest
+ *  file under the owner root is the DEAD PREDECESSOR'S — frozen at kill time.
+ *  Reading the latter re-reports the predecessor's over-limit size against the
+ *  near-empty successor and re-kills it at every grace expiry (the 2026-07-18
+ *  idle-successor leg of the WI-5075 kill loop). 10 min ≫ the watchdog cadence
+ *  and any single write gap of a session actively filling its context; a file
+ *  older than that cannot be the "live session about to overflow" P-016 exists
+ *  to catch. */
+const FALLBACK_TRANSCRIPT_FRESH_MS = 10 * 60_000;
+
+/** Exported for tests: the P-016 fallback freshness gate. */
+export function fallbackTranscriptFresh(p: string, nowMs = Date.now()): boolean {
+  try {
+    return nowMs - fs.statSync(p).mtimeMs <= FALLBACK_TRANSCRIPT_FRESH_MS;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Best-effort context-token estimate for a session by its coord ownerId.
  *
  * Primary: resolve the recorded session_id → its `<sessionId>.jsonl`. Fallback
  * (P-016): if that misses for a Claude session (stale/rotated session_id), use the
- * newest jsonl under the owner root so a live session is never left with a null
- * estimate — the null that silently hid the per-turn compaction reminder and let the
- * 2026-07-04 cohort drift to 836k. OMP/Codex keep the null-by-design gate (no jsonl
- * transcript). Cohorts whose transcript lives outside the owner root entirely are
- * covered by the mechanical `autoCompactWindow` cap (P-014), not this estimate.
+ * newest RECENTLY-WRITTEN jsonl under the owner root so a live session is never left
+ * with a null estimate — the null that silently hid the per-turn compaction reminder
+ * and let the 2026-07-04 cohort drift to 836k. The freshness gate
+ * ({@link fallbackTranscriptFresh}) keeps the fallback from pinning a fresh
+ * carry-respawn successor to its dead predecessor's frozen transcript (an idle
+ * successor has no jsonl until its first turn); a genuinely-missing estimate
+ * degrades to null, which the watchdog's dark-telemetry grace handles without a
+ * cut. OMP/Codex keep the null-by-design gate (no jsonl transcript). Cohorts whose
+ * transcript lives outside the owner root entirely are covered by the mechanical
+ * `autoCompactWindow` cap (P-014), not this estimate.
  */
 export async function estimateContextTokensForOwner(ownerId: string): Promise<number | null> {
   const ref = await resolveSessionRef(ownerId);
@@ -220,7 +248,8 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
   if (primary != null) return primary;
   if (ref.agent === 'omp' || ref.agent === 'codex') return null;
   const alt = newestTranscriptUnderOwner(ownerId);
-  return alt ? tokensFromFileSize(alt) : null;
+  if (!alt || !fallbackTranscriptFresh(alt)) return null;
+  return tokensFromFileSize(alt);
 }
 
 /* ── WI-4154: anchored incremental reads — right the first time ─────────────
