@@ -12,7 +12,7 @@ vi.mock('@papercusp/db-org', () => ({
   },
 }));
 
-import { runGithubBridgeTick, BRIDGE_REMOTE_STAGING_REF, type BridgeTickInput } from './github-bridge-tick';
+import { runGithubBridgeTick, BRIDGE_REMOTE_STAGING_REF, BRIDGE_CANONICAL_REF, type BridgeTickInput } from './github-bridge-tick';
 import type { IngressResult } from './github-ingress';
 import type { AdmissionResult } from './github-ingress-admission';
 import type { EgressResult } from './github-egress';
@@ -110,11 +110,32 @@ describe('runGithubBridgeTick — composition', () => {
     expect(out.ingressed.upToDate).toBe(1);
   });
 
-  it('no canonical staging yet → egress skipped (nothing canonical to publish)', async () => {
-    const { input, egressCalls } = bridgeInput({}, { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) });
+  it('no canonical staging yet → egress skipped, and the pass ESCALATES rather than reading clear', async () => {
+    // Regression (hello-world-3-pot canary, 2026-07-18): a live egress target
+    // with an unestablished canonical ref used to be indistinguishable from a
+    // healthy no-op — `egress: null` + verdict 'clear' every tick — so GitHub
+    // origin silently froze 8 commits / ~22h behind while the bridge reported
+    // green. Nothing may be pushed without a canonical, but it MUST be loud.
+    const { input, recorded, egressCalls } = bridgeInput({}, { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) });
     const out = await runGithubBridgeTick(input);
     expect(out.egress).toBeNull();
-    expect(egressCalls).toHaveLength(0);
+    expect(egressCalls).toHaveLength(0); // still never pushes a canonical it cannot read
+    expect(out.verdict.action).toBe('escalate');
+    expect(out.verdict.signals).toEqual([
+      { kind: 'egress-canonical-missing', canonicalRef: BRIDGE_CANONICAL_REF, watermarkSha: null },
+    ]);
+    // Not an owner lever — the integrator's next publish (or the catch-up pin) clears it.
+    expect(out.verdict.needsOwner).toBe(false);
+    expect(out.verdict.detail).toMatch(/canonical ref absent/i);
+    expect(out.errors.some((e) => e.includes(BRIDGE_CANONICAL_REF))).toBe(true);
+    expect(recorded).toHaveLength(1);
+  });
+
+  it('canonical missing is NOT signalled when there is no egress target at all (nothing to freeze)', async () => {
+    const { input } = bridgeInput({ upstreamWrite: null }, { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) });
+    const out = await runGithubBridgeTick(input);
+    expect(out.egressTarget).toBe('skipped');
+    expect(out.verdict.action).toBe('clear');
   });
 
   it('no github remote at all → skipped pass, watermark untouched', async () => {

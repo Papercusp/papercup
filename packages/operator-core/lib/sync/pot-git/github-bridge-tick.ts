@@ -150,6 +150,11 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
     upstreamWrite: input.upstreamWrite,
   });
   let egress: EgressResult | null = null;
+  // A live target with NO canonical ref is a fault, not a quiet no-op: left
+  // unsignalled it reports `egress: null` + verdict 'clear' on every tick while
+  // origin freezes indefinitely (the hello-world-3-pot canary sat ~22h / 8
+  // commits behind reading green). Surface it so divergence escalates.
+  let canonicalMissing: { canonicalRef: string; watermarkSha: string | null } | null = null;
   if (target.target !== 'none') {
     const canonicalSha = await readCanonicalSha(repoPath, runGit);
     if (canonicalSha) {
@@ -160,12 +165,17 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
         runGit,
       });
       errors.push(...egress.errors.map((e) => `egress: ${e}`));
+    } else {
+      canonicalMissing = { canonicalRef: BRIDGE_CANONICAL_REF, watermarkSha: input.lastAdmitted };
+      errors.push(
+        `egress: canonical ref ${BRIDGE_CANONICAL_REF} is absent in ${repoPath} — nothing egressed (origin stays frozen until the integrator or the catch-up pin establishes it)`,
+      );
     }
   }
 
   // 4. DIVERGENCE — fold residues, write/clear the escalation (best-effort).
   const verdict = classifyDivergence(
-    collectDivergenceSignals({ egress, ingress, admissions: admissionResults }),
+    collectDivergenceSignals({ egress, ingress, admissions: admissionResults, canonicalMissing }),
   );
   await record(input.potHomeSlug, input.workspaceId, verdict);
 

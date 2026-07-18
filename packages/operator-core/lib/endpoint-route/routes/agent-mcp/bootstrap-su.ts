@@ -30,6 +30,7 @@ import {
   markAdvSessionEnded,
   reactivateAdvSession,
   reanchorAdvSessionNativeId,
+  reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
 } from '../../../adv-sessions';
 import { getOrgPg } from '@papercusp/db-org';
@@ -2202,7 +2203,8 @@ const optionsForSessionResumed = defineTool({
 const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * POST /api/agent-mcp/console/bootstrap-su/session-respawned  { advSessionId, sessionId }
+ * POST /api/agent-mcp/console/bootstrap-su/session-respawned
+ *   { advSessionId?, coordOwnerId?, sessionId }
  *
  * The psu launcher's RESPAWN report (WI-5075) — the managed pty host replaced the
  * agent child with a fresh successor under a NEW native `--session-id` (P-018
@@ -2212,6 +2214,12 @@ const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[
  * LIVE incarnation instead of the dead predecessor's transcript. Without this,
  * the estimate stays pinned over-limit and the watchdog re-kills each successor
  * at every retry-grace expiry (the 2026-07-15/16 kill loop).
+ *
+ * Keyed by `advSessionId` when the launch env carried one (the adv-spawned
+ * cohort), FALLING BACK to `coordOwnerId` (newest row for the owner) — an
+ * interactive `psu` / `psu --resume` launch has NO adv id in its env, and
+ * requiring one silently exempted that whole cohort from the re-anchor (the
+ * 2026-07-18 su-57b6247d successor-kill loop). At least one key is required.
  *
  * Best-effort + idempotent like its ended/resumed siblings: re-anchoring to the
  * already-recorded id is a no-op, and the launcher swallows any failure.
@@ -2224,11 +2232,19 @@ const sessionRespawned = defineTool({
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     let advSessionId: number | null = null;
+    let coordOwnerId: string | null = null;
     let sessionId: string | null = null;
     try {
-      const body = (await req.json()) as { advSessionId?: unknown; sessionId?: unknown };
+      const body = (await req.json()) as {
+        advSessionId?: unknown;
+        coordOwnerId?: unknown;
+        sessionId?: unknown;
+      };
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
+      }
+      if (typeof body.coordOwnerId === 'string' && body.coordOwnerId.trim().length > 0) {
+        coordOwnerId = body.coordOwnerId.trim().slice(0, 200);
       }
       if (typeof body.sessionId === 'string' && NATIVE_SESSION_ID_RE.test(body.sessionId.trim())) {
         sessionId = body.sessionId.trim();
@@ -2236,14 +2252,24 @@ const sessionRespawned = defineTool({
     } catch {
       /* fall through to the 400 */
     }
-    if (advSessionId == null || advSessionId <= 0) {
-      return jsonRes({ error: 'advSessionId required' }, 400);
+    if ((advSessionId == null || advSessionId <= 0) && !coordOwnerId) {
+      return jsonRes({ error: 'advSessionId or coordOwnerId required' }, 400);
     }
     if (!sessionId) {
       return jsonRes({ error: 'sessionId (native session UUID) required' }, 400);
     }
     try {
-      const { reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId);
+      let reanchored = false;
+      let owner: string | null = null;
+      if (advSessionId != null && advSessionId > 0) {
+        ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId));
+      }
+      // Owner-keyed fallback: the interactive/resumed cohort has no adv id, and a
+      // stale/mismatched adv id that touched no row heals through the same path.
+      // Both updates are idempotent per native id, so chaining cannot double-write.
+      if (!reanchored && coordOwnerId) {
+        ({ reanchored, owner } = await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId));
+      }
       // Frozen-gauge fix: the successor keeps the coord ownerId, so the
       // in-process context-usage cache still holds the DEAD predecessor's
       // near-limit estimate — a fresh successor rendering "89%" gets nudged

@@ -51,7 +51,18 @@ export type DivergenceSignal =
       blockedAuthors: { githubUserId: number; commits: string[] }[];
       errors: string[];
     }
-  | { kind: 'egress-secret-block'; remoteRef: string; findings: number; overflow: boolean };
+  | { kind: 'egress-secret-block'; remoteRef: string; findings: number; overflow: boolean }
+  /**
+   * The egress target is live but the bare store has no canonical ref to push.
+   * Without this signal an unestablished canonical is INDISTINGUISHABLE from a
+   * healthy no-op — the tick reports `egress: null` + `clear` on every pass
+   * while origin silently freezes (observed on the hello-world-3-pot canary:
+   * the worktree-bridge watermark named a sha whose object was absent, so the
+   * catch-up pin's `update-ref` refused and egress no-opped for ~22h reading
+   * green). Not an owner lever: the integrator's next publish — or the
+   * catch-up pin — establishes it.
+   */
+  | { kind: 'egress-canonical-missing'; canonicalRef: string; watermarkSha: string | null };
 
 export interface DivergenceVerdict {
   /** No signals → clear (a clean pass clears the escalation, git-sync idiom). */
@@ -73,8 +84,17 @@ export function collectDivergenceSignals(results: {
   ingress?: Pick<IngressResult, 'nonFF'> | null;
   /** Admission verdicts for newly-ingressed heads, keyed by the judged head. */
   admissions?: Array<{ head: string; result: Pick<AdmissionResult, 'admit' | 'basis' | 'blockedAuthors' | 'errors'> }>;
+  /** Set by the tick when a live egress target found no canonical ref to push. */
+  canonicalMissing?: { canonicalRef: string; watermarkSha: string | null } | null;
 }): DivergenceSignal[] {
   const signals: DivergenceSignal[] = [];
+  if (results.canonicalMissing) {
+    signals.push({
+      kind: 'egress-canonical-missing',
+      canonicalRef: results.canonicalMissing.canonicalRef,
+      watermarkSha: results.canonicalMissing.watermarkSha,
+    });
+  }
   for (const r of results.egress?.rejectedNonFF ?? []) {
     signals.push({ kind: 'egress-non-ff', remoteRef: r.remoteRef, remoteSha: r.remoteSha, localSha: r.localSha, reason: r.reason });
   }
@@ -125,6 +145,10 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     );
   if (c('egress-secret-block') > 0)
     parts.push(`${c('egress-secret-block')} ref(s) blocked by the secrets gate (nothing left the machine — scrub + re-egress)`);
+  if (c('egress-canonical-missing') > 0)
+    parts.push(
+      `canonical ref absent in the bare store — NOTHING is being egressed and origin is frozen (the integrator has not published it, and the catch-up pin could not: its watermark sha's object is missing). Re-establish canonical, then egress fast-forwards`,
+    );
   return {
     action: 'escalate',
     signals,

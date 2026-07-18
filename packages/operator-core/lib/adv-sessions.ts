@@ -478,11 +478,16 @@ export async function reanchorAdvSessionNativeId(
   if (!sessionId) return { reanchored: false, owner: null };
   try {
     const { sql } = getOrgPg();
+    // ⚠ `RETURNING coord_owner_id` — there is NO `owner` column on adv_sessions.
+    // The original WI-5075 ship wrote `RETURNING id, owner`, which made the WHOLE
+    // statement throw 42703 into the catch below: the re-anchor silently never
+    // committed for ANY cohort and only the watchdog's streak breaker masked it
+    // (the 2026-07-18 su-57b6247d 3-successor kill loop).
     const rows = await sql<{ id: number; owner: string | null }[]>`
       UPDATE harness_shared.adv_sessions
          SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now()
        WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
-      RETURNING id, owner
+      RETURNING id, coord_owner_id AS owner
     `;
     // The owner rides back so the respawn route can clear the frozen context
     // gauge (the successor keeps the coord ownerId, so the in-process usage
@@ -491,6 +496,42 @@ export async function reanchorAdvSessionNativeId(
     return { reanchored: rows.length > 0, owner: rows[0]?.owner ?? null };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
+    return { reanchored: false, owner: null };
+  }
+}
+
+/**
+ * Owner-keyed sibling of {@link reanchorAdvSessionNativeId} for sessions with NO
+ * numeric adv id in their environment — an interactive `psu` / `psu --resume`
+ * launch never gets PAPERCUSP_ADV_SESSION_ID, so its respawn report can only
+ * name the coord ownerId. Without this path that whole cohort was invisible to
+ * WI-5075: its adv row kept naming the dead predecessor and the compaction
+ * watchdog re-killed each successor (2026-07-18 su-57b6247d, 3 cuts in 16 min).
+ * Re-anchors the NEWEST row for the owner — the same row `resolveSessionRef`
+ * reads (both order by started_at DESC), so the two stay consistent by
+ * construction. Idempotent per native id.
+ */
+export async function reanchorAdvSessionNativeIdByOwner(
+  coordOwnerId: string,
+  sessionId: string,
+): Promise<{ reanchored: boolean; owner: string | null }> {
+  if (!coordOwnerId || !sessionId) return { reanchored: false, owner: null };
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now()
+       WHERE id = (
+         SELECT id FROM harness_shared.adv_sessions
+          WHERE coord_owner_id = ${coordOwnerId}
+          ORDER BY started_at DESC
+          LIMIT 1
+       ) AND session_id IS DISTINCT FROM ${sessionId}
+      RETURNING id
+    `;
+    return { reanchored: rows.length > 0, owner: rows.length > 0 ? coordOwnerId : null };
+  } catch (e) {
+    warnUnlessMissingTable(e, 'reanchorAdvSessionNativeIdByOwner');
     return { reanchored: false, owner: null };
   }
 }
