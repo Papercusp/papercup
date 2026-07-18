@@ -1358,7 +1358,7 @@ export async function collectLoopStalledSignals(sql: Sql, stuckParkSec = 1800): 
          SELECT 1 FROM harness_shared.agent_activity a
           WHERE a.owner_id = r.target_owner_id
             AND a.kind = 'lifecycle'
-            AND a.summary ILIKE '%end%'
+            AND a.summary = ${SESSION_END_MARKER}
             AND a.created_at > r.last_fired_at)
        AND COALESCE(
              (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p WHERE p.owner_id = r.target_owner_id),

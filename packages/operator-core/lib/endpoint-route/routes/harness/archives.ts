@@ -16,13 +16,20 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { mkdir, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { STATE_FILES_FOR_RESET } from '../../../harness-state-files';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const dbcFor = (slug: string) => getLegacyClient(slug);
+/** Extracted for direct testability (WI-5381 / WI-4995 part b) — was inline
+ *  `getLegacyClient(slug).prepare(...).run(...)`, a direct connection outside
+ *  PgBouncer pooling; now routed through harnessQuery's PgBouncer-safe
+ *  per-transaction search_path in pooled mode / connect-time search_path in
+ *  direct mode (byte-identical behavior either way). */
+export async function clearHarnessFeaturesForReset(slug: string): Promise<void> {
+  await harnessQuery(slug, (sql) => sql`DELETE FROM harness_features WHERE harness_slug = ${slug}`);
+}
 
 const archiveOnly = defineTool({
   method: 'POST',
@@ -67,8 +74,7 @@ const archiveOnly = defineTool({
             try { await rm(join(dir, d), { recursive: true, force: true }); resetRemoved.push(`${d}/`); } catch {}
           }
           try {
-            const dbc = dbcFor(project.slug);
-            await dbc.prepare('DELETE FROM harness_features WHERE harness_slug = ?').run(project.slug);
+            await clearHarnessFeaturesForReset(project.slug);
             resetRemoved.push('harness_features (PG)');
           } catch (e: any) {
             console.warn('[archive-reset] PG features clear failed:', e?.message ?? e);

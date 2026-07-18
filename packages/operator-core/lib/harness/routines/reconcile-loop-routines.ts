@@ -109,6 +109,7 @@ import {
 import { cancelInboxWake as defaultCancelInboxWake } from '../../events/await/inbox-wake-arm';
 import { openEscalation } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
