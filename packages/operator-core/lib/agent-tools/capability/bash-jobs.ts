@@ -392,7 +392,17 @@ export function killJob(job: BashJob): { ok: boolean; alreadyDone: boolean } {
     /* fallthrough to SIGKILL */
   }
   setTimeout(() => {
-    if (job.status === 'running') {
+    // NOTE: `job.status` is flipped to 'killed' below, SYNCHRONOUSLY, right after
+    // the SIGTERM is sent — well before the process has actually exited. That
+    // flip reflects kill-INTENT (a caller checking status should see "killed" as
+    // soon as the kill is requested), not actual process death, so it must NOT be
+    // used to decide whether the SIGKILL escalation is still needed: checking
+    // `job.status === 'running'` here is always false and would silently make
+    // this fallback dead code, defeating the grace-period safety net for a
+    // process that ignores/survives SIGTERM. `exitCode` is set only by the real
+    // `close` handler once the OS confirms the process has actually terminated —
+    // that is the correct liveness signal for this guard.
+    if (job.exitCode === null) {
       try { killProcessTree(job.child, 'SIGKILL'); } catch { /* ignore */ }
     }
   }, 2_000);

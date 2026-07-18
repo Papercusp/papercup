@@ -230,11 +230,27 @@ describe('process-group kill — no orphaned descendants (capability-bash-orphan
   // outer `wait` keeps bash alive until the kill. With the group fix the grandchild
   // dies with the group; without it, it orphans, sleeps, and creates the marker.
   const grandchildCmd = (marker: string): string => `( sleep 3; touch ${marker} ) & echo started; wait`;
+  // EI-10982: this used to sample the marker exactly ONCE at a fixed 3500ms
+  // offset — well past the grandchild's 3s delay under an idle box, but a real
+  // race against host load: on a shared box running many concurrent vitest
+  // workers, the kill's actual effect (signal delivery/scheduling, and for
+  // killJob specifically the SIGTERM->SIGKILL grace-period escalation) can be
+  // pushed out far enough that a genuinely-about-to-be-killed process still
+  // wins the race against a single fixed-offset sample. Poll for the marker
+  // instead of sampling once, over a bound generous enough to absorb that
+  // load-induced skew (comfortably past the grandchild's 3s delay plus
+  // killJob's 2s escalation grace period plus OS reap latency) — a real orphan
+  // still fails fast (the loop breaks the moment the marker appears), and a
+  // correctly-killed process is given real headroom to prove it stays dead
+  // rather than being raced against the clock.
   async function expectNoOrphanMarker(run: (marker: string) => Promise<unknown>): Promise<void> {
     const marker = join(STATE, `orphan-${markerSeq++}.marker`);
     await run(marker);
-    // Wait well past the grandchild's 3s delay; an orphan would have touched it.
-    await new Promise((r) => setTimeout(r, 3500));
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      if (existsSync(marker)) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
     expect(existsSync(marker)).toBe(false);
   }
 
@@ -243,7 +259,7 @@ describe('process-group kill — no orphaned descendants (capability-bash-orphan
       const r = await runForeground({ command: grandchildCmd(marker), cwd: STATE, stateDir: STATE }, never, 300);
       expect(r.status).toBe('timed_out');
     });
-  }, 10_000);
+  }, 15_000);
 
   it('foreground abort kills the grandchild (no orphan)', async () => {
     await expectNoOrphanMarker(async (marker) => {
@@ -252,7 +268,7 @@ describe('process-group kill — no orphaned descendants (capability-bash-orphan
       const r = await runForeground({ command: grandchildCmd(marker), cwd: STATE, stateDir: STATE }, ac.signal, 30_000);
       expect(r.status).toBe('killed');
     });
-  }, 10_000);
+  }, 15_000);
 
   it('killJob kills the background grandchild (no orphan)', async () => {
     await expectNoOrphanMarker(async (marker) => {
@@ -260,5 +276,5 @@ describe('process-group kill — no orphaned descendants (capability-bash-orphan
       expect(job.status).toBe('running');
       killJob(job);
     });
-  }, 10_000);
+  }, 15_000);
 });
