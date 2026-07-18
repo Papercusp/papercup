@@ -27,6 +27,10 @@ import { isLoopbackRequest } from '../../../superuser-token';
 interface Body {
   action?: unknown;
   fleetSlug?: unknown;
+  /** P-001: the pot-scoped grantee — mutually exclusive with fleetSlug. */
+  potSlug?: unknown;
+  /** P-001/D-002: required iff potSlug is set. */
+  audience?: unknown;
   resourceKind?: unknown;
   resourceRef?: unknown;
   sharePct?: unknown;
@@ -83,11 +87,15 @@ export default defineTool({
         } catch {}
       }
 
-      // Pass identity fields through — the store validates non-empty + kind and
-      // returns typed refusals (fleet_required / resource_required / invalid_resource_kind / …).
+      // Pass identity fields through — the store validates the grantee (exactly
+      // one of fleetSlug/potSlug) + kind and returns typed refusals
+      // (grantee_required / grantee_conflict / audience_required /
+      // resource_required / invalid_resource_kind / …).
       const result = await delegateResource({
         workspaceId: ws,
-        fleetSlug: typeof body.fleetSlug === 'string' ? body.fleetSlug : '',
+        fleetSlug: str(body.fleetSlug),
+        potSlug: str(body.potSlug),
+        audience: body.audience === 'trusted-members' || body.audience === 'whole-pot' ? body.audience : undefined,
         kind: typeof body.resourceKind === 'string' ? body.resourceKind : '',
         ref: str(body.resourceRef),
         // NaN when absent/non-numeric → the store's invalid_share_pct refusal (account/gpu).

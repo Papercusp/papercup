@@ -9,13 +9,14 @@
  * "The plan's pot is shared" = this workspace resolves to exactly one shared
  * Hive (resolveWorkspaceHiveScope kind==='one') — none/many never guesses.
  * "Seat-offers exist" reads harness_shared.p2p_work_offers pot-wide (kind
- * 'seat', status 'open') via the EXISTING offer-store read (offer-store.ts
- * listWorkOffers) — that read is already scoped by potHomeSlug with an
- * OPTIONAL fleetSlug filter, so it already returns every open seat-offer in
- * the pot regardless of which fleet a donor originally delegated to. Once
- * P-001 lands pot-scoped delegation (`potSlug`/`audience`, fleetSlug-less
- * rows), those rows land in the SAME table and are picked up here with no
- * change — this module needs no update when P-001 ships.
+ * 'seat', status 'open') via the offer-store read (offer-store.ts
+ * listWorkOffers), then keeps only the rows with a non-null `potSlug` (P-001)
+ * — a TRUE pot-scoped standing offer, spendable by ANY fleet in the pot. A
+ * fleet-SCOPED offer (fleetSlug set, potSlug null) is donated to one already-
+ * EXISTING fleet and is not spendable by the not-yet-created fleet this
+ * routing gate is about to launch, so it is deliberately excluded here (it
+ * still counts for an existing fleet's own placement:'remote' spread —
+ * P-004/P-005, a different code path).
  *
  * Fail-soft by contract (mirrors offer-store-publish.ts / federation-scope.ts
  * discipline): any resolution error degrades to the "unshared/no offers"
@@ -62,6 +63,10 @@ export async function resolveRemoteSeatInventory(
     const donors = new Set<number>();
     let totalSeats = 0;
     for (const row of rows) {
+      // P-001: only a TRUE pot-scoped offer (potSlug set) is spendable by the
+      // not-yet-created fleet this routing gate is about — a fleet-scoped
+      // offer (potSlug null) belongs to a specific existing fleet.
+      if (row.potSlug == null) continue;
       if (!row.record || row.record.kind !== 'seat' || !row.record.seat) continue;
       donors.add(row.publisherGithubUserId);
       totalSeats += row.record.seat.count;
