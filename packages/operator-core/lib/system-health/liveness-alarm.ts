@@ -73,6 +73,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { activeWorkspaceId } from '../workspace-registry';
 import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
+import { resolveSevereEventOwner } from '../severe-event-owner';
 import { currentLoopLag } from '../event-loop-lag-monitor';
 import {
   readRoutineEngineLiveness as readSharedRoutineEngineLiveness,
@@ -817,6 +818,13 @@ async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
     /* best-effort: never crash the request worker */
   }
   try {
+    // EI-10060: resolve the responsible party for this SIGNAL (raw s.key — the
+    // registry keys off the un-prefixed condition class; the broadcast's own
+    // `conditionKey` below stays `infra-liveness:${s.key}`-prefixed for the
+    // WI-1444 lifecycle join, a SEPARATE concern from ownership). Additive: the
+    // fleet-wide broadcast below is unchanged either way; a resolved owner just
+    // ALSO gets a directed, woken, full-fidelity notice.
+    const route = resolveSevereEventOwner(s.key);
     await broadcastSevereEvent({
       summary: `${SUMMARY_PREFIX}${s.summary}`,
       body:
@@ -824,6 +832,7 @@ async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
         `routine engine. Signal: ${s.key}. Workspace: ${ws}. See harness_escalations for the durable record.`,
       category: 'severe-event',
       conditionKey: `infra-liveness:${s.key}`,
+      ...(route ? { route: { ownerSelector: route.ownerSelector, reason: route.reason } } : {}),
     });
   } catch {
     /* best-effort: never crash the request worker */
@@ -1106,6 +1115,12 @@ export async function runLivenessAlarmTick(
           dedupKind: 'infra-liveness',
           subjectSignature: s.key,
           ...(s.diagnosis ? { healthTickStallDiagnosis: s.diagnosis } : {}),
+          // EI-10060: no registered/derivable owner for this signal — nobody is
+          // durably on the hook for it beyond the ambient `to:['*']` broadcast
+          // (which digest-suppresses after EI-9939's flap threshold like every
+          // other repeat fire). Stamped so a human-facing surface can filter on
+          // "escalations nobody owns" instead of that fact staying implicit.
+          needsHumanRoute: resolveSevereEventOwner(s.key) === null,
         },
       });
     } catch {
