@@ -133,6 +133,11 @@ export default function MemoryPage() {
   const [expandedId, setExpandedId] = useQueryState('mem', parseAsString);
   const [addOpen, setAddOpen] = useQueryState('add', parseAsBoolean.withDefault(false));
   const [semantic, setSemantic] = useQueryState('sem', parseAsBoolean.withDefault(false));
+  // EI-12937: default to a bounded recent window instead of shipping the entire
+  // corpus (measured live: 2.02MB / 1,140 rows) on every page load. `full=true`
+  // reproduces the exact pre-fix unbounded fetch — an explicit opt-in, not a
+  // removed capability, so search/filter across full history still works when needed.
+  const [showAll, setShowAll] = useQueryState('full', parseAsBoolean.withDefault(false));
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
   const [harnesses, setHarnesses] = useState<string[]>([]);
   const [hygiene, setHygiene] = useState<ClaudeHygiene | null>(null);

@@ -206,5 +206,8 @@ export async function listUserMemories(
     return typeof turn === 'number' ? turn : 0;
   };
   enriched.sort((a, b) => sortKey(b) - sortKey(a));
+  if (typeof opts.limit === 'number' && opts.limit >= 0 && opts.limit < enriched.length) {
+    return enriched.slice(0, opts.limit);
+  }
   return enriched;
 }

@@ -2346,11 +2346,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // notifySyncInvalidate('userMemory.list') from the REST routes AND the
   // memory:* MCP verbs, so the page updates live on agent writes.
   'userMemory.list': {
-    argsSchema: z.object({ userId: z.string().min(1) }),
+    // EI-12937: `limit` is optional (undefined = today's exact unbounded behavior) —
+    // the settings page defaults to a bounded window and offers an explicit
+    // "show all" opt-in that omits it, reproducing the pre-fix full fetch on demand.
+    argsSchema: z.object({ userId: z.string().min(1), limit: z.number().int().positive().max(100_000).optional() }),
     resolve: async (args) => {
-      const { userId } = args as { userId: string };
+      const { userId, limit } = args as { userId: string; limit?: number };
       const { listUserMemories } = await import('../memory/list-user-memories');
-      return (await listUserMemories(userId)) as unknown[];
+      return (await listUserMemories(userId, { limit })) as unknown[];
     },
   },
 
