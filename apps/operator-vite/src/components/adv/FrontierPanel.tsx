@@ -1,0 +1,284 @@
+/**
+ * FrontierPanel — the Verify-stage frontier lane-status grid
+ * (learning-tab-visibility-2026-07-18 P-003/P-004).
+ *
+ * One row per workspace-singleton learning loop (`learning.frontier` sync
+ * query), answering the relight audit's three-gate question at a glance — a
+ * loop is genuinely live only when routine active + flag ON + governor budget:
+ *
+ *   lane · liveness (firing / pending / stale / dark-by-design /
+ *   should-be-on-but-dark / absent, from the SAME reader
+ *   improvements:learning_loops uses) · flag gate · governor budget
+ *   (READ-ONLY, owner decision 2026-07-18) · last activity.
+ *
+ * Self-contained (own sync query + pc-frontier__* styles, the
+ * RedQueenPanel/EkgPanel idiom) so the LearningTab wiring stays at two lines.
+ * Defensive about the snapshot shape — anything unexpected renders the empty
+ * state, never a crash.
+ */
+import { useEffect } from "react";
+import { useSyncQuery } from "@papercusp/sync";
+import { Radar, RefreshCw } from "lucide-react";
+import type { FrontierSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-frontier-read";
+import {
+  LearningPageHeader,
+  LearningVisualEmpty,
+  LearningVisualError,
+} from "./LearningVisuals";
+
+const STATUS_META: Record<
+  string,
+  { label: string; tone: "good" | "warn" | "bad" | "mute"; hint: string }
+> = {
+  firing: {
+    label: "firing",
+    tone: "good",
+    hint: "Active and fired within the stale window.",
+  },
+  pending: {
+    label: "pending",
+    tone: "mute",
+    hint: "Just armed — its first fire is still ahead.",
+  },
+  stale: {
+    label: "stale",
+    tone: "bad",
+    hint: "Active but has NOT fired within the stale window — a wedge; investigate.",
+  },
+  "dark-by-design": {
+    label: "dark",
+    tone: "mute",
+    hint: "A frontier loop, deliberately inactive until armed.",
+  },
+  "should-be-on-but-dark": {
+    label: "DARK (should be on)",
+    tone: "bad",
+    hint: "An always-on loop that is inactive — a real gap.",
+  },
+  absent: {
+    label: "absent",
+    tone: "warn",
+    hint: "No routine row seeded at all — registration never happened.",
+  },
+};
+
+function money(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `$${v.toFixed(2)}`;
+}
+
+function ago(iso: string | null): string {
+  if (!iso) return "never";
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "never";
+  const mins = Math.max(0, Math.round((Date.now() - ms) / 60_000));
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60 * 48) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / (60 * 24))}d ago`;
+}
+
+export function FrontierPanel({
+  onStatus,
+}: {
+  onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+} = {}) {
+  const sync = useSyncQuery<FrontierSnapshot>({
+    queryName: "learning.frontier",
+    args: {},
+    staleTime: 30_000,
+  });
+  const snap = sync.data?.[0];
+  const lanes = Array.isArray(snap?.lanes) ? snap.lanes : [];
+
+  // View health for the stage chip: an always-on loop dark/stale/absent is bad;
+  // a collision, a stale frontier lane, or an armed-but-unbudgeted lane warns.
+  const status: "neutral" | "good" | "warn" | "bad" =
+    lanes.length === 0
+      ? sync.error
+        ? "bad"
+        : "neutral"
+      : lanes.some(
+            (l) =>
+              l.status === "should-be-on-but-dark" ||
+              l.status === "stale" ||
+              (l.status === "absent" && l.expectedMaterialized),
+          )
+        ? "bad"
+        : lanes.some(
+              (l) =>
+                l.collision ||
+                (l.active && l.flagOn === false) ||
+                (l.active && l.governor != null && l.governor.budgetUsd == null),
+            )
+          ? "warn"
+          : "good";
+  useEffect(() => {
+    onStatus?.(status);
+  }, [onStatus, status]);
+
+  return (
+    <section className="pc-learning__section pc-frontier" aria-label="Frontier learning lanes">
+      <LearningPageHeader
+        icon={<Radar size={14} aria-hidden />}
+        title="Frontier lanes"
+        subtitle="Every workspace-singleton learning loop and its three gates — routine liveness, feature flag, governor budget (read-only). A loop is genuinely live only when all three are open."
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload frontier lanes"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+        }
+      />
+      {sync.error ? (
+        <LearningVisualError message="The frontier read failed — reload, or check the operator log." />
+      ) : lanes.length === 0 ? (
+        <LearningVisualEmpty message="No learning-loop rows yet — the singleton materializer has not run on this workspace." />
+      ) : (
+        <div className="pc-frontier__scroll">
+          <table className="pc-frontier__grid">
+            <thead>
+              <tr>
+                <th scope="col">lane</th>
+                <th scope="col">liveness</th>
+                <th scope="col">flag</th>
+                <th scope="col">budget</th>
+                <th scope="col">spent</th>
+                <th scope="col">last activity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lanes.map((l) => {
+                const meta = STATUS_META[l.status] ?? {
+                  label: l.status,
+                  tone: "mute" as const,
+                  hint: "",
+                };
+                const lastAt = l.activityLastAt ?? l.lastFiredAt;
+                return (
+                  <tr key={l.blueprintId}>
+                    <th scope="row">
+                      <span
+                        title={
+                          l.alwaysOn
+                            ? "Always-on workspace loop."
+                            : "Frontier loop (armed deliberately, per-lane)."
+                        }
+                      >
+                        {l.blueprintId}
+                        {l.alwaysOn ? <em> · always-on</em> : null}
+                        {l.collision ? (
+                          <em
+                            className="pc-frontier__flag--warn"
+                            title="BOTH a @singleton and a legacy routine row exist — the migration double-state."
+                          >
+                            {" "}
+                            · collision
+                          </em>
+                        ) : null}
+                      </span>
+                    </th>
+                    <td>
+                      <span
+                        className={`pc-frontier__pill pc-frontier__pill--${meta.tone}`}
+                        title={meta.hint}
+                      >
+                        {meta.label}
+                      </span>
+                    </td>
+                    <td>
+                      {l.flagKey == null ? (
+                        <span title="No flag gate — on by construction.">—</span>
+                      ) : (
+                        <span
+                          className={
+                            l.flagOn === false
+                              ? "pc-frontier__flag--warn"
+                              : undefined
+                          }
+                          title={`${l.flagKey} — flip via /admin/features (never from here).`}
+                        >
+                          {l.flagOn == null ? "?" : l.flagOn ? "ON" : "OFF"}
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      title={
+                        l.governor
+                          ? `Governor registration '${l.governor.loopId}' (${l.governor.budgetKind}, ${l.governor.enforcement}${l.governor.enabled ? "" : ", disabled"}). Budgets are read-only here — set them via the learning-governor tools.`
+                          : "No governor registration — the unattended path refuses an unbudgeted loop."
+                      }
+                    >
+                      {l.governor ? (
+                        l.governor.budgetUsd == null ? (
+                          <span className="pc-frontier__flag--warn">
+                            unbudgeted
+                          </span>
+                        ) : (
+                          money(l.governor.budgetUsd)
+                        )
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td>{l.governor ? money(l.governor.spentUsd) : "—"}</td>
+                    <td
+                      title={
+                        l.activitySource
+                          ? `From ${l.activitySource}.`
+                          : "From the routine's last_fired_at."
+                      }
+                    >
+                      {ago(lastAt)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {snap && snap.unmatchedGovernor.length > 0 ? (
+            <p className="pc-frontier__unmatched">
+              Governor rows matching no lane:{" "}
+              {snap.unmatchedGovernor
+                .map(
+                  (g) =>
+                    `${g.loopId} (${money(g.budgetUsd)} budget, ${money(g.spentUsd)} spent)`,
+                )
+                .join(" · ")}
+            </p>
+          ) : null}
+        </div>
+      )}
+      <style>{`
+      .pc-frontier__scroll { overflow-x: auto; }
+      .pc-frontier__grid { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+      .pc-frontier__grid th, .pc-frontier__grid td {
+        text-align: left; padding: 5px 10px; white-space: nowrap;
+        border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+        color: var(--fg-dim, #b9d4e8);
+      }
+      .pc-frontier__grid thead th {
+        font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+        color: var(--fg-mute, #7f9bb4); font-weight: 700;
+      }
+      .pc-frontier__grid tbody th { font-weight: 650; }
+      .pc-frontier__grid tbody th em { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+      .pc-frontier__pill {
+        display: inline-block; padding: 1px 8px; border-radius: 999px;
+        font-size: 10px; font-weight: 700;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+      }
+      .pc-frontier__pill--good { color: var(--good, #34d399); border-color: color-mix(in srgb, var(--good, #34d399) 45%, transparent); }
+      .pc-frontier__pill--warn { color: var(--warn, #fbbf24); border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, transparent); }
+      .pc-frontier__pill--bad { color: var(--bad, #f87171); border-color: color-mix(in srgb, var(--bad, #f87171) 45%, transparent); }
+      .pc-frontier__pill--mute { color: var(--fg-mute, #7f9bb4); }
+      .pc-frontier__flag--warn { color: var(--warn, #fbbf24); font-weight: 700; }
+      .pc-frontier__unmatched { margin: 6px 2px 0; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      `}</style>
+    </section>
+  );
+}

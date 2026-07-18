@@ -3836,8 +3836,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             health: { status: 'neutral', markers: [] },
             lensWeights: null,
             groundingTitles: {},
+            cadence: null,
           },
         ];
+      }
+    },
+  },
+
+  // ── learning.frontier — the Learning tab's Frontier lane-status grid
+  // (learning-tab-visibility-2026-07-18 P-003/P-004). One row per workspace-
+  // singleton learning loop: liveness from the SAME shared reader
+  // improvements:learning_loops uses, the lane's flag gate, and the FB-01
+  // governor registration (read-only). Whole-read failure degrades to the
+  // empty snapshot, never a 500. Returns a 1-element array (client reads
+  // data[0]).
+  'learning.frontier': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readFrontierSnapshot } = await import('./learning-frontier-read');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => [await readFrontierSnapshot(tx, ws)]);
+      } catch (err) {
+        console.warn('[learning.frontier] frontier read failed:', err instanceof Error ? err.message : err);
+        return [{ lanes: [], unmatchedGovernor: [], generatedAt: new Date().toISOString() }];
       }
     },
   },

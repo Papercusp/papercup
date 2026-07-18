@@ -14,16 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
-import { LEARNING_SINGLETONS } from '../../blueprint/seed-learning-singletons';
-import {
-  computeLearningLoopHealth,
-  computeActivityLaneHealth,
-  summarizeLearningLoopHealth,
-  singletonRoutineName,
-  SINGLETON_HOST_SLUG,
-  type LearningRoutineRow,
-} from '../../blueprint/learning-loop-health';
+import { computeActivityLaneHealth, summarizeLearningLoopHealth } from '../../blueprint/learning-loop-health';
 
 export default defineTool({
   name: 'improvements:learning_loops',
@@ -63,68 +54,16 @@ export default defineTool({
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
-
-    // Read the routine rows for both the @singleton cadence homes and the legacy
-    // papercup-slug rows the loops may still live on (pre-migration). Narrowed to
-    // the loops we classify so the read is small; the pure core matches by the
-    // exact (slug, name) pair, so over-fetching by name-or-slug is harmless.
-    const names = [
-      ...new Set([
-        ...LEARNING_SINGLETONS.map((l) => singletonRoutineName(l.blueprintId)),
-        ...LEARNING_SINGLETONS.map((l) => l.legacyRoutine),
-      ]),
-    ];
-    const rows = (await sql`
-      SELECT install_slug, name, active, last_fired_at, next_fire_at
-        FROM harness_shared.routines
-       WHERE workspace_id = ${workspaceId}
-         AND install_slug IN ${sql([SINGLETON_HOST_SLUG, operatorHomeHarnessSlug()])}
-         AND name IN ${sql(names)}`) as {
-      install_slug: string;
-      name: string;
-      active: boolean;
-      last_fired_at: Date | string | null;
-      next_fire_at: Date | string | null;
-    }[];
-
-    const routines: LearningRoutineRow[] = rows.map((r) => ({
-      installSlug: r.install_slug,
-      name: r.name,
-      active: !!r.active,
-      lastFiredAt: r.last_fired_at == null ? null : new Date(r.last_fired_at).toISOString(),
-      nextFireAt: r.next_fire_at == null ? null : new Date(r.next_fire_at).toISOString(),
-    }));
-    // origin='scout' (migration 571): su-ideate ticks share this ledger but are
-    // NOT Scout activity — counting them here would mask a dead Scout loop.
-    const scoutTicks = (await sql<{ last_tick_at: Date | string | null }[]>`
-      SELECT max(tick_at) AS last_tick_at
-        FROM harness_shared.scout_ticks
-       WHERE workspace_id = ${workspaceId}
-         AND origin = 'scout'`) as { last_tick_at: Date | string | null }[];
-    const lastScoutTickAt = scoutTicks[0]?.last_tick_at ?? null;
     const nowMs = Date.now();
 
-    // P-070 deployment gate (EI-10625): a Class-C platform-improvement loop is
-    // DELIBERATELY not materialized when platform mode is off, so its missing routine row
-    // is by design. Every other declared singleton is expected to have one — and a missing
-    // row there is a registration failure, never a dark-by-design loop (a dark loop still
-    // HAS a row). Resolve the gate once and hand it to the pure classifier.
-    const { platformImprovementLoopsEnabled, isPlatformImprovementLoop } = await import(
-      '../../blueprint/materialize-triggers'
-    );
-    const platformLoopsOn = await platformImprovementLoopsEnabled();
-
-    const loops = computeLearningLoopHealth(LEARNING_SINGLETONS, routines, {
-      nowMs,
+    // The singleton-loop classification lives in the SHARED reader
+    // (learning-loop-read.ts) — the Learning tab's frontier grid renders from
+    // the same assembly, so the two surfaces cannot drift (learning-tab-
+    // visibility P-003).
+    const { readLearningLoopHealth } = await import('../../blueprint/learning-loop-read');
+    const loops = await readLearningLoopHealth(sql, workspaceId, {
       staleAfterDays: args.staleAfterDays,
-      homeSlug: operatorHomeHarnessSlug(),
-      expectedMaterialized: (id) => platformLoopsOn || !isPlatformImprovementLoop(id),
-      activityByBlueprintId: {
-        scout: {
-          lastActivityAt: lastScoutTickAt == null ? null : new Date(lastScoutTickAt).toISOString(),
-          source: 'scout_ticks',
-        },
-      },
+      nowMs,
     });
 
     // su-ideation dark-lane (su-ideate-learning-substrate P-013): a ROUTINE-LESS,
