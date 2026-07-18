@@ -14,7 +14,8 @@ import {
   launchDetachedDeploy,
   DEPLOY_UNIT,
 } from './release-deploy-launch';
-import type { GitPipelineSnapshot, PipelineEventRow } from './git-pipeline-stats';
+import type { GitPipelineSnapshot } from './git-pipeline-stats';
+import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
 
 /** Minimal snapshot fixture — computeDeployStatus only reads gate + deploy (+ recent, EI-10902). */
 function mkSnap(

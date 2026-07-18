@@ -612,6 +612,80 @@ describe('renderLoopCheckpointBlock — the write-age staleness stamp (P-002)', 
   });
 });
 
+describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901)', () => {
+  const now = Date.parse('2026-07-18T12:00:00.000Z');
+
+  it('no awaits ⇒ never suppress', () => {
+    expect(decideLoopAwaitSuppression({ awaits: [], nowMs: now })).toEqual({ suppress: false, resumeAtMs: null });
+  });
+
+  it('a fresh await with a future deadline ⇒ suppress until that deadline', () => {
+    const deadline = now + 5 * 60_000;
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: new Date(deadline).toISOString(), createdAt: new Date(now).toISOString() }],
+      nowMs: now,
+    });
+    expect(out).toEqual({ suppress: true, resumeAtMs: deadline, drivingEventKey: 'gate:x' });
+  });
+
+  it('an await already past its deadline ⇒ not suppressed', () => {
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: new Date(now - 1_000).toISOString(), createdAt: new Date(now - 60_000).toISOString() }],
+      nowMs: now,
+    });
+    expect(out.suppress).toBe(false);
+  });
+
+  it('a deadline-less await is bounded by max-quiet from ITS OWN creation, not the deadline', () => {
+    const createdAt = now - 10 * 60_000;
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: null, createdAt: new Date(createdAt).toISOString() }],
+      nowMs: now,
+      maxQuietMs: 30 * 60_000,
+    });
+    expect(out).toEqual({ suppress: true, resumeAtMs: createdAt + 30 * 60_000, drivingEventKey: 'gate:x' });
+  });
+
+  it('a deadline-less await older than max-quiet ⇒ not suppressed (the fallback bound)', () => {
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: null, createdAt: new Date(now - 31 * 60_000).toISOString() }],
+      nowMs: now,
+      maxQuietMs: 30 * 60_000,
+    });
+    expect(out.suppress).toBe(false);
+  });
+
+  it('a deadline BEYOND max-quiet is still capped by max-quiet — "must not silence past its fallback"', () => {
+    const createdAt = now;
+    const farDeadline = now + 60 * 60_000; // 1h out
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: new Date(farDeadline).toISOString(), createdAt: new Date(createdAt).toISOString() }],
+      nowMs: now,
+      maxQuietMs: 30 * 60_000,
+    });
+    expect(out.resumeAtMs).toBe(createdAt + 30 * 60_000); // NOT the 1h-out deadline
+  });
+
+  it('multiple awaits ⇒ suppressed while ANY is still fresh; resumeAtMs is the EARLIEST threshold', () => {
+    const out = decideLoopAwaitSuppression({
+      awaits: [
+        { eventKey: 'gate:soon', expiresTs: new Date(now + 60_000).toISOString(), createdAt: new Date(now).toISOString() },
+        { eventKey: 'gate:later', expiresTs: new Date(now + 10 * 60_000).toISOString(), createdAt: new Date(now).toISOString() },
+      ],
+      nowMs: now,
+    });
+    expect(out).toEqual({ suppress: true, resumeAtMs: now + 60_000, drivingEventKey: 'gate:soon' });
+  });
+
+  it('a malformed createdAt is skipped rather than throwing or wrongly suppressing', () => {
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:bad', expiresTs: null, createdAt: 'not-a-date' }],
+      nowMs: now,
+    });
+    expect(out.suppress).toBe(false);
+  });
+});
+
 describe('walls + turn-settle nag in the wake text (compaction-continuity-hardening P-006)', () => {
   const FULL_KICKOFF = ['🔁 Work the plan toward the goal.', 'line 2 of the contract.'].join('\n');
   const NOTE_WITH_WALLS = [
