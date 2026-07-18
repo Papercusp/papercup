@@ -37,6 +37,14 @@
 import { groundingLaneHistogram } from './scheduler';
 import { computeScoutQualityReport, buildQualityReportInputs, type ScoutQualityInputs } from './quality-metrics';
 import type { BuildQualityInputsOptions } from './quality-metrics';
+// EI-12146: the rolling-window FALLBACK below shares its ms value with
+// resolveCriterionWindow()'s own default (rubric-template.ts is dependency-free, exactly
+// so instruments can import it without a PG edge) — the last remaining "two independent
+// 48h hardcodes" seam this item was filed to close. The tool surface
+// (agent-tools/scout/success-metrics.ts) resolves the REAL default from the
+// blender-release-readiness rubric's own declared criterion window; this constant is
+// only the safety-net used when that rubric read is unavailable.
+import { DEFAULT_CRITERION_WINDOW_MS } from '../agent-tools/plans/rubric-template';
 import { hasForcedDiversity } from './invariants';
 import type { RoutedIdeaProvenance } from './outcome-feedback';
 import type { CreativeLens, SuIdeationLens } from './types';
@@ -454,8 +462,10 @@ export interface BuildProgramSuccessOptions extends Pick<
 
 /** Default ledger row cap — also the truncation probe (rows === limit ⇒ older rows unseen). */
 const DEFAULT_LEDGER_LIMIT = 500;
-/** The active blender-release-readiness rubric's cycle-error window. */
-export const CYCLE_ERROR_WINDOW_MS = 48 * 60 * 60 * 1000;
+/** Fallback cycle-error window when the rubric's own declared window can't be read
+ *  (EI-12146) — otherwise byte-identical to the pre-EI-12146 hardcode (48h), now sourced
+ *  from the same constant resolveCriterionWindow() itself falls back to. */
+export const CYCLE_ERROR_WINDOW_MS = DEFAULT_CRITERION_WINDOW_MS;
 /** Workspace-global Scout ticks and Scout-origin routed ideas live here. */
 export const SCOUT_TICK_INSTALL_SLUG = '@singleton';
 

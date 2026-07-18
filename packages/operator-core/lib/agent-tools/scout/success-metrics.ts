@@ -26,6 +26,8 @@ import {
   resolveWatermarkRef,
   type RunningGeneration,
 } from '../../scout/generation-watermark';
+import { getRubric } from '../../rubrics';
+import { resolveCriterionWindow } from '../plans/rubric-template';
 
 export const successMetricsArgs = z
   .object({
