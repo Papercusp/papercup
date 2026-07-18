@@ -42,7 +42,7 @@ import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibil
 import { getPotGitMode, type PotGitMode } from './hive-git-mode';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
-import { runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
+import { BRIDGE_CANONICAL_REF, runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
 import { runWorktreeBridgeTick } from '../../sync/pot-git/worktree-bridge-tick';
 import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from '../../sync/pot-git/ref-announce-tick';
@@ -53,7 +53,7 @@ import {
   type AnnounceBudgetState,
 } from '../../sync/pot-git/ref-announce';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
-import { deviceNamespaceKey, ensurePotGitRepo, hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
+import { defaultRunGit, deviceNamespaceKey, ensurePotGitRepo, hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer } from '../../sync/pot-git/bootstrap';
@@ -1281,13 +1281,33 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
-    const rows = await sql<{ la: string | null }[]>`
-      SELECT metadata->'github_bridge'->>'last_admitted' AS la
+    const rows = await sql<{ la: string | null; wb_sha: string | null }[]>`
+      SELECT metadata->'github_bridge'->>'last_admitted' AS la,
+             metadata->'worktree_bridge'->>'stagingSha' AS wb_sha
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const lastAdmitted = rows[0]?.la ?? null;
+
+    // Catch-up pin (WI-3500): the bare-side canonical mirror (refs/hive/staging)
+    // is maintained on staging-advance ACCEPTANCE (worktree-bridge step 3.5),
+    // but advances accepted before that pin shipped — or a failed pin — leave
+    // the ref missing while the watermark is already persisted, and egress then
+    // silently no-ops every tick. Re-derive it from the accepted watermark when
+    // absent (update-ref itself refuses a sha whose object is missing, so a
+    // pruned mirror can't produce a dangling canonical ref).
+    const wbSha = rows[0]?.wb_sha ?? null;
+    if (wbSha) {
+      const bareRepoPath = hiveGitRepoPath(potHomeSlug, slug);
+      const existing = await defaultRunGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], bareRepoPath);
+      if (existing.code !== 0) {
+        const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
+        if (pinned.code !== 0) {
+          console.warn(`[git-sync] ${slug}: bare canonical catch-up pin failed: ${pinned.stderr.trim()}`);
+        }
+      }
+    }
 
     // Upstream-write probe only when it can matter (a fork always wins — D-007b).
     let upstreamWrite: boolean | null = null;

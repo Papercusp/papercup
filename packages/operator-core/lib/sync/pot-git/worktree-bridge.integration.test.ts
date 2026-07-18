@@ -23,6 +23,7 @@ import { STAGING_REF } from './integrator';
 import { type EpochSeq, type SignedStagingAdvance, signStagingAdvance } from './staging-advance';
 import {
   type WorktreeBridgeConfig,
+  WORKTREE_STAGING_REF,
   bridgeStagingShaToWorktree,
   handleStagingAdvance,
 } from './worktree-bridge';
@@ -148,6 +149,10 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
     expect(await git(['rev-parse', 'HEAD'], wt)).toBe(s1);
     expect(await readFile(join(wt, 'f.txt'), 'utf8')).toBe('v1\n');
     expect(await readNamespaceRef(localMirror, integrator.pubkeyBase64, STAGING_REF)).toBe(s1);
+    // The BARE-side canonical mirror is pinned too — the ref the GitHub
+    // bridge's egress leg reads (github-bridge-tick BRIDGE_CANONICAL_REF);
+    // without it a bridged hive's egress silently never runs (WI-3500).
+    expect(await git(['rev-parse', '--verify', WORKTREE_STAGING_REF], localMirror)).toBe(s1);
   });
 
   it('a later announcement ff-advances the worktree', async () => {
@@ -159,6 +164,7 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
     watermark = res.watermark;
     expect(await git(['rev-parse', 'HEAD'], wt)).toBe(s2);
     expect(await readFile(join(wt, 'f.txt'), 'utf8')).toBe('v2\n');
+    expect(await git(['rev-parse', '--verify', WORKTREE_STAGING_REF], localMirror)).toBe(s2);
   });
 
   it('a replayed / stale announcement is rejected BEFORE any fetch', async () => {

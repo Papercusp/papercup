@@ -223,6 +223,15 @@ export async function handleStagingAdvance(
     );
     if (!full.ok) return { outcome: 'rejected', reason: full.reason, preFetch: false };
 
+    // 3.5) Maintain the BARE-side canonical mirror: the GitHub bridge's egress
+    //      leg reads `refs/hive/staging` from the BARE repo (github-bridge-tick
+    //      BRIDGE_CANONICAL_REF — same ref string as WORKTREE_STAGING_REF), so
+    //      every accepted advance must pin it there, not only in the worktree.
+    //      Safe: the FF fence just ran, so this never rewinds the canonical
+    //      line. Best-effort: on failure the github-bridge leg's catch-up pin
+    //      (git-sync-action) re-derives it from the persisted watermark.
+    await runGit(['update-ref', WORKTREE_STAGING_REF, incoming.staging_sha], cfg.bareRepoPath);
+
     // 4) Follow with the worktree (ff-only, dirty-safe; deferral is fine).
     const advance = await bridgeStagingShaToWorktree(
       cfg.bareRepoPath,
