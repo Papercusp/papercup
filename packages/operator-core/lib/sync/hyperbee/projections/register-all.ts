@@ -132,8 +132,10 @@ export interface RegisterAllOpts {
    * owned-not-remote, so `potHomeSlug` stayed undefined and `decideMemberContentOp` dropped
    * EVERY cross-member op with 'no-hiveHome'; PG-proven tower-VM REV break). It overrides
    * ONLY the content projections' guard potHomeSlug (via `guardScoped`) — it does NOT
-   * touch `hiveScoped`, so the owned-hive member never rebinds the hive-home projections
-   * (no double-apply). Undefined falls back to `potHomeSlug` (today's behavior).
+   * touch `hiveScoped`. (WI-3734: the owned-hive member now rebinds the hive-home
+   * projections too, but via `potHomeSlug` + the `resolveHomeLogKeyHex` home-log
+   * exclusion above — never via this field.) Undefined falls back to `potHomeSlug`
+   * (today's behavior).
    */
   memberContentHiveHome?: string;
   /**
@@ -390,13 +392,13 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     buildPlanItemAssignmentsProjection(guardScoped),
     // A-003: hive_settings + hive_members demux on the hive-HOME slug — scope them
     // to `hiveScoped` so a joiner's member harness lands the home-grained ops.
-    buildHiveSettingsProjection(hiveScoped),
+    hh(buildHiveSettingsProjection(hiveScoped)),
     // F1-1 (federated-scout-gym): SHAREABLE standing facts, hive-home-grained
     // like hive_settings (the fact's harness_slug carries the hive home slug).
-    buildAgentFactsProjection(hiveScoped),
+    hh(buildAgentFactsProjection(hiveScoped)),
     // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror): SHAREABLE memories,
     // hive-home-grained like hive_settings (the memory's harness_slug carries the hive home slug).
-    buildMemoriesProjection(hiveScoped),
+    hh(buildMemoriesProjection(hiveScoped)),
     // F1-2/F1-5 (federated-scout-gym): foreign QD elites, hive-home-grained too
     // (the elite's harness_slug carries the hive home slug — mig 465 demux).
     // F1-6/P-014: thread the WI-259 verified-source-log→device resolver as
@@ -406,25 +408,25 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // devicePubkey via `admittedIdentities`, which holds ONLY admitted-member
     // devices — so a non-null result already proves membership and the separate
     // isDeviceAdmitted seam is unnecessary here.
-    buildGymQdElitesProjection({ ...hiveScoped, resolveSignerDevice: hiveScoped.resolveAuthorDevice }),
-    buildBeeClaimSpecProjection(hiveScoped),
+    hh(buildGymQdElitesProjection({ ...hiveScoped, resolveSignerDevice: hiveScoped.resolveAuthorDevice })),
+    hh(buildBeeClaimSpecProjection(hiveScoped)),
     // P-044 DG-1: verdict facts are hive-home-grained (the gate is a hive-wide
     // aggregate) — scope like hive_settings so a joiner receives + verifies them.
-    buildGateVerdictProjection(hiveScoped),
-    buildHiveMembersProjection(hiveScoped),
+    hh(buildGateVerdictProjection(hiveScoped)),
+    hh(buildHiveMembersProjection(hiveScoped)),
     // EN-1: hive_policy is hive-home-grained too (the owner-signed policy demuxes on
     // the Hive home) — scope it to `hiveScoped` so a joiner receives + verifies it.
-    buildHivePolicyProjection(hiveScoped),
+    hh(buildHivePolicyProjection(hiveScoped)),
     // EN-3: hive_reports (member→owner moderation queue) + hive_pending_joins (approval-mode
     // admission queue) are hive-home-grained too — scope to `hiveScoped` so the bidirectional
     // request↔decision federation lands on both the owner's home and a joiner's member harness.
-    buildHiveReportsProjection(hiveScoped),
-    buildHivePendingJoinsProjection(hiveScoped),
+    hh(buildHiveReportsProjection(hiveScoped)),
+    hh(buildHivePendingJoinsProjection(hiveScoped)),
     // shared-hive-rekey-2026-06-19 (P-005): hive_epoch_keys (per-member wrapped epoch keys
     // for the read-plane re-key) is hive-home-grained too — scope to `hiveScoped` so a
     // joiner's member harness lands the owner's epoch-key rows. DARK: the boundary trigger +
     // producer are flag-gated (papercusp-hive-rekey), so the table stays empty until cutover.
-    buildHiveEpochKeysProjection(hiveScoped),
+    hh(buildHiveEpochKeysProjection(hiveScoped)),
     buildEngineerIssuesProjection(guardScoped),
     // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
     // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation
@@ -435,21 +437,21 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // like hive_settings. The projection RECEIVER-ENFORCES the op author's attested
     // identity == the row's grantor (M6/L9) before applying. Inert until grants are
     // authored (zero/empty by default — the P-005 structural-inertness pattern).
-    buildP2pPeerGrantsProjection(hiveScoped),
+    hh(buildP2pPeerGrantsProjection(hiveScoped)),
     // P-004: receipts are hive-home-grained like grants (the requester's machines
     // must receive them) — scope to hiveScoped.
-    buildP2pReceiptsProjection(hiveScoped),
+    hh(buildP2pReceiptsProjection(hiveScoped)),
     // P-101 (D-006): the fleet directory is hive-home-grained like hive_policy (the
     // record demuxes on the Hive home + its verify resolves attestations there) —
     // scope to hiveScoped so a joiner receives + verifies directory records.
-    buildFleetDirectoryProjection(hiveScoped),
+    hh(buildFleetDirectoryProjection(hiveScoped)),
     // P-102 store leg (WI-1935): offers are hive-home-grained like the directory
     // (the fleet owner's machines must receive them; verify resolves attestations
     // on the Hive home) — scope to hiveScoped.
-    buildWorkOffersProjection(hiveScoped),
+    hh(buildWorkOffersProjection(hiveScoped)),
     // P-302 LIVE-2 seam 1: leader leases are hive-home-grained liveness hints
     // (not auth records) and share the same home-scope as the fleet directory.
-    buildFleetLeaderLeaseProjection(hiveScoped),
+    hh(buildFleetLeaderLeaseProjection(hiveScoped)),
   ] as TableProjection<unknown>[];
 }
 

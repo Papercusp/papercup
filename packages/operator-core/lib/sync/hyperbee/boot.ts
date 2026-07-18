@@ -983,6 +983,30 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // (home ≠ own slug, hive owned-not-remote, e.g. hive-canary→papercusp) where ownPotHomeSlug
   // is undefined. Threaded as `memberContentHiveHome` (guard-only; does NOT drive the rebind).
   const contentGuardHiveHome = resolvedPotHomeSlug;
+  // WI-3734 (owned-hive owner-side fold): the hive-home projection REBIND now also engages
+  // for an OWNED hive's member harness (home ≠ own slug, hive owned-not-remote — the case
+  // ownPotHomeSlug deliberately excludes). Without it this member fold demux-dropped every
+  // home-grained op a PEER member drained (B→A pot_settings/pot_members silently lost, no
+  // counter — the live-fed-gate content-matrix RED), because the pot-home scope that WOULD
+  // apply them may never see the peer log (WI-183 zombie replicator) while THIS scope reads
+  // it and throws the rows away. The WI-2105/WI-559 double-apply fear is closed by the
+  // HOME-LOG EXCLUSION threaded below (`resolveHomeLogKeyHex`): ops sourced from the
+  // locally-booted home's own log are skipped at this member scope — the home fold owns them.
+  const memberHomeRebindSlug =
+    resolvedPotHomeSlug && resolvedPotHomeSlug !== opts.harnessSlug
+      ? resolvedPotHomeSlug
+      : undefined;
+  const resolveHomeLogKeyHex: (() => string | null) | undefined = memberHomeRebindSlug
+    ? await (async () => {
+        // Runtime import of ./boot-all (it imports this module — a static import would
+        // cycle). The returned closure runs per-op at APPLY time, long after boot: the
+        // home may boot after this member and still be excluded from then on; for a
+        // JOINED hive the home slug is never locally booted → null → no exclusion.
+        const { getBootedHarness } = await import('./boot-all');
+        return () =>
+          getBootedHarness(opts.workspaceId, memberHomeRebindSlug)?.ownLog.keyHex ?? null;
+      })()
+    : undefined;
 
   const buildScopedApply = (potHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
@@ -992,12 +1016,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // WI-559/FED-1: fall back to the OWNER's own hive-home when the joiner rebind
       // (hiveHomeProjectionSlug) is null, so an owner's home harness engages the WI-259
       // membership guard instead of dropping every cross-member op (no-hiveHome). For a joiner
-      // `potHomeSlug` is its rebound home (≠ null) so `?? ownPotHomeSlug` is a no-op.
-      potHomeSlug: potHomeSlug ?? ownPotHomeSlug,
+      // `potHomeSlug` is its rebound home (≠ null) so the fallbacks are a no-op. WI-3734:
+      // `memberHomeRebindSlug` extends the fallback to an OWNED hive's member harness
+      // (home ≠ own slug) — paired with the `resolveHomeLogKeyHex` exclusion below.
+      potHomeSlug: potHomeSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug,
       // WI-2105 REV: DECOUPLED content-guard home (member-set lookup) — broader than the
       // rebind fallback (covers an owned-hive member harness) and never drives hiveScoped.
       memberContentHiveHome: potHomeSlug ?? contentGuardHiveHome,
       resolveAuthorDevice,
+      ...(resolveHomeLogKeyHex ? { resolveHomeLogKeyHex } : {}),
       pendingMemberContent,
     });
 
@@ -1074,7 +1101,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     harnessSlug: opts.harnessSlug,
     // WI-559/FED-1: owner-home fallback (see ownPotHomeSlug) so the global-registry content
     // projections also engage the WI-259 membership guard on an owner's home harness.
-    potHomeSlug: hiveHomeProjectionSlug ?? ownPotHomeSlug,
+    // WI-3734: + the owned-member rebind fallback, paired with the home-log exclusion.
+    potHomeSlug: hiveHomeProjectionSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug,
+    ...(resolveHomeLogKeyHex ? { resolveHomeLogKeyHex } : {}),
     // WI-2105 REV: DECOUPLED content-guard home for the global-registry apply path too.
     memberContentHiveHome: hiveHomeProjectionSlug ?? contentGuardHiveHome,
     // Drain hook: feed the queue ONLY when the re-key is active (rekeyDeps non-null) — else

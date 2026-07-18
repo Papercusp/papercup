@@ -829,10 +829,21 @@ export async function getIssueInWorkspace(
   // visibly '' beside operator:<workspace>). A caller that just claimed a specific
   // physical row must be able to re-read THAT row; otherwise this SELECT can return
   // a stale resolved twin and make a successful claim look terminal/no-op.
+  //
+  // WI-4514: when `baseHarnessSlug` is NOT passed (the plain get-path, e.g. bare
+  // getIssue()/getIssueInWorkspace() reads used by the UI/tools), a duplicated
+  // (workspace_id, issue_id) previously fell through with no ORDER BY — PG returns
+  // an ARBITRARY twin (heap/index scan order) for a bare WHERE match, so a read
+  // could non-deterministically flip between a fresh twin and one hours stale.
+  // `ORDER BY updated_at DESC NULLS LAST LIMIT 1` makes the get-path deterministic
+  // (freshest twin wins) without touching the EI-6480 claim re-read path, which
+  // already pins `baseHarnessSlug` to filter to exactly one physical row.
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
      WHERE workspace_id = ${workspaceId} AND issue_id = ${id}
-       AND ${opts.baseHarnessSlug != null ? sql`base_harness_slug = ${opts.baseHarnessSlug}` : sql`TRUE`}`;
+       AND ${opts.baseHarnessSlug != null ? sql`base_harness_slug = ${opts.baseHarnessSlug}` : sql`TRUE`}
+     ORDER BY updated_at DESC NULLS LAST
+     LIMIT 1`;
   return rows[0] ? toIssue(rows[0]) : null;
 }
 
