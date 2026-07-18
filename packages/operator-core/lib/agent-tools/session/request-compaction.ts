@@ -103,6 +103,8 @@ function defaultContinueNote(focus: string): string {
     'First re-run coord:orient { afterCompaction: true } to reconcile live state AND get your ' +
     'recovery block (held-item checkpoints, armed-loop status, self-recall pointer). Anything ' +
     "the carry dropped is still searchable: sessions:search { session:'self', mode:'verbatim' }. " +
+    'DISTRUST a near-limit context gauge on your first turns — it can lag the respawn by up to ' +
+    'a watchdog pass (~2 min) and describe your DEAD predecessor; never re-compact on it alone. ' +
     `Then resume: ${focus}`
   );
 }

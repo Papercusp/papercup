@@ -104,12 +104,15 @@ vi.mock('../OperatorActiveToggle', () => ({
 vi.mock('../voice/VoiceButton', () => ({
   VoiceButton: () => <button type="button">Voice</button>,
 }));
-const inboxState = { pending: 0, plansNeedingYou: 0 };
+const inboxState = { pending: 0, plansNeedingYou: 0, items: [] as unknown[] };
 vi.mock('../inbox/use-inbox-pending', () => ({
   useInboxPendingCount: () => inboxState.pending,
   // owner-plans-single-pane-2026-07-17: the sidebar now also reads the
   // plans-needing-you count for the Plans face badge.
   usePlansNeedingYouCount: () => inboxState.plansNeedingYou,
+  // WI-5342: the sidebar also reads the live attention items so a curator
+  // card's drill-in can resolve its ref against a real inbox item.
+  useInboxAttention: () => ({ items: inboxState.items, loading: false, error: null, refresh: () => {} }),
 }));
 vi.mock('../plans/PlansPane', () => ({
   default: () => <div data-testid="plans-pane-stub" />,

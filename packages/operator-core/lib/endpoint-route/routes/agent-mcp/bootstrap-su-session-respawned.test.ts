@@ -24,7 +24,7 @@ beforeAll(async () => {
   routes = mod.default as unknown as typeof routes;
 }, 30_000);
 
-const reanchorMock = vi.hoisted(() => vi.fn(async () => true));
+const reanchorMock = vi.hoisted(() => vi.fn(async () => ({ reanchored: true, owner: 'su-resp-owner' })));
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -43,7 +43,7 @@ vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
 }));
 
-beforeEach(() => { vi.clearAllMocks(); reanchorMock.mockResolvedValue(true); });
+beforeEach(() => { vi.clearAllMocks(); reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' }); });
 afterEach(() => { vi.clearAllMocks(); });
 
 const FRESH_ID = ' 1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f '.trim();
@@ -70,7 +70,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
   });
 
   it('an already-anchored id is a harmless no-op (reanchored: false)', async () => {
-    reanchorMock.mockResolvedValue(false);
+    reanchorMock.mockResolvedValue({ reanchored: false, owner: 'su-resp-owner' });
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reanchored: false });

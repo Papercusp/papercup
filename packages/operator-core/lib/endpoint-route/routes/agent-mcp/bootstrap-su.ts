@@ -2243,7 +2243,20 @@ const sessionRespawned = defineTool({
       return jsonRes({ error: 'sessionId (native session UUID) required' }, 400);
     }
     try {
-      const reanchored = await reanchorAdvSessionNativeId(advSessionId, sessionId);
+      const { reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId);
+      // Frozen-gauge fix: the successor keeps the coord ownerId, so the
+      // in-process context-usage cache still holds the DEAD predecessor's
+      // near-limit estimate — a fresh successor rendering "89%" gets nudged
+      // into an immediate pointless re-cut. Clear it; the next watchdog pass
+      // measures the real successor transcript. Best-effort like the reanchor.
+      if (owner) {
+        try {
+          const { clearContextUsage } = await import('../../../system-health/context-usage-cache');
+          clearContextUsage(owner);
+        } catch {
+          /* gauge hygiene must never fail the respawn report */
+        }
+      }
       return jsonRes({ ok: true, reanchored });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);

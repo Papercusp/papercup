@@ -39,6 +39,16 @@ export function recordContextUsage(
   cache.set(ownerId, { tokens, limit, at: now });
 }
 
+/** Respawn invalidation: a carry-respawn/recycle keeps the coord ownerId but
+ *  replaces the transcript, so the cached estimate describes the DEAD
+ *  predecessor — a fresh successor would render its ~near-limit gauge and could
+ *  be nudged into an immediate pointless re-cut. Clearing beats a stale serve:
+ *  the gauge renders nothing until the next watchdog pass measures the real
+ *  (tiny) successor transcript. */
+export function clearContextUsage(ownerId: string): void {
+  cache.delete(ownerId);
+}
+
 /** Reader: the owner's cached usage, or null when absent / staler than the TTL. */
 export function getContextUsage(
   ownerId: string,

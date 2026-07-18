@@ -471,20 +471,27 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
  * resume-visibility reasons as {@link reactivateAdvSession}. Idempotent per
  * native id; returns true when a row was updated.
  */
-export async function reanchorAdvSessionNativeId(id: number, sessionId: string): Promise<boolean> {
-  if (!sessionId) return false;
+export async function reanchorAdvSessionNativeId(
+  id: number,
+  sessionId: string,
+): Promise<{ reanchored: boolean; owner: string | null }> {
+  if (!sessionId) return { reanchored: false, owner: null };
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ id: number }[]>`
+    const rows = await sql<{ id: number; owner: string | null }[]>`
       UPDATE harness_shared.adv_sessions
          SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now()
        WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
-      RETURNING id
+      RETURNING id, owner
     `;
-    return rows.length > 0;
+    // The owner rides back so the respawn route can clear the frozen context
+    // gauge (the successor keeps the coord ownerId, so the in-process usage
+    // cache would otherwise serve the DEAD predecessor's near-limit estimate
+    // for up to a watchdog cadence — the "89% on a fresh successor" bug).
+    return { reanchored: rows.length > 0, owner: rows[0]?.owner ?? null };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
-    return false;
+    return { reanchored: false, owner: null };
   }
 }
 

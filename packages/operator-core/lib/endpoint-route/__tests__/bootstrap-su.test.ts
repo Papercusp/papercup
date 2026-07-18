@@ -93,7 +93,7 @@ vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => 
   recordAdvSession: recordAdvSessionMock,
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => {}),
-  reanchorAdvSessionNativeId: vi.fn(async () => true),
+  reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
 }));
 vi.mock('../../session-port/store', () => ({
   assertSessionPortStorageReady: vi.fn(async () => undefined),
