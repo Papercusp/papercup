@@ -35,6 +35,7 @@
  * id, threshold — is config and is deliberately NOT matched.)
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -79,6 +80,49 @@ const ALLOW = new Set([
   'PAPERCUSP_STRUCTURAL_ERROR_VERIFIER', 'PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE',
   'PAPERCUSP_DISK_SPACE_ALARM', 'PAPERCUSP_REPLICATION_SLOT_ALARM', 'PAPERCUSP_TEST_DESKTOP_REAPER',
   'PAPERCUSP_MEMORY_ANCHOR_AUDIT', // nightly Layer-1 memory-anchor audit (P-019); default-ON ops kill-switch
+  // ── EI-2390 (2026-07-18 audit): 3 entries GRADUATED out of KNOWN_ENV_CAPABILITY_GATES
+  //    — each is confirmed fully-shipped default-ON behavior with an opt-out kill-switch
+  //    (`!== 'off'`), not a pending "should this be on?" capability decision. ──
+  'PAPERCUSP_MEM0_CONVERSATION_CAPTURE', // default ON (operator converse mem0 capture); =off kill-switch
+  'PAPERCUSP_MEMORY_CONFLICT_CHECK', // default ON (memory:remember conflict-check); =off kill-switch
+  'PAPERCUSP_SU_MEMORY_INJECTION', // default ON (P-050 su-session memory prelude); =off kill-switch
+  // ── EI-2390 (2026-07-18 audit): 61 boolean PAPERCUSP_ gates newly classified — every one
+  //    is an internal ops/dev/tuning toggle (watchdog kill-switch, sidecar boot-mode select,
+  //    or an internal-algorithm dial), never a user-facing capability a human would flip via
+  //    /admin/features. Grouped by area; each is default-ON unless noted "opt-in". ──
+  // system-health watchdogs / alarms (default-ON, `=== '0'` opts out)
+  'PAPERCUSP_CODEX_ROLLOUT_WATCHDOG', 'PAPERCUSP_COMPACTION_WATCHDOG', 'PAPERCUSP_CONDITION_STALENESS_ALARM',
+  'PAPERCUSP_GITSYNC_STALL_WATCHDOG', 'PAPERCUSP_MCP_DARK_WATCHDOG', 'PAPERCUSP_MCP_DARK_INTERACTIVE',
+  'PAPERCUSP_RECIPE_HYGIENE', 'PAPERCUSP_WORKTREE_COVERAGE_WATCHDOG', 'PAPERCUSP_SPAWN_READINESS_SHADOW',
+  'PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART', 'PAPERCUSP_WATCHDOG_NO_AUTOSTART', 'PAPERCUSP_PARENT_DEATH_WATCH',
+  // inference-gateway internal self-tuning (default-ON, `!== '0'` opts out)
+  'PAPERCUSP_GATEWAY_ABSORB_STALLS', 'PAPERCUSP_GATEWAY_ABSORB_TIER_SCALE', 'PAPERCUSP_GATEWAY_RPM_SMOOTH',
+  'PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP', 'PAPERCUSP_GATEWAY_SUPERVISE', 'PAPERCUSP_GATEWAY_SUPPRESS_BAREBURST_ROTATE',
+  'PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS', // opt-in escape hatch, disables egress proxying
+  // sidecar boot-mode selectors (launcher-set process-wiring, mirrors PAPERCUSP_DESKTOP/IPC_ENABLE above)
+  'PAPERCUSP_EMBED_SIDECAR_MODE', 'PAPERCUSP_GATEWAY_SIDECAR_MODE', 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+  'PAPERCUSP_SPAWNER_SIDECAR', 'PAPERCUSP_SUBSTRATE_SIDECAR_MODE', 'PAPERCUSP_SUBSTRATE_SIDECAR_SCOPE',
+  'PAPERCUSP_IPC_TCP',
+  // mcp-proxy / mcp-admission internal tuning
+  'PAPERCUSP_MCP_ADMISSION_CONTROL', 'PAPERCUSP_MCP_PROXY_ABSORB_429', 'PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET',
+  'PAPERCUSP_MCP_PROXY_KEYED_RETRY',
+  // memory-lib internal algorithm dials (libs/generic/memory — decay, MMR, entity-linking)
+  'PAPERCUSP_MEMORY_DECAY', 'PAPERCUSP_MEMORY_MMR', 'PAPERCUSP_MEMORY_ENTITY_FILTER',
+  'PAPERCUSP_MEMORY_ENTITY_NLP', 'PAPERCUSP_MEMORY_ENTITY_RELINK', 'PAPERCUSP_MEMORY_REF_EXPANSION',
+  'PAPERCUSP_MEMORY_PROACTIVE_GC', 'PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN',
+  // scout internal legs (digest-embed clustering, intent-rank, semantic-novelty — algorithm dials)
+  'PAPERCUSP_SU_DIGEST_EMBED_CLUSTER', 'PAPERCUSP_SU_INTENT_RANK', 'PAPERCUSP_SU_SEMANTIC_NOVELTY',
+  'PAPERCUSP_SCOUT_READY_AUTOSTART',
+  // work-item dupe-guard tuning
+  'PAPERCUSP_WI_RECENT_DUPE', 'PAPERCUSP_WI_SEMANTIC_DUPE',
+  // coordination event-log read caches (perf tuning, default-ON)
+  'PAPERCUSP_COORD_READEVENTS_CACHE', 'PAPERCUSP_COORD_READLINES_CACHE',
+  // misc dev/debug/ops toggles
+  'PAPERCUSP_AGENT_SPAWN_SCOPE', 'PAPERCUSP_ANNOUNCE_DEBUG', 'PAPERCUSP_CC_AUTOUPDATE',
+  'PAPERCUSP_CHECKPOINT_SCOPE', 'PAPERCUSP_DISABLE_SEARCH_WARMUP', 'PAPERCUSP_DISABLE_TESTCONTAINERS_START_LOCK',
+  'PAPERCUSP_DOORS_CONFIG_OFF', 'PAPERCUSP_FULL_HEAP_SNAPSHOT', 'PAPERCUSP_HEAP_SNAPSHOT',
+  'PAPERCUSP_HEAP_SNAPSHOT_REPEAT', 'PAPERCUSP_INJECTION_DOOR_OFF', 'PAPERCUSP_OMP_RESUME_VIA_PTY',
+  'PAPERCUSP_PROVISION_ENV_OPERATORS', 'PAPERCUSP_RESULT_DOOR_OFF', 'PAPERCUSP_TUTORIAL_NO_ANIM',
 ]);
 
 // Real default-OFF CAPABILITIES deliberately kept on an env gate (infra routing /
@@ -133,18 +177,6 @@ const KNOWN_ENV_CAPABILITY_GATES = {
     reviewBy: '2026-07-31',
     reason: "Memory dedup-on-remember (top-k similarity, checked === 'on'). Built, OFF. DECIDE: enable or migrate to a FLAG.",
   },
-  PAPERCUSP_MEM0_CONVERSATION_CAPTURE: {
-    reviewBy: '2026-07-15',
-    reason: 'mem0 conversation-capture toggle (operator converse). Surfaced by the submodule-scan fix — CLASSIFY: confirm built-state, then ALLOW (dev/experimental) or enable/migrate.',
-  },
-  PAPERCUSP_MEMORY_CONFLICT_CHECK: {
-    reviewBy: '2026-07-15',
-    reason: 'Memory conflict-check on remember. Surfaced by the submodule-scan fix — CLASSIFY: confirm built-state, then ALLOW or enable/migrate.',
-  },
-  PAPERCUSP_SU_MEMORY_INJECTION: {
-    reviewBy: '2026-07-15',
-    reason: 'su-session memory injection at the MCP handler. Surfaced by the submodule-scan fix — CLASSIFY: confirm built-state, then ALLOW or enable/migrate.',
-  },
 };
 
 // Broad scan (git grep), precise filter in JS. --recurse-submodules so the
@@ -167,12 +199,14 @@ const GATE_RE = /process\.env\.(PAPERCUSP_[A-Z_0-9]+)\s*[!=]==?\s*['"](?:1|0|tru
 
 const hits = new Map(); // unclassified name -> [file:line, …]
 const seen = new Set(); // every boolean gate name seen anywhere (for stale-registry detection)
+const scannedFiles = new Set(); // every file that referenced a PAPERCUSP_ env var (for the 2nd pass below)
 for (const line of raw.split('\n')) {
   const m = line.match(/^(.+?):(\d+):(.*)$/);
   if (!m) continue;
   const [, file, lineno, content] = m;
   if (!file.endsWith('.ts') && !file.endsWith('.tsx') && !file.endsWith('.mjs')) continue;
   if (file.endsWith('.test.ts') || file.endsWith('.test.tsx')) continue; // tests legitimately poke env
+  scannedFiles.add(file);
   const g = content.match(GATE_RE);
   if (!g) continue;
   const name = g[1];
@@ -180,6 +214,36 @@ for (const line of raw.split('\n')) {
   if (ALLOW.has(name) || name in KNOWN_ENV_CAPABILITY_GATES) continue;
   if (!hits.has(name)) hits.set(name, []);
   hits.get(name).push(`${file}:${lineno}`);
+}
+
+// ── 2nd pass: the "assign-then-compare" idiom (EI-2390 blind spot) ──
+// `GATE_RE` above only catches a boolean literal compared on the SAME LINE as
+// `process.env.X`. Both flagship capabilities this registry exists to track
+// (PAPERCUSP_PGBOUNCER, PAPERCUSP_LISTEN_HUB) evolved to a two-line idiom —
+// `const flag = process.env.X; if (flag === "1") …` — which made them silently
+// invisible to the single-line scan (falsely reported "no longer found in code",
+// EI-2390 audit 2026-07-18). Read each already-touched file's full content and
+// also match `const/let NAME = process.env.X;` followed, within a bounded
+// window, by a boolean-literal compare against that SAME local variable name.
+const ASSIGN_RE = /(?:const|let)\s+(\w+)\s*=\s*process\.env\.(PAPERCUSP_[A-Z_0-9]+)\s*;/g;
+for (const file of scannedFiles) {
+  let text;
+  try {
+    text = readFileSync(join(ROOT, file), 'utf8');
+  } catch {
+    continue; // file moved/deleted since the git grep snapshot — skip, not fatal
+  }
+  for (const am of text.matchAll(ASSIGN_RE)) {
+    const [, varName, name] = am;
+    const windowEnd = Math.min(text.length, am.index + am[0].length + 400);
+    const window = text.slice(am.index + am[0].length, windowEnd);
+    const cmpRe = new RegExp(`\\b${varName}\\s*[!=]==?\\s*['"](?:1|0|true|false|on|off|yes|no)['"]`);
+    if (!cmpRe.test(window)) continue;
+    seen.add(name);
+    if (ALLOW.has(name) || name in KNOWN_ENV_CAPABILITY_GATES) continue;
+    if (!hits.has(name)) hits.set(name, []);
+    hits.get(name).push(`${file} (assign-then-compare)`);
+  }
 }
 
 let fail = false;
