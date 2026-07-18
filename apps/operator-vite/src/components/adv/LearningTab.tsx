@@ -3953,7 +3953,7 @@ export function LearningStyles() {
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         background: transparent; color: var(--fg-mute, #7f9bb4);
       }
-      .pc-learning__lane.is-active { color: var(--fg, #e7f7ff); border-color: rgba(125, 211, 252, 0.5); background: rgba(125, 211, 252, 0.12); }
+      .pc-learning__lane.is-active { color: var(--fg, #e7f7ff); border-color: rgba(var(--accent-strong-rgb, 125, 211, 252), 0.5); background: rgba(var(--accent-strong-rgb, 125, 211, 252), 0.12); }
       .pc-learning__refresh {
         display: inline-flex; align-items: center; justify-content: center;
         width: 30px; height: 30px; flex-shrink: 0;

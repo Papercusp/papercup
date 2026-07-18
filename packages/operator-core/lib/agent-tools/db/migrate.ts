@@ -31,6 +31,63 @@ import {
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 60;
 
+// EI-9417: harness_shared.coord_presence / coord_event_log / work_items are
+// extremely hot (every agent heartbeat/declare-intent writes them), so even a
+// metadata-only ALTER TABLE (constant default, PG 11+ — trivial hold time once
+// granted) genuinely queues behind live write traffic and can hit a lock
+// timeout — not a bug in the migration, just contention. Rather than every
+// agent hand-rolling a "check pg_locks, retry BEGIN/SET lock_timeout/ALTER/
+// COMMIT" loop from scratch (WI-1546), db:migrate now applies a hard
+// lock_timeout (fail FAST instead of hanging indefinitely — no lock_timeout
+// was set before this fix) and retries with backoff automatically, but ONLY
+// for the lock-timeout failure class; any other psql error (syntax,
+// constraint, …) fails immediately, unretried.
+const MIGRATION_LOCK_TIMEOUT_SQL = '10s';
+const LOCK_RETRY_MAX_ATTEMPTS = 5;
+const LOCK_RETRY_BASE_DELAY_MS = 2000;
+const LOCK_RETRY_MAX_DELAY_MS = 30_000;
+
+/** True iff psql's stderr is PG's own "canceling statement due to lock
+ *  timeout" — the ONLY failure class the retry loop below targets. Exported
+ *  + pure for unit testing. */
+export function isLockTimeoutFailure(stderr: string): boolean {
+  return /canceling statement due to lock timeout/i.test(stderr);
+}
+
+/** Exponential backoff (2s, 4s, 8s, 16s, capped at 30s) for attempt N
+ *  (1-based) — gives the hot table's writers a window to quiesce between
+ *  attempts. Pure + unit tested. */
+export function lockRetryBackoffMs(attempt: number): number {
+  return Math.min(LOCK_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), LOCK_RETRY_MAX_DELAY_MS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type SpawnResult = ReturnType<typeof spawnSync>;
+
+/** Run the migration script via psql, retrying ONLY on a lock-timeout cancel,
+ *  up to `maxAttempts`, with {@link lockRetryBackoffMs} backoff between
+ *  attempts. `spawn` is injectable for tests. */
+async function runMigrationWithLockRetry(
+  url: string,
+  script: string,
+  spawn: (cmd: string, args: string[], opts: { input: string; encoding: 'utf8' }) => SpawnResult = spawnSync,
+  maxAttempts = LOCK_RETRY_MAX_ATTEMPTS,
+): Promise<{ result: SpawnResult; attempts: number }> {
+  let result: SpawnResult;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    result = spawn('psql', [url, '-v', 'ON_ERROR_STOP=1'], { input: script, encoding: 'utf8' });
+    if (result.status === 0) return { result, attempts: attempt };
+    if (attempt >= maxAttempts || !isLockTimeoutFailure(result.stderr ?? '')) return { result, attempts: attempt };
+    await sleep(lockRetryBackoffMs(attempt));
+  }
+  // Unreachable — the loop above always returns by its last iteration — but
+  // keeps TS's control-flow analysis happy without a non-null assertion.
+  return { result: result!, attempts: maxAttempts };
+}
+
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
@@ -61,7 +118,9 @@ export default defineTool({
     ],
   },
   capability: 'locks:write',
-  timeoutSec: MAX_DRAIN_SEC + 60,
+  // EI-9417: + budget for the lock-timeout retry loop's worst case (5 attempts
+  // x MIGRATION_LOCK_TIMEOUT_SQL, plus backoff between them — see above).
+  timeoutSec: MAX_DRAIN_SEC + 60 + 120,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
