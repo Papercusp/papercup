@@ -581,6 +581,16 @@ export function getBootedHarness(
  *      federation re-key: the Hive id, not the harness slug, is the topic key.
  *   2. else read `.papercusp/shared.json` (PG-canonical via `resolveHarnessPaths`)
  *      and return a `gh:<repository_id>` binding when present.
+ *   2a. WI-275 EXCEPTION: a harness that IS a Hive member (per
+ *       `potHomeSlugForHarness`) but whose Hive binding above came back null for
+ *       some OTHER reason than "not a member" — an unresolvable/un-backfilled Hive
+ *       identity — and whose shared.json has no explicit topic either, must NOT
+ *       fall through to the gh-repo topic: that derives a DIFFERENT topic than the
+ *       owner's `hive:<pubkey>` topic, silently splitting the member onto the wrong
+ *       swarm (the join-vs-owner topic-split footgun). Stay LOCAL (null) + warn
+ *       instead. A malformed-but-PRESENT topic still falls through to gh below
+ *       unchanged (existing "never strand the joiner" recovery path) — this
+ *       exception is scoped to a topic that is entirely ABSENT.
  *   3. else `null` (private / local-only — no swarm join).
  * Errors swallow to `null` so a missing/corrupt config never blocks the boot loop.
  */
@@ -593,7 +603,9 @@ export async function defaultResolveSwarmBinding(
     // the Hive pubkey topic, replacing the per-harness gh/local topic (D-001/D-003).
     // A non-hive or local-only member harness returns null here and falls through
     // to the gh-binding path unchanged.
-    const { resolveHiveSwarmBinding } = await import('../../hive-federation');
+    const { resolveHiveSwarmBinding, potHomeSlugForHarness } = await import(
+      '../../hive-federation'
+    );
     const hiveBinding = await resolveHiveSwarmBinding(workspaceId, harnessSlug);
     if (hiveBinding) return hiveBinding;
 
@@ -614,6 +626,27 @@ export async function defaultResolveSwarmBinding(
     if (cfg.topic && /^[0-9a-f]{64}$/i.test(cfg.topic)) {
       return { kind: 'topic', topic_hex: cfg.topic };
     }
+
+    // (2a) WI-275: no usable topic in shared.json — before falling to the gh-repo
+    // topic, confirm this ISN'T a Hive member whose binding just failed to resolve.
+    // `potHomeSlugForHarness` answers pure membership (registry `hive_slug` / a
+    // `kind:'hive'` home), independent of WHY `resolveHiveSwarmBinding` returned
+    // null above (unresolvable identity, un-backfilled, or private/unpublished all
+    // land here) — in every one of those cases gh-splitting a real member is wrong,
+    // so treat "is a member" as the gate, not "why the hive lookup failed".
+    if (!cfg.topic) {
+      const potHomeSlug = await potHomeSlugForHarness(workspaceId, harnessSlug);
+      if (potHomeSlug) {
+        console.warn(
+          `[boot-all] harness '${harnessSlug}' is a Hive member (home '${potHomeSlug}') but its ` +
+            'Hive binding is unresolvable and shared.json has no stored topic — staying LOCAL ' +
+            'instead of falling back to the gh-repo topic (would silently split it off the ' +
+            "Hive's topic). WI-275.",
+        );
+        return null;
+      }
+    }
+
     return { kind: 'gh', github_repository_id: cfg.github_repository_id };
   } catch {
     return null;

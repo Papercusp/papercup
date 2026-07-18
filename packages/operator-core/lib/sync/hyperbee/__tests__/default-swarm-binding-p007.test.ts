@@ -11,7 +11,7 @@
  * `hive-federation.test.ts` (6 cases); this pins the CALLER's two branches
  * directly so the sub-share preservation is asserted end-to-end, not by inspection.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the three deps `defaultResolveSwarmBinding` consults. The relative paths
 // here (from __tests__/) resolve to the SAME module ids as the in-function
@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // + its static import (../../harness/load-shared-config), so the mocks apply to both.
 vi.mock('../../../hive-federation', () => ({
   resolveHiveSwarmBinding: vi.fn(),
+  potHomeSlugForHarness: vi.fn(),
 }));
 vi.mock('../../../resolve-harness-paths', () => ({
   resolveHarnessPaths: vi.fn(),
@@ -28,15 +29,20 @@ vi.mock('../../../harness/load-shared-config', () => ({
 }));
 
 import { defaultResolveSwarmBinding } from '../boot-all';
-import { resolveHiveSwarmBinding } from '../../../hive-federation';
+import { resolveHiveSwarmBinding, potHomeSlugForHarness } from '../../../hive-federation';
 import { resolveHarnessPaths } from '../../../resolve-harness-paths';
 import { loadSharedConfigFromProjectDir } from '../../../harness/load-shared-config';
 
 const mockHive = vi.mocked(resolveHiveSwarmBinding);
+const mockPotHomeSlug = vi.mocked(potHomeSlugForHarness);
 const mockPaths = vi.mocked(resolveHarnessPaths);
 const mockCfg = vi.mocked(loadSharedConfigFromProjectDir);
 
 afterEach(() => vi.clearAllMocks());
+// Default: not a Hive member at all — matches every EXISTING test's fixture
+// (a plain non-hive / fork-PR harness). Tests exercising the WI-275 membership
+// guard override this per-case.
+beforeEach(() => mockPotHomeSlug.mockResolvedValue(null));
 
 describe('P-007 — single-harness sub-share preserved under Hive membership', () => {
   it('a published-Hive member federates over the Hive binding (precedence; gh path not consulted)', async () => {
@@ -114,5 +120,42 @@ describe('the join-vs-owner topic-split fix — a joiner honors its link topic',
     const got = await defaultResolveSwarmBinding('ws', 'joined-hive-harness');
 
     expect(got).toEqual({ kind: 'gh', github_repository_id: 42 });
+    // A PRESENT-but-malformed topic is a distinct recovery path from WI-275's
+    // "topic entirely absent" gate below — membership must not even be consulted.
+    expect(mockPotHomeSlug).not.toHaveBeenCalled();
+  });
+});
+
+describe('WI-275 — a Hive member with an unresolvable binding stays LOCAL, never gh-splits', () => {
+  // The latent footgun: a harness IS a Hive member (registry `hive_slug` /
+  // `potHomeSlugForHarness` resolves it) but `resolveHiveSwarmBinding` came back
+  // null for some OTHER reason (un-backfilled Hive identity, or a private/
+  // unpublished owned Hive) AND shared.json has no stored topic at all (the join
+  // never persisted one). Falling through to `gh:<repo_id>` here would derive a
+  // DIFFERENT topic than the owner's `hive:<pubkey>` topic and silently strand the
+  // member off the Hive — exactly the split this ticket hardens against.
+
+  it('a Hive member whose binding is unresolvable + no stored topic stays LOCAL (null), not gh', async () => {
+    mockHive.mockResolvedValue(null); // unresolvable / private / un-backfilled
+    mockPaths.mockResolvedValue({ projectDir: '/real/project/dir' } as never);
+    mockCfg.mockReturnValue({ github_repository_id: 99 } as never); // no `topic` field
+    mockPotHomeSlug.mockResolvedValue('hive-home-slug'); // IS a Hive member
+
+    const got = await defaultResolveSwarmBinding('ws', 'member-with-bad-binding');
+
+    expect(got).toBeNull();
+    // The bug this guards: WITHOUT the fix it would gh-split onto repo 99.
+    expect(got).not.toEqual({ kind: 'gh', github_repository_id: 99 });
+  });
+
+  it('a genuinely NON-member harness with no topic still falls through to gh (unchanged)', async () => {
+    mockHive.mockResolvedValue(null);
+    mockPaths.mockResolvedValue({ projectDir: '/real/project/dir' } as never);
+    mockCfg.mockReturnValue({ github_repository_id: 99 } as never);
+    mockPotHomeSlug.mockResolvedValue(null); // NOT a Hive member
+
+    const got = await defaultResolveSwarmBinding('ws', 'plain-fork-pr-harness');
+
+    expect(got).toEqual({ kind: 'gh', github_repository_id: 99 });
   });
 });
