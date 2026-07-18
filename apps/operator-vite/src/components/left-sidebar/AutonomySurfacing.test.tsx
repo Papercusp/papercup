@@ -14,9 +14,10 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 const H = vi.hoisted(() => ({
   policy: [] as unknown[],
   armed: false,
+  useSyncQuery: vi.fn(() => ({ data: H.policy, loading: false, error: null })),
 }));
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: H.policy, loading: false, error: null }),
+  useSyncQuery: (...args: unknown[]) => H.useSyncQuery(...args),
 }));
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.armed }));
 
@@ -47,6 +48,7 @@ afterEach(() => {
   cleanup();
   H.policy = [];
   H.armed = false;
+  H.useSyncQuery.mockClear();
 });
 
 describe('AutonomySurfacing pure helpers', () => {
@@ -101,6 +103,15 @@ describe('AutonomySurfacing rendering', () => {
     render(<AutonomySurfacing {...makeProps({ breakerThreshold: null })} />, { wrapper: Wrap });
     expect(screen.getByText('Retry limit')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
+  });
+
+  it('EI-1538: queries autonomy.policy with NO args/staleTime override — must share the /settings/autonomy table\'s cache entry so the "N locked" chip does not lag it', () => {
+    render(<AutonomySurfacing {...makeProps()} />, { wrapper: Wrap });
+    const call = H.useSyncQuery.mock.calls.find(([opts]) => (opts as { queryName?: string }).queryName === 'autonomy.policy');
+    expect(call).toBeTruthy();
+    const opts = call?.[0] as Record<string, unknown>;
+    expect(opts.args).toBeUndefined();
+    expect(opts.staleTime).toBeUndefined();
   });
 
   it('Autonomy settings calls the navigate callback', () => {

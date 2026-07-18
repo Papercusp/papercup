@@ -76,7 +76,15 @@ export default function AutonomySurfacing({
   onManageAutonomy: () => void;
 }) {
   const [open, setOpen] = useQueryState('qAutonomy', parseAsBoolean.withDefault(false));
-  const policyQ = useSyncQuery<PolicyRow>({ queryName: 'autonomy.policy', args: {}, staleTime: 30_000 });
+  // EI-1538: this MUST be the identical call shape to the /settings/autonomy table's
+  // useSyncQuery('autonomy.policy') (no `args`, no `staleTime` override) — the write
+  // path (autonomy-policy-set.ts) fires an args-less notifySyncInvalidate, and the
+  // SSEAdapter invalidates by query NAME against the single shared QueryClient. An
+  // explicit `args:{}` here split this into a SECOND cache key from the table's
+  // no-args call, and `staleTime:30_000` further delayed the refetch — so this "N
+  // locked" chip lagged the table by up to 30s (or until a hard reload) after every
+  // lock/unlock. Dropping both makes this share the table's cache entry exactly.
+  const policyQ = useSyncQuery<PolicyRow>({ queryName: 'autonomy.policy' });
   const armed = useFlag(FLAGS.MUG_AUTONOMY_ARMED);
 
   const rows = policyRows(policyQ.data);
