@@ -137,8 +137,22 @@ function displayScope(e: MemoryEntry, userId: string): {
  * plus one pool per harness in the active workspace. Throws if the
  * backend is unavailable — callers that need the availability envelope
  * (the REST route) check `backend.available()` first.
+ *
+ * `opts.limit` (EI-12937): the settings Memory page shipped the ENTIRE corpus
+ * unpaginated on every load (measured live: 2.02MB / 1,140 rows / avg 1,860
+ * bytes/row) — a real, growing cost (2MB of JSON parse on the render thread),
+ * squarely in the /internal/docs/performance anti-pattern space. Applied as a
+ * FINAL slice, after the full sort — "most recent N" — so the ordering
+ * contract is unchanged; omitted (the default) preserves today's exact
+ * behavior for every OTHER caller (memory:search, the REST route's full-export
+ * path, …). Deliberately NOT a per-row content cap ("memory rows are
+ * user-authored long text — a per-row cap is not appropriate" per EI-12937) —
+ * pagination is the lever, not truncation.
  */
-export async function listUserMemories(userId: string): Promise<UserMemoryRow[]> {
+export async function listUserMemories(
+  userId: string,
+  opts: { limit?: number } = {},
+): Promise<UserMemoryRow[]> {
   const backend = getMemoryBackend();
   const ws = activeWorkspaceId();
 
