@@ -3736,6 +3736,39 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // `hive.workspaceScope` — pot-seat-pools-prose-ux-2026-07-18 P-002: tells the
+  // /res board whether THIS workspace ("pot") has exactly one shared Hive it
+  // can publish a pot-scoped seat offer into (resource:delegate { potSlug, … }
+  // requires potSlug to be one of the workspace's real shared hives — see
+  // offer-store-publish.ts's disambiguator check). Mirrors the same
+  // resolveWorkspaceHiveScope the routing-gate kickoff (P-007/P-013,
+  // remote-seat-inventory.ts) uses for "is the plan's pot shared" — a single
+  // no-arg read so the client never re-derives hive membership itself.
+  // Single-row array (like other workspace-scalar queries): { kind, homeSlug,
+  // candidates }. Fail-soft: any resolution error degrades to kind:'none' (the
+  // pot-wide affordance just hides) rather than a 500.
+  'hive.workspaceScope': {
+    resolve: async () => {
+      try {
+        const { resolveWorkspaceHiveScope } = await import('../agent-tools/coordination/federation-scope');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const ws = activeWorkspaceId();
+        if (!ws) return [{ kind: 'none', homeSlug: null, candidates: [] }];
+        const scope = await resolveWorkspaceHiveScope(ws);
+        if (scope.kind === 'one') {
+          return [{ kind: 'one', homeSlug: scope.homeSlug, candidates: [scope.homeSlug] }];
+        }
+        if (scope.kind === 'many') {
+          return [{ kind: 'many', homeSlug: null, candidates: scope.candidates }];
+        }
+        return [{ kind: 'none', homeSlug: null, candidates: [] }];
+      } catch (err) {
+        console.warn('[hive.workspaceScope] read failed:', err instanceof Error ? err.message : String(err));
+        return [{ kind: 'none', homeSlug: null, candidates: [] }];
+      }
+    },
+  },
+
   // `fleets.byWorkspace` — the /res Resources board's fleet column: this
   // workspace's persisted named fleets (agent_fleets, mig 417), newest first.
   // FLAT — fleets are workspace-scoped with NO hive nesting in the data model
