@@ -130,7 +130,7 @@ export function startAppendHeavyInvalidator(deps: AppendHeavyInvalidatorDeps): (
     // sweep (no reads, no fires) but keep ticking so a runtime flip back ON resumes without a
     // restart. lastSeen is left untouched while off, so the first ON tick fires at most ONCE to
     // catch up the OFF-window backlog (a single full-bust, not a per-row storm).
-    if (deps.isEnabled && !deps.isEnabled()) {
+    if (deps.isEnabled && !(await deps.isEnabled())) {
       if (!stopped) timer = setTimer(() => void tick(), pollMs);
       return;
     }
@@ -153,8 +153,9 @@ export function startAppendHeavyInvalidator(deps: AppendHeavyInvalidatorDeps): (
 export function startAppendHeavyInvalidatorHost(opts?: {
   pollMs?: number;
   dedupeWindowMs?: number;
-  /** Runtime kill-switch checked per-tick (default always on). Pass `() => getFlag(...)`. */
-  isEnabled?: () => boolean;
+  /** Runtime kill-switch checked per-tick (default always on). Pass `() => getFlag(...)`
+   *  (async is fine — EI-13014). */
+  isEnabled?: () => boolean | Promise<boolean>;
   log?: (msg: string) => void;
 }): () => void {
   // Dedicated single connection on the BYPASSRLS admin URL (mig 016) so max(id) sees every
