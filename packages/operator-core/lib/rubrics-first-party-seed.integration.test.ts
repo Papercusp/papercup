@@ -15,7 +15,10 @@
  * Docker-gated (`*.integration.test.ts`); mirrors rubrics-seed.integration.test.ts's
  * db-org mock + createOrgTestDb harness.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 

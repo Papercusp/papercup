@@ -10,11 +10,20 @@
  * TTL stored as Date vs ISO) only surface against real PG.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomBytes } from 'node:crypto';
 
 let pgReachable = false;
 let authMod: typeof import('./auth') | null = null;
+
+// EI-12970: every uname() below feeds a signup() call, which INSERTs a
+// permanent row into harness_shared.users. Unlike the session rows this
+// file cleans up per-test, nothing ever deleted the user rows themselves —
+// this suite alone leaked ~29k debris rows into the live dev PG (this file
+// intentionally targets the real embedded-pg, not testcontainers; see the
+// module docstring). Track every username this run creates and delete them
+// in afterAll below.
+const createdUsernames: string[] = [];
 
 beforeAll(async () => {
   try {
@@ -25,6 +34,17 @@ beforeAll(async () => {
     const c = new Client(fields);
     await c.connect();
     await c.query('SELECT 1 FROM harness_shared.users LIMIT 1');
+    // Self-heal: sweep STALE ('vitest_%' older than 2h) debris on every run
+    // so the historical backlog (and any future regression of the cleanup
+    // below) drains automatically without a separate scheduled job. The 2h
+    // floor is well past any single test run, so it never touches a
+    // concurrent in-flight run's fresh rows on this heavily-parallel
+    // shared dev box.
+    await c.query(
+      `DELETE FROM harness_shared.users
+        WHERE username LIKE 'vitest_%'
+          AND created_at < now() - interval '2 hours'`,
+    );
     await c.end();
     pgReachable = true;
   } catch {
@@ -39,6 +59,23 @@ beforeAll(async () => {
   }
 });
 
+afterAll(async () => {
+  if (!pgReachable || createdUsernames.length === 0) return;
+  const { pgClientFields } = await import('./memory/mem0-connection');
+  const fields = await pgClientFields();
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Client } = require('pg') as typeof import('pg');
+  const c = new Client(fields);
+  await c.connect();
+  try {
+    await c.query('DELETE FROM harness_shared.users WHERE username = ANY($1)', [
+      createdUsernames,
+    ]);
+  } finally {
+    await c.end();
+  }
+});
+
 const itPg = (name: string, fn: () => Promise<void> | void) => {
   it(name, async () => {
     if (!pgReachable || !authMod) {
@@ -50,7 +87,11 @@ const itPg = (name: string, fn: () => Promise<void> | void) => {
 };
 
 describe('auth.ts integration', () => {
-  const uname = () => `vitest_${randomBytes(4).toString('hex')}`;
+  const uname = () => {
+    const n = `vitest_${randomBytes(4).toString('hex')}`;
+    createdUsernames.push(n);
+    return n;
+  };
 
   itPg('signup creates user and login returns a session token', async () => {
     const name = uname();
