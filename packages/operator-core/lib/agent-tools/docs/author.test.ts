@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeSlug,
   normalizeSection,
+  insightsIndexNudge,
   stripLeadingFrontmatter,
   normalizeList,
   buildFrontmatter,
@@ -54,6 +55,20 @@ describe('normalizeSection', () => {
   });
   it('allows nested kebab dirs', () => {
     expect(normalizeSection('spec/decisions')).toEqual({ ok: true, section: 'spec/decisions' });
+  });
+});
+
+describe('insightsIndexNudge', () => {
+  it('nudges for a papercusp agent-insights doc (the only dir the generator reads)', () => {
+    const msg = insightsIndexNudge('agent-insights', 'papercusp');
+    expect(msg).toContain('gen:doc-insights-index');
+  });
+  it('stays silent for another section in papercusp', () => {
+    expect(insightsIndexNudge('system', 'papercusp')).toBeNull();
+    expect(insightsIndexNudge('spec/decisions', 'papercusp')).toBeNull();
+  });
+  it('stays silent for a harness-scoped agent-insights dir — the generator does not read it', () => {
+    expect(insightsIndexNudge('agent-insights', 'some-other-harness')).toBeNull();
   });
 });
 

@@ -145,7 +145,7 @@ export default defineTool({
       })
       .optional()
       .describe(
-        'APPLY-ON-GRANT: attach the concrete edit you were going to make (the Edit-tool contract). Requires wake_on_grant + a single-file claim (paths must be exactly [pending_edit.file]). On grant the server applies it iff old_string still matches exactly once, then notifies you PASSIVELY (no wake). If the holder changed that region it is NOT applied and you are woken to redo it — i.e. it degrades to plain wake_on_grant. Best for a small, provably-non-conflicting edit to a high-contention shared file.',
+        'APPLY-ON-GRANT: attach the concrete edit you were going to make (the Edit-tool contract). Requires wake_on_grant + a single-file claim (paths must be exactly [pending_edit.file]). On grant the server applies it iff old_string still matches exactly once, then notifies you PASSIVELY (no wake). If the holder changed that region it is NOT applied and you are woken to redo it — i.e. it degrades to plain wake_on_grant. Best for a small, provably-non-conflicting edit to a high-contention shared file. SINGLE HUNK ONLY (EI-11057): if your real change needs a COMPANION hunk elsewhere in the SAME file (e.g. adding an import alongside a new call site, or a decl+every-ref rename), do NOT use pending_edit for just one half — an apply-on-grant that lands only the body hunk while a needed import/decl is missing ships a compile-broken file to the shared tree. For a multi-hunk edit, skip pending_edit and use a plain `wake_on_grant:true` (no pending_edit) so you land ALL hunks together after the grant.',
       ),
   }).superRefine((args, ctx) => {
     const total = (args.paths?.length ?? 0) + (args.external_paths?.length ?? 0);

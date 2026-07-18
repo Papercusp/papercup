@@ -59,6 +59,22 @@ export function normalizeSection(raw: string | undefined): { ok: true; section: 
   return { ok: true, section: s };
 }
 
+/**
+ * The curated insights index (reference/agent-insights-index.md) is a GENERATED projection —
+ * authoring a doc does not refresh it, so the new page is absent from the index until someone
+ * runs the generator. We nudge rather than regenerate on write: the index is deliberately
+ * non-gating and tolerated-stale (D-002 — the fleet writes insights continuously), so
+ * regenerating here would fight the design intent. `docs:search` finds the doc either way.
+ *
+ * Scoped to papercusp's agent-insights dir because that is the only thing the generator reads
+ * (`scripts/gen-doc-insights-index.ts` hardcodes apps/operator-docs/src/content/docs/agent-insights) —
+ * pointing a harness-scoped author at that script would be a nudge to run a no-op. (EI-15927)
+ */
+export function insightsIndexNudge(section: string, harnessSlug: string): string | null {
+  if (section !== 'agent-insights' || harnessSlug !== 'papercusp') return null;
+  return 'the curated insights index is generated and was NOT refreshed — run `npm run gen:doc-insights-index` to list this doc in reference/agent-insights-index.md (docs:search finds it either way).';
+}
+
 /** Strip a leading YAML frontmatter block from a body (we generate our own). */
 export function stripLeadingFrontmatter(body: string): { body: string; stripped: boolean } {
   const m = /^﻿?\s*---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/.exec(body);
@@ -295,6 +311,9 @@ export default defineTool({
     } catch (e) {
       warnings.push(`doc written but anchor threw (${(e as Error).message}) — run harness_docs:anchor manually.`);
     }
+
+    const indexNudge = insightsIndexNudge(section, harnessSlug);
+    if (indexNudge) warnings.push(indexNudge);
 
     ctxAny.metadata?.({ surface: scope.kind === 'harness' ? `harness:${harnessSlug}` : 'engineering', docId });
 
