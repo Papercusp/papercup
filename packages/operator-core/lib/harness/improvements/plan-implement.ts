@@ -171,6 +171,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       autoEligibleCount: auto.length,
       inFlightCount,
       attemptsExhaustedCount,
+      onHoldCount,
       attemptsExhausted,
       message:
         `auto-implement is OFF (default) — ${auto.length} auto-eligible bug(s) waiting. ` +
@@ -189,6 +190,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       autoEligibleCount: auto.length,
       inFlightCount,
       attemptsExhaustedCount,
+      onHoldCount,
       attemptsExhausted,
       message:
         `lane PAUSED — fleet credential/env outage (recent workers dying on rate-limit/auth); ` +
@@ -202,6 +204,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       autoEligibleCount: auto.length,
       inFlightCount,
       attemptsExhaustedCount,
+      onHoldCount,
       attemptsExhausted,
       message: `nothing dispatchable to implement${skippedNote}`,
     };
@@ -213,6 +216,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       autoEligibleCount: auto.length,
       inFlightCount,
       attemptsExhaustedCount,
+      onHoldCount,
       attemptsExhausted,
       message:
         `flag ON and ${dispatchable.length} bug(s) dispatchable, but NO dedicated runner harness is configured ` +
@@ -226,6 +230,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
     autoEligibleCount: auto.length,
     inFlightCount,
     attemptsExhaustedCount,
+    onHoldCount,
     attemptsExhausted,
     message:
       candidates.length > 0
