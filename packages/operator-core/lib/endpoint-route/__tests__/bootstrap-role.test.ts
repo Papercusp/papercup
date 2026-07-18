@@ -48,8 +48,31 @@ vi.mock('../../auth/require-principal', () => ({
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'default',
   workspaceById: (id: string) => (id === 'default' ? { id, name: 'Default' } : undefined),
+  // The SPAWN_HANDOFF_HYDRATION checkpoint source (getWorkItemCheckpoint) resolves its
+  // concrete workspace via resolveConcreteWorkspaceId; a faithful stub (first non-'*',
+  // non-empty candidate, else the active workspace) keeps this fully-mocked module
+  // complete so the fail-soft hydration doesn't degrade on a missing export.
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) => {
+    for (const c of candidates) {
+      if (typeof c === 'string') {
+        const t = c.trim();
+        if (t && t !== '*') return t;
+      }
+    }
+    return 'default';
+  },
 }));
-vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
+// bootstrap-role's spawn-hydration roster source (listHiveRoster → listFleetAssignments)
+// reconciles holder liveness against the recorded-session log (EI-6374/EI-8106) via these
+// adv-sessions reads. Without them on the mock, the roster's fire-and-forget
+// listFleetAssignments promise rejects UNHANDLED (the global onUnhandledError then fails
+// this file). Faithful empty-set stubs — these CODEX_HOME/config-dir cases assert nothing
+// about fleet reconciliation, so an empty result is correct and keeps the mock complete.
+vi.mock('../../adv-sessions', () => ({
+  recordAdvSession: recordAdvSessionMock,
+  endedRecordedOwnerIds: async () => new Set<string>(),
+  recordedLiveOwnerIds: async () => new Set<string>(),
+}));
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));

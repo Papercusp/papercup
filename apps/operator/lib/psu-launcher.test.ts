@@ -143,10 +143,7 @@ import {
   SESSION_PORT_TRANSFORM_VERSION,
   cloudModelBackendHint,
   validateAgentModelPair,
-  autoCompactWindowEnv,
-  isFleetMemberLaunch,
-  COMPACTION_LIMIT_1M_LEADER,
-  COMPACTION_LIMIT_1M_FLEET_MEMBER,
+  nativeCompactionEnv,
   setupReminderLines,
   AGENT_LABELS,
   whichBin,
@@ -699,20 +696,21 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).not.toContain('carryInteractive');
   });
 
-  it('carry opt-in without a clientId stays INERT — no owner to build a carry doc for', () => {
+  it('no clientId ⇒ mechanical shake with NO endpoint line — no gateway hard-dependency, no plain-LLM lane (P-022)', () => {
     writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', carryCompaction: true }, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
+    expect(written).not.toContain('remoteEndpoint');
     expect(written).not.toContain('carryOwner');
-    expect(written).toMatch(/\n\s+strategy:\s*shake/); // weak-model default preserved
+    expect(written).toMatch(/\n\s+strategy:\s*shake/);
   });
 
-  it('carry opt-in on a gateway-routed hosted model appends the params and PRESERVES the native strategy (no probed window ⇒ no carryWindow)', () => {
+  it('P-022: a gateway-routed hosted model gets the FORCED carry block too (context-full + carryOwner; no probed window ⇒ no carryWindow) — supersedes the P-001 preserve decision', () => {
     writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6', clientId: 'su-carry-2', carryCompaction: true }, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
     expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize\?carryOwner=su-carry-2"/);
     expect(written).not.toContain('carryWindow');
-    expect(written).not.toContain('strategy: shake'); // hosted model keeps its native strategy (P-001)
+    expect(written).toMatch(/\n\s+strategy:\s*context-full/);
+    expect(written).not.toContain('strategy: shake');
   });
 
   it('carry defaults ON for an owned session: params are present and weak-model strategy reaches the carry endpoint', () => {
@@ -724,7 +722,7 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toMatch(/\n\s+strategy:\s*context-full/);
   });
 
-  it('PAPERCUSP_OMP_CARRY_COMPACTION=0 is the emergency opt-out: no params and shake preserved', () => {
+  it('P-022: the old PAPERCUSP_OMP_CARRY_COMPACTION=0 opt-out is RETIRED — carry still applies with the env set', () => {
     const saved = process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
     try {
       process.env.PAPERCUSP_OMP_CARRY_COMPACTION = '0';
@@ -732,8 +730,8 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
       writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-off', backendWindow: 204800 }, home);
       err.mockRestore();
       const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-      expect(written).not.toContain('carryOwner');
-      expect(written).toMatch(/\n\s+strategy:\s*shake/);
+      expect(written).toContain('carryOwner=su-carry-off');
+      expect(written).toMatch(/\n\s+strategy:\s*context-full/);
     } finally {
       if (saved === undefined) delete process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
       else process.env.PAPERCUSP_OMP_CARRY_COMPACTION = saved;
@@ -741,11 +739,12 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
   });
 
   it('falls back to the config.yml modelRoles.default when no model opt is passed', () => {
-    // AGENT_CFG's default is a gateway-routed hosted model → endpoint-only seeding (P-002)…
+    // AGENT_CFG's default is a gateway-routed hosted model; with no clientId the
+    // forced block is the mechanical shake (P-022 — no endpoint without an owner)…
     writeOmpSessionConfigDir('sess1', {}, home);
     const gwWritten = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(gwWritten).toContain('/maintenance/summarize');
-    expect(gwWritten).not.toContain('strategy: shake');
+    expect(gwWritten).not.toContain('/maintenance/summarize');
+    expect(gwWritten).toMatch(/\n\s+strategy:\s*shake/);
     // …and a LOCAL default (the incident box's actual config) seeds shake even with model omitted.
     writeFileSync(
       join(home, '.omp', 'agent', 'config.yml'),
@@ -756,7 +755,7 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toMatch(/\n\s+strategy:\s*shake/);
   });
 
-  it('REPLACES an inherited compaction block for a local model (remove-then-append, no duplicate key)', () => {
+  it('REPLACES an inherited compaction block for EVERY omp session (remove-then-append, no duplicate key) — hosted models included (P-022)', () => {
     const withCompaction = AGENT_CFG + 'compaction:\n  strategy: snapcompact\n  thresholdPercent: 90\n';
     writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withCompaction);
     writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith' }, home);
@@ -764,10 +763,13 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect((written.match(/^compaction:/gm) ?? []).length).toBe(1);
     expect(written).not.toContain('snapcompact');
     expect(written).toMatch(/\n\s+thresholdPercent:\s*70/);
-    // A hosted model keeps the inherited block exactly as the user set it.
+    // P-022: a direct-API hosted model no longer keeps the inherited native
+    // strategy — snapcompact is stripped and the mechanical shake rules.
     writeOmpSessionConfigDir('sess2', { model: 'anthropic/claude-opus-4-8' }, home);
     const hosted = readFileSync(agentPath('sess2', 'config.yml'), 'utf8');
-    expect(hosted).toContain('strategy: snapcompact');
+    expect(hosted).not.toContain('snapcompact');
+    expect((hosted.match(/^compaction:/gm) ?? []).length).toBe(1);
+    expect(hosted).toMatch(/\n\s+strategy:\s*shake/);
   });
 
   it('strips flat dotted compaction.* keys too (both spellings are valid omp settings)', () => {
@@ -2702,61 +2704,16 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
   });
 });
 
-describe('autoCompactWindowEnv (P-014 — CC mechanical compaction backstop for [1m] launches)', () => {
-  const KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
-  /** CC's REAL fire point for a resolved window (binary-verified): output reserve 20000,
-   *  default precompute-buffer fraction 0.2 ⇒ compact fires at ≈0.8·(window−20000). */
-  const ccFirePoint = (w) => Math.round((w - 20_000) * 0.8);
-
-  it('lockstep soft-limit constants (agent-config-constants COMPACTION_LIMIT_DEFAULT_1M_*_CAP)', () => {
-    expect(COMPACTION_LIMIT_1M_LEADER).toBe(400_000);
-    expect(COMPACTION_LIMIT_1M_FLEET_MEMBER).toBe(300_000);
+describe('nativeCompactionEnv (P-022 — native auto-compact retired for every Claude launch)', () => {
+  it('claude → DISABLE_AUTO_COMPACT=1 regardless of spec or window (the carry-respawn ladder owns the boundary)', () => {
+    expect(nativeCompactionEnv('claude')).toEqual({ DISABLE_AUTO_COMPACT: '1' });
   });
 
-  it('fleet MEMBER [1m] → window 470k (fires at the 1.2×300k=360k overshoot envelope)', () => {
-    const env = autoCompactWindowEnv('claude', 'sonnet[1m]:high', { fleetMember: true });
-    expect(env[KEY]).toBe('470000'); // 1.5·300000 + 20000
-    expect(ccFirePoint(Number(env[KEY]))).toBe(1.2 * COMPACTION_LIMIT_1M_FLEET_MEMBER);
-  });
-
-  it('leader / solo [1m] → window 620k (fires at the 1.2×400k=480k overshoot envelope)', () => {
-    const leader = autoCompactWindowEnv('claude', 'opus[1m]', { fleetMember: false });
-    expect(leader[KEY]).toBe('620000'); // 1.5·400000 + 20000
-    expect(ccFirePoint(Number(leader[KEY]))).toBe(1.2 * COMPACTION_LIMIT_1M_LEADER);
-    // fleetMember defaults to false ⇒ the leader/solo cap
-    expect(autoCompactWindowEnv('claude', 'claude-fable-5[1m]:xhigh')[KEY]).toBe('620000');
-  });
-
-  it('every resolved window sits inside CC\'s accepted [1e5, 1e6] clamp', () => {
-    for (const [spec, fm] of [['sonnet[1m]', true], ['opus[1m]', false]]) {
-      const w = Number(autoCompactWindowEnv('claude', spec, { fleetMember: fm })[KEY]);
-      expect(w).toBeGreaterThanOrEqual(100_000);
-      expect(w).toBeLessThanOrEqual(1_000_000);
-    }
-  });
-
-  it('NO override for a non-[1m] spec (a ≤200k session already backstops near its 158k soft limit)', () => {
-    expect(autoCompactWindowEnv('claude', 'sonnet', { fleetMember: true })).toEqual({});
-    expect(autoCompactWindowEnv('claude', 'haiku')).toEqual({});
-    expect(autoCompactWindowEnv('claude', 'claude-fable-5')).toEqual({});
-  });
-
-  it('NO override for a non-claude agent, or a null/absent spec (set only when we KNOW it is [1m])', () => {
-    expect(autoCompactWindowEnv('omp', 'sonnet[1m]', { fleetMember: true })).toEqual({});
-    expect(autoCompactWindowEnv('codex', 'opus[1m]')).toEqual({});
-    expect(autoCompactWindowEnv('claude', null)).toEqual({});
-    expect(autoCompactWindowEnv('claude', undefined)).toEqual({});
-  });
-});
-
-describe('isFleetMemberLaunch (P-014 — shapes the [1m] soft-limit leg)', () => {
-  it('true only for a named-fleet launch whose role is not leader', () => {
-    expect(isFleetMemberLaunch({ fleet: 'backlog-clearance', fleetRole: 'member' })).toBe(true);
-    expect(isFleetMemberLaunch({ fleet: 'backlog-clearance', fleetRole: 'leader' })).toBe(false);
-    expect(isFleetMemberLaunch({ fleet: 'backlog-clearance', fleetRole: null })).toBe(true); // fleet present, not leader
-    expect(isFleetMemberLaunch({ fleet: null, fleetRole: null })).toBe(false); // solo
-    expect(isFleetMemberLaunch({})).toBe(false);
-    expect(isFleetMemberLaunch(undefined)).toBe(false);
+  it('non-claude agents get no env fragment — their compaction is papercusp-owned at their own launch legs', () => {
+    expect(nativeCompactionEnv('omp')).toEqual({});
+    expect(nativeCompactionEnv('codex')).toEqual({});
+    expect(nativeCompactionEnv(null)).toEqual({});
+    expect(nativeCompactionEnv(undefined)).toEqual({});
   });
 });
 

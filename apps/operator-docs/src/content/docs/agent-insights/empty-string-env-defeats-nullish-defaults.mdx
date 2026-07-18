@@ -45,3 +45,12 @@ threshold parsed to zero/empty, before suspecting the accounting.
 *"fix(scout): fall back to default base URL when OPENAI_BASE_URL is empty"*.
 When you see `?? 'default'` next to `process.env` anywhere a compose file feeds
 it, assume the empty-string case WILL eventually arrive.
+
+**Instances stack and MASK each other (same outage, hour two):** fixing the $0
+budget gate un-masked a SECOND instance in the same file — `OPENAI_MODEL_ID ?? 'gpt-4o-mini'`
+kept `""`, so every request shipped `model: ""` → OpenAI 400 "you must provide a
+model parameter". The file even ALREADY had the correct `?.trim() ||` idiom on two
+neighboring consts (`OLLAMA_URL`, `OPENAI_BASE_URL`) from prior hits — the lesson is
+to sweep the WHOLE file/service for the class when you fix one instance
+(`grep -n "process\.env\..* ??" …`), because the first instance's failure hides the
+later ones on the same request path.
