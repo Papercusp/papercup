@@ -493,6 +493,10 @@ function spawnSpecFor(t, extraArgs) {
 
 let failed = 0;
 let quarantinedFailed = 0;
+// EI-2341 item 2: the final summary used to report only a COUNT of failed tasks,
+// so finding WHICH task failed meant scrolling back through the whole run's
+// interleaved output. Track names as we go and name them in the final summary.
+const failedTaskNames = [];
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
   outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
