@@ -94,6 +94,12 @@ export interface DispatchResult {
   /** The subset of targets with NO live session watching their inbox-wake key —
    *  genuinely dead; the dispatch black-holes until they are relaunched. */
   recipient_dead?: string[];
+  /** EI-2292: requested items the pre-assign guard excluded (live-claimed by
+   *  someone else, or needs-human/blocked) — present only when non-empty. The
+   *  note still delivers (it may legitimately be about other, kept items), but
+   *  these were NOT added to the target's durable lane, so re-dispatching a
+   *  parked/claimed item every cycle no longer collides or spams. */
+  skippedItems?: DispatchSkippedItem[];
   /** A loud, human-readable miss note when the target is not pickup-able right now. */
   warning?: string;
 }

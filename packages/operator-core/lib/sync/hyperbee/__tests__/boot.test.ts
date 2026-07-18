@@ -2324,13 +2324,23 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     // Every re-opened session stays a "stuck" zombie — a real writer well
     // ahead (length 1000) but zero merge progress and a live replicator peer —
     // so each repair is judged ineffective instead of a genuine recovery.
+    // `get` THROWS (not `=> null`, unlike `fakeCloseableRemoteLog` above) —
+    // read-merge's `readOpBoundedDetailed` treats a resolved `null` as a
+    // normal "version-gated drop" and ADVANCES the cursor past it, which
+    // would race mergeCursor.positions up to `length` after a single pass
+    // and falsely read as "caught up" to `checkRepairConfirmation` on the
+    // very next repair. A throw (⇒ `{ kind: 'unavailable' }`) is read-merge's
+    // actual "block never arrived" signal — it `break`s without advancing,
+    // so mergedPosition genuinely never moves, matching the real zombie.
     const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
     const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
       const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
         keyHex: k,
         length: 1000,
         contiguousLength: 0,
-        get: async () => null,
+        get: async () => {
+          throw new Error('WI-5340 test: simulated stuck zombie — block fetch never resolves');
+        },
         update: async () => {},
         prefetch: () => {},
         has: () => false,

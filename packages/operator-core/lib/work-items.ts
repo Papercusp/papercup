@@ -2657,6 +2657,10 @@ export async function setWorkItemClaimHold(
      *  terminal transition. */
     parkedBy?: string;
     parkedReason?: string;
+    /** Clear ONLY the `held_open_*` lease, preserving a coexisting durable park
+     *  (`_claimHold` + `claim_hold_*`). For AUTOMATED liveness-triggered lifts (the inline
+     *  expired-lease chokepoint); explicit agent clears stay full. */
+    leaseOnly?: boolean;
   } = {},
 ): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
   const wi = await getWorkItem(id, opts.harness);

@@ -174,8 +174,16 @@ export async function reclaimStaleHoldOpens(
          FOR UPDATE OF w SKIP LOCKED
     )
     UPDATE harness_shared.work_items w
-       SET payload = COALESCE(w.payload, '{}'::jsonb)
-                       - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at',
+       -- A durable PARK (claim_hold_by, from release {claimHold:true}) may coexist with the
+       -- dead lease being lifted — it is deliberately NOT liveness-bound, so lift only the
+       -- held_open_* lease and keep _claimHold when the park is present.
+       SET payload = CASE
+             WHEN COALESCE(w.payload, '{}'::jsonb) ? 'claim_hold_by'
+             THEN COALESCE(w.payload, '{}'::jsonb)
+                    - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+             ELSE COALESCE(w.payload, '{}'::jsonb)
+                    - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+           END,
            updated_ts = ${Date.now()}
       FROM stale s
      WHERE w.workspace_id = s.workspace_id AND w.feature_id = s.feature_id

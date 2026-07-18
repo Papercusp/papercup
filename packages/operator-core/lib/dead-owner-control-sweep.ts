@@ -51,8 +51,15 @@ export async function sweepDeadOwnerControlState(
     ),
     lifted_hold AS (
       UPDATE harness_shared.work_items w
-         SET payload = COALESCE(w.payload, '{}'::jsonb)
-                         - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at',
+         -- Same park-preservation as reclaimStaleHoldOpens: a durable park (claim_hold_by)
+         -- is not liveness-bound — lift only the dead lease, keep _claimHold with it.
+         SET payload = CASE
+               WHEN COALESCE(w.payload, '{}'::jsonb) ? 'claim_hold_by'
+               THEN COALESCE(w.payload, '{}'::jsonb)
+                      - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+               ELSE COALESCE(w.payload, '{}'::jsonb)
+                      - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+             END,
              updated_ts = ${Date.now()}
         FROM dead_owner d
        WHERE w.payload->>'held_open_by' = d.owner_id
