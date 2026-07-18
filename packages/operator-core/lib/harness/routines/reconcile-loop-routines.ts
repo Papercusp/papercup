@@ -24,10 +24,14 @@
  * the loop's `target_owner_id`. So the most-recent such marker AFTER `last_fired_at` is
  * the woken turn's completion. This is per-turn AND immune to the mid-turn quiet-gap a
  * `coord_presence.last_active_at` quiescence read suffers from (a long SILENT Bash leaves
- * last_active_at stale mid-turn → a false "settled"). (report.ts `lifecyclePhase` keys
- * the same marker off the word "end"; matching `summary ILIKE '%end%'` over
- * kind='lifecycle' rows — whose only summaries are "▶ session started" / "■ session
- * ended" — picks the end marker exactly, since "started" has no "end".)
+ * last_active_at stale mid-turn → a false "settled"). (EI-12979: this used to match
+ * `summary ILIKE '%end%'` on the reasoning that kind='lifecycle' rows only ever carry
+ * "▶ session started" / "■ session ended" — true today, but an unanchored substring
+ * match on someone ELSE's assumption about what else might get written under
+ * kind='lifecycle' is exactly the latent trap that bug describes. Now compares against
+ * the shared SESSION_END_MARKER / SESSION_START_MARKER constants exactly, the same
+ * ones report.ts's `lifecyclePhase` and presence-wakeability.ts's `fetchWakeability`
+ * key off — one canonical marker, never re-derived per reader.)
  *
  * ## Robustness (3 layers, each cheap)
  *  1. PRIMARY — the lifecycle 'ended' marker (above). COLD loops (payload_template
@@ -419,13 +423,13 @@ export async function reconcileLoopRoutines(
               FROM harness_shared.agent_activity a
              WHERE a.owner_id = r.target_owner_id
                AND a.kind = 'lifecycle'
-               AND a.summary ILIKE '%end%'
+               AND a.summary = ${SESSION_END_MARKER}
                AND a.created_at > r.last_fired_at) AS lifecycle_completed_at,
            (SELECT max(a.created_at)
               FROM harness_shared.agent_activity a
              WHERE a.owner_id = r.target_owner_id
                AND a.kind = 'lifecycle'
-               AND a.summary ILIKE '%start%'
+               AND a.summary = ${SESSION_START_MARKER}
                AND a.created_at > r.last_fired_at) AS lifecycle_started_at,
            (r.payload_template->>'carry') AS carry,
            (SELECT max(cn.updated_ts)

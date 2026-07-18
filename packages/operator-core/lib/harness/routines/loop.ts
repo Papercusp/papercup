@@ -39,6 +39,7 @@ import { getOrgPg, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org'
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
+import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -619,7 +620,7 @@ export async function getLoopStatuses(
            a.consecutive_errors  AS consecutive_errors,
            (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
              WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
-               AND ag.summary ILIKE '%end%' AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
+               AND ag.summary = ${SESSION_END_MARKER} AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
            (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at
       FROM harness_shared.routines r
