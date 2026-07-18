@@ -306,6 +306,17 @@ export function normalizeTickEconomics(row: Record<string, unknown>): ScoutTickE
     (status === 'error' && errText ? errText.slice(0, 120) : null);
   const spend = row.budget_used_usd == null ? null : Number(row.budget_used_usd);
   const cycleId = detailObj ? firstString(detailObj, ['cycleId']) : null;
+  // P-006: the digest grounding-lane composition this cycle was fed, when the
+  // tick recorder captured it. Tolerant: anything but a {lane: number} object
+  // reads as empty.
+  const groundingLanes: Record<string, number> = {};
+  const rawLanes = detailObj?.groundingLanes;
+  if (rawLanes && typeof rawLanes === 'object' && !Array.isArray(rawLanes)) {
+    for (const [lane, v] of Object.entries(rawLanes as Record<string, unknown>)) {
+      const n = typeof v === 'string' ? Number(v) : v;
+      if (typeof n === 'number' && Number.isFinite(n) && n > 0) groundingLanes[lane] = n;
+    }
+  }
   return {
     at: toIso(row.tick_at ?? row.ticked_at ?? row.created_at ?? row.at),
     status,
@@ -316,6 +327,7 @@ export function normalizeTickEconomics(row: Record<string, unknown>): ScoutTickE
     spendUsd: spend != null && Number.isFinite(spend) ? spend : null,
     cycleId,
     lenses: {},
+    groundingLanes,
   };
 }
 

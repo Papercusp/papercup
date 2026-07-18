@@ -38,6 +38,7 @@ import {
   Beaker,
   Search,
   Telescope,
+  Rss,
 } from "lucide-react";
 import type {
   ImprovementDigest,
@@ -60,6 +61,7 @@ import type { BakeoffTrendRow } from "@papercusp/operator-core/lib/pot-eval/bake
 import { EkgPanel } from "./EkgPanel";
 import { RedQueenPanel } from "./RedQueenPanel";
 import { FrontierPanel } from "./FrontierPanel";
+import { SignalsPanel } from "./SignalsPanel";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { MugWakeEfficiencyPanel } from "./MugWakeEfficiencyPanel";
 import { ExperimentsPanel } from "./ExperimentsPanel";
@@ -88,6 +90,7 @@ import {
 } from "./LearningVisuals";
 
 const LVIEWS = [
+  "signals",
   "observations",
   "rubrics",
   "ideas",
@@ -136,6 +139,7 @@ const STAGES: ReadonlyArray<{
     label: "Observe",
     icon: Eye,
     views: [
+      { id: "signals", label: "Signals", icon: Rss },
       { id: "observations", label: "Observations", icon: Eye },
       { id: "rubrics", label: "Rubrics", icon: Gauge },
     ],
@@ -484,6 +488,9 @@ function LearningViewContent({
     (status: LearningViewStatus) => onStatus(view, status),
     [onStatus, view],
   );
+  if (view === "signals") {
+    return <SignalsPanel onStatus={reportViewStatus} />;
+  }
   if (view === "observations") {
     return <ObservationsPanel onStatus={reportViewStatus} />;
   }
