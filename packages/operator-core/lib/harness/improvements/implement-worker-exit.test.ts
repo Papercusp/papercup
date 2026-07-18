@@ -435,6 +435,71 @@ describe('recordImplementWorkerExit (EI-404 back-edge + EI-406 rollback)', () =>
   });
 });
 
+describe('recordImplementWorkerExit — EI-1404 reset-hold', () => {
+  // 2026-07-17 03:00 America/New_York == 07:00 UTC.
+  const NOW = Date.parse('2026-07-17T07:00:00.000Z');
+
+  it('the live shape ("resets 7am (America/New_York)") stamps dispatchHoldUntil alongside the attempt rollback', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await recordImplementWorkerExit(
+      {
+        dispatchId: 'd-1404',
+        itemId: 'EI-89',
+        attempt: 3,
+        exitCode: 1,
+        runtimeMs: 3_000,
+        stdout: "worker exit 1 … You've hit your weekly limit · resets 7am (America/New_York)",
+        nowMs: NOW,
+      },
+      deps,
+    );
+    expect(res.charged).toBe(false);
+    expect(res.resetHold).toBeTruthy();
+    // 7am America/New_York in July (EDT, UTC-4) == 11:00 UTC the same day.
+    expect(new Date(res.resetHold!.holdUntilMs).toISOString()).toBe('2026-07-17T11:00:00.000Z');
+    expect(calls.mergePayload).toEqual([
+      ['EI-89', { implementAttempts: 2, dispatchHoldUntil: '2026-07-17T11:00:00.000Z' }],
+    ]);
+    expect(calls.markOrphaned[0][2]).toMatch(/dispatch held until 2026-07-17T11:00:00\.000Z/);
+  });
+
+  it('an env death WITHOUT a parseable reset time rolls the attempt back but does NOT stamp dispatchHoldUntil', async () => {
+    const { deps, calls } = fakeDeps();
+    await recordImplementWorkerExit(
+      {
+        dispatchId: 'd-75',
+        itemId: 'EI-75',
+        attempt: 2,
+        exitCode: 1,
+        runtimeMs: 3_000,
+        // The older EI-75 fixture shape: a date, no clock time this parser targets.
+        stdout: "You've hit your weekly limit · resets Jun 18, 7am",
+        nowMs: NOW,
+      },
+      deps,
+    );
+    expect(calls.mergePayload).toEqual([['EI-75', { implementAttempts: 1 }]]);
+  });
+
+  it('a context-overflow death never computes a reset-hold even if the text mentions a time (its own escalation path wins)', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await recordImplementWorkerExit(
+      {
+        dispatchId: 'd-of',
+        itemId: 'EI-716',
+        attempt: 1,
+        exitCode: 1,
+        runtimeMs: 300_000,
+        stdout: 'Prompt is too long — resets 7am (America/New_York) mentioned incidentally in a log line.',
+        nowMs: NOW,
+      },
+      deps,
+    );
+    expect(res.resetHold).toBeUndefined();
+    expect(calls.mergePayload[0][1]).not.toHaveProperty('dispatchHoldUntil');
+  });
+});
+
 describe('recordImplementWorkerExit — WI-716 context-overflow bounded escalation', () => {
   const overflowInput = (over: Partial<Parameters<typeof recordImplementWorkerExit>[0]> = {}) => ({
     dispatchId: 'd-of',

@@ -200,3 +200,52 @@ describe('planImplementRun — post-touch cooldown (EI-8385 cross-lane claim rac
     expect(pShort.candidates.map((c) => c.id)).toEqual(['B1']);
   });
 });
+
+describe('planImplementRun — reset-hold (EI-1404)', () => {
+  const NOW = Date.parse('2026-07-17T10:00:00Z');
+
+  it('an item with a FUTURE dispatchHoldUntil is skipped, not re-dispatched', () => {
+    const items = [cand({ id: 'B1', dispatchHoldUntil: '2026-07-17T11:00:00Z' })]; // 1h from NOW
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates).toEqual([]);
+    expect(p.onHoldCount).toBe(1);
+    expect(p.action).toBe('noop');
+    expect(p.message).toMatch(/1 on-hold/);
+  });
+
+  it('an item whose dispatchHoldUntil has already PASSED is dispatchable again (the hold expired)', () => {
+    const items = [cand({ id: 'B1', dispatchHoldUntil: '2026-07-17T09:00:00Z' })]; // 1h in the past
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B1']);
+    expect(p.onHoldCount).toBe(0);
+  });
+
+  it('an item with a garbled dispatchHoldUntil fails OPEN (dispatchable, never wedged)', () => {
+    const items = [cand({ id: 'B1', dispatchHoldUntil: 'not-a-date' })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B1']);
+    expect(p.onHoldCount).toBe(0);
+  });
+
+  it('on-hold items still surface via onHoldCount alongside a dispatchable sibling', () => {
+    const items = [cand({ id: 'B1' }), cand({ id: 'B2', dispatchHoldUntil: '2026-07-17T11:00:00Z' })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B1']);
+    expect(p.onHoldCount).toBe(1);
+    expect(p.action).toBe('dispatch');
+  });
+
+  it('an ON-HOLD item that is ALSO in-flight counts only as in-flight (no double-skip accounting)', () => {
+    const items = [
+      cand({
+        id: 'B1',
+        dispatchHoldUntil: '2026-07-17T11:00:00Z',
+        assignee: 'improvement-runner',
+        assignedAt: '2026-07-17T09:59:00Z',
+      }),
+    ];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.inFlightCount).toBe(1);
+    expect(p.onHoldCount).toBe(0);
+  });
+});
