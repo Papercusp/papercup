@@ -230,3 +230,25 @@ export function resolveReplicationStallEi(
 ): Promise<string[]> {
   return escalator.resolve(recovery, deps);
 }
+
+/**
+ * WI-5332: is a durable EI ALREADY open for this exact (harness, log, kind)?
+ * boot.ts's repair-on-detect ladder (`repairAttempts`) is a per-process-
+ * lifetime Map — under restart-cadence disruption (a real sidecar restart,
+ * or the live-fed-gate rig's restart_durability/reconnect_catchup scenarios)
+ * it resets before ever reaching REPAIR_MAX_ATTEMPTS_PER_LOG, so the heavier
+ * forced-rejoin escalation becomes structurally unreachable exactly when the
+ * condition is chronic. An open EI is the one signal that survives the reset:
+ * if THIS process's first-ever episode for a log finds an EI already open, a
+ * PRIOR process already stalled on the exact same (harness, log, kind) and no
+ * recovery has been observed since — i.e. this is not a fresh stall, it is
+ * the SAME zombie surviving a restart. The caller (boot.ts) uses a true
+ * result to skip straight to the forced rejoin instead of re-running a fresh
+ * session-repair budget that the next restart would just reset again.
+ */
+export function hasOpenReplicationStallEi(
+  episode: Pick<StallEiEpisode, 'harnessSlug' | 'logKeyHex' | 'kind'>,
+  deps?: ReplicationStallEiDeps,
+): Promise<boolean> {
+  return escalator.hasOpen({ ...episode, detail: '' }, deps);
+}

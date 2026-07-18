@@ -86,6 +86,16 @@ export interface EpisodicEscalator<E, R, Sev extends IssueSeverity = IssueSeveri
    * never strands its siblings.
    */
   resolve(recovery: R, deps?: EpisodicEiDeps<Sev>): Promise<string[]>;
+  /**
+   * WI-5332: best-effort check for whether an EI is ALREADY open for this
+   * stable title — the one signal a process-lifetime-scoped detector can use
+   * to see PAST its own restart (an open EI survives in PG; nothing else
+   * here does). Same VITEST safety gate as file()/resolve() (returns false
+   * rather than touching production PG unless a test passes `deps`); any
+   * other failure also degrades to false — never a reason to block the
+   * caller's own in-process fallback behavior.
+   */
+  hasOpen(x: E | R, deps?: EpisodicEiDeps<Sev>): Promise<boolean>;
   /** Test seam: clear the per-process in-flight guard. */
   _resetForTests(): void;
 }
@@ -178,6 +188,20 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
         return resolvedIds;
       } catch {
         return []; // best-effort: the registry verdict already reads recovered
+      }
+    },
+
+    async hasOpen(x, deps): Promise<boolean> {
+      const title = config.stableTitle(x);
+      // Same VITEST safety gate as file()/resolve(): a detection-only unit
+      // test with no real reporter/deps must never touch production PG.
+      if (process.env.VITEST && !deps) return false;
+      try {
+        const d = deps ?? (await defaultDeps());
+        const open = await d.listOpenByTopic(config.topic);
+        return open.some((i) => i.title === title);
+      } catch {
+        return false; // best-effort: the caller's own fallback path still applies
       }
     },
   };
