@@ -53,8 +53,10 @@ export default defineTool({
   guidance: {
     when:
       'MANY tool calls with control flow — loop/branch/filter, fan-out reads, retry-until: ' +
-      'orchestrate them in ONE call. Pass title+description so the run saves as a reusable ' +
-      'RECIPE other agents in your hive can find.',
+      'orchestrate them in ONE call. ALSO the sanctioned way to run a TypeScript snippet against ' +
+      'repo internals (call a repo function, query the DB, poke a module): do NOT hand-roll a tsx ' +
+      'script — one outside the repo cannot resolve workspace deps. Pass title+description so the ' +
+      'run saves as a reusable RECIPE other agents in your hive can find.',
     notWhen:
       'A single call; a few independent calls you can emit together in this assistant turn; or a ' +
       'step that needs YOUR judgment mid-flow (read a result, then decide) — call tools directly.',
