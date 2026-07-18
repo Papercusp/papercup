@@ -23,10 +23,15 @@ import { systemDistinctId } from '../../flag-distinct-id';
 
 // workspace-data-isolation-leaks-2026-06-17 F-C1: scope the coord plane to the
 // ACTIVE workspace instead of the single shared `default` partition — flag-gated
-// (papercusp-coord-per-workspace, default OFF, a reversible kill-switch). The
-// PgCoordLog resolver must be SYNC, so cache the flag (machine-global) refreshed on
-// an initial read + every flag change — exactly the lexicon/configure.ts pattern.
-// While the cache is unloaded it reads false ⇒ 'default' (today's behavior, safe).
+// (papercusp-coord-per-workspace). DEFAULT ON — the cutover COMPLETED and is
+// graduated (corrected 2026-07-12, WI-4238/EI-1548: this comment used to say
+// "default OFF — reversible kill-switch", which is now stale — see
+// FLAGS.COORD_PER_WORKSPACE's own comment in libs/flags/src/types.ts for the
+// live corpus numbers that make flipping it OFF a DATA-STRANDING move, not a
+// safe restore). The PgCoordLog resolver must be SYNC, so cache the flag
+// (machine-global) refreshed on an initial read + every flag change — exactly
+// the lexicon/configure.ts pattern. While the cache is unloaded it reads false
+// ⇒ 'default' (the pre-cutover partition — no longer the live one).
 let coordPerWorkspaceOn = false;
 /**
  * Re-read the COORD_PER_WORKSPACE flag into the sync cache. Fired on an initial

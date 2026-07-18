@@ -97,6 +97,36 @@ describe('listEscalationsPaginated — bounded read (EI-1548)', () => {
     expect(r.truncated).toBe(false);
   });
 
+  it('EI-1548 (#3): a fat body is truncated in list mode and flagged, short bodies are untouched', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    const fatBody = 'x'.repeat(2_000);
+    await coordLog.putEvent('escalations', 'fat1', {
+      ts: '2026-01-01T00:00:01.000Z', msg_id: 'fat1', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'has a huge body', body: fatBody, resolved: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'short1', {
+      ts: '2026-01-01T00:00:02.000Z', msg_id: 'short1', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'has a short body', body: 'tiny', resolved: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const r = await listEscalationsPaginated({ status: 'open', maxRecords: 50 });
+    const fat = r.escalations.find((e) => e.msg_id === 'fat1') as (typeof r.escalations)[number] & {
+      bodyTruncated?: boolean;
+      bodyLength?: number;
+    };
+    const short = r.escalations.find((e) => e.msg_id === 'short1') as (typeof r.escalations)[number] & {
+      bodyTruncated?: boolean;
+      bodyLength?: number;
+    };
+    expect(fat.body).toHaveLength(500);
+    expect(fat.bodyTruncated).toBe(true);
+    expect(fat.bodyLength).toBe(2_000);
+    expect(short.body).toBe('tiny');
+    expect(short.bodyTruncated).toBeUndefined();
+  });
+
   it('EI-6624: a resolve-heavy window does not starve status:open opens out of the page', async () => {
     // Reproduces the reported symptom: an active fleet resolving many escalations
     // recently means a maxRecords-sized COMBINED window (old behavior) could be

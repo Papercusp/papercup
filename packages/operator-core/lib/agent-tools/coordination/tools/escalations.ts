@@ -10,7 +10,7 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:escalations',
   description:
-    'List escalations addressed to the human — NEWEST-FIRST and bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. `truncated:true` means older escalations exist beyond the window — raise maxRecords or narrow by status.',
+    'List escalations addressed to the human — NEWEST-FIRST and bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. `truncated:true` means older escalations exist beyond the window — raise maxRecords or narrow by status. A record whose `body` exceeds 500 chars is truncated in list mode (`bodyTruncated:true` + the original `bodyLength`) so a page of fat bodies cannot reproduce the original ~9MB dump.',
   guidance: {
     when: 'Showing the human inbox; diagnostics; checking your own past escalations.',
     notWhen: 'A specific msg_id you already have — there is no escalation read-by-id tool yet; coord:escalations + filter is enough at current volumes.',
