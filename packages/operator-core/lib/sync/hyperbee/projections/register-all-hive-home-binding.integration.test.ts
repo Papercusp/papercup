@@ -98,7 +98,7 @@ afterAll(async () => {
 });
 afterEach(async () => {
   await db.adminSql.unsafe(
-    'TRUNCATE harness_shared.pot_members, harness_shared.pot_settings, harness_shared.pots CASCADE',
+    'TRUNCATE harness_shared.pot_members, harness_shared.pot_settings, harness_shared.pots, harness_shared.federation_refused_op_counters CASCADE',
   );
 });
 
@@ -193,5 +193,97 @@ describe('A-003 (a′) — slug-filter gate composed with the rebind apply', () 
     // + the existing two-hive federation are unchanged.
     expect(announceSlugInScope(HOME, MEMBER, HOME)).toBe(true);
     expect(announceSlugInScope(null, HOME, null)).toBe(true);
+  });
+});
+
+// WI-3734 — the OWNED-hive owner-side rebind + home-log exclusion. The owner's
+// machine boots the home harness AND a member harness of its OWN hive; both join
+// the same swarm topic. A PEER member's home-grained ops (pot_settings /
+// pot_members) may only ever be READ by the owner's MEMBER scope (the pot-home
+// scope can lack a replicator for that log — the WI-183 zombie), and before this
+// fix the member scope demux-dropped them: B→A settings/members silently lost
+// (the live-fed-gate content-matrix RED). The fix rebinds the owner-side member
+// fold to the home slug — exactly like the joiner — but with a HOME-LOG
+// EXCLUSION: ops sourced from the locally-booted home's OWN log are skipped
+// (the home fold owns them; re-applying would double-apply the owner's rows as
+// origin='remote' — the WI-2105/WI-559 fear that previously blocked this rebind).
+describe('WI-3734 — owned-hive member rebind with home-log exclusion', () => {
+  const HOME_LOG = 'home-own-log-hex'; // the locally-booted home harness's own log
+
+  /** The owner-side member apply: rebound to HOME, excluding home-own-log ops.
+   *  `homeLog=null` models the JOINED case (home never locally booted). */
+  const ownedMemberApply = (homeLog: string | null = HOME_LOG) =>
+    buildHarnessProjectionApply({
+      workspaceId: WS,
+      harnessSlug: MEMBER,
+      sql: db.adminSql,
+      ownLogKeyHex: OWN_LOG,
+      potHomeSlug: HOME,
+      resolveHomeLogKeyHex: () => homeLog,
+    });
+
+  it("GREEN (the fix): a PEER member's home-grained ops LAND on the owner-side member fold", async () => {
+    await seedHive(HOME);
+    const apply = ownedMemberApply();
+    await apply(memberOp()); // sourced from REMOTE_LOG — a peer member's log
+    await apply(settingsOp());
+    expect((await getHiveMember(WS, HOME, 7, db.adminSql))?.githubUsername).toBe('octo');
+    expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).not.toBeNull();
+  });
+
+  it("HOME-LOG EXCLUSION: ops sourced from the locally-booted home's own log are SKIPPED", async () => {
+    await seedHive(HOME);
+    const apply = ownedMemberApply();
+    await apply({ ...memberOp(), sourceLogKeyHex: HOME_LOG });
+    await apply({ ...settingsOp(), sourceLogKeyHex: HOME_LOG });
+    // The home fold owns home-log ops (CDC already landed them in home PG at
+    // write time) — the member scope must not re-apply them as origin='remote'.
+    expect(await getHiveMember(WS, HOME, 7, db.adminSql)).toBeNull();
+    expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).toBeNull();
+  });
+
+  it('the exclusion guards DELETES too — a home-log del is skipped; a peer del still applies', async () => {
+    await seedHive(HOME);
+    const apply = ownedMemberApply();
+    await apply(settingsOp()); // a peer put lands (ts=100)
+    const del = (sourceLogKeyHex: string): OpEnvelope => ({
+      type: 'del',
+      table: 'hive-settings-by-key',
+      hbKey: 'theme',
+      ts: 200,
+      writerPubkey: 'peer-hex',
+      sourceLogKeyHex,
+    });
+    await apply(del(HOME_LOG));
+    expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).not.toBeNull(); // skipped
+    await apply(del(REMOTE_LOG));
+    expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).toBeNull(); // peer del applies
+  });
+
+  it('JOINED behavior preserved: resolver → null ⇒ home-log ops LAND (a joiner MUST apply them)', async () => {
+    await seedHive(HOME);
+    const apply = ownedMemberApply(null);
+    await apply({ ...memberOp(), sourceLogKeyHex: HOME_LOG });
+    await apply({ ...settingsOp(), sourceLogKeyHex: HOME_LOG });
+    expect((await getHiveMember(WS, HOME, 7, db.adminSql))?.githubUsername).toBe('octo');
+    expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).not.toBeNull();
+  });
+
+  it("demux-mismatch is now COUNTED: a different hive-home's op drops AND bumps federation_refused_op_counters", async () => {
+    await seedHive(HOME);
+    await seedHive('other-hive');
+    const apply = ownedMemberApply();
+    await apply(settingsOp({ harness_slug: 'other-hive' }));
+    // Still dropped by the projection's own harness_slug guard (surgical demux)…
+    expect(await getHiveSetting(WS, 'other-hive', 'theme', db.adminSql)).toBeNull();
+    // …but no longer silently: the WI-5136 observability counter records it.
+    const rows = await db.adminSql`
+      SELECT source_hive, table_tag, reason, count
+      FROM harness_shared.federation_refused_op_counters
+      WHERE workspace_id = ${WS} AND harness_slug = ${HOME} AND reason = 'demux-mismatch'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].table_tag).toBe('hive-settings-by-key');
+    expect(rows[0].source_hive).toBe(REMOTE_LOG);
+    expect(Number(rows[0].count)).toBe(1);
   });
 });

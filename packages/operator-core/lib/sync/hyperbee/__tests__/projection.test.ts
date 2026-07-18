@@ -220,8 +220,13 @@ describe('provenance attribution binds to the unforgeable source log, not the se
       { ownLogKeyHex: 'OWN-LOG-KEY' },
     );
     // origin=remote (source ≠ own) → attribution is the receiver-stamped log
-    // key, NOT the attacker-controlled writerPubkey.
-    expect(seen[0]).toEqual({ authorPubkey: 'REMOTE-LOG-KEY', origin: 'remote' });
+    // key, NOT the attacker-controlled writerPubkey. WI-3734: the raw source-log
+    // key also rides along for per-projection apply guards (home-log exclusion).
+    expect(seen[0]).toEqual({
+      authorPubkey: 'REMOTE-LOG-KEY',
+      origin: 'remote',
+      sourceLogKeyHex: 'REMOTE-LOG-KEY',
+    });
   });
 
   it('a LOCAL op keeps the trustworthy self-declared writerPubkey (own writes are not a forgery vector)', async () => {
@@ -231,7 +236,11 @@ describe('provenance attribution binds to the unforgeable source log, not the se
       putOp({ writerPubkey: 'MY-OWN-DEVICE', sourceLogKeyHex: 'OWN-LOG-KEY' }),
       { ownLogKeyHex: 'OWN-LOG-KEY' },
     );
-    expect(seen[0]).toEqual({ authorPubkey: 'MY-OWN-DEVICE', origin: 'local' });
+    expect(seen[0]).toEqual({
+      authorPubkey: 'MY-OWN-DEVICE',
+      origin: 'local',
+      sourceLogKeyHex: 'OWN-LOG-KEY',
+    });
   });
 
   it('a REMOTE op with no source key records NO forgeable identity (never the self-declared field)', async () => {
