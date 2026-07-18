@@ -295,7 +295,7 @@ describe('runScoutTick — tick observability (P-034)', () => {
 
   it('persists typed pool exhaustion as a versioned no-capacity gate', async () => {
     const denial = Object.assign(new Error('pool exhausted'), {
-      admissionDenial: { reason: 'all-accounts-paused' as const, pausedAccounts: 3, freeSlots: 0 },
+      admissionDenial: { reason: 'all-accounts-paused' as const, via: 'governor' as const, pausedAccounts: 3, freeSlots: 0 },
     });
     const { deps, calls } = makeDeps({
       runCycle: async () => {
@@ -310,8 +310,89 @@ describe('runScoutTick — tick observability (P-034)', () => {
       detail: {
         error: 'pool exhausted',
         capacityClassifierVersion: 1,
-        admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 },
+        admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
       },
+    });
+  });
+
+  it('keeps an UNATTESTED capacity-reason denial a loud error (fail closed, WI-5391)', async () => {
+    const denial = Object.assign(new Error('429 rate limit exceeded'), {
+      admissionDenial: { reason: 'provider-429' as const },
+    });
+    const { deps, calls } = makeDeps({
+      runCycle: async () => {
+        throw denial;
+      },
+    });
+    const r = await runScoutTick(deps);
+    expect(r.reason).toBe('cycle-error');
+    expect(calls.ticks[0].status).toBe('error');
+  });
+
+  describe('record-time pool-snapshot discrimination (WI-5391 Part B)', () => {
+    const http429 = () =>
+      Object.assign(new Error('429 from gateway'), {
+        admissionDenial: { reason: 'provider-429' as const, via: 'http-429' as const },
+      });
+
+    it('records an http-429 denial CONTRADICTED by healthy accounts as a loud error with evidence', async () => {
+      const snapshot = { probedAtMs: 123, healthyAccounts: 3, codexConfigured: false };
+      const { deps, calls } = makeDeps({ runCycle: async () => { throw http429(); } });
+      deps.readPoolSnapshot = async () => snapshot;
+      const r = await runScoutTick(deps);
+      expect(r.reason).toBe('cycle-error');
+      expect(calls.ticks[0]).toMatchObject({
+        status: 'error',
+        detail: {
+          capacityClassifierVersion: 1,
+          admissionDenial: { reason: 'provider-429', via: 'http-429' },
+          capacityContradicted: true,
+          poolSnapshot: snapshot,
+        },
+      });
+    });
+
+    it('gates an http-429 denial CORROBORATED by zero healthy accounts, persisting the snapshot', async () => {
+      const snapshot = { probedAtMs: 123, healthyAccounts: 0, codexConfigured: false };
+      const { deps, calls } = makeDeps({ runCycle: async () => { throw http429(); } });
+      deps.readPoolSnapshot = async () => snapshot;
+      const r = await runScoutTick(deps);
+      expect(r.reason).toBe('no-capacity');
+      expect(calls.ticks[0]).toMatchObject({
+        status: 'gated',
+        gate: 'no-capacity',
+        detail: { poolSnapshot: snapshot },
+      });
+      expect(calls.ticks[0].detail).not.toHaveProperty('capacityContradicted');
+    });
+
+    it('gates on an UNKNOWN snapshot (probe failed / unwired) — the attestation is trusted', async () => {
+      const { deps: unwired, calls: unwiredCalls } = makeDeps({ runCycle: async () => { throw http429(); } });
+      expect((await runScoutTick(unwired)).reason).toBe('no-capacity');
+      expect(unwiredCalls.ticks[0].status).toBe('gated');
+
+      const { deps: throwing, calls: throwingCalls } = makeDeps({ runCycle: async () => { throw http429(); } });
+      throwing.readPoolSnapshot = async () => {
+        throw new Error('gateway probe down');
+      };
+      expect((await runScoutTick(throwing)).reason).toBe('no-capacity');
+      expect(throwingCalls.ticks[0].status).toBe('gated');
+    });
+
+    it('does NOT consult the snapshot for a governor-attested wall (different pool authority)', async () => {
+      const denial = Object.assign(new Error('pool exhausted'), {
+        admissionDenial: { reason: 'all-accounts-paused' as const, via: 'governor' as const },
+      });
+      let probed = 0;
+      const { deps, calls } = makeDeps({ runCycle: async () => { throw denial; } });
+      deps.readPoolSnapshot = async () => {
+        probed += 1;
+        return { probedAtMs: 1, healthyAccounts: 5, codexConfigured: false };
+      };
+      const r = await runScoutTick(deps);
+      expect(r.reason).toBe('no-capacity');
+      expect(probed).toBe(0);
+      expect(calls.ticks[0].status).toBe('gated');
     });
   });
 

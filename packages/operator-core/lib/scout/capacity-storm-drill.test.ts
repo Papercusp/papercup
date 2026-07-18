@@ -1,7 +1,7 @@
 /**
  * capacity-storm-drill.test.ts — P-006 (rubric-system-hardening-2026-07-14,
  * EI-12151): the capacity-storm drill drives the REAL runScoutTick through the
- * three failure legs and proves the write path + read path agree on the persisted
+ * five failure legs and proves the write path + read path agree on the persisted
  * bytes. The in-memory ledger JSON-round-trips every row (the jsonb boundary), so
  * "the typed denial survives persistence" is exercised here too. The DISCRIMINATION
  * bar: a drill never shown to fail on a broken classifier is a green light with
@@ -82,9 +82,24 @@ describe('runCapacityStormDrill — the storm through the real scheduler', () =>
       classifierVersion: 1,
       readClassifiedCapacity: false,
     });
+    // Leg 4: a capacity REASON with no `via` attestation fails CLOSED on both paths (WI-5391).
+    expect(byLeg['unattested-capacity']).toMatchObject({
+      tickReason: 'cycle-error',
+      persistedStatus: 'error',
+      classifierVersion: 1,
+      readClassifiedCapacity: false,
+    });
+    // Leg 5: an http-429 denial contradicted by the healthy pool snapshot stays loud,
+    // and the read path does NOT re-exclude it from its attested denial.
+    expect(byLeg['contradicted-capacity']).toMatchObject({
+      tickReason: 'cycle-error',
+      persistedStatus: 'error',
+      classifierVersion: 1,
+      readClassifiedCapacity: false,
+    });
 
     // Every recorded row is provenance-stamped at record time.
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(5);
     for (const row of rows) {
       expect(row.origin).toBe(CAPACITY_STORM_TICK_ORIGIN);
       expect(row.installSlug).toBe(result.drillId);
@@ -99,6 +114,14 @@ describe('runCapacityStormDrill — the storm through the real scheduler', () =>
     const defectRow = rows.find((r) => (r.detail?.cycleId as string)?.endsWith('-defect'));
     expect(String(defectRow?.detail?.error)).toContain('rate limit exceeded');
     expect(defectRow?.detail?.capacityClassifierVersion).toBe(1);
+    // The unattested row's denial survived persistence WITHOUT gaining a stamp.
+    const unattestedRow = rows.find((r) => (r.detail?.cycleId as string)?.endsWith('-unattested'));
+    expect(unattestedRow?.detail?.admissionDenial).toEqual({ reason: 'provider-429' });
+    // The contradicted row carries the full audit evidence: flag + snapshot + attested denial.
+    const contradictedRow = rows.find((r) => (r.detail?.cycleId as string)?.endsWith('-contradicted'));
+    expect(contradictedRow?.detail?.capacityContradicted).toBe(true);
+    expect(contradictedRow?.detail?.admissionDenial).toEqual({ reason: 'provider-429', via: 'http-429' });
+    expect((contradictedRow?.detail?.poolSnapshot as { healthyAccounts?: number })?.healthyAccounts).toBe(3);
   });
 
   it('DISCRIMINATION: goes red when the persisted capacity row lost its classification', async () => {
@@ -151,6 +174,10 @@ describe('evaluateCapacityStormEvidence — the pure verdict', () => {
     timeoutReadStaysError: true,
     defectStaysError: true,
     defectReadStaysError: true,
+    unattestedStaysError: true,
+    unattestedReadStaysError: true,
+    contradictedStaysError: true,
+    contradictedReadStaysError: true,
     allLegsPersisted: true,
     organicTickLeaks: 0,
     organicMetricsUnchanged: true,
