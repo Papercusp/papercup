@@ -29,6 +29,7 @@
  * `?ppv` popup tab (see PlanPopupModal).
  */
 import { useMemo, useRef } from 'react';
+import { ClipboardList } from 'lucide-react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSyncQuery } from '@papercusp/sync';
@@ -231,6 +232,8 @@ export default function PlansPane() {
         <div className="plans-pane__empty">Loading plans…</div>
       ) : rows.length === 0 ? (
         <div className="plans-pane__empty">
+          <ClipboardList size={20} className="plans-pane__empty-icon" aria-hidden="true" />
+          <span>
           {debouncedQuery.trim()
             ? 'No plans match the search.'
             : !plans || plans.length === 0
@@ -245,6 +248,7 @@ export default function PlansPane() {
               : showFinished
                 ? 'No plans yet.'
                 : 'No active plans — everything is finished. 🎉'}
+          </span>
         </div>
       ) : (
         <div className="plans-pane__list" ref={listRef} role="list" aria-label="Plans">
@@ -252,6 +256,9 @@ export default function PlansPane() {
             {rowVirtualizer.getVirtualItems().map((vi) => {
               const { plan, needsYou, liveAgents } = rows[vi.index]!;
               const progress = progressOf(plan);
+              const bucket = bucketOf(plan);
+              // WI-5365: left-accent priority — needs-you (red) outranks live (green).
+              const accent = needsYou > 0 ? ' plans-pane__row--needs' : liveAgents > 0 ? ' plans-pane__row--live' : '';
               return (
                 <div
                   key={vi.key}
@@ -269,13 +276,16 @@ export default function PlansPane() {
                 >
                 <button
                   type="button"
-                  className="plans-pane__row"
+                  className={`plans-pane__row${accent}`}
                   onClick={() => void setPopupPlan(plan.slug)}
                   data-testid={`plans-pane-row-${plan.slug}`}
                 >
                   <span className="plans-pane__row-main">
                     <span className="plans-pane__row-title">{plan.title ?? plan.slug}</span>
                     <span className="plans-pane__row-sub">
+                      {bucket !== 'running' ? (
+                        <span className={`plans-pane__bucket plans-pane__bucket--${bucket}`}>{bucket}</span>
+                      ) : null}
                       <span className="plans-pane__row-harness">{plan.harness}</span>
                       <span className="plans-pane__row-ago" title={plan.updated ?? undefined}>
                         {agoLabel(plan.updated)}
@@ -319,6 +329,16 @@ export default function PlansPane() {
                       </span>
                     ) : null}
                   </span>
+                  {progress ? (
+                    // WI-5365: glanceable done/total as a 2px strip along the
+                    // row's bottom edge (the n/m badge stays the precise read).
+                    <span className="plans-pane__progress-track" aria-hidden="true">
+                      <span
+                        className="plans-pane__progress-fill"
+                        style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
+                      />
+                    </span>
+                  ) : null}
                 </button>
                 </div>
               );

@@ -28,7 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQueryState, useQueryStates, parseAsString, parseAsStringLiteral } from 'nuqs';
-import { MessageCircle } from 'lucide-react';
+import { Inbox as InboxIcon, MessageCircle } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
 import { TIER_LABEL, type AttentionItem, type AttentionTier } from '@/app/admin/plans/plans-api';
@@ -212,11 +212,14 @@ export default function InboxPane({ onDiscussInChat }: {
       {error ? <div className="op-inbox__error">Error: {error}</div> : null}
       {loading && items.length === 0 ? <div className="op-inbox__loading">Loading…</div> : null}
       {!loading && !error && visible.length === 0 ? (
-        <p className="op-inbox__empty" data-testid="inbox-empty">
-          {filter === 'needs'
-            ? 'Inbox zero — nothing needs you. Decisions, escalations and messages the fleet sends you land here.'
-            : 'Nothing here right now.'}
-        </p>
+        <div className="op-inbox__empty" data-testid="inbox-empty">
+          <InboxIcon size={20} className="op-inbox__empty-icon" aria-hidden="true" />
+          <span>
+            {filter === 'needs'
+              ? 'Inbox zero — nothing needs you. Decisions, escalations and messages the fleet sends you land here.'
+              : 'Nothing here right now.'}
+          </span>
+        </div>
       ) : null}
 
       <div className="op-inbox__list" ref={listRef}>
@@ -242,7 +245,7 @@ export default function InboxPane({ onDiscussInChat }: {
                   transform: `translateY(${vi.start}px)`,
                 }}
               >
-                <div className={`op-inbox__row${isSel ? ' is-selected' : ''}`}>
+                <div className={`op-inbox__row op-inbox__row--${tier}${isSel ? ' is-selected' : ''}`}>
               {/* A `div` (not `button`) — the row now nests a real chat-launch
                   <button>, and nested interactive elements are invalid HTML /
                   silently mis-parsed by the browser. Same click+keyboard
