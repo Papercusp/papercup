@@ -22,6 +22,7 @@
   --accent-strong-rgb: 255, 255, 255; /** RGB triplet of --accent-strong for rgba() alpha composition (same leak rule as accent-rgb) */
   --accent-cool: #b0b0b0; /** Cool grey accent */
   --accent-soft: #d8d8d8; /** Light grey — glows/highlights go monochrome on black (frost: sky-200) */
+  --accent-soft-rgb: 216, 216, 216; /** RGB triplet of --accent-soft for rgba() alpha composition (same leak rule as accent-rgb) */
   --accent-deep: #707070; /** Mid grey — deeper accent tint on black (frost: sky-500) */
   --accent-deeper: #4a4a4a; /** Dark grey — deepest accent tint on black (frost: sky-700) */
   --accent-ink: #000000; /** Black text drawn on top of an accent fill */

@@ -25,6 +25,7 @@
   --accent-strong-rgb: 214, 166, 74; /** RGB triplet of --accent-strong for rgba() alpha composition (same leak rule as accent-rgb) */
   --accent-cool: #e8d9b5; /** Cream highlight for glows and linework */
   --accent-soft: #e0c071; /** Soft honey signal tint */
+  --accent-soft-rgb: 224, 192, 113; /** RGB triplet of --accent-soft for rgba() alpha composition (same leak rule as accent-rgb) */
   --accent-deep: #8b5e16; /** Burnt honey active tint */
   --accent-deeper: #5f3f12; /** Deep amber shadow tint */
   --accent-ink: #130d03; /** Text on honey fills */

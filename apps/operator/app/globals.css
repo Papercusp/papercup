@@ -8868,8 +8868,13 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel {
-  --operator-cyan: 125, 211, 252;
-  --operator-arc: 186, 230, 253;
+  /* EI-2387: these two were hardcoded sky literals — the winning declaration in
+     the cascade (this is the LAST of many historical `.operator-panel { }` redesign-pass
+     blocks in this file, so it's the one that actually renders); route through the
+     semantic accent-tint tokens (byte-identical fallback under frost) so the HUD glow
+     effects correctly go monochrome/honey under Black/Honeycomb instead of staying sky. */
+  --operator-cyan: var(--accent-strong-rgb, 125, 211, 252);
+  --operator-arc: var(--accent-soft-rgb, 186, 230, 253);
   --operator-gold: 245, 181, 63;
   --operator-armor: 248, 113, 113;
   --operator-armor-dark: 12, 18, 31;

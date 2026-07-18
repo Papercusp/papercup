@@ -9,9 +9,9 @@
  * avistorewolf.com" for DAYS, 2026-07-07 owner report). findAccountRow resolves the account across
  * every registry workspace (own first), with a learned accountId→workspace cache.
  */
-import { test } from 'vitest';
+import { afterEach, test } from 'vitest';
 import assert from 'node:assert/strict';
-import { findAccountRow } from './stall-waker-loop';
+import { findAccountRow, ensureStallWakerLoop, stopStallWakerLoop, getStallWakerStatus } from './stall-waker-loop';
 import type { AccountStatusRow } from '../deployment/account-pool-store';
 
 const row = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatusRow => ({
@@ -101,4 +101,49 @@ test('an erroring workspace pool is skipped, not fatal', async () => {
   };
   const a = await findAccountRow('broken', 'acct', withBroken);
   assert.ok(a, 'resolution survives a broken workspace pool');
+});
+
+// EI-2432: runtime observability for the loop itself — running?, since when, poll cadence,
+// last-tick health, live counters — without grepping operator stdout.
+afterEach(() => {
+  stopStallWakerLoop(); // never leak a live timer/singleton across test files
+});
+
+test('getStallWakerStatus reports not-running with null/zeroed fields before the loop ever starts', () => {
+  stopStallWakerLoop(); // ensure a clean slate regardless of test order
+  const s = getStallWakerStatus();
+  assert.equal(s.running, false);
+  assert.equal(s.workspaceId, null);
+  assert.equal(s.startedAt, null);
+  assert.equal(s.lastTickAt, null);
+  assert.equal(s.tickCount, 0);
+  assert.equal(s.pendingCount, 0);
+  assert.equal(s.breadcrumbCount, 0);
+  assert.equal(s.wokenTotal, 0);
+  assert.equal(s.pollMs > 0, true, 'pollMs is always a positive cadence, even when not running');
+});
+
+test('ensureStallWakerLoop flips running:true + records startedAt/workspaceId; stopStallWakerLoop reverts it', () => {
+  const before = Date.now();
+  ensureStallWakerLoop('a-test-workspace');
+  const s = getStallWakerStatus();
+  assert.equal(s.running, true);
+  assert.equal(s.workspaceId, 'a-test-workspace');
+  assert.ok(s.startedAt !== null && s.startedAt >= before, 'startedAt is stamped at start time');
+  assert.equal(s.tickCount, 0, 'no tick has fired yet — managedSetInterval only fires after pollMs elapses');
+
+  stopStallWakerLoop();
+  const s2 = getStallWakerStatus();
+  assert.equal(s2.running, false);
+  assert.equal(s2.workspaceId, null);
+  assert.equal(s2.startedAt, null);
+});
+
+test('ensureStallWakerLoop is idempotent — a second call while running does not reset startedAt', () => {
+  ensureStallWakerLoop('ws-1');
+  const first = getStallWakerStatus().startedAt;
+  ensureStallWakerLoop('ws-2'); // no-op per the existing `if (timer) return;` guard
+  const second = getStallWakerStatus();
+  assert.equal(second.startedAt, first, 'the running loop is untouched by a second ensure call');
+  assert.equal(second.workspaceId, 'ws-1', 'still bound to the FIRST workspace, not silently re-bound');
 });
