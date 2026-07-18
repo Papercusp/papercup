@@ -52,6 +52,7 @@ import {
   dropReplicationLiveness,
   setDhtUniverseAssertion,
   setReplicationRepairHandler,
+  type ReplicationStallEpisode,
 } from './replication-liveness';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
@@ -1736,20 +1737,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     });
   }
-  setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
-    if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
-    const attempts = repairAttempts.get(episode.logKeyHex) ?? 0;
+  /**
+   * WI-5340: the shared "enqueue a session-repair attempt for this log" path —
+   * extracted from the replication-liveness episode handler so
+   * `checkRepairConfirmation` (a SECOND caller, driven by the post-repair
+   * confirmation window rather than a fresh liveness episode) shares the
+   * exact same cap/exhaustion/chronic-zombie ladder instead of duplicating it.
+   */
+  function enqueueRepairAttempt(logKeyHex: string, kind: string): void {
+    const attempts = repairAttempts.get(logKeyHex) ?? 0;
     if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) {
       // Session-level re-attach is exhausted for this log and it has STILL
       // re-stalled (the gate-run-050615 shape: swarm re-pairs repeatedly,
       // content replication never re-attaches — a per-log Corestore session
       // swap alone didn't fix it).
       escalateToForcedRejoin(
-        episode.logKeyHex,
-        episode.kind,
-        `${peerLabel(episode.logKeyHex)} repair budget exhausted ` +
+        logKeyHex,
+        kind,
+        `${peerLabel(logKeyHex)} repair budget exhausted ` +
           `(${REPAIR_MAX_ATTEMPTS_PER_LOG}/${REPAIR_MAX_ATTEMPTS_PER_LOG}) and re-stalled ` +
-          `(${episode.kind}) — forcing topic rejoin`,
+          `(${kind}) — forcing topic rejoin`,
       );
       return;
     }
@@ -1774,7 +1781,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         let alreadyChronic = false;
         try {
           const m = await import('./replication-stall-ei');
-          alreadyChronic = await m.hasOpenReplicationStallEi(episode);
+          alreadyChronic = await m.hasOpenReplicationStallEi({
+            harnessSlug: opts.harnessSlug,
+            logKeyHex,
+            kind: kind as ReplicationStallEpisode['kind'],
+          });
         } catch {
           /* best-effort — falls back to the ordinary per-process ladder */
         }
@@ -1782,19 +1793,69 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // The local budget is moot for a proven-chronic zombie — mark it
         // exhausted too so a same-process re-stall after this also escalates
         // immediately instead of waiting through another 3-attempt cycle.
-        repairAttempts.set(episode.logKeyHex, REPAIR_MAX_ATTEMPTS_PER_LOG);
+        repairAttempts.set(logKeyHex, REPAIR_MAX_ATTEMPTS_PER_LOG);
         escalateToForcedRejoin(
-          episode.logKeyHex,
-          episode.kind,
-          `${peerLabel(episode.logKeyHex)} chronic zombie (${episode.kind}): a durable EI for ` +
+          logKeyHex,
+          kind,
+          `${peerLabel(logKeyHex)} chronic zombie (${kind}): a durable EI for ` +
             `this exact log is already open from a PRIOR process instance — restart-cadence ` +
             `disruption would otherwise amnesty the session-repair budget every restart ` +
             `(WI-5332) — forcing topic rejoin without re-running it`,
         );
       })();
     }
-    repairAttempts.set(episode.logKeyHex, attempts + 1);
-    if (!repairQueue.includes(episode.logKeyHex)) repairQueue.push(episode.logKeyHex);
+    repairEpisodeKind.set(logKeyHex, kind);
+    repairAttempts.set(logKeyHex, attempts + 1);
+    if (!repairQueue.includes(logKeyHex)) repairQueue.push(logKeyHex);
+  }
+
+  /**
+   * WI-5340: judge a completed repair once its confirmation window elapses.
+   * Called from mergeOnePass's per-log sample (the SAME data
+   * `sampleReplicationLiveness` already reads) — never on its own timer, so
+   * it can only ever run at most once per merge pass per log, and only while
+   * a confirmation is outstanding (the common case is a no-op Map lookup).
+   *
+   * Genuine recovery (ingest resumed OR caught up) clears the confirmation
+   * and does nothing further — replication-liveness.ts's own recovery branch
+   * independently clears ITS latch off the same sample, so the two are
+   * consistent without coordinating directly. A log with zero live peers is
+   * left to the `no_replicator` axis (a level below a session re-attach —
+   * WI-752/WI-1534's swarm self-heal loop, not this ladder) rather than
+   * judged here. Otherwise: the repair did NOT work — synthesize the next
+   * attempt via `enqueueRepairAttempt` directly, which is precisely the call
+   * replication-liveness.ts's edge-latch cannot make again on its own while
+   * still alarmed.
+   */
+  function checkRepairConfirmation(
+    logKeyHex: string,
+    mergedPosition: number,
+    knownLength: number,
+    peersCount: number | undefined,
+  ): void {
+    const confirmation = repairConfirmations.get(logKeyHex);
+    if (!confirmation) return;
+    if (Date.now() - confirmation.appliedAtMs < REPLICATION_STALL_GRACE_MS) return;
+    repairConfirmations.delete(logKeyHex); // one judgment per applied repair
+    const advanced = mergedPosition > confirmation.baselinePosition;
+    const caughtUp = knownLength <= mergedPosition;
+    if (advanced || caughtUp) return; // genuine recovery — nothing to do
+    if ((peersCount ?? 0) <= 0) return; // no_replicator's axis, not this ladder
+    recordBootEvent(
+      opts.workspaceId,
+      opts.harnessSlug,
+      'replication_repair_confirmation_failed',
+      `${peerLabel(logKeyHex)} (${confirmation.kind}): repair applied ` +
+        `${Math.round((Date.now() - confirmation.appliedAtMs) / 1000)}s ago but mergedPosition ` +
+        `is still ${mergedPosition} (was ${confirmation.baselinePosition}) with a live replicator ` +
+        `peer — ineffective repair, synthesizing the next attempt directly (WI-5340)`,
+    );
+    enqueueRepairAttempt(logKeyHex, confirmation.kind);
+  }
+
+  setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
+    if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
+    enqueueRepairAttempt(episode.logKeyHex, episode.kind);
   });
 
   /** Re-attach queued zombie logs. MUST run under the merge gate (mergeOnePass). */
@@ -1814,6 +1875,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
         const fresh = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
         admitted.set(keyHex, fresh);
+        // WI-5340: stamp a post-repair confirmation baseline — judged by
+        // `checkRepairConfirmation` once REPLICATION_STALL_GRACE_MS has
+        // elapsed (mergeOnePass's per-log sample). Overwrites any PRIOR
+        // outstanding confirmation for this log (this repair supersedes it).
+        repairConfirmations.set(keyHex, {
+          appliedAtMs: Date.now(),
+          baselinePosition: mergeCursor.positions.get(keyHex) ?? 0,
+          kind: repairEpisodeKind.get(keyHex) ?? 'frozen',
+        });
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,

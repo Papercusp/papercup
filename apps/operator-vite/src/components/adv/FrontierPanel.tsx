@@ -249,14 +249,21 @@ export function FrontierPanel({
             </tbody>
           </table>
           {snap && snap.unmatchedGovernor.length > 0 ? (
-            <p className="pc-frontier__unmatched">
-              Governor rows matching no lane:{" "}
-              {snap.unmatchedGovernor
-                .map(
-                  (g) =>
-                    `${g.loopId} (${money(g.budgetUsd)} budget, ${money(g.spentUsd)} spent)`,
-                )
+            <p
+              className="pc-frontier__unmatched"
+              title={snap.unmatchedGovernor
+                .map((g) => `${g.loopId} (${money(g.budgetUsd)} budget, ${money(g.spentUsd)} spent)`)
                 .join(" · ")}
+            >
+              {snap.unmatchedGovernor.length} governor row
+              {snap.unmatchedGovernor.length === 1 ? "" : "s"} matching no lane:{" "}
+              {snap.unmatchedGovernor
+                .slice(0, 3)
+                .map((g) => g.loopId)
+                .join(" · ")}
+              {snap.unmatchedGovernor.length > 3
+                ? ` · +${snap.unmatchedGovernor.length - 3} more (hover for all)`
+                : ""}
             </p>
           ) : null}
         </div>

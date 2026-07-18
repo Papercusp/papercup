@@ -368,6 +368,7 @@ export default function LearningTab() {
                     value={candidate.id}
                     className={`pc-learning__view-tab${semantic ? ` has-${semantic}` : ""}`}
                     aria-label={candidate.label}
+                    title={candidate.label}
                     aria-describedby={
                       status
                         ? `learning-view-status-${candidate.id}`

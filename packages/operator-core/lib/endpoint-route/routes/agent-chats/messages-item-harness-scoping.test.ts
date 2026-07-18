@@ -23,6 +23,7 @@ const {
   computeCupWakeDossierMock,
   getWorkItemCheckpointMock,
   loadHarnessRegistryMock,
+  readFeatureLockStateMock,
 } = vi.hoisted(() => ({
   projectDirForSlugMock: vi.fn(),
   assembleRolePromptMock: vi.fn(),
@@ -31,6 +32,7 @@ const {
   computeCupWakeDossierMock: vi.fn(),
   getWorkItemCheckpointMock: vi.fn(),
   loadHarnessRegistryMock: vi.fn(),
+  readFeatureLockStateMock: vi.fn(),
 }));
 
 vi.mock('../../../agent-tools/index', () => ({}));
@@ -86,7 +88,7 @@ vi.mock('../../../operator-notes', () => ({ projectDirForSlug: projectDirForSlug
 vi.mock('@papercusp/orchestrator/role-prompt', () => ({ assembleRolePrompt: assembleRolePromptMock }));
 vi.mock('../../../agent-chats-data', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../agent-chats-data')>();
-  return { ...orig, readFeatureLockState: async () => null };
+  return { ...orig, readFeatureLockState: readFeatureLockStateMock };
 });
 vi.mock('../../../work-items', () => ({ getWorkItem: getWorkItemMock }));
 vi.mock('../../../pot/cup-wake-dossier', () => ({ computeCupWakeDossier: computeCupWakeDossierMock }));
@@ -122,6 +124,8 @@ beforeEach(() => {
   getWorkItemCheckpointMock.mockReset();
   loadHarnessRegistryMock.mockReset();
   loadHarnessRegistryMock.mockResolvedValue({ projects: [] });
+  readFeatureLockStateMock.mockReset();
+  readFeatureLockStateMock.mockResolvedValue(null);
 });
 
 async function drainToClose(body: ReadableStream<Uint8Array> | null, maxMs = 5_000): Promise<void> {
@@ -208,5 +212,43 @@ describe('agent-chats messagesRoute — item-own-harness scoping (P-003)', () =>
 
     expect(streamOpts.promptText).not.toContain('No dossier available');
     expect(streamOpts.promptText).toContain('all good here');
+  });
+});
+
+describe('agent-chats messagesRoute — blueprint-aware lock notice (P-003)', () => {
+  it('a LEGACY (non-hive) item harness keeps the .papercusp/notes guidance', async () => {
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    computeCupWakeDossierMock.mockResolvedValue(null);
+    getWorkItemCheckpointMock.mockResolvedValue(null);
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{ slug: 'item-owning-harness', harness_kind: undefined }],
+    });
+    readFeatureLockStateMock.mockResolvedValue({
+      taken_by: 'orchestrator-1', taken_at: '2026-07-18T00:00:00Z', expires_at: null, active: true,
+    });
+
+    const streamOpts = await runAndCapture();
+
+    expect(streamOpts.promptText).toContain('.papercusp/notes/WI-CROSS-1.md');
+    expect(streamOpts.promptText).not.toContain('work_items:comment');
+  });
+
+  it('a NON-legacy (hive) item harness drops .papercusp/notes for work_items:comment guidance', async () => {
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    computeCupWakeDossierMock.mockResolvedValue(null);
+    getWorkItemCheckpointMock.mockResolvedValue(null);
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{ slug: 'item-owning-harness', harness_kind: 'hive' }],
+    });
+    readFeatureLockStateMock.mockResolvedValue({
+      taken_by: 'orchestrator-1', taken_at: '2026-07-18T00:00:00Z', expires_at: null, active: true,
+    });
+
+    const streamOpts = await runAndCapture();
+
+    expect(streamOpts.promptText).toContain('work_items:comment');
+    expect(streamOpts.promptText).not.toContain('.papercusp/notes');
+    // The lock lookup itself is keyed to the item's own harness, not the chat's.
+    expect(readFeatureLockStateMock).toHaveBeenCalledWith('item-owning-harness', 'WI-CROSS-1');
   });
 });
