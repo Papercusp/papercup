@@ -238,7 +238,7 @@ export function SignalsPanel({
       }
       .pc-signals__sectionhead h3 {
         margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase;
-        letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4);
+        color: var(--fg-mute, #7f9bb4);
       }
       .pc-signals__sectionhead > span { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
       .pc-signals__lanes, .pc-signals__taxonomy, .pc-signals__fed {

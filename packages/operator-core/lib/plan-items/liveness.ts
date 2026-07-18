@@ -252,7 +252,11 @@ function disposition(assignment: PlanItemAssignment | null, liveClaim: PlanItemC
   const assignee = assignment?.assigneeName ?? null;
   if (liveClaim) {
     if (!assignee) return 'claimed-pooled';
-    return liveClaim.ownerName === assignee ? 'active' : 'claimed-mismatch';
+    // EI-2299: mirror claimPlanItem's identity match — the claimant matches the
+    // assignment via EITHER their adopted name (ownerName) OR their raw ownerId
+    // (owner), since an assignment's `assigneeName` may itself be a raw ownerId.
+    const isAssignee = liveClaim.ownerName === assignee || liveClaim.owner === assignee;
+    return isAssignee ? 'active' : 'claimed-mismatch';
   }
   return assignee ? 'assigned-idle' : 'pooled';
 }

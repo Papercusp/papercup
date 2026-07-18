@@ -2625,6 +2625,20 @@ export function alreadyTerminallyCompletedExclusionSql(sql: OrgSql) {
  * normal — visible, commentable, and claimable directly BY ID. With `opts.by`, the hold is a
  * named HOLD-OPEN: `held_open_by`/`held_open_reason` are stamped so `setWorkItemState`'s
  * held-open guard can refuse a terminal transition by anyone else (EI-8993).
+ *
+ * TWO provenance modes — the lease/park split (WI-321 boomerang fix):
+ *   - `opts.by` → a LEASE (`held_open_*`): gates non-holder terminal transitions and is
+ *     liveness-bound — the WI-4531 reaper lifts it (hold + `_claimHold`) once the holder is
+ *     dead past grace. Right for hold_open and the blocked-issue auto-hold, where a lapsed
+ *     gate self-heals by letting the pool retry.
+ *   - `opts.parkedBy` → a DURABLE PARK (`claim_hold_*`): records who parked it and why but
+ *     is NOT a lease — no reaper touches it and it never gates a terminal transition, so it
+ *     survives its parker's session ending. Right for `release {claimHold:true}` ("do not
+ *     self-select this again"), whose whole point outlives the ephemeral agent that judged
+ *     it: before this split, eight agents in 27h re-claimed the SAME parked umbrella item
+ *     (WI-321) because each park lapsed ~2h after its parker's session died. Cleared only
+ *     deliberately (`claimHold:false` / hold-clear) — visible for triage via the
+ *     burn_down 'claim-hold' bucket, never starved invisibly.
  */
 export async function setWorkItemClaimHold(
   id: string,
@@ -2638,6 +2652,11 @@ export async function setWorkItemClaimHold(
      *  anonymous hold (tag only). */
     by?: string;
     reason?: string;
+    /** Durable-park provenance (`claim_hold_by`/`claim_hold_at`) — who parked the item out
+     *  of self-select, WITHOUT lease semantics: not reaped on parker death, never gates a
+     *  terminal transition. */
+    parkedBy?: string;
+    parkedReason?: string;
   } = {},
 ): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
   const wi = await getWorkItem(id, opts.harness);
@@ -2654,12 +2673,15 @@ export async function setWorkItemClaimHold(
     _claimHold: true,
     ...(opts.by ? { held_open_by: opts.by, held_open_at: new Date().toISOString() } : {}),
     ...(opts.reason ? { held_open_reason: opts.reason } : {}),
+    ...(opts.parkedBy ? { claim_hold_by: opts.parkedBy, claim_hold_at: new Date().toISOString() } : {}),
+    ...(opts.parkedReason ? { claim_hold_reason: opts.parkedReason } : {}),
   });
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
        SET payload = CASE
              WHEN ${hold} THEN COALESCE(payload, '{}'::jsonb) || ${holdPatch}::text::jsonb
              ELSE COALESCE(payload, '{}'::jsonb) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+                    - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
            END,
            updated_ts = ${Date.now()}
      WHERE workspace_id IN (${issueWs}, ${ws}) AND feature_id = ${id}

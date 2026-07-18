@@ -53,6 +53,16 @@ export interface DispatchAssigned {
   error?: string;
 }
 
+/** EI-2292: an item the pre-assign guard excluded from this dispatch's lane —
+ *  either it is live-claimed by someone OTHER than the target (a re-dispatch
+ *  would collide with an in-flight peer instead of pooling), or it is flagged
+ *  needs-human/blocked (owner-gated — a dispatcher pushing it is exactly the
+ *  "wakes/spams multiple sessions on parked work" pattern this guards against). */
+export interface DispatchSkippedItem {
+  item: string;
+  reason: string;
+}
+
 export interface DispatchResult {
   ok: boolean;
   /** The RESOLVED target ownerId (coord:send resolves a short handle/prefix). */

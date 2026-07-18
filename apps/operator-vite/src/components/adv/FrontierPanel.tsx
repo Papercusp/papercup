@@ -277,7 +277,7 @@ export function FrontierPanel({
         color: var(--fg-dim, #b9d4e8);
       }
       .pc-frontier__grid thead th {
-        font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+        font-size: 10px; text-transform: uppercase;
         color: var(--fg-mute, #7f9bb4); font-weight: 700;
       }
       .pc-frontier__grid tbody th { font-weight: 650; }

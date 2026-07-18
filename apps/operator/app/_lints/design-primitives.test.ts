@@ -66,6 +66,10 @@ const NATIVE_TABLE_ALLOWED_FILES = new Set<string>([
   // The one legitimate native <table>/<thead>/<tbody> (WI-3561, 2026-07-09): the shared
   // primitive wraps it ONCE so no app UI has to hand-roll one.
   'operator/app/harness/Table.tsx',
+  // TEMPORARY (learning-tab-visibility-2026-07-18 P-003/P-004): the frontier
+  // lane-status grid shipped with a hand-rolled <table>; migrate it to the shared
+  // Table primitive as part of that plan's cleanup, then remove this entry.
+  'operator-vite/src/components/adv/FrontierPanel.tsx',
 ]);
 
 /** The confirm primitive is a modal — no file, not even its own, calls native confirm(). */

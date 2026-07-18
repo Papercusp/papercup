@@ -176,7 +176,16 @@ export default defineTool({
         }
         const claimHold = it.claimHold ?? args.claimHold;
         if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced };
-        const held = await setWorkItemClaimHold(it.id, claimHold, { harness, by: ident.ownerId });
+        // WI-321 boomerang fix: a release-park is a DURABLE park (claim_hold_* provenance),
+        // NOT a held_open_* lease — a lease dies ~2h after the parker's session ends
+        // (WI-4531 reaper), so every park placed by an ephemeral agent boomeranged back
+        // into scheduler:get_next. Parks never gate terminal transitions, so durability
+        // costs nothing WI-4531 was defending against.
+        const held = await setWorkItemClaimHold(it.id, claimHold, {
+          harness,
+          parkedBy: ident.ownerId,
+          parkedReason: it.reason ?? args.reason,
+        });
         return {
           ok: true as const,
           id: it.id,
