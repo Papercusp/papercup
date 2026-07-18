@@ -202,4 +202,62 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
     // Seen (fallback read) and queued as below-steer — not invisible.
     expect(out.gated).toEqual({ integrated: 0, queued: 1, errors: 0 });
   });
+
+  describe('integrator-is-the-author (lastAnnouncedStagingSha watermark)', () => {
+    // Regression (hello-world-3-pot canary, 2026-07-18): when the integrator
+    // machine's checked-out branch IS `staging`, own-head-publish (G-2a)
+    // pre-advances ns/<integrator>/refs/heads/staging — the very ref
+    // integrateMemberHeads uses as base+output — so `advanced` never trips and
+    // NO announcement fires, even with the member head 8 commits past the last
+    // announced canonical. The watermark input is what makes this case announce.
+    const solo = makeDevice();
+
+    it('advanced:false but behind the announced watermark → still announces', async () => {
+      const repo2 = await ensurePotGitRepo('hive-i', 'repo-2');
+      const head = await commit(repo2, { 's.txt': 'v1' });
+      // Simulate own-head-publish: BOTH the work alias and the integrator's
+      // own staging ref already sit at the new head before the tick runs.
+      await writeNamespaceRef(repo2, solo.pubBase64, WORK_REF, head);
+      await writeNamespaceRef(repo2, solo.pubBase64, 'refs/heads/staging', head);
+
+      const out = await runIntegratorTick({
+        potHomeSlug: 'hive-i',
+        workspaceId: 'ws-1',
+        repoKey: 'repo-2',
+        memberDevicePubkeysBase64: [solo.pubBase64],
+        integratorDevicePubkeyBase64: solo.pubBase64,
+        epoch: 1,
+        priorSeq: 0,
+        lastAnnouncedStagingSha: null, // never announced anything
+        sign: solo.sign,
+        resolveTier: () => 'steer',
+        deps: { isIntegrator: async () => true, sql: fakeSql() },
+      });
+      expect(out.integration?.advanced).toBe(false); // the ref did not move this pass
+      expect(out.integration?.staging).toBe(head);
+      expect(out.announcement).not.toBeNull(); // …but the advance was never announced
+      expect(out.announcement!.staging_sha).toBe(head);
+      expect(verifyStagingAdvance(out.announcement!)).toBe(true);
+    });
+
+    it('watermark caught up → no announcement (no per-tick re-announce loop)', async () => {
+      const repo2 = await ensurePotGitRepo('hive-i', 'repo-2');
+      const head = await readStaging(repo2, solo.pubBase64);
+      const out = await runIntegratorTick({
+        potHomeSlug: 'hive-i',
+        workspaceId: 'ws-1',
+        repoKey: 'repo-2',
+        memberDevicePubkeysBase64: [solo.pubBase64],
+        integratorDevicePubkeyBase64: solo.pubBase64,
+        epoch: 1,
+        priorSeq: 1,
+        lastAnnouncedStagingSha: head, // acceptance already recorded this staging
+        sign: solo.sign,
+        resolveTier: () => 'steer',
+        deps: { isIntegrator: async () => true, sql: fakeSql() },
+      });
+      expect(out.integration?.advanced).toBe(false);
+      expect(out.announcement).toBeNull();
+    });
+  });
 });

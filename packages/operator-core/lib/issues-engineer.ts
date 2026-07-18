@@ -634,16 +634,13 @@ function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
 
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
-  // Topic filter resolves through the tag edges (coord_links) first.
-  let idsFromTopic: string[] | null = null;
-  if (filter.topic) {
-    const tagged = await tags.listTagged(filter.topic);
-    idsFromTopic = tagged.filter((o) => o.kind === ISSUE_KIND).map((o) => o.ref);
-    if (idsFromTopic.length === 0) return [];
-  }
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
+  // Topic filter is an EXISTS over the tag edges — the same indexed coord_links
+  // predicate countIssues uses. (Materializing every tagged ref into a JS array
+  // and passing it back via ANY() shipped ~7K ids out of PG and back on every
+  // learning.improvements read — WI-5412.)
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)}
       FROM harness_shared.engineer_issues
@@ -655,7 +652,19 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
-       AND ${idsFromTopic ? sql`issue_id = ANY(${idsFromTopic})` : sql`TRUE`}
+       AND ${
+         filter.topic
+           ? sql`EXISTS (
+               SELECT 1 FROM harness_shared.coord_links cl
+                WHERE cl.workspace_id = ${coordScopeWorkspace()}
+                  AND cl.rel = 'tagged'
+                  AND cl.src_kind = ${ISSUE_KIND}
+                  AND cl.src_ref = engineer_issues.issue_id
+                  AND cl.dst_kind = 'topic'
+                  AND cl.dst_ref = ${filter.topic}
+             )`
+           : sql`TRUE`
+       }
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit
