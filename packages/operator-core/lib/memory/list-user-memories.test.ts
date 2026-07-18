@@ -115,3 +115,54 @@ describe('listUserMemories — scope isolation (no cross-tenant bleed)', () => {
     expect(rows).toHaveLength(1);
   });
 });
+
+describe('listUserMemories — opts.limit (EI-12937: bounded window instead of the whole corpus)', () => {
+  const mkEntries = (n: number): Row[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `id-${i}`,
+      text: `fact ${i}`,
+      scope: USER,
+      // Distinct turn_at epochs (the metadata fallback sortKey reads when there's no
+      // canonical created_at/updated_at) so "most recent first" is unambiguous —
+      // higher i = more recent.
+      metadata: { turn_at: i },
+    }));
+
+  it('no limit (omitted) ⇒ today\'s exact unbounded behavior, unchanged', async () => {
+    h.entries = mkEntries(5);
+    const rows = await listUserMemories(USER);
+    expect(rows).toHaveLength(5);
+  });
+
+  it('limit smaller than the corpus ⇒ returns exactly `limit` rows, the MOST RECENT ones', async () => {
+    h.entries = mkEntries(10);
+    const rows = await listUserMemories(USER, { limit: 3 });
+    expect(rows).toHaveLength(3);
+    // Newest-first: ids 9, 8, 7 (the highest turn_at epochs) are the 3 most recent.
+    expect(rows.map((r) => r.id)).toEqual(['id-9', 'id-8', 'id-7']);
+  });
+
+  it('limit larger than the corpus ⇒ returns the whole (unpadded) list, no error', async () => {
+    h.entries = mkEntries(3);
+    const rows = await listUserMemories(USER, { limit: 100 });
+    expect(rows).toHaveLength(3);
+  });
+
+  it('limit: 0 ⇒ an empty list (a legitimate edge, not a no-op unbounded fetch)', async () => {
+    h.entries = mkEntries(5);
+    const rows = await listUserMemories(USER, { limit: 0 });
+    expect(rows).toHaveLength(0);
+  });
+
+  it('the slice happens AFTER sorting, never before — never truncate-then-sort', async () => {
+    // Entries arrive out of order from the backend; limiting must still return the
+    // true most-recent 2, not just "the first 2 the backend happened to return".
+    h.entries = [
+      { id: 'old', text: 'old', scope: USER, metadata: { turn_at: 1 } },
+      { id: 'newest', text: 'newest', scope: USER, metadata: { turn_at: 100 } },
+      { id: 'mid', text: 'mid', scope: USER, metadata: { turn_at: 50 } },
+    ];
+    const rows = await listUserMemories(USER, { limit: 2 });
+    expect(rows.map((r) => r.id)).toEqual(['newest', 'mid']);
+  });
+});
