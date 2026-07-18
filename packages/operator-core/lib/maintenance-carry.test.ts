@@ -25,7 +25,7 @@ function brief(over: Partial<CarryBrief> = {}): CarryBrief {
   };
 }
 
-const NO_OWNER: CarryDocContinuation = { lastOwnerMessage: null, answered: true, deliberate: false };
+const NO_OWNER: CarryDocContinuation = { lastOwnerMessage: null, answered: true, deliberate: false, selfRequested: false };
 
 function doc(over: Partial<CarryDoc> = {}): CarryDoc {
   return {

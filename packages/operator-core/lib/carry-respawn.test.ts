@@ -59,10 +59,11 @@ const OPEN_DELIBERATE: CarryDocContinuation = {
   lastOwnerMessage: { text: 'ship the release when the gate is green', ts: '2026-07-14T20:00:00.000Z' },
   answered: false,
   deliberate: true,
+  selfRequested: true,
 };
 const OPEN_FORCED: CarryDocContinuation = { ...OPEN_DELIBERATE, deliberate: false };
 const ANSWERED: CarryDocContinuation = { ...OPEN_DELIBERATE, answered: true };
-const NO_OWNER: CarryDocContinuation = { lastOwnerMessage: null, answered: true, deliberate: true };
+const NO_OWNER: CarryDocContinuation = { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true };
 
 describe('buildRespawnLaunchSpec — assembly', () => {
   it('renders the carry doc to the budget-B addendum and derives the budget from the window', () => {
@@ -117,7 +118,7 @@ describe('buildRespawnLaunchSpec — first prompt (P-010)', () => {
     // marker beyond the preview cap must live ONLY in the first prompt, never
     // duplicated as quoted history in the addendum (P-010 "never quoted material").
     const longText = 'PLEASE ' + 'x'.repeat(300) + ' UNIQUE_TAIL_MARKER';
-    const cont: CarryDocContinuation = { lastOwnerMessage: { text: longText, ts: null }, answered: false, deliberate: true };
+    const cont: CarryDocContinuation = { lastOwnerMessage: { text: longText, ts: null }, answered: false, deliberate: true, selfRequested: true };
     const spec = buildRespawnLaunchSpec({ doc: doc(cont), effectiveWindowTokens: 400_000, now: NOW });
     expect(spec.firstPrompt).toContain('UNIQUE_TAIL_MARKER');
     expect(spec.systemPromptAddendum).not.toContain('UNIQUE_TAIL_MARKER');
@@ -172,7 +173,7 @@ describe('deriveRespawnFirstPrompt (pure branch)', () => {
   });
 
   it('guards a blank owner message from falling through to the empty-note kickoff', () => {
-    const blank: CarryDocContinuation = { lastOwnerMessage: { text: '   \n  ', ts: null }, answered: false, deliberate: true };
+    const blank: CarryDocContinuation = { lastOwnerMessage: { text: '   \n  ', ts: null }, answered: false, deliberate: true, selfRequested: true };
     expect(deriveRespawnFirstPrompt(doc(blank))).toBeNull();
   });
 

@@ -425,7 +425,12 @@ async function maybeCarryRespawn(
         ownerLabel,
         transcriptPath,
         transcriptSourceKind: 'claude',
+        // Clean/idle-gated (deliberate ⇒ the P-010 refuse-once gate applies) but
+        // NOT self-requested: the session never ran its flush discipline, and the
+        // rendered continuation must not claim "state was flushed" (the
+        // 2026-07-18 provenance mislabel).
         boundaryDeliberate: true,
+        boundarySelfRequested: false,
       },
     });
     if (!spec) return false;

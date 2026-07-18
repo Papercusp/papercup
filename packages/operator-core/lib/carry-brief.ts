@@ -124,6 +124,12 @@ export const CARRY_BRIEF_FOCUS_MAX = 600;
 const COLD_CHECKPOINT_CAP = 500;
 const COLD_FACT_BODY_CAP = 240;
 const COLD_TITLE_CAP = 120;
+/** An INACTIVE loop's carry-note older than this renders as a labeled STALE
+ *  pointer instead of verbatim — a dead lane's "Next action" is history, not the
+ *  successor's agenda (2026-07-18: a 3-day-old drill note rode a carry doc as if
+ *  current). An ACTIVE loop's note is always rendered in full (it is the
+ *  workhorse), as is a recently-ended loop's (still-warm context). */
+const INACTIVE_LOOP_NOTE_STALE_MS = 24 * 60 * 60_000;
 
 // ── Held-items read (shared with the orient recovery fold) ────────────────────
 
@@ -633,11 +639,25 @@ export function renderCarryBriefText(brief: CarryBrief, now: number = Date.now()
     const iv = brief.loop.intervalSec != null ? `, every ${brief.loop.intervalSec}s` : '';
     const head = `Armed loop @${brief.loop.harness} (${brief.loop.active ? 'active' : 'inactive'}${iv}).`;
     if (brief.loop.carryNote) {
-      const age =
+      const ageMs =
         brief.loop.carryNoteUpdatedAtMs != null
-          ? ` (written ${humanAge(Math.max(0, now - brief.loop.carryNoteUpdatedAtMs))} ago)`
-          : '';
-      sections.push(`${head} Its carry-note${age}:\n${brief.loop.carryNote}`);
+          ? Math.max(0, now - brief.loop.carryNoteUpdatedAtMs)
+          : null;
+      if (!brief.loop.active && ageMs != null && ageMs > INACTIVE_LOOP_NOTE_STALE_MS) {
+        // A dead lane's old note is HISTORY, not agenda — reproducing its
+        // imperative "Next action" verbatim reads as current marching orders to
+        // a cold successor (the 2026-07-18 carry doc carried a 3-day-stale drill
+        // note this way). Collapse to a labeled pointer; the note itself stays
+        // recoverable via loop:status / the loop's checkpoint history.
+        sections.push(
+          `${head} Its last carry-note is ${humanAge(ageMs)} old — STALE (the loop is not armed; ` +
+            `the note's imperatives are historical, NOT your current agenda). Recover it via ` +
+            `loop:status if genuinely needed.`,
+        );
+      } else {
+        const age = ageMs != null ? ` (written ${humanAge(ageMs)} ago)` : '';
+        sections.push(`${head} Its carry-note${age}:\n${brief.loop.carryNote}`);
+      }
     } else {
       sections.push(`${head} No carry-note written.`);
     }

@@ -360,6 +360,58 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
     );
     expect(out).toContain('No carry-note written.');
   });
+
+  it("an INACTIVE loop's day-old note collapses to a STALE pointer — never verbatim marching orders", async () => {
+    const now = Date.now();
+    const out = renderCarryBriefText(
+      await buildCarryBrief(
+        'su-abc',
+        fullOpts({
+          getLoopStatusFn: async () => ({ harnessSlug: 'papercusp', active: false, intervalSec: 900 }),
+          getLoopCarryNoteWithMetaFn: async () => ({
+            note: '## Next action\nOn wake: tail the drill ledger and nudge the leader',
+            updatedAtMs: now - 3 * 24 * 60 * 60_000,
+          }),
+        }),
+      ),
+      now,
+    );
+    expect(out).toContain('STALE');
+    expect(out).toContain('historical, NOT your current agenda');
+    // The stale imperatives themselves must NOT ride the brief verbatim.
+    expect(out).not.toContain('nudge the leader');
+  });
+
+  it("an ACTIVE loop's note renders in full regardless of age; a recently-ended loop's note also survives", async () => {
+    const now = Date.now();
+    const activeOld = renderCarryBriefText(
+      await buildCarryBrief(
+        'su-abc',
+        fullOpts({
+          getLoopCarryNoteWithMetaFn: async () => ({
+            note: '## Next action\nkeep shipping',
+            updatedAtMs: now - 3 * 24 * 60 * 60_000,
+          }),
+        }),
+      ),
+      now,
+    );
+    expect(activeOld).toContain('keep shipping');
+    const inactiveFresh = renderCarryBriefText(
+      await buildCarryBrief(
+        'su-abc',
+        fullOpts({
+          getLoopStatusFn: async () => ({ harnessSlug: 'papercusp', active: false, intervalSec: 900 }),
+          getLoopCarryNoteWithMetaFn: async () => ({
+            note: '## Next action\nfinish the drill',
+            updatedAtMs: now - 60 * 60_000,
+          }),
+        }),
+      ),
+      now,
+    );
+    expect(inactiveFresh).toContain('finish the drill');
+  });
 });
 
 describe('owner directives in the brief (EI-11484)', () => {

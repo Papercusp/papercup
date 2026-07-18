@@ -116,15 +116,23 @@ export interface CarryDocTailTurn {
  *   - `answered` — did a model turn follow it? false = the owner's message is
  *     still OPEN; a deliberate compaction across it is refused
  *     ({@link gateOpenOwnerQuestion});
- *   - `deliberate` — was this boundary self-requested at a clean point
- *     (session:request-compaction) or FORCED (native auto-compact / window-guard
- *     mid-turn)? A forced boundary may have truncated an in-flight reply, so the
- *     successor trusts the tail less.
+ *   - `deliberate` — did this boundary land at a CLEAN point (a settled turn) vs
+ *     FORCED mid-turn? A forced boundary may have truncated an in-flight reply,
+ *     so the successor trusts the tail less. Also the refuse-once gate key
+ *     ({@link gateOpenOwnerQuestion}).
+ *   - `selfRequested` — did the SESSION ITSELF ask for this cut
+ *     (session:request-compaction, after running its flush discipline)? A
+ *     watchdog-initiated cut can be clean (`deliberate: true`) yet NOT
+ *     self-requested — the session never flushed, so the successor must verify
+ *     checkpoint freshness instead of trusting a "state was flushed" claim
+ *     (the 2026-07-18 mislabel: a watchdog force-cut rendered as "self-requested
+ *     at a clean point — state was flushed").
  */
 export interface CarryDocContinuation {
   lastOwnerMessage: { text: string; ts: string | null } | null;
   answered: boolean;
   deliberate: boolean;
+  selfRequested: boolean;
 }
 
 export interface CarryDoc {
@@ -178,14 +186,21 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   transcriptPath?: string | null;
   /** Which client wrote the transcript (default 'claude'). */
   transcriptSourceKind?: 'claude' | 'omp' | 'codex';
-  /** Was this boundary reached DELIBERATELY (self-requested at a clean point via
-   *  session:request-compaction / the psu threshold-end) vs FORCED (native
-   *  auto-compact or the gateway window-guard firing mid-turn)? Feeds the P-010
-   *  continuation flags. Defaults to `false` (treat as forced/unknown) — the safe
-   *  under-promise: a successor trusts a "forced" tail less, and the deliberate
-   *  psu path asserts `true` explicitly. Only a deliberate boundary can be
-   *  REFUSED across an open owner question ({@link gateOpenOwnerQuestion}). */
+  /** Was this boundary reached at a CLEAN point (a settled turn) vs FORCED
+   *  mid-turn? Feeds the P-010 continuation flags. Defaults to `false` (treat as
+   *  forced/unknown) — the safe under-promise: a successor trusts a "forced"
+   *  tail less, and the clean-boundary paths assert `true` explicitly. Only a
+   *  deliberate boundary can be REFUSED across an open owner question
+   *  ({@link gateOpenOwnerQuestion}). */
   boundaryDeliberate?: boolean;
+  /** Did the SESSION ITSELF request this cut (session:request-compaction — i.e.
+   *  its flush discipline presumably ran) vs an EXTERNAL initiator (the
+   *  compaction watchdog) cutting a session that never asked? Defaults to
+   *  `boundaryDeliberate` (the historical meaning of "deliberate" WAS
+   *  self-requested, so existing callers keep their semantics); the watchdog's
+   *  clean soft rung passes `false` explicitly so the rendered continuation
+   *  never claims a flush that did not happen. */
+  boundarySelfRequested?: boolean;
   // Test seams — each defaults to the real reader (or a best-effort empty leg).
   buildCarryBriefFn?: (ownerId: string, opts: BuildCarryBriefOpts) => Promise<CarryBrief>;
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
@@ -344,7 +359,11 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     planItems: planItems.slice(0, CARRY_DOC_MAX_PLAN_ITEMS),
     asks: asks.slice(0, CARRY_DOC_MAX_ASKS),
     tail,
-    continuation: deriveContinuation(tail, opts.boundaryDeliberate ?? false),
+    continuation: deriveContinuation(
+      tail,
+      opts.boundaryDeliberate ?? false,
+      opts.boundarySelfRequested,
+    ),
   };
 }
 
@@ -362,7 +381,10 @@ const CONT_PREVIEW_CAP = 240;
 export function deriveContinuation(
   tail: ReadonlyArray<CarryDocTailTurn>,
   boundaryDeliberate: boolean,
+  boundarySelfRequested: boolean = boundaryDeliberate,
 ): CarryDocContinuation {
+  // A cut can only have been self-requested if it was also clean/deliberate.
+  const selfRequested = boundaryDeliberate && boundarySelfRequested;
   let idx = -1;
   for (let i = tail.length - 1; i >= 0; i -= 1) {
     if (tail[i].provenance?.verdict === 'owner-typed') {
@@ -373,7 +395,7 @@ export function deriveContinuation(
   if (idx < 0) {
     // No owner turn in the recent tail ⇒ nothing owner-shaped is open. `answered`
     // is vacuously true (there is no open owner question to cross).
-    return { lastOwnerMessage: null, answered: true, deliberate: boundaryDeliberate };
+    return { lastOwnerMessage: null, answered: true, deliberate: boundaryDeliberate, selfRequested };
   }
   const owner = tail[idx];
   // Answered ⇔ a model turn FOLLOWS the owner's final message in the tail.
@@ -382,6 +404,7 @@ export function deriveContinuation(
     lastOwnerMessage: { text: owner.text, ts: owner.ts },
     answered,
     deliberate: boundaryDeliberate,
+    selfRequested,
   };
 }
 
@@ -400,12 +423,17 @@ export async function deriveSessionContinuation(opts: {
   transcriptPath?: string | null;
   transcriptSourceKind?: 'claude' | 'omp' | 'codex';
   boundaryDeliberate?: boolean;
+  boundarySelfRequested?: boolean;
 }): Promise<CarryDocContinuation> {
   const tail = await defaultGetTail({
     transcriptPath: opts.transcriptPath ?? undefined,
     transcriptSourceKind: opts.transcriptSourceKind,
   });
-  return deriveContinuation(tail.slice(-CARRY_DOC_MAX_TAIL_TURNS), opts.boundaryDeliberate ?? false);
+  return deriveContinuation(
+    tail.slice(-CARRY_DOC_MAX_TAIL_TURNS),
+    opts.boundaryDeliberate ?? false,
+    opts.boundarySelfRequested,
+  );
 }
 
 export interface OpenOwnerQuestionGate {
@@ -590,10 +618,15 @@ function tailTurnHeader(t: CarryDocTailTurn): string {
  */
 function renderContinuation(cont: CarryDocContinuation): string {
   const lines: string[] = [
-    cont.deliberate
+    cont.deliberate && cont.selfRequested
       ? '- Boundary: DELIBERATE (self-requested at a clean point — state was flushed; the tail is trustworthy).'
-      : '- Boundary: FORCED (native auto-compact / window-guard fired mid-turn — the tail may be ' +
-        'truncated mid-reply; trust it less and re-verify via the self-recall pointer).',
+      : cont.deliberate
+        ? '- Boundary: CLEAN but WATCHDOG-INITIATED (the session crossed its context limit and was cut ' +
+          'at an idle point — it did NOT request this cut, so pre-cut flushes are NOT guaranteed: ' +
+          'verify checkpoint/fact freshness via coord:orient before trusting them. The tail itself is complete.)'
+        : '- Boundary: FORCED (the watchdog/window-guard seized a saturated session mid-flight — the ' +
+          'tail may be truncated mid-reply AND nothing was flushed; trust both less and re-verify via ' +
+          'the self-recall pointer).',
   ];
   if (cont.lastOwnerMessage) {
     const preview = cap(cont.lastOwnerMessage.text, CONT_PREVIEW_CAP);

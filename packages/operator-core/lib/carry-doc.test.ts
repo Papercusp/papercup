@@ -177,7 +177,7 @@ describe('renderCarryDoc (pure)', () => {
       planItems,
       asks,
       tail,
-      continuation: { lastOwnerMessage: null, answered: true, deliberate: true },
+      continuation: { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true },
       ...over,
     };
   }
@@ -248,7 +248,7 @@ describe('renderCarryDoc (pure)', () => {
           { speaker: 'assistant', text: 'earlier work', ts: null },
           { speaker: 'user', text: 'now fix the migration', ts: null, provenance: { verdict: 'owner-typed', origin: null } },
         ],
-        continuation: { lastOwnerMessage: { text: 'now fix the migration', ts: null }, answered: false, deliberate: true },
+        continuation: { lastOwnerMessage: { text: 'now fix the migration', ts: null }, answered: false, deliberate: true, selfRequested: true },
       }),
       NOW,
     );
@@ -269,7 +269,7 @@ describe('renderCarryDoc (pure)', () => {
           { speaker: 'user', text: 'ship it', ts: null, provenance: { verdict: 'owner-typed', origin: null } },
           { speaker: 'assistant', text: 'shipped', ts: null },
         ],
-        continuation: { lastOwnerMessage: { text: 'ship it', ts: null }, answered: true, deliberate: false },
+        continuation: { lastOwnerMessage: { text: 'ship it', ts: null }, answered: true, deliberate: false, selfRequested: false },
       }),
       NOW,
     );
@@ -279,8 +279,19 @@ describe('renderCarryDoc (pure)', () => {
   });
 
   it('no owner turn in the tail renders the standing-work continuation line', () => {
-    const text = renderCarryDoc(doc({ tail: [], continuation: { lastOwnerMessage: null, answered: true, deliberate: true } }), NOW);
+    const text = renderCarryDoc(doc({ tail: [], continuation: { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true } }), NOW);
     expect(text).toContain('No owner turn in the recent tail');
+  });
+
+  it('a CLEAN watchdog-initiated boundary never claims the session flushed (2026-07-18 provenance mislabel)', () => {
+    const text = renderCarryDoc(
+      doc({ tail: [], continuation: { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: false } }),
+      NOW,
+    );
+    expect(text).toContain('Boundary: CLEAN but WATCHDOG-INITIATED');
+    expect(text).toContain('did NOT request this cut');
+    expect(text).not.toContain('state was flushed');
+    expect(text).not.toContain('Boundary: DELIBERATE');
   });
 });
 
@@ -302,7 +313,14 @@ describe('deriveContinuation (pure, P-010)', () => {
 
   it('no owner turn ⇒ null message, vacuously answered, boundary flag flows through', () => {
     const cont = deriveContinuation([model('a'), wake('w')], false);
-    expect(cont).toEqual({ lastOwnerMessage: null, answered: true, deliberate: false });
+    expect(cont).toEqual({ lastOwnerMessage: null, answered: true, deliberate: false, selfRequested: false });
+  });
+
+  it('selfRequested defaults to the deliberate flag (historical meaning preserved) and can be overridden false', () => {
+    expect(deriveContinuation([model('a')], true).selfRequested).toBe(true);
+    expect(deriveContinuation([model('a')], true, false).selfRequested).toBe(false);
+    // Invariant: a forced boundary can never read as self-requested.
+    expect(deriveContinuation([model('a')], false, true).selfRequested).toBe(false);
   });
 
   it('picks the LAST owner turn when several are present', () => {
@@ -313,7 +331,7 @@ describe('deriveContinuation (pure, P-010)', () => {
 });
 
 describe('gateOpenOwnerQuestion (pure, P-010)', () => {
-  const open: CarryDocContinuation = { lastOwnerMessage: { text: 'answer me', ts: null }, answered: false, deliberate: true };
+  const open: CarryDocContinuation = { lastOwnerMessage: { text: 'answer me', ts: null }, answered: false, deliberate: true, selfRequested: true };
 
   it('trips only on a DELIBERATE boundary across an UNANSWERED owner message', () => {
     const gate = gateOpenOwnerQuestion(open);
@@ -325,7 +343,7 @@ describe('gateOpenOwnerQuestion (pure, P-010)', () => {
   it('does NOT trip on a forced boundary, an answered message, or no owner message', () => {
     expect(gateOpenOwnerQuestion({ ...open, deliberate: false }).crossesOpenOwnerMessage).toBe(false);
     expect(gateOpenOwnerQuestion({ ...open, answered: true }).crossesOpenOwnerMessage).toBe(false);
-    expect(gateOpenOwnerQuestion({ lastOwnerMessage: null, answered: true, deliberate: true }).crossesOpenOwnerMessage).toBe(false);
+    expect(gateOpenOwnerQuestion({ lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true }).crossesOpenOwnerMessage).toBe(false);
   });
 });
 
@@ -349,7 +367,7 @@ describe('buildCarryDoc continuation leg (P-010)', () => {
         { speaker: 'user', text: 'open question', ts: null, provenance: { verdict: 'owner-typed', origin: null } } as CarryDocTailTurn,
       ],
     });
-    expect(doc.continuation).toEqual({ lastOwnerMessage: { text: 'open question', ts: null }, answered: false, deliberate: true });
+    expect(doc.continuation).toEqual({ lastOwnerMessage: { text: 'open question', ts: null }, answered: false, deliberate: true, selfRequested: true });
     expect(gateOpenOwnerQuestion(doc.continuation).crossesOpenOwnerMessage).toBe(true);
   });
 
@@ -387,7 +405,7 @@ describe('constant budget B + slot audit (P-011)', () => {
 });
 
 describe('aging ladder / budget fit (P-011)', () => {
-  const cont: CarryDocContinuation = { lastOwnerMessage: null, answered: true, deliberate: true };
+  const cont: CarryDocContinuation = { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true };
   function fitDoc(over: Partial<CarryDoc> = {}): CarryDoc {
     return {
       brief: brief(),
