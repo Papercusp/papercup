@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveHiveWorkspaceId } from '../../hive-store';
 import { getHivePolicy } from '../../hive-policy-store';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { fileReport, countReportsSince } from '../../hive-reports-store';
@@ -59,8 +60,19 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const workspaceId =
+    const ambientWorkspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    // WI-5334/WI-5321/WI-5061: same ambient-workspace-mismatch family as
+    // authorHivePolicy/policy-set.ts — a JOINED member's ambient workspaceId can
+    // differ from whatever partition the Hive's own row (and this member's
+    // membership row) is actually stamped under. Resolving here means the
+    // policy read, the membership check, AND the write below (fileReport /
+    // countReportsSince) all agree on the SAME workspace the Hive is minted
+    // in, instead of getHivePolicy/getHiveMember silently missing under the
+    // wrong partition (reads as reporting-not-enabled or not-a-member even for
+    // a genuinely admitted member) and fileReport persisting the row under a
+    // workspace no reader ever queries.
+    const workspaceId = await resolveHiveWorkspaceId(ambientWorkspaceId, args.pot);
 
     // Gate: reporting must be enabled by the owner-signed policy.
     const resolved = await getHivePolicy(workspaceId, args.pot).catch(() => null);

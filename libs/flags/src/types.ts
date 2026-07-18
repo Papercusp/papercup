@@ -1890,25 +1890,17 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // no peer ever computed with a stale value across a reboot boundary). Default ON;
     // OFF is the tested rollback (selectAuthorityFromRows argmin, byte-identical
     // pre-WI-1491 behavior). See docs/plans/CUTOVER-presence-gossip-2026-07-16.md.
-    // EI-9064 dark-flag-age sweep (2026-07-10, su-043a1): FIFTH instance of the
-    // identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-
-    // RECLAIM_STALLED/WI-3093-PSU_END_USER bug-fix class in this same file — the
-    // flag's OWN code comment (plan-federation-regrain-2026-06-13 P-005/P-006,
-    // directly above in FLAGS) has always said "DEFAULT-OFF: an UNVERIFIED cutover
-    // that needs a real two-machine merge proof (P-008) + the existing-plan
-    // backfill (P-007) before the flip... The owner flips this ON at cutover" but
-    // was never actually added here, so it silently derived default-ON (FLAG_DEFAULTS
-    // = !DARK_FLAGS.has(k)). CONFIRMED LIVE in workspace `papercusp-workspace`: no PG
-    // override row exists for it (harness_shared.operator_flag_overrides), so it was
-    // resolving purely off the buggy default. HIGH severity: this flag gates the
-    // per-PART plan federation path (boot-all.ts / projections/harness-plan-parts.ts)
-    // in the SAME hyperbee substrate the P-059 fed-plane investigation (WI-3619
-    // outbox-drain hangs, WI-3653 slug-stamp) is actively debugging — an unverified
-    // cutover silently live there is a plausible contributing factor, flagged to the
-    // fleet leader. OFF ⇒ plans federate as the whole-document LWW blob (mig 125,
-    // today's actually-verified behavior); per-part capture/projection go inert.
-    // Owner/leader flips ON only after the two-machine merge proof + backfill land.
-    [FLAGS.PLAN_PART_FEDERATION, { case: 'cutover', reason: 'plan-federation-regrain-2026-06-13 P-005/P-006: per-PART plan federation — kills the whole-document LWW clobber where two peers editing DIFFERENT plan items lose one edit (D-009). DEFAULT-OFF: an UNVERIFIED cutover that needs a real two-machine merge proof (P-008) + the existing-plan backfill (P-007) before the flip. When OFF, plans federate EXACTLY as today (the whole harness_plans.content blob, mig 125) and the per-part capture/projection are inert — the live path is byte-identical. The owner flips this ON at cutover.' }],
+    // 2026-07-18 — papercusp-plan-part-federation GRADUATED default-ON (WI-5331 Leg B):
+    // the real two-machine merge proof its dark entry demanded (P-008) ran on the live
+    // tower↔Avis-iMac rig — concurrent different-part edits (tower section:now rewrite
+    // vs mac item flip, 5s apart) under flag-ON on BOTH machines converged to
+    // byte-identical content (md5 b2f6826d…) in ~5s with both edits surviving on both
+    // sides: tower held item:P-003 origin=remote (mac device key) recomposed into its
+    // content, the mac held section:now origin=remote (tower device key) recomposed
+    // into its content — no whole-blob clobber in either direction; recompose was the
+    // sole content writer per P-006/P-009. Verdict: p2p-part-merge-proof-2026-07-18
+    // D-001. Entry removed (the set shrinks). OFF remains the tested rollback (plans
+    // federate as the whole harness_plans.content blob, mig 125).
     // WI-3796 (2026-07-10, fleet p2p-parity-lanes): SEVENTH instance of the identical
     // EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-RECLAIM_STALLED/
     // WI-3093-PSU_END_USER/EI-9064-PLAN_PART_FEDERATION/WI-3370-SUBSTRATE_LOG_SNAPSHOT

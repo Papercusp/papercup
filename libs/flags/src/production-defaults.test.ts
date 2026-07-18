@@ -172,23 +172,14 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // required ran on the tower↔VM rig (identical fresh candidate sets + the same
   // tower-built code on both machines) and the flag flipped ON in both stores.
   // Entry removed (the set shrinks). Count 20 → 19 relative to this list's history.
-  // 2026-07-10 (EI-9064 dark-flag-age sweep, su-043a1) — NOT a new post-inversion
-  // darkening: the FIFTH instance of the same bug-fix class as papercusp-watchdog-
-  // auto-close / papercusp-substrate-sidecar / papercusp-reclaim-stalled /
-  // papercusp-psu-end-user above. papercusp-plan-part-federation's OWN code comment
-  // (libs/flags/src/types.ts, plan-federation-regrain-2026-06-13 P-005/P-006) has
-  // ALWAYS said "DEFAULT-OFF: an UNVERIFIED cutover that needs a real two-machine
-  // merge proof (P-008) + the existing-plan backfill (P-007) before the flip... The
-  // owner flips this ON at cutover" but was never actually added to DARK_FLAGS, so it
-  // silently derived default-ON both before AND after the P-011 inversion. Confirmed:
-  // no PG override row exists for it in workspace `papercusp-workspace`
-  // (harness_shared.operator_flag_overrides), so it was resolving purely off the
-  // buggy default. HIGH severity: gates the per-PART plan federation path
-  // (boot-all.ts / projections/harness-plan-parts.ts) in the SAME hyperbee substrate
-  // the P-059 fed-plane investigation (WI-3619, WI-3653) is actively debugging.
-  // Adding it here + to DARK_FLAGS restores its always-intended default-OFF.
-  // Count 20 → 21; well under DARK_FLAGS_HIGH_WATERMARK (22).
-  'papercusp-plan-part-federation',
+  // 2026-07-18 — papercusp-plan-part-federation GRADUATED default-ON (WI-5331 Leg B):
+  // the real two-machine merge proof its dark entry demanded (P-008) ran on the live
+  // tower↔Avis-iMac rig — concurrent different-part edits under flag-ON on BOTH
+  // machines converged byte-identically (md5 b2f6826d…) with both edits surviving on
+  // both sides (tower item:P-003 origin=remote recomposed; mac section:now
+  // origin=remote recomposed; no whole-blob clobber either direction). Verdict:
+  // docs/plans/p2p-part-merge-proof-2026-07-18.md D-001. Entry removed (the set
+  // shrinks). Count 21 → 20 relative to this list's history.
   // 2026-07-10 (WI-3370) — NOT a new post-inversion darkening: the SIXTH instance of
   // the same bug-fix class as papercusp-watchdog-auto-close / papercusp-substrate-
   // sidecar / papercusp-reclaim-stalled / papercusp-psu-end-user / papercusp-plan-
@@ -481,7 +472,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 2026-07-17 — papercusp-hrw-rendezvous-authority graduated default-ON: the
     // same LIVE-1 P-059 drill's multi-peer same-inputs verify met its cutover
     // dark-entry gate; flag flipped ON in both machines' stores. Count 29 → 28.
-    expect(offCount).toBe(28);
+    // 2026-07-18 — papercusp-plan-part-federation graduated default-ON: WI-5331
+    // Leg B two-machine merge proof (tower↔Avis-iMac concurrent different-part
+    // edits, flag ON both stores, byte-identical convergence, no clobber) met its
+    // cutover dark-entry gate (p2p-part-merge-proof-2026-07-18 D-001). Count 28 → 27.
+    expect(offCount).toBe(27);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
