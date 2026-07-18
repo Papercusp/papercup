@@ -188,6 +188,64 @@ describe("cc PreToolUse hook — operator-independent paths", () => {
   });
 });
 
+// ── PostToolUse locks-release hook (EI-1400) ───────────────────────────
+// Operator-independent paths only: the no-cached-lock no-op, the fail-open
+// contract, and — the regression this exists to guard — a bounded retry on
+// connection-refused before giving up, mirroring the PreToolUse hook's own
+// retry (added because a single-shot release silently stranded the SERVER-
+// SIDE lock for the full 1200s acquire TTL whenever the release POST hit a
+// transient refuse, e.g. the few-second window a `lib/**` edit's forced
+// :3070 restart refuses connections in — repo-conventions' two-port model).
+const RELEASE_HOOK = join(__dirname, "..", "posttooluse-locks-release.sh");
+
+function runRelease(input: string, extraEnv: Record<string, string> = {}) {
+  const r = spawnSync("bash", [RELEASE_HOOK], {
+    input,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      PAPERCUSP_LOCKS_CACHE_DIR: cache,
+      ...extraEnv,
+    },
+  });
+  return { status: r.status, stdout: (r.stdout ?? "").trim() };
+}
+
+describe("cc PostToolUse locks-release hook — operator-independent paths", () => {
+  it("no cached lock_id for this tool_use_id (Pre didn't run / already released) → no-op", () => {
+    const r = runRelease(
+      payload({ tool_use_id: "no-such-tu", session_id: "s" }),
+      { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1" },
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+  });
+
+  it("connection-refused is retried (bounded) before failing open — a transient restart-window refuse does not strand the lock for the full TTL", () => {
+    const tuId = "release-retry-tu";
+    fs.writeFileSync(join(cache, `${tuId}.lock`), "lock-abc\n");
+    fs.writeFileSync(join(cache, `${tuId}.paths`), JSON.stringify(["a.ts"]));
+    const t0 = Date.now();
+    const r = runRelease(
+      payload({ tool_use_id: tuId, session_id: "s" }),
+      { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1" },
+    );
+    const elapsed = Date.now() - t0;
+    expect(r.status).toBe(0); // release is always best-effort — never blocks the turn
+    expect(r.stdout).toBe("");
+    expect(elapsed).toBeGreaterThan(1500); // proves the retry loop actually ran
+    // Best-effort cleanup still happens even on a final failure (TTL covers the rest).
+    expect(fs.existsSync(join(cache, `${tuId}.lock`))).toBe(false);
+    expect(fs.existsSync(join(cache, `${tuId}.paths`))).toBe(false);
+    const marker = join(cache, "last-error.json");
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(marker, "utf8")).handler).toBe(
+      "posttooluse",
+    );
+  }, 15000);
+});
+
 // ── PostToolUse activity-report hook ───────────────────────────────────
 // Operator-independent paths only: the psu-session + install gates, the
 // fail-open contract, and the first-run cursor seed. Since EI-11405
