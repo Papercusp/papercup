@@ -57,6 +57,7 @@ import {
 import type { ImprovementSeverity } from './policy';
 import type { LearningSloOptions } from './learning-slo';
 import { isLoopArmOwnerRole } from '../routines/autoloop-chronic-failure';
+import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 
 export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
