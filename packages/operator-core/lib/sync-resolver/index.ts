@@ -3845,6 +3845,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.analyze — the Learning tab's Analyze stage (learning-tab-
+  // visibility-2026-07-18 P-009 / D-001). Per fired cycle, the pipeline's
+  // INTERMEDIATE artifacts (migration 623: per-ideator ideas, critique
+  // verdicts, debate/recombine fusions, ideator slot outcomes) joined to the
+  // cycle's scout_ticks economics + routed-ledger rows by cycle_id.
+  // 42P01-tolerant — a substrate without the migration renders the
+  // explain-empty state, never a 500. Returns a 1-element array (client reads
+  // data[0]). NOT table-backed — refreshes on mount + manual `invalidate()`.
+  'learning.analyze': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readAnalyzeSnapshot } = await import('./learning-analyze-read');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => [await readAnalyzeSnapshot(tx, ws)]);
+      } catch (err) {
+        console.warn('[learning.analyze] analyze read failed:', err instanceof Error ? err.message : err);
+        return [{ cycles: [], generatedAt: new Date().toISOString() }];
+      }
+    },
+  },
+
   // ── learning.frontier — the Learning tab's Frontier lane-status grid
   // (learning-tab-visibility-2026-07-18 P-003/P-004). One row per workspace-
   // singleton learning loop: liveness from the SAME shared reader

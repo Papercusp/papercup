@@ -82,7 +82,7 @@
    stop looking identical to active work. */
 .plans-pane__bucket {
   flex: 0 0 auto; padding: 0 5px; border-radius: 999px;
-  font-size: 8.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.02em;
+  font-size: 8.5px; font-weight: 650; text-transform: uppercase;
   color: var(--fg-mute, #a6a6ad); border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
 }
 .plans-pane__bucket--draft { color: #c4b5fd; border-color: color-mix(in srgb, var(--accent, #8b5cf6) 40%, transparent); }

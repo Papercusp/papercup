@@ -39,6 +39,8 @@ import {
   Search,
   Telescope,
   Rss,
+  Microscope,
+  Workflow,
 } from "lucide-react";
 import type {
   ImprovementDigest,
@@ -62,6 +64,7 @@ import { EkgPanel } from "./EkgPanel";
 import { RedQueenPanel } from "./RedQueenPanel";
 import { FrontierPanel } from "./FrontierPanel";
 import { SignalsPanel } from "./SignalsPanel";
+import { AnalyzePanel } from "./AnalyzePanel";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { MugWakeEfficiencyPanel } from "./MugWakeEfficiencyPanel";
 import { ExperimentsPanel } from "./ExperimentsPanel";
@@ -93,6 +96,7 @@ const LVIEWS = [
   "signals",
   "observations",
   "rubrics",
+  "pipeline",
   "ideas",
   "gym",
   "improvements",
@@ -109,7 +113,7 @@ const LVIEWS = [
 ] as const;
 type LView = (typeof LVIEWS)[number];
 
-type LearningStage = "observe" | "improve" | "verify" | "retain";
+type LearningStage = "observe" | "analyze" | "improve" | "verify" | "retain";
 type LearningViewStatus = "neutral" | "good" | "warn" | "bad";
 type LearningStatusSemantic = "attention" | "failure";
 
@@ -143,6 +147,16 @@ const STAGES: ReadonlyArray<{
       { id: "observations", label: "Observations", icon: Eye },
       { id: "rubrics", label: "Rubrics", icon: Gauge },
     ],
+  },
+  // P-009 (owner ask 2026-07-18: "I want the user to be able to see the
+  // advanced things happening as part of idea generation, I dont want to hide
+  // it"): the pipeline-transparency stage between Observe and Improve —
+  // per-cycle divergent generation, adversarial critique, and fusion.
+  {
+    id: "analyze",
+    label: "Analyze",
+    icon: Microscope,
+    views: [{ id: "pipeline", label: "Pipeline", icon: Workflow }],
   },
   {
     id: "improve",
@@ -494,6 +508,9 @@ function LearningViewContent({
   }
   if (view === "observations") {
     return <ObservationsPanel onStatus={reportViewStatus} />;
+  }
+  if (view === "pipeline") {
+    return <AnalyzePanel onStatus={reportViewStatus} />;
   }
   if (view === "ideas") {
     return <ScoutView onStatus={reportViewStatus} />;

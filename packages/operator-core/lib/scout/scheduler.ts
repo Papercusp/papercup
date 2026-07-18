@@ -63,6 +63,8 @@ export interface ScoutCycleLike {
   scored?: readonly unknown[];
   /** keep + moonshot after the critics (ScoutCycleResult.survivors) — deduped = scored − survivors. */
   survivors?: readonly unknown[];
+  /** Debate/recombine fusions (ScoutCycleResult.proposals) — persisted per cycle for the Analyze stage (P-009). */
+  proposals?: readonly unknown[];
   /** Why the cycle ended (ScoutCycleResult.stop). */
   stop?: string;
   /**
@@ -121,6 +123,16 @@ export interface ScoutTickDeps {
   }) => Promise<ScoutCycleLike>;
   /** Persist routed-idea provenance for the cycle (P-013 ledger). */
   persistRouted: (records: ScoutRoutedRecord[], cycleId: string) => Promise<void>;
+  /**
+   * Optional per-stage cycle-artifact persist (learning-tab-visibility P-009):
+   * land the fired cycle's INTERMEDIATE stage arrays (per-ideator ideas,
+   * critique verdicts, debate/recombine fusions, ideator slot outcomes) on
+   * harness_shared.scout_cycle_stage_artifacts for the Learning tab's Analyze
+   * stage. Best-effort by contract — runScoutTick swallows its errors (Analyze
+   * observability never fails the tick); unwired ⇒ no artifact persistence
+   * (the hermetic unit-test default).
+   */
+  persistStageArtifacts?: (cycle: ScoutCycleLike, cycleId: string) => Promise<void>;
   /** Optional autoloop fire-gate (backoff/circuit); default: always allow. */
   fireGate?: () => Promise<ScoutFireGate>;
   /** Optional fire-state recorder (autoloop recordFire). */
@@ -306,6 +318,16 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     );
     const provenance = cycle.provenance ?? [];
     if (provenance.length > 0) await deps.persistRouted(provenance, cycleId);
+    // P-009 (learning-tab-visibility): land the cycle's INTERMEDIATE stage
+    // artifacts (per-ideator ideas, critique verdicts, fusions, slot outcomes)
+    // so the Analyze view can show the pipeline, not just its routed tail.
+    if (deps.persistStageArtifacts) {
+      try {
+        await deps.persistStageArtifacts(cycle, cycleId);
+      } catch {
+        /* best-effort — Analyze observability never fails the tick */
+      }
+    }
     const groundingLanes = groundingLaneHistogram(provenance);
     await deps.refreshOutcomes?.();
     // P-001: a queen-feedback revision cycle SUCCEEDED — ack the consumed messages
@@ -631,6 +653,19 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
           ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
         });
       }
+    },
+    async persistStageArtifacts(cycle, cycleId) {
+      // Lazy import keeps the pure core free of the PG edge (module pattern).
+      const { persistStageArtifacts } = await import('./stage-artifacts');
+      await persistStageArtifacts({
+        cycleId,
+        ideas: cycle.ideas,
+        scored: cycle.scored,
+        proposals: cycle.proposals,
+        ideatorSlots: cycle.ideators,
+        installSlug: harnessSlug,
+        ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+      });
     },
     async fireGate(): Promise<ScoutFireGate> {
       const { checkFireGate } = await import('../autoloop');

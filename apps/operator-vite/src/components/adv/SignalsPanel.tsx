@@ -41,15 +41,28 @@ const TRIGGER_LANE_DOCS: Record<string, string> = {
 };
 
 /** One-line description per FED (digest grounding) lane — what the corpus
- *  synthesis reads and ideas cite as grounding. */
+ *  synthesis reads and ideas cite as grounding. Mirrors the FULL flattenDigest
+ *  lane list (lenses.ts) — every lane the ideator prompt actually renders, so
+ *  "the full lane taxonomy" below is really full (owner ask 2026-07-18: the
+ *  watchdog lane was fed but invisible here). */
 const FED_LANE_DOCS: Record<string, string> = {
   corpus: "The standing MetaPattern corpus — recurring friction patterns distilled from the whole signal history.",
+  "recurring-friction": "Recurring friction patterns — the same breakage/annoyance surfacing across many signals.",
+  "time-token-sink": "Time / token sinks — where agent hours and LLM spend chronically pool.",
+  "chronic-deferral": "Chronically deferred work — items the colony keeps pushing off.",
+  "capability-gap": "Capability gaps — things agents repeatedly could not do.",
   "rubric-rating": "Rubric criterion grades — quality verdicts on live behavior.",
   "spend-anomaly": "Spend anomalies — cost spikes worth ideating on.",
   "niche-map": "The quality-diversity niche map — where idea-space is unexplored.",
   "standing-fact": "Standing facts (facts:assert) — durable conclusions agents have pinned.",
+  "watchdog-health": "Watchdog health — chronic measured infrastructure signal from the 15-min collectors + standing open alarm conditions (watchdog_ticks).",
+  "gate-pipeline-health": "Gate / pipeline health — release ship-path incidents: standing reds, promotion/deploy stalls, chronic pipeline failures.",
+  "coord-health": "Coordination health — escalation storms, unanswered directed mail, inbox/wake floods, claim conflicts.",
+  "tool-telemetry": "Tool telemetry — measured DX friction: per-tool error rates, arg-limit rejections, retry loops, chronic p95 latency.",
+  "knowledge-reuse-gap": "Knowledge-reuse gaps — lessons that exist but keep not being found/applied.",
   "plan-health": "Plan-health signals — stalled / drifting plans.",
   "owner-correction": "Owner corrections — every time you redirect an agent, that becomes learning input.",
+  "recent-commit": "Recent-commit churn hotspots — where the tree is actively morphing right now.",
 };
 
 export function SignalsPanel({
