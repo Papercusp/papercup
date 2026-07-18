@@ -117,6 +117,14 @@ export interface ScoutRoutedItem {
    * stage (learning-tab-alignment P-004).
    */
   addressesPatternRefs: string[];
+  /**
+   * The ledger row's own harness_slug (WI-5412): lets a gym-rail deep-link
+   * carry the idea's hive (`?lhive=`) instead of dropping the reader on the
+   * default hive's empty data. Nullable — the scout write path does not stamp
+   * it consistently (EI-10520), so consumers must treat absence as "unknown",
+   * never "workspace".
+   */
+  harnessSlug: string | null;
 }
 
 /**
@@ -481,7 +489,7 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
   const items = (await sql`
     SELECT idea_id, lens, rail, routed_ref, title, routed_at, outcome,
            human_grade, human_feedback, graded_by, origin, cycle_id,
-           addresses_pattern_refs
+           addresses_pattern_refs, harness_slug
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${workspaceId}
      ORDER BY routed_at DESC
@@ -503,6 +511,7 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     addressesPatternRefs: Array.isArray(r.addresses_pattern_refs)
       ? (r.addresses_pattern_refs as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0)
       : [],
+    harnessSlug: typeof r.harness_slug === 'string' && r.harness_slug ? r.harness_slug : null,
   }));
 
   // P-004 pipeline trace: resolve the opaque grounding refs (the wi:EI-… class)
