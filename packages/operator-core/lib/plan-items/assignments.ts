@@ -59,6 +59,29 @@ export async function planItemExists(
   return read.parsed.items.some((i) => i.id === itemId);
 }
 
+/**
+ * The Stage-3 effective status of a plan item ('todo' | 'wip' | 'done' | 'dropped' |
+ * …), or null when it can't be determined (plan/item missing, or an un-normalized
+ * row with no Stage-3 index and no parsed status). Reads the SAME source as
+ * planItemExists. Used by plan_items:assign to refuse (re)assigning an
+ * ALREADY-TERMINAL item — the push-assign leg of the EI-2295 dead-dispatch class,
+ * where re-assigning a finished item does nothing but fire a stale wake. FAIL-OPEN
+ * BY CONTRACT: an undeterminable status returns null so the caller never blocks a
+ * legitimate assign on a read hiccup.
+ */
+export async function planItemEffectiveStatus(
+  harnessSlug: string,
+  planSlug: string,
+  itemId: string,
+): Promise<string | null> {
+  const read = await readPlanBySlug(planSlug, { harnessSlug });
+  if (!read) return null;
+  const stage3 = read.row.items.find((i) => i.id === itemId);
+  if (stage3) return stage3.status ?? null;
+  const parsed = read.parsed.items.find((i) => i.id === itemId) as { status?: string } | undefined;
+  return parsed?.status ?? null;
+}
+
 export interface AssignOpts {
   workspaceId: string;
   harnessSlug: string;

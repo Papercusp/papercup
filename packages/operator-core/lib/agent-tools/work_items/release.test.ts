@@ -179,17 +179,19 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     expect(b.results[0]).not.toHaveProperty('claimHold');
   });
 
-  it('claimHold:true releases AND applies the hold (stamping the caller as holder), surfacing it in the result', async () => {
-    const b = await body({ id: 'WI-1', claimHold: true });
+  it('claimHold:true releases AND applies a DURABLE park (parkedBy provenance, NOT a held_open lease), surfacing it in the result', async () => {
+    const b = await body({ id: 'WI-1', claimHold: true, reason: 'umbrella item' });
     expect(releaseM).toHaveBeenCalledWith('WI-1', { harness: undefined, expectedAssignee: 'me' });
-    // P-006: the hold is stamped with WHO applied it (held_open_by), so peers see whose gate it is.
-    expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: undefined, by: 'me' });
+    // WI-321 boomerang fix: park provenance goes in claim_hold_* (parkedBy), never held_open_*
+    // — a held_open lease dies ~2h after the parker's session ends (WI-4531 reaper), which made
+    // every ephemeral agent's park boomerang back into scheduler:get_next.
+    expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: undefined, parkedBy: 'me', parkedReason: 'umbrella item' });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimHold: true });
   });
 
   it('claimHold:false clears a prior hold', async () => {
     const b = await body({ id: 'WI-1', claimHold: false });
-    expect(holdM).toHaveBeenCalledWith('WI-1', false, { harness: undefined, by: 'me' });
+    expect(holdM).toHaveBeenCalledWith('WI-1', false, { harness: undefined, parkedBy: 'me', parkedReason: undefined });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimHold: false });
   });
 
@@ -202,14 +204,14 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
 
   it('a batch default claimHold applies to every item unless a per-item override is given', async () => {
     const b = await body({ items: [{ id: 'WI-1' }, { id: 'WI-2', claimHold: false }], claimHold: true });
-    expect(holdM).toHaveBeenNthCalledWith(1, 'WI-1', true, { harness: undefined, by: 'me' });
-    expect(holdM).toHaveBeenNthCalledWith(2, 'WI-2', false, { harness: undefined, by: 'me' });
+    expect(holdM).toHaveBeenNthCalledWith(1, 'WI-1', true, { harness: undefined, parkedBy: 'me', parkedReason: undefined });
+    expect(holdM).toHaveBeenNthCalledWith(2, 'WI-2', false, { harness: undefined, parkedBy: 'me', parkedReason: undefined });
     expect(b.results[0]).toMatchObject({ claimHold: true });
     expect(b.results[1]).toMatchObject({ claimHold: false });
   });
 
   it('per-item harness flows through to setWorkItemClaimHold', async () => {
     await body({ items: [{ id: 'WI-1', harness: 'h1', claimHold: true }], harness: 'default-h' });
-    expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: 'h1', by: 'me' });
+    expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: 'h1', parkedBy: 'me', parkedReason: undefined });
   });
 });

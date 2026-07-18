@@ -18,7 +18,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
 import { bestEffortOwnerUser, agentNameOwner, registerAgentName } from '../../plan-items/agent-names';
-import { assignItem } from '../../plan-items/assignments';
+import { assignItem, planItemEffectiveStatus } from '../../plan-items/assignments';
+import { isTerminalStatus } from '../plans/set-status';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { softText, clampText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -155,6 +156,19 @@ export default defineTool({
             plan: it.plan,
             item: it.item,
             refused: `agent-name '${it.assignee}' is owned by another user — cross-user assignment is pull-only (D-005). They join the work-group and claim it.`,
+          };
+        }
+        // EI-2295 (push-assign leg): never (re)assign an ALREADY-TERMINAL plan item.
+        // Re-assigning a done/dropped item is a no-op whose only effect is a stale
+        // wake — the dead-dispatch class this issue is about. FAIL-OPEN: an
+        // undeterminable status (null) never blocks a legitimate assign.
+        const effStatus = await planItemEffectiveStatus(harnessSlug, it.plan, it.item);
+        if (effStatus && isTerminalStatus(effStatus)) {
+          return {
+            ok: false,
+            plan: it.plan,
+            item: it.item,
+            refused: `plan item ${it.item} is already ${effStatus} (terminal) — not (re)assigning. Flip it off-terminal (plans:set-status) first to reopen it.`,
           };
         }
         if (!existingOwner) await registerAgentName(workspaceId, it.assignee, ownerUser);

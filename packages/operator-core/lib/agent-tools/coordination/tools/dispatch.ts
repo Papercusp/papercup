@@ -162,28 +162,76 @@ export async function composeDispatch(
     /* degrade: sessionState/wakeable stay null */
   }
 
-  // 2. Assign the lane (durable intent) — only when planSlug + items are given.
+  // 1.5. EI-2292 pre-assign guard: a naive re-dispatch cycle (the su-aede8
+  //      incident) re-assigned the SAME plan items every wake with no check for
+  //      an existing live claim or an owner-gated park, pushing fresh agents
+  //      into head-on collisions on items another peer had deliberately parked
+  //      (needs-human) or was actively holding. Read the plan's merged
+  //      assignment+claim view ONCE and drop any requested item that is (a)
+  //      live-claimed by someone OTHER than this dispatch's target, or (b)
+  //      flagged needs-human/blocked — before it ever reaches plan_items:assign.
+  //      BEST-EFFORT + fail-open: a status-read hiccup degrades to "no guard"
+  //      (today's unfiltered behavior) rather than blocking the dispatch.
+  const skippedItems: DispatchSkippedItem[] = [];
+  let itemsToAssign = args.items;
+  if (args.planSlug && args.items && args.items.length > 0) {
+    try {
+      const statusEnv = (await call('plan_items:status', {
+        plan: args.planSlug,
+        ...(args.harness ? { harness: args.harness } : {}),
+      })) as {
+        items?: Array<{
+          itemId: string;
+          itemStatus: string | null;
+          claim: { owner?: string; ownerName?: string | null } | null;
+        }>;
+      } | undefined;
+      const byId = new Map((statusEnv?.items ?? []).map((it) => [it.itemId, it]));
+      const targetOwnerId = presenceOwnerId || args.to;
+      const kept: string[] = [];
+      for (const item of args.items) {
+        const st = byId.get(item);
+        if (st?.itemStatus === 'needs-human' || st?.itemStatus === 'blocked') {
+          skippedItems.push({ item, reason: `item is ${st.itemStatus} (owner-gated) — not re-assigned` });
+          continue;
+        }
+        if (st?.claim?.owner && st.claim.owner !== targetOwnerId) {
+          skippedItems.push({
+            item,
+            reason: `live-claimed by ${st.claim.ownerName ?? st.claim.owner} — not re-assigned to avoid a collision`,
+          });
+          continue;
+        }
+        kept.push(item);
+      }
+      itemsToAssign = kept;
+    } catch {
+      /* fail-open: guard degrades, assign proceeds unfiltered (today's behavior) */
+    }
+  }
+
+  // 2. Assign the lane (durable intent) — only for items that survived the guard.
   //    BEST-EFFORT: a cross-user refusal / bad item must not swallow the wake (the
   //    lane assignment is the backstop; the directed note+wake is what gets pickup).
   let assigned: DispatchAssigned | null = null;
-  if (args.planSlug && args.items && args.items.length > 0) {
+  if (args.planSlug && itemsToAssign && itemsToAssign.length > 0) {
     try {
       const env = (await call('plan_items:assign', {
         plan: args.planSlug,
-        itemIds: args.items,
+        itemIds: itemsToAssign,
         assignee: args.to,
         ...(args.harness ? { harness: args.harness } : {}),
       })) as { ok?: boolean; results?: unknown[] } | undefined;
       assigned = {
         planSlug: args.planSlug,
-        items: args.items,
+        items: itemsToAssign,
         ok: env?.ok === true,
         ...(Array.isArray(env?.results) ? { results: env!.results } : {}),
       };
     } catch (e) {
       assigned = {
         planSlug: args.planSlug,
-        items: args.items,
+        items: itemsToAssign,
         ok: false,
         error: e instanceof Error ? e.message : String(e),
       };
@@ -199,9 +247,9 @@ export async function composeDispatch(
   //     coord:send below, unaffected either way).
   let hydratedBody = args.body;
   let itemsHydrated = 0;
-  if (args.planSlug && args.items && args.items.length > 0) {
+  if (args.planSlug && itemsToAssign && itemsToAssign.length > 0) {
     try {
-      const refs: HydratableRef[] = args.items.map((item) => ({
+      const refs: HydratableRef[] = itemsToAssign.map((item) => ({
         kind: 'plan-item' as const,
         slug: args.planSlug as string,
         item,

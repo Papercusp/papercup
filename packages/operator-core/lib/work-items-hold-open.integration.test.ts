@@ -288,3 +288,70 @@ describe('WI-4531 — isHoldOpenExpired (the inline chokepoint test)', () => {
     expect(await isHoldOpenExpired(sql, 'su-ghost', justOutside)).toBe(true);
   });
 });
+
+/** Seed a work-item DURABLY PARKED out of self-select (release {claimHold:true}) — the
+ *  claim_hold_* provenance shape setWorkItemClaimHold writes for `parkedBy`, with NO
+ *  held_open_* lease. */
+async function seedParked(featureId: string, parker: string, parkedAgoMin: number, extraPayload: Record<string, unknown> = {}): Promise<void> {
+  const payload = {
+    _claimHold: true,
+    claim_hold_by: parker,
+    claim_hold_reason: 'umbrella item tracked elsewhere — do not self-select',
+    claim_hold_at: new Date(Date.now() - parkedAgoMin * 60_000).toISOString(),
+    ...extraPayload,
+  };
+  await sql`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, payload, created_ts, updated_ts)
+    VALUES
+      (${WS}, ${H}, ${featureId}, 'task', ${featureId}, 'open',
+       ${sql.json(payload)}, ${Date.now()}, ${Date.now()})`;
+}
+
+describe('durable park vs lease — the WI-321 boomerang fix', () => {
+  // THE INCIDENT: release {claimHold:true} used to stamp held_open_by, so every park was a
+  // WI-4531 liveness lease — and a park placed by an ephemeral drain agent lapsed ~2h after
+  // its session died. Eight agents in 27h re-claimed the SAME parked umbrella item (WI-321),
+  // each re-parking it into the same trap. A park (claim_hold_by, no held_open_by) is a
+  // judgment about the ITEM, not the parker — it must survive the parker's death.
+
+  it('a durable park is NEVER reaped, however dead its parker (the boomerang fix itself)', async () => {
+    await seedParked('WI-PARK', 'su-ephemeral-drainer', 8 * 60); // parker has no liveness signal at all
+
+    const { expired } = await reclaimStaleHoldOpens(sql);
+
+    expect(expired).toEqual([]);
+    expect((await holdOf('WI-PARK')).claimHold).toBe('true');
+  });
+
+  it('the dead-owner sweep leaves a durable park alone too', async () => {
+    await seedParked('WI-PARK-2', 'su-dead-owner', 8 * 60);
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, workspace_id, name, active, reschedule_interval_sec, target_owner_id, updated_at)
+      VALUES ('loop-p', ${WS}, 'loop-p', true, 60, 'su-dead-owner', now() - interval '3 hours')`;
+
+    const result = await sweepDeadOwnerControlState(sql, { ownerGraceMs: 1, holdOpenGraceMs: 1 });
+
+    expect(result.holdsLifted).toBe(0);
+    expect((await holdOf('WI-PARK-2')).claimHold).toBe('true');
+  });
+
+  it('lifting a dead LEASE preserves a coexisting durable park (_claimHold + claim_hold_* survive; held_open_* go)', async () => {
+    await seedHeld('WI-BOTH', 'su-dead-gater', 8 * 60);
+    await sql`
+      UPDATE harness_shared.work_items
+         SET payload = payload || '{"claim_hold_by":"su-parker","claim_hold_reason":"parked"}'::jsonb
+       WHERE feature_id = 'WI-BOTH'`;
+
+    const { expired } = await reclaimStaleHoldOpens(sql);
+
+    expect(expired.map((e) => e.feature_id)).toEqual(['WI-BOTH']);
+    const [row] = await sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = 'WI-BOTH'`;
+    expect(row!.payload.held_open_by).toBeUndefined();
+    expect(row!.payload.held_open_at).toBeUndefined();
+    expect(String(row!.payload._claimHold)).toBe('true');
+    expect(row!.payload.claim_hold_by).toBe('su-parker');
+  });
+});

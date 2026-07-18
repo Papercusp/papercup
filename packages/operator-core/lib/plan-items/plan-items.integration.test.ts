@@ -257,6 +257,49 @@ describe('claim policy coordinator (D-004/D-005)', () => {
     const ok = await liveness.claimPlanItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-002', owner: 'sess-M', ownerName: 'puller', ownerUser: 'user-member' });
     expect(ok.status).toBe('claimed');
   });
+
+  it('EI-2299: assigned by raw ownerId (never an adopted name) — the assignee session claims via its OWN ownerId even with no adopted name', async () => {
+    // Repro: a coordinator push-assigns an item using the TARGET's raw ownerId as
+    // the `assignee` string (plan_items:assign has no other handle on it) —
+    // assigneeName ends up literally 'su-ebc491ff-8d2a-4c47-887d-340542c8587d'.
+    await asg.assignItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      itemId: 'P-001',
+      assigneeName: 'su-ebc491ff-8d2a-4c47-887d-340542c8587d',
+      assignedByUser: 'user-x',
+    });
+    // The assignee's own session: coord:whoami.ownerId === the assigneeName above,
+    // but it never called plan_items:adopt_name, so ownerName resolves to null —
+    // exactly the repro's `coord:whoami` shows name:null.
+    const ok = await liveness.claimPlanItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      itemId: 'P-001',
+      owner: 'su-ebc491ff-8d2a-4c47-887d-340542c8587d',
+      ownerName: null,
+      ownerUser: 'user-x',
+    });
+    expect(ok.status).toBe('claimed');
+    if (ok.status === 'claimed') expect(ok.viaAssignment).toBe(true);
+  });
+
+  it('EI-2299: an ownerId-keyed assignment still refuses every OTHER session (adopted-name or raw ownerId)', async () => {
+    await asg.assignItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      itemId: 'P-001',
+      assigneeName: 'su-ebc491ff-8d2a-4c47-887d-340542c8587d',
+      assignedByUser: 'user-x',
+    });
+    const byName = await liveness.claimPlanItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-001', owner: 'sess-B', ownerName: 'builder-2', ownerUser: 'user-y' });
+    expect(byName.status).toBe('refused');
+    const byOtherOwnerId = await liveness.claimPlanItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-001', owner: 'su-someone-else', ownerName: null, ownerUser: 'user-z' });
+    expect(byOtherOwnerId.status).toBe('refused');
+  });
 });
 
 describe('merged view (assignment/claim drift coherence)', () => {

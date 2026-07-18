@@ -1359,8 +1359,9 @@ async function isStaleHoldOpenAndCleared(
     if (!expired) return false;
     // Lift it for real — not just "ignore it this once". Leaving the stamp in place would keep
     // the item excluded from claim_next/scheduler self-select (the `_claimHold` half of the
-    // hold), which is the other half of the same bug.
-    const cleared = await setWorkItemClaimHold(id, false, { harness });
+    // hold), which is the other half of the same bug. leaseOnly: an automated liveness lift
+    // must preserve a coexisting durable park (claim_hold_by).
+    const cleared = await setWorkItemClaimHold(id, false, { harness, leaseOnly: true });
     if (!cleared) return false;
     console.warn(
       `[hold-open] lifted EXPIRED hold on ${id}: holder ${heldOpen.by} is not live and the hold ` +
@@ -2684,6 +2685,8 @@ export async function setWorkItemClaimHold(
     UPDATE harness_shared.work_items
        SET payload = CASE
              WHEN ${hold} THEN COALESCE(payload, '{}'::jsonb) || ${holdPatch}::text::jsonb
+             WHEN ${opts.leaseOnly === true} AND COALESCE(payload, '{}'::jsonb) ? 'claim_hold_by'
+             THEN COALESCE(payload, '{}'::jsonb) - 'held_open_by' - 'held_open_reason' - 'held_open_at'
              ELSE COALESCE(payload, '{}'::jsonb) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
                     - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
            END,
