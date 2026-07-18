@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   fileReport: vi.fn(),
   getPotMember: vi.fn(),
   countReportsSince: vi.fn(),
+  resolveHiveWorkspaceId: vi.fn(),
 }));
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -25,6 +26,10 @@ vi.mock('../../identity/resolve-local-github-identity', () => ({
 }));
 vi.mock('../../hive-reports-store', () => ({ fileReport: h.fileReport, countReportsSince: h.countReportsSince }));
 vi.mock('../../hive-membership-store', () => ({ getHiveMember: h.getPotMember }));
+// WI-5334: resolveHiveWorkspaceId (../../hive-store) — mocked (not left to hit the real DB)
+// so the ambient-vs-resolved-workspace-mismatch class has a fast, deterministic unit test
+// instead of relying solely on the live two-instance smoke witness.
+vi.mock('../../hive-store', () => ({ resolveHiveWorkspaceId: h.resolveHiveWorkspaceId }));
 
 import tool from './report';
 
@@ -49,6 +54,10 @@ beforeEach(() => {
     createdAt: 1000,
     updatedAt: 1000,
   }));
+  // Default: no ambient/real-partition mismatch — echo the ambient workspaceId straight
+  // back, exactly like the real resolveHiveWorkspaceId when the Hive IS minted under the
+  // caller's ambient workspace (the common case; existing tests below assume 'default').
+  h.resolveHiveWorkspaceId.mockImplementation(async (ambientWorkspaceId: string) => ambientWorkspaceId);
 });
 
 describe('pot:report handler (member-filed moderation reports)', () => {
@@ -200,6 +209,27 @@ describe('pot:report handler (member-filed moderation reports)', () => {
     const b = await env({ pot: 'sheets', targetKind: 'content', targetRef: 'F-1' });
     expect(b).toMatchObject({ ok: true });
     expect(h.fileReport).toHaveBeenCalled();
+  });
+
+  it('WI-5334: a JOINED member whose ambient workspace differs from the Hive\'s real partition still resolves policy/membership/rate-limit/fileReport against the RESOLVED workspace, not the ambient one', async () => {
+    // Reproduces the WI-5334/WI-5321/WI-5061 ambient-workspace-mismatch family: the
+    // caller's ambient workspaceId ('default') is NOT where this Hive's rows (policy,
+    // membership) actually live — resolveHiveWorkspaceId resolves to the Hive's real
+    // partition ('hive-real-ws'). Before the fix, every downstream lookup used the
+    // ambient id directly and silently missed (reportable read as false / not_a_member),
+    // and fileReport would have persisted under a partition no reader ever queries.
+    h.resolveHiveWorkspaceId.mockImplementation(async (_ambient: string, potHomeSlug: string) =>
+      potHomeSlug === 'sheets' ? 'hive-real-ws' : _ambient,
+    );
+    const b = await env({ pot: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: true });
+    expect(h.resolveHiveWorkspaceId).toHaveBeenCalledWith('default', 'sheets');
+    expect(h.getPotPolicy).toHaveBeenCalledWith('hive-real-ws', 'sheets');
+    expect(h.getPotMember).toHaveBeenCalledWith('hive-real-ws', 'sheets', 123);
+    expect(h.countReportsSince).toHaveBeenCalledWith('hive-real-ws', 'sheets', 123, expect.any(Number));
+    expect(h.fileReport).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'hive-real-ws', potHomeSlug: 'sheets' }),
+    );
   });
 
   it('self-report allowed (member can report own content)', async () => {

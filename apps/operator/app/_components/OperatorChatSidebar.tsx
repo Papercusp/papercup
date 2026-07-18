@@ -27,9 +27,9 @@ import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-cor
 import { ChevronLeft, ChevronRight, ClipboardList, Inbox as InboxIcon, Volume2, VolumeX } from 'lucide-react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
-import { drillInRefToInbox } from './chat/curator-card-drill-in';
+import { resolveInboxDrillIn } from './chat/curator-card-drill-in';
 import { PotHealthPane } from './PotHealthPane';
-import { useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
+import { useInboxAttention, useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
 
 // The Inbox view (EI-13037) pulls the Queue detail card chain — lazy so the
@@ -308,10 +308,18 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
     opci: parseAsString,
     opcis: parseAsString,
   });
+  // The live attention items, so a drill-in can RESOLVE its ref against a real
+  // inbox item and actually select it (WI-5342). Same shared plans.attention
+  // cache the badge hooks read — no extra query. Held in a ref so
+  // handleCardDrillIn stays identity-stable (it's memo-keyed into OperatorChat's
+  // renderers) while still reading the freshest items at click time.
+  const { items: inboxItems } = useInboxAttention();
+  const inboxItemsRef = useRef(inboxItems);
+  inboxItemsRef.current = inboxItems;
   const handleCardDrillIn = useCallback(
     (ref: string) => {
-      const sel = drillInRefToInbox(ref);
-      void setDrillNav({ opcv: 'inbox', opci: sel ? 'all' : null, opcis: sel });
+      const { selId, filter } = resolveInboxDrillIn(ref, inboxItemsRef.current);
+      void setDrillNav({ opcv: 'inbox', opci: filter, opcis: selId });
     },
     [setDrillNav],
   );

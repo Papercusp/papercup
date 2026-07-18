@@ -870,11 +870,13 @@ export const FLAGS = {
   DOC_STEWARD: "papercusp-doc-steward",
   // plan-federation-regrain-2026-06-13 P-005/P-006: per-PART plan federation —
   // kills the whole-document LWW clobber where two peers editing DIFFERENT plan
-  // items lose one edit (D-009). DEFAULT-OFF: an UNVERIFIED cutover that needs a
-  // real two-machine merge proof (P-008) + the existing-plan backfill (P-007)
-  // before the flip. When OFF, plans federate EXACTLY as today (the whole
-  // harness_plans.content blob, mig 125) and the per-part capture/projection are
-  // inert — the live path is byte-identical. The owner flips this ON at cutover.
+  // items lose one edit (D-009). DEFAULT ON since 2026-07-18: the two-machine
+  // merge proof its cutover demanded (P-008) ran GREEN on the live tower↔Avis-iMac
+  // rig — concurrent different-part edits under flag-ON on both machines converged
+  // byte-identically with both edits surviving on both sides, no whole-blob
+  // clobber (p2p-part-merge-proof-2026-07-18 D-001, WI-5331). OFF is the tested
+  // rollback: plans federate as the whole harness_plans.content blob (mig 125),
+  // per-part capture/projection inert — the pre-cutover path, byte-identical.
   PLAN_PART_FEDERATION: "papercusp-plan-part-federation",
   // Plan ownership/attribution badges: owner + last-editor on plan list rows +
   // detail, and per-item author (shared-hive-collaboration-2026-06-14 P-001, B1).
