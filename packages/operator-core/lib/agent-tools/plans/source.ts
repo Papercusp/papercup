@@ -105,7 +105,14 @@ export interface PlanSchedule {
   cron?: string;
   concurrency?: 'queue' | 'skip' | 'cancel-prev';
   catchup?: 'skip-old' | 'run-all-backlog';
-  carryState?: boolean;
+  // EI-1388: `carryState` (stateful watch — seed each run with the prior run's
+  // deliverable, D-007) was accepted + stored here but runScheduledPlanFire
+  // (plan-run-action.ts) never read it — enabling it silently did nothing. Removed
+  // rather than implemented: "the prior run's deliverable" needs a real design
+  // decision (which artifact, how it's injected into the new instance) that a
+  // backlog-drain pass shouldn't guess at; a no-op option that looks like it works
+  // is worse than no option. Re-add + wire into runScheduledPlanFire if/when that
+  // design lands.
   costCapCents?: number;
   /**
    * The frontier item_kind each run mints (D-006/P-009). Default 'feature' (coding

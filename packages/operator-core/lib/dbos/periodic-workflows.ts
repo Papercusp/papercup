@@ -32,6 +32,7 @@ import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-le
 import { gcOldOperatorTurns } from '../operator-turns-gc';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots, sweepRecoveryDebrisTick } from '@papercusp/backup';
+import { gcScheduledPlanRuns } from '../harness/routines/gc-plan-runs';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
@@ -595,6 +596,26 @@ const recoveryDebrisCleanupWorkflow = idempotentRegisterWorkflow('backupRecovery
   }),
 );
 DBOS.registerScheduled(recoveryDebrisCleanupWorkflow, { name: 'backupRecoveryDebrisCleanup', crontab: '0 0 4 * * *' });
+
+// Once daily (05:10): retention GC for terminal scheduled-plan runs (EI-1389).
+// gcScheduledPlanRuns (gc-plan-runs.ts) was implemented + tested but had ZERO
+// callers anywhere in the repo, so old scheduled-run artifacts (instance plan,
+// transcript, run-scoped work_items) would accumulate unbounded once the
+// scheduled-plans feature is used at volume — only the `plan_runs` ledger row
+// itself is kept forever (cheap; the Runs-tab history). Pure retention hygiene
+// with generous limits (last-50-per-template / 90-day) and ≈0 current usage, so
+// a dedicated low-cadence daily workflow — not a fold into the 30s routinesTick
+// (per the bug's own fix-sketch reasoning: a per-tick ranked scan there would be
+// wasteful for a sweep this infrequent).
+async function scheduledPlanRunsGcTick(): Promise<void> {
+  await DBOS.runStep(async () => { await gcScheduledPlanRuns(); }, { name: 'scheduled-plan-runs-gc' });
+}
+const scheduledPlanRunsGcWorkflow = idempotentRegisterWorkflow('scheduledPlanRunsGc', () =>
+  DBOS.registerWorkflow(scheduledPlanRunsGcTick, {
+    name: 'scheduledPlanRunsGc', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(scheduledPlanRunsGcWorkflow, { name: 'scheduledPlanRunsGc', crontab: '0 10 5 * * *' });
 
 // Every 30min: refresh APNs/FCM push credentials (consolidation P-003). Replaces
 // the legacy 50min setInterval (which stands down on dbosTimersActive); 30min is

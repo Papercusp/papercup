@@ -124,7 +124,14 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       accept: { expectedDevice: integrator.pubkeyBase64 },
       openDuplex,
     });
-    expect(out).toEqual({ ran: false, results: [], watermark: prior, stoppedOnFetchFailure: false, errors: [] });
+    expect(out).toEqual({
+      ran: false,
+      results: [],
+      watermark: prior,
+      stoppedOnFetchFailure: false,
+      unprocessedFromIndex: null,
+      errors: [],
+    });
   });
 
   it('processes a batch of announcements in order, threading the watermark forward', async () => {
@@ -187,12 +194,71 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
     });
     expect(out.ran).toBe(true);
     expect(out.stoppedOnFetchFailure).toBe(true);
+    expect(out.unprocessedFromIndex).toBe(0); // caller's cursor holds at the stopped item
     expect(out.results).toHaveLength(1); // stopped after the first fetch-failed item
     expect(out.results[0].bridge.outcome).toBe('fetch-failed');
     expect(out.errors.length).toBeGreaterThan(0);
     // Watermark unchanged — nothing was accepted this tick.
     expect(out.watermark).toEqual(priorWatermark);
     expect(dials).toBe(dialsBefore); // deadOpenDuplex never actually connects
+  });
+
+  it('a RETRYABLE rejection (unknown-sha) STOPS the batch and reports the hold index (P-505)', async () => {
+    // A signed advance for objects that never federated — with no dial seam the
+    // sha cannot resolve locally, which must HOLD the cursor (the objects
+    // arrive with a later ref-announce fetch), never drop the advance forever.
+    const ghost = await announce(1, 4, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+    const alsoPending = await announce(1, 5, s3);
+    const priorWatermark = { epochSeq: { epoch: 1, seq: 3 }, stagingSha: s3 };
+    const out = await runWorktreeBridgeTick({
+      bareRepoPath: localMirror,
+      worktreePath: wt,
+      pending: [ghost, alsoPending],
+      prior: priorWatermark,
+      accept: { expectedDevice: integrator.pubkeyBase64 },
+      // no openDuplex — the unknown sha rejects pre-fetch
+    });
+    expect(out.ran).toBe(true);
+    expect(out.stoppedOnFetchFailure).toBe(false);
+    expect(out.unprocessedFromIndex).toBe(0); // held AT the ghost — tail untouched
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0].bridge).toMatchObject({ outcome: 'rejected', reason: 'unknown-sha' });
+    expect(out.watermark).toEqual(priorWatermark);
+    expect(out.errors.some((e) => e.includes('retryable rejection'))).toBe(true);
+  });
+
+  it('a RETRYABLE rejection (ungranted-epoch) STOPS the batch — a successor authority whose token has not federated yet is held, not dropped (P-505)', async () => {
+    // Epoch 5 exceeds the receiver's provable grant cap — the granting handoff
+    // token simply has not federated yet, so the advance must retry later.
+    const successor = await announce(5, 1, s3);
+    const priorWatermark = { epochSeq: { epoch: 1, seq: 3 }, stagingSha: s3 };
+    const out = await runWorktreeBridgeTick({
+      bareRepoPath: localMirror,
+      worktreePath: wt,
+      pending: [successor],
+      prior: priorWatermark,
+      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 1 },
+    });
+    expect(out.ran).toBe(true);
+    expect(out.unprocessedFromIndex).toBe(0);
+    expect(out.results[0].bridge).toMatchObject({ outcome: 'rejected', reason: 'ungranted-epoch' });
+    expect(out.watermark).toEqual(priorWatermark);
+  });
+
+  it('a TERMINAL rejection (stale-epoch-seq) still skips-and-continues — never holds the cursor', async () => {
+    const stale = await announce(1, 1, s1); // long-superseded (epoch, seq)
+    const priorWatermark = { epochSeq: { epoch: 1, seq: 3 }, stagingSha: s3 };
+    const out = await runWorktreeBridgeTick({
+      bareRepoPath: localMirror,
+      worktreePath: wt,
+      pending: [stale],
+      prior: priorWatermark,
+      accept: { expectedDevice: integrator.pubkeyBase64 },
+    });
+    expect(out.ran).toBe(true);
+    expect(out.unprocessedFromIndex).toBe(null); // fully processed — cursor consumes it
+    expect(out.results[0].bridge).toMatchObject({ outcome: 'rejected', reason: 'stale-epoch-seq' });
+    expect(out.watermark).toEqual(priorWatermark);
   });
 
   it('omitting openDuplex serves from an already-current local mirror (integrator-machine path)', async () => {

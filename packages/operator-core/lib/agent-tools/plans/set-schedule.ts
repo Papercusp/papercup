@@ -28,7 +28,10 @@ const scheduleSchema = z
     cron: z.string().optional().describe('Cron dialect (5/6-field) — the alternate input.'),
     concurrency: z.enum(['queue', 'skip', 'cancel-prev']).optional().describe('Overlap policy if a prior run is still going. Default skip.'),
     catchup: z.enum(['skip-old', 'run-all-backlog']).optional(),
-    carryState: z.boolean().optional().describe('Stateful watch: seed each run with the prior run’s deliverable (D-007).'),
+    // EI-1388: `carryState` removed — it was accepted + stored but never actually
+    // applied by the fire path (runScheduledPlanFire always mints a plain copy of
+    // the template), so enabling it silently did nothing. See source.ts's
+    // PlanSchedule.carryState removal comment for the full rationale.
     costCapCents: z.number().int().nonnegative().optional().describe('Per-plan spend cap (D-012).'),
     executorKind: z
       .enum(['feature', 'chunk'])

@@ -1844,14 +1844,16 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
  * committing even when this pass fails); outcome + the `{epoch, seq}`
  * watermark persist on the routine metadata (the `lastAdmitted` idiom above).
  *
- * EPOCH NOTE (known simplification, flagged for the P-101/G-0 live-rig work):
- * the epoch-FENCING mechanism (sign/verify by strict (epoch,seq) order) is
- * fully wired here; the epoch-GRANTING policy (bumping `epoch` on a genuine
- * lock-authority HANDOFF, via the G-0 handoff-token library) is NOT — this
- * leg persists one epoch per (hive,repo) for the life of its routine metadata
- * and only advances `seq` within it. Correct and safe for a single-authority
- * dev-box run (there is only ever one epoch in play); a live multi-machine
- * authority handoff needs the G-0 grant wired in before Phase 3's drill.
+ * EPOCH GRANT (P-505 — closes the former "EPOCH NOTE" gap): the publish epoch
+ * comes from `deriveIntegratorGrant` (authority-epoch.ts), which composes the
+ * G-0 handoff-token library: adopt the best verified member token
+ * (token.epoch + 1, FF-seeded base) on a graceful takeover; the P-038 crash
+ * path (bridge watermark ahead of own publish watermark ⇒ epoch + 1, base =
+ * max observed staging) when the previous authority died tokenless; standing
+ * authorities keep their epoch and bump seq exactly as before. After every
+ * announced advance this leg re-publishes its OWN handoff token (a
+ * continuously-maintained "will"), so a successor can always adopt — crash or
+ * graceful — as long as the namespace replicated.
  */
 async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void> {
   try {
@@ -1874,16 +1876,44 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     ];
     if (memberDevicePubkeysBase64.length === 0) return; // no attested devices yet
 
+    // P-505: gate on the lease ONCE here (the tick's own default gate would
+    // re-query presence) — only the current authority derives a grant; grant
+    // derivation on a non-authority could wrongly seed its staging ref.
+    let isAuthority: boolean;
+    try {
+      isAuthority = (await lockAuthorityForHive(potHomeSlug)).isSelf;
+    } catch {
+      return; // presence unreadable — the real authority still runs its own tick
+    }
+    if (!isAuthority) return;
+
     const { sql } = getOrgPg();
-    const rows = await sql<{ integrator: { epoch: number; seq: number } | null }[]>`
-      SELECT metadata->'integrator' AS integrator
+    const rows = await sql<
+      {
+        integrator: { epoch: number; seq: number } | null;
+        worktree_bridge: { epochSeq: EpochSeq | null } | null;
+      }[]
+    >`
+      SELECT metadata->'integrator' AS integrator, metadata->'worktree_bridge' AS worktree_bridge
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const prior = rows[0]?.integrator ?? null;
-    const epoch = prior?.epoch ?? 1;
-    const priorSeq = prior?.seq ?? 0;
+
+    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
+    const grant = await deriveIntegratorGrant({
+      repoPath,
+      selfDevicePubkeyBase64: actor.devicePubkey,
+      memberDevicePubkeysBase64,
+      priorIntegrator: prior,
+      bridgeWatermark: rows[0]?.worktree_bridge?.epochSeq ?? null,
+    });
+    if (grant.basis !== 'standing') {
+      console.info(`[git-sync] ${slug}: ${grant.detail}`);
+    }
+    const { epoch } = grant;
+    const { priorSeq } = grant;
 
     const keychainId = resolveDeviceKeychainId(actor.githubUserId);
     const outcome = await runIntegratorTick({
@@ -1897,6 +1927,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
       resolveTier: async (devicePubkeyBase64) =>
         (await resolveAuthorCommsTier({ workspaceId, potHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
+      deps: { isIntegrator: async () => true }, // gated above — skip the re-query
     });
 
     if (outcome.announcement) {
@@ -1937,6 +1968,32 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
            )
          WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
       `;
+      // P-505 continuous will: refresh our handoff token to the state we just
+      // published, so a successor (crash OR graceful) adopts epoch+1 from it.
+      // Best-effort — a miss only degrades a future takeover to the crash path.
+      try {
+        await publishHandoffToken(
+          repoPath,
+          actor.devicePubkey,
+          {
+            epoch,
+            seq: outcome.announcement.seq,
+            stagingSha: outcome.announcement.staging_sha,
+            parked: (outcome.integration?.skippedConflicts ?? []).map((c) => ({
+              deviceHex: c.deviceHex,
+              sha: c.sha,
+            })),
+            nowMs: Date.now(),
+          },
+          (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
+        );
+      } catch (e) {
+        console.warn(
+          `[git-sync] ${slug}: handoff-token refresh failed (successor falls back to crash-path takeover): ${
+            e instanceof Error ? e.message : e
+          }`,
+        );
+      }
     }
     if (outcome.errors.length) {
       console.warn(`[git-sync] ${slug}: integrator-tick reported errors: ${outcome.errors.join('; ')}`);
@@ -2008,11 +2065,10 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     const priorState = rows[0]?.worktree_bridge ?? null;
     const lastEventId = priorState?.lastEventId ?? 0;
     const priorWatermark = { epochSeq: priorState?.epochSeq ?? null, stagingSha: priorState?.stagingSha ?? null };
-    const maxGrantedEpoch = rows[0]?.integrator?.epoch;
 
     // Pending hive-git:staging-advance fed-events since the watermark.
-    const feRows = await sql<{ id: number; body: Record<string, unknown> }[]>`
-      SELECT id, body
+    const feRows = await sql<{ id: number; ts_ms: string | number | null; body: Record<string, unknown> }[]>`
+      SELECT id, (extract(epoch FROM ts) * 1000)::bigint AS ts_ms, body
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${potHomeSlug}
@@ -2025,11 +2081,17 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     if (feRows.length === 0) return; // fast no-op — nothing new to bridge
 
     const pending: SignedStagingAdvance[] = [];
+    /** Row id + age per PENDING entry, index-aligned with `pending` — the
+     *  cursor-hold math (P-505) needs the stopped item's row id and age. */
+    const pendingRows: { id: number; tsMs: number | null }[] = [];
     let maxRowId = lastEventId;
     for (const row of feRows) {
       maxRowId = Math.max(maxRowId, row.id);
       const fe = row.body?.fed_event as { payload?: unknown } | undefined;
-      if (fe && isSignedStagingAdvance(fe.payload)) pending.push(fe.payload);
+      if (fe && isSignedStagingAdvance(fe.payload)) {
+        pending.push(fe.payload);
+        pendingRows.push({ id: row.id, tsMs: row.ts_ms === null ? null : Number(row.ts_ms) });
+      }
     }
     if (pending.length === 0) {
       // Rows existed (e.g. a malformed payload) but nothing usable — still
@@ -2050,6 +2112,16 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     const worktreePath = await projectDirForSlug(slug);
     if (!worktreePath) return; // no checked-out tree for this slug — next tick retries
 
+    // P-505: the insider-poisoning cap must recognize a LEGITIMATE grant — the
+    // receiver's own publish epoch alone would reject a successor authority's
+    // (epoch + 1) advances as `ungranted-epoch` forever. Verified handoff
+    // tokens are the grant evidence (staging-advance.ts's documented source).
+    const maxGrantedEpoch = await deriveMaxGrantedEpoch({
+      repoPath,
+      memberDevicePubkeysBase64,
+      ownIntegratorEpoch: rows[0]?.integrator?.epoch,
+    });
+
     const outcome = await runWorktreeBridgeTick({
       bareRepoPath: repoPath,
       worktreePath,
@@ -2062,9 +2134,32 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       // openDuplex intentionally omitted — see the module doc above.
     });
 
+    // P-505 cursor-hold (the WI-3497 drop-forever fix): a stop (fetch-failed or
+    // a RETRYABLE rejection — unknown-sha / ungranted-epoch) means the stopped
+    // item and everything after it must RE-COLLECT next tick, so the cursor
+    // only consumes rows strictly before it. Age-bound the hold: an item stuck
+    // retryable past the TTL is a genuinely lost object, not a race — consume
+    // it (loudly) so one poisoned row can never wedge the bridge forever.
+    const RETRY_TTL_MS = 6 * 60 * 60 * 1000;
+    let newCursor = maxRowId;
+    const k = outcome.unprocessedFromIndex;
+    if (k !== null && k < pendingRows.length) {
+      const stuck = pendingRows[k];
+      const age = stuck.tsMs === null ? null : Date.now() - stuck.tsMs;
+      if (age !== null && age > RETRY_TTL_MS) {
+        console.warn(
+          `[git-sync] ${slug}: staging-advance fed-event row ${stuck.id} stuck retryable past ` +
+            `${Math.round(RETRY_TTL_MS / 3_600_000)}h — consuming it as lost (objects/token never federated)`,
+        );
+        newCursor = stuck.id; // consume the stuck row, hold before the tail
+      } else {
+        newCursor = stuck.id - 1; // hold AT the stuck row — it re-collects next tick
+      }
+    }
+
     await patchRoutineMetadata(slug, {
       worktree_bridge: {
-        lastEventId: maxRowId,
+        lastEventId: newCursor,
         epochSeq: outcome.watermark.epochSeq,
         stagingSha: outcome.watermark.stagingSha,
         at: Date.now(),
