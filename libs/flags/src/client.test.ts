@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+//
 /**
  * client.test.ts — flag-read defaulting + the client store (P-022 of
  * test-coverage-rest-non-critical). The client is the browser/Tauri-safe flag
@@ -7,8 +9,15 @@
  *
  * @papercusp/sse is mocked — subscribeToFlagStream isn't under test here and the
  * mock keeps the import off the (submodule) SSE lib.
+ *
+ * EI-2425 fix A: `useFlag` is now a REAL React hook (useSyncExternalStore over
+ * the store below), so it can no longer be called bare outside a component
+ * render (React throws "Invalid hook call"). The defaulting/value tests below
+ * use `@testing-library/react`'s `renderHook` (hence the jsdom environment
+ * pragma above — renderHook needs a DOM to mount its throwaway host).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
 
 vi.mock('@papercusp/sse', () => ({ createResilientEventSource: vi.fn() }));
 
@@ -40,21 +49,40 @@ afterEach(() => {
 describe('useFlag — defaulting', () => {
   it('returns the FLAG_DEFAULTS value for the initial state', () => {
     for (const k of ALL_FLAG_KEYS) {
-      expect(useFlag(k)).toBe(FLAG_DEFAULTS[k]);
+      const { result } = renderHook(() => useFlag(k));
+      expect(result.current).toBe(FLAG_DEFAULTS[k]);
     }
   });
 
-  it('reflects a value set via setFlagPayload', () => {
+  it('reflects a value set via setFlagPayload BEFORE the hook mounts', () => {
     setFlagPayload({ flags: { [KEY]: true } as FlagValues, evaluatedAt: 1, source: 'posthog' });
-    expect(useFlag(KEY)).toBe(true);
+    const { result } = renderHook(() => useFlag(KEY));
+    expect(result.current).toBe(true);
   });
 
   it('a partial payload still defaults every unset flag (resolveWithDefaults)', () => {
     setFlagPayload({ flags: { [KEY]: true } as FlagValues, evaluatedAt: 1, source: 'posthog' });
-    expect(useFlag(KEY)).toBe(true);
-    expect(useFlag(OTHER)).toBe(false); // unset → default
+    expect(renderHook(() => useFlag(KEY)).result.current).toBe(true);
+    expect(renderHook(() => useFlag(OTHER)).result.current).toBe(false); // unset → default
     // every key resolves to a boolean
-    for (const k of ALL_FLAG_KEYS) expect(typeof useFlag(k)).toBe('boolean');
+    for (const k of ALL_FLAG_KEYS) {
+      expect(typeof renderHook(() => useFlag(k)).result.current).toBe('boolean');
+    }
+  });
+
+  it('EI-2425 fix A: a MOUNTED hook re-renders live when setFlagPayload changes the flag — the exact bug this fixes (a plain function read never updated an already-rendered consumer)', () => {
+    const { result } = renderHook(() => useFlag(KEY));
+    expect(result.current).toBe(false); // default
+
+    act(() => {
+      setFlagPayload({ flags: { [KEY]: true } as FlagValues, evaluatedAt: 1, source: 'posthog' });
+    });
+    expect(result.current).toBe(true); // re-rendered with the NEW value, no remount
+
+    act(() => {
+      setFlagPayload({ flags: { [KEY]: false } as FlagValues, evaluatedAt: 2, source: 'posthog' });
+    });
+    expect(result.current).toBe(false); // flips back live too
   });
 });
 
@@ -103,7 +131,7 @@ describe('loadFlags', () => {
     const result = await loadFlags('/api/flags/bootstrap');
     expect(fetchMock).toHaveBeenCalledWith('/api/flags/bootstrap', { credentials: 'same-origin' });
     expect(result.flags[KEY]).toBe(true);
-    expect(useFlag(KEY)).toBe(true); // store updated
+    expect(renderHook(() => useFlag(KEY)).result.current).toBe(true); // store updated
   });
 
   it('throws on a non-2xx response', async () => {

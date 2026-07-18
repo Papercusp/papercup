@@ -14,7 +14,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/db/migrate.test.ts
  */
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // WI-5217: explicit result/param types so `.mock.calls[...]` destructures and
 // `.mockResolvedValue({...extra fields})` overrides typecheck against the real
@@ -63,7 +63,7 @@ vi.mock('../locks/resource-lock-guard', () => ({
   }),
 }));
 
-import migrateTool from './migrate';
+import migrateTool, { isLockTimeoutFailure, lockRetryBackoffMs } from './migrate';
 
 const CTX = { role: 'operator' } as never;
 const parse = (res: { content: Array<{ text: string }> }) => JSON.parse(res.content[0].text);
@@ -187,5 +187,87 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
     expect(out.already_applied).toBe(true);
     expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
+  beforeEach(() => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const LOCK_TIMEOUT_STDERR = 'ERROR:  canceling statement due to lock timeout';
+
+  it('sets an explicit lock_timeout so a stuck attempt fails fast instead of hanging indefinitely', async () => {
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.applied).toBe(true);
+    expect(out.attempts).toBe(1);
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).toContain("SET LOCAL lock_timeout = '10s';");
+    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
+  });
+
+  it('retries a lock-timeout cancel with backoff and succeeds once contention clears', async () => {
+    vi.useFakeTimers();
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: LOCK_TIMEOUT_STDERR })
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: LOCK_TIMEOUT_STDERR })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' });
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(2000); // backoff after attempt 1
+    await vi.advanceTimersByTimeAsync(4000); // backoff after attempt 2
+    const out = parse(await promise);
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+    expect(out.attempts).toBe(3);
+    expect(h.spawnSync).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT retry a non-lock-timeout failure — fails fast on a single attempt', async () => {
+    h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'ERROR: syntax error' });
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.ok).toBe(false);
+    expect(out.attempts).toBe(1);
+    expect(out.lock_timeout_retries_exhausted).toBe(false);
+    expect(h.spawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('exhausts retries after 5 repeated lock-timeout cancels and reports lock_timeout_retries_exhausted', async () => {
+    vi.useFakeTimers();
+    h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: LOCK_TIMEOUT_STDERR });
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.advanceTimersByTimeAsync(8000);
+    await vi.advanceTimersByTimeAsync(16000);
+    const out = parse(await promise);
+    expect(out.ok).toBe(false);
+    expect(out.attempts).toBe(5);
+    expect(out.lock_timeout_retries_exhausted).toBe(true);
+    expect(h.spawnSync).toHaveBeenCalledTimes(5);
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('isLockTimeoutFailure / lockRetryBackoffMs — pure helpers (EI-9417)', () => {
+  it("matches PG's own lock-timeout cancel message, case-insensitively", () => {
+    expect(isLockTimeoutFailure('ERROR:  canceling statement due to lock timeout')).toBe(true);
+    expect(isLockTimeoutFailure('error: CANCELING STATEMENT DUE TO LOCK TIMEOUT')).toBe(true);
+  });
+
+  it('does not match an unrelated failure (including the similarly-worded statement_timeout cancel)', () => {
+    expect(isLockTimeoutFailure('ERROR: syntax error at or near "FOO"')).toBe(false);
+    expect(isLockTimeoutFailure('ERROR: canceling statement due to statement timeout')).toBe(false);
+    expect(isLockTimeoutFailure('')).toBe(false);
+  });
+
+  it('backs off exponentially (2s, 4s, 8s, 16s), capped at 30s', () => {
+    expect(lockRetryBackoffMs(1)).toBe(2000);
+    expect(lockRetryBackoffMs(2)).toBe(4000);
+    expect(lockRetryBackoffMs(3)).toBe(8000);
+    expect(lockRetryBackoffMs(4)).toBe(16000);
+    expect(lockRetryBackoffMs(5)).toBe(30000); // would be 32000 uncapped
   });
 });

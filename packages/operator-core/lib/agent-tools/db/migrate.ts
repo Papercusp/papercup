@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
@@ -65,7 +65,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-type SpawnResult = ReturnType<typeof spawnSync>;
+type SpawnResult = SpawnSyncReturns<string>;
 
 /** Run the migration script via psql, retrying ONLY on a lock-timeout cancel,
  *  up to `maxAttempts`, with {@link lockRetryBackoffMs} backoff between
@@ -284,6 +284,10 @@ export default defineTool({
         const script =
           `BEGIN;\n` +
           `SET LOCAL statement_timeout = 0;\n` +
+          // EI-9417: fail FAST on lock contention (was unset — could hang
+          // indefinitely against a hot table) instead of waiting it out; the
+          // retry loop below is what actually rides out the contention.
+          `SET LOCAL lock_timeout = '${MIGRATION_LOCK_TIMEOUT_SQL}';\n` +
           `\\i ${args.file}\n` +
           `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
           `COMMIT;\n`;
@@ -293,12 +297,19 @@ export default defineTool({
         // postgres-js can't, and it's gated behind PAPERCUSP_ALLOW_DB_MIGRATE
         // + the db-schema lock. Not runtime/shipped data-plane code. Mirrored
         // in @papercusp/export-state's no-psql-shellout ALLOW set.
-        const r = spawnSync('psql', [url, '-v', 'ON_ERROR_STOP=1'], {
-          input: script,
-          encoding: 'utf8',
-        });
+        // EI-9417: retries automatically on "canceling statement due to lock
+        // timeout" against a hot coordination table (coord_presence et al) —
+        // see runMigrationWithLockRetry above.
+        const { result: r, attempts } = await runMigrationWithLockRetry(url, script);
         if (r.status !== 0) {
-          return json({ ok: false, applied: false, exit_code: r.status, stderr: (r.stderr ?? '').slice(-2000) });
+          return json({
+            ok: false,
+            applied: false,
+            exit_code: r.status,
+            stderr: (r.stderr ?? '').slice(-2000),
+            attempts,
+            lock_timeout_retries_exhausted: attempts >= LOCK_RETRY_MAX_ATTEMPTS && isLockTimeoutFailure(r.stderr ?? ''),
+          });
         }
         // Record only on a successful apply (first writer wins). This is the
         // su_meta coordination-domain idempotency ledger (a DIFFERENT record
@@ -316,6 +327,7 @@ export default defineTool({
           fence_seq: fence.seq,
           schema_migrations_recorded: true,
           sha256,
+          attempts,
         });
       },
     );

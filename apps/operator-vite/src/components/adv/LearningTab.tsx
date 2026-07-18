@@ -4124,7 +4124,7 @@ export function LearningStyles() {
       .pc-learning__provenance.is-brain { color: #34d399; border-color: color-mix(in srgb, #34d399 42%, var(--border)); }
       .pc-learning__provenance.is-scout { color: #a78bfa; border-color: color-mix(in srgb, #a78bfa 42%, var(--border)); }
       .pc-learning__provenance.is-system { color: #fbbf24; border-color: color-mix(in srgb, #fbbf24 42%, var(--border)); }
-      .pc-learning__provenance.is-reference { color: #38bdf8; border-color: color-mix(in srgb, #38bdf8 42%, var(--border)); }
+      .pc-learning__provenance.is-reference { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
       .pc-learning__memorymap { display: grid; grid-template-columns: repeat(16, minmax(5px, 1fr)); grid-auto-rows: 1fr; gap: 3px; padding: 12px; }
       .pc-learning__memorymap i { min-height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 58%, transparent); opacity: .78; }
       .pc-learning__memorymap i.is-organic { background: #34d399; }

@@ -291,6 +291,14 @@ const ALLOWLIST: Record<string, Classification> = {
       'frozen pre-migration backup snapshot of subscriptions taken during the 2026-07-17 unify migration — no ' +
       'live reader or reaper touches it; DELETE this entry when the bak_ table is dropped.',
   },
+  'session_pending_gates.owner_id': {
+    status: 'exempt',
+    reason:
+      'owner-inbox-single-pane-2026-07-17 P-002 (migration 619): "asking agent\'s coord identity, when known" — ' +
+      'a provenance stamp set once at gate-open and only ever read back for DISPLAY (sessions:list-pending-gates, ' +
+      'the owner-wall attention adapter). No reader re-queries or reaps rows keyed on a LIVE owner_id — the gate ' +
+      'itself is addressed by (session_id, ref_id), same class as agent_activity.owner_id / tool_invocations.coord_owner_id.',
+  },
 };
 
 /** Column-name patterns that mean "this stores a CURRENT holder/owner
