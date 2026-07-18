@@ -28,6 +28,7 @@ import {
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PendingMembershipContent } from '../pending-membership-content';
+import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
 import { buildContributorsProjection } from './contributors';
 import { buildFeatureClaimsProjection } from './feature-claims';
 import { buildFeatureQueueProjection } from './feature-queue';
@@ -96,13 +97,32 @@ export interface RegisterAllOpts {
    * settings never reach the joiner, AND `loadRevokedHivePubkeys(<home>)` finds an
    * empty set so a revoked member is never refused by the joiner's admission union
    * (the revocation half). Binding ONLY these two to the home slug lets the
-   * already-running member merge land them. Boot sets this iff the harness's Hive
-   * home is a `remote_hive` (joined) view — the owner's home harness owns the
-   * write side, so an owned-hive member must NOT rebind (it would double-apply the
-   * owner's own rows as `origin='remote'`). Undefined ⇒ today's behavior
+   * already-running member merge land them. Boot sets this for a `remote_hive`
+   * (joined) view, AND — WI-3734 — for an OWNED hive's member harness (home ≠ own
+   * slug, hive owned locally): without the rebind the owner-side member fold
+   * demux-dropped every home-grained op a PEER member drained (B→A settings/members
+   * silently lost). The double-apply the owned case risks (re-applying the owner's
+   * own rows as `origin='remote'`) is prevented by `resolveHomeLogKeyHex` below —
+   * boot threads it together with this rebind. Undefined ⇒ today's behavior
    * (member-slug binding for all projections).
    */
   potHomeSlug?: string;
+  /**
+   * WI-3734 (owned-hive owner-side fold): lazily resolve the LOCALLY-BOOTED
+   * hive-home harness's own-log keyHex — non-null iff the home harness is booted
+   * in THIS process (an OWNED hive; a joined hive's home is remote and never
+   * resolves). Boot threads it whenever the hive-home rebind engages for a MEMBER
+   * harness (home ≠ own slug). The hiveScoped projections' apply guard SKIPS an op
+   * whose receiver-stamped `sourceLogKeyHex` matches: the home's own fold owns its
+   * own-log ops (they land in PG at write time via the CDC capture), so re-applying
+   * them at the member scope would double-apply the owner's rows as
+   * `origin='remote'` — the WI-2105/WI-559 fear that previously blocked this rebind
+   * entirely. Lazy because the home may boot AFTER the member (boot order is not
+   * guaranteed); resolved per-op at apply time. For a JOINED hive it returns null
+   * and nothing is excluded — the joiner MUST apply home-log ops (that is the
+   * A-003 rebind's whole point).
+   */
+  resolveHomeLogKeyHex?: () => string | null;
   /**
    * WI-2105 REV (no-hiveHome fix): the hive-home the MEMBER-CONTENT GUARD resolves
    * its member set from — DECOUPLED from `potHomeSlug` (the projection-rebind home
@@ -240,26 +260,104 @@ export const REGISTERED_PROJECTION_TAGS = [
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
 
 /**
+ * WI-3734: apply-guard wrapped around every hive-home-grained (`hiveScoped`)
+ * projection when boot threads `resolveHomeLogKeyHex` (the owned-hive member
+ * rebind). Two duties:
+ *
+ *  - HOME-LOG EXCLUSION: skip ops sourced from the locally-booted home's own log
+ *    — the home fold owns them (CDC capture already landed the rows in PG), so
+ *    re-applying at the member scope would double-apply the owner's rows as
+ *    `origin='remote'`. Keyed on the RECEIVER-STAMPED `provenance.sourceLogKeyHex`
+ *    (unforgeable), the same signal `skipOwnOps` uses for the own log. For a
+ *    JOINED hive the resolver returns null (home is remote, never locally booted)
+ *    and nothing is excluded.
+ *
+ *  - DEMUX-DROP OBSERVABILITY (WI-5136): a home-grained row tagged with a slug
+ *    OTHER than the bound home previously vanished in the projection's own
+ *    `harness_slug` guard with no counter — count it into
+ *    `federation_refused_op_counters` ('demux-mismatch') before delegating (the
+ *    projection's guard still performs the actual drop). Fail-soft by the
+ *    counter's own contract.
+ */
+function withHiveHomeApplyGuard<Row>(
+  p: TableProjection<Row>,
+  guard: {
+    workspaceId: string;
+    boundSlug: string;
+    resolveHomeLogKeyHex: () => string | null;
+    sql?: import('postgres').Sql;
+  },
+): TableProjection<Row> {
+  const rowSlug = (row: unknown): string | undefined => {
+    if (!row || typeof row !== 'object') return undefined;
+    const r = row as Record<string, unknown>;
+    const v = r.harness_slug ?? r.pot_home_slug;
+    return typeof v === 'string' ? v : undefined;
+  };
+  return {
+    ...p,
+    writeToPg: async (row, provenance) => {
+      const homeLog = guard.resolveHomeLogKeyHex();
+      if (homeLog && provenance?.sourceLogKeyHex === homeLog) return; // home fold owns home-log ops
+      const slug = rowSlug(row);
+      if (slug !== undefined && slug !== guard.boundSlug) {
+        await bumpFederationRefusedOp(
+          {
+            workspaceId: guard.workspaceId,
+            harnessSlug: guard.boundSlug,
+            sourceHive: provenance?.sourceLogKeyHex ?? provenance?.authorPubkey,
+            tableTag: p.tableTag,
+            reason: 'demux-mismatch',
+          },
+          guard.sql,
+        );
+      }
+      return p.writeToPg(row, provenance);
+    },
+    deleteFromPg: async (key, delTs, delHlc, provenance) => {
+      const homeLog = guard.resolveHomeLogKeyHex();
+      if (homeLog && provenance?.sourceLogKeyHex === homeLog) return; // home fold owns home-log ops
+      return p.deleteFromPg(key, delTs, delHlc, provenance);
+    },
+  };
+}
+
+/**
  * Build this harness's projections as a fresh array. Single source of truth
  * for the per-harness projection SET — both the global-registry registration
  * (`registerAllHarnessProjections`) and the per-harness scoped apply
  * (`buildHarnessProjectionApply`) derive from it, so they never drift.
  */
 export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown>[] {
-  // A-003: the two hive-home-grained projections scope to the HIVE-HOME slug when
-  // boot supplies one (a joiner's member harness), else to this harness's own slug
-  // (the home harness itself, or today's non-rebind default). Every OTHER
-  // projection always stays on `harnessSlug` — the rebind is surgical to these two.
+  // A-003: the hive-home-grained projections scope to the HIVE-HOME slug when
+  // boot supplies one (a joiner's member harness, or — WI-3734 — an owned hive's
+  // member harness), else to this harness's own slug (the home harness itself, or
+  // today's non-rebind default). Every OTHER projection always stays on
+  // `harnessSlug` — the rebind is surgical to the hive-home-grained set.
   const hiveScoped: RegisterAllOpts =
     opts.potHomeSlug && opts.potHomeSlug !== opts.harnessSlug
       ? { ...opts, harnessSlug: opts.potHomeSlug }
       : opts;
+  // WI-3734: when boot threads the owned-home resolver, every hiveScoped projection
+  // gets the home-log-exclusion + demux-drop-counting apply guard. Identity (zero
+  // behavior change) when the resolver is absent — every pre-WI-3734 path.
+  const hh = <Row,>(p: TableProjection<Row>): TableProjection<Row> =>
+    opts.resolveHomeLogKeyHex
+      ? withHiveHomeApplyGuard(p, {
+          workspaceId: opts.workspaceId,
+          boundSlug: hiveScoped.harnessSlug,
+          resolveHomeLogKeyHex: opts.resolveHomeLogKeyHex,
+          sql: opts.sql,
+        })
+      : p;
   // WI-2105 REV (no-hiveHome fix): the member-content GUARD's hive-home is resolved for
   // a BROADER set than the projection rebind — any hive-peered harness incl. an OWNED
   // hive's member harness (`memberContentHiveHome`). Override ONLY `potHomeSlug` (which
   // the content projections read for the guard's member-set lookup); `harnessSlug` stays
-  // the member slug (writes still land under it) and `hiveScoped` is untouched (the
-  // owned-hive member never rebinds the hive-home projections → no double-apply).
+  // the member slug (writes still land under it) and `hiveScoped` is untouched here.
+  // (WI-3734: the owned-hive member NOW rebinds the hive-home projections too — via
+  // boot's `potHomeSlug` + the `resolveHomeLogKeyHex` home-log exclusion above, which
+  // closes the double-apply this decoupling originally existed to avoid.)
   const guardScoped: RegisterAllOpts =
     opts.memberContentHiveHome && opts.memberContentHiveHome !== opts.potHomeSlug
       ? { ...opts, potHomeSlug: opts.memberContentHiveHome }

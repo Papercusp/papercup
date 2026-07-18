@@ -67,6 +67,14 @@ export interface ProvenanceContext {
    * the guard derives an order key from `fed_ts` instead.
    */
   fedHlc?: string;
+  /**
+   * WI-3734: the op's RECEIVER-STAMPED source-log core key (`op.sourceLogKeyHex`),
+   * threaded verbatim so a per-projection apply guard can key on the unforgeable
+   * log source — register-all's owned-home exclusion skips hive-home-grained ops
+   * sourced from a locally-booted home's own log (the home fold owns them).
+   * `undefined` for a synthetic/local op built without a source log.
+   */
+  sourceLogKeyHex?: string;
 }
 
 export interface TableProjection<Row> {
@@ -225,12 +233,18 @@ function resolveOpProvenance(op: OpEnvelope, applyOpts?: ApplyOpOpts): Provenanc
     // write — trustworthy. D-001: thread the op's HLC so the writer stamps fed_hlc.
     const authorPubkey =
       origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
-    return { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc };
+    return { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc, sourceLogKeyHex: op.sourceLogKeyHex };
   }
   if (typeof op.ts === 'number') {
     // EI-79 step 2: even a provenance-less op must carry its `ts` so the writer stamps fed_ts and
     // the PG-level LWW guard works. Default attribution to a local self-write. D-001: carry hlc too.
-    return { authorPubkey: op.writerPubkey ?? '', origin: 'local', ts: op.ts, fedHlc: op.hlc };
+    return {
+      authorPubkey: op.writerPubkey ?? '',
+      origin: 'local',
+      ts: op.ts,
+      fedHlc: op.hlc,
+      sourceLogKeyHex: op.sourceLogKeyHex,
+    };
   }
   return undefined;
 }

@@ -24,8 +24,11 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from '../../work-items';
 
-/** Why a federated content op was refused. Bounded, low-cardinality by design. */
-export type RefusedOpReason = 'malformed' | 'not-federatable' | 'rate-capped';
+/** Why a federated content op was refused. Bounded, low-cardinality by design.
+ *  'demux-mismatch' (WI-3734/WI-5136): a hive-home-grained op whose row slug matches
+ *  NEITHER the applying scope's bound slug — previously an invisible silent drop in
+ *  the projection's own `harness_slug` guard. */
+export type RefusedOpReason = 'malformed' | 'not-federatable' | 'rate-capped' | 'demux-mismatch';
 
 export interface BumpRefusedOpArgs {
   /** The receiving operator's workspace partition. */
