@@ -200,4 +200,76 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     await git(['checkout', '-q', BRANCH], worktree);
     expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(head);
   });
+
+  describe('genesis-publish baseline (WI-5395 follow-on: onboarding a pre-existing repo)', () => {
+    // A fresh device + repo key so every publish here is a genuine genesis.
+    const REPO_G = 'repo-ohp-genesis';
+
+    it('without a baseline, a history above the flood cap is refused forever (the papercusp shape)', async () => {
+      const dev2 = devicePubkey();
+      const shas: string[] = [];
+      for (let i = 0; i < 4; i++) shas.push(await commitFile(worktree, `g${i}.txt`, `v${i}`, `g${i}`));
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE,
+        repoKey: REPO_G,
+        worktreePath: worktree,
+        branch: BRANCH,
+        devicePubkeyBase64: dev2,
+        // Tight flood cap: the FULL history exceeds it, the tip delta does not.
+        publishGuardCaps: { maxNewObjects: 6 },
+      });
+      expect(out.refused).not.toBeNull();
+      expect(out.refused!.refusalCode).toBe('object-flood');
+      expect(out.changed).toBe(false);
+    });
+
+    it('with a verified already-exposed baseline, genesis judges only the (baseline, head] delta and lands', async () => {
+      const dev2 = devicePubkey();
+      const repoPath = hiveGitRepoPath(HIVE, REPO_G);
+      const head = await git(['rev-parse', 'HEAD'], worktree);
+      const baseline = await git(['rev-parse', 'HEAD~1'], worktree); // "origin already serves up to here"
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE,
+        repoKey: REPO_G,
+        worktreePath: worktree,
+        branch: BRANCH,
+        devicePubkeyBase64: dev2,
+        publishGuardCaps: { maxNewObjects: 6 },
+        genesisBaselineSha: baseline,
+      });
+      expect(out.refused).toBeNull();
+      expect(out.changed).toBe(true);
+      expect(await readNamespaceRef(repoPath, dev2, `refs/heads/${BRANCH}`)).toBe(head);
+    });
+
+    it('after genesis the baseline is IGNORED — incremental publishes keep the strict namespace prior', async () => {
+      const dev2 = devicePubkey();
+      const first = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE,
+        repoKey: REPO_G,
+        worktreePath: worktree,
+        branch: BRANCH,
+        devicePubkeyBase64: dev2,
+        genesisBaselineSha: await git(['rev-parse', 'HEAD'], worktree),
+      });
+      expect(first.changed).toBe(true);
+      // Advance by one commit; pass a bogus far-back baseline WITH a cap that
+      // would refuse a full-history judge — the strict prior (one commit back)
+      // must be used instead, so the publish lands.
+      const next = await commitFile(worktree, 'g-post.txt', 'post', 'g-post');
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE,
+        repoKey: REPO_G,
+        worktreePath: worktree,
+        branch: BRANCH,
+        devicePubkeyBase64: dev2,
+        publishGuardCaps: { maxNewObjects: 6 },
+        genesisBaselineSha: null,
+      });
+      expect(out.refused).toBeNull();
+      expect(out.changed).toBe(true);
+      expect(out.headSha).toBe(next);
+      expect(out.priorSha).not.toBeNull();
+    });
+  });
 });

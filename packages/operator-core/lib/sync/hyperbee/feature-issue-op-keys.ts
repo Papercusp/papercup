@@ -643,7 +643,9 @@ function toWorkOfferValue(row: Record<string, unknown>): WorkOfferWireRow {
     signer_device_pubkey: String(row.signer_device_pubkey ?? ''),
     signature: String(row.signature ?? ''),
     record_version: numOrZero(row.record_version),
+    // P-001: DB NULL ⇔ wire '' for both — exactly one is non-empty for a valid row.
     fleet_slug: String(row.fleet_slug ?? ''),
+    pot_slug: String(row.pot_slug ?? ''),
     offer_kind: String(row.offer_kind ?? ''),
     status: String(row.status ?? ''),
   };

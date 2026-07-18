@@ -24,6 +24,15 @@
  *   • record already up to date   → ok, no version churn (re-delegating the
  *     same trio+count is an idempotent upsert at the allotment layer and must
  *     stay one at the offer layer — no re-federating a byte-identical card).
+ *
+ * pot-seat-pools-prose-ux-2026-07-18 P-001: the grantee generalizes from
+ * "always the fleet owner" to "exactly one of fleetSlug/potSlug" — a
+ * pot-scoped delegation publishes the standing offer into the pot's OWN hive
+ * topic (potSlug names it directly, validated like hiveOverride) with the
+ * seat payload's `audience` field narrowing who in that pot may spend it
+ * (D-002). A grantee mixup (neither/both set, or a pot form missing audience)
+ * is a loud `error` (an authoring bug — the caller already validated this at
+ * the store layer), never a benign `skipped`.
  */
 
 import { createHash } from 'node:crypto';

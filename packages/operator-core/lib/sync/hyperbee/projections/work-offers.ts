@@ -50,8 +50,11 @@ export interface WorkOfferWireRow {
   signature: string;
   /** Monotone version; bumps each author. */
   record_version: number;
-  /** Filter conveniences; MUST match the signed record (verified below). */
+  /** Filter conveniences; MUST match the signed record (verified below). P-001:
+   *  for offer_kind='seat', exactly one of fleet_slug/pot_slug is non-empty
+   *  (represented on the wire as '' — see isWorkOfferWireRow / toWorkOfferValue). */
   fleet_slug: string;
+  pot_slug: string;
   offer_kind: string;
   status: string;
 }
@@ -70,7 +73,11 @@ export function isWorkOfferWireRow(input: unknown): input is WorkOfferWireRow {
   if (!isString(r.signer_device_pubkey) || r.signer_device_pubkey.length === 0) return false;
   if (!isString(r.signature) || r.signature.length === 0) return false;
   if (typeof r.record_version !== 'number' || !Number.isFinite(r.record_version)) return false;
-  if (!isString(r.fleet_slug) || r.fleet_slug.length === 0) return false;
+  if (!isString(r.fleet_slug)) return false;
+  if (!isString(r.pot_slug)) return false;
+  // P-001: exactly one of fleet_slug/pot_slug is non-empty ('' is how NULL
+  // is represented on the wire, mirroring toWorkOfferValue's `?? ''`).
+  if ((r.fleet_slug.length > 0) === (r.pot_slug.length > 0)) return false;
   if (!isString(r.offer_kind) || r.offer_kind.length === 0) return false;
   if (!isString(r.status) || r.status.length === 0) return false;
   return true;
@@ -99,7 +106,9 @@ async function realVerifyWorkOffer(
     if (record.publisherGithubUserId !== row.publisher_github_user_id) return false;
     if (record.offerId !== row.offer_id) return false;
     if (record.recordVersion !== row.record_version) return false;
-    if (record.fleetSlug !== row.fleet_slug) return false;
+    // P-001: DB NULL ⇔ wire '' (mirrors toWorkOfferValue's `?? ''`).
+    if ((record.fleetSlug ?? '') !== row.fleet_slug) return false;
+    if ((record.potSlug ?? '') !== row.pot_slug) return false;
     if (record.kind !== row.offer_kind) return false;
     if (record.status !== row.status) return false;
 
@@ -173,15 +182,20 @@ async function writeToPg(
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   const now = Date.now();
+  // P-001: wire '' ⇔ DB NULL for both fleet_slug/pot_slug (mirrors the schema's
+  // fleetSlug/potSlug ?? '' convention — the column stays NULLABLE, so an empty
+  // wire string round-trips to NULL rather than a stray '').
+  const fleetSlugDb = row.fleet_slug.length > 0 ? row.fleet_slug : null;
+  const potSlugDb = row.pot_slug.length > 0 ? row.pot_slug : null;
   const upsertResult = await sql`
     INSERT INTO harness_shared.p2p_work_offers
       (workspace_id, harness_slug, publisher_github_user_id, offer_id, record_json,
-       signer_device_pubkey, signature, record_version, fleet_slug, offer_kind, status,
+       signer_device_pubkey, signature, record_version, fleet_slug, pot_slug, offer_kind, status,
        author_pubkey, origin, fed_ts, fed_hlc, created_at, updated_at)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.publisher_github_user_id},
        ${row.offer_id}, ${row.record_json}, ${row.signer_device_pubkey},
-       ${row.signature}, ${row.record_version}, ${row.fleet_slug}, ${row.offer_kind},
+       ${row.signature}, ${row.record_version}, ${fleetSlugDb}, ${potSlugDb}, ${row.offer_kind},
        ${row.status}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${now}, ${now})
     ON CONFLICT (workspace_id, harness_slug, publisher_github_user_id, offer_id) DO UPDATE SET
       record_json          = EXCLUDED.record_json,
@@ -189,6 +203,7 @@ async function writeToPg(
       signature            = EXCLUDED.signature,
       record_version       = EXCLUDED.record_version,
       fleet_slug           = EXCLUDED.fleet_slug,
+      pot_slug             = EXCLUDED.pot_slug,
       offer_kind           = EXCLUDED.offer_kind,
       status               = EXCLUDED.status,
       author_pubkey        = EXCLUDED.author_pubkey,
