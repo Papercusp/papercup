@@ -606,10 +606,30 @@ export VERIFY_TAURI_POLL="$POLL"
 
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
 
-# ⚠️ EI-10387: display/ports/process are isolated — the DATABASE AND WORKSPACE ARE NOT.
-# Say so LOUDLY at boot: an agent that skipped the header must not learn this by
-# mutating the owner's live steering (and waking the real Mug) mid-"test".
-cat >&2 <<'WARN'
+# EI-10387: the DB/workspace warning is now CONDITIONAL — VERIFY_TAURI_ISOLATED_DB=1
+# genuinely isolates them (verified above against the sidecar's own /proc/<pid>/environ,
+# not just asserted here), so print an affirming line instead of the scary banner.
+if [ "$ISOLATED_DB" = "1" ]; then
+  cat >&2 <<WARN
+
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │  ✅  THIS INSTANCE HAS A GENUINELY ISOLATED DATABASE (EI-10387)         │
+  │                                                                        │
+  │  Isolated: X display · devUrl port · pty port · sidecar process · SPA  │
+  │            module bundle · DATABASE (throwaway, on :$ISOLATED_PG_PORT) │
+  │            · PAPERCUSP_HOME · PAPERCUSP_WORKSPACE                      │
+  │                                                                        │
+  │  ALL writes here are safe — they land in the throwaway DB and are      │
+  │  discarded at teardown. The instance boots into the normal first-run   │
+  │  onboarding flow (empty, freshly-migrated DB), not real pots/plans.    │
+  └────────────────────────────────────────────────────────────────────────┘
+
+WARN
+else
+  # ⚠️ display/ports/process are isolated — the DATABASE AND WORKSPACE ARE NOT.
+  # Say so LOUDLY at boot: an agent that skipped the header must not learn this by
+  # mutating the owner's live steering (and waking the real Mug) mid-"test".
+  cat >&2 <<'WARN'
 
   ┌────────────────────────────────────────────────────────────────────────┐
   │  ⚠️  THIS INSTANCE SHARES THE **LIVE DATABASE AND WORKSPACE**          │
@@ -622,12 +642,14 @@ cat >&2 <<'WARN'
   │  mutates real steering and wakes the real Mug (burning real tokens);   │
   │  a routine toggle here really toggles it (git-sync included).          │
   │                                                                        │
-  │  To exercise write paths safely, intercept POST /api/agent-mcp/run-tool│
-  │  in the webview, capture the body, and validate it offline against the │
-  │  tool's zod schema. See the header block + EI-10387.                   │
+  │  To exercise write paths safely, pass VERIFY_TAURI_ISOLATED_DB=1 (a    │
+  │  genuinely isolated throwaway DB — EI-10387), or intercept             │
+  │  POST /api/agent-mcp/run-tool in the webview, capture the body, and    │
+  │  validate it offline against the tool's zod schema.                   │
   └────────────────────────────────────────────────────────────────────────┘
 
 WARN
+fi
 tauri-agent-tools probe --pid "$VERIFY_TAURI_PID" 2>&1 | sed 's/^/[probe] /' >&2 || true
 
 if [ "${1:-}" = "--boot-only" ]; then
