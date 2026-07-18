@@ -5,19 +5,20 @@
  * bare `${x}::jsonb` to `${x}::text::jsonb`, while leaving the already-correct
  * `::text::jsonb`, the postgres-js `sql.json()`/`pgJson()` helper forms, and
  * non-jsonb casts untouched.
+ *
+ * Relocated out of `tools/eslint-rules/__tests__/` (EI-10445 follow-up): no
+ * vitest config owned that directory, so this guard never ran. See the header
+ * of `no-org-pool-sql-json.test.ts` in this directory for the full rationale.
  */
 import { createRequire } from 'node:module';
 import { describe, it } from 'vitest';
 
 // npm workspaces hoists `eslint` to the repo-root node_modules — a plain
-// require('eslint') resolves it via normal Node module-resolution walk-up
-// (EI-10445: the previous node_modules/.pnpm/eslint@… scan never resolved in
-// this npm-only repo — no pnpm store exists here at all — so this test file
-// silently ran 0 tests, ENOENT'ing before RuleTester.run ever executed).
+// require('eslint') resolves it via the normal Node module-resolution walk-up.
 const require = createRequire(import.meta.url);
 const { RuleTester } = require('eslint');
 
-const rule = require('../no-bare-jsonb-cast.js');
+const rule = require('../../../../tools/eslint-rules/no-bare-jsonb-cast.js');
 
 const tester = new RuleTester({
   languageOptions: { ecmaVersion: 2022, sourceType: 'module' },

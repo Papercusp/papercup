@@ -6,19 +6,32 @@
  * (getOrgPg/getOrgPgApp/getHarnessPg) from @papercusp/db-org — and stays
  * silent for a file using a DIFFERENT pool (e.g. dock-layouts.ts's own fresh
  * postgres() client), where sql.json() is the CORRECT form.
+ *
+ * WHY IT LIVES HERE and not next to the rule (EI-10445 follow-up): this file
+ * and its two siblings previously sat in `tools/eslint-rules/__tests__/`,
+ * which NO vitest config owns — `tools/` is not an npm workspace, is absent
+ * from the root `workspaces[]`, and no CI/gate step referenced it, so all
+ * three guards silently never executed. That is not hypothetical rot: the
+ * sibling `no-raw-route-handlers` test resolved eslint through
+ * `node_modules/.pnpm/eslint@…`, a path that has never existed in this
+ * npm-only repo, so it would have thrown ENOENT at import — undetected for as
+ * long as it sat there. Relocating into an already-covered workspace follows
+ * the repo's own precedent for testing repo tooling
+ * (`packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts`, which
+ * imports `scripts/check-no-raw-setinterval.mjs` across the tree) and needs no
+ * new workspace or vitest config.
  */
 import { createRequire } from 'node:module';
 import { describe, it } from 'vitest';
 
 // npm workspaces hoists `eslint` to the repo-root node_modules — a plain
-// require('eslint') resolves it via normal Node module-resolution walk-up
-// (EI-10445: fixed the sibling no-bare-jsonb-cast.test.mjs's hardcoded
-// node_modules/.pnpm/eslint@… path the same way — this is an npm-only repo,
-// no pnpm store ever exists here, so that path never resolved).
+// require('eslint') resolves it via the normal Node module-resolution walk-up.
+// (Never re-introduce a hardcoded node_modules/.pnpm/eslint@… path: this is an
+// npm-only repo — `only-allow npm` — so no pnpm store ever exists here.)
 const require = createRequire(import.meta.url);
 const { RuleTester } = require('eslint');
 
-const rule = require('../no-org-pool-sql-json.js');
+const rule = require('../../../../tools/eslint-rules/no-org-pool-sql-json.js');
 
 const tester = new RuleTester({
   languageOptions: { ecmaVersion: 2022, sourceType: 'module' },

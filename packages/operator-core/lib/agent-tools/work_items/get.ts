@@ -34,15 +34,13 @@ import { getPresence } from "../coordination/presence";
  * while Postgres held the new one). Tag with `work_items` (table-level) — bumped on
  * EVERY work-item write — as the read-your-writes correctness floor.
  *
- * The `work_items:<id>` row tag is kept for PRECISE per-row invalidation, but it only
- * fires once emit_change_notify emits the row PK for this table: `work_items` keys on
- * `feature_id` (no `id` column), and the trigger currently reads `to_jsonb(row)->'id'`
- * (JSON null here), so the row tag is presently inert and correctness rides the table
- * tag. Restoring the row PK emission (COALESCE ->'id', ->'feature_id') is tracked as a
- * separate defect (row-level tag dead for work_items + sync-bridge per-row scoping);
- * until it lands the table tag is what guarantees correctness. The short soft TTL
- * backstops the un-tagged dimensions a detail read folds in (topics / thread posts /
- * links). Not on the claim hot path (D-004-safe).
+ * The `work_items:<id>` row tag is kept for PRECISE per-row invalidation. `work_items`
+ * keys on `feature_id` (no `id` column); WI-4513 (migration 625) taught the generic
+ * emit_change_notify trigger to fall back to `feature_id` when `id` is absent, so this
+ * row tag now fires on every work-item write — precision no longer rides solely on the
+ * table tag, though the table tag remains the correctness floor regardless (belt+braces).
+ * The short soft TTL backstops the un-tagged dimensions a detail read folds in (topics /
+ * thread posts / links). Not on the claim hot path (D-004-safe).
  */
 const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
 

@@ -5,24 +5,32 @@
  * Hono route registrations (`app.get`, `app.post`, `app.use`,
  * `app.route(literal, …)`, `new Hono()`) while leaving non-Hono code
  * untouched.
+ *
+ * Relocated out of `tools/eslint-rules/__tests__/` (EI-10445 follow-up), where
+ * no vitest config owned the directory so this guard never ran — and while it
+ * sat there it had ALSO rotted: it resolved eslint by scanning
+ * `node_modules/.pnpm/eslint@…`, a directory that has never existed in this
+ * npm-only repo (`only-allow npm`), so importing it threw ENOENT before
+ * RuleTester ever ran. Both faults are fixed here: it lives in a covered
+ * workspace, and it resolves eslint through the normal hoisted walk-up. See
+ * `no-org-pool-sql-json.test.ts` in this directory for the full rationale.
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { describe, it } from 'vitest';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
-// pnpm hoists eslint into `.pnpm/`; resolve through any matching dir
-// so the test stays working across version bumps.
-const pnpmDir = path.join(__dirname, '..', '..', '..', 'node_modules', '.pnpm');
-const eslintPkg = readdirSync(pnpmDir).find((d) => d.startsWith('eslint@'));
-const eslintModule = path.join(pnpmDir, eslintPkg, 'node_modules', 'eslint');
-const { RuleTester } = require(eslintModule);
+// packages/operator-core/lib/eslint-rules → repo root.
+const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
 
-const rule = require('../no-raw-route-handlers.js');
+// npm workspaces hoists `eslint` to the repo-root node_modules — a plain
+// require('eslint') resolves it via the normal Node module-resolution walk-up.
+const { RuleTester } = require('eslint');
+
+const rule = require(path.join(repoRoot, 'tools', 'eslint-rules', 'no-raw-route-handlers.js'));
 
 const tester = new RuleTester({
   languageOptions: {
@@ -47,16 +55,7 @@ describe('papercusp/no-raw-route-handlers', () => {
         // Host-seam file — allowlisted.
         {
           code: `app.get('/x', () => new Response())`,
-          filename: path.resolve(
-            __dirname,
-            '..',
-            '..',
-            '..',
-            'apps',
-            'operator',
-            'bin',
-            'host-app.ts',
-          ),
+          filename: path.join(repoRoot, 'apps', 'operator', 'bin', 'host-app.ts'),
         },
         // `app.route(nonString)` — chainable form, not a mount.
         { code: `app.route(other).get('/x', h)` },

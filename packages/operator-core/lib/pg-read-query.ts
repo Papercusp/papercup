@@ -452,3 +452,43 @@ export async function pgReadQuery(
   const fields = capped.length ? Object.keys(capped[0]) : [];
   return { rows: capped, rowCount: capped.length, truncated, fields, elapsedMs };
 }
+
+/**
+ * Schema-validate a read-only statement against live PG WITHOUT executing it or
+ * materializing any rows: parses + plans it via `EXPLAIN (COSTS OFF)` inside the same
+ * READ ONLY / statement_timeout-bounded transaction `pgReadQuery` uses. A malformed
+ * table/column/function reference surfaces the identical PG error info
+ * (extractPgErrorInfo — hint/detail/code/position) a real run would, at zero cost and
+ * with zero side effects.
+ *
+ * Built for EI-10514: schema-checking embedded SQL "replication drills" in rubric
+ * criteria at propose time — 10/14 pot-coordination-health drills referenced
+ * renamed/nonexistent tables and were unrunnable as written, and nothing caught it
+ * until someone tried to actually run one.
+ */
+export async function explainReadQuery(
+  rawQuery: string,
+  opts: { timeoutMs?: number; client?: OrgSql } = {},
+): Promise<{ ok: true } | { ok: false; error: PgErrorInfo }> {
+  let query: string;
+  try {
+    query = assertSingleReadStatement(rawQuery);
+  } catch (err) {
+    return { ok: false, error: extractPgErrorInfo(err) };
+  }
+  const timeoutMs = Math.max(
+    100,
+    Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(opts.timeoutMs ?? PG_READ_QUERY_DEFAULT_TIMEOUT_MS)),
+  );
+  const sql = opts.client ?? getOrgPg().sql;
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe('SET TRANSACTION READ ONLY');
+      await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
+      await tx.unsafe(`EXPLAIN (COSTS OFF) ${query}`);
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: extractPgErrorInfo(err) };
+  }
+}

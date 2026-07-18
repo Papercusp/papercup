@@ -6,9 +6,13 @@
  * so we can run the rule against this file in unit tests without
  * polluting the main `eslint .` exit code.
  *
- * The companion test (`tools/eslint-rules/__tests__/no-raw-route-handlers.test.js`)
- * removes the allowlist entry, runs the rule directly via `RuleTester`,
- * and asserts that each line below produces exactly one violation.
+ * The companion test lives at
+ * `packages/operator-core/lib/eslint-rules/no-raw-route-handlers.test.ts`
+ * (moved there by the EI-10445 follow-up — no vitest config owned this
+ * `tools/` directory, so the tests here never ran). It runs the rule directly
+ * via `RuleTester` on inline sources, and asserts this file's own path stays
+ * allowlisted. Keep THIS fixture at THIS path: the allowlist entry in
+ * `no-raw-route-handlers.js` matches it literally.
  */
 import { Hono } from 'hono';
 
