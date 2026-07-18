@@ -3771,7 +3771,9 @@ export function LearningStyles() {
       .pc-learning { container: learning / inline-size; display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 8px 14px 14px; gap: 7px; overflow: hidden; }
 
       .pc-learning__stage-list {
-        display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr));
+        /* Auto-flow columns: every stage stays on ONE row regardless of how
+           many STAGES holds (repeat(4) wrapped Retain when Analyze landed). */
+        display: grid; grid-auto-flow: column; grid-auto-columns: minmax(90px, 1fr);
         align-items: start; width: 100%; max-width: 720px; margin: 0 auto; padding: 0 22px; box-sizing: border-box;
       }
       .pc-learning__stage {
@@ -3872,7 +3874,7 @@ export function LearningStyles() {
       }
       @container learning (max-width: 560px) {
         .pc-learning { padding-inline: 9px; }
-        .pc-learning__stage-list { grid-template-columns: repeat(4, minmax(44px, 1fr)); }
+        .pc-learning__stage-list { grid-auto-columns: minmax(44px, 1fr); }
         .pc-learning__stage-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
         .pc-learning__controls { flex-wrap: nowrap; }
         .pc-learning__view-tabs { flex: 1 1 auto; overflow: hidden; }

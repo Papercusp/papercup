@@ -50,6 +50,20 @@
  * pot_members op un-re-applied: B's roster stays EMPTY and A's content count stays 0
  * AFTER the rekey → the step-(f) assertions flip RED. (Verified by the author.)
  *
+ * ## Restart-survival extension (WI-5369, added 2026-07-18)
+ * Steps (g)/(h) go one step further than the fix's own teeth: after the repair lands
+ * (step f), the JOINER's process is FULLY RESTARTED — close + re-boot on the SAME
+ * on-disk corestore dir + SAME PG (mirroring the live gate's `rig_kill_sidecar` +
+ * `rig_restart_sidecar`, which both the `reconnect_catchup` and `restart_durability`
+ * scenarios use and both assert "roster intact" after). This was added while chasing
+ * WI-5369's still-open live symptom (the identical drop→rebind→forceReFold trace
+ * signature fires live, yet the roster reads EMPTY at the end of `reconnect_catchup`).
+ * This test's restart step PASSES — a cold restart with PG preserved does NOT lose the
+ * already-repaired roster row here — so a plain "restart loses PG state" mechanism is
+ * REFUTED as WI-5369's live cause (at least under this deterministic reproduction). Kept
+ * as a permanent regression guard for restart-survival specifically, since no prior test
+ * combined the home=<none> race+repair with a subsequent cold restart.
+ *
  * RUN (integration layer — real testcontainer PG; needs Docker):
  *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *     lib/sync/hyperbee/__tests__/owner-roster-rebind-race.repro.integration.test.ts
@@ -516,7 +530,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       const rosterAfter =
         (await pollUntil(
           async () => {
-            await Promise.all([handleOwner.mergeNow(), handleJoiner.mergeNow()]);
+            await Promise.all([handleOwner.mergeNow(), handleJoiner!.mergeNow()]);
             const ids = await rosterUserIds(orgDb.adminSql, HIVE_HOME);
             return ids.has(idOwner.userId) ? ids : undefined;
           },
@@ -532,7 +546,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       const contentAfter =
         (await pollUntil(
           async () => {
-            await Promise.all([handleOwner.mergeNow(), handleJoiner.mergeNow()]);
+            await Promise.all([handleOwner.mergeNow(), handleJoiner!.mergeNow()]);
             const n = await contentRowCount(orgDb.adminSql, HIVE_HOME, FEATURE_ID);
             return n > 0 ? n : undefined;
           },
@@ -543,10 +557,90 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
         'post-rekey: once the owner roster row re-applies, the pendingMemberContent drain must land ' +
           'A’s content op → row count > 0. If RED here, the forceReFold re-fold never fired.',
       ).toBeGreaterThan(0);
+
+      // ── (g) WI-5369 follow-up: RESTART the JOINER — a full process restart (cold re-open),
+      //    mirroring `rig_kill_sidecar` + `rig_restart_sidecar` in the LIVE reconnect_catchup /
+      //    restart_durability gate scenarios (both assert "roster intact" after exactly this kind
+      //    of restart, and both are RED live with the identical pre-restart drop-then-rebind trace
+      //    signature this test reproduces above). PG is untouched (real Postgres — the repaired
+      //    pot_members row is durable); the corestore dir is reused (same on-disk hypercore log);
+      //    only in-process boot state (admitted set, merge cursor, hiveHomeProjectionSlug,
+      //    forceReFold) is destroyed and rebuilt from scratch. ──
+      await handleJoiner.close();
+      await closeHarnessStore({ workspaceRoot: rootJoiner, harnessSlug: JOINER_SLUG });
+
+      // A REBOOTED (already-rekeyed) member resolves the hive-home IMMEDIATELY at boot — no more
+      // home=<none> window (the registry already carries hive_slug + this member already rekeyed
+      // once). `joinerHomeResolves` is already `true` from step (e), so this mirrors the live
+      // evidence (WI-5369 checkpoint): "both resolve hiveHomeProjectionSlug=hello-world-pot
+      // immediately on boot (no gap, no re-drop)".
+      const swarmJoiner2 = makeSwarm(testnet.bootstrap);
+      handleJoiner = await bootHarnessSubstrate({
+        workspaceRoot: rootJoiner,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: JOINER_SLUG,
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
+        swarmOverride: swarmJoiner2,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idOwner.userId ? 'verified' : 'fail',
+        joinerPotHomeSlugOverride,
+        ownerDeviceForHiveOverride: async (hivePubkey) =>
+          hivePubkey === hivePubkeyB64 ? idOwner.devicePubkey : null,
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idJoiner.override,
+      });
+      cleanups.push(async () => {
+        await handleJoiner?.close();
+        await closeHarnessStore({ workspaceRoot: rootJoiner, harnessSlug: JOINER_SLUG });
+      });
+
+      // ── (h) ASSERT ROSTER SURVIVES THE RESTART. No fresh forceReFold should be needed — the
+      //    repaired pot_members row already sits durably in PG, untouched by the restart — but
+      //    this is EXACTLY the live "ROSTER FAIL: member roster EMPTY after reconnect/restart"
+      //    symptom (WI-5369 / restart_durability gate RED). Read it back with ZERO extra merge
+      //    passes first (pure PG durability, no re-fold credit). ──
+      const rosterAfterRestart = await rosterUserIds(orgDb.adminSql, HIVE_HOME);
+      expect(
+        rosterAfterRestart.has(idOwner.userId),
+        'RESTART-SURVIVAL (WI-5369): a cold process restart must NOT lose the pot_members roster ' +
+          `row the forceReFold repair already landed durably in PG. Got: [${[...rosterAfterRestart].join(',')}]. ` +
+          'If RED here, something on the fresh boot re-derives/re-applies state in a way that DROPS ' +
+          'the existing roster row before the home resolves — this is the live reconnect_catchup / ' +
+          'restart_durability gate RED, reproduced deterministically.',
+      ).toBe(true);
+
+      // The owner writes NEW content post-restart — must still federate to the reopened joiner
+      // (the link is genuinely healed, not just a stale pre-restart PG read).
+      const FEATURE_ID_POST = `${FEATURE_ID}-post-restart`;
+      await authorDb.adminSql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (workspace_id, harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${FEATURE_ID_POST}, 'Owner→joiner post-restart feature', 'from owner', 'todo', 0, 'local', 7002, 7002, 7002)
+      `;
+      const drainedPost = await drainOutboxOnce(handleOwner, authorDb.adminSql);
+      expect(drainedPost, 'post-restart owner content did not drain').toBeGreaterThanOrEqual(1);
+
+      const contentAfterRestart =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleOwner.mergeNow(), handleJoiner!.mergeNow()]);
+            const n = await contentRowCount(orgDb.adminSql, HIVE_HOME, FEATURE_ID_POST);
+            return n > 0 ? n : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? 0;
+      expect(
+        contentAfterRestart,
+        'LINK-HEALED after restart: a NEW owner write must federate to the cold-reopened joiner ' +
+          '(ongoing federation resumed, not just a one-time catch-up).',
+      ).toBeGreaterThan(0);
     },
     // Generous: pays the first-time org-template build (~280 migrations) inside the body
-    // before the swarm/replication work, TWICE (author + receiver org DBs).
-    180_000,
+    // before the swarm/replication work, TWICE (author + receiver org DBs), PLUS a full
+    // joiner process restart (cold re-open) at the end.
+    240_000,
   );
 });
 

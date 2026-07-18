@@ -22,7 +22,7 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
-const { nuqs, setters, planListData, attentionItems, rosterData, setPlanArchived, confirmAnswer, toastSpies } =
+const { nuqs, setters, planListData, attentionItems, rosterData, setPlanArchived, confirmAnswer, toastSpies, planListRefresh } =
   vi.hoisted(() => ({
     nuqs: {} as Record<string, unknown>,
     setters: {} as Record<string, ReturnType<typeof vi.fn>>,
@@ -32,6 +32,7 @@ const { nuqs, setters, planListData, attentionItems, rosterData, setPlanArchived
     setPlanArchived: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
     confirmAnswer: { value: true },
     toastSpies: { success: vi.fn(), error: vi.fn() },
+    planListRefresh: vi.fn(),
   }));
 function mkSetter(key: string) {
   if (!setters[key]) setters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });
@@ -58,7 +59,7 @@ vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-1' }));
 // Keep bucketOf real (buildGlanceRows uses it) — only stub the data hook + the write.
 vi.mock('@/app/admin/plans/plans-api', async (orig) => ({
   ...(await orig<typeof import('@/app/admin/plans/plans-api')>()),
-  usePlanList: () => ({ data: planListData.value, loading: planListData.value === null, error: null, refresh: vi.fn() }),
+  usePlanList: () => ({ data: planListData.value, loading: planListData.value === null, error: null, refresh: planListRefresh }),
   setPlanArchived: (a: unknown) => setPlanArchived(a),
 }));
 vi.mock('sonner', () => ({ toast: toastSpies }));
@@ -94,6 +95,7 @@ afterEach(() => {
   setPlanArchived.mockClear();
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
+  planListRefresh.mockClear();
 });
 
 /** An ISO timestamp `days` in the past — for the stale (≥14d) threshold. */
@@ -173,6 +175,10 @@ describe('PlansPane', () => {
       expect.objectContaining({ slug: 'p-stale', archived: true, harness: 'papercusp' }),
     );
     await waitFor(() => expect(toastSpies.success).toHaveBeenCalled());
+    // The archived row must LEAVE the list. Verified live that the
+    // harness_plans → plans.list SSE invalidation alone did not re-render it
+    // within 3s, so the handler refreshes the plan feed explicitly.
+    expect(planListRefresh).toHaveBeenCalled();
   });
 
   it('does NOT archive when the confirm is declined', async () => {

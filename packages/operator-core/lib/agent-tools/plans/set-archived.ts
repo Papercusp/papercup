@@ -13,11 +13,18 @@
  * one click; an archived plan drops out of every default list but stays fully
  * readable via `includeArchived`, so this is reversible (pass archived:false).
  *
- * ⚠ Deliberately does NOT touch `updated_at`. That column is "last REAL
- * activity on the plan" — the plan list renders it as recency and the Plans
- * face's stale detector (no activity ≥14d) keys on it. Bumping it here would
- * make every archived-then-restored plan look freshly worked. We bump the
- * operational `op_updated_at` instead, exactly as plans:set-priority does.
+ * We write the operational `op_updated_at`, not `updated_at`, exactly as
+ * plans:set-priority does.
+ *
+ * ⚠ Note (verified against the live schema, not assumed): `updated_at` still
+ * moves on archive — the `harness_plans_updated_at_trg` BEFORE-UPDATE trigger
+ * lists `archived` among its "meaningful change" columns and stamps
+ * `updated_at := now()` itself. That is the schema's DELIBERATE choice, so an
+ * archive counts as activity; a restored plan therefore reads as recently
+ * touched (i.e. no longer "stale") rather than keeping its original last-touch
+ * date. Don't try to defeat it by writing the old value back — the trigger's
+ * "explicit write wins" escape hatch only fires for a value that DIFFERS from
+ * OLD, so re-writing the same timestamp still auto-bumps.
  */
 
 import { z } from 'zod';

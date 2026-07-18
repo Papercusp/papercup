@@ -25,8 +25,9 @@ import {
   ownerWallToAttention,
   darkFlagRatificationToAttention,
   blockedSessionToAttention,
+  blockedWorkItemToAttention,
 } from './adapters';
-import { dropDuplicateNeedsHumanWorkItems } from './sources';
+import { dropDuplicateNeedsHumanWorkItems, dropDuplicateBlockedWorkItems } from './sources';
 import { isAutonomyCategory } from '../autonomy/categories';
 
 describe('importance helpers', () => {
@@ -603,6 +604,92 @@ describe('P-005e — dropDuplicateNeedsHumanWorkItems (D-008 dedupe canonicaliza
   });
 });
 
+describe('curated-signal-cards P-001/P-002 — blocked work-items become Alert cards', () => {
+  it('blockedWorkItemToAttention: an Alert (never a Decision), ungoverned category, kind-aware status', () => {
+    const a = blockedWorkItemToAttention({
+      workItemId: 'WI-5231',
+      itemKind: 'feature',
+      title: 'verification lane',
+      reason: 'waiting on the staging deploy',
+      harnessSlug: 'papercusp',
+      ownerAgentId: 'su-0e48',
+      curatorRef: 'papercusp#WI-5231',
+    });
+    expect(a.kind).toBe('work-item-blocked');
+    expect(a.id).toBe('work-item-blocked:WI-5231');
+    expect(a.tier).toBe('alert');
+    // The invariant that matters: an Alert must never inflate the Decisions
+    // bucket — unblocking is work, not a triage verdict the human renders.
+    expect(a.needsHuman).toBe(false);
+    expect(a.category).toBeNull(); // ungoverned signal → never auto-disposed
+    expect(a.status).toBe('blocked (feature)');
+    expect(a.body).toBe('waiting on the staging deploy');
+    expect(a.ownerAgentId).toBe('su-0e48');
+    expect(a.ref).toEqual({ kind: 'work-item-blocked', workItemId: 'WI-5231', itemKind: 'feature' });
+  });
+
+  it('carries the curator ref as itemRef so the SHIPPED chat drill-in can select this card', () => {
+    // resolveInboxDrillIn (deterministic-status-cards / WI-5342) matches a
+    // `wi:<ref>` drill-in against each live item's OWN identifiers — itemRef is
+    // the one it reads. Without this the drill-in selects nothing.
+    const a = blockedWorkItemToAttention({
+      workItemId: 'WI-7',
+      itemKind: 'bug',
+      title: 't',
+      reason: 'r',
+      curatorRef: 'papercusp#WI-7',
+    });
+    expect(a.itemRef).toBe('papercusp#WI-7');
+  });
+
+  it('falls back to the title when the blocker reason is blank', () => {
+    const a = blockedWorkItemToAttention({
+      workItemId: 'WI-8',
+      itemKind: 'task',
+      title: 'no reason recorded',
+      reason: '   ',
+    });
+    expect(a.body).toBe('no reason recorded');
+    expect(a.itemRef).toBeNull(); // no curatorRef supplied
+  });
+
+  it('dropDuplicateBlockedWorkItems: a needs-human card WINS over the blocked card for the same row', () => {
+    // An issue-family row can be status=blocked AND payload.needsHuman — the
+    // Decision-tier framing must win, or one row lands in two tiers.
+    const items: AttentionItem[] = [
+      workItemNeedsHumanToAttention({ workItemId: 'EI-5', itemKind: 'bug', title: 'needs the owner' }),
+      blockedWorkItemToAttention({ workItemId: 'EI-5', itemKind: 'bug', title: 'same row', reason: 'r' }),
+      blockedWorkItemToAttention({ workItemId: 'WI-9', itemKind: 'feature', title: 'uncovered', reason: 'r' }),
+    ];
+    const kept = dropDuplicateBlockedWorkItems(items);
+    expect(kept.map((i) => i.id).sort()).toEqual(
+      ['work-item-blocked:WI-9', 'work-item-needs-human:EI-5'].sort(),
+    );
+  });
+
+  it('dropDuplicateBlockedWorkItems: an improvement or owner-wall covering the row also wins', () => {
+    const viaImprovement: AttentionItem[] = [
+      improvementToAttention({ issueId: 'EI-6', title: 'covered' }),
+      blockedWorkItemToAttention({ workItemId: 'EI-6', itemKind: 'bug', title: 'same', reason: 'r' }),
+    ];
+    expect(dropDuplicateBlockedWorkItems(viaImprovement).map((i) => i.kind)).toEqual(['improvement']);
+
+    const viaWall: AttentionItem[] = [
+      ownerWallToAttention({ source: 'work-item', ownerId: 'su-a', claim: 'ratify', ref: 'F-4', status: 'waiting' }),
+      blockedWorkItemToAttention({ workItemId: 'F-4', itemKind: 'feature', title: 'same', reason: 'r' }),
+    ];
+    expect(dropDuplicateBlockedWorkItems(viaWall).map((i) => i.kind)).toEqual(['owner-wall']);
+  });
+
+  it('TEETH: is a no-op when nothing overlaps — a blocked card is never dropped on its own', () => {
+    const items: AttentionItem[] = [
+      workItemNeedsHumanToAttention({ workItemId: 'WI-1', itemKind: 'bug', title: 't' }),
+      blockedWorkItemToAttention({ workItemId: 'WI-2', itemKind: 'bug', title: 't', reason: 'r' }),
+    ];
+    expect(dropDuplicateBlockedWorkItems(items).length).toBe(2);
+  });
+});
+
 describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009/D-011)', () => {
   const ALL_KINDS: AttentionKind[] = [
     'plan-item',
@@ -618,6 +705,7 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
     'owner-wall',
     'dark-flag-ratification',
     'blocked-session',
+    'work-item-blocked',
   ];
 
   it('the kind to category map covers every AttentionKind (no kind silently uncategorized)', () => {

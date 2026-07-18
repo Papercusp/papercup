@@ -195,9 +195,14 @@ export default function PlansPane() {
 
   // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
   // behind a confirm. Archiving flips the PG-canonical harness_plans.archived
-  // flag (plans:set-archived) — reversible, and the harness_plans trigger
-  // invalidates plans.list so the row leaves this list on its own (no local
-  // optimistic removal to drift).
+  // flag (plans:set-archived) — reversible; the row then drops out of this list
+  // because every plan reader filters `archived = false`.
+  //
+  // We refresh the plan list EXPLICITLY after the write instead of waiting on
+  // the harness_plans → plans.list SSE invalidation: live-verified in an
+  // isolated shell, the archived row was still rendered 3s after a confirmed
+  // write, so relying on the push alone leaves the user staring at a plan they
+  // just archived. Same post-write refresh PlansListPanel already does.
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const onArchive = useCallback(
     async (plan: PlanListRow) => {
@@ -214,11 +219,12 @@ export default function PlansPane() {
           return;
         }
         toast.success(`Archived “${plan.title ?? plan.slug}”.`);
+        planList.refresh();
       } catch (e) {
         toast.error(`Could not archive: ${e instanceof Error ? e.message : 'unknown error'}`);
       }
     },
-    [askConfirm],
+    [askConfirm, planList],
   );
 
   // Virtualize the row list (WI-5339): the active set is ~466 rows and up to
