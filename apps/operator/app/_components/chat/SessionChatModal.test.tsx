@@ -192,7 +192,10 @@ describe('SessionChatModal', () => {
   it('surfaces a sessions:list resolution failure', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText(/Couldn't resolve a session/)).toBeTruthy());
+    // WI-5364: friendly headline leads; the raw transport error rides below it
+    // in muted mono (both live inside the same testid'd banner).
+    await waitFor(() => expect(screen.getByText(/Couldn't load this agent's conversation/)).toBeTruthy());
+    expect(screen.getByTestId('session-chat-resolve-error').textContent).toContain('500');
   });
 
   it('maps the live backfill through the tool-noise-filtering layer and renders it as chat', async () => {

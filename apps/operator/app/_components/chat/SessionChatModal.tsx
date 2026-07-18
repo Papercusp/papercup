@@ -261,7 +261,15 @@ export default function SessionChatModal({
         {resolving ? (
           <div style={BANNER_STYLE}>Finding this agent's session…</div>
         ) : resolveError ? (
-          <div style={ERROR_BANNER_STYLE}>Couldn't resolve a session: {resolveError}</div>
+          // WI-5364: friendly headline first — the raw transport error (status
+          // codes, JSON) is real diagnostic signal but not owner-facing copy,
+          // so it rides below in small muted mono instead of leading.
+          <div style={ERROR_BANNER_STYLE} data-testid="session-chat-resolve-error">
+            <div>Couldn't load this agent's conversation right now — try reopening the popup.</div>
+            <div style={{ marginTop: 4, fontSize: 10, fontFamily: 'var(--font-mono, monospace)', color: 'var(--fg-mute)', overflowWrap: 'anywhere' }}>
+              {resolveError}
+            </div>
+          </div>
         ) : !resolved ? (
           <div style={BANNER_STYLE}>No recent Claude session found for this agent.</div>
         ) : streamUrl ? (
