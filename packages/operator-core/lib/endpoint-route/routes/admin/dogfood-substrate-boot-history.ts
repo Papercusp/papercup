@@ -84,6 +84,9 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   // EI-13317 rung (b): repair-exhaustion escalation to a forced topic rejoin.
   replication_repair_exhausted: true,
   replication_repair_rejoin_failed: true,
+  // WI-5340: a re-attach's post-repair confirmation window elapsed with no
+  // ingest progress — the repair didn't work, next attempt synthesized directly.
+  replication_repair_confirmation_failed: true,
 };
 const VALID_KINDS: ReadonlySet<string> = new Set(Object.keys(VALID_KINDS_MAP));
 

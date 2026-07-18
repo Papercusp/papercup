@@ -2245,17 +2245,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // replicas — see replication-liveness.ts). Same best-effort posture.
           try {
             const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
+            const livenessPeersCount =
+              typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
+            const livenessMergedPosition = mergeCursor.positions.get(log.keyHex) ?? 0;
             sampleReplicationLiveness(
               opts.workspaceId,
               opts.harnessSlug,
               {
                 keyHex: log.keyHex,
                 knownLength: log.length,
-                mergedPosition: mergeCursor.positions.get(log.keyHex) ?? 0,
-                peersCount:
-                  typeof maybePeers.peersCount === 'function'
-                    ? maybePeers.peersCount()
-                    : undefined,
+                mergedPosition: livenessMergedPosition,
+                peersCount: livenessPeersCount,
                 // WI-183 zombie axis: live swarm connections for the harness
                 // topic. Read from the CURRENT handle (rekey() reassigns it);
                 // null handle (no swarm joined / mid-rekey window) → undefined
@@ -2264,6 +2264,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               },
               { graceMs: REPLICATION_STALL_GRACE_MS },
             );
+            // WI-5340: judge any OUTSTANDING post-repair confirmation off the
+            // SAME sample (cheap no-op Map lookup when none is outstanding).
+            checkRepairConfirmation(log.keyHex, livenessMergedPosition, log.length, livenessPeersCount);
           } catch {
             // diagnostic-only — swallow
           }

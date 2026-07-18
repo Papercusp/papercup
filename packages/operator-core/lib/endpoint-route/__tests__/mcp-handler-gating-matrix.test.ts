@@ -501,6 +501,20 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).toContain('"workspaceId": "ws-test"');
   });
 
+  it('flag ON: a scoped superuser MAY call autonomy:record_disposition — the WRITE sibling, same scoped-safe self-confining profile (EI-1934)', async () => {
+    // record_disposition self-scopes to the caller's OWN workspace (ws from
+    // principal / activeWorkspaceId) and records the disposition row only there —
+    // the same class as autonomy:decide. Without the exemption the Queen's
+    // decision-ledger audit was workspace_forbidden from its normal scoped seat.
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'autonomy:record_disposition',
+      { action: 'improvements:capture', disposition: 'no-op', why: 'gate test' },
+      scoped('ws-test'),
+    );
+    expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp (reached its handler)
+  });
+
   it('flag ON: a scoped superuser MAY call memory:search — a scoped-safe user/harness-scoped tool (EI-2378)', async () => {
     // After EI-2378, memory:search's crossWorkspace:true survives projection (so an
     // unscoped psu gets the admin handle). For a SCOPED session it must NOT be clamped:

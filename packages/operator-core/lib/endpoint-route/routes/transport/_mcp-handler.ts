@@ -349,6 +349,14 @@ async function maybeRunWithDeltaProxy(input: {
  */
 const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
   'autonomy:decide',
+  // EI-1934: the WRITE sibling of autonomy:decide — SAME self-confining profile
+  // (resolves ws from the caller's principal / activeWorkspaceId(), and records the
+  // disposition row ONLY to that ws — record_disposition.ts:92-93,114-115).
+  // crossWorkspace:true only so an UNSCOPED psu gets the admin handle; from a SCOPED
+  // Queen session it crosses no workspace boundary, so the clamp must not deny it —
+  // otherwise the Queen's decision-ledger audit is unusable from its normal scoped seat
+  // (EI-1810's exemption must cover the whole autonomy:* decide+record family, not just decide).
+  'autonomy:record_disposition',
   'memory:search',
   'memory:list',
   'memory:remember',

@@ -38,6 +38,20 @@ import '../../../agent-tools/index';
  */
 const activeChats = new Map<string, { startedAt: number }>();
 
+/**
+ * P-008 (work-item-chat-context-modernize-2026-07-18, D-003/D-004): race any
+ * best-effort context-injection read against a hard budget so a slow/wedged
+ * leg degrades that ONE section, never the chat turn itself. Shared by the
+ * memory-recall pull below and the work-item dossier pull further down —
+ * both are inline on the hot chat-reply path, so both must be capped.
+ */
+function withTimeoutBudget<T>(p: Promise<T>, budgetMs: number): Promise<T | null> {
+  return Promise.race([
+    p.catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs).unref?.()),
+  ]);
+}
+
 function dbForSlug(slug: string) {
   return getLegacyClient(slug);
 }
@@ -330,12 +344,23 @@ const messagesRoute = defineTool({
           baseTranscript.slice(0, -1).map((t) => `${t.role === 'user' ? 'User' : 'You (assistant)'}: ${t.content}`).join('\n\n') +
           '\n'
         : '';
-      const memBlock = await buildMemoryContextBlock({
-        userId: null,
-        workspaceId: activeWorkspaceId(),
-        queryContext: `${chat.role} agent: ${userContent}`,
-        heading: 'Agent memory (relevant entries)',
-      }).catch(() => null);
+      // P-008 (D-003 ground truth): buildMemoryContextBlock previously ran
+      // with NO outer budget on this inline chat-reply path — its own
+      // internal MEMORY_INJECT_TIMEOUT_MS (5s) bounds each of its 3
+      // sequential legs (available/hive-resolve/search) individually, so a
+      // cold operator (just-restarted mem0 client) could legitimately stack
+      // up to ~15s of sequential waiting, measured live at ~6.7s. Race it
+      // against the same 3s budget the dossier pull below uses so a slow
+      // recall degrades to "no memory section" instead of stalling the reply.
+      const memBlock = await withTimeoutBudget(
+        buildMemoryContextBlock({
+          userId: null,
+          workspaceId: activeWorkspaceId(),
+          queryContext: `${chat.role} agent: ${userContent}`,
+          heading: 'Agent memory (relevant entries)',
+        }),
+        3_000,
+      );
       const memorySection = memBlock ? `\n---\n\n${memBlock}\n` : '';
 
       // Plan context — inject for worker/validator/reviewer roles on
@@ -366,12 +391,6 @@ const messagesRoute = defineTool({
       // fail the reply. Anything missing simply leaves the agent with its tools.
       let dossierSection = '';
       if (chat.feature_id) {
-        const budgetMs = 3_000;
-        const withBudget = <T,>(p: Promise<T>): Promise<T | null> =>
-          Promise.race([
-            p.catch(() => null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs).unref?.()),
-          ]);
         try {
           const [{ computeCupWakeDossier }, { getWorkItemCheckpoint }] = await Promise.all([
             import('../../../pot/cup-wake-dossier'),
@@ -379,11 +398,13 @@ const messagesRoute = defineTool({
           ]);
           const ws = activeWorkspaceId();
           const [dossier, checkpoint] = await Promise.all([
-            withBudget(
+            withTimeoutBudget(
               computeCupWakeDossier({ workspaceId: ws, harness: itemHarness.harness, workItemId: chat.feature_id }),
+              3_000,
             ),
-            withBudget(
+            withTimeoutBudget(
               getWorkItemCheckpoint({ workspaceId: ws, harness: itemHarness.harness, workItemId: chat.feature_id }),
+              3_000,
             ),
           ]);
           if (dossier && dossier.trim()) dossierSection += `\n---\n\n${dossier.trim()}\n`;

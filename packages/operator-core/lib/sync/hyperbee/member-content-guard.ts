@@ -32,6 +32,13 @@
  */
 import type { Sql } from 'postgres';
 import { resolveHiveMemberDeviceSet, type MemberDeviceSetDeps } from './hive-member-identity-set';
+import { loadRevokedHivePubkeys } from '../../hive-membership-store';
+
+/** {@link MemberDeviceSetDeps} plus an injectable revoked-pubkey loader (EI-1895 test seam). */
+export interface MemberContentGuardDeps extends MemberDeviceSetDeps {
+  /** Injectable for hermetic tests (default: the real federated revoked-pubkey union). */
+  loadRevoked?: typeof loadRevokedHivePubkeys;
+}
 
 export interface MemberContentGuardOpts {
   workspaceId: string;
@@ -67,7 +74,7 @@ export async function decideMemberContentOp(
   rowHarnessSlug: string,
   opts: MemberContentGuardOpts,
   sourceLogDevicePubkey: string | null | undefined,
-  deps?: MemberDeviceSetDeps,
+  deps?: MemberContentGuardDeps,
 ): Promise<MemberContentDecision> {
   // Own slug — apply (today's behavior; no membership work on the hot common path).
   if (rowHarnessSlug === opts.harnessSlug) return 'apply';
@@ -85,9 +92,26 @@ export async function decideMemberContentOp(
   // coincides with the workspace PG in production but diverges under a per-peer test topology. Passing
   // it sent the membership read at a content DB with no `hive_members` table (WI-259 close-gate repro).
   const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.potHomeSlug, undefined, deps);
-  // Member NOW → apply. Author identified but not yet a member → DEFER (P-004): the member row may
-  // simply not have federated to this peer yet (content-before-membership ordering).
-  if (memberSet.has(sourceLogDevicePubkey)) return 'apply';
+  // Member NOW → apply, UNLESS revoked (EI-1895). `resolveHiveMemberDeviceSet` is built from
+  // `listHiveMembers`, which selects every `pot_members` row's `deviceAttestations` UNCONDITIONALLY —
+  // revocation is tracked separately as that same row's `revoked_pubkeys` list, not by removing the
+  // row or filtering the attestation out. So a REVOKED member's device pubkey still shows up "in the
+  // member set" and would otherwise be applied here — the write-plane never got the revoke cut the
+  // read-plane already has. Only check revocation on THIS branch (not on the drop/defer paths below,
+  // which are already non-applying): union the SAME revoked-pubkey gate the read-side admission path
+  // uses (`loadRevokedHivePubkeys`, boot.ts's connection-level `revoked` seed) so a revoked member's
+  // write is HARD-DROPPED — never merely deferred, which could re-apply it on a later retry once the
+  // (buggy, unfiltered) member set is re-resolved.
+  if (memberSet.has(sourceLogDevicePubkey)) {
+    const loadRevoked = deps?.loadRevoked ?? loadRevokedHivePubkeys;
+    const revoked = await loadRevoked(opts.workspaceId, opts.potHomeSlug, undefined);
+    if (revoked.has(sourceLogDevicePubkey)) {
+      return traceMemberDecision('drop', 'revoked', rowHarnessSlug, opts, sourceLogDevicePubkey);
+    }
+    return 'apply';
+  }
+  // Author identified but not yet a member → DEFER (P-004): the member row may simply not have
+  // federated to this peer yet (content-before-membership ordering).
   return traceMemberDecision(
     'defer',
     `not-in-member-set(size=${memberSet.size})`,
@@ -134,7 +158,7 @@ export async function shouldApplyMemberContentOp(
   rowHarnessSlug: string,
   opts: MemberContentGuardOpts,
   sourceLogDevicePubkey: string | null | undefined,
-  deps?: MemberDeviceSetDeps,
+  deps?: MemberContentGuardDeps,
 ): Promise<boolean> {
   return (await decideMemberContentOp(rowHarnessSlug, opts, sourceLogDevicePubkey, deps)) === 'apply';
 }

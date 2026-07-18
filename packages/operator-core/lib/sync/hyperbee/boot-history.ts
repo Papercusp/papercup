@@ -190,7 +190,15 @@ export type BootHistoryKind =
   | 'replication_repair_exhausted'
   // The forced-rejoin escalation itself threw (swarm.leave/join failure) —
   // distinct from 'replication_repair_failed' (a session re-attach failure).
-  | 'replication_repair_rejoin_failed';
+  | 'replication_repair_rejoin_failed'
+  // WI-5340 (WI-5332 Direction #1): a session re-attach was applied
+  // ('replication_repair' above) but the post-repair confirmation window
+  // elapsed with NO ingest progress and a live replicator peer still
+  // attached — the re-attach did not actually fix the zombie. Emitted right
+  // before synthesizing the next repair attempt directly (bypassing
+  // replication-liveness.ts's edge-latch, which cannot re-fire on its own
+  // while still alarmed).
+  | 'replication_repair_confirmation_failed';
 
 export interface BootHistoryEntry {
   ts: number;

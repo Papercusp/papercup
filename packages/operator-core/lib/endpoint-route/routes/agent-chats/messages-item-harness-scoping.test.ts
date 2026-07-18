@@ -24,6 +24,8 @@ const {
   getWorkItemCheckpointMock,
   loadHarnessRegistryMock,
   readFeatureLockStateMock,
+  getPlanContextForFeatureMock,
+  buildMemoryContextBlockMock,
 } = vi.hoisted(() => ({
   projectDirForSlugMock: vi.fn(),
   assembleRolePromptMock: vi.fn(),
@@ -33,6 +35,8 @@ const {
   getWorkItemCheckpointMock: vi.fn(),
   loadHarnessRegistryMock: vi.fn(),
   readFeatureLockStateMock: vi.fn(),
+  getPlanContextForFeatureMock: vi.fn(),
+  buildMemoryContextBlockMock: vi.fn(),
 }));
 
 vi.mock('../../../agent-tools/index', () => ({}));
@@ -83,7 +87,7 @@ vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-tes
 vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
 vi.mock('../../../harness-effective-config', () => ({ readEffectiveHarnessConfig: async () => ({}) }));
 vi.mock('../../../harness-prompt-overrides', () => ({ getPromptOverride: async () => null }));
-vi.mock('../../../memory/injection', () => ({ buildMemoryContextBlock: async () => null }));
+vi.mock('../../../memory/injection', () => ({ buildMemoryContextBlock: buildMemoryContextBlockMock }));
 vi.mock('../../../operator-notes', () => ({ projectDirForSlug: projectDirForSlugMock }));
 vi.mock('@papercusp/orchestrator/role-prompt', () => ({ assembleRolePrompt: assembleRolePromptMock }));
 vi.mock('../../../agent-chats-data', async (importOriginal) => {
@@ -93,7 +97,7 @@ vi.mock('../../../agent-chats-data', async (importOriginal) => {
 vi.mock('../../../work-items', () => ({ getWorkItem: getWorkItemMock }));
 vi.mock('../../../pot/cup-wake-dossier', () => ({ computeCupWakeDossier: computeCupWakeDossierMock }));
 vi.mock('../../../work-item-checkpoint', () => ({ getWorkItemCheckpoint: getWorkItemCheckpointMock }));
-vi.mock('../../../plan-context-for-feature', () => ({ getPlanContextForFeature: async () => null }));
+vi.mock('../../../plan-context-for-feature', () => ({ getPlanContextForFeature: getPlanContextForFeatureMock }));
 vi.mock('../../../fleet/chat-spawn-tracking', () => ({
   beginChatSpawnTracking: async () => ({ spawnId: 'test-spawn', finish: async () => {} }),
   resolveChatRunOutcome: () => ({ status: 'done' }),
@@ -126,6 +130,10 @@ beforeEach(() => {
   loadHarnessRegistryMock.mockResolvedValue({ projects: [] });
   readFeatureLockStateMock.mockReset();
   readFeatureLockStateMock.mockResolvedValue(null);
+  getPlanContextForFeatureMock.mockReset();
+  getPlanContextForFeatureMock.mockResolvedValue(null);
+  buildMemoryContextBlockMock.mockReset();
+  buildMemoryContextBlockMock.mockResolvedValue(null);
 });
 
 async function drainToClose(body: ReadableStream<Uint8Array> | null, maxMs = 5_000): Promise<void> {
@@ -215,6 +223,42 @@ describe('agent-chats messagesRoute — item-own-harness scoping (P-003)', () =>
   });
 });
 
+describe('agent-chats messagesRoute — memory-recall budget (P-008, D-003/D-004)', () => {
+  it('renders the memory block into the prompt when buildMemoryContextBlock resolves', async () => {
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    computeCupWakeDossierMock.mockResolvedValue(null);
+    getWorkItemCheckpointMock.mockResolvedValue(null);
+    buildMemoryContextBlockMock.mockResolvedValue('RECALLED MEMORY TEXT');
+
+    const streamOpts = await runAndCapture();
+
+    expect(streamOpts.promptText).toContain('RECALLED MEMORY TEXT');
+  });
+
+  it('a hung buildMemoryContextBlock times out via the 3s outer budget instead of stalling the chat reply', async () => {
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    computeCupWakeDossierMock.mockResolvedValue(null);
+    getWorkItemCheckpointMock.mockResolvedValue(null);
+    // Simulates the live P-008 finding: buildMemoryContextBlock's own internal
+    // per-leg timeouts (MEMORY_INJECT_TIMEOUT_MS=5s × up to 3 sequential legs)
+    // can stack well past this route's budget — a promise that never resolves
+    // is the worst case. The outer withTimeoutBudget race must still return.
+    buildMemoryContextBlockMock.mockReturnValue(new Promise<never>(() => {}));
+
+    vi.useFakeTimers();
+    const resPromise = postMessage('chat-owning-harness');
+    await vi.advanceTimersByTimeAsync(3_100);
+    vi.useRealTimers();
+
+    const res = await resPromise;
+    expect(res.status).toBe(200);
+    await drainToClose(res.body);
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    const [, , streamOpts] = dispatchMock.mock.calls[0] as [unknown, unknown, { promptText: string }];
+    expect(streamOpts.promptText).not.toContain('Agent memory (relevant entries)');
+  });
+});
+
 describe('agent-chats messagesRoute — blueprint-aware lock notice (P-003)', () => {
   it('a LEGACY (non-hive) item harness keeps the .papercusp/notes guidance', async () => {
     getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
@@ -250,5 +294,65 @@ describe('agent-chats messagesRoute — blueprint-aware lock notice (P-003)', ()
     expect(streamOpts.promptText).not.toContain('.papercusp/notes');
     // The lock lookup itself is keyed to the item's own harness, not the chat's.
     expect(readFeatureLockStateMock).toHaveBeenCalledWith('item-owning-harness', 'WI-CROSS-1');
+  });
+});
+
+describe('agent-chats messagesRoute — dossier-first ordering (P-002/P-006)', () => {
+  it('places the dossier immediately after the persona — BEFORE the lock notice, plan context, and memory sections', async () => {
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    computeCupWakeDossierMock.mockResolvedValue('DOSSIER-MARKER for WI-CROSS-1');
+    getWorkItemCheckpointMock.mockResolvedValue(null);
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{ slug: 'item-owning-harness', harness_kind: 'hive' }],
+    });
+    readFeatureLockStateMock.mockResolvedValue({
+      taken_by: 'orchestrator-1', taken_at: '2026-07-18T00:00:00Z', expires_at: null, active: true,
+    });
+    getPlanContextForFeatureMock.mockResolvedValue({ section: 'PLAN-CONTEXT-MARKER' });
+    buildMemoryContextBlockMock.mockResolvedValue('MEMORY-MARKER');
+
+    const streamOpts = await runAndCapture();
+    const text = streamOpts.promptText;
+
+    // Every section actually rendered (a false positive from a missing
+    // section would make the ordering assertion below vacuous).
+    for (const marker of ['DOSSIER-MARKER', 'orchestrator-1', 'PLAN-CONTEXT-MARKER', 'MEMORY-MARKER']) {
+      expect(text).toContain(marker);
+    }
+
+    const dossierIdx = text.indexOf('DOSSIER-MARKER');
+    const lockIdx = text.indexOf('Concurrent autonomous run');
+    const planIdx = text.indexOf('PLAN-CONTEXT-MARKER');
+    const memoryIdx = text.indexOf('MEMORY-MARKER');
+
+    // work-item-chat-context-modernize P-002: the dossier LEADS the task
+    // framing — it must sit before every other injected section, not as a
+    // trailing appendix the model reaches only after wading through
+    // lock/plan/memory boilerplate for an item it may not yet recognize.
+    expect(dossierIdx).toBeGreaterThan(-1);
+    expect(dossierIdx).toBeLessThan(lockIdx);
+    expect(dossierIdx).toBeLessThan(planIdx);
+    expect(dossierIdx).toBeLessThan(memoryIdx);
+  });
+
+  it('still renders the dossier-miss notice FIRST even when later sections are present', async () => {
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    computeCupWakeDossierMock.mockResolvedValue(null);
+    getWorkItemCheckpointMock.mockResolvedValue(null);
+    readFeatureLockStateMock.mockResolvedValue({
+      taken_by: 'orchestrator-1', taken_at: '2026-07-18T00:00:00Z', expires_at: null, active: true,
+    });
+    buildMemoryContextBlockMock.mockResolvedValue('MEMORY-MARKER');
+
+    const streamOpts = await runAndCapture();
+    const text = streamOpts.promptText;
+
+    const missIdx = text.indexOf('No dossier available for WI-CROSS-1');
+    const lockIdx = text.indexOf('Concurrent autonomous run');
+    const memoryIdx = text.indexOf('MEMORY-MARKER');
+
+    expect(missIdx).toBeGreaterThan(-1);
+    expect(missIdx).toBeLessThan(lockIdx);
+    expect(missIdx).toBeLessThan(memoryIdx);
   });
 });
