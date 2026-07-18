@@ -93,6 +93,37 @@ describe('auth.ts integration', () => {
     return n;
   };
 
+  // EI-12970 recurrence guard (part 4 of the fix): the beforeAll self-heal
+  // sweep above already deleted every 'vitest_%' row older than 2h for THIS
+  // run, so right now there should be exactly zero stale rows regardless of
+  // how many concurrent fleet test runs are mid-flight (their own rows are
+  // all fresh, not stale). A regression that breaks the sweep (wrong table,
+  // wrong predicate, sweep silently failing) makes this fail immediately
+  // instead of debris quietly re-accumulating to another 29k rows. The total
+  // (fresh + stale) count is bounded generously so normal concurrent-run
+  // noise never flags it, while a full-blown regression still would.
+  itPg('EI-12970 regression guard: vitest_* debris in harness_shared.users stays bounded', async () => {
+    const { pgClientFields } = await import('./memory/mem0-connection');
+    const fields = await pgClientFields();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Client } = require('pg') as typeof import('pg');
+    const c = new Client(fields);
+    await c.connect();
+    try {
+      const stale = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM harness_shared.users
+          WHERE username LIKE 'vitest_%' AND created_at < now() - interval '2 hours'`,
+      );
+      expect(Number(stale.rows[0]!.n)).toBe(0);
+      const total = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM harness_shared.users WHERE username LIKE 'vitest_%'`,
+      );
+      expect(Number(total.rows[0]!.n)).toBeLessThan(2000);
+    } finally {
+      await c.end();
+    }
+  });
+
   itPg('signup creates user and login returns a session token', async () => {
     const name = uname();
     const user = await authMod!.signup(name, 'Test User', 'sup3rsecret');
