@@ -75,6 +75,31 @@ export interface DeployStatus {
     lastFixerStatus: string | null;
     lastFixerCandidate: string | null;
     flakyWorkspaces: string[];
+    /** WI-4533's `gate_health.failingTests`, threaded through to the agent-facing status
+     *  surface (EI-10902) — the gate's OWN answer to "which tests are failing", already
+     *  captured but previously stranded in the snapshot with no consumer. Empty on a green
+     *  gate; never trust it when `verdictStale`. */
+    failingTests: string[];
+    /** EI-10902: the most recent green-checkpoint TICK, from the append-only pipeline-events
+     *  history (`harness_shared.pipeline_events`, mig 177) — whichever runner produced it
+     *  (routine or manual `release:checkpoint-run`, WI-4494). Answers "what did the last gate
+     *  tick decide, and on what code?" without grepping log files: the candidate sha it tested,
+     *  the sha main was at BEFORE this tick (`from`), the verdict, and the exact per-run log
+     *  path (WI-4957) to open for detail. Null only when no green_checkpoint event has been
+     *  recorded yet for this install (a fresh/never-ticked gate). */
+    lastVerdict: {
+      tickAtMs: number;
+      /** The commit this tick actually tested (12-char sha), when the CLI recorded one. */
+      candidate: string | null;
+      /** The sha `ready`/main was at BEFORE this tick (12-char sha) — the closest recorded
+       *  analog of what the CLI's own log-filename calls "base". */
+      from: string | null;
+      /** The tick's outcome vocabulary (advanced | up-to-date | not-green | not-fast-forward |
+       *  create-failed | error | skipped-locked | ...) — see buildCheckpointDetail's callers. */
+      status: string;
+      /** The exact per-run log this tick wrote (WI-4957), when recorded. */
+      logPath: string | null;
+    } | null;
   };
   deploy: {
     deployedSha: string | null;
@@ -107,6 +132,20 @@ export interface DeployStatus {
 export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
   const g = snap.gate;
   const d = snap.deploy;
+  // EI-10902: the most recent green_checkpoint pipeline event (snap.recent is newest-first) —
+  // whatever runner produced it. `detail` carries the shape buildCheckpointDetail wrote
+  // (candidate/from/failingTests/logPath/runId), already persisted for every tick; this is
+  // the first read surface exposing it to an agent instead of a raw log grep.
+  const lastCheckpointEvent = (snap.recent ?? []).find((e) => e.kind === 'green_checkpoint');
+  const lastVerdict = lastCheckpointEvent
+    ? {
+        tickAtMs: lastCheckpointEvent.createdAtMs,
+        candidate: typeof lastCheckpointEvent.detail?.candidate === 'string' ? lastCheckpointEvent.detail.candidate : null,
+        from: typeof lastCheckpointEvent.detail?.from === 'string' ? lastCheckpointEvent.detail.from : null,
+        status: lastCheckpointEvent.status,
+        logPath: typeof lastCheckpointEvent.detail?.logPath === 'string' ? lastCheckpointEvent.detail.logPath : null,
+      }
+    : null;
   const gateGreen = g.consecutiveReds === 0 && !g.fireStale;
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
@@ -184,6 +223,8 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
       lastFixerStatus: g.lastFixerStatus,
       lastFixerCandidate: g.lastFixerCandidate,
       flakyWorkspaces: g.flakyWorkspaces,
+      failingTests: g.failingTests ?? [],
+      lastVerdict,
     },
     deploy: {
       deployedSha: d.deployed?.sha ?? null,

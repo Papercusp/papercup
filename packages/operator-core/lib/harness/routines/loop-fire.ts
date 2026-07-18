@@ -28,6 +28,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { checkFireGate as defaultCheckFireGate, recordFire as defaultRecordFire } from '../../autoloop';
 import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coordination/inbox-wake';
+import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import {
   getLoopCarryNote as defaultGetLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
@@ -106,15 +107,99 @@ export interface LoopFireDeps {
     opts?: { sql?: Sql },
   ) => Promise<string | null>;
   deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
+  /** EI-10901: read the owner's currently-active BLOCKING awaits (defaults to
+   *  listParkedAwaitsForSubscribers, scoped to one owner). */
+  listBlockingAwaits?: (targetOwnerId: string) => Promise<BlockingAwaitLike[]>;
 }
 
 export interface LoopFireResult {
   fired: boolean;
   /** Why a fire was withheld (when fired=false). */
-  reason?: 'no-target' | 'fire-gate' | 'cost-cap' | 'dead-man' | 'no-session-now';
+  reason?: 'no-target' | 'fire-gate' | 'cost-cap' | 'dead-man' | 'no-session-now' | 'await-blocking';
   woken?: number;
   staged?: number;
   detail?: string;
+}
+
+// ── Blocking-await suppression (EI-10901) ────────────────────────────────
+//
+// "checkpoint:await says 'END YOUR TURN, do not poll' and then the 60s loop polls you
+// anyway": an agent that deliberately parked on `events:await`/`watch:create` (a real,
+// non-standing wait — NOT the always-armed inbox-wake self-await, NOT a standing
+// `announce` row) should not also be interrupted by its own loop's routine wake — that
+// re-injects the full loop contract + carry-note just to report "still waiting," the
+// exact empty-wake cost the "do not poll" contract tells the agent to avoid.
+//
+// Reuses `listParkedAwaitsForSubscribers` — the SAME "is this owner deliberately parked
+// on a real event" read `fleet:assignments` / `bench` / `presence` / claim-discipline
+// already derive bench state from (EI-9014) — rather than inventing new await-kind
+// semantics: it already excludes the `coord:inbox-wake:%` liveness self-await and
+// `policy = 'announce'` rows.
+
+/** A blocking-await row's minimal shape the suppression decision needs. */
+export interface BlockingAwaitLike {
+  eventKey: string;
+  /** ISO deadline, or null = no deadline set on the await itself. */
+  expiresTs: string | null;
+  /** ISO creation time — the suppression-quiet clock's origin (no new state needed). */
+  createdAt: string;
+}
+
+/** Ceiling on how long a blocking await may silence loop wakes, measured from the
+ *  await's OWN creation — independent of its `expiresTs` (which may be null / far
+ *  future). Bounds a stuck-forever await (emitter bug, cancelled-without-cleanup, …)
+ *  from permanently silencing the loop: past this bound the routine wake resumes on
+ *  its normal cadence regardless of the await still being active (mirrors the
+ *  `loopCheckpointStaleMs` 30-minute floor used elsewhere in this file). */
+export const LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS = 30 * 60_000;
+
+export interface LoopAwaitSuppressionDecision {
+  suppress: boolean;
+  /** Earliest moment (ms epoch) suppression is expected to lift — null when not suppressed. */
+  resumeAtMs: number | null;
+  /** The blocking await that drove the decision (earliest-resuming, when suppressed). */
+  drivingEventKey?: string;
+}
+
+/** Pure decision: given the owner's currently-active blocking awaits, should THIS
+ *  routine wake be withheld? `resumeAtMs` per await = min(its own deadline, its
+ *  creation + maxQuietMs) — "an await near deadline must not silence the routine
+ *  past its fallback" (the recommended plan this item's checkpoint left). Suppressed
+ *  while ANY await's resumeAtMs is still in the future; the reported `resumeAtMs` is
+ *  the EARLIEST such threshold (a self-correcting re-check — if another await is
+ *  still fresh, the next tick simply re-suppresses). No awaits ⇒ never suppress
+ *  (today's behavior, byte-identical). */
+export function decideLoopAwaitSuppression(input: {
+  awaits: ReadonlyArray<BlockingAwaitLike>;
+  nowMs: number;
+  maxQuietMs?: number;
+}): LoopAwaitSuppressionDecision {
+  const maxQuietMs =
+    typeof input.maxQuietMs === 'number' && Number.isFinite(input.maxQuietMs) && input.maxQuietMs > 0
+      ? input.maxQuietMs
+      : LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS;
+  let earliestResumeAtMs = Infinity;
+  let drivingEventKey: string | undefined;
+  for (const a of input.awaits) {
+    const createdAtMs = Date.parse(a.createdAt);
+    if (!Number.isFinite(createdAtMs)) continue; // malformed row — never suppress on it
+    const quietCeilingMs = createdAtMs + maxQuietMs;
+    const deadlineMs = a.expiresTs ? Date.parse(a.expiresTs) : NaN;
+    const resumeAtMs = Number.isFinite(deadlineMs) ? Math.min(deadlineMs, quietCeilingMs) : quietCeilingMs;
+    if (input.nowMs < resumeAtMs && resumeAtMs < earliestResumeAtMs) {
+      earliestResumeAtMs = resumeAtMs;
+      drivingEventKey = a.eventKey;
+    }
+  }
+  if (!Number.isFinite(earliestResumeAtMs)) return { suppress: false, resumeAtMs: null };
+  return { suppress: true, resumeAtMs: earliestResumeAtMs, drivingEventKey };
+}
+
+/** Default resolver: the owner's active BLOCKING awaits (excludes the standing
+ *  inbox-wake self-await + `announce` rows — see `listParkedAwaitsForSubscribers`). */
+async function defaultListBlockingAwaits(targetOwnerId: string): Promise<BlockingAwaitLike[]> {
+  const rows = await listParkedAwaitsForSubscribers([targetOwnerId]);
+  return rows.map((r) => ({ eventKey: r.eventKey, expiresTs: r.expiresTs, createdAt: r.createdAt }));
 }
 
 async function defaultDeactivateLoop(input: { sql?: Sql; installSlug: string; routineName: string }): Promise<boolean> {
@@ -422,6 +507,27 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
       // autoloop:status / fire history, and withhold the wake.
       await recordFire(input.installSlug, input.routineName, `dead-man ${dm.reason}`, 'error').catch(() => {});
       return { fired: false, reason: 'dead-man', detail: `dead-man guard tripped: ${dm.reason} — loop auto-paused` };
+    }
+  }
+
+  // Guard 4 — an active BLOCKING event-await (EI-10901): the owner deliberately parked via
+  // events:await/watch:create and was told "end your turn, do not poll" — this routine's own
+  // wake should not undo that by re-injecting the full loop contract just to report "still
+  // waiting." Withheld SILENTLY (no recordFire call, matching Guard 1's fire-gate pattern):
+  // this is expected, benign, self-correcting behavior, not a fire-history-worthy anomaly —
+  // the routine simply re-checks on its normal cadence next tick.
+  const listBlockingAwaits = deps.listBlockingAwaits ?? defaultListBlockingAwaits;
+  const blockingAwaits = await listBlockingAwaits(input.targetOwnerId).catch(() => []);
+  if (blockingAwaits.length > 0) {
+    const decision = decideLoopAwaitSuppression({ awaits: blockingAwaits, nowMs: Date.now() });
+    if (decision.suppress) {
+      return {
+        fired: false,
+        reason: 'await-blocking',
+        detail:
+          `owner is parked on a blocking await (${decision.drivingEventKey ?? blockingAwaits[0]?.eventKey}) — ` +
+          `wake withheld until ${decision.resumeAtMs != null ? new Date(decision.resumeAtMs).toISOString() : 'it fires'}`,
+      };
     }
   }
 

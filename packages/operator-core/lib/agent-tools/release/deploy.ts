@@ -72,6 +72,10 @@ function statusBrief(s: DeployStatus) {
       fireStale: s.gate.fireStale,
       verdictStale: s.gate.verdictStale,
       ...(s.gate.verdictStale ? { verdictStaleReason: s.gate.verdictStaleReason } : {}),
+      // EI-10902: "what did the last tick decide, and on what code?" — surfaced here too so a
+      // trigger/force reply carries the same answer without a follow-up op:status call.
+      ...(s.gate.failingTests.length ? { failingTests: s.gate.failingTests } : {}),
+      lastVerdict: s.gate.lastVerdict,
     },
     deployedBehindGreenPin: s.deploy.deployedBehindGreenPin,
     canTriggerGreen: s.canTriggerGreen,

@@ -7,9 +7,11 @@ import {
   renderLoopWakeText,
   renderLoopWallsBlock,
   loopCheckpointStaleMs,
+  decideLoopAwaitSuppression,
   LOOP_WAKE_FULL_TEMPLATE_EVERY,
   LOOP_WAKE_CHECKPOINT_MAX_CHARS,
   LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS,
+  LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS,
   type LoopFireDeps,
 } from './loop-fire';
 
@@ -30,6 +32,7 @@ function mkDeps(
     | 'findWakeRecipe'
     | 'takeWallNag'
     | 'renderOwnerDirectives'
+    | 'listBlockingAwaits'
   >
 > {
   return {
@@ -49,6 +52,7 @@ function mkDeps(
     findWakeRecipe: vi.fn(async () => null) as never,
     takeWallNag: vi.fn(async () => null) as never,
     renderOwnerDirectives: vi.fn(async () => null) as never,
+    listBlockingAwaits: vi.fn(async () => []) as never,
     ...over,
   };
 }
@@ -217,6 +221,73 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     const deps = mkDeps();
     await fireLoopWake(baseInput, deps); // payloadTemplate null → no costCapCents
     expect(deps.costCap).not.toHaveBeenCalled();
+  });
+
+  describe('BLOCKING-AWAIT suppression (EI-10901)', () => {
+    it('an active blocking await → fire WITHHELD, no wake, nothing recorded (silent, benign skip)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          { eventKey: 'work-item:claimable', expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(), createdAt: new Date().toISOString() },
+        ]) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+      expect(res.detail).toContain('work-item:claimable');
+      expect(deps.wake).not.toHaveBeenCalled();
+      // Matches the fire-gate pattern: a deliberate, expected skip is not fire-history noise.
+      expect(deps.recordFire).not.toHaveBeenCalled();
+    });
+
+    it('no blocking awaits → fires normally (today’s behavior, unchanged)', async () => {
+      const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+    });
+
+    it('a blocking-await READ FAILURE fails OPEN — the loop still fires (fail-soft, never wedges a loop)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => {
+          throw new Error('await store down');
+        }) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+    });
+
+    it('a blocking await already past ITS OWN deadline → not suppressed (the sweeper owns firing it)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          { eventKey: 'foo:bar', expiresTs: new Date(Date.now() - 1_000).toISOString(), createdAt: new Date(Date.now() - 60_000).toISOString() },
+        ]) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+    });
+
+    it('a deadline-less await older than the max-quiet ceiling → not suppressed (cannot silence the loop forever)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          {
+            eventKey: 'stuck:forever',
+            expiresTs: null,
+            createdAt: new Date(Date.now() - (LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS + 60_000)).toISOString(),
+          },
+        ]) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+    });
+
+    it('a deadline-less await still within the max-quiet ceiling → suppressed', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          { eventKey: 'stuck:fresh', expiresTs: null, createdAt: new Date().toISOString() },
+        ]) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+    });
   });
 
   it('a missed wake (woke 0, staged 0) auto-ends the orphaned loop instead of leaving it parked', async () => {

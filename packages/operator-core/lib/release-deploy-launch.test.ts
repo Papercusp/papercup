@@ -14,12 +14,13 @@ import {
   launchDetachedDeploy,
   DEPLOY_UNIT,
 } from './release-deploy-launch';
-import type { GitPipelineSnapshot } from './git-pipeline-stats';
+import type { GitPipelineSnapshot, PipelineEventRow } from './git-pipeline-stats';
 
-/** Minimal snapshot fixture — computeDeployStatus only reads gate + deploy. */
+/** Minimal snapshot fixture — computeDeployStatus only reads gate + deploy (+ recent, EI-10902). */
 function mkSnap(
   gate: Partial<GitPipelineSnapshot['gate']>,
   deploy: Partial<GitPipelineSnapshot['deploy']>,
+  recent: PipelineEventRow[] = [],
 ): GitPipelineSnapshot {
   return {
     gate: {
@@ -37,6 +38,7 @@ function mkSnap(
       lastFixerAtMs: null,
       lastFixerCandidate: null,
       flakyWorkspaces: [],
+      failingTests: [],
       ...gate,
     },
     deploy: {
@@ -55,6 +57,7 @@ function mkSnap(
       errors: [],
       ...deploy,
     },
+    recent,
   } as unknown as GitPipelineSnapshot;
 }
 
@@ -227,5 +230,57 @@ describe('WI-4489: gate verdict staleness', () => {
     );
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true); // decoupled from gate colour by design (line ~118)
+  });
+});
+
+/**
+ * EI-10902: "what did the last gate tick decide, and on what code?" — previously answerable
+ * only by grepping ANSI-coloured log files + cross-referencing a checkout's git log. The
+ * candidate sha / failing tests / log path were ALREADY persisted (WI-4494's recordCheckpointVerdict
+ * writes them into harness_shared.pipeline_events; WI-4533 already threaded failingTests into
+ * GitPipelineSnapshot.gate) — this just threads BOTH through to the existing agent-facing
+ * release:deploy{op:status} surface instead of leaving them stranded in the snapshot.
+ */
+describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', () => {
+  const greenEvent: PipelineEventRow = {
+    id: '1',
+    kind: 'green_checkpoint',
+    status: 'advanced',
+    detail: { green: true, candidate: 'deadbeefcafe', from: '28a3a3d50258', logPath: '/tmp/x-run.log' },
+    createdAtMs: 1_720_000_000_000,
+  };
+
+  it('lastVerdict is null when no green_checkpoint event has ever been recorded', () => {
+    const s = computeDeployStatus(mkSnap({}, {}, []));
+    expect(s.gate.lastVerdict).toBeNull();
+    expect(s.gate.failingTests).toEqual([]);
+  });
+
+  it('lastVerdict surfaces the newest green_checkpoint event candidate/from/status/logPath', () => {
+    const s = computeDeployStatus(mkSnap({}, {}, [greenEvent]));
+    expect(s.gate.lastVerdict).toEqual({
+      tickAtMs: 1_720_000_000_000,
+      candidate: 'deadbeefcafe',
+      from: '28a3a3d50258',
+      status: 'advanced',
+      logPath: '/tmp/x-run.log',
+    });
+  });
+
+  it('picks the FIRST (newest) green_checkpoint event, skipping other pipeline-event kinds ahead of it', () => {
+    const newer: PipelineEventRow = { id: '2', kind: 'git_sync', status: 'synced', detail: {}, createdAtMs: 2 };
+    const s = computeDeployStatus(mkSnap({}, {}, [newer, greenEvent]));
+    expect(s.gate.lastVerdict?.candidate).toBe('deadbeefcafe');
+  });
+
+  it('a RED tick with no candidate/logPath recorded (old-CLI skew) degrades to nulls, not a throw', () => {
+    const bareRed: PipelineEventRow = { id: '3', kind: 'green_checkpoint', status: 'not-green', detail: {}, createdAtMs: 5 };
+    const s = computeDeployStatus(mkSnap({}, {}, [bareRed]));
+    expect(s.gate.lastVerdict).toEqual({ tickAtMs: 5, candidate: null, from: null, status: 'not-green', logPath: null });
+  });
+
+  it('gate_health.failingTests (WI-4533) is threaded through unchanged', () => {
+    const s = computeDeployStatus(mkSnap({ failingTests: ['lib/a.test.ts', 'lib/b.test.ts'] }, {}, []));
+    expect(s.gate.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
   });
 });
