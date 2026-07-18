@@ -65,6 +65,9 @@ export interface ScoredItem {
   /** Who filed it (payload.sourceRole, P-010): 'Scout' | 'Queen' | 'bee' | 'system';
    *  undefined = human/legacy. Drives the Learning tab's source filter. */
   source?: string;
+  /** EI-1404: a parsed quota/rate-limit reset instant (ISO) — see policy.ts's
+   *  ImprovementCandidate.dispatchHoldUntil doc. Undefined = no hold. */
+  dispatchHoldUntil?: string | null;
 }
 
 export interface DupCluster {
@@ -401,6 +404,7 @@ export function buildDigest(
       ...(c.ideaLifecycle ? { ideaLifecycleState: c.ideaLifecycle.state } : {}),
       ...(c.ideaLifecycle?.triageDecision ? { triageDecision: c.ideaLifecycle.triageDecision } : {}),
       ...(c.sourceRole ? { source: c.sourceRole } : {}),
+      ...(c.dispatchHoldUntil ? { dispatchHoldUntil: c.dispatchHoldUntil } : {}),
     };
     // Only OPEN items go into the actionable queues.
     if (!isOpen) continue;

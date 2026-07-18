@@ -27,6 +27,7 @@
 
 import { markDispatchOrphaned } from './dispatch-ledger';
 import { mergeIssuePayload, getIssue } from '../../issues-engineer';
+import { parseResetHoldUntil } from './reset-backoff';
 
 export interface WorkerExitInfo {
   /** Subprocess exit code (0 = clean exit). */
@@ -320,6 +321,8 @@ export interface ImplementWorkerExitInput extends WorkerExitInfo {
   itemId: string;
   /** The attempt number stamped for THIS dispatch (== payload.implementAttempts). */
   attempt: number;
+  /** Injectable clock for the EI-1404 reset-hold computation (tests only; defaults to Date.now()). */
+  nowMs?: number;
 }
 
 /** Injectable deps (unit tests run without PG). */
@@ -358,6 +361,11 @@ export interface ImplementWorkerExitResult {
    *  clock, not a crash) — the running count of such deaths for this item
    *  (including this one) and whether the escalation cap tripped. */
   timeoutEscalation?: { deaths: number; escalated: boolean };
+  /** EI-1404: set when the death's output named an exact quota/rate-limit reset
+   *  time ("weekly limit · resets 7am (...)") — the dispatcher now holds
+   *  re-dispatch of THIS item until `holdUntilMs`, instead of the generic hourly
+   *  retry cadence bouncing off the same closed window all night. */
+  resetHold?: { holdUntilMs: number; raw: string };
 }
 
 /**
@@ -373,6 +381,18 @@ export async function recordImplementWorkerExit(
 ): Promise<ImplementWorkerExitResult> {
   const env = isEnvFailureExit(input);
   const tail = boundedTail(input);
+  const nowMs = input.nowMs ?? Date.now();
+
+  // EI-1404: a PLAIN env failure (not the context-overflow/timeout classes, which
+  // already get their own bounded-escalation routing) may name the EXACT moment its
+  // quota/rate-limit window reopens. Parsing it lets the dispatcher hold THIS item
+  // specifically until the reset, instead of re-firing on the generic ~hourly
+  // cadence into the same closed window (the lane-wide laneInEnvOutage pause needs
+  // >=2 deaths inside a 90-minute window and never engages against an isolated,
+  // once-an-hour bounce). Best-effort text scan; a miss just means no hold is set,
+  // same as before this change.
+  const resetHold =
+    env.env && !env.class ? (parseResetHoldUntil(`${input.stdout ?? ''}\n${input.stderr ?? ''}`, nowMs) ?? undefined) : undefined;
 
   // WI-716/WI-2162: a context-overflow OR worker-timeout death needs the item's PRIOR
   // death count for ITS class (persisted independently of implementAttempts, since the
@@ -407,7 +427,9 @@ export async function recordImplementWorkerExit(
           ? ` [worker-timeout death ${timeoutEsc.deaths}/${TIMEOUT_ESCALATE_CAP} — escalation cap tripped, routed to needs-human, attempt ${input.attempt} not charged]`
           : ` [worker-timeout death ${timeoutEsc.deaths}/${TIMEOUT_ESCALATE_CAP}; attempt ${input.attempt} not charged]`
         : env.env
-          ? ` [env-failure: ${env.reason}; attempt ${input.attempt} not charged]`
+          ? ` [env-failure: ${env.reason}; attempt ${input.attempt} not charged` +
+            (resetHold ? `; dispatch held until ${new Date(resetHold.holdUntilMs).toISOString()} (${resetHold.raw})` : '') +
+            ']'
           : ' [no resolve recorded; attempt charged]') +
     (tail ? `: ${tail}` : '');
 
@@ -483,8 +505,14 @@ export async function recordImplementWorkerExit(
   if (env.env) {
     // EI-406: an environment failure is not a real attempt — roll the counter back
     // so a credential/infra outage can't drain the auto-eligible pool to human-only.
-    await deps.mergePayload(input.itemId, { implementAttempts: Math.max(0, input.attempt - 1) });
-    return { marked: true, charged: false, envReason: env.reason };
+    // EI-1404: when a reset time was parsed, ALSO stamp dispatchHoldUntil so the
+    // dispatch loop (plan-implement.ts) skips this item until the window reopens,
+    // instead of re-firing on the generic cadence.
+    await deps.mergePayload(input.itemId, {
+      implementAttempts: Math.max(0, input.attempt - 1),
+      ...(resetHold ? { dispatchHoldUntil: new Date(resetHold.holdUntilMs).toISOString() } : {}),
+    });
+    return { marked: true, charged: false, envReason: env.reason, ...(resetHold ? { resetHold } : {}) };
   }
   return { marked: true, charged: true };
 }

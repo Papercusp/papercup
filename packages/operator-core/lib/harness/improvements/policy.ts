@@ -107,6 +107,13 @@ export interface ImprovementCandidate {
    *  the idea machine-checkably bettable (scout/invariants isBettable → the
    *  bettable-first ranking feature). */
   ideation?: CandidateIdeation;
+  /** EI-1404: an exact quota/rate-limit reset instant (ISO) parsed off a prior
+   *  dead-on-arrival worker's output (payload.dispatchHoldUntil, set by
+   *  implement-worker-exit.ts's reset-hold classification) — the auto-implement
+   *  dispatcher holds re-dispatch of THIS item until this instant instead of
+   *  re-firing on the generic cadence into the same closed window. Undefined =
+   *  no hold (the common case). */
+  dispatchHoldUntil?: string;
 }
 
 /**

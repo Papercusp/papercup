@@ -107,6 +107,9 @@ export interface ImplementRunPlan {
    * Excludes items whose final claim is still fresh (the worker may yet resolve).
    */
   attemptsExhausted: ScoredItem[];
+  /** EI-1404: auto-eligible items skipped because a prior death parsed an exact
+   *  quota/rate-limit reset time still in the future (dispatchHoldUntil). */
+  onHoldCount: number;
   message: string;
 }
 
@@ -142,13 +145,23 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
     return false;
   };
   const exhausted = (s: ScoredItem): boolean => (s.attempts ?? 0) >= maxAttempts;
-  const dispatchable = auto.filter((s) => !inFlight(s) && !exhausted(s));
+  // EI-1404: a prior death parsed an EXACT quota/rate-limit reset time still in the
+  // future — hold THIS item until then instead of re-firing on the generic cadence
+  // into the same closed window. An unparseable/garbled dispatchHoldUntil is treated
+  // as "no hold" (fail open — never wedge an item on a corrupt payload value).
+  const onHold = (s: ScoredItem): boolean => {
+    if (!s.dispatchHoldUntil) return false;
+    const holdMs = Date.parse(s.dispatchHoldUntil);
+    return Number.isFinite(holdMs) && holdMs > nowMs;
+  };
+  const dispatchable = auto.filter((s) => !inFlight(s) && !exhausted(s) && !onHold(s));
   const inFlightCount = auto.filter(inFlight).length;
   const attemptsExhausted = auto.filter((s) => !inFlight(s) && exhausted(s));
   const attemptsExhaustedCount = attemptsExhausted.length;
+  const onHoldCount = auto.filter((s) => !inFlight(s) && !exhausted(s) && onHold(s)).length;
   const skippedNote =
-    inFlightCount || attemptsExhaustedCount
-      ? ` (skipped: ${inFlightCount} in-flight, ${attemptsExhaustedCount} attempts-exhausted)`
+    inFlightCount || attemptsExhaustedCount || onHoldCount
+      ? ` (skipped: ${inFlightCount} in-flight, ${attemptsExhaustedCount} attempts-exhausted, ${onHoldCount} on-hold)`
       : '';
 
   if (!input.flagEnabled) {

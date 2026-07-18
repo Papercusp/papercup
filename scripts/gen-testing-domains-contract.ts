@@ -69,34 +69,55 @@ function serializeDomain(d: TestDomain): unknown {
   };
 }
 
-const ordered: TestDomain[] = [];
-for (const id of UNIVERSAL_ORDER) {
-  const d = byId.get(id);
-  if (d) ordered.push(d);
-}
-for (const d of adminRegistry) {
-  if (!UNIVERSAL_IDS.has(d.id)) ordered.push(d);
-}
-
-const contract = {
-  _comment:
-    'Harness-owned test-domain contract for the papercup dogfood harness. GENERATED from testing-domains-registry.ts by scripts/gen-testing-domains-contract.ts — do not hand-edit. Run `npx tsx scripts/gen-testing-domains-contract.ts` after changing domains.',
-  domains: [...ordered.map(serializeDomain), serializeDomain(ACCEPTANCE_DOMAIN)],
-  tierLabels: HARNESS_TESTING_TIER_LABELS,
-};
-
-const json = JSON.stringify(contract, null, 2) + '\n';
-
-if (process.argv.includes('--check')) {
-  const current = readFileSync(OUT, 'utf8');
-  if (current !== json) {
-    process.stderr.write(
-      '✗ .papercusp/testing-domains.json is stale. Run: npx tsx scripts/gen-testing-domains-contract.ts\n',
-    );
-    process.exit(1);
+/**
+ * Pure: build the contract JSON string from the live registry — no file I/O.
+ * Exported (EI-1407) so a Vitest can assert `.papercusp/testing-domains.json`
+ * freshness WITHOUT spawning this script as a subprocess, closing the gap
+ * where `gen:contract:check` only ran in GH Actions CI, which git-sync's
+ * `[skip ci]` dev-box commits never trigger — the local `test:affected` gate
+ * (green-checkpoint's greenCmd) now catches contract drift too.
+ */
+export function buildContractJson(): string {
+  const ordered: TestDomain[] = [];
+  for (const id of UNIVERSAL_ORDER) {
+    const d = byId.get(id);
+    if (d) ordered.push(d);
   }
-  process.stdout.write('✓ .papercusp/testing-domains.json is up to date\n');
-} else {
-  writeFileSync(OUT, json);
-  process.stdout.write(`✓ wrote ${contract.domains.length} domains to .papercusp/testing-domains.json\n`);
+  for (const d of adminRegistry) {
+    if (!UNIVERSAL_IDS.has(d.id)) ordered.push(d);
+  }
+
+  const contract = {
+    _comment:
+      'Harness-owned test-domain contract for the papercup dogfood harness. GENERATED from testing-domains-registry.ts by scripts/gen-testing-domains-contract.ts — do not hand-edit. Run `npx tsx scripts/gen-testing-domains-contract.ts` after changing domains.',
+    domains: [...ordered.map(serializeDomain), serializeDomain(ACCEPTANCE_DOMAIN)],
+    tierLabels: HARNESS_TESTING_TIER_LABELS,
+  };
+
+  return JSON.stringify(contract, null, 2) + '\n';
+}
+
+/** Exported for the freshness test — the on-disk contract path. */
+export const TESTING_DOMAINS_CONTRACT_PATH = OUT;
+
+// CLI-only side effects. Guarded so importing `buildContractJson` (from a
+// Vitest, or anywhere else) never writes a file or calls process.exit — only
+// running this file directly (`tsx scripts/gen-testing-domains-contract.ts`)
+// does.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  const json = buildContractJson();
+  if (process.argv.includes('--check')) {
+    const current = readFileSync(OUT, 'utf8');
+    if (current !== json) {
+      process.stderr.write(
+        '✗ .papercusp/testing-domains.json is stale. Run: npx tsx scripts/gen-testing-domains-contract.ts\n',
+      );
+      process.exit(1);
+    }
+    process.stdout.write('✓ .papercusp/testing-domains.json is up to date\n');
+  } else {
+    writeFileSync(OUT, json);
+    const count = JSON.parse(json).domains.length;
+    process.stdout.write(`✓ wrote ${count} domains to .papercusp/testing-domains.json\n`);
+  }
 }

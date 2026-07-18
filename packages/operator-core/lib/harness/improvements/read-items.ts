@@ -65,6 +65,9 @@ interface ImprovementPayload {
    *  payload.ideation { lens, bet, cheapExperiment }, persisted at capture and
    *  surfaced onto the candidate for the bettable-first ranking feature. */
   ideation?: unknown;
+  /** EI-1404: parsed quota/rate-limit reset instant (ISO) — see policy.ts's
+   *  ImprovementCandidate.dispatchHoldUntil doc. */
+  dispatchHoldUntil?: unknown;
 }
 
 function payloadOf(issue: EngineerIssue): ImprovementPayload {
@@ -85,6 +88,8 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
   // Undefined on non-observation / free-text rows.
   const observation = asStructuredObservation(p.observation);
   const ideation = asCandidateIdeation(p.ideation);
+  const dispatchHoldUntil =
+    typeof p.dispatchHoldUntil === 'string' && !Number.isNaN(Date.parse(p.dispatchHoldUntil)) ? p.dispatchHoldUntil : undefined;
   return {
     id: issue.id,
     kind,
@@ -111,6 +116,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(isSignalOrigin(issue.signalOrigin) ? { origin: issue.signalOrigin } : {}),
     ...(observation ? { observation } : {}),
     ...(ideation ? { ideation } : {}),
+    ...(dispatchHoldUntil ? { dispatchHoldUntil } : {}),
   };
 }
 
