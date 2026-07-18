@@ -2023,8 +2023,18 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     // A healthy authority that simply had nothing to merge must be
     // distinguishable from one that never ran: `metadata.integrator` is only
     // written on a real announcement, so without this an idle-but-working
-    // integrator and a stalled one look identical (both absent).
-    if (!outcome.announcement) await decline('ran_no_advance', 'integrator ran; no member head to integrate');
+    // integrator and a stalled one look identical (both absent). Record the
+    // trust-gate counts too — a head QUEUED for ratification (below
+    // AUTO_INTEGRATE_TIER) reads as "no advance" and cost a live diagnosis
+    // (canary hello-world-3-pot: every device tier 'message' < 'steer', so
+    // the integrator queued its own head forever with no visible reason).
+    if (!outcome.announcement) {
+      await decline(
+        'ran_no_advance',
+        `integrator ran; no advance (gate: ${outcome.gated ? `integrated=${outcome.gated.integrated} queued=${outcome.gated.queued} errors=${outcome.gated.errors}` : 'none'};` +
+          ` conflicts=${outcome.integration?.skippedConflicts?.length ?? 0}; errors=${outcome.errors.length})`,
+      );
+    }
 
     if (outcome.announcement) {
       // Local wake for any same-machine waiter, then federate hive-wide (the
