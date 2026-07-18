@@ -67,6 +67,15 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // signal STOPS firing immediately and unconditionally (not just recency-gated), so its
   // absence reliably means the underlying loop is gone/paused, not merely quiet.
   'loop-stalled',
+  // EI-1760: collectMigrationDriftSignals re-derives `missing` from a live DB query
+  // EVERY tick (never caches/latches) and, unlike service-down's freshness-gated probe
+  // skip, degrades LOUD not silent on failure — checkMigrationDrift's own internal
+  // catch treats an unreachable schema_migrations tracker as "report all on-disk as
+  // missing", so a query outage still FIRES the signal rather than going quiet. A quiet
+  // tick therefore reliably means every on-disk migration is applied (the common case:
+  // the operator restarted and boot-apply caught up) — the exact condition this EI was
+  // filed to auto-resolve instead of leaving self-cleared criticals polluting the queue.
+  'migration-drift',
 ]);
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */

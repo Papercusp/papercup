@@ -71,10 +71,15 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
   });
 
   it('accepts every eligible source and rejects an unlisted one', () => {
-    for (const src of ['red-test', 'repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck']) {
+    for (const src of ['red-test', 'repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(true);
     }
-    for (const src of ['service-down', 'migration-drift', 'orphaned-dispatch', 'insight-staleness']) {
+    // service-down is deliberately excluded: its P-004 freshness gate SKIPS collection
+    // (silently, no signal) when the probe workflow itself has stalled — a quiet tick
+    // can mean "the monitor died", not "the service recovered", so absence is NOT a
+    // reliable resolution signal for it (unlike migration-drift, which fires loud on
+    // its own check failure — see the EI-1760 comment on AUTO_CLOSE_ELIGIBLE_SOURCES).
+    for (const src of ['service-down', 'orphaned-dispatch', 'insight-staleness']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(false);
     }
   });
