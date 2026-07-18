@@ -64,6 +64,25 @@ describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
     expect(h.heal).not.toHaveBeenCalled();
   });
 
+  // EI-12979: lifecyclePhase used to be an unanchored `/end/i` / `/start/i` regex,
+  // so ANY lifecycle summary merely CONTAINING those words would misfire — e.g.
+  // "recommend a fix" contains "end" and would have wrongly CANCELLED the
+  // worker's inbox-wake watch AND force-released every lease/claim it holds
+  // (the phase==='end' branch above), and "restarted the watcher" contains
+  // "start" and would have wrongly re-ARMED. Only the EXACT marker literal may
+  // trigger either side effect.
+  it('EI-12979: a lifecycle summary merely containing "end" as a substring does NOT cancel (no false session-end)', async () => {
+    await run({ owner: 'su-abc', kind: 'lifecycle', summary: 'recommend a fix' });
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(h.arm).not.toHaveBeenCalled();
+  });
+
+  it('EI-12979: a lifecycle summary merely containing "start" as a substring does NOT arm (no false session-start)', async () => {
+    await run({ owner: 'su-abc', kind: 'lifecycle', summary: 'restarted the watcher' });
+    expect(h.arm).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
+  });
+
   it('an arm failure never breaks the activity report', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     h.arm.mockRejectedValueOnce(new Error('pg down'));

@@ -114,6 +114,50 @@ describe('sweepAppendHeavy', () => {
     stop();
   });
 
+  it('an ASYNC isEnabled (the real getFlag() shape) correctly disables the sweep when it resolves false (EI-13014)', async () => {
+    // Regression: isEnabled used to be typed `() => boolean`, but the real host wiring
+    // passes `() => getFlag(...)`, which returns a Promise. `!<a Promise object>` is
+    // always false (a Promise is always truthy), so the OLD code's `!deps.isEnabled()`
+    // silently NEVER disabled the sweep no matter what the flag resolved to. This locks
+    // that the sweep is correctly SKIPPED when an async isEnabled resolves false.
+    const maxId = vi.fn(async () => 5n);
+    const emitChanged = vi.fn(async () => {});
+    let next: (() => void) | null = null;
+    const { startAppendHeavyInvalidator } = await import('./append-heavy-invalidator');
+    const stop = startAppendHeavyInvalidator({
+      tables: ['user_actions'],
+      maxId,
+      emitChanged,
+      isEnabled: () => Promise.resolve(false), // async + always resolves disabled
+      setTimer: (fn: () => void) => {
+        next = fn;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer: () => {},
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(maxId).not.toHaveBeenCalled(); // must be skipped, not always-truthy-Promise enabled
+    expect(next).toBeTypeOf('function'); // still ticking — a runtime flip could resume it
+    stop();
+  });
+
+  it('an ASYNC isEnabled resolving true correctly enables the sweep (EI-13014)', async () => {
+    const maxId = vi.fn(async () => 5n);
+    const emitChanged = vi.fn(async () => {});
+    const { startAppendHeavyInvalidator } = await import('./append-heavy-invalidator');
+    const stop = startAppendHeavyInvalidator({
+      tables: ['user_actions'],
+      maxId,
+      emitChanged,
+      isEnabled: async () => true,
+      setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
+      clearTimer: () => {},
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(maxId).toHaveBeenCalledWith('user_actions');
+    stop();
+  });
+
   it('isolates a per-table query error — other tables still sweep + fire', async () => {
     const maxId = vi.fn(async (table: string) => {
       if (table === 'bad') throw new Error('boom');

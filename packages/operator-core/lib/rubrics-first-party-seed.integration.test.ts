@@ -219,6 +219,7 @@ describe('EI-12932: first-party bundle content-drift auto-upgrade', () => {
   });
 
   it('never overwrites a row that diverged from its own recorded seed state, even under the seed owner', async () => {
+    RUBRIC_ID = 'test-upgrade-rubric-2';
     writeBundleVersion([c1]);
     rubrics.__resetRubricSeedStateForTests();
     await rubrics.ensureFirstPartyRubricsSeeded();

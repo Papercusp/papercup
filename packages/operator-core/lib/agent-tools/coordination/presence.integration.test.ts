@@ -194,10 +194,23 @@ describe('fetchWakeability (real PG)', () => {
 
   it('activity AFTER the end-marker → liveTurn=true (a new turn resumed)', async () => {
     await seedAwait('resumed');
-    await seedActivity('resumed', { kind: 'lifecycle', summary: 'session ended', agoSec: 30 });
+    await seedActivity('resumed', { kind: 'lifecycle', summary: '■ session ended', agoSec: 30 });
     await seedActivity('resumed', { kind: 'tool', summary: '✎ x.ts', agoSec: 2 });
     const m = await fetchWakeability([own('resumed')]);
     expect(m.get(own('resumed'))).toEqual({ wakeable: true, liveTurn: true });
+  });
+
+  // EI-12979: the end-marker match must be EXACT, never an unanchored substring.
+  // Before the fix this used `summary ILIKE '%end%'`, so a lifecycle summary that
+  // merely CONTAINS "end" (e.g. "recommend a fix") would be mistaken for the
+  // `■ session ended` marker — turning a live, mid-turn agent's ONLY recent
+  // activity into a false end-marker and reporting liveTurn=false (parked) for a
+  // session that is demonstrably still running.
+  it('EI-12979: a lifecycle summary merely CONTAINING "end" is not the end marker — liveTurn stays true', async () => {
+    await seedAwait('substringtrap');
+    await seedActivity('substringtrap', { kind: 'lifecycle', summary: 'recommend a fix', agoSec: 5 });
+    const m = await fetchWakeability([own('substringtrap')]);
+    expect(m.get(own('substringtrap'))).toEqual({ wakeable: true, liveTurn: true });
   });
 
   it('an owner with no rows is present in the map as { wakeable:false, liveTurn:false }', async () => {
