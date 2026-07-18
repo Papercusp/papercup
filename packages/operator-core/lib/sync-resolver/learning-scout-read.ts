@@ -135,6 +135,36 @@ export interface IdeasHealth {
   markers: IdeasDriftMarker[];
 }
 
+/** One pending-signal lane of the cadence card (P-001, learning-tab-visibility
+ *  2026-07-18): the accumulator's cached "new since the last successful cycle"
+ *  count plus the weight the gate multiplies it by. */
+export interface ScoutCadenceLane {
+  lane: string;
+  count: number;
+  weight: number;
+}
+
+/**
+ * The live firing state (P-001): what the volume-mode cadence gate will see on
+ * its next tick. Derived from the SAME reader + score function the gate itself
+ * uses (signal-accumulator's readAccumulatorCounts + weightedSignalScore, and
+ * the gate's own SCOUT_CADENCE_DEFAULTS) — never a UI-side re-derivation.
+ */
+export interface ScoutCadenceState {
+  /** Every signal lane with its pending count (0 included) + gate weight. */
+  lanes: ScoutCadenceLane[];
+  /** The weighted new-signal score the gate consumes. */
+  score: number;
+  /** score >= threshold fires 'signal-volume'; score <= 0 withholds. */
+  threshold: number;
+  /** Burst-coalescing floor between volume fires (seconds). */
+  minVolumeIntervalSec: number;
+  /** Heartbeat ceiling — a cycle fires at least this often regardless (seconds). */
+  maxIntervalSec: number;
+  /** ISO of the accumulator baseline (the last successful cycle), when known. */
+  watermarkAt: string | null;
+}
+
 export interface ScoutSnapshot {
   totalRouted: number;
   railCounts: ScoutRailCount[];
@@ -168,6 +198,12 @@ export interface ScoutSnapshot {
    * Best-effort: an unresolvable ref simply has no entry.
    */
   groundingTitles: Record<string, string>;
+  /**
+   * Live firing state (learning-tab-visibility P-001): the accumulator's
+   * per-lane pending counts + the weighted score vs the gate's threshold.
+   * null when the accumulator table is missing or the read degrades.
+   */
+  cadence: ScoutCadenceState | null;
 }
 
 const UNDEFINED_TABLE = '42P01';
@@ -507,6 +543,35 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
+  // Cadence leg (learning-tab-visibility P-001): the live firing state — the
+  // SAME accumulator reader + score function the volume gate consumes, plus the
+  // gate's own defaults, so the card can never drift from what the gate judges.
+  // Best-effort like the tick half: a missing table degrades to null.
+  let cadence: ScoutCadenceState | null = null;
+  try {
+    const { readAccumulatorCounts, weightedSignalScore, DEFAULT_LANE_WEIGHTS, SIGNAL_LANES } = await import(
+      '../scout/signal-accumulator'
+    );
+    const { SCOUT_CADENCE_DEFAULTS } = await import('../scout/cadence');
+    const { counts, watermarkAt } = await readAccumulatorCounts({ workspaceId, sql });
+    cadence = {
+      lanes: SIGNAL_LANES.map((lane) => ({
+        lane,
+        count: counts[lane] ?? 0,
+        weight: DEFAULT_LANE_WEIGHTS[lane],
+      })),
+      score: weightedSignalScore(counts),
+      threshold: SCOUT_CADENCE_DEFAULTS.signalScoreThreshold,
+      minVolumeIntervalSec: SCOUT_CADENCE_DEFAULTS.minVolumeIntervalSec,
+      maxIntervalSec: SCOUT_CADENCE_DEFAULTS.maxIntervalSec,
+      watermarkAt: watermarkAt ? watermarkAt.toISOString() : null,
+    };
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] cadence read failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   const health = evaluateIdeasDriftMarkers({ ticks, recent, scoutLensSample });
-  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles };
+  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles, cadence };
 }

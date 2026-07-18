@@ -291,8 +291,11 @@ export async function upsertAccumulatorRows(
  *  (summing across pot rows would double-count a multi-pot workspace). */
 export async function readAccumulatorCounts(opts: {
   workspaceId: string;
+  /** Injectable sql seam (the learning.scout resolver routes a workspace-scoped
+   *  tx through here; tests stub it) — defaults to the org pool. */
+  sql?: Sql;
 }): Promise<{ counts: Partial<Record<SignalLane, number>>; watermarkAt: Date | null }> {
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<
     Array<{ lane: string; new_count: number; watermark_at: Date | string | null; updated_at: Date | string }>
   >`

@@ -2969,6 +2969,13 @@ export function ScoutView({
         </div>
       ) : null}
 
+      {/* Cadence card (learning-tab-visibility P-001): the LIVE firing state —
+          per-lane pending signal + the weighted score vs the volume gate's
+          threshold, from the same reader + score function the gate consumes.
+          Answers "why isn't it firing / what will make it fire" without a
+          PG query. */}
+      {cadence ? <CadenceCard cadence={cadence} scoutWord={t("scout")} /> : null}
+
       {/* Tick-economics strip (learning-tab-alignment P-002): the last N ticks'
           stop reason, spend, generated→routed funnel + lens mix — the columns
           where the 17-day WI-4482 lens collapse and the budget-exhausted

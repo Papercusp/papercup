@@ -171,6 +171,11 @@ const DEFAULTS = {
   minVolumeIntervalSec: 900,
 } as const;
 
+/** The pure-gate defaults, exported for surfaces that must render the SAME
+ *  numbers the gate judges by (the Learning tab's cadence card) — never a
+ *  UI-side copy that can drift. */
+export const SCOUT_CADENCE_DEFAULTS = DEFAULTS;
+
 /**
  * Decide whether to run a Scout cycle now. Pure over {@link ScoutCadenceState}.
  */
