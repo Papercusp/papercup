@@ -28,8 +28,9 @@
  * agent-driveable: `?plq` search, `?plf` show-finished, `?pplan` popup plan,
  * `?ppv` popup tab (see PlanPopupModal).
  */
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSyncQuery } from '@papercusp/sync';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
@@ -188,6 +189,19 @@ export default function PlansPane() {
 
   const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
 
+  // Virtualize the row list (WI-5339): the active set is ~466 rows and up to
+  // ~977 with Finished on — rendering them all unvirtualized made a ~89k-px DOM
+  // and a ~600ms filter re-render in an always-visible sidebar. Only the rows
+  // near the viewport mount now; heights self-correct via measureElement.
+  const listRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 52,
+    overscan: 10,
+    getItemKey: (i) => `${rows[i]!.plan.harness}:${rows[i]!.plan.slug}`,
+  });
+
   return (
     <div className="plans-pane" data-testid="plans-pane">
       <div className="plans-pane__bar">
@@ -233,11 +247,26 @@ export default function PlansPane() {
                 : 'No active plans — everything is finished. 🎉'}
         </div>
       ) : (
-        <ul className="plans-pane__list" aria-label="Plans">
-          {rows.map(({ plan, needsYou, liveAgents }) => {
-            const progress = progressOf(plan);
-            return (
-              <li key={`${plan.harness}:${plan.slug}`}>
+        <div className="plans-pane__list" ref={listRef} role="list" aria-label="Plans">
+          <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+            {rowVirtualizer.getVirtualItems().map((vi) => {
+              const { plan, needsYou, liveAgents } = rows[vi.index]!;
+              const progress = progressOf(plan);
+              return (
+                <div
+                  key={vi.key}
+                  role="listitem"
+                  data-index={vi.index}
+                  ref={rowVirtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    paddingBottom: 4,
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
                 <button
                   type="button"
                   className="plans-pane__row"
@@ -291,10 +320,11 @@ export default function PlansPane() {
                     ) : null}
                   </span>
                 </button>
-              </li>
-            );
-          })}
-        </ul>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       <PlanPopupModal

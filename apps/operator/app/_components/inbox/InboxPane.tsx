@@ -26,6 +26,7 @@
  * nuqs-by-default policy.
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQueryState, useQueryStates, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { MessageCircle } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
@@ -136,9 +137,11 @@ export default function InboxPane({ onDiscussInChat }: {
   );
 
   // deterministic-status-cards-2026-07-17 P-003: when a curator card's drill-in
-  // deep-links a selection (opcis), scroll that row into view once it renders.
-  const selectedRowRef = useRef<HTMLLIElement | null>(null);
+  // deep-links a selection (opcis), scroll that row into view. With the list
+  // virtualized (WI-5339) the target row may not be mounted, so we scroll via
+  // the virtualizer's scrollToIndex rather than a row ref.
   const lastScrolledSel = useRef<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(() => {
     const filtered = items.filter((i) => {
