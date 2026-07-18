@@ -35,7 +35,10 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     const line = renderContextUsageLine(85, 100); // exactly 85%
     expect(line).toContain('context: 85/100 (85%)');
     expect(line).toContain('session:request-compaction');
-    expect(line).toContain('/compact');
+    // WI-4998 (owner:Avi 2026-07-14 "remove the compact call entirely"): the affordance
+    // names session:request-compaction ONLY — the native /compact call is retired. Guard
+    // that it does not creep back into this line.
+    expect(line).not.toContain('/compact');
   });
 
   it('NAMES the action ABOVE the threshold, including over 100%', () => {
