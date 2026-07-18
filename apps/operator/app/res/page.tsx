@@ -31,6 +31,19 @@
  * renders one level under a workspace root; cross-hive nesting fills in as
  * federation (P-301) lands. The spend bar is hidden until fleet capacity (P-206)
  * is wired.
+ *
+ * POT-WIDE SEAT OFFERS (pot-seat-pools-prose-ux-2026-07-18 P-002): a seat
+ * delegation may also target the whole pot instead of one fleet
+ * (resource:delegate { potSlug, audience }, P-001) — a standing offer any
+ * fleet in the pot can draw from once the honor/spend paths (P-003/P-004)
+ * land, audience-gated ('trusted-members' | 'whole-pot'). These rows carry
+ * `fleetSlug: null` + a non-null `potSlug`/`audience`, so they are filtered
+ * OUT of the per-fleet tree above and rendered as their own "Whole pot" card
+ * (below the fleet tree) with an audience toggle per seat row, revocable the
+ * same way. `potSlug` must be one of this workspace's real shared hives
+ * (offer-store-publish.ts's disambiguator check) — resolved read-only via the
+ * `hive.workspaceScope` sync query; the card hides behind an explanatory note
+ * when this workspace has no single shared hive.
  */
 'use client';
 
@@ -58,6 +71,8 @@ import './res.css';
 type ResType = 'account' | 'gpu';
 /** Everything resource_allotments stores (mig 486 adds agent_slot). */
 type WireKind = ResType | 'agent_slot';
+/** P-001/D-002: audience gate for a pot-scoped (potSlug) allotment. */
+type AllotmentAudience = 'trusted-members' | 'whole-pot';
 
 /* ── Wire types — mirror the server row shapes, kept local per the client
  *    wire-type decoupling convention. ── */
@@ -74,7 +89,12 @@ interface AccountRow {
   boundTo?: string | null;
 }
 interface AllotmentRow {
-  fleetSlug: string;
+  /** null for a pot-scoped row (P-001) — exactly one of fleetSlug/potSlug is set. */
+  fleetSlug: string | null;
+  /** P-001: the pot-scoped grantee — mutually exclusive with fleetSlug. */
+  potSlug?: string | null;
+  /** P-001/D-002: required iff potSlug is set; null for a fleet-scoped row. */
+  audience?: AllotmentAudience | null;
   resourceKind: WireKind;
   resourceRef: string;
   sharePct: number;
@@ -87,7 +107,12 @@ interface AllotmentRow {
 
 interface AllotmentSetArgs {
   action: 'set' | 'remove';
-  fleetSlug: string;
+  /** Exactly one of fleetSlug/potSlug (P-001). */
+  fleetSlug?: string;
+  /** Pot-scoped grantee (P-001) — the workspace's shared-hive slug. */
+  potSlug?: string;
+  /** Required iff potSlug is set (D-002). */
+  audience?: AllotmentAudience;
   resourceKind: WireKind;
   /** Optional for agent_slot 'set' — the store DERIVES it from axis. */
   resourceRef?: string;
@@ -159,6 +184,13 @@ export default function ResourcesPage() {
   const { data: accountsData } = useSyncQuery<AccountRow>({ queryName: 'accounts.pool' });
   const { data: allotmentsData } = useSyncQuery<AllotmentRow>({ queryName: 'p2p.allotments' });
   const { data: tiersData } = useSyncQuery<ModelTier>({ queryName: 'agentConfig.modelTiersBaseline' });
+  // P-002: whether this workspace ("pot") has exactly one shared Hive to
+  // publish a pot-scoped seat offer into — potSlug must be a real shared hive
+  // (offer-store-publish.ts). Fail-soft: any other shape just hides the card.
+  const { data: hiveScopeData } = useSyncQuery<{ kind: 'one' | 'many' | 'none'; homeSlug: string | null }>({
+    queryName: 'hive.workspaceScope',
+  });
+  const potHomeSlug = hiveScopeData?.[0]?.kind === 'one' ? (hiveScopeData[0].homeSlug ?? null) : null;
 
   const workspace = fleetsData?.[0]?.workspaceId ?? 'this workspace';
 
