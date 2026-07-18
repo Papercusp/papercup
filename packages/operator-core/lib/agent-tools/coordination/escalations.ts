@@ -387,6 +387,27 @@ const RESOLVE_COVERAGE_SLACK_MS = 60_000;
 const MAX_RESOLVE_COVERAGE_PAGES = 8;
 
 /**
+ * EI-1548 (#3): a caller-supplied `body` (openEscalation's free-text detail
+ * field, e.g. a diagnostic dump) can be arbitrarily large — unlike `summary`,
+ * which is always short. Bounding `maxRecords` alone still lets N records of
+ * fat bodies reproduce the original ~9MB-response repro. LIST mode truncates
+ * `body` per-record and flags it (`bodyTruncated` + the original `bodyLength`)
+ * so a caller who needs the full text knows more exists; `getEscalation`
+ * (single-record read by msg_id) is untouched and always returns the full body.
+ */
+const MAX_LIST_BODY_CHARS = 500;
+
+function boundBodyForList(rec: EscalationRecord): EscalationRecord {
+  if (typeof rec.body !== 'string' || rec.body.length <= MAX_LIST_BODY_CHARS) return rec;
+  return {
+    ...rec,
+    body: rec.body.slice(0, MAX_LIST_BODY_CHARS),
+    bodyTruncated: true,
+    bodyLength: rec.body.length,
+  };
+}
+
+/**
  * List escalation records with pagination to prevent unbounded response sizes.
  * Loads up to maxRecords events, folds them, and returns with a truncated flag.
  * WI-239: bounds coord:escalations so one call never returns ~9M chars.
@@ -456,7 +477,7 @@ export async function listEscalationsPaginated(
       (rec): rec is EscalationResolvedEvent => typeof (rec as EscalationResolvedEvent).related_msg_id === 'string',
     );
 
-  const escalations = foldEscalations(opens, resolves, opts);
+  const escalations = foldEscalations(opens, resolves, opts).map(boundBodyForList);
   // `total` = escalations actually returned (matches the tool's own human-facing
   // "Bounded to the N most-recent escalation events" note — never inconsistent
   // with `escalations`, unlike the old raw-event-scan count). `truncated` flags
