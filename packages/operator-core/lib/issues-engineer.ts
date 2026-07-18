@@ -295,7 +295,6 @@ interface IssueRowDb {
   feature_order: number | null;
   created_at: unknown;
   updated_at: unknown;
-  brand_new_test_field: string;
 }
 function tsIso(v: unknown): string {
   return v instanceof Date ? v.toISOString() : String(v);

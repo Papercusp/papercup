@@ -7,8 +7,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const M = vi.hoisted(() => ({
-  notifyAttention: vi.fn(async () => {}),
-  broadcastSevereEvent: vi.fn(async () => true),
+  notifyAttention: vi.fn(async (..._args: unknown[]) => {}),
+  broadcastSevereEvent: vi.fn(async (..._args: unknown[]) => true),
 }));
 vi.mock('../attention-notify', () => ({ notifyAttention: M.notifyAttention }));
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: M.broadcastSevereEvent }));

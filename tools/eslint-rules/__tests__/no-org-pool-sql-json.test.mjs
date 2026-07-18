@@ -7,19 +7,16 @@
  * silent for a file using a DIFFERENT pool (e.g. dock-layouts.ts's own fresh
  * postgres() client), where sql.json() is the CORRECT form.
  */
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { describe, it } from 'vitest';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// npm workspaces hoists `eslint` to the repo-root node_modules — a plain
+// require('eslint') resolves it via normal Node module-resolution walk-up
+// (EI-10445: fixed the sibling no-bare-jsonb-cast.test.mjs's hardcoded
+// node_modules/.pnpm/eslint@… path the same way — this is an npm-only repo,
+// no pnpm store ever exists here, so that path never resolved).
 const require = createRequire(import.meta.url);
-
-const pnpmDir = path.join(__dirname, '..', '..', '..', 'node_modules', '.pnpm');
-const eslintPkg = readdirSync(pnpmDir).find((d) => d.startsWith('eslint@'));
-const eslintModule = path.join(pnpmDir, eslintPkg, 'node_modules', 'eslint');
-const { RuleTester } = require(eslintModule);
+const { RuleTester } = require('eslint');
 
 const rule = require('../no-org-pool-sql-json.js');
 
