@@ -9057,6 +9057,35 @@ const data = await readJsonBody<{ projects?: { slug: string }[] }>(r);
 
 Related: the EI-390 insight on bare `fetch failed` loopback retries (`describeFetchError`) — same file, same “make loopback failures self-diagnosing” philosophy.
 
+# Empty-string env vars defeat `??` defaults — docker-compose `${VAR:-}` ships "", not unset
+
+> A compose line like `SCOUT_CONVERSATION_BUDGET_USD: ${SCOUT_CONVERSATION_BUDGET_USD:-}` injects an EMPTY STRING into the container when the host env doesn't define the var. In Node, `'' ?? 'default'` keeps '' (empty string is not nullish), so `Number(process.env.X ?? '1')` becomes Number('') → 0. In the Restart scout-service this made the conversation budget $0 and the gate `cost >= 0` rejected EVERY message ('hit budget: $0.0000 ≥ $0') — a total prod chat outage with a perfectly healthy service. Same class hit OPENAI_BASE_URL earlier (commit 4920dd05). Rule: any env consumed with a default must treat empty/whitespace/garbage/non-positive as unset — parse via a helper (see apps/scout-service/src/scout/budget.ts parseBudgetUsd), or use `:-realdefault` in compose, never `:-`. Diagnostic tell: an error that should depend on accumulated state firing on the FIRST request of a fresh session means the threshold parsed to zero, not that the meter is wrong.
+
+# Empty-string env vars defeat `??` defaults
+
+[Section titled “Empty-string env vars defeat ?? defaults”](#empty-string-env-vars-defeat--defaults)
+
+**Symptom (2026-07-17, WI-5324):** every Scout chat message on shop.buyrestart.com — including message one of a brand-new session — returned *“This conversation has reached its usage limit.”* The service was healthy; no LLM call was ever attempted.
+
+**Mechanism, three innocent pieces that compose into an outage:**
+
+1. `docker-compose.prod.yml`: `SCOUT_CONVERSATION_BUDGET_USD: ${SCOUT_CONVERSATION_BUDGET_USD:-}` — when the host `.env.production` doesn’t define the var, `${VAR:-}` interpolates to **empty string**, and the container env var exists as `""` (NOT unset).
+2. `scout.service.ts`: `Number(process.env.SCOUT_CONVERSATION_BUDGET_USD ?? '1')` — `"" ?? '1'` evaluates to `""` because **empty string is not nullish**.
+3. `Number("")` → `0`. Budget = $0, so the gate `costMicroUsd >= budget * 1e6` is `0 >= 0` → **true on every request**.
+
+**Proof pattern in logs:** `hit budget: $0.0000 ≥ $0` — a threshold of literal `$0` is the giveaway that the *parse* failed, not the meter.
+
+**Diagnostic tell (generalizes):** a limit/quota error that should depend on accumulated state firing on the FIRST request of a fresh session ⇒ suspect the threshold parsed to zero/empty, before suspecting the accounting.
+
+**Fix + recurrence guard:**
+
+* `apps/scout-service/src/scout/budget.ts` `parseBudgetUsd(raw, fallback)` — empty / whitespace / non-numeric / non-finite / non-positive all fall back; unit-pinned in `budget.test.ts` (the empty-string case is named for this outage).
+* If you want a compose-level default, write `${VAR:-1}` — a REAL value — never bare `${VAR:-}` feeding code that uses `??`.
+
+**Prior art in the same repo, same class:** commit `4920dd05` *“fix(scout): fall back to default base URL when OPENAI\_BASE\_URL is empty”*. When you see `?? 'default'` next to `process.env` anywhere a compose file feeds it, assume the empty-string case WILL eventually arrive.
+
+**Instances stack and MASK each other (same outage, hour two):** fixing the $0 budget gate un-masked a SECOND instance in the same file — `OPENAI_MODEL_ID ?? 'gpt-4o-mini'` kept `""`, so every request shipped `model: ""` → OpenAI 400 “you must provide a model parameter”. The file even ALREADY had the correct `?.trim() ||` idiom on two neighboring consts (`OLLAMA_URL`, `OPENAI_BASE_URL`) from prior hits — the lesson is to sweep the WHOLE file/service for the class when you fix one instance (`grep -n "process\.env\..* ??" …`), because the first instance’s failure hides the later ones on the same request path.
+
 # Porting Next route.ts files to defineRoute
 
 > The non-obvious patterns from migrating all 243 operator endpoints off Next route handlers onto the Hono-mounted defineRoute primitive.
@@ -17320,6 +17349,73 @@ All verified against the QEMU macOS 14.8.5 x86\_64 build VM (`ssh -i ~/.ssh/pape
 
 * Mac build VM recovery: [mac-vm-qmp-recovery](/internal/docs/agent-insights/mac-vm-qmp-recovery)
 * Desktop app testing conventions (Tauri agent-driven UI checks — a *different* battery, for the interactive webview control surface, not this SSH-driven VM battery): `/internal/docs/testing/agent-e2e`
+
+# Mac VM isolated packaged-app testing: bypass `open`, exec the binary directly
+
+> The durable fix for EI-14941-style shared-sidecar collisions when testing a packaged macOS Papercusp .app in isolation — launch the Mach-O binary directly instead of `open -a`, sidestepping the launchd env-cache race entirely.
+
+# Mac VM isolated packaged-app testing: bypass `open`, exec the binary directly
+
+[Section titled “Mac VM isolated packaged-app testing: bypass open, exec the binary directly”](#mac-vm-isolated-packaged-app-testing-bypass-open-exec-the-binary-directly)
+
+## The problem (EI-14941)
+
+[Section titled “The problem (EI-14941)”](#the-problem-ei-14941)
+
+Testing a packaged macOS Papercusp `.app` (GUI or Server) “in isolation” — its own `$HOME`, its own embedded PG, its own ports — normally means: `launchctl setenv PAPERCUSP_HOME /some/isolated/dir` (+ the other overrides), then `open -a "/path/to/App.app"`.
+
+This **silently fails to isolate** on a slow-booting VM: `launchctl setenv` populates a process-wide environment cache that `open`-launched apps inherit at *launch time* — but on this mac VM the GPU-less WKWebView boot sequence takes on the order of **minutes** before the sidecar process actually forks, and something in that window (another `open`, a shell reset, a login-item re-exec) reverts the `launchctl setenv` values well before then. The forked child inherits the REAL shared `$HOME` instead, and — because `shared_sidecar_home()==real_home()` by design — silently takes over the box-canonical embedded PG / `operator.json` / `superuser-token`, colliding with whatever else is running on the shared VM. This is exactly what happened 2026-07-17 (EI-14941): a P-021 update-center E2E attempt collided with a live peer’s federation-drill rig on the SAME mac VM’s shared PG data dir.
+
+The instinctive “fix” — just wait longer before checking, extend the setenv-to-launch gap — does not actually change the failure mode: `launchctl setenv`’s scope and the `open`/LaunchServices handoff are simply the wrong mechanism for this, no matter the timing.
+
+## The actual fix: don’t use `open` at all
+
+[Section titled “The actual fix: don’t use open at all”](#the-actual-fix-dont-use-open-at-all)
+
+`open -a` hands the launch off to LaunchServices/launchd, which is what re-derives the environment from its own cache rather than your shell’s. Skip that whole layer: **launch the app’s actual Mach-O executable directly**, with the isolation env vars set inline in the SAME exec — normal Unix fork+exec env inheritance, no launchd cache, no race:
+
+```bash
+BIN="/path/to/e2e/priorapp/Papercusp GUI.app/Contents/MacOS/papercusp-desktop"
+ISOHOME="/path/to/e2e/home3"
+
+
+nohup env \
+  HOME="$ISOHOME" \
+  PAPERCUSP_HOME="$ISOHOME" \
+  PAPERCUSP_PG_PORT=19170 \
+  PAPERCUSP_HONO_PORT=19070 \
+  PAPERCUSP_PG_DATA_DIR="$ISOHOME/embedded-pg-data" \
+  PAPERCUSP_RELEASE_HOST="http://127.0.0.1:8044" \
+  "$BIN" > "$ISOHOME/../gui.log" 2>&1 &
+disown
+```
+
+Verified live (2026-07-17, mac VM, prior-version 0.0.8 GUI.app which **predates** the `PAPERCUSP_HOME` fix, i.e. its own JS ignores that env var entirely): the process still came up **fully isolated** —
+
+* its own `~/.papercusp/embedded-pg.json` written under `$ISOHOME`, not the shared one (whose mtime was unchanged before/after);
+* its own embedded postgres, auto-picked port (`20836` in the observed run — the app auto-selects an available port; it does NOT need to honor your requested `PAPERCUSP_PG_PORT` value for isolation to hold, it just needs to pick *a* free one), data dir under `$ISOHOME/.papercusp-workspaces/.shared/embedded-pg-data`;
+* its own hono/HTTP port (`17701` in the observed run), confirmed via `GET /api/health` returning the correct old version/sha;
+* confirmed via `lsof -nP -iTCP -sTCP:LISTEN` (compare the full listening-port set before/after) that the shared `:3070`/`:3170`/`:3270`/`:18213` owners (pids) were **completely unchanged** throughout.
+
+**Why this works even on code that predates the `PAPERCUSP_HOME` fix:** Node’s `os.homedir()` on POSIX checks `process.env.HOME` before falling back to the passwd DB — so a plain `HOME` override, delivered via normal env inheritance (not `launchctl setenv`), isolates the process’s default `~/.papercusp` resolution regardless of whether the app’s own code added explicit `PAPERCUSP_HOME` support. The EI-14941 incident was never really about “the app can’t be told to isolate” — it was specifically about `open`
+
+* `launchctl setenv` being the wrong DELIVERY mechanism for that instruction on a slow-booting VM. Bypass the mechanism, not the timing.
+
+**Watch for a companion process spawned via a registered bundle id.** The GUI role may spawn a companion “Server” role process resolved via LaunchServices to whatever’s registered at `/Applications` (not necessarily your extracted test copy) — `ps eww` on that child still shows YOUR env correctly (fork/exec inheritance doesn’t care which path the exec target resolves to), so verify via `ps eww` + `lsof -p <pid>`, not by assuming the executable path implies which env it’s running with.
+
+## What this does NOT solve: driving the GUI itself
+
+[Section titled “What this does NOT solve: driving the GUI itself”](#what-this-does-not-solve-driving-the-gui-itself)
+
+Direct-binary-launch fixes *isolation*. It does not give you a way to click through the actual update UI on a **packaged release build**:
+
+* The `tauri-agent-tools` dev-bridge (`dev_bridge.rs`, the eval/click/screenshot CLI documented for driving the Tauri webview headlessly) only starts `if is_dev` — it is compiled out of / inert in a packaged release `.app`. `npm run dev`’s Tauri shell is the only surface where that CLI works.
+* OS-level UI scripting (`osascript`/`System Events`) requires Accessibility (TCC) grant for whatever process runs it (ssh/Terminal) — not granted by default, and granting it requires either physical GUI interaction or a system-wide TCC.db change (itself a shared-VM-risk action, not something to do unilaterally for a test).
+* There is no server-side HTTP shortcut for `install_update`/`revert_to` — they are Tauri commands invoked ONLY via the webview’s JS `invoke()`; the operator’s `/api/updates/*` routes (`updates-manifest.ts`, `updates-rollback.ts`) only RESOLVE the install manifest the client will fetch — they never perform the actual download/swap themselves.
+
+So: isolated packaged-app testing (safe to boot, safe to leave running, verifiable via its own `/api/health`) is now a solved, repeatable technique. Driving an actual click-through install+relaunch on a packaged release build still needs either a human / VNC session with Accessibility granted, or a dev-mode (`npm run dev`) rebuild specifically for that pass (which changes what’s being tested — dev mode skips the normal sidecar spawn/update path entirely, so it cannot substitute for testing the real packaged updater).
+
+Related: EI-14941 (the original collision incident), `apps/operator/bin/serve.ts`’s `PAPERCUSP_HOME` handling (comment tag EI-13917), `papercusp-desktop/src-tauri/src/dev_bridge.rs`.
 
 # Mac build VM — QMP recovery from a wedged boot, and the launcher split-brain
 
@@ -32384,6 +32480,8 @@ Don’t guess from “coordination seems dark” — confirm the severed-link si
 3. **Frozen inbound apply.** The receiving side’s `coord_event_log` (or equivalent federated-event ledger) stops advancing — `max(ts)` sticks at the moment of severance.
 
 4. **Zero sockets between the machines.** `ss -tnp` / `ss -aunp` (whichever transport the swarm uses) shows no active connection between the two hosts’ processes.
+
+**Fastest disambiguator — run the probes FIRST.** `bin/vm-rig/probe-rev.sh` + `bin/vm-rig/probe-fwd.sh` give a definitive live round-trip verdict in \~15s each; only when they FAIL does the restart lever below apply. On 2026-07-17 \~20:54Z (su-0e484126) legs 2–4 all appeared to match — `coord_event_log` remote rows frozen 3.4h, `hive-presence` gossip broadcasting into `0 channel(s) open`, `ss`/`netstat` showing no inter-machine sockets — yet both probes PASSED in seconds: the link was fine. The false reads: the VM had merely stopped *authoring* coord messages after its own serve.mjs restart (frozen inbound ≠ frozen replication); hyperswarm’s UDX rides **unconnected UDP sockets that `ss`/`netstat` per-peer greps cannot see** (and `conntrack` may not be installed), so leg 4 needs the probes, not socket greps; and `dogfood-substrate-status` can report `bootedCount: 0` on the bg-host while the engine is demonstrably live in-process (outbox draining, corestore fd open — a separate status-seam false-negative, filed 2026-07-17). Leg 1 is the strong guard: **remote `shared_presence` rows re-stamping fresh (age < \~1 min) mean the link is ALIVE** — never restart through that signal.
 
 Rule out the two usual false leads before concluding it’s this bug:
 
@@ -79375,6 +79473,39 @@ btn[Object.keys(btn).find((k) => k.startsWith('__reactProps$'))].onClick();
 ```
 
 Plain `.click()` on buttons works fine (React listens natively for clicks) — the expando path is only needed for **value-tracked** inputs. Also remember a value injected this way bypasses UI constraints: only pass values the real control could produce (e.g. an option that exists in the select), or you are testing a state the user can never reach.
+
+### 15.6 Verifying a terminal/PTY-hosted pane (e.g. the brain pane)
+
+[Section titled “15.6 Verifying a terminal/PTY-hosted pane (e.g. the brain pane)”](#156-verifying-a-terminalpty-hosted-pane-eg-the-brain-pane)
+
+Found during WI-198 (Tauri-verifying the Queen brain pane — the `♛ queen` zellij pane running `psu --brain`). The §15.4 Xvfb/VirtualGL cookbook only covers screenshotting the Tauri **webview**; a pane whose surface is a **terminal/PTY** (brain/sentinel/overwatch panes, any `psu` pane) hits two traps that recipe doesn’t warn about:
+
+1. **No working GUI terminal emulator under an isolated Xvfb on the dev box.** Only `gnome-terminal` is installed (no xterm/alacritty/foot/st), and it renders as a broken 10×10 stub window under Xvfb (portal/VTE/pipewire failures) — `import -window` then captures blank. A “screenshot the pane” task has no straightforward terminal to screenshot.
+2. **The desktop chat-dock is a NAMED zellij session** (`~/.papercusp/pui-chat-dock.kdl`, §16). Launching a second desktop to open the dock risks zellij **ATTACHing to the owner’s LIVE dock session** — disrupting real funded Queen/overwatch/sentinel sessions. If you genuinely need to observe a live pane, use §16’s `zellij ls` / `dump-screen` path (read-only, always safe) rather than opening a fresh desktop.
+
+**What works instead: verify the pane’s COMMAND directly**, without a GUI terminal at all. The brain pane’s command is `psu --brain`; run it with a PATH-shim stub `claude` (a script that prints its argv + `cat`s the `--append-system-prompt-file`, then exits) and `PAPERCUSP_PSU_NO_PTY=1`. This exercises the entire real launch chain (`psu` brainFlow → `bootstrap-su` fresh-mint → the exact `claude` argv + injected brief) with **zero API spend** and no GUI flakiness:
+
+```sh
+# a stub `claude` on PATH that just proves what psu would have launched
+cat > /tmp/claude-stub.sh <<'EOF'
+#!/usr/bin/env bash
+echo "ARGV: $@"
+for a in "$@"; do
+  [ -f "$a" ] && echo "--- $a ---" && cat "$a"
+done
+EOF
+chmod +x /tmp/claude-stub.sh
+PATH="/tmp:$PATH" PAPERCUSP_PSU_NO_PTY=1 \
+  PAPERCUSP_OPERATOR_URL=http://localhost:3070 \
+  psu --brain
+```
+
+* `claude-stub.sh` must be named `claude` on `PATH` (symlink or `cp`) for `psu` to exec it.
+* **`PAPERCUSP_OPERATOR_URL` must be the bare `:3070` origin**, not `.../api/mcp` — the session env sometimes has the MCP suffix baked in, which 404s `psu`’s own `api()` calls.
+* Pair this with a plain `curl` GET/POST of the bootstrap-su brain endpoints to verify the server seam independently of the client launch chain.
+* For a pixel artifact from the captured output, render it to PNG with ImageMagick: `convert -background black -fill white label:"$(cat out.txt)" out.png` — note `label:@file` is blocked by the default IM security policy; inline the content via `$(cat …)` instead.
+
+This “stub the launched command” technique generalizes to any `psu`-hosted pane (sentinel/overwatch/any role) — swap `--brain` for the pane’s real launch args and read the stub’s captured argv + prompt file to confirm the pane would have booted correctly, without needing a terminal emulator, Xvfb, or a live zellij session at all.
 
 ## 16. Driving the zellij `pui` chat dock (the Papercup / Mug TUIs)
 

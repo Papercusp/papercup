@@ -1472,7 +1472,10 @@ test('stats().pausedActuallyEnforced + unified.rejectedActuallyEnforced read TRU
   const s = gw.stats();
   assert.equal(s.pausedActuallyEnforced, true, 'a still-future pausedUntil IS actually enforced');
   assert.equal(s.unified?.rejectedActuallyEnforced, true, 'a still-future resetAt means the rejected verdict is still live');
-  assert.equal(s.unified?.staleAsOfMs, 0, 'just observed → zero staleness');
+  // staleAsOfMs is a live wall-clock delta (Date.now() − observedAt), so "just
+  // observed" is a small-elapsed bound, never an exact 0 — the strict equality
+  // flaked on a loaded box (1ms elapsed between observe and read).
+  assert.ok((s.unified?.staleAsOfMs ?? Infinity) < 5_000, 'just observed → staleness is (near) zero');
 });
 
 test('per-account egress isolation: each pinned account routes via its OWN dispatcher; cached per-account; localAddress builds an Agent (B-GW-3 / per-account IP routing, D-003)', async () => {

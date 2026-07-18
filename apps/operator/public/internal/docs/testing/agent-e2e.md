@@ -1945,6 +1945,67 @@ value injected this way bypasses UI constraints: only pass values the real
 control could produce (e.g. an option that exists in the select), or you are
 testing a state the user can never reach.
 
+### 15.6 Verifying a terminal/PTY-hosted pane (e.g. the brain pane)
+
+Found during WI-198 (Tauri-verifying the Queen brain pane — the `♛ queen`
+zellij pane running `psu --brain`). The §15.4 Xvfb/VirtualGL cookbook only
+covers screenshotting the Tauri **webview**; a pane whose surface is a
+**terminal/PTY** (brain/sentinel/overwatch panes, any `psu` pane) hits two
+traps that recipe doesn't warn about:
+
+1. **No working GUI terminal emulator under an isolated Xvfb on the dev box.**
+   Only `gnome-terminal` is installed (no xterm/alacritty/foot/st), and it
+   renders as a broken 10×10 stub window under Xvfb (portal/VTE/pipewire
+   failures) — `import -window` then captures blank. A "screenshot the pane"
+   task has no straightforward terminal to screenshot.
+2. **The desktop chat-dock is a NAMED zellij session**
+   (`~/.papercusp/pui-chat-dock.kdl`, §16). Launching a second desktop to open
+   the dock risks zellij **ATTACHing to the owner's LIVE dock session** —
+   disrupting real funded Queen/overwatch/sentinel sessions. If you genuinely
+   need to observe a live pane, use §16's `zellij ls` / `dump-screen` path
+   (read-only, always safe) rather than opening a fresh desktop.
+
+**What works instead: verify the pane's COMMAND directly**, without a GUI
+terminal at all. The brain pane's command is `psu --brain`; run it with a
+PATH-shim stub `claude` (a script that prints its argv + `cat`s the
+`--append-system-prompt-file`, then exits) and `PAPERCUSP_PSU_NO_PTY=1`. This
+exercises the entire real launch chain (`psu` brainFlow → `bootstrap-su`
+fresh-mint → the exact `claude` argv + injected brief) with **zero API spend**
+and no GUI flakiness:
+
+```sh
+# a stub `claude` on PATH that just proves what psu would have launched
+cat > /tmp/claude-stub.sh <<'EOF'
+#!/usr/bin/env bash
+echo "ARGV: $@"
+for a in "$@"; do
+  [ -f "$a" ] && echo "--- $a ---" && cat "$a"
+done
+EOF
+chmod +x /tmp/claude-stub.sh
+PATH="/tmp:$PATH" PAPERCUSP_PSU_NO_PTY=1 \
+  PAPERCUSP_OPERATOR_URL=http://localhost:3070 \
+  psu --brain
+```
+
+* `claude-stub.sh` must be named `claude` on `PATH` (symlink or `cp`) for
+  `psu` to exec it.
+* **`PAPERCUSP_OPERATOR_URL` must be the bare `:3070` origin**, not
+  `.../api/mcp` — the session env sometimes has the MCP suffix baked in,
+  which 404s `psu`'s own `api()` calls.
+* Pair this with a plain `curl` GET/POST of the bootstrap-su brain endpoints
+  to verify the server seam independently of the client launch chain.
+* For a pixel artifact from the captured output, render it to PNG with
+  ImageMagick: `convert -background black -fill white label:"$(cat out.txt)" out.png`
+  — note `label:@file` is blocked by the default IM security policy; inline
+  the content via `$(cat …)` instead.
+
+This "stub the launched command" technique generalizes to any `psu`-hosted
+pane (sentinel/overwatch/any role) — swap `--brain` for the pane's real
+launch args and read the stub's captured argv + prompt file to confirm the
+pane would have booted correctly, without needing a terminal emulator, Xvfb,
+or a live zellij session at all.
+
 ## 16. Driving the zellij `pui` chat dock (the Papercup / Mug TUIs)
 
 > **⚠ Testing-gated since 2026-07-13** (operator-chat-sidebar-revival-2026-07-13

@@ -86,6 +86,11 @@ const RULES: ReadonlyArray<{
       // route-stack auth chokepoint while still requiring no token. See the
       // route's own doc-comment (memory-canary-probe.ts).
       { method: 'POST', path: '/internal/memory-canary', auth: 'loopback' },
+      // Deploy-triggered domain-read canary (same contract as memory-canary):
+      // the caller is deploy-cli on the same box, no principal token —
+      // `'loopback'` rejects non-loopback hosts while requiring no token. See
+      // the route's own doc-comment (domain-read-canary.ts).
+      { method: 'POST', path: '/internal/domain-read-canary', auth: 'loopback' },
     ],
   },
   // The /api/tui/* workbench READS stay `auth:'public'` (loopback-protected by
