@@ -2576,7 +2576,17 @@ export function hostThroughPty(o) {
           });
         }
         try {
-          process.stderr.write(`psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message}\n`);
+          // Once per boot: the watchdog re-sends every ~2min sweep, and a
+          // deterministic build failure repeated verbatim into the session's
+          // terminal is pure spam (owner-reported 2026-07-18, the resume-launch
+          // mint gap). The event-log row above still records every attempt.
+          if (!recycleChild.argvBuildFailWarned) {
+            recycleChild.argvBuildFailWarned = true;
+            process.stderr.write(
+              `psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message} ` +
+                `(further identical failures logged to the event log only)\n`,
+            );
+          }
         } catch {
           /* diagnostic only */
         }

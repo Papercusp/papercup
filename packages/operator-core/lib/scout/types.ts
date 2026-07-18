@@ -298,6 +298,15 @@ export interface ScoutLlmCall {
      */
     governorMaxWaitMs?: number;
     /**
+     * WI-5391 — ABSOLUTE epoch-ms deadline for the transport's transient-retry ladder.
+     * `governorMaxWaitMs` bounds one admission wait, but the host retry ladder (8 attempts
+     * + backoff) is deadline-blind: under a mid-cycle pool pause it outlives the cycle's
+     * own timer, which then mislabels the honest capacity error as "cycle timed out".
+     * Derived from the cycle deadline minus a recording margin so the true error lands
+     * while the tick can still record it.
+     */
+    retryDeadlineMs?: number;
+    /**
      * WI-4475 — fired when the LOCAL governor admits the call (per attempt), immediately
      * before the HTTP request is issued. The inference gateway may still queue it, so this
      * is observability only — it is NOT the generation boundary.

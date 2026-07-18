@@ -297,6 +297,9 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     // request has also cleared the inference gateway and response headers arrive. A caller's
     // generation timer belongs on the latter boundary.
     governorMaxWaitMs: opts.governorMaxWaitMs,
+    // WI-5391: bounds the anthropic-direct transient-retry LADDER (all attempts + backoff),
+    // the layer governorMaxWaitMs (one admission wait) never covered.
+    retryDeadlineMs: opts.retryDeadlineMs,
     onAdmitted: opts.onAdmitted,
     onResponseStart: opts.onResponseStart,
     // Usage attribution: the priority label already names the caller ('gym',
