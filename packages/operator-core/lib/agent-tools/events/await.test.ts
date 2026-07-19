@@ -45,8 +45,15 @@ vi.mock('../../plan-items/claims', () => ({
 vi.mock('../plans/source', () => ({
   resolvePlanScope: vi.fn(async () => ({ workspaceId: 'ws-x', harnessSlug: 'papercup' })),
 }));
+// EI-13846: the claim-spec read behind the `work-item:claimable` payload_filter
+// default. Defaults to 'default' (no spec) so every PRE-EXISTING test above (none
+// of which awaits 'work-item:claimable') is unaffected; overridden per-test below.
+vi.mock('../../scheduler/claim-spec-store', () => ({
+  getClaimSpecRecord: vi.fn(async () => ({ source: 'default' as const, spec: null, revision: null, updatedBy: null, updatedAt: null })),
+}));
 
 import awaitTool from './await';
+import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { registerAwait } from '../../events/await/store';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
@@ -362,5 +369,75 @@ describe('EI-383 — extend the caller\'s plan-item claim leases to survive the 
     const out = await call({ event: 'lock:grant:t9' });
     expect(out.ok).toBe(true);
     expect(out.await_id).toBe(99);
+  });
+});
+
+describe('EI-13846 — default the `work-item:claimable` payload_filter to the caller\'s own claim spec', () => {
+  it('an explicit payload_filter always wins — no claim-spec lookup, no auto-scoping', async () => {
+    const filter = { kind: { equals: 'feature' } };
+    await call({ event: 'work-item:claimable', payload_filter: filter });
+    expect(getClaimSpecRecord).not.toHaveBeenCalled();
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: filter });
+  });
+
+  it('a fleet-scoped caller with a narrowable spec gets it auto-applied as the default payload_filter', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
+      source: 'fleet',
+      spec: { specId: 'bug-drain-200k', revision: 2, view: { filter: { field: 'kind', op: '=', value: 'bug' } } } as never,
+      revision: 2,
+      updatedBy: 'su-leader',
+      updatedAt: '2026-07-19T00:00:00Z',
+      fleetSlug: 'bug-drain-200k',
+    });
+    const out = await call({ event: 'work-item:claimable' });
+    expect(getClaimSpecRecord).toHaveBeenCalledWith({ cupId: 'su-awaiter', workspaceId: 'ws-x' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: { kind: { equals: 'bug' } } });
+    expect(out.auto_scoped_payload_filter).toBe(true);
+    expect(out.payload_filter_source).toMatchObject({ source: 'fleet', specId: 'bug-drain-200k', revision: 2 });
+    expect(out.unscoped_claimable_await).toBeUndefined();
+  });
+
+  it('no spec at all (source: default) registers UNSCOPED but WARNS instead of silently thrashing', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
+      source: 'default',
+      spec: null as never,
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    });
+    const out = await call({ event: 'work-item:claimable' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: null });
+    expect(out.unscoped_claimable_await).toBe(true);
+    expect(out.unscoped_claimable_advice).toMatch(/UNSCOPED/);
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+  });
+
+  it("a spec that exists but doesn't narrow over the payload's fields also WARNS unscoped (never silently drops the narrowing)", async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
+      source: 'cup',
+      spec: { specId: 's1', revision: 1, view: { filter: { field: 'priority', op: '>', value: 5 } } } as never,
+      revision: 1,
+      updatedBy: 'su-x',
+      updatedAt: '2026-07-19T00:00:00Z',
+    });
+    const out = await call({ event: 'work-item:claimable' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: null });
+    expect(out.unscoped_claimable_await).toBe(true);
+  });
+
+  it('a claim-spec read failure/timeout never blocks registration — falls back to unscoped', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getClaimSpecRecord).mockRejectedValueOnce(new Error('db unreachable'));
+    const out = await call({ event: 'work-item:claimable' });
+    expect(out.ok).toBe(true);
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: null });
+    warnSpy.mockRestore();
+  });
+
+  it('never auto-scopes a DIFFERENT event key or a pattern — only the exact "work-item:claimable" key', async () => {
+    await call({ event: 'work-item:done:*' });
+    expect(getClaimSpecRecord).not.toHaveBeenCalled();
+    await call({ event: 'lock:grant:t1' });
+    expect(getClaimSpecRecord).not.toHaveBeenCalled();
   });
 });

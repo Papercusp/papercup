@@ -143,6 +143,12 @@ vi.mock('../self-marker', () => ({
 
 vi.mock('../../../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'test-ws'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) => {
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim() && c.trim() !== '*') return c.trim();
+    }
+    return 'test-ws';
+  }),
 }));
 
 // The handler's declared return type is a ToolResult|ToolResponse union and its

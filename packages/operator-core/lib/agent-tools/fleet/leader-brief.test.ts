@@ -185,3 +185,55 @@ describe('computeBenchSuggestion (pure, EI-9943)', () => {
     expect('benchSuggestion' in benched).toBe(false);
   });
 });
+
+describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
+  it('flags a speaking member with zero claims/queued and not parked', () => {
+    const s = computeBenchSuggestion({ stalled: false, verdict: 'speaking', parkedOn: [], doing: null, load: 0, queued: [] });
+    expect(s).toBeDefined();
+    expect(s?.item).toBeNull();
+    expect(s?.reason).toMatch(/idle-cycling/);
+  });
+
+  it("flags a LOOP-DRIVEN member ('monitoring'/'waiting' verdict) — the case `stalled`-gated speaking/first-turn-done could never catch", () => {
+    for (const verdict of ['monitoring', 'waiting'] as const) {
+      const s = computeBenchSuggestion({ stalled: false, verdict, parkedOn: [], doing: null, load: 0, queued: [] });
+      expect(s).toBeDefined();
+    }
+  });
+
+  it('does NOT flag a member already parked on an event (parked-awaiting-capability shape)', () => {
+    const s = computeBenchSuggestion({
+      stalled: false,
+      verdict: 'parked-awaiting-capability',
+      parkedOn: ['work-item:claimable'],
+      doing: null,
+      load: 0,
+      queued: [],
+    });
+    expect(s).toBeUndefined();
+  });
+
+  it('does NOT flag a member holding a real claim (load>0) or with queued work', () => {
+    const holding = { id: 'WI-1', itemKind: 'bug', title: 'in progress', status: 'open', rank: 0, rankWriter: null, activity: 'alive' as const };
+    expect(computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: holding, load: 1, queued: [] })).toBeUndefined();
+    expect(
+      computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: null, load: 0, queued: [{ id: 'WI-9' }] as never }),
+    ).toBeUndefined();
+  });
+
+  it('does NOT flag dead/booted/joined — a fresh boot or a dead session is not "idle-cycling"', () => {
+    for (const verdict of ['dead', 'booted', 'joined'] as const) {
+      expect(computeBenchSuggestion({ stalled: false, verdict, parkedOn: [], doing: null, load: 0, queued: [] })).toBeUndefined();
+    }
+  });
+
+  it('load/queued omitted (pre-EI-13846 call sites) never falsely triggers — undefined reads as "not laneless"', () => {
+    expect(computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: null })).toBeUndefined();
+  });
+
+  it('projectMember surfaces the laneless-idle suggestion end-to-end', () => {
+    const m = projectMember(baseAgent({ verdict: 'waiting', monitorState: 'waiting' }), NOW);
+    expect(m.benchSuggestion).toBeDefined();
+    expect(m.benchSuggestion?.reason).toMatch(/idle-cycling/);
+  });
+});

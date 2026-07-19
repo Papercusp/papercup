@@ -18,7 +18,15 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-leader', ownerLabel: 'l', source: 'static-client', workspaceId: 'ws-x', userId: null }),
   deriveFleetMembership: vi.fn(() => ({ fleetSlug: 'p2p-git' })),
 }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-x' }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: () => 'ws-x',
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) => {
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim() && c.trim() !== '*') return c.trim();
+    }
+    return 'ws-x';
+  },
+}));
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async (ownerId: string) =>
     ownerId === 'su-no-session'
