@@ -13,24 +13,43 @@ import type { CriterionTrend } from './scorecards';
 
 // EI-12147: the graded-generation stamp's read-side validator — a scorecard row must
 // surface WHICH generation it graded, and a malformed/pre-stamp payload must degrade.
-describe('parseGradedGeneration (EI-12147)', () => {
-  it('projects a complete stamp', () => {
+// WI-5397 widened the stamp (deployedSha/bootHeadSha/scoutCodeHash/staleHost) while
+// keeping BACKWARD COMPAT with the pre-WI-5397 `{ sha, hostStartedAt }` shape.
+describe('parseGradedGeneration (EI-12147, widened WI-5397)', () => {
+  it('projects a complete new-shape stamp', () => {
+    expect(
+      parseGradedGeneration({
+        deployedSha: 'abc1234',
+        hostStartedAt: '2026-07-14T18:21:25.000Z',
+        bootHeadSha: 'abc1234',
+        scoutCodeHash: 'deadbeef',
+        staleHost: false,
+      }),
+    ).toEqual({
+      deployedSha: 'abc1234',
+      hostStartedAt: '2026-07-14T18:21:25.000Z',
+      bootHeadSha: 'abc1234',
+      scoutCodeHash: 'deadbeef',
+      staleHost: false,
+    });
+  });
+  it('BACKWARD COMPAT: a pre-WI-5397 row storing the legacy `sha` key is read as deployedSha', () => {
     expect(parseGradedGeneration({ sha: 'abc1234', hostStartedAt: '2026-07-14T18:21:25.000Z' })).toEqual({
-      sha: 'abc1234',
+      deployedSha: 'abc1234',
       hostStartedAt: '2026-07-14T18:21:25.000Z',
     });
   });
   it('tolerates a half-resolved stamp (one leg null) — partial identity still discriminates', () => {
-    expect(parseGradedGeneration({ sha: null, hostStartedAt: '2026-07-14T18:21:25.000Z' })).toEqual({
-      sha: null,
+    expect(parseGradedGeneration({ deployedSha: null, hostStartedAt: '2026-07-14T18:21:25.000Z' })).toEqual({
+      deployedSha: null,
       hostStartedAt: '2026-07-14T18:21:25.000Z',
     });
-    expect(parseGradedGeneration({ sha: 'abc1234', hostStartedAt: null })).toEqual({
-      sha: 'abc1234',
+    expect(parseGradedGeneration({ deployedSha: 'abc1234', hostStartedAt: null })).toEqual({
+      deployedSha: 'abc1234',
       hostStartedAt: null,
     });
   });
-  it('an all-null stamp carries no identity — null, so pre-stamp and unresolved rows read the same', () => {
+  it('an all-null/absent stamp carries no identity — null, so pre-stamp and unresolved rows read the same', () => {
     expect(parseGradedGeneration({ sha: null, hostStartedAt: null })).toBeNull();
     expect(parseGradedGeneration({})).toBeNull();
   });

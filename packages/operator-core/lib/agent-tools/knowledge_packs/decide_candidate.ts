@@ -55,12 +55,12 @@ export default defineTool({
   name: 'knowledge_packs:decide_candidate',
   capability: 'memory:write',
   description:
-    'Decide one OR many pending knowledge-pack candidates: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published. Single: { id, action, note?, title?, text? }. Many same action: { ids:[…], action }. Many heterogeneous: items:[{ id, action, note?, title?, text? }]. Returns { ok, results:[{ ok, id, action?, … | error }], counts } — correlate by id, not by position; one bad candidate never fails the rest.',
+    'Decide one OR many pending knowledge-pack candidates: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). Most candidates are auto-decided by a scheduled review sweep; this tool is the manual OVERRIDE. Single: { id, action, note?, title?, text? }. Many same action: { ids:[…], action }. Many heterogeneous: items:[{ id, action, note?, title?, text? }]. Returns { ok, results:[{ ok, id, action?, … | error }], counts } — correlate by id, not by position; one bad candidate never fails the rest.',
   guidance: {
     when:
-      'The owner has reviewed pending candidate(s) (knowledge_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting. Decide several at once via ids:[…]+action or items:[…].',
+      'The owner asks you to adopt/dismiss a candidate now, overriding the automated review sweep. Decide several at once via ids:[…]+action or items:[…].',
     notWhen:
-      'To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via knowledge_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.',
+      'Routine unattended candidates — the automated sweep already decides those. To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via knowledge_packs:install/upgrade).',
     chaining:
       'knowledge_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → knowledge_packs:upgrade { hive, pack: "fleet-lessons" }; others via knowledge_packs:install. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
     seeAlso: [

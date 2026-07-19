@@ -47,8 +47,11 @@ describe('blender:success-metrics window-floor args (EI-12148) + rubric-derived 
       window: { ticks: 1, ranCycles: 1, routedIdeas: 0, ledgerTruncated: false },
     });
     mocks.readRunningGeneration.mockReset().mockResolvedValue({
-      sha: '8a9ce7c105',
+      deployedSha: '8a9ce7c105',
       hostStartedAt: '2026-07-15T03:11:25.000Z',
+      bootHeadSha: '8a9ce7c105abcdef0000000000000000000000',
+      scoutCodeHash: 'deadbeef12345678',
+      staleHost: false,
     });
     // Default: no rubric found — every test exercises the EI-12146 rubric-derived
     // default path explicitly instead, via its own mockResolvedValueOnce.
@@ -91,8 +94,9 @@ describe('blender:success-metrics window-floor args (EI-12148) + rubric-derived 
         source: 'sinceMs',
       },
       runningGeneration: {
-        sha: '8a9ce7c105',
+        deployedSha: '8a9ce7c105',
         hostStartedAt: '2026-07-15T03:11:25.000Z',
+        staleHost: false,
       },
     });
     expect(mocks.readRunningGeneration).toHaveBeenCalledOnce();
@@ -154,7 +158,7 @@ describe('blender:success-metrics window-floor args (EI-12148) + rubric-derived 
         expect(out).toMatchObject({
           ok: true,
           resolvedWindow: { sinceMs: expectedSinceMs, source: 'rubric:window' },
-          runningGeneration: { sha: '8a9ce7c105' },
+          runningGeneration: { deployedSha: '8a9ce7c105' },
         });
         expect(mocks.buildProgramSuccessReport).toHaveBeenCalledWith(expect.objectContaining({ sinceMs: expectedSinceMs }));
         expect(mocks.readRunningGeneration).toHaveBeenCalledOnce();
