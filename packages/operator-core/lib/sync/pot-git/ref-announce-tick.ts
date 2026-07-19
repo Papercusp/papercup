@@ -79,6 +79,17 @@ export interface RefAnnouncePublishTickInput {
    *  Omit for the module defaults (matches foreign-mirror-quarantine's own
    *  blob-size posture). */
   publishGuardCaps?: PublishGuardCaps;
+  /**
+   * Genesis baseline for FIRST-EVER sigrefs (same contract as
+   * OwnHeadPublishTickInput.genesisBaselineSha): a ref with no prior sigrefs
+   * entry is judged over `(baseline, sha]` instead of the ENTIRE history —
+   * without it a pre-existing GitHub-backed repo above the flood caps
+   * (papercusp: 200k+ objects vs 50k) can never publish sigrefs, so peers
+   * never fetch it. Caller must verify the baseline is already-exposed (the
+   * origin remote-tracking tip, ancestry-checked). Refs that already have a
+   * prior sigrefs sha keep the strict prior — this only affects genesis.
+   */
+  genesisBaselineSha?: string | null;
 }
 
 export interface RefAnnouncePublishTickOutcome {
@@ -163,7 +174,9 @@ export async function runRefAnnouncePublishTick(
   // exposed under the namespace ref, so a peer can't have fetched it either.
   const priorShaByRef = new Map((prior?.refs ?? []).map((r) => [r.ref, r.sha] as const));
   for (const r of currentRefs) {
-    const fromOid = priorShaByRef.get(r.ref) ?? null;
+    // Genesis: no prior sigrefs entry for this ref → judge from the verified
+    // already-exposed baseline instead of the whole history (see input doc).
+    const fromOid = priorShaByRef.get(r.ref) ?? input.genesisBaselineSha ?? null;
     if (fromOid === r.sha) continue; // this ref didn't move
     let guard: PublishGuardResult;
     try {

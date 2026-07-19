@@ -1356,6 +1356,40 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
  *  its sibling legs: never throws; a guard REFUSAL is logged loudly (a
  *  planted secret silently un-published is exactly the failure G-10 exists
  *  to make visible) and recorded on the routine metadata. */
+/**
+ * Genesis-publish baseline (see OwnHeadPublishTickInput.genesisBaselineSha and
+ * RefAnnouncePublishTickInput.genesisBaselineSha — both G-10 guards consume the
+ * SAME contract): on a GitHub-backed repo, content at/under the origin's branch
+ * tip is already served to every hive member, so a FIRST publish/sigrefs only
+ * needs to guard the (originTip, head] delta — without this, a pre-existing
+ * repo above the flood caps (papercusp: 200k+ objects vs the 50k cap) can never
+ * onboard onto the hive-git plane. The LOCAL remote-tracking ref is used
+ * deliberately: no network, and if it lags the real origin we judge MORE than
+ * needed, never less. Ancestry is verified so a diverged/rewound remote can
+ * never smuggle a non-ancestor baseline in; any failure falls back to null —
+ * the strict full-history judge.
+ */
+async function deriveGenesisBaselineSha(entry: ProjectEntry, branch: string | undefined): Promise<string | null> {
+  if (!entry.github_remote) return null;
+  try {
+    // Resolve the branch EXACTLY as the publish ticks do (explicit cfg wins,
+    // else the worktree's checked-out branch) so baseline and publish agree.
+    let wtBranch = branch ?? null;
+    if (!wtBranch) {
+      const sym = await defaultRunGit(['symbolic-ref', '-q', '--short', 'HEAD'], entry.path);
+      wtBranch = sym.code === 0 ? sym.stdout.trim() : null;
+    }
+    if (!wtBranch) return null;
+    const tip = await defaultRunGit(['rev-parse', '--verify', '-q', `refs/remotes/origin/${wtBranch}^{commit}`], entry.path);
+    const tipSha = tip.code === 0 ? tip.stdout.trim() : '';
+    if (!tipSha) return null;
+    const anc = await defaultRunGit(['merge-base', '--is-ancestor', tipSha, `refs/heads/${wtBranch}`], entry.path);
+    return anc.code === 0 ? tipSha : null;
+  } catch {
+    return null; // strict fallback
+  }
+}
+
 async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: string | undefined): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
@@ -1371,36 +1405,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
     const actor = await resolveUsageActor();
     if (!actor?.devicePubkey) return; // gh unauthenticated — no device identity to publish as
 
-    // Genesis-publish baseline (see OwnHeadPublishTickInput.genesisBaselineSha):
-    // on a GitHub-backed repo, content at/under the origin's branch tip is
-    // already served to every hive member, so a FIRST publish only needs to
-    // guard the (originTip, head] delta — without this, a pre-existing repo
-    // above the flood caps (papercusp: 200k+ objects) can never onboard. The
-    // LOCAL remote-tracking ref is used deliberately: no network, and if it
-    // lags the real origin we judge MORE than needed, never less. Ancestry is
-    // verified so a diverged/rewound remote can never smuggle a non-ancestor
-    // baseline in; any failure falls back to the strict full-history judge.
-    let genesisBaselineSha: string | null = null;
-    if (entry.github_remote) {
-      try {
-        // Resolve the branch EXACTLY as the tick will (explicit cfg wins, else
-        // the worktree's checked-out branch) so baseline and publish agree.
-        let wtBranch = branch ?? null;
-        if (!wtBranch) {
-          const sym = await defaultRunGit(['symbolic-ref', '-q', '--short', 'HEAD'], entry.path);
-          wtBranch = sym.code === 0 ? sym.stdout.trim() : null;
-        }
-        if (!wtBranch) throw new Error('unresolvable branch');
-        const tip = await defaultRunGit(['rev-parse', '--verify', '-q', `refs/remotes/origin/${wtBranch}^{commit}`], entry.path);
-        const tipSha = tip.code === 0 ? tip.stdout.trim() : '';
-        if (tipSha) {
-          const anc = await defaultRunGit(['merge-base', '--is-ancestor', tipSha, `refs/heads/${wtBranch}`], entry.path);
-          if (anc.code === 0) genesisBaselineSha = tipSha;
-        }
-      } catch {
-        /* strict fallback */
-      }
-    }
+    const genesisBaselineSha = await deriveGenesisBaselineSha(entry, branch);
 
     const outcome = await runOwnHeadPublishTick({
       potHomeSlug,

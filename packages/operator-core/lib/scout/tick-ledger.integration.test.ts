@@ -19,7 +19,8 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => Promise.resolve() }));
 
 // Imported AFTER the mocks are declared (vi.mock is hoisted above imports).
-const { recordScoutTick, readScoutTicks, readLastRanTickAtMs } = await import('./tick-ledger');
+const { recordScoutTick, readScoutTicks, readLastRanTickAtMs, readNewestScoutCodeHash, readScoutTicksByCodeHash } =
+  await import('./tick-ledger');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 describe('scout_ticks ledger (real PG)', () => {
@@ -191,6 +192,80 @@ describe('scout_ticks ledger (real PG)', () => {
       expect(
         await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [slug], origin: 'su-ideate' }),
       ).not.toBeNull();
+    });
+  });
+
+  // WI-5397: the soak-method fix reads `detail->>'scoutCodeHash'` (stamped by
+  // scheduler.ts's recordTick on every tick, see scout-code-identity.ts) to aggregate
+  // ticks across bg-host restarts that loaded byte-identical code, UNBOUNDED by time —
+  // replacing the rolling time window the cycle-error-rate bar otherwise resets on every
+  // restart (fact alpha-011-soak-unreachable-as-planned). These pin the two readers
+  // against the real JSONB column.
+  describe('scoutCodeHash soak-method readers (WI-5397)', () => {
+    it('readNewestScoutCodeHash returns the newest tick\'s stamped hash, workspace + origin scoped', async () => {
+      const ws = 'ws-scout-codehash-newest';
+      await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { cycleId: 'c1', scoutCodeHash: 'hash-old' } });
+      await new Promise((r) => setTimeout(r, 25));
+      await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { cycleId: 'c2', scoutCodeHash: 'hash-new' } });
+      expect(await readNewestScoutCodeHash({ workspaceId: ws })).toBe('hash-new');
+    });
+
+    it('readNewestScoutCodeHash is null when the newest tick never stamped a hash (pre-WI-5397 row)', async () => {
+      const ws = 'ws-scout-codehash-absent';
+      await recordScoutTick({ workspaceId: ws, status: 'gated', gate: 'min-interval' });
+      expect(await readNewestScoutCodeHash({ workspaceId: ws })).toBeNull();
+    });
+
+    it('readNewestScoutCodeHash respects installSlug scoping', async () => {
+      const ws = 'ws-scout-codehash-slug';
+      await recordScoutTick({
+        workspaceId: ws,
+        installSlug: 'alpha',
+        status: 'ran',
+        detail: { scoutCodeHash: 'hash-alpha' },
+      });
+      await recordScoutTick({
+        workspaceId: ws,
+        installSlug: 'beta',
+        status: 'ran',
+        detail: { scoutCodeHash: 'hash-beta' },
+      });
+      expect(await readNewestScoutCodeHash({ workspaceId: ws, installSlug: 'alpha' })).toBe('hash-alpha');
+      expect(await readNewestScoutCodeHash({ workspaceId: ws, installSlug: 'beta' })).toBe('hash-beta');
+    });
+
+    it('readScoutTicksByCodeHash returns the UNION of code-identical ticks UNBOUNDED by time, excluding a different hash', async () => {
+      const ws = 'ws-scout-codehash-union';
+      // Two "generations" (simulating two bg-host restarts) that happened to load the
+      // SAME code, interleaved with a tick from a DIFFERENT code hash.
+      await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { cycleId: 'gen1-a', scoutCodeHash: 'hash-x' } });
+      await recordScoutTick({ workspaceId: ws, status: 'error', detail: { cycleId: 'gen1-b', scoutCodeHash: 'hash-x' } });
+      await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { cycleId: 'gen2-a', scoutCodeHash: 'hash-y' } });
+      await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { cycleId: 'gen3-a', scoutCodeHash: 'hash-x' } });
+      const union = await readScoutTicksByCodeHash({ workspaceId: ws, codeHash: 'hash-x' });
+      expect(union).toHaveLength(3);
+      const cycleIds = union.map((t) => (t.detail as { cycleId?: string } | undefined)?.cycleId).sort();
+      expect(cycleIds).toEqual(['gen1-a', 'gen1-b', 'gen3-a']);
+    });
+
+    it('readScoutTicksByCodeHash never returns a tick from a different origin partition', async () => {
+      const ws = 'ws-scout-codehash-origin';
+      await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { scoutCodeHash: 'hash-shared' } });
+      await recordScoutTick({
+        workspaceId: ws,
+        status: 'ran',
+        origin: 'su-ideate',
+        detail: { scoutCodeHash: 'hash-shared' },
+      });
+      expect(await readScoutTicksByCodeHash({ workspaceId: ws, codeHash: 'hash-shared' })).toHaveLength(1);
+    });
+
+    it('is workspace-scoped — another workspace\'s code-identical ticks never leak in', async () => {
+      await recordScoutTick({ workspaceId: 'ws-scout-codehash-iso-a', status: 'ran', detail: { scoutCodeHash: 'hash-shared-2' } });
+      await recordScoutTick({ workspaceId: 'ws-scout-codehash-iso-b', status: 'ran', detail: { scoutCodeHash: 'hash-shared-2' } });
+      expect(
+        await readScoutTicksByCodeHash({ workspaceId: 'ws-scout-codehash-iso-a', codeHash: 'hash-shared-2' }),
+      ).toHaveLength(1);
     });
   });
 });

@@ -2115,8 +2115,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeaturesConsolidatedInHarnessShared;
       const { db } = getOrgPg();
+      // Slim wire projection (sync query-health / WI-5412): the sole consumer
+      // (useHarnessFeatures → HarnessFeature) renders only these ~11 fields, but
+      // `.select()` shipped all 70 columns of the view — including `embedding`
+      // (a pgvector ≈15KB/row), `_search` (tsvector), and several jsonb blobs
+      // (metadata / payload / completion_ref / worked_by_history / schedule).
+      // On papercusp that was 1162 rows ≈ 9.4MB parsed into the webview per load.
+      // Projecting to the rendered columns cuts it ~20× with NO behavior change
+      // (row count unchanged, so client-side search/count still see every row).
       return (await db
-        .select()
+        .select({
+          harnessSlug: t.harnessSlug,
+          featureId: t.featureId,
+          title: t.title,
+          summary: t.summary,
+          status: t.status,
+          attempts: t.attempts,
+          claims: t.claims,
+          tags: t.tags,
+          needsHumanReview: t.needsHumanReview,
+          sourcePlanSlug: t.sourcePlanSlug,
+          workingUsers: t.workingUsers,
+          updatedTs: t.updatedTs,
+        })
         .from(t)
         .where(
           workspaceId != null
