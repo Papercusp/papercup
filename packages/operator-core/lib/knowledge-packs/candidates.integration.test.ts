@@ -58,6 +58,32 @@ describe('knowledge-pack candidates (real PG, migration 239)', () => {
     delete process.env.PAPERCUSP_LEARNING_CANDIDATE_CAP;
   });
 
+  it('staging admits a linked pack-candidate transfer lesson (P-003, the D-006 edge) and normalizes instance tokens out of the signature (P-002)', async () => {
+    const staged = await stageKnowledgePackCandidate(
+      stageInput('183 6b29d5e853eb replication liveness never replicated'),
+    );
+    expect(staged).toMatchObject({ staged: true });
+    const id = (staged as { id: string }).id;
+
+    // P-002: the stored dedup signature is the instance-stripped class key —
+    // the same incident with a different log hash re-stages as a DUPLICATE.
+    const rows = await listKnowledgePackCandidates({ status: 'pending' });
+    expect(rows.find((r) => r.id === id)?.signature).toBe('replication liveness never replicated');
+    const otherLog = await stageKnowledgePackCandidate(
+      stageInput('183 5741efa1c7dd replication liveness never replicated'),
+    );
+    expect(otherLog).toEqual({ staged: false, reason: 'duplicate-signature' });
+
+    // P-003: a probationary transfer lesson exists, linked by pack_candidate_id
+    // — packCandidateTransferBar's join is now satisfiable.
+    const sql = h.sql as OrgTestDb['adminSql'];
+    const lessons = (await sql`
+      SELECT source_kind, tier, status, lesson_text FROM harness_shared.transfer_lessons
+       WHERE pack_candidate_id = ${id}`) as Array<Record<string, unknown>>;
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]).toMatchObject({ source_kind: 'pack-candidate', tier: 'probationary', status: 'candidate' });
+  });
+
   it('stages once per signature — the structural dedup eats every retry', async () => {
     const first = await stageKnowledgePackCandidate(stageInput('sig-dedup'));
     expect(first).toMatchObject({ staged: true });

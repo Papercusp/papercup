@@ -1172,8 +1172,12 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       screen.getAllByRole("button", { name: /Cache-warmup|Tighter scoper/ })
         .length,
     ).toBe(2); // rows are openable
-    // P-002 strip: the newest ticks' economics — the gated tick's gate name and
-    // the ran tick's generated→routed funnel + spend + lens mix.
+    // P-002 strip: the instruments now live behind the "How the cycle engine
+    // is doing" disclosure (owner ask 2026-07-19b — plain glance line up top,
+    // gauges on demand). Open it, then assert the tick economics.
+    fireEvent.click(
+      screen.getByRole("button", { name: /How the cycle engine is doing/ }),
+    );
     const strip = screen.getByLabelText("scout tick economics, newest first");
     expect(strip.textContent).toContain("min-interval");
     expect(strip.textContent).toContain("8→3");
@@ -1191,6 +1195,9 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     };
     render(<ScoutView />);
     expect(screen.getByText("No routed ideas")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: /How the cycle engine is doing/ }),
+    );
     expect(
       screen.getByLabelText("scout tick economics, newest first").textContent,
     ).toContain("none yet");

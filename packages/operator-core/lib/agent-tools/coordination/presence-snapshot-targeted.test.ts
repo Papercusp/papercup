@@ -46,6 +46,13 @@ vi.mock('./recorded-sessions', () => ({
   reconcileRosterSources: (rows: unknown[]) => rows,
   RECORDED_SESSION_SOURCE: 'recorded-session',
 }));
+// EI-16639: the nursery-alias leg — no running nursery bees in these fixtures,
+// so it contributes nothing (existing counts/ids stay exactly as asserted below).
+vi.mock('./nursery-alias-liveness', () => ({
+  listRunningNurseryAliasRows: vi.fn(async () => []),
+  synthesizeNurseryAliasRosterRows: () => [],
+  NURSERY_ALIAS_SOURCE: 'nursery-alias',
+}));
 vi.mock('./presence-tier1', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   fetchPresenceTier1: tier1Mock,
