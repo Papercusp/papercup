@@ -103,23 +103,35 @@ export default defineTool({
   args: z.object({
     /** Exact MCP tool name in colon form, e.g. "flags:set". */
     name: z.string().min(1).max(120),
-    // EI-6681: some MCP clients intermittently stringify a moderately-long/complex
-    // nested `args` object before it reaches this schema (root cause not isolated —
-    // this server's own dispatch path never stringifies it; see the endpoint-system
-    // docs). A preprocess step tolerates that: a STRING value is JSON.parsed before
-    // the record check, so a client-side serialization quirk degrades to a normal
-    // call instead of a client-facing "expected record, received string" failure
-    // with no actionable next step. A non-JSON string still fails validation
-    // naturally (parse throws → the original string reaches the record check).
+    // EI-6681 / EI-15360: some MCP clients intermittently stringify a
+    // moderately-long/complex nested `args` object before it reaches this schema
+    // (root cause client-side — this server's own dispatch path never stringifies
+    // it; see the endpoint-system docs). A preprocess step tolerates that: a STRING
+    // value is JSON.parsed before the record check, so a client-side serialization
+    // quirk degrades to a normal call instead of a client-facing "expected record,
+    // received string" failure with no actionable next step.
+    //
+    // EI-15360: for a DEEPLY-NESTED payload (e.g. scheduler:set_claim_spec's ~10-level
+    // boolean filter tree) some clients DOUBLE-encode — the value arrives as the JSON
+    // of a JSON string. A single JSON.parse then yields a *string*, which still fails
+    // z.record with the exact same "expected record, received string" error. Un-string
+    // ITERATIVELY (bounded, so a pathological input can't loop) so a double-/multi-
+    // encoded object is recovered too. We only un-string the TOP-LEVEL args value —
+    // never nested values — so a target tool's legitimate string arg (a title, body,
+    // or a JSON-blob-as-string) is left untouched. A non-JSON string still fails
+    // naturally (parse throws → the last string reaches the record check).
     /** The target tool's arguments object (its own schema). Defaults to {}. */
     args: z
       .preprocess((v) => {
-        if (typeof v !== 'string') return v;
-        try {
-          return JSON.parse(v);
-        } catch {
-          return v;
+        let cur = v;
+        for (let i = 0; i < 5 && typeof cur === 'string'; i++) {
+          try {
+            cur = JSON.parse(cur);
+          } catch {
+            break;
+          }
         }
+        return cur;
       }, z.record(z.string(), z.unknown()))
       .optional(),
   }),

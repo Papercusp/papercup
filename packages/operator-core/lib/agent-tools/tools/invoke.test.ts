@@ -51,6 +51,51 @@ describe('tools:invoke registration', () => {
   it('still rejects a non-JSON string args payload (no silent pass-through)', () => {
     expect(def.args.safeParse({ name: 'flags:set', args: 'not-json {' }).success).toBe(false);
   });
+
+  it('tolerates a DOUBLE-encoded deeply-nested args payload (EI-15360)', () => {
+    // Repro of EI-15360: a client double-stringifies a deep spec object (e.g.
+    // scheduler:set_claim_spec's ~10-level filter tree). A single JSON.parse
+    // yields a *string*, which used to fail z.record with the exact reported
+    // "expected record, received string". Iterative un-stringify recovers it.
+    const spec = {
+      specVersion: '1.0',
+      specId: 'backlog-drain-clean',
+      revision: 1,
+      view: {
+        filter: {
+          all: [{ any: [{ not: { all: [{ any: [{ field: 'tags', op: 'contains', value: 'WI-1281' }] }] } }] }],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'asc' }] },
+    };
+    const r = def.args.safeParse({
+      name: 'scheduler:set_claim_spec',
+      args: JSON.stringify(JSON.stringify(spec)),
+    }) as { success: true; data: { args: unknown } } | { success: false };
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.args).toEqual(spec);
+  });
+
+  it('recovers a triple-encoded args payload too, bounded (EI-15360)', () => {
+    const obj = { key: 'x', value: true };
+    const r = def.args.safeParse({
+      name: 'flags:set',
+      args: JSON.stringify(JSON.stringify(JSON.stringify(obj))),
+    }) as { success: true; data: { args: unknown } } | { success: false };
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.args).toEqual(obj);
+  });
+
+  it('does NOT un-string a target tool\'s legitimate nested string arg', () => {
+    // A nested value that HAPPENS to be JSON must survive untouched — only the
+    // top-level args wrapper is un-stringified, never its members.
+    const r = def.args.safeParse({
+      name: 'work_items:create',
+      args: { kind: 'bug', title: 't', body: '{"looks":"like json"}' },
+    }) as { success: true; data: { args: { body: unknown } } } | { success: false };
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.args.body).toBe('{"looks":"like json"}');
+  });
 });
 
 describe('tools:invoke handler', () => {
