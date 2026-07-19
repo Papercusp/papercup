@@ -854,11 +854,20 @@ function ImprovementsView({
 
   const allRows = useMemo<ScoredItem[]>(() => {
     if (!digest) return [];
-    if (lane === "auto") return digest.autoEligible;
-    if (lane === "human") return digest.humanQueue;
-    return [...digest.autoEligible, ...digest.humanQueue].sort(
-      (a, b) => b.score - a.score || a.id.localeCompare(b.id),
-    );
+    const base =
+      lane === "auto"
+        ? digest.autoEligible
+        : lane === "human"
+          ? digest.humanQueue
+          : [...digest.autoEligible, ...digest.humanQueue];
+    // Most-recent first (owner ask 2026-07-19): improvement ids (EI-NNNNN) are
+    // issued sequentially, so the numeric suffix is a reliable capture-recency
+    // key (the payload carries no createdAt). Newest at top.
+    const idNum = (s: string) => {
+      const n = parseInt(s.split("-").pop() ?? "", 10);
+      return Number.isFinite(n) ? n : 0;
+    };
+    return [...base].sort((a, b) => idNum(b.id) - idNum(a.id));
   }, [digest, lane]);
 
   const sources = useMemo<string[]>(() => {
@@ -3691,10 +3700,55 @@ export function ScoutView({
           </button>
         }
       />
-      {/* Drift-marker warnings (learning-tab-alignment P-003): the fired
-          blender-release-readiness driftMarkers, evaluated server-side over the
-          same rows this view renders. Each chip names the rubric criterion it
-          instruments. */}
+      {/* ONE plain-language glance line (owner ask 2026-07-19: the stacked
+          instrument clusters were unreadable). Every gauge behind ONE labelled
+          disclosure below. */}
+      <p className="pc-learning__glance" aria-label="Ideas at a glance">
+        <span title="Every idea a cycle turned into an artifact (work item, gym seed, plan, benchmark).">
+          <strong>{snap?.totalRouted ?? 0}</strong> ideas routed
+        </span>
+        {snap?.improveFunnel ? (
+          <span title="Ideas filed onto the improvement rail that are now resolved or closed.">
+            <strong>{snap.improveFunnel.done}</strong> done
+          </span>
+        ) : null}
+        {cadence ? (
+          <span
+            title={`A weighted score over pending signal (new observations, captures, reverts, completions…) fires the next idea cycle at ≥${cadence.threshold}. Details in "How the cycle engine is doing".`}
+          >
+            next cycle{" "}
+            <strong>
+              {cadence.score >= cadence.threshold
+                ? "armed — fires on the next sweep"
+                : `waiting for signal (${Math.round(cadence.score * 10) / 10} of ${cadence.threshold})`}
+            </strong>
+          </span>
+        ) : null}
+        {tick && !Number.isNaN(tickMs) ? (
+          <span title="When the cycle engine last ticked.">
+            last ran <strong>{whenLabel(tickMs)}</strong>
+          </span>
+        ) : null}
+        {health.markers.length > 0 ? (
+          <span
+            className="is-warn"
+            title={health.markers
+              .map((m) => `${m.key.replace(/-/g, " ")}: ${m.summary}`)
+              .join("\n")}
+          >
+            <AlertTriangle size={11} aria-hidden />
+            {health.markers.length} loop warning
+            {health.markers.length === 1 ? "" : "s"}
+          </span>
+        ) : null}
+      </p>
+
+      {/* The instruments, together and labelled: drift warnings, the firing
+          gauge, the per-tick history, and the idea→work funnel. */}
+      <LearningDisclosure
+        label="How the cycle engine is doing"
+        subtitle="what fires a cycle, the recent runs, and where routed ideas went"
+      >
       {health.markers.length > 0 ? (
         <div className="pc-learning__flow" aria-label="Ideas health warnings">
           {health.markers.map((m) => (
@@ -3829,6 +3883,7 @@ export function ScoutView({
           </span>
         </div>
       ) : null}
+      </LearningDisclosure>
 
       {/* Lens weights — always visible under a standard header (owner ask
           2026-07-19: "should always be visible, it never takes up much space").
@@ -5001,6 +5056,15 @@ export function LearningStyles() {
         font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8);
       }
       .pc-learning__gymhow { margin: -2px 2px 6px; }
+      /* The one-line plain-language glance replacing the instrument stack
+         (owner ask 2026-07-19). */
+      .pc-learning__glance {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px;
+        margin: 2px 2px 4px; font-size: 12px; color: var(--fg-dim, #b9d4e8);
+      }
+      .pc-learning__glance > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+      .pc-learning__glance strong { font-weight: 700; color: var(--fg, #e7eef5); font-variant-numeric: tabular-nums; }
+      .pc-learning__glance .is-warn { color: var(--warn, #fbbf24); font-weight: 600; }
       .pc-learning__lensstacks {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
         gap: 16px; margin-top: 8px;

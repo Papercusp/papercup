@@ -32,7 +32,7 @@ import { parseSlotSelector } from '../slot-selector';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
-import { resolveWorkspaceHiveScope } from '../federation-scope';
+import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../federation-scope';
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkItemResult } from '../../_bulk';
@@ -89,6 +89,14 @@ interface SendMsg {
    *  even for a harness-scoped sender. Omitted = auto (ctx harness, else the
    *  workspace's single shared Hive, else local). */
   scope?: 'hive' | 'local';
+  /** WI-5445: on a workspace with MORE THAN ONE shared Hive, names WHICH shared
+   *  Hive `scope:'hive'` means (mirrors resource:offers'/fleet:request_remote_spawn's
+   *  own `hive` disambiguator). Without it, scope:'hive' on a multi-hive workspace
+   *  refused loudly with no way to comply (ambiguous_hive_scope) — this is the
+   *  per-message picker that closes that gap. No effect when the workspace has
+   *  zero or exactly one shared Hive (already resolves unambiguously), or when
+   *  ctx already carries a harness scope (pipeline roles — unaffected). */
+  hive?: string;
   /** FF#1: name the DURABLE BACKSTOP that will re-dispatch a wake:'optimistic' miss
    *  (e.g. 'queen-survey re-dispatches'). Optimistic is silent-on-miss ONLY when a
    *  backstop is declared; WITHOUT one, an optimistic miss is reported as loudly as a
@@ -682,7 +690,9 @@ async function sendOne(
       // FF#3: force each missed addressee's FRESH session state into the result so a
       // transfer to a long-dead agent reads `ended`, not a silent woken:0. Miss-path only.
       try {
-        const liveness = await describeMissedRecipients(fan.targets);
+        const liveness = await describeMissedRecipients(fan.targets, {
+          workspaceId: identity.workspaceId,
+        });
         if (liveness.length > 0) wake.recipient_liveness = liveness;
       } catch {
         /* fail-soft: liveness enrichment is best-effort */

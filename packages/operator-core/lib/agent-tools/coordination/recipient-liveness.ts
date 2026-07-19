@@ -18,7 +18,7 @@
  * none of which import it — so there is no import cycle.
  */
 import { NON_WAKEABLE } from './inbox-wake';
-import { isSelectorOrWildcard } from './recipient-resolve';
+import { isSelectorOrWildcard, remoteSessionsByOwnerId } from './recipient-resolve';
 // TYPE-ONLY import (erased): keep this module import-SAFE. The value side
 // (resolveSessionStates) pulls the presence→DB chain, so it is lazy-imported
 // inside the function — a consumer (or its unit test) can import this module
@@ -49,28 +49,61 @@ export interface MissedRecipientLiveness {
  * `parked` — a false "the transfer will be picked up" — exactly where the
  * caller was deciding whether the send black-holed.) The miss set is small
  * (the addressees of ONE send), so the per-id hydration point-reads are cheap.
+ *
+ * EI-16693: a FEDERATED (cross-machine) recipient must NEVER be run through the
+ * local oracle. `resolveSessionStates`'s legs (wakeability, hardStale, pid probe,
+ * `coord_presence` hydration) are ALL local-machine-only — a remote-homed session
+ * has no row in any of them, which used to read as "no signal anywhere" and fall
+ * through `deriveSessionState`'s `!wakeable ⇒ 'ended'` branch: a confidently WRONG
+ * verdict for a session that is, per its own federated heartbeat, very much alive
+ * (repro: coord:presence showed a 12s-old federated heartbeat for the same ownerId
+ * the same send's `recipient_liveness` had just called `ended`). coord:presence
+ * itself never makes this mistake — it explicitly excludes federated rows from the
+ * local wakeability fetch and leaves their `sessionState` unset (see
+ * presence-snapshot.ts's `isFederated` filtering). This mirrors that: consult the
+ * SAME federated live-presence source send.ts already uses to classify
+ * `recipient_remote`/`recipient_remote_stale` (`remoteSessionsByOwnerId`, backed by
+ * `shared_session_presence`) and short-circuit those ids to `'unknown'` — a
+ * deliberately non-committal verdict — instead of asking the local-only oracle to
+ * guess at a session it structurally cannot see.
  */
 export async function describeMissedRecipients(
   ownerIds: readonly string[],
+  opts: { workspaceId?: string | null } = {},
 ): Promise<MissedRecipientLiveness[]> {
   const ids = [...new Set(ownerIds)].filter(
     (r) => !isSelectorOrWildcard(r) && !NON_WAKEABLE.has(r),
   );
   if (ids.length === 0) return [];
+  // Best-effort: a federation-detection hiccup just means we fall back to running
+  // every id through the local oracle (today's pre-fix behavior for that id),
+  // never a hard failure of the whole liveness enrichment.
+  let remoteIds: ReadonlySet<string>;
+  try {
+    remoteIds = new Set((await remoteSessionsByOwnerId(opts.workspaceId)).keys());
+  } catch {
+    remoteIds = new Set();
+  }
+  const localIds = ids.filter((id) => !remoteIds.has(id));
+  const remoteResults: MissedRecipientLiveness[] = ids
+    .filter((id) => remoteIds.has(id))
+    .map((ownerId) => ({ ownerId, sessionState: 'unknown' as const, wakeable: false }));
+  if (localIds.length === 0) return remoteResults;
   try {
     // Lazy value-import (keeps this module import-safe — see the type-only import above).
     const { resolveSessionStates } = await import('./liveness-oracle');
     const verdicts = await resolveSessionStates(
-      ids.map((ownerId) => ({ ownerId })),
+      localIds.map((ownerId) => ({ ownerId })),
       { hydratePerId: true },
     );
-    return ids.map((ownerId) => {
+    const localResults = localIds.map((ownerId) => {
       const v = verdicts.get(ownerId);
       if (!v) return { ownerId, sessionState: 'unknown' as const, wakeable: false };
       return { ownerId, sessionState: v.sessionState, wakeable: v.wakeable };
     });
+    return [...localResults, ...remoteResults];
   } catch {
     // Fail-soft: a liveness-probe hiccup must never fail the (already-durable) send.
-    return [];
+    return remoteResults;
   }
 }

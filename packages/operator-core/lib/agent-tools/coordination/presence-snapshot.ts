@@ -226,7 +226,7 @@ export async function assemblePresenceSnapshot(
   // EI-9454: a `{ owner }` read is a TARGETED point-lookup — it must not pay the
   // whole-roster assembly (see the early filter + sweep skip below).
   const targeted = typeof opts.owner === 'string' && opts.owner.length > 0;
-  const [records, federated, recordedLive] = await Promise.all([
+  const [records, federated, recordedLive, nurseryAliasRows] = await Promise.all([
     listPresence({ workspaceId: wsId, potSlug: potId }),
     listFederatedPresence({ workspaceId: wsId, potSlug: potId }),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
@@ -254,6 +254,15 @@ export async function assemblePresenceSnapshot(
     // must not queue a write behind a starved pool. The hourly presence-reaper and
     // every default read keep the sweep cadence, so retention is unaffected.
     targeted ? Promise.resolve(0) : sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
+    // EI-16639: the alias-aware nursery-liveness leg (nursery-alias-liveness.ts)
+    // — closes the same identity-alias gap migration 225/EI-311 already closed
+    // for fleet_assignment. A targeted read scopes the query to just the
+    // requested owner (EI-9454 point-lookup-cost discipline); a full-roster read
+    // takes the bounded (500-row) default. Best-effort ([] on any DB error).
+    listRunningNurseryAliasRows({
+      workspaceId: wsId,
+      ...(targeted ? { ownerIds: [opts.owner as string] } : {}),
+    }).catch(() => [] as NurseryAliasRow[]),
   ]);
   // Reconcile the two liveness sources: a fresh presence row wins; a live
   // session-log record supersedes a STALE presence row (so a resumed-but-idle

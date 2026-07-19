@@ -122,7 +122,7 @@ describe('materializeCandidateIntoPack', () => {
   });
 });
 
-describe('reviewCandidateForAutoAdopt (WI-5414 automated review)', () => {
+describe('reviewCandidateForAutoAdopt (WI-5414 automated review + P-001 transferability bar)', () => {
   let root: string;
   beforeAll(async () => {
     root = await fs.mkdtemp(join(tmpdir(), 'fleet-lessons-review-test-'));
@@ -136,19 +136,51 @@ describe('reviewCandidateForAutoAdopt (WI-5414 automated review)', () => {
     draftText,
   });
 
-  it('passes when the fleet-lessons pack does not exist yet (nothing to conflict with)', async () => {
+  /** A distiller that judges pass and rewrites the draft to `lesson`. */
+  const passDistiller = (title: string, lesson: string) =>
+    vi.fn(async () => ({ text: JSON.stringify({ verdict: 'pass', title, lesson }), costUsd: 0 }));
+
+  it('passes a transferable candidate when the fleet-lessons pack does not exist yet, carrying the DISTILLED lesson', async () => {
     const empty = await fs.mkdtemp(join(tmpdir(), 'fleet-lessons-review-empty-'));
+    const distiller = passDistiller('Lock before concurrent edits', 'Acquire the file lock before editing shared files.');
     const verdict = await reviewCandidateForAutoAdopt(draft('New lesson', 'Some new draft text.'), {
       packsRoot: empty,
+      distiller,
     });
     expect(verdict).toEqual({
       verdict: 'pass',
-      reason: 'fleet-lessons pack is empty — nothing to conflict with (knowledge-pack sweep scoring)',
+      reason: 'transferable; fleet-lessons pack is empty — nothing to conflict with (knowledge-pack sweep scoring)',
+      distilled: { title: 'Lock before concurrent edits', text: 'Acquire the file lock before editing shared files.' },
     });
     await fs.rm(empty, { recursive: true, force: true });
   });
 
-  it('fails the review when the judge reports a contradiction with an existing item', async () => {
+  it('fails at stage 1 when the transferability judge rejects the draft — the conflict judge never runs', async () => {
+    const distiller = vi.fn(async () => ({
+      text: '{"verdict":"fail","reason":"raw incident report bound to a specific log hash"}',
+      costUsd: 0,
+    }));
+    const judge = vi.fn(async () => ({ conflicts: [] }));
+    const verdict = await reviewCandidateForAutoAdopt(
+      draft('[replication-liveness] log=6b29d5e853eb…', 'log=6b29d5e853eb… has NEVER attached a replicator (181s).'),
+      { packsRoot: root, distiller, judge },
+    );
+    expect(verdict.verdict).toBe('fail');
+    expect(verdict.reason).toContain('not a transferable lesson');
+    expect(verdict.reason).toContain('raw incident report');
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it('returns verdict error (stays pending, D-004) when the transferability judge is unusable — e.g. the no-API-key distiller', async () => {
+    const distiller = vi.fn(async () => ({ text: '[]', costUsd: 0 }));
+    const verdict = await reviewCandidateForAutoAdopt(draft('Whatever', 'Whatever text.'), {
+      packsRoot: root,
+      distiller,
+    });
+    expect(verdict.verdict).toBe('error');
+  });
+
+  it('fails at stage 2 when the conflict judge reports a contradiction with an existing item (judged on the DISTILLED text)', async () => {
     await materializeCandidateIntoPack(
       {
         title: 'Use Postgres for durable state',
@@ -163,12 +195,16 @@ describe('reviewCandidateForAutoAdopt (WI-5414 automated review)', () => {
       { packsRoot: root },
     );
 
-    const judge = vi.fn(async ({ neighbors }: { neighbors: Array<{ id: string }> }) => ({
-      conflicts: [{ memory_id: neighbors[0]!.id, summary: 'contradicts the existing Postgres-only lesson' }],
-    }));
+    const distiller = passDistiller('Use SQLite for durable state', 'Write durable state to a local SQLite file.');
+    const judge = vi.fn(async ({ newText, neighbors }: { newText: string; neighbors: Array<{ id: string }> }) => {
+      expect(newText).toBe('Write durable state to a local SQLite file.'); // the DISTILLED text, not the raw draft
+      return {
+        conflicts: [{ memory_id: neighbors[0]!.id, summary: 'contradicts the existing Postgres-only lesson' }],
+      };
+    });
     const verdict = await reviewCandidateForAutoAdopt(
-      draft('Use SQLite for durable state', 'Always write new durable state to a local SQLite file.'),
-      { packsRoot: root, judge },
+      draft('Use SQLite for durable state', 'RAW DRAFT: sqlite kept timing out on host xyz-123.'),
+      { packsRoot: root, judge, distiller },
     );
     expect(judge).toHaveBeenCalledOnce();
     expect(verdict.verdict).toBe('fail');
@@ -176,25 +212,29 @@ describe('reviewCandidateForAutoAdopt (WI-5414 automated review)', () => {
     expect(verdict.reason).toContain('knowledge-pack sweep scoring');
   });
 
-  it('passes when the judge reports no conflict', async () => {
+  it('passes when the conflict judge reports no conflict', async () => {
+    const distiller = passDistiller('Lock files first', 'Lock a file before editing it concurrently.');
     const judge = vi.fn(async () => ({ conflicts: [] }));
     const verdict = await reviewCandidateForAutoAdopt(
       draft('Unrelated lesson', 'Lock a file before editing it concurrently.'),
-      { packsRoot: root, judge },
+      { packsRoot: root, judge, distiller },
     );
     expect(verdict).toEqual({
       verdict: 'pass',
-      reason: 'no conflict with existing fleet-lessons content (knowledge-pack sweep scoring)',
+      reason: 'transferable; no conflict with existing fleet-lessons content (knowledge-pack sweep scoring)',
+      distilled: { title: 'Lock files first', text: 'Lock a file before editing it concurrently.' },
     });
   });
 
-  it('degrades to pass when the judge itself errors (hygiene, never load-bearing)', async () => {
+  it('still passes stage 2 when the conflict judge itself errors (checkConflicts fails open — stage 1 is the load-bearing bar)', async () => {
+    const distiller = passDistiller('Whatever lesson', 'Whatever transferable text.');
     const judge = vi.fn(async () => {
       throw new Error('LLM timeout');
     });
     const verdict = await reviewCandidateForAutoAdopt(draft('Whatever lesson', 'Whatever text.'), {
       packsRoot: root,
       judge,
+      distiller,
     });
     expect(verdict.verdict).toBe('pass');
   });

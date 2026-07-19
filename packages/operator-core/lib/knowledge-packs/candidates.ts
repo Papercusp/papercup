@@ -542,8 +542,12 @@ export async function decideKnowledgePackCandidate(
 export const AUTO_ADOPT_MAX_PER_RUN = 10;
 
 export interface AutoReviewVerdict {
-  verdict: 'pass' | 'fail';
+  verdict: 'pass' | 'fail' | 'error';
   reason: string;
+  /** The rewritten transferable lesson (verdict 'pass' only) — what adoption
+   *  materializes into the pack (plan D-003: the pack carries the DISTILLED
+   *  text; the candidate row keeps the raw draft as provenance). */
+  distilled?: DistilledCandidate;
 }
 
 function lazyConflictJudge(): LlmJudge {
@@ -555,19 +559,45 @@ function lazyConflictJudge(): LlmJudge {
   };
 }
 
+function lazyDistillerLlm(): LessonDistillerLlm {
+  // Lazy — live-deps pulls the replay/eval subtree; only load it when a
+  // review actually runs.
+  return async (input) => {
+    const { anthropicDistillerLlm } = await import('../transfer/live-deps');
+    return anthropicDistillerLlm()(input);
+  };
+}
+
 /**
- * The automated review: reuses the SAME conflict-check machinery the
- * install/upgrade review + sweepHiveConflicts already run (manage.ts) —
- * here judged against the fleet-lessons pack's OWN current items (the pack
- * itself is the dedup surface; there is no hive pool at this point). A
- * reported contradiction fails the review; an empty pack, no neighbors, or a
- * degraded/errored judge call all PASS — checkConflicts fails OPEN (same
- * posture as memory:remember's own dedup: this is hygiene, not a human gate).
+ * The automated review — TWO stages (knowledge-pack-loop-integrity P-001):
+ *
+ *   1. TRANSFERABILITY (./candidate-review): an LLM judge rejects raw
+ *      incident bodies / ephemeral state / instance-bound text, and REWRITES
+ *      a passing draft into the compact transferable lesson. verdict 'error'
+ *      (LLM down, unparseable, no API key) leaves the candidate PENDING —
+ *      never adopt-by-default (plan D-004).
+ *   2. CONFLICT: the SAME conflict-check machinery the install/upgrade review
+ *      + sweepHiveConflicts already run (manage.ts) — the DISTILLED lesson is
+ *      judged against the fleet-lessons pack's OWN current items. A reported
+ *      contradiction fails the review; an empty pack, no neighbors, or a
+ *      degraded judge call pass this stage — checkConflicts fails OPEN (the
+ *      transferability stage above is the load-bearing bar).
  */
 export async function reviewCandidateForAutoAdopt(
-  candidate: Pick<KnowledgePackCandidate, 'title' | 'draftText'>,
-  opts: { packsRoot?: string; judge?: LlmJudge } = {},
+  candidate: Pick<KnowledgePackCandidate, 'title' | 'draftText'> &
+    Partial<Pick<KnowledgePackCandidate, 'scopes' | 'recurrenceCount'>>,
+  opts: { packsRoot?: string; judge?: LlmJudge; distiller?: LessonDistillerLlm } = {},
 ): Promise<AutoReviewVerdict> {
+  const distiller = opts.distiller ?? lazyDistillerLlm();
+  const transferability = await judgeCandidateTransferability(candidate, distiller);
+  if (transferability.verdict === 'fail') {
+    return { verdict: 'fail', reason: `not a transferable lesson: ${transferability.reason}` };
+  }
+  if (transferability.verdict === 'error') {
+    return { verdict: 'error', reason: transferability.reason };
+  }
+  const { distilled } = transferability;
+
   const { loadKnowledgePack } = await import('./load-packs');
   const { checkConflicts } = await import('../memory/conflict-check');
   const loaded = await loadKnowledgePack(
@@ -576,12 +606,16 @@ export async function reviewCandidateForAutoAdopt(
   ).catch(() => null);
   const existing = loaded?.pack.items ?? [];
   if (existing.length === 0) {
-    return { verdict: 'pass', reason: 'fleet-lessons pack is empty — nothing to conflict with (knowledge-pack sweep scoring)' };
+    return {
+      verdict: 'pass',
+      reason: 'transferable; fleet-lessons pack is empty — nothing to conflict with (knowledge-pack sweep scoring)',
+      distilled,
+    };
   }
 
   const neighbors = existing.map((i) => ({ id: i.id, text: memoryTextOf(i) }));
   const judge = opts.judge ?? lazyConflictJudge();
-  const report = await checkConflicts({ newText: candidate.draftText, neighbors, judge });
+  const report = await checkConflicts({ newText: distilled.text, neighbors, judge });
   if (report.conflicts.length > 0) {
     const summary = report.conflicts.map((c) => c.summary).join('; ');
     return {
@@ -589,15 +623,20 @@ export async function reviewCandidateForAutoAdopt(
       reason: `conflicts with existing fleet-lessons item(s) (knowledge-pack sweep scoring): ${summary}`,
     };
   }
-  return { verdict: 'pass', reason: 'no conflict with existing fleet-lessons content (knowledge-pack sweep scoring)' };
+  return {
+    verdict: 'pass',
+    reason: 'transferable; no conflict with existing fleet-lessons content (knowledge-pack sweep scoring)',
+    distilled,
+  };
 }
 
 export interface AutoAdoptSweepResult {
   reviewed: number;
   adopted: number;
   dismissed: number;
-  /** A decide() call that didn't succeed (e.g. the D-006 transfer bar refused
-   *  an adopt) — the candidate stays pending and the next tick retries it. */
+  /** A review that ERRORED (verdict 'error' — no decide call, D-004) or a
+   *  decide() that didn't succeed (e.g. the D-006 transfer bar refused an
+   *  adopt) — the candidate stays pending and the next tick retries it. */
   failed: number;
 }
 
@@ -636,13 +675,18 @@ export async function autoAdoptPendingCandidates(
     try {
       verdict = await review(candidate, opts.packsRoot ? { packsRoot: opts.packsRoot } : {});
     } catch (e) {
-      // The review is hygiene, never load-bearing (checkConflicts already
-      // fails open on a judge error) — a harder failure (e.g. pack fs I/O)
-      // still must not strand the candidate mid-sweep; degrade to pass.
+      // D-004 (reverses the pre-P-001 fail-open-to-adopt that shipped six raw
+      // incident bodies): an errored review NEVER decides — the candidate
+      // stays pending and the next tick retries it.
       verdict = {
-        verdict: 'pass',
-        reason: `automated review errored, defaulting to pass: ${e instanceof Error ? e.message : String(e)}`,
+        verdict: 'error',
+        reason: `automated review errored: ${e instanceof Error ? e.message : String(e)}`,
       };
+    }
+    if (verdict.verdict === 'error') {
+      console.warn(`[knowledge-packs] auto-adopt review errored for ${candidate.id} (stays pending): ${verdict.reason}`);
+      result.failed += 1;
+      continue;
     }
     const note = `Automated review (${AUTO_ADOPT_REVIEWER}): ${verdict.reason}`;
     const res = await decide({
@@ -650,6 +694,11 @@ export async function autoAdoptPendingCandidates(
       action: verdict.verdict === 'fail' ? 'dismiss' : 'adopt',
       by: AUTO_ADOPT_REVIEWER,
       note,
+      // Adoption materializes the DISTILLED lesson (plan D-003); the raw
+      // draft stays on the candidate row as provenance.
+      ...(verdict.verdict === 'pass' && verdict.distilled
+        ? { title: verdict.distilled.title, text: verdict.distilled.text }
+        : {}),
       ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
       ...(verdict.verdict === 'pass' && opts.packsRoot ? { packsRoot: opts.packsRoot } : {}),
     });

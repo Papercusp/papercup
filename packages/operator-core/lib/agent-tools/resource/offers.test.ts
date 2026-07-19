@@ -1,14 +1,46 @@
 /**
  * offers.test.ts — pot-seat-pools-prose-ux-2026-07-18 P-013: `toSummaryRow`,
- * the pure projection `resource:offers` returns to the chat surface.
+ * the pure projection `resource:offers` returns to the chat surface. Also
+ * EI-16673: the handler's multi-hive `hive` disambiguation (previously
+ * `resource:offers` had NO way to disambiguate a multi-hive workspace, so
+ * `potShared` could never resolve to true on one).
  *
- * Pure — no PG, no mocks needed.
+ * The `toSummaryRow` suite is pure — no PG, no mocks needed. The handler suite
+ * mocks identity/scope/store.
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/resource/offers.test.ts
  */
-import { describe, expect, it } from 'vitest';
-import { toSummaryRow } from './offers';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoredWorkOffer } from '../../p2p/offer-store';
 import type { WorkOfferStoreRecord } from '../../p2p/offer-store-schema';
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: vi.fn(() => ({ workspaceId: 'ws-1' })),
+}));
+vi.mock('../coordination/federation-scope', async () => {
+  const actual = await vi.importActual<typeof import('../coordination/federation-scope')>(
+    '../coordination/federation-scope',
+  );
+  return { ...actual, resolveWorkspaceHiveScope: vi.fn() };
+});
+vi.mock('../../p2p/offer-store', () => ({
+  listWorkOffers: vi.fn(async () => []),
+}));
+
+import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { listWorkOffers } from '../../p2p/offer-store';
+
+const identM = vi.mocked(resolveAgentIdentity);
+const scopeM = vi.mocked(resolveWorkspaceHiveScope);
+const listM = vi.mocked(listWorkOffers);
+
+const mod = await import('./offers');
+const { toSummaryRow } = mod;
+const tool = mod.default;
+
+type Out = { data: Record<string, unknown> };
+const call = (args: Record<string, unknown> = {}) => tool.handler(args as never, {} as never) as Promise<Out>;
+const body = (o: Out) => o.data;
 
 function seatOffer(over: {
   publisherGithubUserId: number;
@@ -90,5 +122,66 @@ describe('resource:offers toSummaryRow', () => {
     const workKind = { ...seatOffer({ publisherGithubUserId: 5 }) };
     workKind.record = { ...workKind.record!, kind: 'work', seat: null };
     expect(toSummaryRow(workKind)).toBeNull();
+  });
+});
+
+describe('resource:offers handler — multi-hive `hive` disambiguation (EI-16673)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    identM.mockReturnValue({ workspaceId: 'ws-1' } as never);
+    listM.mockResolvedValue([]);
+  });
+
+  it('no workspace resolvable → potShared:false, rows:[] (never throws)', async () => {
+    identM.mockReturnValue({ workspaceId: null } as never);
+    const b = body(await call());
+    expect(b).toEqual({ ok: true, potShared: false, rows: [] });
+    expect(scopeM).not.toHaveBeenCalled();
+  });
+
+  it('exactly one shared hive resolves alone (today\'s pre-fix behavior, unchanged)', async () => {
+    scopeM.mockResolvedValue({ kind: 'one', homeSlug: 'the-hive' });
+    const b = body(await call());
+    expect(b).toMatchObject({ ok: true, potShared: true, rows: [] });
+    expect(listM.mock.calls[0]?.[1]).toBe('the-hive');
+  });
+
+  it('MULTI-hive + no `hive` arg → THE BUG, now fixed: potShared:false with candidates surfaced (never silently empty)', async () => {
+    scopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] });
+    const b = body(await call());
+    expect(b.ok).toBe(true);
+    expect(b.potShared).toBe(false);
+    expect(b.rows).toEqual([]);
+    expect(b.candidates).toEqual(['hive-a', 'hive-b']);
+    expect(b.hiveError).toEqual(expect.any(String));
+    expect(listM).not.toHaveBeenCalled();
+  });
+
+  it('MULTI-hive + explicit `hive` naming one of the shared hives now resolves it (the fix)', async () => {
+    scopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] });
+    const b = body(await call({ hive: 'hive-b' }));
+    expect(b).toMatchObject({ ok: true, potShared: true, rows: [] });
+    expect(listM.mock.calls[0]?.[1]).toBe('hive-b');
+  });
+
+  it('an explicit `hive` NOT in the shared set is refused, never silently accepted', async () => {
+    scopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] });
+    const b = body(await call({ hive: 'not-shared' }));
+    expect(b).toMatchObject({ ok: true, potShared: false, rows: [], candidates: ['hive-a', 'hive-b'] });
+    expect(listM).not.toHaveBeenCalled();
+  });
+
+  it('no shared hive at all → potShared:false, no candidates key', async () => {
+    scopeM.mockResolvedValue({ kind: 'none' });
+    const b = body(await call());
+    expect(b.ok).toBe(true);
+    expect(b.potShared).toBe(false);
+    expect(b.candidates).toBeUndefined();
+  });
+
+  it('threads fleetSlug and potSlug through to the store filter', async () => {
+    scopeM.mockResolvedValue({ kind: 'one', homeSlug: 'the-hive' });
+    await call({ fleetSlug: 'f1', potSlug: 'p1' });
+    expect(listM.mock.calls[0]?.[2]).toMatchObject({ fleetSlug: 'f1', potSlug: 'p1' });
   });
 });
