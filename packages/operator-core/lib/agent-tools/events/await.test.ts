@@ -21,6 +21,10 @@ vi.mock('../../events/await/handle', () => ({
 }));
 vi.mock('../../events/await/store', () => ({
   registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 99, eventKey: i.eventKey, expiresTs: '2030-01-01', timeoutBehavior: i.timeoutBehavior })),
+  // EI-14225: the supersede-prior-await-on-registration retirement. Defaults to
+  // "nothing to retire" so every pre-existing test above is unaffected; overridden
+  // per-test below to exercise the supersede path.
+  cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
@@ -54,7 +58,7 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 
 import awaitTool from './await';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { registerAwait } from '../../events/await/store';
+import { registerAwait, cancelAwaitsForSubscribersOnKeys } from '../../events/await/store';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
@@ -111,6 +115,40 @@ describe('events:await wrapper defaults', () => {
       expires_ts: '2030-01-01',
       on_timeout: 'wake',
       wake_handle: 'resumable',
+    });
+  });
+
+  // ── EI-14225: re-registration retires the caller's own prior pending await
+  // on the SAME exact key (idle-park loops re-await the same key every wake). ──
+  describe('EI-14225: supersede-on-registration', () => {
+    it('retires the callers own prior pending await(s) on this EXACT key before registering the new one', async () => {
+      await call({ event: 'work-item:claimable' });
+      expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(['su-awaiter'], ['work-item:claimable']);
+      // Ordering: the retirement must run BEFORE the new row is registered (both
+      // mocks recorded on the same shared timeline via invocationCallOrder).
+      const supersedeOrder = vi.mocked(cancelAwaitsForSubscribersOnKeys).mock.invocationCallOrder[0];
+      const registerOrder = vi.mocked(registerAwait).mock.invocationCallOrder[0];
+      expect(supersedeOrder).toBeLessThan(registerOrder);
+    });
+
+    it('when a prior await was retired, the response reports `superseded` with an advice line', async () => {
+      vi.mocked(cancelAwaitsForSubscribersOnKeys).mockResolvedValueOnce(2);
+      const out = await call({ event: 'work-item:claimable' });
+      expect(out).toMatchObject({ superseded: 2 });
+      expect(out.superseded_advice).toContain('2');
+    });
+
+    it('when nothing was retired, the response omits `superseded` entirely', async () => {
+      const out = await call({ event: 'lock:grant:t1' });
+      expect(out).not.toHaveProperty('superseded');
+      expect(out).not.toHaveProperty('superseded_advice');
+    });
+
+    it('a failed retirement is best-effort — registration still proceeds', async () => {
+      vi.mocked(cancelAwaitsForSubscribersOnKeys).mockRejectedValueOnce(new Error('db hiccup'));
+      const out = await call({ event: 'k' });
+      expect(out).toMatchObject({ ok: true, await_id: 99 });
+      expect(registerAwait).toHaveBeenCalledTimes(1);
     });
   });
 

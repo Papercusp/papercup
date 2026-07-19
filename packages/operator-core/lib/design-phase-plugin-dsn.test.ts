@@ -21,7 +21,7 @@ const plugin = require_(
 ) as { _internal: { resolveAdminPgUrl: () => string } };
 const { resolveAdminPgUrl } = plugin._internal;
 
-const SAVED = ['HOME', 'HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'PAPERCUSP_SKIP_PG_DISCOVERY'] as const;
+const SAVED = ['HOME', 'PAPERCUSP_HOME', 'HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'PAPERCUSP_SKIP_PG_DISCOVERY'] as const;
 let saved: Record<string, string | undefined> = {};
 let tmpHome = '';
 
@@ -71,5 +71,28 @@ describe('design-phase plugin — resolveAdminPgUrl (P-076)', () => {
     expect(resolveAdminPgUrl()).toBe(
       'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp',
     );
+  });
+
+  it('EI-14499: PAPERCUSP_HOME wins over the box-canonical ~/.papercusp discovery file', () => {
+    // A discovery file at the box-canonical HOME-derived path that must be
+    // ignored once PAPERCUSP_HOME is scoped — proves we don't silently fall
+    // back to os.homedir() when an isolated caller has its own root.
+    mkdirSync(join(tmpHome, '.papercusp'), { recursive: true });
+    writeFileSync(
+      join(tmpHome, '.papercusp', 'embedded-pg.json'),
+      JSON.stringify({ host: '127.0.0.1', port: 1, user: 'wrong', password: 'wrong' }),
+    );
+
+    const isolatedHome = mkdtempSync(join(tmpdir(), 'design-phase-dsn-isolated-'));
+    try {
+      writeFileSync(
+        join(isolatedHome, 'embedded-pg.json'),
+        JSON.stringify({ host: '127.0.0.1', port: 39172, user: 'harness_admin', password: 'iso-pw' }),
+      );
+      process.env.PAPERCUSP_HOME = isolatedHome;
+      expect(resolveAdminPgUrl()).toBe('postgresql://harness_admin:iso-pw@127.0.0.1:39172/papercusp');
+    } finally {
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
   });
 });

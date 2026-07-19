@@ -102,3 +102,51 @@ describe('.gitmodules submodule URL invariants (release blocker)', () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * Recurrence guard for EI-14414 (2026-07-17): git-sync auto-commits the superproject
+ * AND every submodule on a schedule, with no per-repo opt-out and no grace period — so
+ * an npm-based submodule with no `.gitignore` (or one that omits `node_modules/`) leaks
+ * scratch/build artifacts into its history the moment ANYTHING creates untracked files
+ * (even a one-off `npx vitest run` to sanity-check a brand-new lib), because git-sync's
+ * next tick sweeps them in before anyone notices. Live case: extracting
+ * `@papercusp/model-pricing` into its own submodule (WI-5143) got a stray
+ * `node_modules/.vite/...results.json` auto-committed within minutes.
+ *
+ * This is NOT hypothetical for the CURRENT tree either — auditing every submodule
+ * turned up two (`libs/papercusp-db`, `libs/generic/token-kit`) whose `.gitignore`
+ * already existed (from the WI-4419 `.papercusp/` scratch-dir guard) but never picked
+ * up the base `node_modules/` line other borrowable libs carry — fixed alongside this
+ * test. Only submodules with a `package.json` (i.e. actually npm-managed) are checked;
+ * a non-JS submodule (`libs/zero-harness`) has no `node_modules` risk to guard.
+ */
+describe('submodule .gitignore invariants (EI-14414 — node_modules leak into git-sync)', () => {
+  const root = findRepoRoot(process.cwd());
+  const entries = parseGitmodules(readFileSync(join(root, '.gitmodules'), 'utf8'));
+  const npmSubmodules = entries.filter((e) => existsSync(join(root, e.path, 'package.json')));
+
+  it('found at least one npm-managed submodule to check (sanity — not an empty pass)', () => {
+    expect(npmSubmodules.length).toBeGreaterThan(10);
+  });
+
+  it('every npm-managed submodule has its OWN .gitignore that ignores node_modules/', () => {
+    const offenders: string[] = [];
+    for (const e of npmSubmodules) {
+      const giPath = join(root, e.path, '.gitignore');
+      if (!existsSync(giPath)) {
+        offenders.push(`${e.path} (no .gitignore at all)`);
+        continue;
+      }
+      const body = readFileSync(giPath, 'utf8');
+      // Accept any reasonable node_modules-ignoring line (bare, leading slash, or **/-anchored).
+      if (!/(^|\n)\s*(\*\*\/)?\/?node_modules\/?\s*(\n|$)/.test(body)) {
+        offenders.push(`${e.path} (.gitignore exists but has no node_modules/ pattern)`);
+      }
+    }
+    expect(
+      offenders,
+      `submodule(s) at risk of a git-sync auto-commit sweeping in node_modules/ the moment ` +
+        `an npm install/test run creates it (see EI-14414): ${offenders.join(', ')}`,
+    ).toEqual([]);
+  });
+});

@@ -23,7 +23,7 @@ import {
   type EventCatalogEntry,
 } from '../../events/await/catalog';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
-import { registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
+import { registerAwait, findAnnouncementsForKey, findNearMissKeys, cancelAwaitsForSubscribersOnKeys } from '../../events/await/store';
 import { registerComposedAwait } from '../../events/await/compose';
 import { ComposedSpecError, type ComposedSpec } from '../../events/await/compose-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -50,7 +50,7 @@ export default defineTool({
     when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you). work-item:unblocked:<id> latches at registration: an already-unblocked target returns already_unblocked instead of a dead wait.',
     notWhen:
       'Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer the sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
-    chaining: 'events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register if you need the NEXT occurrence (one-shot: a fired await is gone). events:cancel retracts; events:status inspects.',
+    chaining: 'events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register if you need the NEXT occurrence (one-shot: a fired await is gone). EI-14225: re-awaiting the SAME exact key auto-retires your own prior pending registration on it (see `superseded` in the response) — a repeated idle-park loop never has to `events:cancel` first. events:cancel retracts (still useful to drop a wait early without re-registering); events:status inspects.',
     seeAlso: [
       'events:catalog (what CAN I wait on? — the awaitable-key registry; check before polling)',
       'deploy:await / work-item:await / … (named sugar for the common waits — build the key for you)',
@@ -478,6 +478,28 @@ export default defineTool({
       }
     }
 
+    // ── EI-14225: retire the CALLER'S OWN prior pending registration(s) on this
+    // EXACT key before adding a new one. events:await is one-shot by construction
+    // (the caller only ever wants ONE outstanding wait per key) — the canonical
+    // idle-park loop (scheduler:get_next miss → re-await 'work-item:claimable' →
+    // end turn, repeated every wake) previously left every earlier registration
+    // alive, each ticking down to its OWN independent timeout: a long-running loop
+    // that re-registered on turns 2/3/4 could still be woken by turn 2's stale
+    // await firing its TIMEOUT well after turns 3/4 were already handled — a full
+    // wasted wake turn carrying a stale `note` for zero new information. Reuses the
+    // exact supersede primitive the checkpoint/deploy sugar verbs already rely on
+    // for this (cancelAwaitsForSubscribersOnKeys, EI-12457) instead of a new
+    // mechanism. Best-effort: a failed retirement must never block registering the
+    // new wait. Skipped when a PRIOR key genuinely fired for someone (announcedGate/
+    // already_fired above already returned) — this only runs on the path that is
+    // about to register a fresh row.
+    let supersededCount = 0;
+    try {
+      supersededCount = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], [eventKey]);
+    } catch {
+      /* best-effort — never let a retirement failure block the new registration */
+    }
+
     // ── Capture the wake handle NOW (D-003) ────────────────────────────
     const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
       planRunId: args.plan_run_id,
@@ -504,6 +526,12 @@ export default defineTool({
             ok: true,
             await_id: row.id,
             event: row.eventKey,
+            ...(supersededCount > 0
+              ? {
+                  superseded: supersededCount,
+                  superseded_advice: `Retired ${supersededCount} of your own prior pending await(s) on this exact key — one-shot semantics mean only the NEWEST registration stays live, so a stale earlier wait can no longer fire a duplicate/late TIMEOUT wake.`,
+                }
+              : {}),
             ...(args.fromMsg ? { resolved_from_msg: args.fromMsg } : {}),
             ...(patternAwait ? { pattern: true } : {}),
             ...(announcedGate ? { announced_gate: announcedGate } : {}),

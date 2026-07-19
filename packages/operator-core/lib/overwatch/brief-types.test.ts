@@ -84,7 +84,7 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   assert.match(out, /### Bees \(Mug-placed only — NOT the whole fleet\)\n- running 4 · completed 11 · churning 2 · dead claims 1 · invalid-model failures 3/);
   // EI-6493: the zero-caveat only fires when running is actually 0 — this fixture has 4.
   assert.doesNotMatch(out, /zero here means no Mug-dispatched bee is active/);
-  assert.match(out, /### Work feed\n- frontier 7 ready · 5 auto-eligible stuck · 1 dead routine\(s\) · 2 stranded/);
+  assert.match(out, /### Work feed\n- frontier 7 ready · 5 auto-eligible stuck \(dispatcher lane — NOT a Mug\/placement signal; see auto-implement dispatcher-staleness\) · 1 dead routine\(s\) · 2 stranded/);
   assert.match(out, /### Tokens \/ gateway\n- paused buckets: opus, sonnet · 3 failover\(s\) · 12 429\(s\) · 1 account\(s\) available/);
   assert.match(out, /### Plans \+ escalations\n- 6 active plan\(s\) · 4 stalled item\(s\) · 2 aging escalation\(s\)/);
   // recentByRole rendered role-sorted (queen, scout, worker), deterministic.
@@ -216,4 +216,20 @@ test('emptyOverwatchBrief — neutral fail-soft default: healthy, zeroed, no ano
   a.observations.recentByRole.worker = 2;
   assert.deepEqual(b.tokens.pausedBuckets, []);
   assert.deepEqual(b.observations.recentByRole, {});
+});
+
+test('renderOverwatchBrief — keylessHumanReviewBacklog renders as a separate, explicitly non-Mug-actionable line (EI-14223)', () => {
+  const brief = unhealthyBrief();
+  brief.workFeed.keylessHumanReviewBacklog = 202;
+  const out = renderOverwatchBrief(brief);
+  // The by-design keyless backlog must be visible but clearly labelled as NOT
+  // Mug-actionable, and must not be folded into the auto-eligible-stuck count.
+  assert.match(out, /202 keyless human-review-backlog/);
+  assert.match(out, /do NOT nudge or escalate to Mug/);
+  assert.match(out, /5 auto-eligible stuck/); // unhealthyBrief's autoEligibleStuck (5) unchanged
+});
+
+test('renderOverwatchBrief — a zero/absent keylessHumanReviewBacklog omits the line entirely', () => {
+  const out = renderOverwatchBrief(unhealthyBrief()); // no keylessHumanReviewBacklog set
+  assert.doesNotMatch(out, /keyless human-review-backlog/);
 });
