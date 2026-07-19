@@ -196,6 +196,7 @@ beforeEach(() => {
   resetBootConfigAssertForTests(); // P-018 boot self-assert dedup + streak
   resetContextUsageCacheForTests(); // P-013 gauge cache + flag mirror
   resetImplausibleReadingsForTests(); // EI-10434 sanity-clamp warn dedup
+  resetStaleCutoverEscalationsForTests(); // EI-16190 pre-cutover-process dedup
   // The watchdog narrates seeds/over-limit crossings on the console by design;
   // silence it so vitest-fail-on-console doesn't flag the expected output.
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -1130,6 +1131,85 @@ describe('WI-5075 carry-respawn kill-loop breaker (rapid-refire guard)', () => {
       const again = await checkCompactionCompliance(fakeSql({ seeded }));
       expect(again.carryRespawned).toEqual(['hot']);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('EI-16190 pre-cutover-process self-check', () => {
+  const cutovers = [{ id: 'test-cutover', atMs: Date.parse('2026-07-18T00:00:00Z'), note: 'a test cutover' }];
+
+  it('staleCutoversForProcessStart: a process that booted BEFORE the cutover is flagged', () => {
+    const bootedBefore = Date.parse('2026-07-17T12:00:00Z');
+    expect(staleCutoversForProcessStart(bootedBefore, cutovers)).toEqual(cutovers);
+  });
+
+  it('staleCutoversForProcessStart: a process that booted AT/AFTER the cutover is clean', () => {
+    const bootedAt = Date.parse('2026-07-18T00:00:00Z');
+    const bootedAfter = Date.parse('2026-07-19T00:00:00Z');
+    expect(staleCutoversForProcessStart(bootedAt, cutovers)).toEqual([]);
+    expect(staleCutoversForProcessStart(bootedAfter, cutovers)).toEqual([]);
+  });
+
+  it('staleCutoversForProcessStart: multiple cutovers each independently evaluated', () => {
+    const twoCutovers = [
+      { id: 'old-cutover', atMs: Date.parse('2026-06-01T00:00:00Z'), note: 'old' },
+      { id: 'new-cutover', atMs: Date.parse('2026-07-18T00:00:00Z'), note: 'new' },
+    ];
+    // Booted between the two ⇒ only predates the newer one.
+    const bootedBetween = Date.parse('2026-06-15T00:00:00Z');
+    expect(staleCutoversForProcessStart(bootedBetween, twoCutovers)).toEqual([twoCutovers[1]]);
+  });
+
+  it('staleCutoversForProcessStart: defaults to the real WATCHDOG_BEHAVIOR_CUTOVERS registry when no override is passed', () => {
+    // A process that booted in the deep past predates every known cutover —
+    // just asserts the default-arg wiring reaches the real registry, not any
+    // particular entry's content (which may grow over time).
+    const ancientBoot = Date.parse('2000-01-01T00:00:00Z');
+    expect(staleCutoversForProcessStart(ancientBoot).length).toBeGreaterThan(0);
+  });
+
+  it('startCompactionComplianceWatchdog escalates ONCE when this process predates a known cutover', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // 2026-06-01: before the real P-022-native-compact-retirement cutover
+      // (2026-07-18) baked into the module's WATCHDOG_BEHAVIOR_CUTOVERS.
+      vi.setSystemTime(new Date('2026-06-01T00:00:00Z'));
+      vi.spyOn(process, 'uptime').mockReturnValue(0); // "just booted" at the faked system time
+      startCompactionComplianceWatchdog(fakeSql({}), { intervalMs: 999_999_999 });
+      // Escalation is fire-and-forget (best-effort async) — flush microtasks.
+      await vi.waitFor(() => {
+        expect(openEscalationMock).toHaveBeenCalled();
+      });
+      const escPayload = (
+        openEscalationMock.mock.calls[0] as unknown as [unknown, { severity?: string; summary?: string }]
+      )?.[1];
+      expect(escPayload?.severity).toBe('advisory');
+      expect(escPayload?.summary).toContain('pre-cutover process');
+
+      // A second start() call within the same process must NOT re-escalate
+      // the same cutover (dedup).
+      startCompactionComplianceWatchdog(fakeSql({}), { intervalMs: 999_999_999 });
+      await Promise.resolve();
+      expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    } finally {
+      const { stopManaged } = await import('@papercusp/scheduled-registry');
+      stopManaged('compaction-compliance-watchdog');
+      vi.useRealTimers();
+    }
+  });
+
+  it('startCompactionComplianceWatchdog does NOT escalate when this process postdates every known cutover', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2027-01-01T00:00:00Z'));
+      vi.spyOn(process, 'uptime').mockReturnValue(0);
+      startCompactionComplianceWatchdog(fakeSql({}), { intervalMs: 999_999_999 });
+      await Promise.resolve();
+      expect(openEscalationMock).not.toHaveBeenCalled();
+    } finally {
+      const { stopManaged } = await import('@papercusp/scheduled-registry');
+      stopManaged('compaction-compliance-watchdog');
       vi.useRealTimers();
     }
   });

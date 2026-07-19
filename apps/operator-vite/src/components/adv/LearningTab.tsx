@@ -74,7 +74,7 @@ import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
-import { CardStack } from "@/app/harness/CardStack";
+import { CardStack } from "@papercusp/card-stack";
 import { statusToneColor } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
@@ -91,6 +91,7 @@ import {
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
+  LearningStatLine,
   LearningVisualEmpty,
   LearningVisualError,
   LearningVisualStyles,
@@ -924,51 +925,20 @@ function ImprovementsView({
       <LearningEfficacyPanel />
 
       {digest && showDashboard ? (
-        <div className="pc-learning-visual__layout pc-learning-visual__layout--improvements">
-          <LearningHeroMetric
-            eyebrow="Open"
-            value={String(digest.open)}
-            status={digest.open === 0 ? "clear" : "active"}
-            tone={digest.open === 0 ? "good" : "accent"}
-          >
-            {resolved} resolved
-          </LearningHeroMetric>
-          <div
-            className="pc-learning__improvementflow"
-            aria-label="Improvement routing"
-          >
-            <span>
-              <small>Captured</small>
-              <strong>{digest.total}</strong>
-            </span>
-            <i aria-hidden />
-            <span className="is-auto">
-              <small>Automatic</small>
-              <strong>{digest.autoEligible.length}</strong>
-            </span>
-            <span className="is-human">
-              <small>Review</small>
-              <strong>{digest.humanQueue.length}</strong>
-            </span>
-            <i aria-hidden />
-            <span className="is-good">
-              <small>Resolved</small>
-              <strong>{resolved}</strong>
-            </span>
-          </div>
-          <LearningEvidenceRail>
-            <div className="pc-learning-visual__evidence-grid">
-              <div className="pc-learning-visual__evidence-metric">
-                <span>Automatic</span>
-                <strong>{digest.autoEligible.length}</strong>
-              </div>
-              <div className="pc-learning-visual__evidence-metric">
-                <span>Review</span>
-                <strong>{digest.humanQueue.length}</strong>
-              </div>
-            </div>
-          </LearningEvidenceRail>
-        </div>
+        // The header signal already carries the headline "N open"; this line is the
+        // pipeline breakdown, with Review the one accent (only when it needs eyes).
+        <LearningStatLine
+          stats={[
+            { label: "Captured", value: digest.total },
+            { label: "Automatic", value: digest.autoEligible.length },
+            {
+              label: "Review",
+              value: digest.humanQueue.length,
+              tone: digest.humanQueue.length > 0 ? "warn" : undefined,
+            },
+            { label: "Resolved", value: resolved },
+          ]}
+        />
       ) : null}
 
       {showDashboard ? (
@@ -1549,44 +1519,24 @@ function GymView({
       ) : null}
 
       {snap && proposals.length >= 4 ? (
-        <div className="pc-learning-visual__layout pc-learning-visual__layout--gym">
-          <LearningHeroMetric
-            eyebrow="Champions"
-            value={String(champions)}
-            status={pending > 0 ? `${pending} pending` : "current"}
-            tone={champions > 0 ? "good" : "accent"}
-          >
-            {proposals.length} experiments
-          </LearningHeroMetric>
-          <div
-            className="pc-learning__gymflow"
-            aria-label="Gym experiment flow"
-          >
-            {[
-              ["Tested", proposals.length, "accent"],
-              ["Pending", pending, "warn"],
-              ["Champions", champions, "good"],
-            ].map(([label, value, tone], index) => (
-              <span key={String(label)} className={`is-${tone}`}>
-                <small>{label}</small>
-                <strong>{value}</strong>
-                {index < 2 ? <i aria-hidden /> : null}
-              </span>
-            ))}
-          </div>
-          <LearningEvidenceRail>
-            <div className="pc-learning-visual__evidence-grid">
-              <div className="pc-learning-visual__evidence-metric">
-                <span>Rejected</span>
-                <strong>{rejected}</strong>
-              </div>
-              <div className="pc-learning-visual__evidence-metric">
-                <span>Loops</span>
-                <strong>{running}</strong>
-              </div>
-            </div>
-          </LearningEvidenceRail>
-        </div>
+        // The header signal already carries "N active" (running loops); this line
+        // is the experiment breakdown, Champions the one accent when there are any.
+        <LearningStatLine
+          stats={[
+            {
+              label: "Champions",
+              value: champions,
+              tone: champions > 0 ? "good" : undefined,
+            },
+            { label: "Tested", value: proposals.length },
+            {
+              label: "Pending",
+              value: pending,
+              tone: pending > 0 ? "warn" : undefined,
+            },
+            { label: "Rejected", value: rejected },
+          ]}
+        />
       ) : null}
 
       {activeAutoloops.length > 0 && (

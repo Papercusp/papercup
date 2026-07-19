@@ -295,6 +295,7 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     parked: false,
     nextFireAt: new Date(NOW + 300_000).toISOString(),
     lastFiredAt: new Date(NOW - 300_000).toISOString(),
+    armedAt: new Date(NOW - 300_000).toISOString(),
     costCapCents: null,
     maxFires: null,
     maxDurationSec: null,

@@ -29,7 +29,7 @@ import {
 import { readListTotal } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import type { PanelComponentProps } from "@/app/harness/dock/panel-registry";
 import { useColumnFilters, ColumnFilterBar } from "@/app/harness/filters";
-import { CardStack } from "@/app/harness/CardStack";
+import { CardStack } from "@papercusp/card-stack";
 import { useItemPlanFilter } from "./use-create-data";
 import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
 import { Tooltip } from "@/app/harness/Tooltip";

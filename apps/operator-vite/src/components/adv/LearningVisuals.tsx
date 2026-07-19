@@ -76,6 +76,31 @@ export function LearningHeroMetric({
   );
 }
 
+/**
+ * One quiet, consistent summary line of `label value` stats — replaces the loud,
+ * inconsistent per-step metric-tile strips (owner ask 2026-07-19: the colored
+ * flow-cell "info pills" were confusing and different on every step). Plain text,
+ * tabular numbers, ONE accent only on the stat(s) that actually signal health
+ * (pass a `tone`); everything else stays muted-neutral. ~1 line tall vs the former
+ * ~120px hero+flow+evidence dashboard band, which also closes the blank-space gap.
+ */
+export function LearningStatLine({
+  stats,
+}: {
+  stats: Array<{ label: string; value: ReactNode; tone?: LearningTone }>;
+}) {
+  return (
+    <dl className="pc-learning-visual__statline">
+      {stats.map((s) => (
+        <div key={s.label} className={s.tone ? `is-${s.tone}` : undefined}>
+          <dt>{s.label}</dt>
+          <dd>{s.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export interface LearningComparisonRow {
   label: string;
   baseline: number | null;
@@ -250,11 +275,25 @@ export function LearningVisualStyles() {
       .pc-learning-visual__head h2 { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--fg); font-size: 13px; font-weight: 680; letter-spacing: 0; }
       .pc-learning-visual__headspace { flex: 1 1 auto; }
       .pc-learning-visual__question { color: var(--fg-mute); font-size: 11px; font-weight: 550; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-      .pc-learning-visual__signal { border: 1px solid color-mix(in srgb, var(--fg-mute) 28%, transparent); border-radius: 999px; padding: 2px 7px; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
-      .pc-learning-visual__signal.is-good { color: #34d399; border-color: color-mix(in srgb, #34d399 42%, transparent); background: color-mix(in srgb, #34d399 9%, transparent); }
-      .pc-learning-visual__signal.is-warn { color: #fbbf24; border-color: color-mix(in srgb, #fbbf24 42%, transparent); background: color-mix(in srgb, #fbbf24 9%, transparent); }
-      .pc-learning-visual__signal.is-bad { color: #fb7185; border-color: color-mix(in srgb, #fb7185 42%, transparent); background: color-mix(in srgb, #fb7185 9%, transparent); }
-      .pc-learning-visual__signal.is-accent { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, transparent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+      /* Quiet header signal (owner ask 2026-07-19): the former uppercase, bordered,
+         tone-filled pill read as a confusing "info pill". Now plain inline text —
+         a small muted label with the number tone-tinted, the ONE accent the header
+         carries. No pill chrome, no uppercase. */
+      .pc-learning-visual__signal { color: var(--fg-mute); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+      .pc-learning-visual__signal.is-good { color: #34d399; }
+      .pc-learning-visual__signal.is-warn { color: #fbbf24; }
+      .pc-learning-visual__signal.is-bad { color: #fb7185; }
+      .pc-learning-visual__signal.is-accent { color: var(--accent); }
+      /* One quiet stat line replacing the per-step metric-tile strips (owner ask
+         2026-07-19). Single row, plain label/value pairs, one accent per tone. */
+      .pc-learning-visual__statline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 18px; margin: 0 0 4px; padding: 7px 11px; border: 1px solid color-mix(in srgb, var(--border) 82%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--bg-2) 55%, transparent); }
+      .pc-learning-visual__statline > div { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+      .pc-learning-visual__statline dt { color: var(--fg-mute); font-size: 10.5px; font-weight: 600; }
+      .pc-learning-visual__statline dd { margin: 0; color: var(--fg); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+      .pc-learning-visual__statline > div.is-good dd { color: #34d399; }
+      .pc-learning-visual__statline > div.is-warn dd { color: #fbbf24; }
+      .pc-learning-visual__statline > div.is-bad dd { color: #fb7185; }
+      .pc-learning-visual__statline > div.is-accent dd { color: var(--accent); }
       .pc-learning-visual__layout { display: grid; grid-template-columns: minmax(140px, .62fr) minmax(300px, 2fr) minmax(170px, .78fr); gap: 7px; align-items: stretch; margin-bottom: 6px; }
       .pc-learning-visual__hero, .pc-learning-visual__comparison, .pc-learning-visual__evidence { border: 1px solid color-mix(in srgb, var(--border) 84%, transparent); border-radius: 11px; background: color-mix(in srgb, var(--bg-2) 92%, transparent); }
       .pc-learning-visual__hero { min-height: 92px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 10px 12px; overflow: hidden; position: relative; }

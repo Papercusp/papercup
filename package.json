@@ -11,6 +11,7 @@
     "apps/*",
     "packages/*",
     "libs/agent-chat",
+    "libs/generic/card-stack",
     "libs/generic/chat-protocol",
     "libs/generic/seed-bundle",
     "libs/generic/git-graph",
