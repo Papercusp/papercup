@@ -154,6 +154,29 @@ describe('delegateResource — P-001 potSlug/audience passthrough (pot-seat-pool
     await delegateResource({ workspaceId: 'w', potSlug: 'my-pot', kind: 'account', ref: 'pool-main', remove: true });
     expect(removeM.mock.calls[0]![0]).toMatchObject({ potSlug: 'my-pot', resourceKind: 'account', resourceRef: 'pool-main' });
   });
+
+  // WI-5408: the store owns the xor + audience-required validation
+  // (resource-allotments.test.ts pins the refusal LOGIC); this layer's whole job
+  // for that class is to thread potSlug/audience through and pass the store's
+  // refusal back UNTOUCHED without firing the board invalidate. grantee_conflict
+  // is checked just above — audience_required (potSlug set, audience missing) is
+  // the other cell of the matrix D-002 makes loud, so pin it here too.
+  it('a store audience_required refusal (potSlug without audience) passes through untouched, no invalidate', async () => {
+    setM.mockResolvedValue({ ok: false, refusal: { code: 'audience_required', detail: 'potSlug needs an audience' } });
+    const r = await delegateResource({
+      workspaceId: 'w',
+      potSlug: 'my-pot',
+      // audience deliberately omitted — the store refuses; this layer must not invent a default
+      kind: 'agent_slot',
+      model: 'opus',
+      effort: 'high',
+      count: 2,
+    });
+    expect(r).toEqual({ ok: false, refusal: { code: 'audience_required', detail: 'potSlug needs an audience' } });
+    // the audience/potSlug the store rejected on were still forwarded verbatim
+    expect(setArgs()).toMatchObject({ potSlug: 'my-pot', audience: undefined });
+    expect(invalidateM).not.toHaveBeenCalled();
+  });
 });
 
 describe('delegateResource — account/gpu unchanged (P-201 semantics)', () => {

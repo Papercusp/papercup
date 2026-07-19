@@ -12,6 +12,7 @@
  * Pure DI — no PG, no keychain, no desktop spawn.
  * Run: cd packages/operator-core && npx vitest run lib/p2p/delegated-spawn-honor.test.ts
  */
+import fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import {
   SPAWN_REQUEST_HONOR_WINDOW_MS,
@@ -28,7 +29,7 @@ import {
   resolveHonorAccount,
 } from './honor-account-resolution';
 import { seatOfferId } from './offer-store-publish';
-import type { SeatSlot } from '../fleet/seat-accounting';
+import { computeSeatAvailability, resolveSeatLaunch, type SeatSlot } from '../fleet/seat-accounting';
 import type { WorkOfferStoreRecord } from './offer-store-schema';
 
 const WS = 'ws-1';
@@ -523,6 +524,210 @@ describe('honorSpawnRequestFromProjection — the P-003 audience gate', () => {
     expect(isTrustedUser).not.toHaveBeenCalled();
     expect(isPotMember).not.toHaveBeenCalled();
     expect(spawnMembers).toHaveBeenCalled();
+  });
+
+  // WI-5408: trust-revoked-BETWEEN-offer-and-claim. The offer is published once
+  // while the requester is trusted; the audience gate is re-consulted on EVERY
+  // claim against the LIVE trust state (delegated-spawn-honor.ts §Gate 2.5/3.5:
+  // "a trust revocation takes effect on the very next claim with no offer
+  // republish"). Two distinct requests from the SAME requester drawing the SAME
+  // pot offer, with trust flipped between them, prove the gate is not cached at
+  // offer time: request-1 (trusted) is honored, request-2 (trust since revoked)
+  // fail-closes with a loud receipt — no republish needed.
+  it('trust revoked between two claims of one pot offer ⇒ first honored, second audience_refused (live per-claim re-read)', async () => {
+    const isTrustedUser = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+    const { d, spawnMembers, emitReceipt, setDisposition } = deps({
+      listAllotments: potAwareListAllotments('trusted-members'),
+      availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any, // seats never the cause here
+      isTrustedUser,
+    });
+
+    const first = await honorSpawnRequestFromProjection(
+      { ...ARGS, row: row(requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } })) },
+      d,
+    );
+    expect(first).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+
+    // A SECOND, distinct spawn-request (different offer id) from the SAME requester
+    // (UID_A) for the SAME pot offer — trust has since been revoked.
+    const secondRecord = {
+      ...requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } }),
+      offerId: 'spawnreq-second-claim-0002',
+    };
+    const second = await honorSpawnRequestFromProjection({ ...ARGS, row: row(secondRecord) }, d);
+    expect(second).toEqual({ outcome: 'refused', code: 'audience_refused' });
+
+    // The gate was consulted PER CLAIM with the same requester subject both times —
+    // the second read saw the revocation (nothing about the offer changed).
+    expect(isTrustedUser).toHaveBeenCalledTimes(2);
+    expect(isTrustedUser).toHaveBeenNthCalledWith(1, WS, UID_A);
+    expect(isTrustedUser).toHaveBeenNthCalledWith(2, WS, UID_A);
+    // Only the first claim spawned; the revoked claim never did, and it disposed loud.
+    expect(spawnMembers).toHaveBeenCalledTimes(1);
+    expect(setDisposition).toHaveBeenCalledWith(
+      WS,
+      HOME,
+      UID_A,
+      'spawnreq-second-claim-0002',
+      'refused:audience_refused',
+      undefined,
+      undefined,
+    );
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ refusal: expect.objectContaining({ code: 'audience_refused' }) }),
+    );
+  });
+});
+
+// ── WI-5408: the over-draw race (two fleets racing one pot offer) ─────────────
+//
+// Two DIFFERENT fleets each send a spawn-request drawing on the SAME pot seat
+// offer. Their spawn-request records carry DIFFERENT offer ids, so Gate 5's
+// per-offer atomic claim (setDisposition WHERE NULL) does NOT serialize them —
+// what protects the pot's seat cap is Gate 4 (resolveSeatLaunch over
+// seatAvailabilityForFleet). This pins that the honor path REFUSES THE LOSER
+// LOUDLY (seats_exhausted + federated receipt, no spawn) once the winner's
+// members have consumed the shared seats.
+//
+// SCOPE (honest): this proves the honor path RESPECTS the availability gate. The
+// hard "exactly one wins under a genuinely simultaneous race" guarantee is
+// consumeSeatAtBoot's atomic conditional INSERT (seat-accounting.ts; its live
+// cap enforcement is a PG-integration concern), re-enforced at each member boot
+// regardless of this pre-check. The pure cap-math invariant behind it is the
+// property test below.
+describe('honorSpawnRequestFromProjection — WI-5408 over-draw race (two fleets, one pot offer)', () => {
+  const potReqRow = (offerId: string, fleetSlug: string) =>
+    row({
+      ...requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } }),
+      offerId,
+      fleetSlug,
+    });
+
+  it('winner honored; the loser (seats already consumed) is refused seats_exhausted LOUD, never spawns', async () => {
+    // availabilityForFleet: full for the winner, exhausted by the time the loser is
+    // evaluated (the winner's members have taken the shared pot seats).
+    const availabilityForFleet = vi
+      .fn()
+      .mockResolvedValueOnce(POT_AVAILABILITY) // fleet 'alpha' (winner): 5 free
+      .mockResolvedValue([{ ...POT_SLOT, consumed: 5, available: 0 }]); // fleet 'beta' (loser): 0 free
+    const { d, spawnMembers, emitReceipt, setDisposition } = deps({
+      listAllotments: potAwareListAllotments('trusted-members'),
+      availabilityForFleet: availabilityForFleet as any,
+    });
+
+    const winner = await honorSpawnRequestFromProjection(
+      { ...ARGS, row: potReqRow('spawnreq-alpha-0001', 'alpha') },
+      d,
+    );
+    expect(winner).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+
+    const loser = await honorSpawnRequestFromProjection(
+      { ...ARGS, row: potReqRow('spawnreq-beta-0002', 'beta') },
+      d,
+    );
+    expect(loser).toEqual({ outcome: 'refused', code: 'seats_exhausted' });
+
+    // Exactly one spawn happened — the loser never reached the spawner.
+    expect(spawnMembers).toHaveBeenCalledTimes(1);
+    // The loser refused straight from the null disposition (no dangling 'honoring' claim).
+    expect(setDisposition).toHaveBeenCalledWith(
+      WS,
+      HOME,
+      UID_A,
+      'spawnreq-beta-0002',
+      'refused:seats_exhausted',
+      undefined,
+      undefined,
+    );
+    // ...and told the requester why (D-004 no-silent-drops).
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'refusal',
+        action: 'delegated-seat:spawn',
+        offerId: 'spawnreq-beta-0002',
+        refusal: expect.objectContaining({ code: 'seats_exhausted' }),
+      }),
+    );
+  });
+
+  it('a single over-count request (count > free) is itself refused seats_exhausted before any spawn', async () => {
+    // One fleet asks for more than the pot delegated — the N+1 refusal surfaces at
+    // the honor layer, loud, with no phantom spawn.
+    const over = {
+      ...requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID, count: 6 } }),
+      offerId: 'spawnreq-overcount-0003',
+    };
+    const { d, spawnMembers, emitReceipt } = deps({
+      listAllotments: potAwareListAllotments('trusted-members'),
+      availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any, // only 5 free, 6 requested
+    });
+    const res = await honorSpawnRequestFromProjection({ ...ARGS, row: row(over) }, d);
+    expect(res).toEqual({ outcome: 'refused', code: 'seats_exhausted' });
+    expect(spawnMembers).not.toHaveBeenCalled();
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ refusal: expect.objectContaining({ code: 'seats_exhausted' }) }),
+    );
+  });
+});
+
+// ── WI-5408: the over-draw invariant, property-based ─────────────────────────
+//
+// The pure cap math (resolveSeatLaunch over computeSeatAvailability) is what
+// makes "exactly one spawn wins the last seat, never over-draw" true regardless
+// of how many racers arrive or in what size. Assert it holds for ARBITRARY
+// delegated quantities + arbitrary request sequences, not just the hand-picked
+// examples above.
+describe('over-draw invariant (property): the seat cap math never admits more than Q', () => {
+  const REF = 'sonnet:high:AUTO';
+  const slotOf = (quantity: number): SeatSlot => ({ ref: REF, model: 'sonnet', effort: 'high', account: 'AUTO', quantity });
+
+  it('greedily honoring any request sequence against one slot never consumes more than the delegated Q', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 20 }),
+        fc.array(fc.integer({ min: 1, max: 8 }), { maxLength: 15 }),
+        (quantity, requestCounts) => {
+          const slot = slotOf(quantity);
+          let consumed = 0;
+          let admittedTotal = 0;
+          for (const count of requestCounts) {
+            const availability = computeSeatAvailability([slot], new Map([[REF, consumed]]));
+            const res = resolveSeatLaunch({ availability, count, seatRef: REF });
+            if (res.ok) {
+              // admitted ⇒ it fit under the remaining cap
+              expect(count).toBeLessThanOrEqual(quantity - consumed);
+              consumed += count;
+              admittedTotal += count;
+            } else {
+              // the slot always exists and the ref always matches here, so the ONLY
+              // possible refusal is exhaustion — never a spurious other code
+              expect(res.refusal.code).toBe('seats_exhausted');
+            }
+            // THE INVARIANT: consumption can never exceed the delegated quantity,
+            // whatever order/size the racers arrive in — no over-draw is representable.
+            expect(consumed).toBeLessThanOrEqual(quantity);
+          }
+          expect(admittedTotal).toBe(consumed);
+        },
+      ),
+    );
+  });
+
+  it('the last free seat is won by exactly one count-1 racer; the other is refused seats_exhausted', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 10 }), (quantity) => {
+        const slot = slotOf(quantity);
+        // down to exactly one free seat
+        const oneFree = computeSeatAvailability([slot], new Map([[REF, quantity - 1]]));
+        expect(resolveSeatLaunch({ availability: oneFree, count: 1, seatRef: REF }).ok).toBe(true);
+        // the winner's consumption lands ⇒ zero free ⇒ the racer for the same last seat loses, loud
+        const none = computeSeatAvailability([slot], new Map([[REF, quantity]]));
+        expect(resolveSeatLaunch({ availability: none, count: 1, seatRef: REF })).toMatchObject({
+          ok: false,
+          refusal: { code: 'seats_exhausted' },
+        });
+      }),
+    );
   });
 });
 
