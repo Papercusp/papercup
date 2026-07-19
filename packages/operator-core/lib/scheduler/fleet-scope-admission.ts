@@ -18,6 +18,7 @@ import {
   matchesWorkItemClaimSpec,
   type ClaimSpecSubject,
 } from './claim-spec-match';
+import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
 
 export interface FleetScopeContext {
   ownerId: string;
@@ -384,6 +385,13 @@ export function fleetScopedMiss(
 ) {
   const paused = opts?.pausedReason !== undefined;
   const cooldown = !paused ? (opts?.cooldownDiag ?? null) : null;
+  // EI-15185: derive the ready-made `payload_filter` for a `work-item:claimable`
+  // idle-park await from the member's OWN claim-spec view — the missing "how do I
+  // scope this await" answer that led members to register an UNSCOPED await and
+  // get woken on every system-wide release. `undefined` ⇒ the spec narrows only on
+  // fields the claimable payload does not carry, so the advice below must NOT
+  // recommend an unscoped await (the other half of the fix).
+  const claimablePayloadFilter = claimSpecFilterToClaimablePayloadFilter(scope.record.spec.view.filter);
   const cooldownExpirySec = cooldown?.earliestExpiryMs != null ? Math.max(0, Math.round((cooldown.earliestExpiryMs - Date.now()) / 1000)) : null;
   // EI-14615: surface the ABSOLUTE cooldown expiry instant, not just the relative
   // `~Ns` (which is recomputed against Date.now() every poll and so reads the same
@@ -414,12 +422,18 @@ export function fleetScopedMiss(
     },
     quarantinedIds,
     windDown: true as const,
+    // EI-15185: the ready-made payload_filter derived from THIS member's own claim
+    // spec — present only when the spec can be narrowed over the claimable payload's
+    // fields (id/kind/title/plan). Copy it verbatim into the idle-park await below.
+    ...(claimablePayloadFilter ? { payloadFilter: claimablePayloadFilter } : {}),
     ...(paused ? { paused: true as const } : {}),
     ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt } : {}),
     advice: paused
       ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Resume only after a fleet:resume cue.'
       : cooldown
         ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. BUT if on re-poll cooldownExpiryAt has ADVANCED (the window keeps resetting — you see the same ~Ns every poll and it never counts down), the fleet is round-robin re-releasing these permanently-unfit rows faster than the cooldown lapses (a LIVELOCK, EI-14615): it will NOT clear on its own, so DO report it to your leader to exclude those rows from the claim spec (that is the fix), or wind down.'
-        : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Resume only after a claim-spec revision or a new claimable event.',
+        : claimablePayloadFilter
+          ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end. To be woken ONLY on work your spec could admit (EI-15185), park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } and end your turn — it is derived from your own claim spec\'s view, so it fires only on in-scope items instead of every system-wide release; the ~30-min on_timeout backstops a missed emit. The wake is a HINT: scheduler:get_next stays the authoritative claim (a re-miss just re-registers the await).'
+          : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
   };
 }
