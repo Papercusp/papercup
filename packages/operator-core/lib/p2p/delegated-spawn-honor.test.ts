@@ -20,6 +20,7 @@ import {
   honorSpawnRequestFromProjection,
   probeAgentBinResolvable,
   type DelegatedSpawnHonorDeps,
+  type PotSeatCandidate,
 } from './delegated-spawn-honor';
 import {
   honorAccountRoutingMode,
@@ -46,6 +47,19 @@ const TARGET_OFFER_ID = seatOfferId({
 });
 
 const SLOT: SeatSlot = { ref: 'haiku:low:AUTO', model: 'haiku', effort: 'low', account: 'AUTO', quantity: 3 };
+
+// ── P-003: pot-scoped fixtures ───────────────────────────────────────────────
+const POT_SLUG = 'design-pot';
+const POT_SLOT: SeatSlot = { ref: 'sonnet:high:AUTO', model: 'sonnet', effort: 'high', account: 'AUTO', quantity: 5 };
+const POT_TARGET_OFFER_ID = seatOfferId({
+  potSlug: POT_SLUG,
+  model: 'sonnet',
+  effort: 'high',
+  account: 'AUTO',
+  devicePubkey: PK_B,
+});
+const TRUSTED_POT_CANDIDATE: PotSeatCandidate = { slot: POT_SLOT, potSlug: POT_SLUG, audience: 'trusted-members' };
+const WHOLE_POT_CANDIDATE: PotSeatCandidate = { slot: POT_SLOT, potSlug: POT_SLUG, audience: 'whole-pot' };
 
 function requestRecord(over: {
   status?: 'open' | 'paused' | 'cancelled';
@@ -128,6 +142,58 @@ describe('evaluateSpawnRequestTarget (pure)', () => {
       evaluateSpawnRequestTarget({ record: requestRecord(), ...base, selfDevicePubkey: 'other-device' }),
     ).toMatchObject({ ok: false, code: 'seat_ref_unknown', disposition: 'refused:seat_ref_unknown' });
   });
+
+  it('a fleet-scoped match carries potMatch: null (P-003 — no audience concept)', () => {
+    const res = evaluateSpawnRequestTarget({ record: requestRecord(), ...base });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.potMatch).toBeNull();
+  });
+
+  it('matches a POT-scoped candidate via the potSlug-scope re-derivation and surfaces potMatch (P-003)', () => {
+    const potRecord = requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } });
+    const res = evaluateSpawnRequestTarget({
+      record: potRecord,
+      selfGithubUserId: UID_B,
+      selfDevicePubkey: PK_B,
+      slots: [SLOT], // present but doesn't match — proves the pot leg is tried independently
+      potSlots: [TRUSTED_POT_CANDIDATE],
+      nowMs: NOW,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.slot.ref).toBe('sonnet:high:AUTO');
+      expect(res.potMatch).toEqual({ potSlug: POT_SLUG, audience: 'trusted-members' });
+    }
+  });
+
+  it('tries every pot candidate — a non-matching one first does not block a later match', () => {
+    const otherPotSlot: SeatSlot = { ref: 'opus:xhigh:AUTO', model: 'opus', effort: 'xhigh', account: 'AUTO', quantity: 1 };
+    const otherCandidate: PotSeatCandidate = { slot: otherPotSlot, potSlug: 'other-pot', audience: 'whole-pot' };
+    const potRecord = requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } });
+    const res = evaluateSpawnRequestTarget({
+      record: potRecord,
+      selfGithubUserId: UID_B,
+      selfDevicePubkey: PK_B,
+      slots: [],
+      potSlots: [otherCandidate, TRUSTED_POT_CANDIDATE],
+      nowMs: NOW,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.potMatch).toEqual({ potSlug: POT_SLUG, audience: 'trusted-members' });
+  });
+
+  it('no fleet OR pot candidate matches ⇒ seat_ref_unknown', () => {
+    const potRecord = requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } });
+    const res = evaluateSpawnRequestTarget({
+      record: potRecord,
+      selfGithubUserId: UID_B,
+      selfDevicePubkey: PK_B,
+      slots: [SLOT],
+      potSlots: [{ ...TRUSTED_POT_CANDIDATE, potSlug: 'wrong-pot' }],
+      nowMs: NOW,
+    });
+    expect(res).toMatchObject({ ok: false, code: 'seat_ref_unknown', disposition: 'refused:seat_ref_unknown' });
+  });
 });
 
 // ── IO orchestration ─────────────────────────────────────────────────────────
@@ -164,6 +230,11 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
   // PG (the real pool loader) nor depend on the TEST host's login — the account the
   // seat pins survives verbatim. The downgrade/refuse paths get their own tests.
   const resolveHonorAccount = vi.fn(async (requestedAccount: string) => ({ ok: true as const, account: requestedAccount }));
+  // P-003: default pass-through — no existing (fleet-scoped) test's potMatch is ever
+  // non-null, so these are never invoked by them; the audience-gate tests below
+  // override with fail cases.
+  const isTrustedUser = vi.fn(async () => true);
+  const isPotMember = vi.fn(async () => true);
   const d: DelegatedSpawnHonorDeps = {
     hostAccepts: vi.fn(async () => true),
     resolveActor: vi.fn(async () => ({ githubUserId: UID_B })) as any,
@@ -175,13 +246,37 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     emitReceipt,
     probeAgentRuntime,
     resolveHonorAccount,
+    isTrustedUser,
+    isPotMember,
     nowMs: () => NOW,
     ...over,
   };
-  return { d, setDisposition, spawnMembers, emitReceipt, probeAgentRuntime, resolveHonorAccount };
+  return { d, setDisposition, spawnMembers, emitReceipt, probeAgentRuntime, resolveHonorAccount, isTrustedUser, isPotMember };
 }
 
 const ARGS = { workspaceId: WS, potHomeSlug: HOME, row: row() };
+
+// ── P-003: pot-scoped honor IO fixtures ──────────────────────────────────────
+const POT_ALLOTMENT = (audience: 'trusted-members' | 'whole-pot') => ({
+  resourceKind: 'agent_slot',
+  quantity: 5,
+  axis: { model: 'sonnet', effort: 'high', account: 'AUTO' },
+  resourceRef: 'sonnet:high:AUTO',
+  fleetSlug: null,
+  potSlug: POT_SLUG,
+  audience,
+});
+const POT_AVAILABILITY = [{ ...POT_SLOT, consumed: 0, available: 5 }];
+
+/** listAllotments mock that mirrors the real store: a fleetSlug-filtered call
+ *  sees only fleet rows; the whole-board call (P-003, no filter) sees everything. */
+function potAwareListAllotments(audience: 'trusted-members' | 'whole-pot') {
+  return vi.fn(async (a: { fleetSlug?: string; potSlug?: string }) =>
+    a.fleetSlug ? [ALLOTMENT] : [ALLOTMENT, POT_ALLOTMENT(audience)],
+  );
+}
+
+const potRow = row(requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } }));
 
 describe('honorSpawnRequestFromProjection', () => {
   it('gate OFF ⇒ total silence: no disposition, no receipt, no spawn', async () => {
