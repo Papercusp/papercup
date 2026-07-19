@@ -12,57 +12,17 @@
  *     wake/orient (no forced wake).
  *
  * Boot-baked settings (model/effort/account/carry/contextSize/agent) need a respawn — that is
- * fleet:respawn-member (P-008), not this. Auth reuses the fleet-control classifier
- * (classifyFleetControlInvoker): the caller must be the target fleet's recorded leader, the queen,
- * or the owner (su).
+ * fleet:respawn-member (P-008), not this. Member resolution + leader/queen/owner auth live in the
+ * shared resolveFleetMemberTarget (member-target.ts), shared with fleet:respawn-member.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES, classifyAgentPane } from '@papercusp/agent-mcp';
-import { getFleet, listFleetsLedBy, fleetSlugFromName } from '../../agent-fleets-store';
-import { getPresence } from '../coordination/presence';
-import { fetchPresenceFleet } from '../coordination/presence-fleet';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { sendMessage } from '../coordination/messages';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { setCompactionLimitForOwner } from '../config/set-compaction-limit-core';
-import { classifyFleetControlInvoker } from './fleet-auth';
-import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
-
-/** Resolve a `member` handle (a full coord ownerId, or a unique prefix/substring) to the
- *  ownerId + fleet-role of an actual member of `slug`. Membership is checked against the
- *  authoritative presence-fleet label (includes muted members); prefix resolution enumerates
- *  the deliverable member set. */
-async function resolveMemberInFleet(
-  member: string,
-  slug: string,
-): Promise<{ ok: true; ownerId: string; role: string } | { ok: false; error: string; message: string }> {
-  const trimmed = member.trim();
-  // Exact: the handle is itself a member of this fleet (authoritative label, muted-inclusive).
-  const directRole = (await fetchPresenceFleet([trimmed]).catch(() => new Map())).get(trimmed);
-  if (directRole?.fleetSlug === slug) {
-    return { ok: true, ownerId: trimmed, role: directRole.fleetRole ?? 'member' };
-  }
-  // Prefix/substring: enumerate the fleet's members and match uniquely.
-  const { hostAudienceResolvers } = await import('../coordination/audience-host');
-  const members = (await hostAudienceResolvers.listFleetMembers(slug).catch(() => [])) as string[];
-  const matches = members.filter((id) => id === trimmed || id.startsWith(trimmed) || id.includes(trimmed));
-  if (matches.length === 1) {
-    const role = (await fetchPresenceFleet([matches[0]]).catch(() => new Map())).get(matches[0]);
-    return { ok: true, ownerId: matches[0], role: role?.fleetRole ?? 'member' };
-  }
-  if (matches.length === 0) {
-    return {
-      ok: false,
-      error: 'member_not_found',
-      message: `No member matching "${member}" in fleet '${slug}' — fleet:status lists its members.`,
-    };
-  }
-  return {
-    ok: false,
-    error: 'member_ambiguous',
-    message: `"${member}" matches ${matches.length} members of '${slug}' (${matches.join(', ')}) — pass a full ownerId.`,
-  };
-}
+import { resolveFleetMemberTarget } from './member-target';
+import { json, ROUTING_LADDER } from './_shared';
 
 export default defineTool({
   name: 'fleet:reconfigure-member',
@@ -117,69 +77,22 @@ export default defineTool({
       message: 'pass at least one of compactionLimit / claimSpec / brief',
     }),
   async handler(args, ctx) {
-    const { identity, ownerId: callerId, workspaceId } = resolveFleetCaller(ctx);
-
     // Defense-in-depth (the zod refine covers the MCP path): at least one lever.
     if (args.compactionLimit == null && args.claimSpec == null && args.brief == null) {
       return json({ ok: false, error: 'nothing_to_do', message: 'pass at least one of compactionLimit / claimSpec / brief' }, true);
     }
 
-    // 1. Resolve the fleet — explicit, else the single fleet the caller leads.
-    let slug: string;
-    let fleet;
-    if (args.fleet) {
-      slug = fleetSlugFromName(args.fleet);
-      fleet = await getFleet(workspaceId, slug);
-      if (!fleet) {
-        return json({ ok: false, error: 'fleet_not_found', message: `No fleet '${slug}' in this workspace — see fleet:list.` }, true);
-      }
-    } else {
-      const led = await listFleetsLedBy(workspaceId, callerId);
-      if (led.length === 0) {
-        return json({ ok: false, error: 'no_led_fleet', message: 'You lead no fleet — pass `fleet` explicitly (and you must be its leader/queen/owner).' }, true);
-      }
-      if (led.length > 1) {
-        return json({ ok: false, error: 'ambiguous_fleet', message: `You lead ${led.length} fleets (${led.map((f) => f.fleetSlug).join(', ')}) — pass \`fleet\`.` }, true);
-      }
-      fleet = led[0];
-      slug = fleet.fleetSlug;
+    const target = await resolveFleetMemberTarget(ctx, args.member, args.fleet);
+    if (!target.ok) {
+      return json(target as unknown as Record<string, unknown>, true);
     }
+    const { identity, callerId, workspaceId, slug, memberOwnerId, invokedAs } = target;
 
-    // 2. Auth — leader of THIS fleet, queen, or owner (su). Pane derives from live presence.
-    let paneKind = 'unknown';
-    try {
-      const pres = await getPresence(callerId).catch(() => null);
-      paneKind = classifyAgentPane({ role: pres?.agentRole ?? null, ownerId: callerId }).kind;
-    } catch {
-      paneKind = classifyAgentPane({ role: null, ownerId: callerId }).kind;
-    }
-    const invokedAs = classifyFleetControlInvoker({ callerOwnerId: callerId, leaderOwnerId: fleet.leaderOwnerId, paneKind });
-    if (!invokedAs) {
-      return json(
-        {
-          ok: false,
-          error: 'not_authorized',
-          message:
-            `fleet:reconfigure-member on '${slug}' is restricted to its recorded leader (${fleet.leaderOwnerId ?? 'none'}), ` +
-            `the queen, or the owner (an su session) — you are ${paneKind} (${callerId}).`,
-        },
-        true,
-      );
-    }
-
-    // 3. Resolve the target member within the fleet.
-    const resolved = await resolveMemberInFleet(args.member, slug);
-    if (!resolved.ok) {
-      return json({ ...resolved, fleet: slug }, true);
-    }
-    const memberOwnerId = resolved.ownerId;
-
-    // 4. Apply each requested lever, collecting a per-lever result.
+    // Apply each requested lever, collecting a per-lever result.
     const applied: Record<string, unknown> = {};
 
     if (args.compactionLimit != null) {
-      // Reuse the P-006 cross-session setter (re-runs the same auth harmlessly, and clamps to
-      // the MEMBER's spec+role ceiling — the value-add over a naive write).
+      // Reuse the P-006 cross-session setter (clamps to the MEMBER's spec+role ceiling).
       applied.compactionLimit = await setCompactionLimitForOwner(ctx, memberOwnerId, args.compactionLimit);
     }
 
@@ -189,8 +102,7 @@ export default defineTool({
         applied.claimSpec = { ok: false, errors: validated.errors };
       } else {
         try {
-          // Federate under the caller's harness when harness-scoped (mirrors set_claim_spec's
-          // potSlug resolution for the common case); else local.
+          // Federate under the caller's harness when harness-scoped (mirrors set_claim_spec); else local.
           const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
           const potSlug =
             typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : null;

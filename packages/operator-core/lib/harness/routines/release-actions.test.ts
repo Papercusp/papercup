@@ -886,6 +886,23 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(d.advancedTo).toBe('c'.repeat(12));
     expect((d.failingTests as string[]).length).toBe(20);
   });
+
+  it('EI-15849: buildCheckpointDetail persists isolationNote even when the gate is NOT absorbed (red) — the absorber\'s reasoning must survive past the truncated console log', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      isolationNote: 'isolation: 1 file(s) STILL FAILED in isolation — real break, gate stays red: @p/core::a.test.ts',
+    });
+    expect(d.isolationNote).toBe(
+      'isolation: 1 file(s) STILL FAILED in isolation — real break, gate stays red: @p/core::a.test.ts',
+    );
+  });
+
+  it('EI-15849: buildCheckpointDetail caps an oversized isolationNote at 2000 chars', () => {
+    const d = buildCheckpointDetail({ reason: 'not-green', green: false, isolationNote: 'x'.repeat(5000) });
+    expect((d.isolationNote as string).length).toBe(2000);
+  });
 });
 
 describe('WI-4494: the routine defers to a run that already recorded (no double-counted reds)', () => {

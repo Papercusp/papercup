@@ -225,23 +225,26 @@ async function defaultGetModes(workspaceId: string, ownerId: string): Promise<Ca
   }
 }
 
-/** Read the caller's claimed / in-flight plan items. Assignment is keyed on the
- *  agent-NAME a session adopts (not the coordination ownerId), so resolve the
- *  adopted name first; a session with no adopted name simply owns no items.
+/** Read the caller's claimed / in-flight plan items. Assignment is keyed on EITHER
+ *  the agent-NAME a session adopts OR its raw coordination ownerId (EI-15910/
+ *  EI-2299 — a push assignment made by ownerId, e.g. coord:dispatch, targets that
+ *  identity directly, with no adoption ever happening) — match both identity axes
+ *  so a successor's carry doc doesn't silently drop an assignment made straight to
+ *  its own ownerId just because it never adopted a name.
  *  Best-effort: a throwing read yields no items, never a failed document. */
 async function defaultGetPlanItems(ownerId: string, workspaceId: string): Promise<CarryDocPlanItem[]> {
   try {
     const { resolveAdoptedName } = await import('./plan-items/agent-names');
     const name = await resolveAdoptedName(workspaceId, ownerId);
-    if (!name) return [];
-    const { myItemsWithState } = await import('./plan-items/liveness');
-    const items = await myItemsWithState(workspaceId, name);
+    const { myItemsWithStateForIdentities } = await import('./plan-items/liveness');
+    const items = await myItemsWithStateForIdentities(workspaceId, name ? [name, ownerId] : [ownerId]);
     return items.map((s) => ({
       itemId: s.assignment.itemId,
       planSlug: s.assignment.planSlug,
-      // myItemsWithState pairs assignment+live-claim but does not fetch the plan
-      // item's stored status; the disposition (active / assigned-idle / …) is the
-      // load-bearing state here. Status stays null until a leg fetches it.
+      // myItemsWithStateForIdentities pairs assignment+live-claim but does not
+      // fetch the plan item's stored status; the disposition (active /
+      // assigned-idle / …) is the load-bearing state here. Status stays null
+      // until a leg fetches it.
       status: null,
       disposition: s.disposition,
     }));

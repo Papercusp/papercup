@@ -6,9 +6,10 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, type EscalationAgingInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
+import type { ClaudeAccount } from '../deployment/account-pool';
 
 describe('splitAutoEligibleStuck — keyed dispatcher-stuck vs keyless human-review backlog (EI-14223)', () => {
   it('counts only KEYED, attempts:0 items as autoEligibleStuck', () => {
@@ -387,5 +388,94 @@ describe('toolEfficiencyStatus — WI-839 tool-efficiency panel status fold', ()
   it('broken beats degraded beats unknown-only (precedence order)', () => {
     expect(toolEfficiencyStatus(['broken', 'degraded'])).toBe('crit');
     expect(toolEfficiencyStatus(['degraded', 'unknown'])).toBe('warn');
+  });
+});
+
+describe('computeAccountsAvailable — starvation-watchdog false-positive fix (EI-15875)', () => {
+  const NOW = 1_784_000_000_000;
+
+  function account(id: string, overrides: Partial<ClaudeAccount['rate']> = {}): ClaudeAccount {
+    return {
+      id,
+      credentialRef: `token:${id}`,
+      addedAt: NOW - 1000,
+      boundTo: [],
+      rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0, ...overrides },
+    };
+  }
+
+  it('a plain healthy account (no pause, no usage-wall, no edge-throttle) is available', () => {
+    const r = computeAccountsAvailable([account('a1')], null, NOW);
+    expect(r).toEqual({ accountsTotal: 1, accountsAvailable: 1, accountsPaused: 0 });
+  });
+
+  it('a rate-paused account is excluded (unchanged pre-existing behavior)', () => {
+    const r = computeAccountsAvailable(
+      [account('a1', { pausedUntil: NOW + 60_000 })],
+      null,
+      NOW,
+    );
+    expect(r).toEqual({ accountsTotal: 1, accountsAvailable: 0, accountsPaused: 1 });
+  });
+
+  it('EI-15875 core bug: a weekly-usage-walled account with NO active pause is excluded, not counted as idle-healthy', () => {
+    // pausedUntil: 0 (never set / already lapsed), but util7d is at cap and the window has not
+    // reset yet — exactly the 2026-07-18 false-positive shape (5 accounts read this way as spare
+    // capacity by the OLD pause-only check).
+    const r = computeAccountsAvailable(
+      [account('a1', {
+        pausedUntil: 0,
+        utilization7d: 0.98,
+        utilizationAt: NOW - 1000,
+        windowResetAt7d: NOW + 3 * 24 * 60 * 60_000,
+      })],
+      null,
+      NOW,
+    );
+    expect(r).toEqual({ accountsTotal: 1, accountsAvailable: 0, accountsPaused: 1 });
+  });
+
+  it('a usage-walled account becomes available again once its window has reset', () => {
+    const r = computeAccountsAvailable(
+      [account('a1', {
+        pausedUntil: 0,
+        utilization7d: 0.98,
+        utilizationAt: NOW - 1000,
+        windowResetAt7d: NOW - 1000, // already past — window reset
+      })],
+      null,
+      NOW,
+    );
+    expect(r).toEqual({ accountsTotal: 1, accountsAvailable: 1, accountsPaused: 0 });
+  });
+
+  it('a live edge-throttled account (no pause, no usage-wall) is excluded too', () => {
+    const r = computeAccountsAvailable(
+      [account('a1')],
+      { edgeThrottleByAccount: { a1: { edgeThrottled: true } } },
+      NOW,
+    );
+    expect(r).toEqual({ accountsTotal: 1, accountsAvailable: 0, accountsPaused: 1 });
+  });
+
+  it('mixed pool: only the genuinely-servable accounts count as available (mirrors the 2026-07-18 incident: 2/8 usable)', () => {
+    const accounts = [
+      account('usable-1'),
+      account('usable-2'),
+      account('paused', { pausedUntil: NOW + 60_000 }),
+      account('walled-1', { utilization7d: 0.97, utilizationAt: NOW - 1000, windowResetAt7d: NOW + 100_000 }),
+      account('walled-2', { utilization7d: 0.99, utilizationAt: NOW - 1000, windowResetAt7d: NOW + 100_000 }),
+      account('edge-throttled'),
+    ];
+    const r = computeAccountsAvailable(
+      accounts,
+      { edgeThrottleByAccount: { 'edge-throttled': { edgeThrottled: true } } },
+      NOW,
+    );
+    expect(r).toEqual({ accountsTotal: 6, accountsAvailable: 2, accountsPaused: 4 });
+  });
+
+  it('a null gateway snapshot (gateway unreachable) never throws — edge-throttle just reads as unknown/false', () => {
+    expect(() => computeAccountsAvailable([account('a1')], null, NOW)).not.toThrow();
   });
 });

@@ -191,6 +191,32 @@ export async function listAssignmentsForName(
   return rows.map(assignmentFromDb);
 }
 
+/**
+ * Active assignments to ANY of the given assignee identities across all plans in a
+ * workspace (EI-15910: the multi-identity counterpart to listAssignmentsForName).
+ * An assignment's `assignee_name` is sometimes a genuinely-adopted stable
+ * agent-NAME and sometimes a caller's raw ownerId (EI-2299 — a coordinator with no
+ * better handle on its target, e.g. coord:dispatch, assigns directly to that
+ * ownerId) — pass every identity axis the caller might be assigned under (its
+ * adopted name, if any, plus its raw ownerId) to see the union. Each plan item has
+ * exactly one active assignee_name, so results are naturally deduped.
+ */
+export async function listAssignmentsForNames(
+  workspaceId: string,
+  assigneeNames: string[],
+): Promise<PlanItemAssignment[]> {
+  if (assigneeNames.length === 0) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<AssignmentDbRow[]>`
+    SELECT workspace_id, harness_slug, plan_slug, item_id, assignee_name,
+           assigned_by_user, assigned_ts, released_ts, strategy, note, updated_at
+      FROM harness_shared.plan_item_assignments
+     WHERE workspace_id = ${workspaceId} AND assignee_name = ANY(${assigneeNames}::text[]) AND released_ts IS NULL
+     ORDER BY harness_slug, plan_slug, item_id
+  `;
+  return rows.map(assignmentFromDb);
+}
+
 /** All active assignments for a plan (the assignment side of the merged view). */
 export async function listAssignmentsForPlan(
   workspaceId: string,

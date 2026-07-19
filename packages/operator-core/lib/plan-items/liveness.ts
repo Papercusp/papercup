@@ -28,6 +28,7 @@ import { readPlanBySlug } from '../agent-tools/plans/source';
 import {
   getAssignment,
   listAssignmentsForName,
+  listAssignmentsForNames,
   listAssignmentsForPlan,
   type PlanItemAssignment,
 } from './assignments';
@@ -310,9 +311,9 @@ export interface MyItemState {
   disposition: PlanItemDisposition;
 }
 
-/** Active assignments to an agent-name across all plans, each with its live claim state. */
-export async function myItemsWithState(workspaceId: string, agentName: string): Promise<MyItemState[]> {
-  const assignments = await listAssignmentsForName(workspaceId, agentName);
+/** Pair each assignment with its live claim + merged disposition (shared by
+ *  myItemsWithState / myItemsWithStateForIdentities). */
+async function pairAssignmentsWithClaims(workspaceId: string, assignments: PlanItemAssignment[]): Promise<MyItemState[]> {
   const out: MyItemState[] = [];
   for (const a of assignments) {
     const claimRow = await getClaim(workspaceId, a.harnessSlug, a.planSlug, a.itemId);
@@ -320,4 +321,29 @@ export async function myItemsWithState(workspaceId: string, agentName: string): 
     out.push({ assignment: a, claim: liveClaim, disposition: disposition(a, liveClaim) });
   }
   return out;
+}
+
+/** Active assignments to an agent-name across all plans, each with its live claim state. */
+export async function myItemsWithState(workspaceId: string, agentName: string): Promise<MyItemState[]> {
+  const assignments = await listAssignmentsForName(workspaceId, agentName);
+  return pairAssignmentsWithClaims(workspaceId, assignments);
+}
+
+/**
+ * EI-15910: the identity-axis counterpart to myItemsWithState. An assignment's
+ * assignee_name is sometimes a stable adopted agent-NAME and sometimes a raw
+ * ownerId (EI-2299 — a coordinator with no better handle on its target, e.g.
+ * coord:dispatch, assigns directly to that ownerId); claimPlanItem/disposition()
+ * already match on either axis, so a caller reading "my items" must too, or an
+ * item assigned straight to its own ownerId is invisible until it happens to
+ * adopt that exact string as a "name". Pass every identity the caller might be
+ * assigned under (its adopted name, if any, plus its raw ownerId) to see the
+ * union — never throws for a caller with no adopted name (an empty/one-identity
+ * list is a normal, valid case, mirroring claim's graceful degrade).
+ */
+export async function myItemsWithStateForIdentities(workspaceId: string, identities: string[]): Promise<MyItemState[]> {
+  const uniq = [...new Set(identities.map((n) => n.trim()).filter((n) => n.length > 0))];
+  if (uniq.length === 0) return [];
+  const assignments = await listAssignmentsForNames(workspaceId, uniq);
+  return pairAssignmentsWithClaims(workspaceId, assignments);
 }

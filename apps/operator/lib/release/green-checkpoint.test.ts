@@ -29,6 +29,7 @@ import {
   decideFlakeAbsorption,
   attemptFlakeAbsorption,
   ISOLATION_MAX_FILES,
+  ISOLATION_RETRY_MAX,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
   armSelfWatchdog,

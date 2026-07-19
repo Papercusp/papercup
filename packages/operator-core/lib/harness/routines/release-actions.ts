@@ -295,6 +295,10 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   // full output directly, instead of only the de-noised failing-test names.
   if (v.runId) detail.runId = v.runId;
   if (v.logPath) detail.logPath = v.logPath;
+  // isolation-retry-resilience-2026-07-19 (EI-15849): persist the absorption verdict note
+  // even on a red (not absorbed) — see CheckpointVerdict.isolationNote for why this closes
+  // a real diagnosability gap.
+  if (v.isolationNote) detail.isolationNote = v.isolationNote.slice(0, 2000);
   return detail;
 }
 

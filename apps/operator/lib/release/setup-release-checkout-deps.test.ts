@@ -793,3 +793,61 @@ describe('assert_checkout_landed (WI-5110)', () => {
     }
   });
 });
+
+/**
+ * WI-5366: the worktree-refresh clean step only ever ran plain `git clean -fdq
+ * -e node_modules` — which does NOT remove gitignored files (that requires `-x`).
+ * Verified live in the running papercusp-checkpoint tree: package-local
+ * `.vitest-tmp/` and `.papercusp-tmp/node-compile-cache/` dirs dated 17+ days
+ * and untold checkouts stale, because they are ignored (not merely untracked)
+ * and `-x` was never passed. A throwaway, correctness-critical tree (this
+ * script's own header) must never let a stale gitignored artifact from a PRIOR
+ * checkout at a DIFFERENT commit survive into the next one — the same class of
+ * risk `--node-modules force` (over `auto`) already exists to close for
+ * node_modules specifically. This locks `-x` in so the class can't regress,
+ * while confirming node_modules itself is still spared (the one directory this
+ * tree deliberately preserves + refreshes via its own hardlink-copy step).
+ */
+describe('worktree clean step removes gitignored debris (WI-5366)', () => {
+  it('a gitignored file survives plain `clean -fdq` but is removed by `clean -fdqx`, and `-e node_modules` still spares node_modules', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'clean-x-')));
+    try {
+      const git = (...args: string[]) => {
+        const r = spawnSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+          encoding: 'utf8',
+        });
+        if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+        return r.stdout.trim();
+      };
+      git('init', '-q');
+      writeFileSync(join(dir, '.gitignore'), '.vitest-tmp/\n');
+      writeFileSync(join(dir, 'f.txt'), 'v1');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c1');
+
+      // Simulate what a prior checkpoint run leaves behind: a gitignored cache
+      // dir, plus node_modules (which the real script preserves + refreshes
+      // itself — clean must never touch it).
+      mkdirSync(join(dir, '.vitest-tmp'), { recursive: true });
+      writeFileSync(join(dir, '.vitest-tmp', 'stale-cache-entry'), 'stale');
+      mkdirSync(join(dir, 'node_modules'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules', 'marker'), 'keep-me');
+
+      // Old behavior (no -x): the gitignored dir survives.
+      spawnSync('git', ['-C', dir, 'clean', '-fdq', '-e', 'node_modules']);
+      expect(existsSync(join(dir, '.vitest-tmp', 'stale-cache-entry'))).toBe(true);
+
+      // Shipped behavior (-x): the gitignored dir is gone, node_modules is untouched.
+      spawnSync('git', ['-C', dir, 'clean', '-fdqx', '-e', 'node_modules']);
+      expect(existsSync(join(dir, '.vitest-tmp'))).toBe(false);
+      expect(existsSync(join(dir, 'node_modules', 'marker'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the shipped script invokes `git clean` with `-x` (not just `-fdq`)', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    expect(script).toMatch(/git\s+-C\s+"\$RELEASE_ROOT"\s+clean\s+-fdqx\s+-e\s+node_modules/);
+  });
+});

@@ -1128,8 +1128,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     });
     const real = await wi.createWorkItem({ kind: 'feature', title: 'free feature', harness: 'papercup', createdBy: 'agA' });
 
-    const rawRow = await db.sql`SELECT feature_id, item_kind, payload, payload ->> '_claimHold' AS hold_txt FROM harness_shared.harness_features_consolidated WHERE feature_id = ${held.id}`;
+    const rawRow = await db.sql`SELECT feature_id, item_kind, payload, pg_typeof(payload) AS ptype, payload::text AS ptext, payload ->> '_claimHold' AS hold_txt FROM harness_shared.work_items WHERE feature_id = ${held.id}`;
     console.log('WI5343-DEBUG raw held row:', JSON.stringify(rawRow));
+    const rawRow2 = await db.sql`SELECT feature_id, item_kind, payload, pg_typeof(payload) AS ptype, payload::text AS ptext, payload ->> '_claimHold' AS hold_txt FROM harness_shared.harness_features_consolidated WHERE feature_id = ${held.id}`;
+    console.log('WI5343-DEBUG raw held row via HFC view:', JSON.stringify(rawRow2));
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     console.log('WI5343-DEBUG list ids:', JSON.stringify(list.map((w) => w.id)));
     expect(list.some((w) => w.id === held.id)).toBe(false);

@@ -639,6 +639,39 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
   });
 }
 
+/**
+ * "Available" for the tokens/starvation panel means CAN ACTUALLY SERVE NOW — mirroring
+ * `accountStatus()`'s `available` (WI-3310), not merely "not rate-paused". A weekly-usage-walled
+ * account (`accountFull`'s 5h/7d `effectiveDrainUtil` check) can read pause-CLEAR — its bounded
+ * pause lapsed, or a pause was never set — while still being unable to serve a single request
+ * until its usage window resets. Counting such an account as "idle healthy unused" is exactly
+ * what fabricated a false "artificial ceiling" admission-starvation escalation to the owner on
+ * 2026-07-18 (EI-15875): 5 accounts sitting at util7d 0.97-0.99 read as spare capacity, while the
+ * queue was actually starved by a genuine weekly usage wall — raising the concurrency ceiling
+ * (the escalation's proposed fix) would only have admitted more requests that then failed over
+ * across already-walled accounts.
+ *
+ * `accountFull` folds in BOTH the rate-limit pause and the 5h/7d usage-wall (its own JSDoc: "Is
+ * this account effectively FULL for fresh load"). A live Cloudflare/per-IP edge-throttle cooldown
+ * is a THIRD, separate non-servable state the gateway reports out-of-band (never persisted on
+ * `a.rate`, only visible via `gatewayStatsRaw.edgeThrottleByAccount`), so it is excluded here too.
+ * Pure — same `splitAutoEligibleStuck` / `tallyPlans` testable-helper shape as this file's other
+ * collectors' decision logic.
+ */
+export function computeAccountsAvailable(
+  accounts: readonly ClaudeAccount[],
+  gatewayStatsRaw: RawGatewayStats | null,
+  now: number,
+): { accountsTotal: number; accountsAvailable: number; accountsPaused: number } {
+  const accountsTotal = accounts.length;
+  const accountsAvailable = accounts.filter((a) => {
+    if (accountFull(a, now)) return false;
+    if (projectLiveEdgeThrottle(a.id, gatewayStatsRaw).edgeThrottled) return false;
+    return true;
+  }).length;
+  return { accountsTotal, accountsAvailable, accountsPaused: accountsTotal - accountsAvailable };
+}
+
 async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>> {
   return panelSafe<TokensHealth>('tokens', async () => {
     const { buildFleetRateStatus } = await import('../fleet-rate-status');
