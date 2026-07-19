@@ -96,26 +96,29 @@ describe('EI-14500 — ownership predicate behavior (claims rig-owned, spares fo
 
   it('the real gate_owns_rig_pid claims a cwd under the gate $WORK and spares one outside it', () => {
     if (process.platform !== 'linux' || !existsSync('/proc/self/cwd')) return; // needs procfs
-    // dot-free temp dirs so $WORK is a literal-safe grep -E operand.
-    const work = mkdtempSync(join(tmpdir(), 'reaprig-'));
-    const other = mkdtempSync(join(tmpdir(), 'reapforeign-'));
-    dirs.push(work, other);
+    const parent = mkdtempSync(join(tmpdir(), 'reaptest-'));
+    dirs.push(parent);
 
-    // Source the REAL gate_owns_rig_pid from the script (not a copy). Each check runs in
-    // a subshell that cd's into the target dir and evaluates the predicate on its OWN pid
+    // Source the REAL gate_owns_rig_pid from the script (not a copy). Each check runs in a
+    // subshell that cd's into the target dir and evaluates the predicate on its OWN pid
     // ($BASHPID) — a same-process /proc read, so it is portable and touches nothing else.
+    // WORK/OTHER are minted INSIDE the harness (dot-free, so $WORK is a literal-safe grep
+    // operand) — their values never enter any argv, so the predicate's cmdline branch,
+    // which reads the parent bash's argv, cannot spuriously match on them.
     const harness = `
 set -uo pipefail
 log(){ :; }
-WORK="$1"; OTHER="$2"; SCRIPT="$3"
-export WORK
+SCRIPT="$1"; PARENT="$2"
 eval "$(sed -n '/^gate_owns_rig_pid() {/,/^}/p' "$SCRIPT")"
+WORK="$(mktemp -d "$PARENT/reaprigXXXXXX")"
+OTHER="$(mktemp -d "$PARENT/reapotherXXXXXX")"
+export WORK
 mkdir -p "$WORK/side" "$OTHER/side"
 ( cd "$WORK/side"  && gate_owns_rig_pid "$BASHPID" ) && ov=owned || ov=foreign
 ( cd "$OTHER/side" && gate_owns_rig_pid "$BASHPID" ) && fv=owned || fv=foreign
 echo "OWNED=$ov FOREIGN=$fv"
 `;
-    const out = execFileSync('bash', ['-c', harness, 'harness', work, other, SCRIPT], {
+    const out = execFileSync('bash', ['-c', harness, 'harness', SCRIPT, parent], {
       encoding: 'utf8',
       timeout: 20_000,
     }).trim();

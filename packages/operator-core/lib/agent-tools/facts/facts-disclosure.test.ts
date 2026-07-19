@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { truncationField } from './assert';
 import { projectFact, FACTS_LIST_EXCERPT_CHARS, FACTS_LIST_DEFAULT_LIMIT } from './list';
-import type { AgentFact } from '../../agent-facts/store';
+import { clampFactBody, type AgentFact } from '../../agent-facts/store';
 
 const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   scope: 'harness',

@@ -128,17 +128,38 @@ export function scanTextForSecrets(path: string, content: string): SecretFinding
   return findings;
 }
 
+/** Files that legitimately contain credential SHAPES as fixtures — the secrets
+ *  scanner's OWN test suite. They are real-shaped BY DESIGN, so scanning them
+ *  self-wedges the publish plane: the guard scans EVERY blob in (baseline,head],
+ *  incl. every historical version of a file, so the instant such a file is
+ *  edited its literal-fixture blob enters the range and can NEVER leave it
+ *  (re-assembling the fixtures in a later commit does not remove the earlier
+ *  blob). Exempt by EXACT repo path — keep this set MINIMAL and never add
+ *  product code. (P-402 canonical-stall follow-on, 2026-07-19.) */
+const FIXTURE_FILES: ReadonlySet<string> = new Set([
+  'packages/operator-core/lib/sync/pot-git/secrets-guard.test.ts',
+]);
+
+/** True if `path` is a designated credential-fixture file exempt from the scan. */
+export function isFixtureFile(path: string): boolean {
+  return FIXTURE_FILES.has(path);
+}
+
 /** Scan a set of changed files. `path` is used only for reporting + the .env
- *  heuristic; pass the NEW content of each changed/added file. */
+ *  heuristic; pass the NEW content of each changed/added file. Designated
+ *  fixture files (isFixtureFile) are skipped — see FIXTURE_FILES. */
 export function scanForSecrets(files: { path: string; content: string }[]): SecretFinding[] {
   const out: SecretFinding[] = [];
-  for (const f of files) out.push(...scanTextForSecrets(f.path, f.content));
+  for (const f of files) {
+    if (isFixtureFile(f.path)) continue;
+    out.push(...scanTextForSecrets(f.path, f.content));
+  }
   return out;
 }
 
 /** True iff any changed file carries a secret — the publish path's fast gate. */
 export function hasSecrets(files: { path: string; content: string }[]): boolean {
-  return files.some((f) => scanTextForSecrets(f.path, f.content).length > 0);
+  return files.some((f) => !isFixtureFile(f.path) && scanTextForSecrets(f.path, f.content).length > 0);
 }
 
 /** A one-line operator message for a set of findings (secrets already masked). */

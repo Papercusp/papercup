@@ -59,6 +59,12 @@ export interface CarryProvenanceStamp {
   refs?: TurnRefVerdict[];
   /** The system's classification of the turn this write happened during. */
   writtenDuring?: CurrentTurnStamp;
+  /** P-005 (cold-carry-system-hardening-2026-07-19): count of hand-written
+   *  [owner:…] tags auto-verified because THIS write happened during an
+   *  owner-typed interactive turn — the platform just witnessed the owner
+   *  speaking, so the tag is evidence-backed rather than asserted. The
+   *  `writtenDuring.ref` is the ready-to-copy [turn:…] anchor for them. */
+  ownerTagsAutoVerified?: number;
 }
 
 /**
@@ -126,12 +132,29 @@ export async function stampCarrySurfaceProvenance(
     [verified, writtenDuring] = value;
   }
 
+  // P-005 (cold-carry-system-hardening-2026-07-19): a hand-written [owner:…] tag is
+  // unproven in general (P-014) — but when THIS write happens during an owner-typed
+  // interactive turn, the platform has just witnessed the owner speaking: auto-verify
+  // those tags instead of flagging them (writtenDuring.ref is their ready-to-copy
+  // anchor). Nudging an agent for tagging a directive the owner gave seconds ago
+  // teaches it to ignore the lint — the observed 2026-07-19 failure. Writes during
+  // machine-injected turns keep the full nudge; owner-attribution phrases and bare
+  // gate imperatives are never auto-cleared this way.
+  let ownerTagsAutoVerified = 0;
+  let effectiveLint = lint;
+  if (writtenDuring?.verdict === 'owner-typed' && lint) {
+    const kept = lint.matches.filter((m) => m.kind !== 'manual-owner-tag');
+    ownerTagsAutoVerified = lint.matches.length - kept.length;
+    effectiveLint = kept.length > 0 ? { ...lint, matches: kept } : undefined;
+  }
+
   const stamp: CarryProvenanceStamp = {};
-  const mergedLint = mergeQuoteMismatchesIntoLint(lint, verified);
+  const mergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, verified);
   if (mergedLint) stamp.lint = mergedLint;
   if (slotLint) stamp.slotLint = slotLint;
   if (verified.length) stamp.refs = verified;
   if (writtenDuring) stamp.writtenDuring = writtenDuring;
+  if (ownerTagsAutoVerified > 0) stamp.ownerTagsAutoVerified = ownerTagsAutoVerified;
   return Object.keys(stamp).length ? stamp : undefined;
 }
 
@@ -146,6 +169,8 @@ export interface CarryProvenanceFields {
   turnProvenance?: {
     refs?: TurnRefVerdict[];
     writtenDuring?: CurrentTurnStamp;
+    /** P-005: [owner:…] tags auto-verified by the owner-typed current turn. */
+    ownerTagsAutoVerified?: number;
   };
 }
 
