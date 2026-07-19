@@ -36,6 +36,7 @@ import {
   readResource,
   parseRequestContext,
   InvalidRequestContextError,
+  lookup as lookupToolDefinitionByName,
   lookupByMcpName,
   resolveMcpName,
   listMcpProjections,
@@ -1506,7 +1507,12 @@ const handler = createMcpHandler(
               // carries only the CONVERTED schema, so the entity-ref sites are
               // read back off the tool's live args schema by name; a listing with
               // no resolvable def (a plugin/pinned entry) simply gets no overlay.
-              const def = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : null;
+              // Entity-ref markers are WeakMap-keyed on the RAW Zod args-schema object
+              // identity (entity-ref.ts), so this needs the raw `ToolDefinition.args`
+              // from the legacy tool registry — `ProjectedTool` (lookupByMcpName) only
+              // carries the already-converted JSON `inputSchema`, a different object
+              // that was never entityRef()-marked, so it can never match here.
+              const def = typeof tt.name === 'string' ? lookupToolDefinitionByName(tt.name) : null;
               if (def?.args) await applyEntityRefEnums(def.args, advertised);
               out.inputSchema = sanitizeToolSchema(advertised);
             }

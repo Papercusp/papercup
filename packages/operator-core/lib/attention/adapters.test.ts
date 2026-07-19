@@ -767,6 +767,18 @@ describe('isOperationalEscalation — operational status vs a genuine owner ask 
     expect(isOperationalEscalation('compaction-watchdog', false)).toBe(true);
   });
 
+  it('EI-16170: inference-gateway, scout-outcome-refresh-sweep, rubric-staleness-watchdog, scorecard-emission-pulse (named AUTOMATED_INFRA_EMITTERs) are operational', () => {
+    // Same shape as the EI-6789/EI-6782 pair above — each is a named, option-less
+    // status advisory from a system watchdog/sweep, verified live against the
+    // papercusp-workspace open backlog to have never been in this set (so every
+    // firing inflated the human-attention `aging` count instead of being demoted
+    // to the alert tier and reconciled after TTL).
+    expect(isOperationalEscalation('inference-gateway', false)).toBe(true);
+    expect(isOperationalEscalation('scout-outcome-refresh-sweep', false)).toBe(true);
+    expect(isOperationalEscalation('rubric-staleness-watchdog', false)).toBe(true);
+    expect(isOperationalEscalation('scorecard-emission-pulse', false)).toBe(true);
+  });
+
   it('an escalation WITH options is a genuine ask — never operational, even from system', () => {
     expect(isOperationalEscalation('system', true)).toBe(false);
     expect(isOperationalEscalation('green-checkpoint', true)).toBe(false);

@@ -12,11 +12,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => {
-  const state: { txCalls: { strings: readonly string[]; values: unknown[] }[] } = { txCalls: [] };
+  const state: {
+    txCalls: { strings: readonly string[]; values: unknown[] }[];
+    /** EI-16183 regression override: force the next UPDATE to match 0 rows. */
+    forceNoMatch: boolean;
+  } = { txCalls: [], forceNoMatch: false };
   // A captured `tx` tagged template: tx`...${v}...` → tx(strings, ...values).
+  // EI-16183: the handler now RETURNS the updated row and treats a 0-row match as
+  // plan_not_found (rather than a silently-successful no-op) — echo the plan_slug
+  // param (always the last value bound) back as a matched row so the existing
+  // "found" assertions below still exercise the success path, unless a test opts
+  // into forceNoMatch to exercise the not-found path.
   const tx = (strings: readonly string[], ...values: unknown[]) => {
     state.txCalls.push({ strings, values });
-    return Promise.resolve([]);
+    if (state.forceNoMatch) return Promise.resolve([]);
+    return Promise.resolve([{ plan_slug: values[values.length - 1] }]);
   };
   const withWorkspace = async (_wsId: string, fn: (t: unknown) => Promise<unknown>) => fn(tx);
   return { state, withWorkspace };
@@ -25,6 +35,14 @@ const H = vi.hoisted(() => {
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
   return { ...actual, withWorkspace: H.withWorkspace };
+});
+
+// EI-16183: the handler resolves its workspace via activeWorkspaceId() (process-global
+// — request-ALS → PAPERCUSP_WORKSPACE_ID → registry default), uncontrolled here. Pin it
+// deterministically rather than depending on the real machine's workspace-registry file.
+vi.mock('../../../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../workspace-registry')>();
+  return { ...actual, activeWorkspaceId: () => actual.DEFAULT_WORKSPACE_ID };
 });
 
 import tool from '../set-priority';
@@ -95,5 +113,30 @@ describe('plans:set-priority', () => {
   it('refuses when neither an arg nor a ctx harness scope is present', async () => {
     await expect(run({ slug: 'p', priority: 1 })).rejects.toThrow();
     expect(H.state.txCalls).toHaveLength(0);
+  });
+
+  it('EI-16183 regression: a 0-row UPDATE (e.g. wrong workspace) is reported as plan_not_found, never a silent ok:true no-op', async () => {
+    const withWorkspace = (await import('@papercusp/db-org')).withWorkspace as (
+      wsId: string,
+      fn: (t: unknown) => Promise<unknown>,
+    ) => Promise<unknown>;
+    const zeroRowTx = (_strings: readonly string[], ..._values: unknown[]) => Promise.resolve([]);
+    const spy = vi
+      .spyOn({ withWorkspace }, 'withWorkspace')
+      .mockImplementation(async (_wsId: string, fn: (t: unknown) => Promise<unknown>) => fn(zeroRowTx));
+    void spy; // documents intent; the real assertion is against the module mock below
+    const dbOrg = await import('@papercusp/db-org');
+    const orig = dbOrg.withWorkspace;
+    (dbOrg as { withWorkspace: typeof orig }).withWorkspace = async (
+      _wsId: string,
+      fn: (t: unknown) => Promise<unknown>,
+    ) => fn(zeroRowTx);
+    try {
+      const res = await run({ slug: 'ghost-plan', priority: 1, harness: 'myharn' });
+      expect(res.data.results[0]).toMatchObject({ ok: false, slug: 'ghost-plan', error: 'plan_not_found' });
+      expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    } finally {
+      (dbOrg as { withWorkspace: typeof orig }).withWorkspace = orig;
+    }
   });
 });

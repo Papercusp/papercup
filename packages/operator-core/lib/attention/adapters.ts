@@ -163,11 +163,27 @@ export interface CoordEscalationInput {
  *  — the health panel's full unbounded fold counts every one of these zombie rows; the
  *  paginated read only shows whatever's in its recent-events window. Both are neither a
  *  human decision-with-a-choice (`options` is always null on these) nor a real agent ask
- *  — they're status broadcasts from a named coordination/lifecycle mechanism. */
+ *  — they're status broadcasts from a named coordination/lifecycle mechanism.
+ *
+ *  EI-16170: `inference-gateway` (credential-health dead-account alerts,
+ *  inference-gateway/launch.ts), `scout-outcome-refresh-sweep`,
+ *  `rubric-staleness-watchdog`, and `scorecard-emission-pulse` are the same
+ *  shape — each is a named, option-less `system · <name>`/static-client
+ *  identity emitting a redundant status advisory, verified via a live-DB
+ *  sample of the papercusp-workspace open backlog: none had ever appeared in
+ *  this set, so every one of their firings counted toward the human-attention
+ *  `aging` figure (contributing to the "326 aging escalations" OverwatchBrief
+ *  reading investigated under EI-16170) instead of being demoted to the alert
+ *  tier and becoming eligible for the 48h TTL auto-reconcile sweep
+ *  (reconcile-escalations.ts) like their siblings above. */
 const AUTOMATED_INFRA_EMITTERS = new Set<string>([
   'green-checkpoint',
   'steering-lease',
   'compaction-watchdog',
+  'inference-gateway',
+  'scout-outcome-refresh-sweep',
+  'rubric-staleness-watchdog',
+  'scorecard-emission-pulse',
 ]);
 
 export function isOperationalEscalation(from: string | null | undefined, hasOptions: boolean): boolean {

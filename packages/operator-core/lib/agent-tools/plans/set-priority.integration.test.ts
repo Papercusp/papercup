@@ -20,6 +20,14 @@ vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
 });
+// EI-16183: the handler resolves its workspace via activeWorkspaceId() (process-global —
+// request-ALS → PAPERCUSP_WORKSPACE_ID → registry default), uncontrolled here. Pin it to
+// 'default' to match the seeded rows below, deterministically (not the real machine's
+// workspace-registry file).
+vi.mock('../../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../workspace-registry')>();
+  return { ...actual, activeWorkspaceId: () => 'default' };
+});
 
 const setPriorityTool = (await import('./set-priority')).default;
 const call = (slug: string, priority: number | null, harness = 'web') =>

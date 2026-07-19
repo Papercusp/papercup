@@ -175,6 +175,38 @@ describe('listEscalationsPaginated — bounded read (EI-1548)', () => {
     const r = await listEscalationsPaginated({ status: 'open', maxRecords: 5 });
     expect(r.escalations.map((e) => e.msg_id)).toEqual(['open1']);
     expect(r.total).toBe(1); // total matches what's actually returned — never a misleading nonzero-with-empty-array
+    expect(r.trueOpenTotal).toBe(1); // and the unbounded true count agrees here (only 1 open exists)
+  });
+
+  it('EI-16170: `total` is page-bounded, not the backlog size — `trueOpenTotal` gives the real unbounded open count', async () => {
+    // Reproduces the false-alarm shape: a small maxRecords window's `total`
+    // (== escalations.length) looks like "how many are open" but is really
+    // just "how many fit in this window". A maxRecords:10 open-scan once read
+    // `total:2` and was mistaken for "only 2 escalations open" when the real
+    // backlog was 279+ (EI-16170). `trueOpenTotal` must reflect the full,
+    // unbounded open count regardless of maxRecords.
+    configureCoordLog(new InMemoryCoordLog());
+    for (let i = 1; i <= 8; i++) {
+      await coordLog.putEvent('escalations', `many${i}`, {
+        ts: `2026-01-01T00:0${i}:00.000Z`, msg_id: `many${i}`, from: 'A', to: ['human'],
+        kind: 'escalation', summary: `open ${i}`, resolved: null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+
+    const r = await listEscalationsPaginated({ status: 'open', maxRecords: 3 });
+    expect(r.escalations).toHaveLength(3); // page bounded to maxRecords
+    expect(r.total).toBe(3); // total is just this page's size — NOT ground truth
+    expect(r.truncated).toBe(true);
+    expect(r.trueOpenTotal).toBe(8); // the real, unbounded backlog size
+
+    // status:'resolved' (and the no-status default) never claim an unbounded
+    // total — computing one isn't cheap for that surface, so the field stays
+    // absent rather than silently lying with a stale/partial number.
+    const resolved = await listEscalationsPaginated({ status: 'resolved', maxRecords: 3 });
+    expect(resolved.trueOpenTotal).toBeUndefined();
+    const noStatus = await listEscalationsPaginated({ maxRecords: 3 });
+    expect(noStatus.trueOpenTotal).toBeUndefined();
   });
 
   it('WI-4181: an old RESOLVED escalation whose resolution was evicted from the resolves window does not re-materialize as open (the zombie that stormed the infra-liveness recovery broadcast)', async () => {
