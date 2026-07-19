@@ -545,6 +545,8 @@ export async function honorSpawnRequestFromProjection(
   const emitReceipt = deps.emitReceipt ?? emitP2pReceipt;
   const probeAgentRuntime = deps.probeAgentRuntime ?? defaultProbeAgentRuntime;
   const resolveHonorAccount = deps.resolveHonorAccount ?? defaultResolveHonorAccount;
+  const isTrustedUser = deps.isTrustedUser ?? defaultIsTrustedUser;
+  const isPotMember = deps.isPotMember ?? defaultIsPotMember;
   const nowMs = deps.nowMs ?? Date.now;
 
   const record = parseWorkOfferRecordJson(args.row.record_json);
@@ -569,11 +571,24 @@ export async function honorSpawnRequestFromProjection(
   );
   const slots = allotments.map(slotFromAllotment).filter((s): s is SeatSlot => s != null);
 
+  // P-003: pot-scoped candidates. A spawn_request names only a targetOfferId,
+  // never which pot the matching seat-offer was donated to — pull this host's
+  // whole allotment board (workspace-bounded, small) and offer every active
+  // pot-scoped agent_slot row as a Gate-2 match candidate.
+  const wholeBoard = await listAllotments({ workspaceId: args.workspaceId }, args.sql as OrgSql | undefined);
+  const potSlots: PotSeatCandidate[] = [];
+  for (const a of wholeBoard) {
+    if (a.potSlug == null || a.audience == null) continue;
+    const slot = slotFromAllotment(a);
+    if (slot) potSlots.push({ slot, potSlug: a.potSlug, audience: a.audience });
+  }
+
   const evaluated = evaluateSpawnRequestTarget({
     record,
     selfGithubUserId: actor.githubUserId,
     selfDevicePubkey: devicePubkey,
     slots,
+    potSlots,
     nowMs: nowMs(),
     honorWindowMs: deps.honorWindowMs,
   });
@@ -612,7 +627,32 @@ export async function honorSpawnRequestFromProjection(
     if (evaluated.disposition === null) return { outcome: 'skipped', reason: evaluated.code };
     return refuse(evaluated.code, evaluated.detail, evaluated.disposition);
   }
-  const { slot, payload } = evaluated;
+  const { slot, payload, potMatch } = evaluated;
+
+  // Gate 2.5/3.5 (P-003): the audience gate — ONLY when Gate 2 matched a
+  // POT-scoped offer (potMatch set); a fleet-scoped match carries no audience
+  // concept (D-002) and skips straight through. The subject is the REQUESTING
+  // fleet's owner — the spawn_request's publisher (`publisher`, already
+  // resolved above), never the honoring host's own identity. Fail-closed +
+  // LOUD refusal so a trust revocation takes effect on the very next claim
+  // with no offer republish (D-002/D-003).
+  if (potMatch) {
+    const passes =
+      potMatch.audience === 'trusted-members'
+        ? await isTrustedUser(args.workspaceId, publisher)
+        : await isPotMember(args.workspaceId, potMatch.potSlug, publisher);
+    if (!passes) {
+      return refuse(
+        'audience_refused',
+        `requester (github ${publisher}) does not satisfy pot '${potMatch.potSlug}'s audience ` +
+          `'${potMatch.audience}' on this host — ` +
+          (potMatch.audience === 'trusted-members'
+            ? 'not on this host\'s local trust list.'
+            : 'not a member of the pot.'),
+        'refused:audience_refused',
+      );
+    }
+  }
 
   // Gate 4: cap pre-check (consumeSeatAtBoot re-enforces atomically at boot).
   const availability = await availabilityForFleet(

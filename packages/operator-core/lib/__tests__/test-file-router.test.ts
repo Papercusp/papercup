@@ -31,6 +31,24 @@ describe('test-files router', () => {
   it('rejects a missing request before running Vitest', () => {
     expect(() => discoverVitestRoute('libs/generic/tooldef/src/no-such.test.ts')).toThrow(/does not exist/);
   });
+
+  // EI-14278: a config-less `libs/generic/*` submodule (its own package.json `"test": "vitest run"`,
+  // zero explicit vitest config — the borrowable-libs shape) must route to the package cwd config-less
+  // (config: null) instead of throwing `no Vitest config owns …`. Without this, ~25 real generic libs
+  // (plan-parser, memory, result-encoding, …) are unroutable via `npm run test:file` and each agent
+  // rediscovers the `cd libs/generic/<name> && npm test` escape hatch.
+  it('routes a config-less libs/generic/* package to its own cwd with config: null', () => {
+    const route = discoverVitestRoute('libs/generic/plan-parser/src/index.test.ts');
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/plan-parser'));
+    expect(route.config).toBeNull();
+    expect(route.requested).toBe('src/index.test.ts');
+  });
+
+  it('still prefers an explicit vitest.config.* over the config-less package fallback', () => {
+    // tooldef HAS its own config — the fallback must not shadow it.
+    const route = discoverVitestRoute('libs/generic/tooldef/src/strict-args.test.ts');
+    expect(route.config).toBe('vitest.config.ts');
+  });
 });
 
 // P-009 / WI-4534: the false-green refusal. A raw `vitest run <paths>` reports success while
