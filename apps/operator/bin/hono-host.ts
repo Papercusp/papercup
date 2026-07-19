@@ -368,6 +368,13 @@ function startRequestServers(): void {
           server: server as { close?: (cb?: () => void) => void },
           skipSubstrateTeardown: true,
           hardExitOnRecycle: true,
+          // EI-16447: attribute the shared hard-exit log line to the ACTUAL
+          // trigger — this is the only call site that is genuinely the memory
+          // watchdog; the SIGTERM/lag-self-restart paths below no longer borrow
+          // this same wording (WI-5434 chased a phantom RSS leak for hours
+          // because a SIGTERM-triggered recycle logged as "a memory-watchdog
+          // recycle" too).
+          reason: `a memory-watchdog RSS recycle (${rssMb}MB >= ${limitMb}MB limit)`,
         });
       },
     });
