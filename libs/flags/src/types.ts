@@ -1831,6 +1831,18 @@ export const FLAGS = {
   // with this FLAGS entry. OFF ⇒ pure no-op kill-switch — the tick returns
   // immediately, byte-identical to before this flag existed.
   FEDERATION_DRAIN_RECONCILE: "papercusp-federation-drain-reconcile",
+  // precompute-derived-sync-reads-2026-07-19 (WI-5460): serve the three slow
+  // derived sync reads (storage.usage, plans.lint, learning.soakReport) from the
+  // precomputed harness_shared.derived_read_snapshots table instead of computing
+  // them synchronously on the user-facing read path (measured 20.0s / 13.8s /
+  // 27.3s respectively, against 3-20ms for pure DB reads).
+  // DEFAULT ON — this is the fix, and it is the only correct behavior on the
+  // shipped desktop target (embedded PG, no systemd/journalctl). OFF ⇒ each
+  // resolver falls back to computing inline, i.e. the exact pre-fix behavior:
+  // a live escape hatch if a snapshot ever reads empty in an environment the
+  // precompute routine has not run in yet. NOT dark — see the OFF path in
+  // lib/derived-reads/registry.ts (readDerivedSnapshot's `computeFallback`).
+  PRECOMPUTE_DERIVED_READS: "papercusp-precompute-derived-reads",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

@@ -8,7 +8,7 @@
  * no-false-positive corpus behavior is locked separately in check-mdx-guard.test.ts.)
  */
 import { describe, it, expect } from 'vitest';
-import { mdxDetector, smartQuotesDetector, DEFAULT_CONTENT_DETECTORS } from './registry';
+import { mdxDetector, smartQuotesDetector, shellSyntaxDetector, DEFAULT_CONTENT_DETECTORS } from './registry';
 
 describe('mdxDetector', () => {
   it('matches ONLY .mdx under the astro-built docs set (mirrors check-mdx.mjs scope)', () => {
@@ -60,8 +60,33 @@ describe('smartQuotesDetector', () => {
   });
 });
 
+describe('shellSyntaxDetector', () => {
+  it('matches tracked .sh, excluding retired/vendored/build trees', () => {
+    expect(shellSyntaxDetector.matches('papercusp-desktop/bin/build-windows-on-vm.sh')).toBe(true);
+    expect(shellSyntaxDetector.matches('scripts/pc-heavy.sh')).toBe(true);
+    expect(shellSyntaxDetector.matches('README.md')).toBe(false);
+    expect(shellSyntaxDetector.matches('_retired/old/a.sh')).toBe(false);
+    expect(shellSyntaxDetector.matches('packages/x/node_modules/pkg/a.sh')).toBe(false);
+    expect(shellSyntaxDetector.matches('packages/x/dist/a.sh')).toBe(false);
+  });
+
+  it('detect flags a syntactically broken script, leaves a clean one null', () => {
+    const bad = shellSyntaxDetector.detect('a.sh', 'echo hi\nif true; then\n  echo ok\n');
+    expect(bad).toMatch(/bash -n syntax error/i);
+    expect(shellSyntaxDetector.detect('a.sh', 'echo hi\nif true; then\n  echo ok\nfi\n')).toBeNull();
+  });
+
+  it('dispatches to the content-fixer role', () => {
+    expect(shellSyntaxDetector.fixerRole).toBe('content-fixer');
+  });
+
+  it('has no autoFix — a corrupted script always needs the LLM fixer to pick the right block', () => {
+    expect(shellSyntaxDetector.autoFix).toBeUndefined();
+  });
+});
+
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships both seeded detectors, keyed for the guard + escalation', () => {
-    expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual(['mdx', 'smart-quotes']);
+  it('ships all three seeded detectors, keyed for the guard + escalation', () => {
+    expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual(['mdx', 'smart-quotes', 'shell-syntax']);
   });
 });

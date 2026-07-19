@@ -13,6 +13,7 @@
  */
 import { findMdxCompileError, autoFixMdxAngles } from './mdx';
 import { findCodePositionCurlyQuotes, curlyLabel } from './smart-quotes';
+import { findShellSyntaxError } from './shell-syntax';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -90,8 +91,31 @@ export const smartQuotesDetector: ContentDetector = {
 };
 
 /**
+ * The shell syntax detector — tracked `.sh` scripts (EI-13192). A real `bash -n`
+ * parse, not a regex heuristic — catches a corrupted/truncated shell script (a
+ * concurrent shared-tree edit interleave duplicated ~475 lines of one and
+ * git-sync committed it before anyone ran `bash -n` by hand) BEFORE it ever
+ * reaches `staging`, the same way the mdx/smart-quotes detectors already catch
+ * their own hard-parse-failure classes. No deterministic `autoFix` — a
+ * corrupted script needs a human/LLM to decide which duplicated block is
+ * correct, so this always quarantines + dispatches the content-fixer.
+ */
+export const shellSyntaxDetector: ContentDetector = {
+  key: 'shell-syntax',
+  glob: '**/*.sh',
+  matches: (f) => f.endsWith('.sh') && !isExcludedPath(f),
+  detect: (file, text) => {
+    const hit = findShellSyntaxError(text);
+    if (!hit) return null;
+    const at = hit.line != null ? `line ${hit.line}` : 'unknown position';
+    return `bash -n syntax error at ${at}: ${hit.reason}`;
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
  * The default registry the git-sync content guard runs with. Extend by adding an
  * entry (a new `{ key, glob, matches, detect, fixerRole }`); the guard + escalation
  * + fixer dispatch pick it up with no further change.
  */
-export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [mdxDetector, smartQuotesDetector];
+export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [mdxDetector, smartQuotesDetector, shellSyntaxDetector];
