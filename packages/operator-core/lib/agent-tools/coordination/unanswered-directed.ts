@@ -31,7 +31,12 @@
  *     reply onto the exact msg_id that set `expectsReply`, so requiring an
  *     exact match left a real, substantively-answered exchange (the
  *     recipient visibly replying to the SAME correspondent) stuck
- *     "unanswered" forever — see the EI-13819 postmortem below.
+ *     "unanswered" forever — see the EI-13819 postmortem below. WI-5345:
+ *     ALSO satisfied by ANY directed message (threaded or not) the recipient
+ *     sends back to the same original sender after the ask — see the WI-5345
+ *     note below (EI-13819's fix still required the reply to carry SOME
+ *     related_msg_id, which misses the common case of a fresh, wholly
+ *     un-threaded status update).
  *
  * WI-4537 — what this counter must NOT count. It is wired to PREEMPT an agent's
  * work ("a directed message awaiting YOUR answer OUTRANKS your own work"), so a

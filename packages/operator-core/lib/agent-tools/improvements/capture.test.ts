@@ -124,6 +124,37 @@ describe('improvements:capture tool envelope', () => {
   });
 });
 
+describe('improvements:capture — conditionKey threads to watchdogKey (EI-15448)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+  });
+
+  it("lane:'observation' + conditionKey → passed through as watchdogKey", async () => {
+    await callTool({
+      title: 'escalation-aging holding flat at 312',
+      lane: 'observation',
+      conditionKey: 'overwatch:escalation-aging',
+    });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ lane: 'observation', watchdogKey: 'overwatch:escalation-aging' }),
+    );
+  });
+
+  it("conditionKey is IGNORED (never threaded to watchdogKey) outside lane:'observation'", async () => {
+    await callTool({ title: 'a real bug', kind: 'bug', conditionKey: 'overwatch:not-an-observation' });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ watchdogKey: undefined }));
+  });
+
+  it('omitting conditionKey on an observation leaves watchdogKey undefined (always re-files, per contract)', async () => {
+    await callTool({ title: 'a one-off reading', lane: 'observation' });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ lane: 'observation', watchdogKey: undefined }));
+  });
+});
+
 describe('improvements:capture — observation strict/fail-loud (P-012)', () => {
   // The tool's args zod is the strip-or-reject boundary (the handler-direct tests above bypass it).
   // `.strict()` on the observation object makes an UNKNOWN key a LOUD arg-parse error instead of a

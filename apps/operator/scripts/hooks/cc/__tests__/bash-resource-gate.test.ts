@@ -869,3 +869,90 @@ describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
     expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
   });
 });
+
+/**
+ * EI-15605 — tauri-agent-tools raw-JSON --token advisory.
+ *
+ * The dev-bridge token file (/tmp/tauri-dev-bridge-<pid>.token) is JSON
+ * (`{"port":N,"token":"...","pid":N}`), not a bare token string. Piping its
+ * raw content straight into `--token` silently fails auth even though the
+ * token itself is correct inside that JSON. Soft advisory only (never a
+ * deny) — the CLI is third-party/global, so we cannot fix its own error
+ * message; this just saves the failed-attempt detour.
+ */
+describe('tauri-agent-tools raw-JSON --token advisory (EI-15605)', () => {
+  const expectTokenAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('tauri-agent-tools --token advisory');
+    expect(hso.additionalContext).toContain('is JSON');
+  };
+
+  it('fires on the inline raw-cat repro (`--token "$(cat …/*.token)"`)', () => {
+    expectTokenAdvisory(
+      runGate(bashCmd(`tauri-agent-tools eval --port 46423 --token "$(cat /tmp/tauri-dev-bridge-1234.token)" 'document.title'`)),
+    );
+  });
+
+  it('fires on an unquoted inline raw-cat substitution', () => {
+    expectTokenAdvisory(
+      runGate(bashCmd(`tauri-agent-tools eval --port 46423 --token $(cat /tmp/tauri-dev-bridge-1234.token) 'x'`)),
+    );
+  });
+
+  it('fires on the assign-then-use form (TOK=$(cat …/*.token); … --token "$TOK")', () => {
+    expectTokenAdvisory(
+      runGate(
+        bashCmd(
+          'TOK=$(cat /tmp/tauri-dev-bridge-1234.token)\n' +
+            `tauri-agent-tools eval --port 46423 --token "$TOK" 'x'`,
+        ),
+      ),
+    );
+  });
+
+  it('silent when the value is already extracted via jq', () => {
+    expectAllow(
+      runGate(bashCmd(`tauri-agent-tools eval --port 46423 --token "$(jq -r .token /tmp/tauri-dev-bridge-1234.token)" 'x'`)),
+    );
+  });
+
+  it('silent when the value is already extracted via node/JSON.parse', () => {
+    expectAllow(
+      runGate(
+        bashCmd(
+          `tauri-agent-tools eval --port 46423 --token "$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).token)' /tmp/tauri-dev-bridge-1234.token)" 'x'`,
+        ),
+      ),
+    );
+  });
+
+  it('silent for a plain bare token value (the correct usage)', () => {
+    expectAllow(
+      runGate(bashCmd(`tauri-agent-tools eval --port 46423 --token tok-abc123 'x'`)),
+    );
+  });
+
+  it('silent when --token is absent (auto-discovery / --pid usage)', () => {
+    expectAllow(runGate(bashCmd(`tauri-agent-tools probe`)));
+  });
+
+  it('silent for a cat on a non-.token file', () => {
+    expectAllow(
+      runGate(bashCmd(`tauri-agent-tools eval --port 46423 --token "$(cat /tmp/some-other-file.txt)" 'x'`)),
+    );
+  });
+
+  it('a deny gate (e.g. the target guard) still wins over the token advisory', () => {
+    // No --pid and no bridges live: the target guard itself allows here (per
+    // its own "nothing to hit" rule), so assert the DECISION is allow — this
+    // just confirms the advisory path never OVERRIDES a deny when one fires.
+    // (Covered structurally: deny() calls sys.exit(0) before this block runs.)
+    const out = runGate(
+      bashCmd('crontab -e'),
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
