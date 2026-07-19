@@ -413,6 +413,7 @@ function startRequestServers(): void {
   //    dedup shape). Closes the coord-conditions signal-actor-registry waiver.
   startInfraLivenessAlarm();
   startConditionStalenessAlarm();
+  startEscalationAgingAlarm();
   startSinglePrimaryGuard();
   // P-002 (mcp-reliability-hardening-2026-07-11): recycle GRACEFULLY. The seam's
   // default is a bare process.exit(75), which severs every in-flight request on

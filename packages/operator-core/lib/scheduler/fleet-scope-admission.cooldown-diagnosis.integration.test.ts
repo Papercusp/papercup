@@ -163,3 +163,75 @@ describe('diagnoseFleetScopeCooldownMiss against real Postgres (WI-5303)', () =>
     expect(diag).toBeNull();
   });
 });
+
+/**
+ * EI-16475: "scheduler:get_next release-cooldown expiry appeared to reset (1s -> 292s)
+ * between two consecutive calls" — filed unconfirmed between two hypotheses:
+ *   (a) get_next itself (even on a miss) re-stamps the caller's release-cooldown floor,
+ *       so an eagerly-repolling session can self-extend its own cooldown forever — a
+ *       real bug, fixable by never touching last_released_at on a miss.
+ *   (b) a genuine release landed in the 1-2s window and legitimately opened a fresh
+ *       cooldown for a DIFFERENT row this bee had also released — expected behavior.
+ *
+ * Code trace settles (a): `last_released_at` is written in exactly one place
+ * (releaseWorkItem's UPDATE, work-items.ts — gated on `taken_by IS NOT NULL`, i.e. only
+ * a release of an ACTUALLY-CLAIMED row) plus the mirrored issue-family release path.
+ * Nothing in the get_next request path (getNextForBee, diagnoseFleetScopeCooldownMiss,
+ * or a MISS response) executes that UPDATE. The one release get_next DOES run
+ * unconditionally — reconcileFleetScopeClaims' quarantine sweep — only ever releases
+ * rows that DON'T match the caller's current claim-spec filter (`itemMatchesScope ===
+ * false`); diagnoseFleetScopeCooldownMiss only ever attributes rows that DO match that
+ * same filter. The two sets are disjoint by construction, so the reconciliation sweep
+ * can never be the "genuine release" that re-stamps a cooldown-excluded row either.
+ *
+ * These tests turn that code trace into a REAL-PG regression guard: repeatedly reading
+ * the diagnosis (the exact value scheduler:get_next surfaces as cooldownExpirySec) must
+ * never move a row's last_released_at nor produce an expiry that has re-advanced with no
+ * intervening release — settling hypothesis (a) definitively and locking it in against
+ * a future accidental regression.
+ */
+describe('diagnoseFleetScopeCooldownMiss never self-extends a cooldown it only reads (EI-16475)', () => {
+  it('two consecutive diagnosis calls (no release in between) never move last_released_at or advance the expiry', async () => {
+    await seedFeature('WI-16475-nearexpiry', { createdTs: 100, takenBy: 'su-member' });
+    // 299s ago against the 300s default cooldown -> ~1s of window left, same shape as the
+    // filed report's "cooldownExpirySec:1" observation.
+    await releaseAt('WI-16475-nearexpiry', 'su-member', 299);
+
+    const before = (
+      await db.sql<{ last_released_at: Date }[]>`
+        SELECT last_released_at FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = 'WI-16475-nearexpiry'`
+    )[0]!.last_released_at;
+
+    const poll1 = await diagnoseFleetScopeCooldownMiss({ scope: scopeFor('su-member'), harness: H, workspaceId: WS });
+    // A second, immediate re-poll — "no other action in between besides the tool call
+    // itself", exactly as filed.
+    const poll2 = await diagnoseFleetScopeCooldownMiss({ scope: scopeFor('su-member'), harness: H, workspaceId: WS });
+
+    const after = (
+      await db.sql<{ last_released_at: Date }[]>`
+        SELECT last_released_at FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = 'WI-16475-nearexpiry'`
+    )[0]!.last_released_at;
+
+    // A mere diagnosis read must never touch the row it is only annotating.
+    expect(after.getTime()).toBe(before.getTime());
+
+    expect(poll1?.earliestExpiryMs).not.toBeNull();
+    expect(poll2?.earliestExpiryMs).not.toBeNull();
+    // The reported expiry is a fixed instant derived from an unmoved last_released_at —
+    // it must be IDENTICAL across immediately-adjacent reads, never advanced (the exact
+    // "1s -> 292s" shape the filed report described).
+    expect(poll2!.earliestExpiryMs).toBe(poll1!.earliestExpiryMs);
+  });
+
+  // The complementary claim — that reconcileFleetScopeClaims' per-get_next quarantine
+  // sweep can't be the "genuine release" that re-stamps an IN-scope row's cooldown — is
+  // structural (itemMatchesScope() gates what the sweep releases; diagnoseFleetScopeCooldownMiss
+  // only ever attributes rows where the SAME predicate is true, so the two sets are
+  // disjoint by construction) and is exercised against real release semantics by
+  // 'releases every incompatible pre-existing claim in one reconciliation sweep and
+  // alerts once' in fleet-scope-admission.test.ts — not duplicated here since it needs
+  // the fleet_assignment view (presence + plan-item + work-item-claim union), which this
+  // file's minimal fixture (work_items + trust-list only) does not build out.
+});

@@ -61,6 +61,10 @@ vi.mock('@/app/admin/plans/plans-api', () => ({
 // liveness) · dev.coordFeed (the coordination stream).
 let rosterResult: { data?: unknown[]; loading?: boolean } = { data: [{ active: [] }], loading: false };
 let activityResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
+// Owner ask 2026-07-19: the three stat tiles' reads.
+let statsResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
+let healthResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
+let readinessResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
@@ -81,6 +85,12 @@ vi.mock('@papercusp/sync', () => ({
         return { ...rosterResult, error: null };
       case 'dev.coordFeed':
         return { ...activityResult, error: null };
+      case 'workItems.stats':
+        return { ...statsResult, error: null };
+      case 'health.snapshot':
+        return { ...healthResult, error: null };
+      case 'learning.releaseReadiness':
+        return { ...readinessResult, error: null };
       default:
         return { data: undefined, loading: false, error: null };
     }
@@ -175,6 +185,9 @@ describe('AdvOverviewTab component', () => {
     attentionResult = { data: { groups: [] }, loading: false, error: null, refresh: vi.fn() };
     rosterResult = { data: [{ active: [] }], loading: false };
     activityResult = { data: [], loading: false };
+    statsResult = { data: [], loading: false };
+    healthResult = { data: undefined, loading: false };
+    readinessResult = { data: undefined, loading: false };
   });
 
   afterEach(() => {
@@ -182,17 +195,23 @@ describe('AdvOverviewTab component', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the four tiles, the top-bar rate control, and the empty states', async () => {
+  it('renders the seven tiles, the top-bar rate control, and the empty states', async () => {
     render(<AdvOverviewTab />);
     expect(screen.getByTestId('fleet-rate-control')).toBeTruthy();
     expect(screen.getByText('Plans')).toBeTruthy();
     expect(screen.getByText('Needs you')).toBeTruthy();
     expect(screen.getByText('Agents')).toBeTruthy();
     expect(screen.getByText('Activity')).toBeTruthy();
+    expect(screen.getByText('Work items')).toBeTruthy();
+    expect(screen.getByText('Health')).toBeTruthy();
+    expect(screen.getByText('Learning')).toBeTruthy();
     expect(screen.getByText('No active plans')).toBeTruthy();
     expect(screen.getByText('Nothing needs you right now')).toBeTruthy();
     expect(screen.getByText('No live agents')).toBeTruthy();
     expect(screen.getByText('No recent agent activity')).toBeTruthy();
+    expect(screen.getByText('No work items')).toBeTruthy();
+    expect(screen.getByText('No health snapshot yet')).toBeTruthy();
+    expect(screen.getByText('No release-readiness report yet')).toBeTruthy();
     // WI-5517: the roster MUST be the pill's own query with IDENTICAL args (one
     // shared cache entry + one shared membership rule) — never a client-side
     // heartbeat re-derivation (PG-text timestamps are NaN under WebKit, which
@@ -298,6 +317,65 @@ describe('AdvOverviewTab component', () => {
     render(<AdvOverviewTab />);
     expect(await screen.findByText('handoff')).toBeTruthy();
     expect(screen.getByText('mug')).toBeTruthy();
+  });
+
+  it('rolls workItems.stats cells into per-kind rows with an OPEN headline count (owner ask 2026-07-19)', () => {
+    statsResult = {
+      data: [
+        { kind: 'bug', state: 'open', n: 4, terminal: false },
+        { kind: 'bug', state: 'resolved', n: 10, terminal: true },
+        { kind: 'change', state: 'open', n: 2, terminal: false },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText('bug')).toBeTruthy();
+    expect(screen.getByText('4 open · 14 all')).toBeTruthy();
+    expect(screen.getByText('change')).toBeTruthy();
+    expect(screen.getByText('2 open · 2 all')).toBeTruthy();
+  });
+
+  it('shows only warn/crit health panels, crit first; an all-ok snapshot reads healthy (owner ask 2026-07-19)', () => {
+    healthResult = {
+      data: [
+        {
+          overall: 'warn',
+          panels: {
+            queen: { key: 'queen', label: 'Queen', status: 'ok', summary: 'looping' },
+            deploy: { key: 'deploy', label: 'Deploy', status: 'warn', summary: 'gate red 2 ticks' },
+            infra: { key: 'infra', label: 'Infra', status: 'crit', summary: 'pg pool saturated' },
+          },
+        },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText('Infra — pg pool saturated')).toBeTruthy();
+    expect(screen.getByText('Deploy — gate red 2 ticks')).toBeTruthy();
+    expect(screen.queryByText(/Queen — /)).toBeNull(); // ok panels stay out of the way
+  });
+
+  it('renders the learning release-gate verdict + bars from learning.releaseReadiness (owner ask 2026-07-19)', () => {
+    readinessResult = {
+      data: [
+        {
+          report: {
+            verdict: 'incomplete',
+            passed: 1,
+            criteria: [
+              { key: 'routed-ideas', status: 'pass' },
+              { key: 'win-rate', status: 'fail' },
+            ],
+          },
+        },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText('release gate: incomplete')).toBeTruthy();
+    expect(screen.getByText('1/2 bars')).toBeTruthy();
+    expect(screen.getByText('routed-ideas')).toBeTruthy();
+    expect(screen.getByText('win-rate')).toBeTruthy();
   });
 
   it('shows the Agents loading state while advRoster.list is in flight', () => {

@@ -16,7 +16,7 @@ const WS = 'ws';
 const HOME = 'home';
 
 function writeCapture() {
-  const writes: Array<{ policyJson: string; signature: string; ownerPubkey: string; policyVersion: number }> = [];
+  const writes: Array<{ workspaceId: string; policyJson: string; signature: string; ownerPubkey: string; policyVersion: number }> = [];
   const write: AuthorHivePolicySeams['write'] = async (input) => {
     writes.push(input);
     const resolved: ResolvedHivePolicy = {

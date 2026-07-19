@@ -92,7 +92,12 @@ const {
       stderr: '',
     };
   }),
-  resolveUsageActorMock: vi.fn(async () => ({ githubUserId: 1, devicePubkey: 'c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=' })),
+  resolveUsageActorMock: vi.fn(
+    async (): Promise<{ githubUserId: number; devicePubkey: string } | null> => ({
+      githubUserId: 1,
+      devicePubkey: 'c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=',
+    }),
+  ),
   // gh-INDEPENDENT self-identity: resolveUsageActor returns null whenever `gh`
   // is unauthenticated / rate-limited, so the leg falls back to the persisted,
   // keychain-verified announce-identity cache (no network). Default null — the

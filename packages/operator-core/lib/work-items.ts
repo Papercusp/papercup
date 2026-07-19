@@ -1770,7 +1770,10 @@ export async function setWorkItemState(
   // as if it were still unfixed. Best-effort + fire-and-forget, same shape as
   // the other post-write hooks above: a failure here never breaks the
   // feature's own settle.
-  if (result && result.family === 'feature' && result.state === 'passed' && wi.state !== 'passed') {
+  // work-item-status-full-unify: fire on entering EITHER success-terminal spelling ('passed'
+  // legacy, 'done' unified) so the auto-resolve keeps working across the status migration.
+  const successTerminal = (s: string | null | undefined) => s === 'passed' || s === 'done';
+  if (result && result.family === 'feature' && successTerminal(result.state) && !successTerminal(wi.state)) {
     void autoResolveSourceIssueOnFeaturePassed(id, wi.harness ?? undefined).catch(() => {});
   }
   return result;

@@ -267,6 +267,16 @@ export function supersededOrphanItemIds(rows: ImprovementDispatchRow[]): Set<str
  *     reasoning as context-overflow: says nothing about the lane, has its own bounded
  *     escalation (TIMEOUT_ESCALATE_CAP), filing a lane-broken EI on it is the same
  *     self-amplifying noise.
+ *   - a PRE-INVOKE SKIP (resolved_by 'pre-invoke-skip:<reason>', EI-9759 /
+ *     durable-spawn.ts's `closeSkippedImprovementDispatch`) — the fire was skipped
+ *     BEFORE the /invoke POST ever ran (gateway-storm gate, gateway-wholesale-throttle,
+ *     gone-target): there was no worker, so there is nothing that "died". The closer
+ *     already rolls the attempt back (not charged) precisely so this is a no-op retry,
+ *     not a lane failure — reusing the 'orphaned' outcome column (there is no separate
+ *     DispatchOutcome for "closed pre-invoke") is what let this masquerade as a worker
+ *     death here. EI-16428: a `pre-invoke-skip:gateway-wholesale-throttled` row (closed
+ *     5min after fire, nowhere near the 2h collector threshold) filed a "died without
+ *     resolving — orphaned worker" bug for a dispatch nothing ever ran.
  * INCLUDED (genuine breakage): the 2h orphan collector's catch-all + a genuine non-env
  * worker crash — a worker that actually died/hung for a reason that IS about the lane.
  *
@@ -281,7 +291,8 @@ export function isLaneBreakageOrphan(r: Pick<ImprovementDispatchRow, 'resolvedBy
     r.resolvedBy === 'host-restart-recovery' ||
     r.resolvedBy === 'worker-exit-backedge-env' ||
     r.resolvedBy === 'worker-exit-backedge-context-overflow' ||
-    r.resolvedBy === 'worker-exit-backedge-timeout'
+    r.resolvedBy === 'worker-exit-backedge-timeout' ||
+    (r.resolvedBy ?? '').startsWith('pre-invoke-skip:')
   )
     return false;
   if ((r.fireError ?? '').includes('[env-failure')) return false; // legacy rows (pre-distinct resolved_by)

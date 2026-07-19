@@ -376,7 +376,13 @@ async function completeOne(
   // what D-004 was written to avoid). Scoped to `family === 'issue'` for the same reason.
   const rawCompletionStatus = typeof it.completion.status === 'string' ? it.completion.status.trim().toLowerCase() : undefined;
   const inferredCloseState =
-    !it.state && existing.family === 'issue' && (rawCompletionStatus === 'resolved' || rawCompletionStatus === 'closed')
+    // work-item-status-full-unify: `dropped` (the unified drop-terminal) is equally unambiguous —
+    // it can never arise from the schema default — so it also infers a close. `done` stays
+    // EXCLUDED for the reason above (it IS the schema default; inferring from it would auto-close
+    // every bare completion).
+    !it.state &&
+    existing.family === 'issue' &&
+    (rawCompletionStatus === 'resolved' || rawCompletionStatus === 'closed' || rawCompletionStatus === 'dropped')
       ? rawCompletionStatus
       : undefined;
   const effectiveState = it.state ?? inferredCloseState;

@@ -170,7 +170,7 @@ export async function getHealth(
 
   const features = await parseFeatures(project);
   const totalFeatures = features.length;
-  const passed = features.filter((f) => f.status === 'passed').length;
+  const passed = features.filter((f) => f.status === 'passed' || f.status === 'done').length; // unify: done≈passed
   const failing = features.filter((f) => f.status === 'failing').length;
   const inProgress = features.filter(
     (f) => f.status === 'in_progress' || f.status === 'validating',
@@ -349,7 +349,7 @@ export async function getWaveProgress(
       const c = byWave[wave]!;
       c.total += 1;
       const s = r.status;
-      if (s === 'passed') c.passed += 1;
+      if (s === 'passed' || s === 'done') c.passed += 1; // unify: done≈passed
       else if (s === 'failing') c.failing += 1;
       else if (s === 'in_progress' || s === 'validating') c.inProgress += 1;
       else if (s === 'blocked') c.blocked += 1;

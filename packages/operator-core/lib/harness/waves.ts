@@ -63,11 +63,13 @@ export function waveCounts(features: WaveFeature[], wave: string): WaveCounts {
   const fs = inWave(features, wave);
   return {
     total: fs.length,
-    passed: fs.filter((f) => f.status === 'passed').length,
+    // work-item-status-full-unify: count the unified spellings alongside the legacy ones
+    // (passed≈done, deprecated≈dropped) so wave rollups stay correct across the migration.
+    passed: fs.filter((f) => f.status === 'passed' || f.status === 'done').length,
     failing: fs.filter((f) => f.status === 'failing').length,
     inProgress: fs.filter((f) => IN_PROGRESS_STATUSES.has(f.status ?? '')).length,
     blocked: fs.filter((f) => f.status === 'blocked').length,
-    deprecated: fs.filter((f) => f.status === 'deprecated').length,
+    deprecated: fs.filter((f) => f.status === 'deprecated' || f.status === 'dropped').length,
   };
 }
 

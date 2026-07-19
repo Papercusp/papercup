@@ -113,7 +113,7 @@ describe('evaluateMatch — the false-green refusal (P-009)', () => {
 // while the other groups' files were never executed). aggregateGroupResults is the pure decision
 // `main` now uses to combine every group's outcome (all groups always run) into one honest verdict.
 describe('aggregateGroupResults — no group may be silently abandoned (EI-13535)', () => {
-  const okGroup = (requested, matched, executed) => ({
+  const okGroup = (requested: number, matched: number, executed: number) => ({
     requested,
     matched,
     executed,

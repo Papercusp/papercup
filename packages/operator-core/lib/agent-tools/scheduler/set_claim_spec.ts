@@ -208,7 +208,8 @@ export async function previewClaimSpecAdmission(args: {
   ];
   const unknownIds = resolved.filter((row) => row.family === null).map((row) => row.id);
 
-  const effectiveStates = args.spec.states ?? ['todo'];
+  // Mirrors claimFloorsWhereSql's transitional ['todo','open'] default (work-item-status-full-unify).
+  const effectiveStates = args.spec.states ?? ['todo', 'open'];
   const explain = args.explain ?? (await import('../../work-items')).explainIssueClaimFloors;
   const rows =
     issueIds.length > 0

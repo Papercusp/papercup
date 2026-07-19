@@ -79,8 +79,8 @@ describe('computeDestructiveReplanDiff — safety: protected statuses (the lost-
     expect(d.protectedFromDeprecation).toEqual(['F-7']);
   });
 
-  it('default protected set is exactly {passed, in_progress}', () => {
-    expect([...DEFAULT_PROTECTED_STATUSES].sort()).toEqual(['in_progress', 'passed']);
+  it('default protected set is the transitional legacy∪unified valuable-work set (work-item-status-full-unify)', () => {
+    expect([...DEFAULT_PROTECTED_STATUSES].sort()).toEqual(['done', 'in_progress', 'passed', 'wip']);
   });
 
   it('deprecates dropped todo / failing features (no real work to lose)', () => {

@@ -516,7 +516,7 @@ describe('status cards — deterministic-status-cards P-002/P-003', () => {
   it('runCurationTick passes a status-card report to surface alongside the text', async () => {
     const { deps, surfaced, surfacedReports } = harness({
       escalations: async () => [
-        { msgId: 'e1', severity: 'blocker', summary: 'build wedged', from: 'agent', planSlug: null, ts: new Date(FIXED).toISOString() },
+        { msgId: 'e1', severity: 'blocker', summary: 'build wedged', from: 'agent', planSlug: undefined, ts: new Date(FIXED).toISOString() },
       ],
     });
     const result = await runCurationTick(deps);

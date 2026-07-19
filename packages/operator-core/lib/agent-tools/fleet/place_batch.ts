@@ -38,7 +38,7 @@ import { FLAGS } from '@papercusp/flags';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { listPresence } from '../coordination/presence';
-import type { PlacementTask } from '../../fleet/placement-affinity';
+import type { PlacementBee, PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
 import { softText, clampText, LIMITS } from '../limits';
 
@@ -479,6 +479,16 @@ function summarizePlan(plan: BatchPlacementPlan) {
  * woken:0 warm-inject fallbacks draw from the leftover (headroom − planned
  * spawns) so a fallback can never starve a planned spawn.
  */
+/**
+ * WI-5421: a warm-inject target's `woken:0` is NOT a definitive death signal while the
+ * bee is still within its boot window — a booting cup (CLI launch + orient + first item
+ * read, under account-pool churn) legitimately has no armed wake channel yet. Reaping +
+ * climbing on a young miss is how back-to-back place_batch calls ate each other's
+ * spawns (4 of 9 reaped within minutes of birth in the WI-5421 repro). 15 minutes covers
+ * the observed worst-case boot time with margin; below it, defer instead of reap+climb.
+ */
+export const WARM_INJECT_BOOT_GRACE_MS = 15 * 60_000;
+
 export async function executeBatch(opts: {
   plan: BatchPlacementPlan;
   headroom: number;
@@ -487,6 +497,14 @@ export async function executeBatch(opts: {
   actor: AgentIdentity;
   role: string;
   workspaceId: string;
+  /** WI-5421: the live bees this batch was planned against (gatherLiveBees) — used
+   *  ONLY to age-gate the woken:0 reap/climb path (below). Optional so existing
+   *  direct callers (tests injecting a bare plan) are unaffected; omitted ⇒ no age
+   *  signal available, so a woken:0 target is treated as unknown-age (age-gated,
+   *  the SAFE default — never reap without a positive age read). */
+  bees?: PlacementBee[];
+  /** Injected clock (testability). Defaults to Date.now(). */
+  now?: number;
   /** Test seam (DI): inject the spawn/claim/message/wake effects. Defaults to
    *  the real modules — the tool handler passes none (zero behavior change). */
   deps?: ExecuteBatchDeps;
@@ -499,6 +517,8 @@ export async function executeBatch(opts: {
   group_errors?: string[];
 }> {
   const { plan, headroom, brief, tier, actor, role, workspaceId } = opts;
+  const nowMs = opts.now ?? Date.now();
+  const beeByOwner = new Map((opts.bees ?? []).map((b) => [b.ownerId, b]));
   const {
     spawnAgentInHarness,
     claimWorkItem,
@@ -624,6 +644,23 @@ export async function executeBatch(opts: {
         // No armed wake — don't strand the item on a dead/asleep bee. Release it
         // and climb the ladder: a fresh spawn if a slot is free, else queue back.
         await releaseWorkItem(d.task.id, { harness }).catch(() => {});
+
+        // WI-5421: a woken:0 miss on a bee STILL WITHIN its boot window is not a
+        // death signal — it's a booting cup that hasn't armed its wake channel yet.
+        // Age-gate BEFORE the EI-490 reap: unknown age (no bee record — e.g. a
+        // caller that didn't pass `bees`) or age < grace ⇒ defer, never reap/climb.
+        const beeAgeMs = beeByOwner.get(bee)?.lastActiveMs;
+        const withinBootGrace = beeAgeMs == null || nowMs - beeAgeMs < WARM_INJECT_BOOT_GRACE_MS;
+        if (withinBootGrace) {
+          placements.push({
+            task: d.task.id,
+            action: 'unplaced',
+            bee,
+            reason: `warm-inject undelivered (woken:0) but ${bee} is within its ${Math.round(WARM_INJECT_BOOT_GRACE_MS / 60_000)}min boot grace — deferred (not reaped, not climbed) to avoid killing a still-booting cup (WI-5421)`,
+          });
+          continue;
+        }
+
         // EI-490: woken:0 is a DEFINITIVE "this nursery row is a zombie" signal —
         // auto-reap it (once per bee per batch) instead of leaving it to keep
         // consuming a concurrency slot until the Queen manually discovers +

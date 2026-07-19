@@ -27,6 +27,10 @@ import {
   scriptUsesPassWithNoTests,
   hasMatchingTestFilesOnDisk,
   emptySuiteGuardArgs,
+  // The .mjs helper has no declaration file; the diagnostic lands on the
+  // `from` line of this multi-line import, so the directive must be the
+  // LAST comment line immediately above it.
+  // @ts-expect-error
 } from '../../../../scripts/lib/empty-suite-guard.mjs';
 
 const tmpDirs: string[] = [];

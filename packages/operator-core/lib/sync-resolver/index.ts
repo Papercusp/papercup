@@ -1999,6 +1999,48 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // workItems.stats — the tiny kind × state COUNT aggregate for dashboard/stat
+  // tiles (WI-5517, owner ask 2026-07-19: "how many items, how many are bugs vs
+  // other"). One GROUP BY over the unified base table instead of shipping the
+  // enriched byHarness list (up to 2000 heavy rows) into the webview to count
+  // client-side (whole-app-sync-payload-audit-2026-07-19). Observation-lane rows
+  // excluded (D-005: corpus notes, not work — same default as the general
+  // work-item surface, EI-10422), workspace-scoped, and each cell stamped with
+  // the CANONICAL cross-family terminal classification (ALL_TERMINAL_STATUSES)
+  // server-side so no client re-derives open-vs-done from a drift-prone state
+  // list. Inline SQL here (not a work-items.ts helper) reusing that module's
+  // exported observationLaneExclusionSql — the module itself is mid-unification
+  // (work-item-status-full-unify) and this read needs no other part of it.
+  // Invalidated via the work_items table bridge (same rows as byHarness).
+  'workItems.stats': {
+    argsSchema: z.object({ harnessSlug: z.string().optional() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug?: string };
+      const [{ getOrgPg }, { observationLaneExclusionSql }, { ALL_TERMINAL_STATUSES }, { activeWorkspaceId }] =
+        await Promise.all([
+          import('@papercusp/db-org'),
+          import('../work-items'),
+          import('../work-item-blocking'),
+          import('../workspace-registry'),
+        ]);
+      const { sql } = getOrgPg();
+      const rows = await sql<{ kind: string | null; state: string | null; n: number }[]>`
+        SELECT wi.item_kind AS kind, wi.status AS state, count(*)::int AS n
+          FROM harness_shared.work_items wi
+         WHERE wi.workspace_id = ${activeWorkspaceId()}
+           AND ${harnessSlug ? sql`wi.harness_slug = ${harnessSlug}` : sql`TRUE`}
+           AND ${observationLaneExclusionSql(sql)}
+         GROUP BY 1, 2
+         ORDER BY 3 DESC`;
+      return rows.map((r) => ({
+        kind: r.kind ?? 'unknown',
+        state: r.state ?? 'unknown',
+        n: r.n,
+        terminal: ALL_TERMINAL_STATUSES.has(r.state ?? ''),
+      }));
+    },
+  },
+
   // fleetAssignments.byHarness — "who's working here?" for the Progress tab's
   // Agents panel (progress-tab-agents-convergence-2026-06-11 P-001/P-002).
   // ⚠ DEPRECATED for NEW consumers (presence-v2 P-007): this is the "divergent"

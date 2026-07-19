@@ -324,6 +324,22 @@ describe('isLaneBreakageOrphan — env-failure + host-restart orphans do NOT fal
     expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
   });
 
+  it('EI-16428: a pre-invoke-skip closure (resolved_by pre-invoke-skip:<reason>) is NOT lane breakage — no worker ever ran', () => {
+    const r = row({
+      id: 'd-piv', itemId: 'EI-14091', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'pre-invoke-skip:gateway-wholesale-throttled',
+      fireError: 'pre-invoke skip: gateway-wholesale-throttled — attempt 1 not charged',
+    });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
+  });
+
+  it('EI-16428: a DIFFERENT pre-invoke-skip reason (gone-target) is also excluded — the whole prefix is benign', () => {
+    const r = row({
+      id: 'd-piv2', itemId: 'EI-14092', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'pre-invoke-skip:gone-target',
+    });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+  });
+
   it('a GENUINE non-env worker death (attempt charged) DOES signal — the lane may be broken', () => {
     const r = row({
       id: 'd4', itemId: 'EI-4', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge',

@@ -129,6 +129,7 @@ const BORROWABLE = [
   ['libs/generic/audio-dsp',                      'Audio & media'],
   ['libs/generic/kokoro-tts',                     'Audio & media'],
   ['libs/generic/ui-primitives',                  'UI components'],
+  ['libs/generic/card-stack',                     'UI components'],
   ['libs/generic/dock-workbench',                 'UI components'],
   ['libs/generic/git-graph',                      'UI components'],
   ['libs/generic/papergrid/grid-core',            'UI components'],

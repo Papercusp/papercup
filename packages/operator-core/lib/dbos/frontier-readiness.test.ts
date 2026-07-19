@@ -58,8 +58,8 @@ describe('selectReady — partition dispatchable nodes into ready / blocked', ()
     expect(selectReady(nodes, NONE, new Set(['todo', 'failing'])).ready.map((n) => n.id).sort()).toEqual(['A', 'B']);
   });
 
-  it('TERMINAL_STATUSES is passed/deprecated', () => {
-    expect([...TERMINAL_STATUSES].sort()).toEqual(['deprecated', 'passed']);
+  it('TERMINAL_STATUSES is the transitional legacy∪unified terminal set (work-item-status-full-unify)', () => {
+    expect([...TERMINAL_STATUSES].sort()).toEqual(['deprecated', 'done', 'dropped', 'passed']);
   });
 });
 

@@ -60,8 +60,11 @@ export interface DestructiveReplanDiff {
   unsafeEmptyReplan: boolean;
 }
 
-/** Statuses whose work is too valuable to retire as a re-promote side effect. */
-export const DEFAULT_PROTECTED_STATUSES = ['passed', 'in_progress'] as const;
+/** Statuses whose work is too valuable to retire as a re-promote side effect.
+ *  work-item-status-full-unify: includes the unified equivalents (`done`≈passed, `wip`≈in_progress)
+ *  as a transitional superset — a destructive replan must never auto-deprecate shipped work on
+ *  either side of the status migration. */
+export const DEFAULT_PROTECTED_STATUSES = ['passed', 'in_progress', 'done', 'wip'] as const;
 
 /**
  * Partition a destructive replan into mint / keep / deprecate (+ safety verdicts).
@@ -100,7 +103,7 @@ export function computeDestructiveReplanDiff(
   const protectedFromDeprecation: string[] = [];
   for (const f of existingPlanFeatures) {
     if (planSet.has(f.featureId)) continue; // still in the plan → keep
-    if (f.status === 'deprecated') continue; // already retired → no-op
+    if (f.status === 'deprecated' || f.status === 'dropped') continue; // already retired → no-op (unified: dropped)
     if (protectStatuses.has(f.status)) {
       protectedFromDeprecation.push(f.featureId);
     } else {

@@ -1,6 +1,15 @@
 import { useMemo } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState, useQueryStates } from 'nuqs';
-import { ArrowRight, ListChecks, Users, Bell, Activity as ActivityIcon } from 'lucide-react';
+import {
+  ArrowRight,
+  ListChecks,
+  Users,
+  Bell,
+  Activity as ActivityIcon,
+  ClipboardList,
+  HeartPulse,
+  GraduationCap,
+} from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import FleetRateControl from './FleetRateControl';
 import { isRunningAgent, type RosterAgent } from './AgentsRunningPill';
@@ -82,6 +91,42 @@ export interface OverviewActivityRow {
   status: string | null;
 }
 
+// ── workItems.stats: one kind × state COUNT cell (owner ask 2026-07-19). The
+//    resolver aggregates server-side and stamps `terminal` from the CANONICAL
+//    cross-family set (ALL_TERMINAL_STATUSES) — never re-derive open-vs-done
+//    client-side from a state list (same never-re-derive rule as liveness). ──
+export interface WorkItemStatsCell {
+  kind: string;
+  state: string;
+  n: number;
+  terminal: boolean;
+}
+
+// ── health.snapshot: the structural subset of SystemHealth the Health tile
+//    renders (same subset pattern as OverviewRosterEntry). ───────────────────
+export interface OverviewHealthPanel {
+  key: string;
+  label: string;
+  status: 'ok' | 'warn' | 'crit' | 'unknown' | string;
+  summary: string;
+}
+export interface OverviewHealthSnapshot {
+  overall: 'ok' | 'warn' | 'crit' | 'unknown' | string;
+  panels?: Record<string, OverviewHealthPanel>;
+}
+
+// ── learning.releaseReadiness: the subset the Learning tile renders (the
+//    Verify-stage GO/NO-GO gate — same read LearningTab's readiness strip
+//    holds, so the two can never disagree). ──────────────────────────────────
+export interface OverviewReadinessSnapshot {
+  report: {
+    verdict: string | null;
+    passed: number;
+    criteria: Array<{ key: string; status: string }>;
+  } | null;
+  errors?: string[];
+}
+
 // ── one `dev.coordFeed` row (the fields this tile reads). ────────────────────
 interface CoordFeedRow {
   ts: string;
@@ -106,6 +151,11 @@ export const OVERVIEW_TILE_TARGETS = {
   // The Activity tile now reads the coordination stream, whose full surface is
   // Conversations → Raw events — so that's where its "open" goes (WI-5517).
   activity: 'conversations',
+  // Owner ask 2026-07-19: work-item stats → the Working tab (WorkItemsPanel);
+  // health/learning headline stats → their own tabs.
+  workItems: 'harnesses',
+  health: 'health',
+  learning: 'learning',
 } as const;
 
 /** done / (todo+wip+blocked+needs-human+done) — dropped/unknown excluded. */
@@ -168,6 +218,52 @@ export function selectAgentRows(
   limit = TILE_LIMIT,
 ): OverviewRosterEntry[] {
   return roster.slice(0, limit);
+}
+
+export interface WorkItemStatsSummary {
+  total: number;
+  open: number;
+  /** Per-kind rollup ("bugs vs the rest"), open-count desc then total desc. */
+  kinds: Array<{ kind: string; open: number; total: number }>;
+}
+
+/**
+ * Roll the server's kind × state cells up to totals + a per-kind breakdown
+ * (owner ask 2026-07-19: "how many items, how many are bugs vs other").
+ * `open` = non-terminal per the resolver's canonical `terminal` stamp. Pure.
+ */
+export function summarizeWorkItemStats(cells: readonly WorkItemStatsCell[]): WorkItemStatsSummary {
+  const byKind = new Map<string, { open: number; total: number }>();
+  let total = 0;
+  let open = 0;
+  for (const c of cells) {
+    const k = byKind.get(c.kind) ?? { open: 0, total: 0 };
+    k.total += c.n;
+    total += c.n;
+    if (!c.terminal) {
+      k.open += c.n;
+      open += c.n;
+    }
+    byKind.set(c.kind, k);
+  }
+  const kinds = [...byKind.entries()]
+    .map(([kind, v]) => ({ kind, ...v }))
+    .sort((a, b) => b.open - a.open || b.total - a.total)
+    .slice(0, TILE_LIMIT);
+  return { total, open, kinds };
+}
+
+/** warn/crit health panels, crit first (stable within a tier), top-N. Pure. */
+export function selectUnhealthyPanels(
+  snap: OverviewHealthSnapshot | undefined,
+  limit = TILE_LIMIT,
+): OverviewHealthPanel[] {
+  if (!snap?.panels) return [];
+  const rank = (s: string) => (s === 'crit' ? 0 : s === 'warn' ? 1 : 2);
+  return Object.values(snap.panels)
+    .filter((p) => p.status === 'crit' || p.status === 'warn')
+    .sort((a, b) => rank(a.status) - rank(b.status))
+    .slice(0, limit);
 }
 
 export default function AdvOverviewTab() {
@@ -236,6 +332,30 @@ export default function AdvOverviewTab() {
     staleTime: 8_000,
   });
 
+  // Work-item stats (owner ask 2026-07-19): the tiny kind × state aggregate —
+  // NEVER the enriched workItems.byHarness list (payload discipline,
+  // whole-app-sync-payload-audit-2026-07-19). Scoped to the focused project
+  // (?slug=) when one is selected; workspace-wide otherwise.
+  const [projectSlug] = useQueryState('slug', parseAsString);
+  const statsQ = useSyncQuery<WorkItemStatsCell>({
+    queryName: 'workItems.stats',
+    args: projectSlug ? { harnessSlug: projectSlug } : {},
+    staleTime: 15_000,
+  });
+
+  // Health + Learning headline stats (owner ask 2026-07-19): the SAME queries
+  // their tabs hold (health.snapshot / learning.releaseReadiness — identical
+  // args ⇒ shared cache entries), so a tile can never disagree with its tab.
+  const healthQ = useSyncQuery<OverviewHealthSnapshot>({
+    queryName: 'health.snapshot',
+    args: {},
+    staleTime: 15_000,
+  });
+  const readinessQ = useSyncQuery<OverviewReadinessSnapshot>({
+    queryName: 'learning.releaseReadiness',
+    staleTime: 30_000,
+  });
+
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);
   const attentionItems = useMemo(
@@ -262,6 +382,10 @@ export default function AdvOverviewTab() {
     [rosterQ.data],
   );
   const agentRows = useMemo(() => selectAgentRows(roster), [roster]);
+  const workItemStats = useMemo(() => summarizeWorkItemStats(statsQ.data ?? []), [statsQ.data]);
+  const health = healthQ.data?.[0];
+  const unhealthy = useMemo(() => selectUnhealthyPanels(health), [health]);
+  const readiness = readinessQ.data?.[0];
 
   // Map coord-feed rows → the Activity tile's render shape: agent-authored rows
   // only (system telemetry belongs to Conversations → Raw events), actor =
@@ -420,6 +544,84 @@ export default function AdvOverviewTab() {
               </span>
             </button>
           ))}
+        </OverviewTile>
+
+        {/* Work-item stats (owner ask 2026-07-19): totals + bugs-vs-the-rest.
+            Headline count = OPEN (non-terminal) items; each row is one kind. */}
+        <OverviewTile
+          icon={<ClipboardList size={14} aria-hidden />}
+          title="Work items"
+          count={workItemStats.open}
+          accent="#fbbf24"
+          loading={statsQ.loading && !statsQ.data}
+          error={statsQ.error ? String((statsQ.error as Error).message ?? statsQ.error) : null}
+          empty={workItemStats.total === 0}
+          emptyLabel="No work items"
+          onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.workItems)}
+        >
+          {workItemStats.kinds.map((k) => (
+            <div key={k.kind} className="pc-overview__row">
+              <span className="pc-overview__row-title">{k.kind}</span>
+              <span className="pc-overview__row-tag">
+                {k.open} open · {k.total} all
+              </span>
+            </div>
+          ))}
+        </OverviewTile>
+
+        {/* Health headline (owner ask 2026-07-19): overall verdict + the
+            warn/crit panels only — healthy systems stay out of the way. */}
+        <OverviewTile
+          icon={<HeartPulse size={14} aria-hidden />}
+          title="Health"
+          count={unhealthy.length}
+          accent="#fb7185"
+          loading={healthQ.loading && !healthQ.data}
+          error={healthQ.error ? String((healthQ.error as Error).message ?? healthQ.error) : null}
+          empty={unhealthy.length === 0}
+          emptyLabel={health ? (health.overall === 'ok' ? 'All systems healthy' : `Overall: ${health.overall}`) : 'No health snapshot yet'}
+          onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.health)}
+        >
+          {unhealthy.map((p) => (
+            <div key={p.key} className="pc-overview__row">
+              <span className="pc-overview__row-dot" data-health={p.status} aria-hidden />
+              <span className="pc-overview__row-title" title={p.summary}>
+                {p.label} — {p.summary}
+              </span>
+            </div>
+          ))}
+        </OverviewTile>
+
+        {/* Learning headline (owner ask 2026-07-19): the release-readiness
+            GO/NO-GO verdict + its bars — the same learning.releaseReadiness
+            read LearningTab's strip renders. */}
+        <OverviewTile
+          icon={<GraduationCap size={14} aria-hidden />}
+          title="Learning"
+          accent="#6ee7b7"
+          loading={readinessQ.loading && !readinessQ.data}
+          error={readinessQ.error ? String((readinessQ.error as Error).message ?? readinessQ.error) : null}
+          empty={!readiness?.report}
+          emptyLabel="No release-readiness report yet"
+          onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.learning)}
+        >
+          {readiness?.report && (
+            <>
+              <div className="pc-overview__row">
+                <span className="pc-overview__row-title">release gate: {readiness.report.verdict ?? 'unreadable'}</span>
+                <span className="pc-overview__row-tag">
+                  {readiness.report.passed}/{readiness.report.criteria.length} bars
+                </span>
+              </div>
+              {readiness.report.criteria.slice(0, TILE_LIMIT - 1).map((c) => (
+                <div key={c.key} className="pc-overview__row">
+                  <span className="pc-overview__row-dot" data-bar={c.status} aria-hidden />
+                  <span className="pc-overview__row-title">{c.key}</span>
+                  <span className="pc-overview__row-tag">{c.status}</span>
+                </div>
+              ))}
+            </>
+          )}
         </OverviewTile>
       </div>
 
@@ -581,6 +783,10 @@ export default function AdvOverviewTab() {
         .pc-overview__row-dot[data-live='idle'] { background: #facc15; }
         .pc-overview__row-dot[data-imp='urgent'] { background: #f87171; }
         .pc-overview__row-dot[data-imp='high'] { background: #fb923c; }
+        .pc-overview__row-dot[data-health='crit'] { background: #f87171; box-shadow: 0 0 6px rgba(248, 113, 113, 0.5); }
+        .pc-overview__row-dot[data-health='warn'] { background: #facc15; }
+        .pc-overview__row-dot[data-bar='pass'] { background: #4ade80; }
+        .pc-overview__row-dot[data-bar='fail'] { background: #f87171; }
         .pc-overview__row-actor {
           font-size: 10.5px; font-weight: 700; color: var(--fg-mute, #7f9bb4);
           flex-shrink: 0; min-width: 40px; max-width: 64px;

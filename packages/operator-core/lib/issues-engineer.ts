@@ -1241,7 +1241,9 @@ export async function setIssueState(
         RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
-  const resolved = state === 'resolved' || state === 'closed';
+  // work-item-status-full-unify: classify via the (transitionally-widened) terminal set so a
+  // unified `done`/`dropped` write still delivers the 'resolved' event kind, not 'updated'.
+  const resolved = ISSUE_TERMINAL_STATUSES.has(state);
   await deliver(issue, resolved ? 'resolved' : 'updated', `issue ${id} → ${state}: ${issue.title}`, by ?? 'substrate');
   return issue;
 }

@@ -49,6 +49,8 @@ function deploy(over: Partial<DeployStatus> = {}): DeployStatus {
       lastFixerStatus: null,
       lastFixerCandidate: null,
       flakyWorkspaces: [],
+      failingTests: [],
+      lastVerdict: null,
     },
     deploy: {
       deployedSha: deployed,

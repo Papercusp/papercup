@@ -27,6 +27,7 @@ import { Rss, RefreshCw, HelpCircle } from "lucide-react";
 import type { ScoutSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
+import { CardStack } from "@papercusp/card-stack";
 import { CATEGORICAL } from "@/app/harness/theme";
 import {
   LearningDisclosure,
@@ -480,33 +481,36 @@ export function SignalsPanel({
                             } as CSSProperties
                           }
                         >
-                          <header className="pc-signals__lanegroup-head">
-                            <Tooltip label={FED_LANE_DOCS[lane] ?? lane}>
-                              <span className="pc-signals__lane">
-                                <i aria-hidden />
-                                {laneLabel(lane)}
-                              </span>
-                            </Tooltip>
-                            <span className="pc-signals__lanegroup-count">
-                              {entries.length}
-                            </span>
-                          </header>
-                          {/* The lane rides the GROUP header, so the cards
-                              inside carry only their own content — that is the
-                              point of stacking by type. */}
-                          <ul
-                            className="pc-signals__cards"
-                            aria-label={`${laneLabel(lane)} standing entries`}
-                          >
-                            {entries.map((e) => (
-                              <li key={e.ref} className="pc-signals__card">
+                          {/* One overlapping DECK per lane (@papercusp/card-stack):
+                              same-type entries browsed one at a time — the lane
+                              badge rides the active card, the count is the
+                              stack depth. The uncapped corpus stays compact. */}
+                          <CardStack
+                            items={entries}
+                            getKey={(e) => e.ref}
+                            ariaLabel={`${laneLabel(lane)} standing entries`}
+                            header={
+                              <>
+                                <Tooltip label={FED_LANE_DOCS[lane] ?? lane}>
+                                  <span className="pc-signals__lane">
+                                    <i aria-hidden />
+                                    {laneLabel(lane)}
+                                  </span>
+                                </Tooltip>
+                                <span className="pc-cardstack__header-count">
+                                  {entries.length}
+                                </span>
+                              </>
+                            }
+                            renderCard={(e) => (
+                              <div className="pc-signals__card pc-signals__card--stacked">
                                 <p className="pc-signals__card-summary">
                                   {e.summary}
                                 </p>
                                 {renderSourceChip(e.ref)}
-                              </li>
-                            ))}
-                          </ul>
+                              </div>
+                            )}
+                          />
                         </section>
                       ),
                     )}
@@ -630,18 +634,17 @@ export function SignalsPanel({
         color: var(--accent, #7dd3fc);
         border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 40%, transparent);
       }
-      /* Standing corpus stacks its cards BY LANE (owner ask 3b) — the lane
-         rides the group header, never repeated on every card inside it. */
-      .pc-signals__cardstack { display: flex; flex-direction: column; gap: 11px; }
-      .pc-signals__lanegroup { display: flex; flex-direction: column; gap: 5px; }
-      .pc-signals__lanegroup-head {
-        display: flex; align-items: center; gap: 8px; padding-inline: 2px;
-        border-left: 3px solid var(--lane-color, transparent); padding-left: 7px;
+      /* Standing corpus: one overlapping card DECK per lane (owner ask 3b +
+         card-system migration 2026-07-19) — the lane badge rides the active
+         card, and the full (uncapped) summary shows while browsing. */
+      .pc-signals__cardstack {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 16px;
       }
-      .pc-signals__lanegroup-count {
-        font-size: 9.5px; font-variant-numeric: tabular-nums; color: var(--fg-mute, #7f9bb4);
-        padding: 0 6px; border-radius: 999px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+      .pc-signals__lanegroup { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+      .pc-signals__card--stacked { padding: 12px 14px 14px; }
+      .pc-signals__card--stacked .pc-signals__card-summary {
+        display: block; overflow: visible; -webkit-line-clamp: unset;
       }
       @media (max-width: 900px) {
         .pc-signals__cards { grid-template-columns: 1fr; }
