@@ -1114,6 +1114,71 @@ describe('WI-4405 — includeObservations / admissibleOnly parity on the read pa
   });
 });
 
+// WI-5343: the issue-family half of "admissibleOnly parity" was already fixed by WI-4405
+// (issueAdmissibleWhereSql). This pins the remaining FEATURE-family gap: listWorkItems'
+// admissibleOnly branch only applied autoPickableWhereSql (G2 admission), never the
+// _claimHold / plan-lane-reservation floors claimFloorsWhereSql (the real claim path)
+// already enforces — so a claim-held or plan-lane-reserved feature was advertised as
+// claimable in orient's fold while the actual claim path would refuse it.
+describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql floors', () => {
+  it('listWorkItems { admissibleOnly: true } EXCLUDES a _claimHold feature row', async () => {
+    const held = await wi.createWorkItem({
+      kind: 'feature', title: 'held feature', harness: 'papercup', createdBy: 'agA',
+      payload: { _claimHold: true },
+    });
+    const real = await wi.createWorkItem({ kind: 'feature', title: 'free feature', harness: 'papercup', createdBy: 'agA' });
+
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === held.id)).toBe(false);
+    expect(list.some((w) => w.id === real.id)).toBe(true);
+    // Without admissibleOnly the held row is still visible (never hidden from a plain read).
+    const plain = await wi.listWorkItems({ harness: 'papercup', kind: 'feature' });
+    expect(plain.some((w) => w.id === held.id)).toBe(true);
+    // …and the REAL claim path already refused it (claimFloorsWhereSql's pre-existing floor) —
+    // proves the list-side fix now matches what claim_next actually does.
+    expect(await wi.claimWorkItem(held.id, 'bee-x', { harness: 'papercup' })).not.toBeNull(); // named-id bypass still allowed
+  });
+
+  it('listWorkItems { admissibleOnly: true } EXCLUDES a feature row reserved to a LIVE plan lane', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
+                 VALUES ('default', 'papercup', 'wi-5343-plan', 'active')`;
+    const reserved = await wi.createWorkItem({
+      kind: 'feature', title: 'lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'wi-5343-plan', item_id: 'P-1' } },
+    });
+    const free = await wi.createWorkItem({ kind: 'feature', title: 'unlaned feature', harness: 'papercup', createdBy: 'agA' });
+
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === reserved.id)).toBe(false);
+    expect(list.some((w) => w.id === free.id)).toBe(true);
+  });
+
+  it('claimFloorsWhereSql (the REAL feature claim path) now also refuses a plan-lane-reserved feature via claimNextWorkItem', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
+                 VALUES ('default', 'papercup', 'wi-5343-plan-2', 'active')`;
+    const reserved = await wi.createWorkItem({
+      kind: 'feature', title: 'lane feature 2', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'wi-5343-plan-2', item_id: 'P-1' } },
+    });
+    // The only unclaimed feature is the lane-reserved one — a self-select claim must find nothing.
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-y' })).toBeNull();
+    // It is still directly claimable BY ID (the named-claim floor bypass every floor here allows).
+    expect((await wi.claimWorkItem(reserved.id, 'bee-y', { harness: 'papercup' }))?.id).toBe(reserved.id);
+  });
+
+  it('a plan-lane-reserved feature whose PLAN is not active drains normally (no over-exclusion)', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
+                 VALUES ('default', 'papercup', 'wi-5343-paused-plan', 'paused')`;
+    const item = await wi.createWorkItem({
+      kind: 'feature', title: 'paused-lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'wi-5343-paused-plan', item_id: 'P-1' } },
+    });
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === item.id)).toBe(true);
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-z' }))?.id).toBe(item.id);
+  });
+});
+
 // B-LOOP-4 (loop-routines P-007 / D-008) — atomic create+claim. Passing `assignee`
 // to createWorkItem makes the row land already-claimed in ONE DB write — no separate
 // claim, no create→claim race window (a competing claim_next can't grab the row in the

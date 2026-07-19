@@ -11,6 +11,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const identity = vi.hoisted(() => ({ ownerId: 'su-me', workspaceId: 'ws-1' }));
 const flag = vi.hoisted(() => ({ schedulerSpecClaim: true }));
 const fleet = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
+// EI-15777: the paused-miss branch cancels the caller's own standing
+// `work-item:claimable` await(s) — mock the store call so these unit tests never
+// touch real PG, and so tests below can assert it was invoked (self-scoped, by assignee).
+const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
+
+vi.mock('../../events/await/store', () => ({
+  cancelClaimableAwaits: cancelClaimableAwaitsM,
+}));
 
 vi.mock('@papercusp/flags', () => ({
   FLAGS: { SCHEDULER_SPEC_CLAIM: 'scheduler.spec.claim' },
@@ -217,5 +225,9 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
     expect(b).toMatchObject({ ok: false, windDown: true, paused: true });
     expect(getNextForBeeM).not.toHaveBeenCalled();
     expect(claimNextM).not.toHaveBeenCalled();
+    // EI-15777: same paused-miss branch must cancel the caller's OWN standing
+    // work-item:claimable await(s) (self-scoped by assignee/ownerId) so a compliant
+    // peer stand-down doesn't keep re-waking this member on a pull it can't make.
+    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-me');
   });
 });

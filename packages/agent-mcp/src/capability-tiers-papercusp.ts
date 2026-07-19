@@ -71,6 +71,12 @@ const EXACT: Record<string, CapabilityTier> = {
   // Rebind a fleet's color scheme — persists agent_fleets.color_scheme + live-recolors
   // every active session in the fleet (a write on both, so 'medium' like the others).
   'fleet:recolor': 'medium',
+  // Per-member declarative launch specs (per-member-declarative-launch-specs P-007/P-008):
+  // a leader reconfigures ONE member's runtime settings (compaction limit / claim spec /
+  // brief) or RESPAWNS it with new boot-baked settings — writes to another session, 'medium'
+  // like the other fleet mutations.
+  'fleet:reconfigure-member': 'medium',
+  'fleet:respawn-member': 'medium',
   'storage:plugin-private': 'low',
   // Storage settings page (storage-settings-page-2026-06-15). Read is a usage
   // introspection; write is a destructive prune-by-age (+ VACUUM FULL) → high.

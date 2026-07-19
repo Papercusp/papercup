@@ -42,7 +42,11 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   fleetScopedMiss: (
     scope: any,
     quarantinedIds: string[],
-    opts?: { pausedReason?: string | null; cooldownDiag?: { cooldownExcluded: number; earliestExpiryMs: number | null } | null },
+    opts?: {
+      pausedReason?: string | null;
+      cooldownDiag?: { cooldownExcluded: number; earliestExpiryMs: number | null } | null;
+      claimableAwaitsCancelled?: number;
+    },
   ) => ({
     ok: false,
     error:
@@ -55,6 +59,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
     quarantinedIds,
     windDown: true,
     ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
+    ...(opts?.pausedReason !== undefined ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(opts?.cooldownDiag ? { cooldownOnly: true } : {}),
   }),
 }));
@@ -156,5 +161,9 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     const b = JSON.parse(out.content[0]!.text);
     expect(b).toMatchObject({ ok: false, windDown: true, paused: true });
     expect(getNextM).not.toHaveBeenCalled();
+    // EI-15777: the paused-miss branch must cancel the caller's OWN standing
+    // work-item:claimable await(s) (self-scoped by ownerId) so a compliant peer
+    // stand-down doesn't keep re-waking this member on a pull it's forbidden to make.
+    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-member');
   });
 });

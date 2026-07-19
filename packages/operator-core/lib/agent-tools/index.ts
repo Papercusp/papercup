@@ -548,6 +548,7 @@ import './fleet_registry/launch-on-plan';
 import './fleet_registry/headcount-target';
 import './fleet_registry/request-remote-spawn';
 import './fleet_registry/recolor';
+import './fleet_registry/reconfigure-member';
 
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md
