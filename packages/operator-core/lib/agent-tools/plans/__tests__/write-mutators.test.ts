@@ -221,6 +221,68 @@ body
     expect(allocateNextDecisionId(doc)).toBe('D-008');
   });
 
+  it('EI-15651: skips past informal `- **D-NNN**` prose bullets in the Decisions section, avoiding a visually-duplicate id', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions
+
+- **D-001** Reuse-first: prefer an existing surface over a new one.
+- **D-002** The chat persona base must come from the shared blueprint.
+`;
+    // The informal bullets aren't parsed as structured decisions (0 real
+    // decisions found), but the allocator must still see the D-001/D-002
+    // tokens and start past them — not restart from D-001.
+    expect(allocateNextDecisionId(doc)).toBe('D-003');
+  });
+
+  it('EI-15651: still counts the max across BOTH informal tokens and structured decisions', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions
+
+- **D-005** an informal mention, higher than any structured id below.
+
+### D-002 — a real structured decision
+Date: 2026-05-20
+body
+`;
+    expect(allocateNextDecisionId(doc)).toBe('D-006');
+  });
+
+  it('EI-15651: ignores D-NNN tokens outside the Decisions section', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Background
+
+See D-999 for context in another plan — not a real decision here.
+
+## Decisions
+
+### D-001 — first
+Date: 2026-05-20
+body
+`;
+    expect(allocateNextDecisionId(doc)).toBe('D-002');
+  });
+
   it('appends a new decision at end of Decisions section', () => {
     const out = appendDecisionToBody(BASE, 'D-002', 'Second decision', 'Body of decision.', '2026-05-20', ['P-001']);
     expect(out).toContain('### D-002 — Second decision');

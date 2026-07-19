@@ -88,6 +88,14 @@ export interface ImprovementCandidate {
    *  already origin-filtered at the read seam (read-items.ts); this rides along
    *  for display + downstream decisions. */
   origin?: import('./provenance').SignalOrigin;
+  /** EI-15659: FEDERATION provenance ('local' | 'remote', from the physical
+   *  work_items row's `origin` column) — DISTINCT from the `origin` field above,
+   *  which is the unrelated learning-signal SignalOrigin (organic/drill/replay/
+   *  shadow). 'remote' means this row is federated in from its authoring peer;
+   *  `work_items:complete` REFUSES to terminal-complete a remote-authored issue
+   *  locally (only the authoring peer can). Only set when 'remote' — a local row
+   *  omits it (byte-identical candidates for the common case). */
+  workItemOrigin?: 'remote';
   /** Machine-readable finding class (payload.findingClass — frontier P-044/D-008):
    *  a stable `<miner>:<shape>` slug from the filing edge (e.g.
    *  `negative-space:resolution-gap`). The graduation tracker counts clean

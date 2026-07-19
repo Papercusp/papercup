@@ -113,6 +113,7 @@ describe('loop surface round-trip (real PG)', () => {
       parked: false,
       costCapCents: 1000,
       carry: 'warm', // default lifecycle (su-cold-auto P-008)
+      mode: 'work', // default (WI-5345 observability)
       fireCount: 0, // never fired
     });
     expect(status!.nextFireAt).toBe(new Date(now.getTime() + 300_000).toISOString());
@@ -132,6 +133,20 @@ describe('loop surface round-trip (real PG)', () => {
     });
     const status = await getLoopStatus(OWNER, { sql });
     expect(status).toMatchObject({ carry: 'cold', fireCount: 0 });
+  });
+
+  it("WI-5345: getLoopStatus surfaces mode:'monitor' for a monitor-armed loop (leader-brief observability)", async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      mode: 'monitor',
+      sql,
+    });
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status).toMatchObject({ mode: 'monitor', fireCount: 0 });
   });
 
   it("getLoopStatus reports parked=true (and nextFireAt=null) when the loop is in-flight ('infinity')", async () => {

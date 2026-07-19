@@ -80,6 +80,12 @@ export interface LeaderBriefMember {
   monitorState: MonitorState | null;
   /** Scheduled next engine fire for monitoring/waiting owners. */
   nextFireAt: string | null;
+  /** WI-5345: the member's engine loop's armed MODE ('work'|'monitor'), surfaced inline so a
+   *  leader can tell a genuinely wedged pure-monitor loop from a healthy work loop that is
+   *  simply between items (verdict:monitoring + doing:null looks identical for both without
+   *  this) — orthogonal to `monitorState`, which is the lifecycle verdict, not the armed mode.
+   *  Null when no active loop. */
+  loopMode: 'work' | 'monitor' | null;
   /** ms since the member's last recorded tool call; null = never (still booting). */
   lastToolCallAgeMs: number | null;
   doing: unknown;
@@ -224,6 +230,7 @@ export type DecoratedAgent = AgentAssignment & {
   unanswered?: UnansweredDirectedSummary;
   monitorState?: MonitorState | null;
   nextFireAt?: string | null;
+  loopMode?: 'work' | 'monitor' | null;
 };
 
 /**
@@ -273,6 +280,7 @@ export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMemb
     wakeMode: a.wakeMode === 'auto' || a.wakeMode === 'manual' ? a.wakeMode : null,
     monitorState: a.monitorState ?? null,
     nextFireAt: a.nextFireAt ?? null,
+    loopMode: a.loopMode ?? null,
     lastToolCallAgeMs: Number.isFinite(lastMs) ? Math.max(0, nowMs - lastMs) : null,
     doing: a.doing,
     workItemIds: a.claims

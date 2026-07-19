@@ -221,12 +221,13 @@ export async function decorateLoopMonitorStates<
     parkedOn?: string[];
     monitorState?: MonitorState | null;
     nextFireAt?: string | null;
+    loopMode?: 'work' | 'monitor' | null;
   },
 >(
   agents: T[],
   fetchStatuses: (ownerIds: string[]) => Promise<Map<string, LoopStatus>> = (ids) => getLoopStatuses(ids),
-): Promise<Array<T & { monitorState: MonitorState | null; nextFireAt: string | null }>> {
-  type Decorated = T & { monitorState: MonitorState | null; nextFireAt: string | null };
+): Promise<Array<T & { monitorState: MonitorState | null; nextFireAt: string | null; loopMode: 'work' | 'monitor' | null }>> {
+  type Decorated = T & { monitorState: MonitorState | null; nextFireAt: string | null; loopMode: 'work' | 'monitor' | null };
   if (agents.length === 0) return agents as Decorated[];
   const statuses = await fetchStatuses(agents.map((a) => a.agentId));
   for (const a of agents) {
@@ -234,6 +235,11 @@ export async function decorateLoopMonitorStates<
     const state = deriveLoopMonitorState(loop, a.parkedOn ?? []);
     a.monitorState = state;
     a.nextFireAt = loop?.active ? loop.nextFireAt : null;
+    // WI-5345: the loop's armed MODE ('work'|'monitor') is orthogonal to monitorState (the
+    // lifecycle verdict) — surface it independently so a leader can tell a genuinely wedged
+    // pure-monitor loop from a healthy work loop that is simply between items, without a
+    // separate loop:status{ownerId} call.
+    a.loopMode = loop?.active ? loop.mode : null;
     if (!state) continue;
     a.declaredUnclaimed = false;
     a.stalled = false;

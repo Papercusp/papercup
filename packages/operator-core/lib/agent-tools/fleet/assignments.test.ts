@@ -240,6 +240,7 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     intervalSec: 300,
     carry: 'warm',
     continuation: 'settle',
+    mode: 'work',
     fireCount: 2,
     parked: false,
     nextFireAt: new Date(NOW + 300_000).toISOString(),
@@ -314,6 +315,29 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     expect(out.claims[0].activity).toBe('alive');
     expect(out.queued[0].activity).toBe('alive');
     expect(out.doing?.activity).toBe('alive');
+  });
+
+  it("WI-5345: decorates loopMode from the loop's armed mode, independent of monitorState", async () => {
+    const agent = baseAgent({ declaredPlanSlug: 'plan-a' });
+    const [workOut] = await decorateLoopMonitorStates(
+      [agent],
+      async () => new Map([['su-agent-1', loop({ mode: 'work' })]]),
+    );
+    expect(workOut.loopMode).toBe('work');
+
+    const [monitorOut] = await decorateLoopMonitorStates(
+      [baseAgent({ declaredPlanSlug: 'plan-a' })],
+      async () => new Map([['su-agent-1', loop({ mode: 'monitor' })]]),
+    );
+    expect(monitorOut.loopMode).toBe('monitor');
+  });
+
+  it('WI-5345: loopMode is null when there is no active loop', async () => {
+    const [out] = await decorateLoopMonitorStates(
+      [baseAgent({ declaredPlanSlug: 'plan-a' })],
+      async () => new Map(),
+    );
+    expect(out.loopMode).toBeNull();
   });
 });
 

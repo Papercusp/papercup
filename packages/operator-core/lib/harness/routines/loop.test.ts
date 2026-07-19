@@ -375,6 +375,22 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     expect('carry' in input.payloadTemplate).toBe(false);
   });
 
+  it("WI-5345: stamps mode:'monitor' onto payload_template only when armed with mode:'monitor'", async () => {
+    await materializeLoop({
+      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', mode: 'monitor',
+    });
+    expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', mode: 'monitor' });
+  });
+
+  it("WI-5345: a WORK (or absent) mode leaves payload_template byte-identical to today (no mode key)", async () => {
+    await materializeLoop({
+      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', mode: 'work',
+    });
+    const input = upsertRoutineSpy.mock.calls[0][1];
+    expect(input.payloadTemplate).toEqual({ kickoff: 'k' });
+    expect('mode' in input.payloadTemplate).toBe(false);
+  });
+
   it('honours an explicit firstFireInSec (first wake sooner than one interval)', async () => {
     const now = new Date('2026-06-20T00:00:00.000Z');
     await materializeLoop({
