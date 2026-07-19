@@ -1745,7 +1745,15 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
 
     // 1. Publish: announce our own namespace advance, if any.
-    const publishOutcome = await runRefAnnouncePublishTick({ repoPath, devicePubkeyBase64: actor.devicePubkey, sign });
+    const publishOutcome = await runRefAnnouncePublishTick({
+      repoPath,
+      devicePubkeyBase64: actor.devicePubkey,
+      sign,
+      // Same genesis contract as the own-head leg — without it the FIRST
+      // sigrefs of a pre-existing repo judges the whole history and the flood
+      // caps refuse it forever (peers then never fetch the repo at all).
+      genesisBaselineSha: await deriveGenesisBaselineSha(entry, undefined),
+    });
     if (publishOutcome.announcement) {
       const announcement = publishOutcome.announcement;
       await emitAwaitedEvent({
