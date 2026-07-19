@@ -6,8 +6,11 @@
  * Semantics (deliberately narrow — the bar blocks PROVEN failures, it never
  * wedges the owner's curation queue on an idle loop):
  *
- *   - flag papercusp-transfer-harness OFF (today: D-001 dark) ⇒ no gating,
- *     byte-identical adoption behavior;
+ *   - flag papercusp-transfer-harness OFF ⇒ no gating, byte-identical
+ *     adoption behavior (the flag is default-ON since the 2026-07-19 P-004
+ *     ratification — the LEARNING GOVERNOR's budget, not this flag, is the
+ *     loop's arming gate, so with the flag ON but the loop unbudgeted the
+ *     bar can only ever see untested/candidate lessons, which never block);
  *   - no transfer_lessons row matches the candidate (by pack_candidate_id or
  *     signature) ⇒ no gating — a candidate with no replayable source task is
  *     untestable, and an untested candidate is the owner's call;

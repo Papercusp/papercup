@@ -455,7 +455,7 @@ export type DecideCandidateResult =
  * with the papercusp-transfer-harness flag armed, a candidate whose matched
  * transfer lesson FAILED its student-transfer test (or was retired) refuses
  * with reason 'transfer_bar' — the candidate stays pending, so the owner can
- * re-decide after a fix or dismiss. Flag dark (today) ⇒ byte-identical
+ * re-decide after a fix or dismiss. Flag OFF ⇒ byte-identical
  * behavior; the bar itself fails open on IO trouble.
  */
 export async function decideKnowledgePackCandidate(

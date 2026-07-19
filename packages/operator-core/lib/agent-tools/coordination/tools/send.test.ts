@@ -45,9 +45,16 @@ vi.mock('../ref-hydrate-resolve', () => ({
 }));
 // P-001 (cross-machine-coord-parity): the workspace shared-Hive scope resolver.
 // Default 'none' = today's local-only behavior for un-scoped senders.
-vi.mock('../federation-scope', () => ({
-  resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
-}));
+vi.mock('../federation-scope', async (importOriginal) => {
+  // WI-5445: resolveSharedHiveDisambiguation is PURE (no I/O) — keep the real
+  // implementation so scope:'hive' + explicit `hive` tests exercise the actual
+  // disambiguation logic instead of a second hand-rolled fake of it.
+  const actual = await importOriginal<typeof import('../federation-scope')>();
+  return {
+    ...actual,
+    resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
+  };
+});
 // fleet-scoped-broadcast-default: sender's fleet lookup. getPresence is now used
 // only by the cue-authority resolver (P-003); the fleet SLUG for the '*' down-scope
 // comes from fetchPresenceFleet (P-004 — fleetSlug is NOT on PresenceRecord).
@@ -501,6 +508,37 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
       candidates: ['hive-a', 'hive-b'],
     });
     expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it("WI-5445: scope:'hive' + explicit `hive` on SEVERAL shared Hives picks that one — closes the ambiguous_hive_scope dead end", async () => {
+    fedScopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] } as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi', scope: 'hive', hive: 'hive-b' });
+    expect(b.results[0]).toMatchObject({ ok: true, federated: true, federationScope: 'hive-b' });
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBe('hive-b');
+  });
+
+  it("WI-5445: scope:'hive' + `hive` naming a hive NOT in the shared set → loud unknown_hive, nothing sent", async () => {
+    fedScopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] } as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi', scope: 'hive', hive: 'not-a-hive' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'unknown_hive',
+      candidates: ['hive-a', 'hive-b'],
+    });
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it("WI-5445: `hive` with NO scope:'hive' has no effect (auto never guesses) — stays local", async () => {
+    fedScopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] } as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi', hive: 'hive-b' });
+    expect(b.results[0]).toMatchObject({ ok: true, federated: false });
+  });
+
+  it("WI-5445: scope:'hive' + `hive` naming the ONLY shared Hive still resolves (redundant but harmless)", async () => {
+    fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'solo-hive' } as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi', scope: 'hive', hive: 'solo-hive' });
+    expect(b.results[0]).toMatchObject({ ok: true, federated: true, federationScope: 'solo-hive' });
   });
 
   it('auto mode with SEVERAL shared Hives → ambiguity is never guessed; stays local, federated:false', async () => {

@@ -690,8 +690,11 @@ describe("LearningTab — Improvements view (default)", () => {
 
   it("renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health", () => {
     render(<LearningTab />);
-    // Loop diagnostics is always visible now (owner ask 2026-07-19) — it's a
-    // standard header, no longer a collapsible the test must click open.
+    // Loop diagnostics live behind the "How the capture loop is doing"
+    // disclosure (owner ask 2026-07-19b) — open it first.
+    fireEvent.click(
+      screen.getByRole("button", { name: /How the capture loop is doing/ }),
+    );
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip).toBeTruthy();
     expect(strip.textContent).toContain("12"); // captured 7d
