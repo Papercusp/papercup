@@ -28,6 +28,31 @@ import { resolvePlanHarnessSlug } from '../plans/source';
 import { resolveRemotePlacementHive } from './launch-on-plan';
 import { fleetRoleFor, json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
+/** Deterministic pick order mirrors distributeRemotePlacement's max-spread
+ *  sort in launch-on-plan.ts: host label then offer id. */
+export function byHostThenOffer(a: StoredWorkOffer, b: StoredWorkOffer): number {
+  return (
+    (a.record?.seat?.hostLabel ?? '').localeCompare(b.record?.seat?.hostLabel ?? '') ||
+    a.offerId.localeCompare(b.offerId)
+  );
+}
+
+/**
+ * PURE (P-004): auto-pick ONE seat-offer from a pot's open (fleetSlug=null,
+ * potSlug-scoped) offers for a spawn-request target when the requester's
+ * fleet has no fleet-scoped offer of its own — deterministic (sorted by host
+ * label then offer id, mirroring distributeRemotePlacement's spread order),
+ * the first candidate whose delegated seat count covers `count`. Null when
+ * none qualifies (caller refuses, listing candidates).
+ */
+export function pickPotSeatOffer(
+  offers: readonly StoredWorkOffer[],
+  count: number,
+): StoredWorkOffer | null {
+  const sorted = [...offers].sort(byHostThenOffer);
+  return sorted.find((o) => (o.record?.seat?.count ?? 0) >= count) ?? null;
+}
+
 export default defineTool({
   name: 'fleet:request_remote_spawn',
   description:
@@ -127,12 +152,6 @@ export default defineTool({
       host: o.record?.seat?.hostLabel ?? null,
       seats: o.record?.seat ? `${o.record.seat.count} × ${o.record.seat.model}:${o.record.seat.effort}` : null,
     });
-    // Deterministic pick order mirrors distributeRemotePlacement's max-spread
-    // sort in launch-on-plan.ts: host label then offer id.
-    const byHostThenOffer = (a: StoredWorkOffer, b: StoredWorkOffer) =>
-      (a.record?.seat?.hostLabel ?? '').localeCompare(b.record?.seat?.hostLabel ?? '') ||
-      a.offerId.localeCompare(b.offerId);
-
     let potOffers: StoredWorkOffer[] = [];
     if (targetPublisher == null || targetOffer == null) {
       if (seatOffers.length > 1) {
@@ -155,8 +174,7 @@ export default defineTool({
         potOffers = potSlug
           ? await listWorkOffers(workspaceId, hiveHomeSlug, { potSlug, kind: 'seat', status: 'open' })
           : [];
-        const sorted = [...potOffers].sort(byHostThenOffer);
-        const picked = sorted.find((o) => (o.record?.seat?.count ?? 0) >= args.count);
+        const picked = pickPotSeatOffer(potOffers, args.count);
         if (!picked) {
           return json(
             {

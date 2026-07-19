@@ -80,6 +80,44 @@ function bridgeInput(over: Partial<BridgeTickInput> = {}, seams: Partial<NonNull
   return { input, recorded, egressCalls };
 }
 
+describe('runGithubBridgeTick — an unreachable remote must not read green', () => {
+  // The oddsmith regression (2026-07-19): the bare store resolved a different
+  // git credential than the clone, so ingress hit `Repository not found` on
+  // every tick. Every structured residue was empty BECAUSE nothing was
+  // fetched, so the tick classified `clear` while the bridge was inert and
+  // origin was frozen.
+  it('ingress that reaches NOTHING and only errors → escalate + needsOwner (not clear)', async () => {
+    const { input, recorded } = bridgeInput(
+      {},
+      {
+        ingress: async () =>
+          cleanIngress({
+            ok: false,
+            upToDate: [],
+            errors: [{ branch: 'main', message: 'remote: Repository not found.' }],
+          }),
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.action).toBe('escalate');
+    expect(out.verdict.needsOwner).toBe(true);
+    expect(out.verdict.signals.map((s) => s.kind)).toContain('bridge-remote-unreachable');
+    expect(recorded.at(-1)?.action).toBe('escalate');
+  });
+
+  it('a per-branch error alongside a branch that DID resolve is not "unreachable"', async () => {
+    const { input } = bridgeInput(
+      {},
+      {
+        ingress: async () =>
+          cleanIngress({ errors: [{ branch: 'gone', message: "couldn't find remote ref gone" }] }),
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.signals.map((s) => s.kind)).not.toContain('bridge-remote-unreachable');
+  });
+});
+
 describe('runGithubBridgeTick — composition', () => {
   it('clean pass: ingress → egress canonical staging to the resolved target → clear verdict', async () => {
     const { input, recorded, egressCalls } = bridgeInput();
@@ -101,13 +139,20 @@ describe('runGithubBridgeTick — composition', () => {
     expect((egressCalls[0] as { remoteUrl: string }).remoteUrl).toBe('https://github.com/me/shop.git');
   });
 
-  it('no fork + no upstream write → egress skipped, ingress still runs', async () => {
-    const { input, egressCalls } = bridgeInput({ upstreamWrite: null });
+  it('no fork + GitHub AFFIRMATIVELY refused write → egress skipped, ingress still runs', async () => {
+    const { input, egressCalls } = bridgeInput({ upstreamWrite: false });
     const out = await runGithubBridgeTick(input);
     expect(out.egressTarget).toBe('skipped');
     expect(out.egress).toBeNull();
     expect(egressCalls).toHaveLength(0);
     expect(out.ingressed.upToDate).toBe(1);
+  });
+
+  it('no fork + UNKNOWN upstream write → still egresses (probe and transport are different credential planes)', async () => {
+    const { input, egressCalls } = bridgeInput({ upstreamWrite: null });
+    const out = await runGithubBridgeTick(input);
+    expect(out.egressTarget).toBe('upstream');
+    expect(egressCalls).toHaveLength(1);
   });
 
   it('no canonical staging yet → egress skipped, and the pass ESCALATES rather than reading clear', async () => {
@@ -132,7 +177,7 @@ describe('runGithubBridgeTick — composition', () => {
   });
 
   it('canonical missing is NOT signalled when there is no egress target at all (nothing to freeze)', async () => {
-    const { input } = bridgeInput({ upstreamWrite: null }, { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) });
+    const { input } = bridgeInput({ upstreamWrite: false }, { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) });
     const out = await runGithubBridgeTick(input);
     expect(out.egressTarget).toBe('skipped');
     expect(out.verdict.action).toBe('clear');

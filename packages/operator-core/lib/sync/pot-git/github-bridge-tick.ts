@@ -124,6 +124,25 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
   });
   errors.push(...ingress.errors.map((e) => `ingress${e.branch ? ` ${e.branch}` : ''}: ${e.message}`));
 
+  // Ingress that failed for EVERY requested branch means the REMOTE is
+  // unreachable, not that a branch diverged — and every structured residue is
+  // then empty for the wrong reason, so the tick would classify `clear` while
+  // the bridge is inert. Surface it as its own signal (oddsmith, 2026-07-19).
+  const ingressReachedNothing =
+    input.branches.length > 0 &&
+    ingress.updated.length === 0 &&
+    ingress.upToDate.length === 0 &&
+    ingress.nonFF.length === 0 &&
+    ingress.absent.length === 0 &&
+    ingress.errors.length > 0;
+  const remoteUnreachable = ingressReachedNothing
+    ? {
+        remoteUrl: input.githubRemote ?? null,
+        branches: [...input.branches],
+        errors: ingress.errors.map((e) => e.message),
+      }
+    : null;
+
   // 2. ADMISSION — judge each moved head; advance the watermark only on admits.
   const admissions: BridgeTickOutcome['admissions'] = [];
   const admissionResults: Array<{ head: string; result: AdmissionResult }> = [];
@@ -175,7 +194,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
 
   // 4. DIVERGENCE — fold residues, write/clear the escalation (best-effort).
   const verdict = classifyDivergence(
-    collectDivergenceSignals({ egress, ingress, admissions: admissionResults, canonicalMissing }),
+    collectDivergenceSignals({ egress, ingress, admissions: admissionResults, canonicalMissing, remoteUnreachable }),
   );
   await record(input.potHomeSlug, input.workspaceId, verdict);
 

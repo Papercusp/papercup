@@ -57,7 +57,7 @@ import {
   getClaimSpec,
 } from '../../scheduler/claim-spec-store';
 import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
-import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
+import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
 import { resolveWorkspaceHiveScope, type WorkspaceHiveScope } from '../coordination/federation-scope';
@@ -685,6 +685,11 @@ export interface RemoteSeatOfferSummary {
   offerId: string;
   host: string | null;
   seats: number;
+  /** P-005: set for a pot-scoped offer (fleetSlug=null on the row) — threaded
+   *  back into publishSpawnRequest's requesterPotSlug so the honoring host's
+   *  audience gate (delegated-spawn-honor.ts) can evaluate it; null/undefined
+   *  for a fleet-scoped offer (no audience concept). */
+  potSlug?: string | null;
 }
 
 export type RemotePlacementDistribution =
@@ -692,12 +697,15 @@ export type RemotePlacementDistribution =
   | { ok: false; error: string };
 
 /**
- * PURE (WI-5211): spread `count` members across the fleet's REMOTE seat-offers.
- * Deterministic max-spread round-robin — 1 member per machine per round (offers
- * sorted by host label then offer id), so `count` ≤ machines lands exactly one
- * member on each of `count` DIFFERENT machines before any machine gets a second;
- * each offer is bounded by its delegated seat count. Refuses (never clamps) when
- * `count` exceeds the total delegated remote capacity.
+ * PURE (WI-5211; P-005 pools in pot-scoped offers too): spread `count` members
+ * across the fleet's REMOTE seat-offers. `offers` is the CALLER's already-merged
+ * pool of this fleet's own fleet-scoped offers AND its pot's shared (potSlug-set)
+ * offers — this function is scope-blind and just spreads over whatever it's
+ * given. Deterministic max-spread round-robin — 1 member per machine per round
+ * (offers sorted by host label then offer id), so `count` ≤ machines lands
+ * exactly one member on each of `count` DIFFERENT machines before any machine
+ * gets a second; each offer is bounded by its delegated seat count. Refuses
+ * (never clamps) when `count` exceeds the total delegated remote capacity.
  */
 export function distributeRemotePlacement(
   count: number,
@@ -708,7 +716,7 @@ export function distributeRemotePlacement(
     return {
       ok: false,
       error:
-        "no open REMOTE seat-offer for this fleet — each contributing machine delegates first (resource:delegate kind:'agent_slot'); this machine's own delegation spawns locally (fromSeats), never via placement:'remote'",
+        "no open REMOTE seat-offer for this fleet or its pot — a contributing machine delegates first (resource:delegate kind:'agent_slot', to the fleet or to the whole pot); this machine's own delegation spawns locally (fromSeats), never via placement:'remote'",
     };
   }
   const capacity = usable.reduce((s, o) => s + o.seats, 0);
@@ -794,7 +802,7 @@ export default defineTool({
       .enum(['local', 'remote'])
       .optional()
       .describe(
-        "Where members run (default 'local': this machine, exactly as before). 'remote' places members on the OTHER machines that delegated agent_slot seats to this fleet (their federated seat-offers): `count` is spread round-robin across those machines — 1 per machine first, so count 2 across 2 machines lands 1 member on EACH — publishing one SIGNED spawn-request per target (the fleet:request_remote_spawn chain, which stays the single-target/explicit-pick door). ASYNC: members arrive only after each host's owner-authority accept-delegated-seats gate admits the request (a gate-off host lets it expire after 60 min); watch arrivals via fleet:status / coord:presence, refusals via p2p:trace. Each machine's delegated slot pins the member's model+effort+account and the host owns the window shape, so agent/model/account/seat/headless/carry/display/per-member-brief args are REFUSED with 'remote'; `launchContext` still applies (sent as brief text, ≤8000 chars).",
+        "Where members run (default 'local': this machine, exactly as before). 'remote' places members on the OTHER machines that delegated agent_slot seats to this fleet OR to its pot (P-005: fleet-scoped and pot-scoped federated seat-offers are pooled together): `count` is spread round-robin across those machines — 1 per machine first, so count 2 across 2 machines lands 1 member on EACH — publishing one SIGNED spawn-request per target (the fleet:request_remote_spawn chain, which stays the single-target/explicit-pick door). ASYNC: members arrive only after each host's owner-authority accept-delegated-seats gate admits the request, AND — for a pot-scoped target — that host's audience check for the pot ('trusted-members'|'whole-pot') passes (a gate-off host, or an audience refusal, lets/leaves the request to expire after 60 min); watch arrivals via fleet:status / coord:presence, refusals via p2p:trace. Each machine's delegated slot pins the member's model+effort+account and the host owns the window shape, so agent/model/account/seat/headless/carry/display/per-member-brief args are REFUSED with 'remote'; `launchContext` still applies (sent as brief text, ≤8000 chars).",
       ),
     hive: z
       .string()
@@ -1239,22 +1247,43 @@ export default defineTool({
       } catch (e: any) {
         return err(`Failed to list the fleet's federated seat-offers: ${e?.message ?? e}`);
       }
-      const remoteOffers: RemoteSeatOfferSummary[] = seatOffers
+      // P-005: pool the pot's shared seat-offers (fleetSlug=null, potSlug=this
+      // plan's harness) alongside this fleet's own — the same fallback
+      // fleet:request_remote_spawn's single-target auto-pick already uses
+      // (WI-5402/P-004's pickPotSeatOffer), now applied to the SPREAD
+      // distribution so `count` can draw from either scope in one call. The
+      // audience gate ('trusted-members'|'whole-pot') is re-checked
+      // authoritatively on the honoring host (delegated-spawn-honor.ts) — this
+      // side just pools candidates and threads potSlug through so that gate has
+      // what it needs; it never filters by audience itself (fail-closed lives
+      // on the host, not the requester).
+      const potSlug = await resolvePlanHarnessSlug(workspaceId, args.plan);
+      let potSeatOffers: typeof seatOffers = [];
+      if (potSlug) {
+        try {
+          potSeatOffers = await listWorkOffers(workspaceId, hiveHomeSlug, {
+            potSlug,
+            kind: 'seat',
+            status: 'open',
+          });
+        } catch (e: any) {
+          return err(`Failed to list the pot's federated seat-offers: ${e?.message ?? e}`);
+        }
+      }
+      const isSelfOffer = (o: (typeof seatOffers)[number]) =>
+        selfGithubUserId != null &&
+        selfDevicePubkey != null &&
+        o.publisherGithubUserId === selfGithubUserId &&
+        o.signerDevicePubkey === selfDevicePubkey;
+      const remoteOffers: RemoteSeatOfferSummary[] = [...seatOffers, ...potSeatOffers]
         .filter((o) => !o.localDisposition)
-        .filter(
-          (o) =>
-            !(
-              selfGithubUserId != null &&
-              selfDevicePubkey != null &&
-              o.publisherGithubUserId === selfGithubUserId &&
-              o.signerDevicePubkey === selfDevicePubkey
-            ),
-        )
+        .filter((o) => !isSelfOffer(o))
         .map((o) => ({
           publisher: o.publisherGithubUserId,
           offerId: o.offerId,
           host: o.record?.seat?.hostLabel ?? null,
           seats: o.record?.seat?.count ?? 0,
+          potSlug: o.potSlug,
         }));
       const dist = distributeRemotePlacement(openCount, remoteOffers);
       if (!dist.ok) return err(dist.error);
@@ -1333,6 +1362,11 @@ export default defineTool({
           count: alloc.count,
           planSlug: args.plan,
           requesterOwnerId: ownerId,
+          // P-005: only set for allocations drawn from a pot-scoped offer — the
+          // honoring host's audience gate (delegated-spawn-honor.ts) consults
+          // this ONLY when Gate 2 matched a pot-scoped candidate; undefined for
+          // a fleet-scoped allocation (no audience concept there).
+          requesterPotSlug: alloc.potSlug ?? undefined,
           launchContext: remoteBriefText,
           hiveOverride: hiveHomeSlug,
         });

@@ -53,6 +53,20 @@ export type DivergenceSignal =
     }
   | { kind: 'egress-secret-block'; remoteRef: string; findings: number; overflow: boolean }
   /**
+   * Ingress failed for EVERY requested branch — the remote itself is
+   * unreachable (repo not found / auth refused / network), not a per-branch
+   * divergence. Without this signal a bridge whose remote it cannot even
+   * contact reports `clear` + `needs_owner:false` on every tick while origin
+   * silently freezes: the structured residues (nonFF/absent/admissions) are
+   * all empty precisely BECAUSE nothing was fetched, so "no residue" reads as
+   * "healthy". Observed live on the oddsmith hive (2026-07-19): the bare
+   * store's git transport resolved a different credential than the clone's
+   * per-URL helper → `Repository not found` every tick, verdict `clear`.
+   * Lever is a HUMAN one (fix the remote URL or wire the credential), so this
+   * sets needsOwner.
+   */
+  | { kind: 'bridge-remote-unreachable'; remoteUrl: string | null; branches: string[]; errors: string[] }
+  /**
    * The egress target is live but the bare store has no canonical ref to push.
    * Without this signal an unestablished canonical is INDISTINGUISHABLE from a
    * healthy no-op — the tick reports `egress: null` + `clear` on every pass
@@ -86,8 +100,18 @@ export function collectDivergenceSignals(results: {
   admissions?: Array<{ head: string; result: Pick<AdmissionResult, 'admit' | 'basis' | 'blockedAuthors' | 'errors'> }>;
   /** Set by the tick when a live egress target found no canonical ref to push. */
   canonicalMissing?: { canonicalRef: string; watermarkSha: string | null } | null;
+  /** Set by the tick when ingress failed for EVERY requested branch (remote unreachable). */
+  remoteUnreachable?: { remoteUrl: string | null; branches: string[]; errors: string[] } | null;
 }): DivergenceSignal[] {
   const signals: DivergenceSignal[] = [];
+  if (results.remoteUnreachable) {
+    signals.push({
+      kind: 'bridge-remote-unreachable',
+      remoteUrl: results.remoteUnreachable.remoteUrl,
+      branches: results.remoteUnreachable.branches,
+      errors: results.remoteUnreachable.errors,
+    });
+  }
   if (results.canonicalMissing) {
     signals.push({
       kind: 'egress-canonical-missing',
@@ -126,7 +150,9 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
   // allowNonFF; a blocked admission needs a revocation decision. An egress
   // non-FF usually self-heals via the integrator's next merge of the ingressed
   // origin head; a secret block needs a scrub, not an owner.
-  const needsOwner = signals.some((s) => s.kind === 'ingress-non-ff' || s.kind === 'admission-blocked');
+  const needsOwner = signals.some(
+    (s) => s.kind === 'ingress-non-ff' || s.kind === 'admission-blocked' || s.kind === 'bridge-remote-unreachable',
+  );
   const counts = new Map<DivergenceSignal['kind'], number>();
   for (const s of signals) counts.set(s.kind, (counts.get(s.kind) ?? 0) + 1);
   const parts: string[] = [];
@@ -145,6 +171,10 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     );
   if (c('egress-secret-block') > 0)
     parts.push(`${c('egress-secret-block')} ref(s) blocked by the secrets gate (nothing left the machine — scrub + re-egress)`);
+  if (c('bridge-remote-unreachable') > 0)
+    parts.push(
+      'the GitHub remote could not be contacted for ANY branch (repo not found / auth refused / network) — the bridge is INERT: nothing ingresses, nothing egresses, and origin is frozen. Fix the remote URL or wire the credential the git transport needs for it',
+    );
   if (c('egress-canonical-missing') > 0)
     parts.push(
       `canonical ref absent in the bare store — NOTHING is being egressed and origin is frozen (the integrator has not published it, and the catch-up pin could not: its watermark sha's object is missing). Re-establish canonical, then egress fast-forwards`,

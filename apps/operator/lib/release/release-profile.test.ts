@@ -162,7 +162,7 @@ describe('rubricReleaseComponent — real adapter, injected deps', () => {
     const comp = rubricReleaseComponent('test-rubric', {
       deps: {
         getRubric: async () => rubric(),
-        listScorecards: async () => [scorecardRow({ gradedGeneration: { sha: 'shaX', hostStartedAt: null } })],
+        listScorecards: async () => [scorecardRow({ gradedGeneration: { deployedSha: 'shaX', hostStartedAt: null } })],
       },
     });
     const result = await comp.check();
@@ -210,7 +210,7 @@ describe('deployStalenessGateComponent — real adapter, injected git-ops', () =
 describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end to end', () => {
   const healthyDeps = {
     listRubrics: async () => [rubric()],
-    readRunningGeneration: async () => ({ sha: 'gen-sha-1', hostStartedAt: null }),
+    readRunningGeneration: async () => ({ deployedSha: 'gen-sha-1', hostStartedAt: null }),
   };
   const healthyGateOpts = {
     deps: {
@@ -225,7 +225,7 @@ describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end
     const spec = await buildPapercuspReleaseProfile({
       deps: healthyDeps,
       gateOpts: healthyGateOpts,
-      rubricOpts: { deps: { listScorecards: async () => [scorecardRow({ gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } })] } },
+      rubricOpts: { deps: { listScorecards: async () => [scorecardRow({ gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } })] } },
     });
     const verdict = await evaluateReleaseProfile(spec, { now: NOW });
     expect(verdict.go).toBe(true);
@@ -242,7 +242,7 @@ describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end
           listScorecards: async () => [
             scorecardRow({
               ratings: { c1: { rating: 'pass', evidence: 'e' }, c2: { rating: 'broken', evidence: 'e' } },
-              gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null },
+              gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null },
             }),
           ],
         },
@@ -263,7 +263,7 @@ describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end
           maxAgeMs: DEFAULT_RUBRIC_STALE_AFTER_MS,
           deps: {
             listScorecards: async () => [
-              scorecardRow({ createdAt: staleMeasuredAt, gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } }),
+              scorecardRow({ createdAt: staleMeasuredAt, gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } }),
             ],
           },
         },
@@ -284,7 +284,7 @@ describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end
         deps: {
           // this scorecard graded an OLDER generation than what's running now
           listScorecards: async () => [
-            scorecardRow({ gradedGeneration: { sha: 'gen-sha-0-OLD', hostStartedAt: null } }),
+            scorecardRow({ gradedGeneration: { deployedSha: 'gen-sha-0-OLD', hostStartedAt: null } }),
           ],
         },
       },
@@ -300,7 +300,7 @@ describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end
       deps: healthyDeps,
       evaluateOpts: { now: NOW },
       rubricOpts: {
-        deps: { listScorecards: async () => [scorecardRow({ gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } })] },
+        deps: { listScorecards: async () => [scorecardRow({ gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } })] },
       },
       gateOpts: {
         // deployedSha matches the running generation ('gen-sha-1') so this case isolates
@@ -329,10 +329,10 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
     },
   };
   const healthyDeps = {
-    readRunningGeneration: async () => ({ sha: 'gen-sha-1', hostStartedAt: null }),
+    readRunningGeneration: async () => ({ deployedSha: 'gen-sha-1', hostStartedAt: null }),
     getRubric: async (ref: string) => rubric({ rubricId: ref }),
   };
-  const healthyScorecard = scorecardRow({ gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } });
+  const healthyScorecard = scorecardRow({ gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } });
 
   it('composes EXACTLY the fixed 7-rubric set + the deploy-staleness gate — never auto-discovery', async () => {
     const spec = await buildAutoloopReleaseProfile({
@@ -375,7 +375,7 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
         deps: {
           listScorecards: async (opts: { rubricRef?: string } = {}) =>
             opts.rubricRef === 'blender-release-readiness'
-              ? [scorecardRow({ ratings: { c1: { rating: 'broken', evidence: 'e' }, c2: { rating: 'pass', evidence: 'e' } }, gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } })]
+              ? [scorecardRow({ ratings: { c1: { rating: 'broken', evidence: 'e' }, c2: { rating: 'pass', evidence: 'e' } }, gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } })]
               : [healthyScorecard],
         },
       },

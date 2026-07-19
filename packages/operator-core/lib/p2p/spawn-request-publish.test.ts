@@ -177,6 +177,55 @@ describe('publishSpawnRequest — target validation (refuse at author time, not 
   });
 });
 
+describe('publishSpawnRequest — pot-scoped targets (P-004)', () => {
+  function potOfferStored(over: Partial<StoredWorkOffer> = {}): StoredWorkOffer {
+    return seatOfferStored({
+      record: {
+        offerId: 'seat-pot123',
+        publisherGithubUserId: UID_B,
+        fleetSlug: null,
+        potSlug: 'pot-x',
+        kind: 'seat',
+        status: 'open',
+        cancelReason: null,
+        workOffer: null,
+        authorship: null,
+        seat: { model: 'haiku', effort: 'low', count: 3, accountScope: 'auto', hostLabel: 'box-b', audience: 'whole-pot' },
+        spawnRequest: null,
+        recordVersion: 1,
+      },
+      offerId: 'seat-pot123',
+      fleetSlug: null,
+      potSlug: 'pot-x',
+      ...over,
+    });
+  }
+
+  it('accepts a pot-scoped offer when requesterPotSlug matches the offer\'s potSlug', async () => {
+    const { d, putRecord } = deps({ getRecord: vi.fn(async () => potOfferStored()) });
+    const res = await publishSpawnRequest(
+      opts({ targetOfferId: 'seat-pot123', requesterPotSlug: 'pot-x' }),
+      d,
+    );
+    expect(res.ok).toBe(true);
+    expect(putRecord).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a pot-scoped offer when requesterPotSlug is missing or does not match', async () => {
+    const { d } = deps({ getRecord: vi.fn(async () => potOfferStored()) });
+    expect(await publishSpawnRequest(opts({ targetOfferId: 'seat-pot123' }), d)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("delegates to pot 'pot-x'"),
+    });
+    expect(
+      await publishSpawnRequest(
+        opts({ targetOfferId: 'seat-pot123', requesterPotSlug: 'other-pot' }),
+        d,
+      ),
+    ).toMatchObject({ ok: false, error: expect.stringContaining("delegates to pot 'pot-x'") });
+  });
+});
+
 describe('publishSpawnRequest — fail-soft gates (offer-store-publish discipline)', () => {
   it('skips on no workspace / no single hive / no identity', async () => {
     const { d } = deps();

@@ -56,6 +56,19 @@ describe('deriveLaunchPromptText — routing gate option (C), AUTO-off + plan bo
     expect(text).toContain('p2p:trace');
   });
 
+  it('P-013: names donors by hostLabel when at least one is set, instead of the anonymous count', () => {
+    const withLabels: RemoteSeatSummary = { ...SHARED_WITH_OFFERS, donorLabels: ['box-a', 'box-b'] };
+    const text = deriveLaunchPromptText(null, false, PLAN, 'full', withLabels);
+    expect(text).toContain('I see 7 agent slots available from box-a, box-b)');
+    expect(text).not.toContain('3 peers in this pot');
+  });
+
+  it('P-013: empty donorLabels array falls back to the anonymous count phrasing', () => {
+    const emptyLabels: RemoteSeatSummary = { ...SHARED_WITH_OFFERS, donorLabels: [] };
+    const text = deriveLaunchPromptText(null, false, PLAN, 'full', emptyLabels);
+    expect(text).toContain('I see 7 agent slots available from 3 peers in this pot');
+  });
+
   it('singular counts use singular nouns ("1 agent slot", "1 peer")', () => {
     const text = deriveLaunchPromptText(null, false, PLAN, 'full', SHARED_SINGULAR);
     expect(text).toContain('I see 1 agent slot available from 1 peer in this pot');

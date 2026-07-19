@@ -61,6 +61,7 @@ export async function resolveRemoteSeatInventory(
       status: 'open',
     });
     const donors = new Set<number>();
+    const labels = new Set<string>();
     let totalSeats = 0;
     for (const row of rows) {
       // P-001: only a TRUE pot-scoped offer (potSlug set) is spendable by the
@@ -70,8 +71,17 @@ export async function resolveRemoteSeatInventory(
       if (!row.record || row.record.kind !== 'seat' || !row.record.seat) continue;
       donors.add(row.publisherGithubUserId);
       totalSeats += row.record.seat.count;
+      // P-013 ("donors named"): hostLabel is optional at delegate time — only
+      // surface it when the offering host actually set one, never invent one.
+      const label = row.record.seat.hostLabel?.trim();
+      if (label) labels.add(label);
     }
-    return { potShared: true, donorCount: donors.size, totalSeats };
+    return {
+      potShared: true,
+      donorCount: donors.size,
+      totalSeats,
+      donorLabels: labels.size > 0 ? Array.from(labels).sort() : undefined,
+    };
   } catch (e) {
 
     console.warn(

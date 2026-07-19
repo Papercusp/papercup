@@ -37,6 +37,16 @@ export interface ResolveForkPushTargetInput {
    * Does the operator hold write to the UPSTREAM? (decideGitSyncPush's permission
    * probe answer.) Only consulted when no fork is configured: a fork ALWAYS wins
    * (the contribution lane never pushes upstream even when it could — D-007).
+   *
+   * TRI-state, and `null` (unknown) means UNKNOWN — never "no". The probe
+   * (`fetchRepoPushPermission`) asks GitHub over the **gh/octokit token**, while
+   * the push itself rides **git transport**, which resolves per-URL credential
+   * helpers the token knows nothing about. The two planes legitimately disagree:
+   * a private repo reachable by a repo-scoped helper is invisible to the global
+   * token, so the probe 404s → `null`. Reading that as "no write" silently
+   * demotes a healthy bridged hive to commit-only forever (observed live on the
+   * oddsmith hive 2026-07-19: canonical established, integrator elected, and
+   * origin frozen behind a bridge reporting `divergence: clear`).
    */
   upstreamWrite?: boolean | null;
 }
@@ -44,8 +54,9 @@ export interface ResolveForkPushTargetInput {
 /**
  * Resolve where a git-sync should push, PURE — no IO. The contribution rule
  * (D-007b): a configured fork ALWAYS wins (a user's loop never direct-pushes
- * upstream, even with write). Absent a fork, fall back to the existing upstream
- * push-decision (push iff the operator has write); otherwise commit-only.
+ * upstream, even with write). Absent a fork, push upstream unless GitHub
+ * AFFIRMATIVELY refused (`upstreamWrite === false`) — `null`/unknown attempts
+ * the push, matching `decideGitSyncPush` rule 6's best-effort optimism.
  */
 export function resolveForkPushTarget(input: ResolveForkPushTargetInput): ForkPushTarget {
   if (input.forkRemote) {
@@ -55,17 +66,23 @@ export function resolveForkPushTarget(input: ResolveForkPushTargetInput): ForkPu
       reason: 'fork configured — contribution lane pushes the user\'s fork, never upstream (D-007b)',
     };
   }
-  if (input.upstreamRemote && input.upstreamWrite === true) {
+  if (input.upstreamRemote && input.upstreamWrite !== false) {
     return {
       target: 'upstream',
       remote: input.upstreamRemote,
-      reason: 'no fork configured + operator has upstream write — push upstream directly',
+      reason:
+        input.upstreamWrite === true
+          ? 'no fork configured + operator has upstream write — push upstream directly'
+          : 'no fork configured + upstream write UNKNOWN — attempt upstream (decideGitSyncPush rule 6 ' +
+            'optimism: the probe and the git transport are different credential planes, so "unknown" is ' +
+            'not "no". Egress is FF-only + CAS + secrets-scanned, so a wrong guess is a rejected push — ' +
+            'a signal — never damage)',
     };
   }
   return {
     target: 'none',
     reason: input.upstreamRemote
-      ? 'no fork configured + no upstream write — commit-only (configure a fork to contribute)'
+      ? 'no fork configured + upstream write REFUSED by GitHub — commit-only (configure a fork to contribute)'
       : 'no fork and no upstream remote — commit-only (local checkout)',
   };
 }

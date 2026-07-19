@@ -552,11 +552,12 @@ describe('overrideCapacityClamp arg + clamp override (EI-8807)', () => {
 // WI-5211: placement:'remote' — one launch-on-plan call spreads members across the
 // OTHER machines' federated seat-offers (one signed spawn-request per target).
 describe("distributeRemotePlacement (WI-5211 — cross-machine max-spread round-robin)", () => {
-  const offer = (publisher: number, offerId: string, host: string | null, seats: number) => ({
+  const offer = (publisher: number, offerId: string, host: string | null, seats: number, potSlug?: string | null) => ({
     publisher,
     offerId,
     host,
     seats,
+    ...(potSlug !== undefined ? { potSlug } : {}),
   });
 
   it('count 2 across 2 machines lands exactly 1 member on EACH (the drill contract)', () => {

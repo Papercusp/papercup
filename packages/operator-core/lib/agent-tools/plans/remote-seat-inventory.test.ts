@@ -21,7 +21,12 @@ const WS = 'ws-1';
 const HOME = 'hive-home';
 
 /** A pot-scoped (potSlug set, fleetSlug null) standing seat-offer — P-001. */
-function potSeatOffer(over: { publisherGithubUserId: number; count: number; potSlug?: string }): StoredWorkOffer {
+function potSeatOffer(over: {
+  publisherGithubUserId: number;
+  count: number;
+  potSlug?: string;
+  hostLabel?: string | null;
+}): StoredWorkOffer {
   const record: WorkOfferStoreRecord = {
     offerId: `seat-${over.publisherGithubUserId}`,
     publisherGithubUserId: over.publisherGithubUserId,
@@ -37,7 +42,7 @@ function potSeatOffer(over: { publisherGithubUserId: number; count: number; potS
       effort: 'low',
       count: over.count,
       accountScope: 'auto',
-      hostLabel: null,
+      hostLabel: over.hostLabel ?? null,
       audience: 'trusted-members',
     },
     spawnRequest: null,
@@ -140,6 +145,27 @@ describe('resolveRemoteSeatInventory', () => {
     const listOffers = vi.fn(async () => rows);
     const out = await resolveRemoteSeatInventory(WS, { resolveScope, listOffers });
     expect(out).toEqual({ potShared: true, donorCount: 2, totalSeats: 10 });
+  });
+
+  it('P-013: collects deduped, sorted hostLabels when donors set one', async () => {
+    const resolveScope = vi.fn(async () => ({ kind: 'one' as const, homeSlug: HOME }));
+    const rows = [
+      potSeatOffer({ publisherGithubUserId: 1, count: 3, hostLabel: 'box-b' }),
+      potSeatOffer({ publisherGithubUserId: 2, count: 5, hostLabel: 'box-a' }),
+      // a second offer from the SAME donor+label — dedupes to one label
+      { ...potSeatOffer({ publisherGithubUserId: 1, count: 2, hostLabel: 'box-b' }), offerId: 'seat-1-b' },
+    ];
+    const listOffers = vi.fn(async () => rows);
+    const out = await resolveRemoteSeatInventory(WS, { resolveScope, listOffers });
+    expect(out).toEqual({ potShared: true, donorCount: 2, totalSeats: 10, donorLabels: ['box-a', 'box-b'] });
+  });
+
+  it('P-013: donorLabels stays undefined when no donor set a hostLabel (falls back to anonymous count)', async () => {
+    const resolveScope = vi.fn(async () => ({ kind: 'one' as const, homeSlug: HOME }));
+    const rows = [potSeatOffer({ publisherGithubUserId: 1, count: 3 })];
+    const listOffers = vi.fn(async () => rows);
+    const out = await resolveRemoteSeatInventory(WS, { resolveScope, listOffers });
+    expect(out.donorLabels).toBeUndefined();
   });
 
   it('P-001: excludes fleet-scoped offers (potSlug null) — not spendable by the not-yet-created fleet', async () => {

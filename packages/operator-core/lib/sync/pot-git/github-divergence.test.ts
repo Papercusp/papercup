@@ -42,6 +42,24 @@ describe('collectDivergenceSignals — folds the mechanism residues', () => {
     ]);
   });
 
+  it('an unreachable remote is its own signal — NOT a clean pass (oddsmith 2026-07-19)', () => {
+    const signals = collectDivergenceSignals({
+      remoteUnreachable: {
+        remoteUrl: 'https://github.com/aviynw/oddsmith.git',
+        branches: ['staging'],
+        errors: ['remote: Repository not found.'],
+      },
+    });
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.kind).toBe('bridge-remote-unreachable');
+    // The whole point: it must ESCALATE and need a human, because every
+    // structured residue is empty exactly BECAUSE nothing was fetched.
+    const verdict = classifyDivergence(signals);
+    expect(verdict.action).toBe('escalate');
+    expect(verdict.needsOwner).toBe(true);
+    expect(verdict.detail).toMatch(/INERT/);
+  });
+
   it('admitted heads (baseline/clean) are non-events; empty/absent inputs yield no signals', () => {
     expect(
       collectDivergenceSignals({

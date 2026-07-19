@@ -50,9 +50,22 @@ describe('resolveForkPushTarget — fork ALWAYS wins, else upstream-write, else 
     if (r.target === 'none') expect(r.reason).toMatch(/configure a fork/);
   });
 
-  it('no fork + unknown upstream write (null) → none (no optimistic upstream push without a fork)', () => {
+  // The probe (gh/octokit token) and the push (git transport, per-URL credential
+  // helpers) are DIFFERENT credential planes: a private repo reachable by a
+  // repo-scoped helper 404s the token → null. Reading null as "no write" froze
+  // the oddsmith hive's origin behind a bridge reporting `clear` (2026-07-19).
+  it('no fork + unknown upstream write (null) → upstream (rule-6 optimism; only an affirmative refusal blocks)', () => {
     const r = resolveForkPushTarget({ upstreamRemote: 'https://github.com/org/up.git', upstreamWrite: null });
-    expect(r.target).toBe('none');
+    expect(r.target).toBe('upstream');
+    if (r.target === 'upstream') {
+      expect(r.remote).toBe('https://github.com/org/up.git');
+      expect(r.reason).toMatch(/UNKNOWN/);
+    }
+  });
+
+  it('no fork + omitted upstreamWrite → upstream (undefined is unknown, not a refusal)', () => {
+    const r = resolveForkPushTarget({ upstreamRemote: 'https://github.com/org/up.git' });
+    expect(r.target).toBe('upstream');
   });
 
   it('no fork + no upstream at all → none (local checkout)', () => {

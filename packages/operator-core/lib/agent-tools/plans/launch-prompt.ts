@@ -74,6 +74,11 @@ export interface RemoteSeatSummary {
   donorCount: number;
   /** Sum of advertised seat counts across those open offers. */
   totalSeats: number;
+  /** P-013 ("donors named"): the offering hosts' friendly `hostLabel`s
+   *  (SeatOfferPayload.hostLabel), deduped + sorted — never a GitHub identity
+   *  (M19: account/identity stays local). Omitted/empty when no donor set a
+   *  label; the clause below falls back to the anonymous count phrasing. */
+  donorLabels?: string[];
 }
 
 /**
@@ -93,9 +98,17 @@ function remoteFleetOptionClause(remoteSeats?: RemoteSeatSummary | null): string
   if (remoteSeats.donorCount > 0) {
     const slotWord = remoteSeats.totalSeats === 1 ? 'slot' : 'slots';
     const peerWord = remoteSeats.donorCount === 1 ? 'peer' : 'peers';
+    const labels = remoteSeats.donorLabels?.filter((l) => l.trim().length > 0) ?? [];
+    // P-013: name the donors when at least one offering host set a friendly
+    // hostLabel; fall back to the anonymous count phrasing when none did (a
+    // label is optional at delegate time — never invent one).
+    const fromClause =
+      labels.length > 0
+        ? `from ${labels.join(', ')}`
+        : `from ${remoteSeats.donorCount} ${peerWord} in this pot`;
     return (
       `launch a fleet — locally, or on the pot's remote seats (I see ${remoteSeats.totalSeats} agent ` +
-      `${slotWord} available from ${remoteSeats.donorCount} ${peerWord} in this pot) — executed in ONE ` +
+      `${slotWord} available ${fromClause}) — executed in ONE ` +
       "call with the `fleet:launch-on-plan` tool (`placement:'remote'` for the pot's seats; omit or " +
       "`'local'` to stay on this machine — never a hand-built psu command). If they opt for remote, " +
       "also ask whether they'd like to add their own agent slots to this fleet too (`resource:delegate`) " +
