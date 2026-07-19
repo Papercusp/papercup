@@ -65,7 +65,11 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   fleetScopedMiss: (
     scope: any,
     quarantinedIds: string[],
-    opts?: { pausedReason?: string | null; cooldownDiag?: { cooldownExcluded: number; earliestExpiryMs: number | null } | null },
+    opts?: {
+      pausedReason?: string | null;
+      cooldownDiag?: { cooldownExcluded: number; earliestExpiryMs: number | null } | null;
+      claimableAwaitsCancelled?: number;
+    },
   ) => ({
     ok: false,
     error:
@@ -78,6 +82,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
     quarantinedIds,
     windDown: true,
     ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
+    ...(opts?.pausedReason !== undefined ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(opts?.cooldownDiag ? { cooldownOnly: true } : {}),
   }),
 }));

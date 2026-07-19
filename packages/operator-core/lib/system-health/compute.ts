@@ -640,27 +640,22 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
     const { buildFleetRateStatus } = await import('../fleet-rate-status');
     const rate = await buildFleetRateStatus(WINDOW_MS);
     const pausedBuckets = rate.buckets.filter((b) => b.paused).length;
-    let accountsTotal = 0, accountsPaused = 0;
-    try {
-      const { loadAccountPool } = await import('../deployment/account-pool-store');
-      const pool = await loadAccountPool(ctx.ws);
-      accountsTotal = pool.accounts.length;
-      accountsPaused = pool.accounts.filter((a) => (a.rate?.pausedUntil ?? 0) > ctx.now).length;
-    } catch { /* no account pool configured — single bound credential */ }
-    const accountsAvailable = accountsTotal - accountsPaused;
     // Gateway-internal wedge/throttle metrics (B-GW-5): read the gateway's OWN /stats (admission
     // queue + AIMD state) and run the wedge detector. Makes the watchdog's silent auto-restart
-    // signature VISIBLE. Only when the gateway is in the egress path AND reachable; fail-soft to
-    // null (greyed) otherwise — never blanks the panel.
+    // signature VISIBLE. Fetched FIRST (not just for the wedge card): the raw snapshot is also the
+    // ONLY source of live per-account edge-throttle signals (never persisted on `a.rate`), needed
+    // below to compute account availability correctly (EI-15875). Only when the gateway is in the
+    // egress path AND reachable; fail-soft to null (greyed) otherwise — never blanks the panel.
     let gateway: TokensHealth['gateway'] = null;
+    let gatewayStatsRaw: Awaited<ReturnType<typeof import('../inference-gateway/observability')['fetchGatewayStatsRaw']>> = null;
     if (ctx.gatewayEnabled && ctx.gatewayReachable) {
       try {
         const { fetchGatewayStatsRaw } = await import('../inference-gateway/observability');
         const { summarizeGatewayMetrics } = await import('../inference-gateway/gateway-wedge');
         const { readGatewayWedge } = await import('./gateway-sample-cache');
-        const raw = await fetchGatewayStatsRaw();
-        if (raw) {
-          const gm = summarizeGatewayMetrics(raw);
+        gatewayStatsRaw = await fetchGatewayStatsRaw();
+        if (gatewayStatsRaw) {
+          const gm = summarizeGatewayMetrics(gatewayStatsRaw);
           const v = readGatewayWedge(gm, ctx.now);
           gateway = {
             inFlight: gm.inFlight, queueDepth: gm.queueDepth, maxConcurrent: gm.maxConcurrent,
@@ -674,6 +669,30 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
         }
       } catch { /* /stats unreadable — leave gateway null (greyed), panel still renders */ }
     }
+    let accountsTotal = 0, accountsAvailable = 0, accountsPaused = 0;
+    try {
+      const { loadAccountPool, projectLiveEdgeThrottle } = await import('../deployment/account-pool-store');
+      const { accountFull } = await import('../deployment/account-pool');
+      const pool = await loadAccountPool(ctx.ws);
+      accountsTotal = pool.accounts.length;
+      // EI-15875 (WI-3565 starvation false-positive): "available" here means CAN ACTUALLY SERVE
+      // NOW — mirroring accountStatus()'s `available` (WI-3310), NOT the old pause-only check. A
+      // weekly-usage-walled account (effectiveDrainUtil at/over cap) can read pause-CLEAR — its
+      // bounded pause lapsed, or a pause was never set — while still being unable to serve a single
+      // request until its window resets. Counting such accounts as "idle healthy unused" is exactly
+      // what fabricated a false "artificial ceiling" escalation to the owner on 2026-07-18 (5
+      // accounts sitting at util7d 0.97-0.99 read as spare capacity, while the queue was actually
+      // starved by a genuine weekly usage wall). `accountFull` folds in BOTH the pause and the 5h/7d
+      // usage-wall; a live Cloudflare/per-IP edge-throttle cooldown is a THIRD, separate
+      // non-servable state the gateway reports out-of-band (never persisted on `a.rate`), so it is
+      // excluded here too via the same live snapshot the wedge detector above already fetched.
+      accountsAvailable = pool.accounts.filter((a) => {
+        if (accountFull(a, ctx.now)) return false;
+        if (projectLiveEdgeThrottle(a.id, gatewayStatsRaw).edgeThrottled) return false;
+        return true;
+      }).length;
+      accountsPaused = accountsTotal - accountsAvailable;
+    } catch { /* no account pool configured — single bound credential */ }
     const data: TokensHealth = {
       gatewayEnabled: ctx.gatewayEnabled,
       gatewayReachable: ctx.gatewayReachable,

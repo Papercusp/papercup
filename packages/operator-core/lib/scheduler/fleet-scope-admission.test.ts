@@ -298,6 +298,40 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).toMatch(/fleet:resume/);
     });
 
+    // EI-15777: the paused branch now also reports how many of the caller's OWN
+    // pre-pause work-item:claimable idle-park await(s) were just cancelled server-side
+    // (see the cancelClaimableAwaits call at both self-pull call sites) — and the
+    // advice must tell the caller NOT to re-park one while paused, since that standing
+    // wake was retired, not merely gated at the ensuing claim.
+    it('EI-15777: a paused miss surfaces claimableAwaitsCancelled + the do-not-re-park advice', () => {
+      const miss = fleetScopedMiss(
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        [],
+        { pausedReason: 'owner pause', claimableAwaitsCancelled: 2 },
+      );
+      expect(miss).toMatchObject({ windDown: true, paused: true, claimableAwaitsCancelled: 2 });
+      expect(miss.advice).toMatch(/Do NOT re-park a work-item:claimable await while paused/);
+      expect(miss.advice).toMatch(/EI-15777/);
+    });
+
+    it('EI-15777: a paused miss with no cancelled awaits still surfaces claimableAwaitsCancelled:0 (default)', () => {
+      const miss = fleetScopedMiss(
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        [],
+        { pausedReason: 'owner pause' },
+      );
+      expect(miss).toMatchObject({ claimableAwaitsCancelled: 0 });
+    });
+
+    it('EI-15777: a non-paused (cooldown-only) miss never carries claimableAwaitsCancelled', () => {
+      const miss = fleetScopedMiss(
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        [],
+        { cooldownDiag: null },
+      );
+      expect(miss).not.toHaveProperty('claimableAwaitsCancelled');
+    });
+
     it('readFleetPauseState fails OPEN when the control-state read errors (never wedges claiming)', async () => {
       admissionMocks.getFleet.mockRejectedValue(new Error('pg unavailable'));
       const state = await readFleetPauseState(
