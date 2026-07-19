@@ -1079,6 +1079,104 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
 let watchdogTimer: ManagedHandle | null = null;
 
 /**
+ * EI-16190: known behavior-cutovers this watchdog's enforcement code must run
+ * AT OR AFTER. A deploy restarts :3070, but a long-lived STANDALONE process
+ * that also loads this module (papercup-bg-host, an embed-sidecar, a gateway
+ * process, …) is NOT part of that restart set — it keeps running whatever
+ * code was in memory when it last booted. The 2026-07-18 incident: P-022
+ * retired native `/compact` fleet-wide, every :3070-served path picked it up
+ * on deploy, but bg-host had been up since 2026-07-17 (hours before the
+ * rewrite landed) and kept enforcing PRE-P-022 semantics for ~13h — completely
+ * silently, because the zero-invocation transcript audit (native-compaction-audit.ts)
+ * only proves the ABSENCE of native compact_boundary rows; it has no way to see
+ * that the enforcer itself is stale. Add one entry here for every future
+ * watchdog-behavior cutover so the NEXT one self-flags at boot instead of
+ * requiring a human to notice a 13-hour silent gap.
+ */
+export const WATCHDOG_BEHAVIOR_CUTOVERS: ReadonlyArray<{ id: string; atMs: number; note: string }> = [
+  {
+    id: 'P-022-native-compact-retirement',
+    atMs: Date.parse('2026-07-18T00:00:00Z'),
+    note:
+      'native /compact retired fleet-wide (WI-4998) — carry-respawn is the only context cut from this ' +
+      'point on; a pre-cutover process still types the retired mode:"compact" (dropped loudly by ' +
+      'psu-pty-host as of this same fix, but the SENDER is the thing that needs restarting).',
+  },
+];
+
+/**
+ * Pure + injectable (EI-16190): given this process's boot instant, return the
+ * known cutovers it PREDATES — i.e. cutovers whose behavior change may not be
+ * reflected in the code this process is actually running. Empty ⇒ this
+ * process booted after every known cutover (the healthy case).
+ */
+export function staleCutoversForProcessStart(
+  processStartedAtMs: number,
+  cutovers: ReadonlyArray<{ id: string; atMs: number; note: string }> = WATCHDOG_BEHAVIOR_CUTOVERS,
+): Array<{ id: string; atMs: number; note: string }> {
+  return cutovers.filter((c) => Number.isFinite(c.atMs) && processStartedAtMs < c.atMs);
+}
+
+/** Dedup so a long-lived process warns/escalates about a given stale cutover
+ *  exactly once, not every restart-of-the-watchdog-timer within one process. */
+const staleCutoverEscalated = new Set<string>();
+
+/** Test seam. */
+export function resetStaleCutoverEscalationsForTests(): void {
+  staleCutoverEscalated.clear();
+}
+
+/**
+ * EI-16190 boot self-assert: one advisory coord escalation per (process,
+ * cutover) when this host's own process demonstrably predates a known
+ * behavior-cutover instant. Best-effort — never throws; a failed escalation
+ * un-dedups so a later sweep can retry (mirrors escalateBootConfig).
+ */
+async function escalateStaleCutoverProcess(
+  cutoverId: string,
+  processStartedAtMs: number,
+  cutoverAtMs: number,
+  note: string,
+): Promise<void> {
+  if (staleCutoverEscalated.has(cutoverId)) return;
+  staleCutoverEscalated.add(cutoverId);
+  const bootIso = new Date(processStartedAtMs).toISOString();
+  const cutoverIso = new Date(cutoverAtMs).toISOString();
+  console.error(
+    `[compaction-watchdog] PRE-CUTOVER PROCESS (pid ${process.pid}): this host booted ${bootIso}, BEFORE the ` +
+      `"${cutoverId}" cutover (${cutoverIso}) — ${note} This process may be enforcing stale behavior (EI-16190 ` +
+      `class: a deploy restarted other hosts but not this long-lived one). RESTART this process to pick up the ` +
+      `current enforcement code.`,
+  );
+  try {
+    const { openEscalation } = await import('../agent-tools/coordination/escalations');
+    await openEscalation(
+      {
+        ownerId: 'compaction-watchdog',
+        ownerLabel: 'system · compaction-watchdog',
+        source: 'principal',
+        workspaceId: null,
+        userId: null,
+      },
+      {
+        severity: 'advisory',
+        summary: `pre-cutover process (pid ${process.pid}) still running: predates the "${cutoverId}" behavior cutover`,
+        body:
+          `This process's compaction watchdog booted ${bootIso}, before the "${cutoverId}" cutover landed ` +
+          `(${cutoverIso}). ${note} Find this process (it is whichever long-lived host loaded ` +
+          `compaction-compliance-watchdog.ts at that boot time — bg-host is the known repeat offender, EI-16190) ` +
+          `and restart it so it runs current enforcement code. (EI-16190)`,
+      },
+    );
+  } catch (e) {
+    staleCutoverEscalated.delete(cutoverId);
+    console.warn(
+      `[compaction-watchdog] stale-cutover escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
  * Start the compaction-compliance watchdog: a recurring process-level sweep.
  * Idempotent. Kill-switch: PAPERCUSP_COMPACTION_WATCHDOG='0'.
  */
@@ -1087,6 +1185,18 @@ export function startCompactionComplianceWatchdog(
   opts: { intervalMs?: number } = {},
 ): void {
   if (process.env.PAPERCUSP_COMPACTION_WATCHDOG === '0') return;
+  // EI-16190: version/boot stamp, logged once at start — makes a stale
+  // long-lived host trivially greppable across every host's logs, and
+  // self-flags (+ escalates) the specific known-cutover misses above.
+  const processStartedAtMs = Date.now() - process.uptime() * 1000;
+  const stale = staleCutoversForProcessStart(processStartedAtMs);
+  console.log(
+    `[compaction-watchdog] starting (pid ${process.pid}, booted ${new Date(processStartedAtMs).toISOString()})` +
+      (stale.length === 0 ? ' — up to date with all known behavior cutovers.' : ''),
+  );
+  for (const c of stale) {
+    void escalateStaleCutoverProcess(c.id, processStartedAtMs, c.atMs, c.note);
+  }
   const intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
   if (watchdogTimer) watchdogTimer.stop();
   watchdogTimer = managedSetInterval(

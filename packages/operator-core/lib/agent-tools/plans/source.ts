@@ -31,6 +31,7 @@ import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { potHomeSlugForHarness } from '../../hive-federation';
+import { isTerminalItemStatus } from '../../fleet-drained-events';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -678,11 +679,9 @@ export async function planSlugExistsInWorkspace(
 
 /** Item statuses that are themselves terminal — the only item statuses worth
  *  surfacing from a terminal (shipped/superseded) plan in a cross-plan query
- *  (items.ts's isTerminalPlanHiddenFromCrossPlan), and the canonical "is this
- *  item still open" check for claim-discipline-action.ts's terminal-plan
- *  filter (EI-16176). Defined here (not items.ts) because items.ts imports
- *  from this module — the reverse import would cycle. */
-export const TERMINAL_ITEM_STATUSES = new Set<string>(['done', 'dropped']);
+ *  (items.ts's isTerminalPlanHiddenFromCrossPlan). Reuses the canonical
+ *  `isTerminalItemStatus` from fleet-drained-events.ts (the ONE answer to
+ *  "is a plan item done") rather than redefining it here. */
 
 /**
  * EI-16176: is this declared plan TERMINAL (shipped/superseded) or does it
@@ -706,7 +705,7 @@ export async function planTerminalityInWorkspace(
   const row = await getPlanRow(slug, { workspaceId, harnessSlug });
   if (!row) return null;
   const hasOpenItems = planItemsForRow(row).some(
-    (item) => !TERMINAL_ITEM_STATUSES.has(item.storedStatus),
+    (item) => !isTerminalItemStatus(item.storedStatus),
   );
   return { status: row.status, hasOpenItems };
 }

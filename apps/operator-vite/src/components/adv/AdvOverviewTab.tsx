@@ -369,7 +369,7 @@ export default function AdvOverviewTab() {
           count={roster.length}
           accent="#a78bfa"
           loading={rosterQ.loading && !rosterQ.data}
-          error={rosterQ.error}
+          error={rosterQ.error ? String((rosterQ.error as Error).message ?? rosterQ.error) : null}
           empty={agentRows.length === 0}
           emptyLabel="No live agents"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.agents)}
@@ -382,11 +382,14 @@ export default function AdvOverviewTab() {
                 type="button"
                 className="pc-overview__row pc-overview__rowbtn"
                 aria-label={`Open ${label}'s session history`}
-                title={a.intent || label}
                 onClick={() => void openAgent(a.ownerId)}
               >
                 <span className="pc-overview__row-dot" data-live={a.liveness} aria-hidden />
-                <span className="pc-overview__row-title">{a.intent || label}</span>
+                {/* title on the SPAN, not the button — the design-primitives lint
+                    blocks native title= on buttons (Tooltip or span-title only). */}
+                <span className="pc-overview__row-title" title={a.intent || label}>
+                  {a.intent || label}
+                </span>
                 {a.role && <span className="pc-overview__row-tag">{agentRoleLabel(a.role, lex)}</span>}
               </button>
             );
@@ -398,7 +401,7 @@ export default function AdvOverviewTab() {
           title="Activity"
           accent="#34d399"
           loading={activityQ.loading && !activityQ.data}
-          error={activityQ.error}
+          error={activityQ.error ? String((activityQ.error as Error).message ?? activityQ.error) : null}
           empty={recentActivity.length === 0}
           emptyLabel="No recent agent activity"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.activity)}
@@ -409,11 +412,12 @@ export default function AdvOverviewTab() {
               type="button"
               className="pc-overview__row pc-overview__rowbtn"
               aria-label="Open this event in Conversations"
-              title={r.summary ?? r.kind}
               onClick={() => void openActivity(r.id)}
             >
               <span className="pc-overview__row-actor">{r.agent ?? '—'}</span>
-              <span className="pc-overview__row-title">{r.summary ?? r.kind}</span>
+              <span className="pc-overview__row-title" title={r.summary ?? r.kind}>
+                {r.summary ?? r.kind}
+              </span>
             </button>
           ))}
         </OverviewTile>

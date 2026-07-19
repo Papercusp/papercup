@@ -71,6 +71,7 @@ const run = async (args: Record<string, unknown>, ctxHarness?: string) =>
 
 beforeEach(() => {
   H.state.txCalls = [];
+  H.state.forceNoMatch = false;
 });
 
 describe('plans:set-priority', () => {
@@ -116,27 +117,9 @@ describe('plans:set-priority', () => {
   });
 
   it('EI-16183 regression: a 0-row UPDATE (e.g. wrong workspace) is reported as plan_not_found, never a silent ok:true no-op', async () => {
-    const withWorkspace = (await import('@papercusp/db-org')).withWorkspace as (
-      wsId: string,
-      fn: (t: unknown) => Promise<unknown>,
-    ) => Promise<unknown>;
-    const zeroRowTx = (_strings: readonly string[], ..._values: unknown[]) => Promise.resolve([]);
-    const spy = vi
-      .spyOn({ withWorkspace }, 'withWorkspace')
-      .mockImplementation(async (_wsId: string, fn: (t: unknown) => Promise<unknown>) => fn(zeroRowTx));
-    void spy; // documents intent; the real assertion is against the module mock below
-    const dbOrg = await import('@papercusp/db-org');
-    const orig = dbOrg.withWorkspace;
-    (dbOrg as { withWorkspace: typeof orig }).withWorkspace = async (
-      _wsId: string,
-      fn: (t: unknown) => Promise<unknown>,
-    ) => fn(zeroRowTx);
-    try {
-      const res = await run({ slug: 'ghost-plan', priority: 1, harness: 'myharn' });
-      expect(res.data.results[0]).toMatchObject({ ok: false, slug: 'ghost-plan', error: 'plan_not_found' });
-      expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
-    } finally {
-      (dbOrg as { withWorkspace: typeof orig }).withWorkspace = orig;
-    }
+    H.state.forceNoMatch = true;
+    const res = await run({ slug: 'ghost-plan', priority: 1, harness: 'myharn' });
+    expect(res.data.results[0]).toMatchObject({ ok: false, slug: 'ghost-plan', error: 'plan_not_found' });
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
   });
 });

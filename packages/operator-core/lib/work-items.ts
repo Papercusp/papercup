@@ -1246,12 +1246,25 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
 export const ISSUE_FAMILY_STATES: readonly string[] = LIFECYCLE_STATES;
 
 /**
- * The cross-family TERMINAL/settled state set — feature-family `passed`/`deprecated`
- * plus issue-family `resolved`/`closed`. The single source of truth for "this work_item
- * is done, one way or another" (WI-1400); was previously an inline literal array
- * duplicated at each call site.
+ * The cross-family TERMINAL/settled state set. The single source of truth for "this work_item
+ * is done, one way or another" (WI-1400); was previously an inline literal array duplicated at
+ * each call site.
+ *
+ * work-item-status-full-unify (2026-07-19): the vocabulary is collapsing to a unified enum whose
+ * terminals are `done`/`dropped` (feature `passed`→`done`+terminal_reason, `deprecated`→`dropped`;
+ * issue `resolved`→`done`, `closed`→`dropped`). This set carries BOTH the legacy per-family terminals
+ * AND the unified ones as a TRANSITIONAL SUPERSET, so terminal-detection stays correct on either side
+ * of the status-backfill migration (no re-serve of an already-settled row during the cutover window).
+ * Once the migration has applied everywhere + the cleanup pass lands, narrow this to `['done','dropped']`.
  */
-export const SETTLED_WORK_ITEM_STATES: readonly string[] = ['passed', 'deprecated', 'resolved', 'closed'];
+export const SETTLED_WORK_ITEM_STATES: readonly string[] = [
+  'passed',
+  'deprecated',
+  'resolved',
+  'closed',
+  'done',
+  'dropped',
+];
 
 /** Is `state` one of the cross-family settled/terminal states? */
 export function isSettledWorkItemState(state: string | null | undefined): boolean {

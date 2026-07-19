@@ -1320,8 +1320,9 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(msg.mode).toBe('reset');
     // P-002 producer: the injected text is the carry-note wrapped by renderColdWakeInjection —
     // it carries the note verbatim AND the standing "refresh via loop:checkpoint" mandate so the
-    // cold anchor stays fresh across wakes.
-    expect(msg.data).toBe(renderColdWakeInjection('## Next action\nresume the wiring'));
+    // cold anchor stays fresh across wakes. EI-15799: the payload's fire-time wakeCount (1 here)
+    // is threaded through as the staleness marker, so the expectation must carry it too.
+    expect(msg.data).toBe(renderColdWakeInjection('## Next action\nresume the wiring', undefined, 1));
     expect(msg.data).toContain('## Next action\nresume the wiring');
     expect(msg.data).toContain('loop:checkpoint');
   });
@@ -1380,7 +1381,8 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
       );
       expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
       const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
-      expect(data).toBe(renderColdWakeInjection('## Next action\nresume the wiring'));
+      // EI-15799: byte-identical to the extras-less injection AT THE SAME fire number (1).
+      expect(data).toBe(renderColdWakeInjection('## Next action\nresume the wiring', undefined, 1));
       // Detector guard (EI-8593 / EI-11484 class): a dropped extras leg means a cold
       // wake silently loses held-items/walls/facts continuity — it must at least log.
       expect(warn).toHaveBeenCalledWith(

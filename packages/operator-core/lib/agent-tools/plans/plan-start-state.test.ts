@@ -28,6 +28,15 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, withWorkspace: H.withWorkspace };
 });
 
+// EI-16183: clearStartedForTerminalPlan resolves its workspace via activeWorkspaceId()
+// (process-global — request-ALS → PAPERCUSP_WORKSPACE_ID → registry default),
+// uncontrolled here. Pin it deterministically rather than depending on the real
+// machine's workspace-registry file.
+vi.mock('../../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../workspace-registry')>();
+  return { ...actual, activeWorkspaceId: () => actual.DEFAULT_WORKSPACE_ID };
+});
+
 import {
   isTerminalPlanStatus,
   reconcileStartStatus,

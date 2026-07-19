@@ -20,9 +20,9 @@ import {
   listPlanRows,
   getPlanRow,
   planItemsForRow,
-  TERMINAL_ITEM_STATUSES,
   type PlanRow,
 } from "./source";
+import { isTerminalItemStatus } from "../../fleet-drained-events";
 import { ctxToPlanSourceOpts } from "./_ctx-opts";
 import { harnessArg, harnessScopedCtx } from "../_harness-scope";
 import {
@@ -70,7 +70,7 @@ export function isTerminalPlanHiddenFromCrossPlan(
   args: { slug?: string; status?: string },
 ): boolean {
   if (args.slug) return false;
-  if (args.status && TERMINAL_ITEM_STATUSES.has(args.status)) return false;
+  if (args.status && isTerminalItemStatus(args.status)) return false;
   return (
     planStatus != null &&
     (TERMINAL_PLAN_STATUSES as readonly string[]).includes(planStatus)
