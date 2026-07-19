@@ -256,7 +256,7 @@ export default defineTool({
       });
     }
 
-    const exec = await executeBatch({ plan, headroom, brief: clampText(args.brief, LIMITS.BRIEF) ?? null, tier: args.tier ?? null, actor, role: (ctx as { role?: string }).role ?? 'operator', workspaceId });
+    const exec = await executeBatch({ plan, headroom, bees, brief: clampText(args.brief, LIMITS.BRIEF) ?? null, tier: args.tier ?? null, actor, role: (ctx as { role?: string }).role ?? 'operator', workspaceId });
     // EI-590: surface a no-op-placement warning when fresh spawns can't actually
     // start (global wake-mode 'manual' → boot-wakes stage). Best-effort: a read
     // failure degrades to no warning, never blocks the placement result.

@@ -21,6 +21,8 @@ import {
   selectDecisions,
   countAlerts,
   selectAgentRows,
+  summarizeWorkItemStats,
+  selectUnhealthyPanels,
   OVERVIEW_TILE_TARGETS,
   type OverviewRosterEntry,
 } from '../adv/AdvOverviewTab';
@@ -200,6 +202,62 @@ describe('selectAgentRows', () => {
   });
 });
 
+// ─── summarizeWorkItemStats (owner ask 2026-07-19) ─────────────────────────
+describe('summarizeWorkItemStats', () => {
+  const cell = (kind: string, state: string, n: number, terminal: boolean) => ({ kind, state, n, terminal });
+  it('sums totals and open (non-terminal per the SERVER terminal stamp) per kind', () => {
+    const s = summarizeWorkItemStats([
+      cell('bug', 'open', 4, false),
+      cell('bug', 'resolved', 6, true),
+      cell('change', 'open', 2, false),
+    ]);
+    expect(s.total).toBe(12);
+    expect(s.open).toBe(6);
+    expect(s.kinds).toEqual([
+      { kind: 'bug', open: 4, total: 10 },
+      { kind: 'change', open: 2, total: 2 },
+    ]);
+  });
+  it('orders kinds by open desc, then total desc', () => {
+    const s = summarizeWorkItemStats([
+      cell('task', 'open', 1, false),
+      cell('bug', 'open', 5, false),
+      cell('chunk', 'passed', 9, true),
+    ]);
+    expect(s.kinds.map((k) => k.kind)).toEqual(['bug', 'task', 'chunk']);
+  });
+  it('empty cells → all-zero summary', () => {
+    expect(summarizeWorkItemStats([])).toEqual({ total: 0, open: 0, kinds: [] });
+  });
+});
+
+// ─── selectUnhealthyPanels (owner ask 2026-07-19) ──────────────────────────
+describe('selectUnhealthyPanels', () => {
+  const panel = (key: string, status: string) => ({ key, label: key, status, summary: `${key} summary` });
+  it('keeps only warn/crit, crit first', () => {
+    const out = selectUnhealthyPanels({
+      overall: 'warn',
+      panels: {
+        a: panel('a', 'ok'),
+        b: panel('b', 'warn'),
+        c: panel('c', 'crit'),
+        d: panel('d', 'unknown'),
+      },
+    });
+    expect(out.map((p) => p.key)).toEqual(['c', 'b']);
+  });
+  it('no snapshot / no panels → empty', () => {
+    expect(selectUnhealthyPanels(undefined)).toEqual([]);
+    expect(selectUnhealthyPanels({ overall: 'ok' })).toEqual([]);
+  });
+  it('respects the limit', () => {
+    const panels = Object.fromEntries(
+      Array.from({ length: 9 }, (_, i) => [`p${i}`, panel(`p${i}`, 'warn')]),
+    );
+    expect(selectUnhealthyPanels({ overall: 'warn', panels }, 3)).toHaveLength(3);
+  });
+});
+
 // ─── click-through targets ─────────────────────────────────────────────────
 describe('OVERVIEW_TILE_TARGETS', () => {
   it('every tile targets a real AdvShell tab', () => {
@@ -208,7 +266,15 @@ describe('OVERVIEW_TILE_TARGETS', () => {
       expect(ids.has(target as (typeof ADV_TABS)[number]['id'])).toBe(true);
     }
   });
-  it('covers all four tiles', () => {
-    expect(Object.keys(OVERVIEW_TILE_TARGETS).sort()).toEqual(['activity', 'agents', 'needsYou', 'plans']);
+  it('covers all seven tiles', () => {
+    expect(Object.keys(OVERVIEW_TILE_TARGETS).sort()).toEqual([
+      'activity',
+      'agents',
+      'health',
+      'learning',
+      'needsYou',
+      'plans',
+      'workItems',
+    ]);
   });
 });

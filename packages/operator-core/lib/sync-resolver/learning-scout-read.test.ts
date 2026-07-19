@@ -471,6 +471,7 @@ const mkIdea = (over: Partial<ScoutRoutedItem>): ScoutRoutedItem => ({
   gradedBy: null,
   origin: 'scout',
   cycleId: null,
+  harnessSlug: null,
   addressesPatternRefs: [],
   ...over,
 });

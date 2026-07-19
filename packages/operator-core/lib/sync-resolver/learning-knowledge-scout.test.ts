@@ -70,7 +70,19 @@ describe('learning.knowledge — insights snapshot + memory health (P-008)', () 
       { slug: 'adding-a-sync-query', title: 'Adding a sync query', description: 'Recipe.', status: 'active', tags: ['sync'], modifiedAt: '2026-06-08T10:00:00.000Z' },
     ],
   };
-  const memory: MemoryHealth = { totalMemories: 168, feedback30d: 2 };
+  const memory: MemoryHealth = {
+    totalMemories: 168,
+    entityRows: 0,
+    feedback30d: 2,
+    recalls7d: 0,
+    zeroHit7d: 0,
+    zeroHitRate7d: 0,
+    topScoreP50: null,
+    topScoreP90: null,
+    fragmentHits7d: 0,
+    recallBySurface: [],
+    recallTelemetryOk: true,
+  };
 
   it('returns [{ insights, memory }] with the memory health read off the org PG handle', async () => {
     readInsightsSnapshot.mockResolvedValue(insights);
@@ -123,6 +135,7 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
     drafts: [],
     digest: null,
     digestHistory: [],
+    improveFunnel: null,
   };
 
   it('returns the reader snapshot as a 1-element array, scoped to the active workspace (no cycle selected)', async () => {

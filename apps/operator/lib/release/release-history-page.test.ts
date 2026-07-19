@@ -60,6 +60,47 @@ function hydrated(over: Partial<HydratedRelease> = {}): HydratedRelease {
   };
 }
 
+describe('work items expand to their full body (WI-5525)', () => {
+  it('wraps an item in a click-to-expand <details> when it has a body', () => {
+    const html = renderIndexHtml(
+      [
+        hydrated({
+          items: [
+            { id: 'WI-9', title: 'Ship the thing', summary: 'The full body.\nSecond detail line.', planSlug: null },
+          ],
+          plans: [],
+        }),
+      ],
+      { generatedAt: GENERATED_AT, analytics: null },
+    );
+    // The id+title stay the clickable summary; the panel carries the full body.
+    expect(html).toContain('<details><summary><span class="wid">WI-9</span>Ship the thing</summary>');
+    expect(html).toContain('class="item-body"');
+    expect(html).toContain('The full body.');
+    expect(html).toContain('Second detail line.');
+  });
+
+  it('renders a plain row (no expander) when the item has no body', () => {
+    const html = renderIndexHtml(
+      [hydrated({ items: [{ id: 'WI-9', title: 'No body item', summary: '', planSlug: null }], plans: [] })],
+      { generatedAt: GENERATED_AT, analytics: null },
+    );
+    expect(html).toContain('No body item');
+    // not wrapped in an item-level details/summary
+    expect(html).not.toContain('<summary><span class="wid">WI-9</span>');
+    expect(html).not.toContain('class="item-body"');
+  });
+
+  it('escapes the body — HTML in a work-item summary is not evaluated (public page)', () => {
+    const html = renderIndexHtml(
+      [hydrated({ items: [{ id: 'WI-9', title: 'x', summary: '<img src=x onerror=alert(1)>', planSlug: null }], plans: [] })],
+      { generatedAt: GENERATED_AT, analytics: null },
+    );
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).not.toContain('<img src=x onerror=alert(1)>');
+  });
+});
+
 describe('the beacon — the leak detector [owner: "collect stats on visits to make sure it isnt leaked"]', () => {
   it('captures document.referrer — the only signal that actually names a leak', () => {
     const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });

@@ -50,6 +50,13 @@ export interface ReleaseArtifact {
 export interface ShippedItem {
   id: string;
   title: string;
+  /**
+   * The item's full body/summary — shown expanded under its title on the release
+   * page (WI-5525). Optional: snapshotWindow (record-time / changelog) does not
+   * fetch it; hydrateRelease (render-time) does, so only the rendered page carries
+   * it. Scrubbed with the whole page on the way out (shell() → scrubIdentity).
+   */
+  summary?: string;
   planSlug: string | null;
 }
 
@@ -207,9 +214,14 @@ export async function hydrateRelease(
   if (userFacingIds.length === 0) return { items: [], plans: [], internalCount };
 
   const rows = await sql<
-    Array<{ feature_id: string; title: string; source_plan_slug: string | null }>
+    Array<{
+      feature_id: string;
+      title: string;
+      summary: string | null;
+      source_plan_slug: string | null;
+    }>
   >`
-    SELECT feature_id, title, source_plan_slug
+    SELECT feature_id, title, summary, source_plan_slug
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId}
        AND harness_slug = ${scope.harnessSlug}
@@ -219,6 +231,7 @@ export async function hydrateRelease(
   const items: ShippedItem[] = rows.map((r) => ({
     id: r.feature_id,
     title: r.title ?? '',
+    summary: r.summary ?? '',
     planSlug: r.source_plan_slug,
   }));
   const plans =

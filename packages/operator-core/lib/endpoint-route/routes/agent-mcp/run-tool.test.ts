@@ -25,6 +25,19 @@ function req(body: unknown): Parameters<typeof tool.handler>[0] {
   } as unknown as Parameters<typeof tool.handler>[0];
 }
 
+// The route handler's declared type takes (req, ctx); this handler's own
+// implementation never reads ctx, so a minimal stub is enough to satisfy
+// the call signature.
+function fakeCtx(): Parameters<typeof tool.handler>[1] {
+  return {
+    principal: null,
+    input: undefined,
+    params: {},
+    log: () => {},
+    signal: new AbortController().signal,
+  } as unknown as Parameters<typeof tool.handler>[1];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   invokeM.mockResolvedValue({ ok: true, status: 200, body: { ok: true } });
@@ -32,32 +45,32 @@ beforeEach(() => {
 
 describe('POST /agent-mcp/run-tool — callerSid shaping', () => {
   it('no callerSid in the body ⇒ omits the field entirely', async () => {
-    await tool.handler(req({ name: 't:x' }));
+    await tool.handler(req({ name: 't:x' }), fakeCtx());
     expect(invokeM).toHaveBeenCalledWith({ name: 't:x', args: undefined, confirmed: false });
   });
 
   it('a plain string callerSid is forwarded trimmed', async () => {
-    await tool.handler(req({ name: 't:x', callerSid: '  pui-4242  ' }));
+    await tool.handler(req({ name: 't:x', callerSid: '  pui-4242  ' }), fakeCtx());
     expect(invokeM).toHaveBeenCalledWith(
       expect.objectContaining({ callerSid: 'pui-4242' }),
     );
   });
 
   it('a non-string callerSid is dropped, not coerced', async () => {
-    await tool.handler(req({ name: 't:x', callerSid: 12345 }));
+    await tool.handler(req({ name: 't:x', callerSid: 12345 }), fakeCtx());
     const call = invokeM.mock.calls[0]![0];
     expect(call).not.toHaveProperty('callerSid');
   });
 
   it('an oversized callerSid is hard-capped at 128 chars', async () => {
     const long = 'x'.repeat(500);
-    await tool.handler(req({ name: 't:x', callerSid: long }));
+    await tool.handler(req({ name: 't:x', callerSid: long }), fakeCtx());
     const call = invokeM.mock.calls[0]![0] as { callerSid?: string };
     expect(call.callerSid).toHaveLength(128);
   });
 
   it('a blank/whitespace-only callerSid is treated as absent', async () => {
-    await tool.handler(req({ name: 't:x', callerSid: '   ' }));
+    await tool.handler(req({ name: 't:x', callerSid: '   ' }), fakeCtx());
     const call = invokeM.mock.calls[0]![0];
     expect(call).not.toHaveProperty('callerSid');
   });

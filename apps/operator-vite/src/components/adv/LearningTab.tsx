@@ -75,6 +75,8 @@ import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
 import { CardStack } from "@papercusp/card-stack";
+import { useColumnFilters, ColumnFilterBar } from "@/app/harness/filters";
+import type { FilterableColumn } from "@papercusp/grid-core";
 import { statusToneColor } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
@@ -878,6 +880,39 @@ function ImprovementsView({
     () => [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])],
     [digest],
   );
+  // Shared column filters + quick-search (owner ask 2026-07-19: mimic the
+  // Working tab's Work Queue): the shared filter engine (`impf` param) over
+  // the lane/source-scoped rows, plus a global substring quick-search
+  // (`impq`) as its own affordance — the same split WorkItemsPanel uses.
+  const [search, setSearch] = useQueryState(
+    "impq",
+    parseAsString.withDefault(""),
+  );
+  const filterCols = useMemo<FilterableColumn<ScoredItem>[]>(
+    () => [
+      { key: "kind", header: "Kind", filter: { type: "enum", accessor: (r) => r.kind } },
+      { key: "severity", header: "Severity", filter: { type: "enum", accessor: (r) => r.severity ?? "—" } },
+      { key: "scope", header: "Scope", filter: { type: "enum", accessor: (r) => r.scope } },
+      { key: "tier", header: "Tier", filter: { type: "enum", accessor: (r) => r.tier } },
+      { key: "state", header: "State", filter: { type: "enum", accessor: (r) => r.state ?? "—" } },
+      { key: "ideaType", header: "Idea type", filter: { type: "enum", accessor: (r) => r.ideaType ?? "—" } },
+      { key: "score", header: "Score", filter: { type: "number", accessor: (r) => r.score } },
+      { key: "ageDays", header: "Age (days)", filter: { type: "number", accessor: (r) => r.ageDays } },
+    ],
+    [],
+  );
+  const cf = useColumnFilters(filterCols, rows, { ns: "imp" });
+  const visibleRows = useMemo(() => {
+    const q = (search ?? "").trim().toLowerCase();
+    if (!q) return cf.rows;
+    return cf.rows.filter((it) =>
+      `${it.id} ${it.title} ${it.tierReason} ${it.scope}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [cf.rows, search]);
+  const isFiltered =
+    cf.hasActive || (search ?? "").trim() !== "" || Boolean(src);
 
   const resolved = digest?.byState?.resolved ?? 0;
   const showDashboard = (digest?.open ?? 0) >= 4;
@@ -944,6 +979,35 @@ function ImprovementsView({
       {showDashboard ? (
         <div className="pc-learning__sectionhead pc-learning__sectionhead--tools">
           <div className="pc-learning__inlinetools">
+            <label className="pc-learning__search">
+              <Search size={12} aria-hidden />
+              <input
+                type="text"
+                value={search ?? ""}
+                onChange={(e) => void setSearch(e.target.value)}
+                placeholder="Search improvements…"
+                aria-label="Search improvements"
+              />
+            </label>
+            <ColumnFilterBar
+              controller={cf.controller}
+              activeChips={cf.activeChips}
+              hasActive={cf.hasActive}
+              clearAll={cf.clearAll}
+            />
+            <span
+              className="pc-learning__matchcount"
+              aria-live="polite"
+              title={
+                isFiltered
+                  ? "Rows matching the current filter / search, out of the backlog total."
+                  : "Backlog rows in this lane."
+              }
+            >
+              {isFiltered
+                ? `${visibleRows.length} of ${allRows.length}`
+                : `${rows.length} items`}
+            </span>
             {sources.length > 0 ? (
               <Select
                 ariaLabel="Filter by who filed it"
@@ -1006,8 +1070,15 @@ function ImprovementsView({
           title="Improvements unavailable"
           onRetry={() => sync.invalidate()}
         />
-      ) : (showDashboard ? rows : sparseRows).length === 0 ? (
-        <LearningVisualEmpty icon={CheckCircle2} title="Nothing in this lane" />
+      ) : (showDashboard ? visibleRows : sparseRows).length === 0 ? (
+        <LearningVisualEmpty
+          icon={CheckCircle2}
+          title={
+            isFiltered
+              ? "Nothing matches the current filter / search"
+              : "Nothing in this lane"
+          }
+        />
       ) : !showDashboard ? (
         <ul className="pc-learning__list pc-learning__list--direct">
           {sparseRows.map((it) => (
@@ -1021,7 +1092,7 @@ function ImprovementsView({
         </ul>
       ) : (
         <WindowedImprovementList
-          rows={rows}
+          rows={visibleRows}
           lsel={lsel}
           onDismissSelect={() => void setLsel(null)}
         />
@@ -4786,7 +4857,26 @@ export function LearningStyles() {
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .pc-learning__sectionhead--tools { justify-content: flex-end; min-height: 28px; }
       .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0; color: var(--fg-dim, #b9d4e8); }
-      .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; }
+      .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      /* Work-Queue-parity search + filter affordances (owner ask 2026-07-19). */
+      .pc-learning__search {
+        display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 999px;
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__search:focus-within {
+        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 48%, var(--border));
+        color: var(--fg, #e7eef5);
+      }
+      .pc-learning__search input {
+        border: 0; background: none; outline: none; color: var(--fg, #e7eef5);
+        font: inherit; font-size: 11px; width: 150px;
+      }
+      .pc-learning__search input::placeholder { color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__matchcount {
+        font-size: 11px; color: var(--fg-mute, #7f9bb4);
+        font-variant-numeric: tabular-nums; white-space: nowrap;
+      }
       .pc-learning__lanes { display: inline-flex; gap: 4px; }
       .pc-learning__lane {
         padding: 4px 10px; font-size: 11px; font-weight: 650; border-radius: 999px; cursor: pointer;

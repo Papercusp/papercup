@@ -554,6 +554,21 @@ export interface LoopStatus {
   /** Same caveat as `lastDeliveryOutcome` — the failure-streak counter only resets on the
    *  fire path (a successful delivery), never on a re-arm. */
   consecutiveErrors: number;
+  /** EI-16210: the most recent `event_wake_deliveries` row recorded for THIS loop's own
+   *  wake (`source = 'loop:<routineId>'`) — the actual delivery-ladder outcome behind a
+   *  generic `lastDeliveryOutcome:'loop-stuck-backstop'`. Distinguishes "the wake was
+   *  genuinely never delivered" (lastWakeStatus stays 'pending'/'dropped'/'dead', or this
+   *  is null — no wake row at all) from "the wake WAS delivered (e.g. `psu-socket-inject`)
+   *  but no post-fire completion signal was ever detected" (lastWakeStatus='delivered') —
+   *  the second case points at a reconcile-side completion-signal gap, not a dead session.
+   *  Null when this loop has never fired (no wake row exists yet). */
+  lastWakeChannel: string | null;
+  lastWakeStatus: string | null;
+  /** ISO of the wake row's `delivered_at` (or `created_at` if never delivered). */
+  lastWakeAt: string | null;
+  /** The delivery ladder's captured error text for that wake, if any (e.g. a spawn
+   *  failure) — null on a clean delivery or when no wake row exists. */
+  lastWakeError: string | null;
 }
 
 /**
@@ -620,6 +635,10 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     stalledSinceMs: stall.stalledSinceMs,
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),
+    lastWakeChannel: r.last_wake_channel ?? null,
+    lastWakeStatus: r.last_wake_status ?? null,
+    lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
+    lastWakeError: r.last_wake_error ?? null,
   };
 }
 
@@ -659,10 +678,25 @@ export async function getLoopStatuses(
              WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
                AND ag.summary = ${SESSION_END_MARKER} AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
            (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
-             WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at
+             WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at,
+           lw.channel                                                    AS last_wake_channel,
+           lw.status                                                     AS last_wake_status,
+           COALESCE(lw.delivered_at, lw.created_at)                      AS last_wake_at,
+           lw.last_error                                                 AS last_wake_error
       FROM harness_shared.routines r
       LEFT JOIN harness_shared.autoloop_state a
         ON a.workspace_id = r.workspace_id AND a.harness_slug = r.install_slug AND a.role = r.name
+      LEFT JOIN LATERAL (
+        -- EI-16210: the most recent wake-delivery row for THIS routine's own wake channel.
+        -- Filters on subscriber_id FIRST (idx_event_wake_deliveries_subscriber) so this stays
+        -- an indexed lookup per owner even though 'source' itself carries no index.
+        SELECT w.channel, w.status, w.last_error, w.created_at, w.delivered_at
+          FROM harness_shared.event_wake_deliveries w
+         WHERE w.subscriber_id = r.target_owner_id
+           AND w.source = 'loop:' || r.id
+         ORDER BY w.created_at DESC
+         LIMIT 1
+      ) lw ON true
      WHERE r.target_owner_id = ANY(${owners}::text[])
        AND r.reschedule_interval_sec IS NOT NULL
      ORDER BY r.target_owner_id, r.active DESC, r.updated_at DESC

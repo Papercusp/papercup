@@ -286,6 +286,21 @@ export interface CooldownMissDiagnosis {
    *  release and report an expiry stuck in the past, i.e. a cooldownExpirySec of 0
    *  forever). */
   earliestExpiryMs: number | null;
+  /** EI-16519: the work-item id whose `last_released_at` PRODUCES `earliestExpiryMs` —
+   *  i.e. the argmin, not just the min. `last_released_at` is only ever written by an
+   *  actual release-of-a-claimed-row (releaseWorkItem's UPDATE, gated on `taken_by IS
+   *  NOT NULL` — see EI-16475's code trace + regression tests), so a SINGLE row's
+   *  timestamp can never advance without a genuine re-claim+re-release of THAT row.
+   *  When `cooldownExcluded > 1`, the reported `earliestExpiryMs` is a MIN over
+   *  MULTIPLE different rows this bee released at different times — as the currently-
+   *  earliest one ages out of the window, the MIN jumps to the next-earliest (a
+   *  DIFFERENT row), which looks like "the cooldown clock keeps re-arming" but is
+   *  ordinary multi-row churn from a bee that has released more than one in-spec row
+   *  recently, not a livelock. Comparing `earliestRowId` across successive polls is the
+   *  mechanical test: the SAME id with an advancing expiry is the genuine EI-14615
+   *  livelock; a DIFFERENT id each poll is healthy churn, not a bug. Null only when
+   *  cooldownExcluded is 0. */
+  earliestRowId: string | null;
 }
 
 /**
@@ -343,20 +358,27 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
     // WI-5303: restrict directly to the rows the WITH-cooldown floor would exclude for
     // THIS bee (self-released, still within the window) — same query, same filter, plus
     // the exact cooldown-exclusion predicate — instead of a bare without-cooldown count.
-    const rows = await sql<{ cnt: number; earliest: Date | null }[]>`
-      SELECT count(*)::int AS cnt,
-             MIN(last_released_at) AS earliest
+    // EI-16519: fetch feature_id alongside last_released_at (not a bare MIN aggregate)
+    // so the argmin row is identifiable — a caller/leader can then tell "the SAME row
+    // keeps re-arming" (genuine livelock) apart from "a DIFFERENT row is earliest each
+    // poll" (ordinary churn across this bee's own multiple recent releases). The set is
+    // already restricted to this bee's own still-cooling-down matches (WI-5303), so it's
+    // small; ORDER BY + LIMIT 1 gives the argmin directly instead of a second query.
+    const rows = await sql<{ feature_id: string; last_released_at: Date }[]>`
+      SELECT feature_id, last_released_at
         FROM harness_shared.harness_features_consolidated
        WHERE ${floorsNoCooldown}
          AND ${filter}
          AND last_released_by = ${args.scope.ownerId}
          AND last_released_at IS NOT NULL
-         AND last_released_at >= now() - make_interval(secs => ${cooldownSec})`;
-    const cnt = rows[0]?.cnt ?? 0;
+         AND last_released_at >= now() - make_interval(secs => ${cooldownSec})
+       ORDER BY last_released_at ASC
+       LIMIT 500`;
+    const cnt = rows.length;
     if (cnt === 0) return null;
-    const earliest = rows[0]?.earliest ?? null;
-    const earliestExpiryMs = earliest ? new Date(earliest).getTime() + cooldownSec * 1000 : null;
-    return { cooldownExcluded: cnt, earliestExpiryMs };
+    const earliest = rows[0]!.last_released_at;
+    const earliestExpiryMs = new Date(earliest).getTime() + cooldownSec * 1000;
+    return { cooldownExcluded: cnt, earliestExpiryMs, earliestRowId: rows[0]!.feature_id };
   } catch {
     return null;
   }

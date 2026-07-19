@@ -212,8 +212,31 @@ const plan = (decisions: PlacementDecision[]): BatchPlacementPlan => ({
 });
 
 const actor = { ownerId: 's-queen' } as unknown as AgentIdentity;
-const run = (p: BatchPlacementPlan, deps: ExecuteBatchDeps, headroom = 2) =>
-  executeBatch({ plan: p, headroom, brief: null, tier: null, actor, role: 'operator', workspaceId: 'ws-1', deps });
+const run = (
+  p: BatchPlacementPlan,
+  deps: ExecuteBatchDeps,
+  headroom = 2,
+  extra: { bees?: import('../../fleet/placement-affinity').PlacementBee[]; now?: number } = {},
+) =>
+  executeBatch({ plan: p, headroom, brief: null, tier: null, actor, role: 'operator', workspaceId: 'ws-1', deps, ...extra });
+
+// WI-5421: a bee fixture for the woken:0 boot-grace age gate. `lastActiveMs` is
+// relative to NOW_MS (below) so a test can control whether the target bee reads
+// as "still booting" (within WARM_INJECT_BOOT_GRACE_MS) or "genuinely stale"
+// (older than it) without depending on wall-clock time.
+const NOW_MS = 1_800_000_000_000; // fixed instant — arbitrary, just deterministic
+const oldBee = (ownerId: string): import('../../fleet/placement-affinity').PlacementBee => ({
+  ownerId,
+  load: 0,
+  alive: true,
+  lastActiveMs: NOW_MS - 20 * 60_000, // 20min old — past the 15min boot grace
+});
+const youngBee = (ownerId: string): import('../../fleet/placement-affinity').PlacementBee => ({
+  ownerId,
+  load: 0,
+  alive: true,
+  lastActiveMs: NOW_MS - 2 * 60_000, // 2min old — well within the 15min boot grace
+});
 
 describe('executeBatch — placement execution', () => {
   it('spawn disposition → fresh spawn, reported as spawned', async () => {
@@ -262,10 +285,13 @@ describe('executeBatch — placement execution', () => {
   it('woken:0 ladder → releases the item and climbs to a fresh spawn when headroom remains', async () => {
     const { fns, deps } = makeDeps({ wakeRecipients: vi.fn(async () => ({ woken: 0 })) });
     // one warm-inject, spawnCount 0 → extraSpawnBudget = headroom(2) − 0 = 2
+    // WI-5421: target bee must read as PAST its boot grace, else woken:0 defers
+    // instead of reaping/climbing — pass an old-enough `bees` fixture.
     const r = await run(
       plan([{ task: task('WI-3'), disposition: 'warm-inject', bee: 's-asleep', rank: 0, reason: 'affinity' }]),
       deps,
       2,
+      { bees: [oldBee('s-asleep')], now: NOW_MS },
     );
     expect(fns.releaseWorkItem).toHaveBeenCalledWith('WI-3', { harness: 'h' });
     expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1); // climbed the ladder
@@ -277,16 +303,77 @@ describe('executeBatch — placement execution', () => {
 
   it('woken:0 ladder → releases to the frontier as unplaced when no spawn headroom', async () => {
     const { fns, deps } = makeDeps({ wakeRecipients: vi.fn(async () => ({ woken: 0 })) });
-    // headroom 0 → extraSpawnBudget 0 → cannot climb
+    // headroom 0 → extraSpawnBudget 0 → cannot climb. WI-5421: old-enough bee so
+    // this exercises the EI-490 "no headroom" branch, not the boot-grace defer.
     const r = await run(
       plan([{ task: task('WI-4'), disposition: 'warm-inject', bee: 's-asleep', rank: 0, reason: 'affinity' }]),
       deps,
       0,
+      { bees: [oldBee('s-asleep')], now: NOW_MS },
     );
     expect(fns.releaseWorkItem).toHaveBeenCalledWith('WI-4', { harness: 'h' });
     expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
     expect(r.placements[0]).toMatchObject({ task: 'WI-4', action: 'unplaced', bee: 's-asleep' });
     expect(r.placements[0].reason).toMatch(/no spawn headroom/);
+  });
+
+  // WI-5421: woken:0 on a bee still within its boot window is NOT a death signal —
+  // it must defer (not reap, not climb), leaving the nursery row + spawn budget alone.
+  describe('woken:0 boot-grace age gate (WI-5421)', () => {
+    it('a bee younger than the boot grace defers — not reaped, not climbed, even with headroom + a working reap', async () => {
+      const { fns, deps } = makeDeps({
+        wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+        cancelDeadBee: vi.fn(async () => true), // would reap if the age gate were bypassed
+      });
+      const r = await run(
+        plan([{ task: task('WI-10'), disposition: 'warm-inject', bee: 's-booting', rank: 0, reason: 'affinity' }]),
+        deps,
+        2, // plenty of headroom — proves the defer isn't a headroom artifact
+        { bees: [youngBee('s-booting')], now: NOW_MS },
+      );
+      expect(fns.releaseWorkItem).toHaveBeenCalledWith('WI-10', { harness: 'h' });
+      expect(fns.cancelDeadBee).not.toHaveBeenCalled();
+      expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
+      expect(r.placements[0]).toMatchObject({ task: 'WI-10', action: 'unplaced', bee: 's-booting' });
+      expect(r.placements[0].reason).toMatch(/boot grace/);
+      expect(r.placements[0].reason).toMatch(/WI-5421/);
+      expect(r.summary.reaped).toBeUndefined();
+      expect(r.summary.spawned).toBeUndefined();
+    });
+
+    it('an UNKNOWN-age bee (no bees[] passed at all) is treated as the safe default — deferred, never reaped', async () => {
+      const { fns, deps } = makeDeps({
+        wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+        cancelDeadBee: vi.fn(async () => true),
+      });
+      // No `bees` fixture at all — mirrors a caller that doesn't gather live bees.
+      const r = await run(
+        plan([{ task: task('WI-11'), disposition: 'warm-inject', bee: 's-unknown', rank: 0, reason: 'affinity' }]),
+        deps,
+        2,
+      );
+      expect(fns.cancelDeadBee).not.toHaveBeenCalled();
+      expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
+      expect(r.placements[0]).toMatchObject({ task: 'WI-11', action: 'unplaced', bee: 's-unknown' });
+      expect(r.placements[0].reason).toMatch(/boot grace/);
+    });
+
+    it('a bee OLDER than the boot grace still gets the original EI-490 reap+climb (backward compat)', async () => {
+      const { fns, deps } = makeDeps({
+        wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+        cancelDeadBee: vi.fn(async () => true),
+      });
+      const r = await run(
+        plan([{ task: task('WI-12'), disposition: 'warm-inject', bee: 's-stale', rank: 0, reason: 'affinity' }]),
+        deps,
+        0, // zero headroom — only a successful reap makes the spawn possible
+        { bees: [oldBee('s-stale')], now: NOW_MS },
+      );
+      expect(fns.cancelDeadBee).toHaveBeenCalledTimes(1);
+      expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1);
+      expect(r.placements[0]).toMatchObject({ task: 'WI-12', action: 'spawned', climbed_from: 's-stale' });
+      expect(r.summary.reaped).toBe(1);
+    });
   });
 
   // EI-490: fleet:place_batch reported "no spawn headroom" against zombie nursery
@@ -303,6 +390,7 @@ describe('executeBatch — placement execution', () => {
         plan([{ task: task('WI-6'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' }]),
         deps,
         0, // zero headroom going in — only the reap makes a spawn possible
+        { bees: [oldBee('s-zombie')], now: NOW_MS }, // WI-5421: past boot grace
       );
       expect(fns.cancelDeadBee).toHaveBeenCalledTimes(1);
       expect(fns.cancelDeadBee).toHaveBeenCalledWith(
@@ -323,6 +411,7 @@ describe('executeBatch — placement execution', () => {
         plan([{ task: task('WI-7'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' }]),
         deps,
         0,
+        { bees: [oldBee('s-zombie')], now: NOW_MS }, // WI-5421: past boot grace
       );
       expect(fns.cancelDeadBee).toHaveBeenCalledTimes(1);
       expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
@@ -340,6 +429,7 @@ describe('executeBatch — placement execution', () => {
         plan([{ task: task('WI-8'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' }]),
         deps,
         0,
+        { bees: [oldBee('s-zombie')], now: NOW_MS }, // WI-5421: past boot grace — actually reaches cancelDeadBee
       );
       expect(r.placements[0]).toMatchObject({ task: 'WI-8', action: 'unplaced', bee: 's-zombie' });
       expect(r.summary.reaped).toBeUndefined();
@@ -357,6 +447,7 @@ describe('executeBatch — placement execution', () => {
         ]),
         deps,
         0,
+        { bees: [oldBee('s-zombie')], now: NOW_MS }, // WI-5421: past boot grace
       );
       expect(fns.cancelDeadBee).toHaveBeenCalledTimes(1); // deduped — not once per task
       expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1); // only ONE bonus slot was freed

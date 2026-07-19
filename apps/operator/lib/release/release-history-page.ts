@@ -318,6 +318,17 @@ ul.items { list-style: none; padding: 0; margin: .6rem 0 0; }
 ul.items li { padding: .35rem 0; font-size: .89rem; color: var(--fg-dim); border-bottom: 1px solid var(--grid); }
 ul.items li:last-child { border-bottom: 0; }
 .wid { font-family: var(--mono); font-size: .76rem; color: var(--accent-2); margin-right: .55rem; }
+/* Per-item click-to-expand (WI-5525). Scope OVER the top-level details/summary
+   rules above so a nested item expander keeps the compact item look, not the big
+   section-header look. */
+ul.items li details { margin-top: 0; border-top: 0; padding-top: 0; }
+ul.items li summary { font-weight: inherit; font-size: inherit; color: inherit; list-style: none; cursor: pointer; }
+ul.items li summary:hover { color: var(--fg); }
+ul.items li summary::-webkit-details-marker { display: none; }
+ul.items li summary::marker { content: ""; }
+ul.items li summary::before { content: "▸"; color: var(--muted); display: inline-block; width: 1em; margin-right: .1rem; transition: transform .12s ease; }
+ul.items li details[open] summary::before { transform: rotate(90deg); }
+ul.items li .item-body { margin: .45rem 0 .35rem 1.1em; padding: .55rem .75rem; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .82rem; line-height: 1.5; color: var(--muted); background: rgba(255,255,255,.02); border-left: 2px solid var(--border); border-radius: 4px; max-height: 24rem; overflow: auto; }
 .plan-group { margin: 1.25rem 0 0; }
 .plan-group > h4 { margin: 0 0 .1rem; font-size: .95rem; font-weight: 640; letter-spacing: -.01em; }
 .plan-group > .n { color: var(--muted); font-size: .78rem; margin: 0 0 .35rem; }
@@ -445,10 +456,17 @@ function renderArtifacts(artifacts: ReleaseArtifact[]): string {
 function renderItemList(items: ShippedItem[]): string {
   return `<ul class="items">
 ${items
-  .map(
-    (i) =>
-      `      <li><span class="wid">${escapeHtml(i.id)}</span>${escapeHtml(i.title)}</li>`,
-  )
+  .map((i) => {
+    const head = `<span class="wid">${escapeHtml(i.id)}</span>${escapeHtml(i.title)}`;
+    const body = (i.summary ?? '').trim();
+    // No body → a plain row (unchanged look). With a body → a click-to-expand
+    // <details> (WI-5525): summary is the id+title row (same look), the panel is
+    // the full item text. Body is ESCAPED + white-space:pre-wrap — faithful and
+    // XSS-safe (no markdown eval); identity is scrubbed with the whole page in
+    // shell(). Pure HTML, no JS — works on the static R2 page.
+    if (!body) return `      <li>${head}</li>`;
+    return `      <li><details><summary>${head}</summary><div class="item-body">${escapeHtml(body)}</div></details></li>`;
+  })
   .join('\n')}
     </ul>`;
 }
