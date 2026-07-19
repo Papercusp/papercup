@@ -38,8 +38,16 @@ const SOURCE_EXTENSIONS = new Set([
 ]);
 
 // Prefixes for genuinely binary-ish fixtures that are intentionally tracked as
-// source-like paths. Empty today: the repo should be clean.
-export const ALLOW_PREFIXES = [];
+// source-like paths.
+export const ALLOW_PREFIXES = [
+  // WI-5450: minified, machine-generated pagefind search-index bundle, mirrored into
+  // apps/operator/public by apps/operator-docs's postbuild-copy.sh on every docs build
+  // (not hand-authored source — regenerated wholesale from the upstream `pagefind` npm
+  // package's own output, which uses raw \x01/\x02 sentinel bytes internally for its
+  // highlight-matching algorithm). Hand-editing it is pointless (the next docs build
+  // overwrites it) and it isn't "our" source to rewrite.
+  'apps/operator/public/internal/docs/pagefind/',
+];
 
 export function isForbiddenControlByte(byte) {
   return byte === 0 || (byte >= 1 && byte <= 8) || byte === 0x0b || byte === 0x0c || (byte >= 0x0e && byte <= 0x1f);

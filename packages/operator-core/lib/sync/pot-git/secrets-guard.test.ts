@@ -11,6 +11,7 @@ import {
   scanTextForSecrets,
   scanForSecrets,
   hasSecrets,
+  isFixtureFile,
   shannonEntropy,
   describeSecretFindings,
 } from './secrets-guard';
@@ -90,5 +91,21 @@ describe('secrets-guard rules', () => {
 
   it('shannonEntropy: random > english word', () => {
     expect(shannonEntropy('Zx9Kq2mNp7Rw4Tv8Lb3Yh6Fd1Gs5Jc0')).toBeGreaterThan(shannonEntropy('passwordpassword'));
+  });
+
+  it('exempts this fixture file by path (scanner must not scan its own fixtures)', () => {
+    // This file's historical blobs carry literal credential shapes; without a
+    // path exemption, editing it wedges the whole publish plane forever (the
+    // literal blob can never leave the publish range). scanForSecrets/hasSecrets
+    // therefore skip the designated fixture path — but the pure per-line
+    // scanTextForSecrets stays path-agnostic so the rule tests above still fire.
+    const fixturePath = 'packages/operator-core/lib/sync/pot-git/secrets-guard.test.ts';
+    expect(isFixtureFile(fixturePath)).toBe(true);
+    expect(isFixtureFile('packages/operator-core/lib/sync/pot-git/own-head-publish.ts')).toBe(false);
+    const loaded = `k="${AKIA}"\n${GH}`; // real shapes that WOULD flag anywhere else
+    expect(scanForSecrets([{ path: fixturePath, content: loaded }])).toEqual([]);
+    expect(hasSecrets([{ path: fixturePath, content: loaded }])).toBe(false);
+    // Same content at a non-fixture path still flags — the exemption is path-scoped.
+    expect(scanForSecrets([{ path: 'src/config.ts', content: loaded }]).length).toBeGreaterThanOrEqual(2);
   });
 });

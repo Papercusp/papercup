@@ -85,9 +85,10 @@ import {
 import {
   getLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+  splitCarryNoteChecks,
   splitCarryNoteWalls,
 } from '../../carry-note';
-import { renderLoopWallsBlock } from '../../harness/routines/loop-fire';
+import { renderLoopChecksBlock, renderLoopWallsBlock } from '../../harness/routines/loop-fire';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
@@ -453,6 +454,11 @@ export async function rehydrateLoopWakeText(
     });
     const { walls } = splitCarryNoteWalls(meta.note);
     const wallsNow = renderLoopWallsBlock(walls) ?? '  (none open — any wall shown OPEN above has been CLEARED since)';
+    // P-001 (cold-carry-system-hardening) delivery parity: the live re-read covers
+    // carried checks too — a stale staged wake must not resurrect a cleared check
+    // (or hide a fresh one) any more than a wall.
+    const { checks } = splitCarryNoteChecks(meta.note);
+    const checksNow = renderLoopChecksBlock(checks);
     const ageMs = meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
     return (
@@ -460,6 +466,7 @@ export async function rehydrateLoopWakeText(
       `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 — this delivery may have been queued/staged, so the ` +
       `checkpoint/walls text ABOVE can be a stale snapshot from when the wake FIRED, not from now). Freshest ` +
       `carry-note is ${ageStr} old. Current open walls:\n${wallsNow}\n` +
+      (checksNow ? `${checksNow}\n` : '') +
       `If this disagrees with the text above (esp. a wall shown open above that is NOT listed here), TRUST THIS ` +
       `BLOCK — it is the live re-read: do not re-execute an irreversible action or re-ask the owner about a wall ` +
       `not listed here.`

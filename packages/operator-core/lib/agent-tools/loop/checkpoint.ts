@@ -322,6 +322,36 @@ export default defineTool({
     const continuationRead = await withBoundedTimeout(
       async () => {
         const pres = await getPresence(ownerId).catch(() => null);
+        // P-006 (cold-carry-system-hardening-2026-07-19): derive context usage from the
+        // transcript's CURRENT state (WI-4154's live read — the same fix inbox.ts already
+        // carries), with the presence cache only as fallback. The gate previously read
+        // ONLY presence.contextTokens, which is null/stale for psu sessions — so every
+        // checkpoint closed on "context usage unknown" even seconds after a fresh turn
+        // (observed on every single wake of 2026-07-19). Best-effort: null keeps the
+        // old fail-safe-toward-settling behavior.
+        const liveTokens = await (async () => {
+          try {
+            const { currentContextTokensForOwner } = await import('../../compaction-usage');
+            return await currentContextTokensForOwner(ownerId);
+          } catch {
+            return null;
+          }
+        })();
+        // Same P-006 gap on the denominator: presence.compactionLimit is null for the
+        // same sessions — derive the model-spec default (the compliance-watchdog's own
+        // fallback chain) so a live token read isn't wasted on a null limit.
+        const derivedLimit = await (async () => {
+          if (pres?.compactionLimit != null) return pres.compactionLimit;
+          try {
+            const [{ resolveModelSpecForOwner }, { defaultCompactionLimitForSpec }] = await Promise.all([
+              import('../../compaction-usage'),
+              import('../../agent-config-constants'),
+            ]);
+            return defaultCompactionLimitForSpec(await resolveModelSpecForOwner(ownerId));
+          } catch {
+            return null;
+          }
+        })();
         let unreadInbox: number | null = null;
         try {
           const wm = await readWatermark(ownerId);
@@ -348,8 +378,8 @@ export default defineTool({
           unreadInbox = null;
         }
         return continuationGateFromReads({
-          contextTokens: pres?.contextTokens,
-          compactionLimit: pres?.compactionLimit,
+          contextTokens: liveTokens ?? pres?.contextTokens,
+          compactionLimit: derivedLimit,
           unreadInbox,
         });
       },

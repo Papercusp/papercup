@@ -176,10 +176,13 @@ export function renderCheckLine(c: CheckEntry): string {
 }
 
 /** Parse one checks-section line back into a {@link CheckEntry}; null for a
- *  non-row line (blank, the legend, prose, malformed). */
+ *  non-row line (blank, the legend, prose, malformed). Review fold #6: the ✓|?
+ *  marker is OPTIONAL on parse — an agent hand-writing a row in walls syntax
+ *  (`- claim — re-check: cmd`) parses as PREDICTED instead of being silently
+ *  dropped on round-trip. */
 export function parseCheckLine(line: string): CheckEntry | null {
   const m =
-    /^-\s+([✓?])\s+(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+—\s+evidence:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
+    /^-\s+(?:([✓?])\s+)?(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+—\s+evidence:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
       line,
     );
   if (!m) return null;
@@ -383,7 +386,15 @@ export function normalizeCheckEntries(
     seen.add(claim);
     const existing = priorByClaim.get(claim);
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
-    const verified = (e.verified ?? existing?.verified ?? '').trim();
+    let verified = (e.verified ?? existing?.verified ?? '').trim();
+    // Review fold #5: evidence never goes stale SILENTLY — stamp the verification
+    // instant into the evidence text when it is NEWLY supplied (inherited evidence
+    // keeps its original stamp), so a ✓ observed 20 wakes ago visibly carries its
+    // age instead of rendering with fresh-evidence authority.
+    const newlySupplied = Boolean((e.verified ?? '').trim()) && (e.verified ?? '').trim() !== (existing?.verified ?? '').trim();
+    if (verified && newlySupplied && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(verified)) {
+      verified = `${verified} @${new Date(nowMs).toISOString()}`;
+    }
     out.push({
       claim,
       ...(recheck ? { recheck } : {}),
@@ -399,17 +410,27 @@ export function normalizeCheckEntries(
 
 const CLAIM_ASSERTION_RE = /\b(MUST|expects?|alarm if|will\s+(?:roll|change|move|land)|anchor(?:ed)?\s+on)\b/i;
 const CLAIM_TOKEN_RES: ReadonlyArray<RegExp> = [
-  /\b[0-9a-f]{12,40}\b/gi, // content-hash / sha-like
+  // content-hash / sha-like: ≥8 hex with at least one letter (review fold #4 — this
+  // fleet habitually quotes 10-char short-shas; the letter requirement keeps plain
+  // numbers like "12345678" from reading as hashes).
+  /\b(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b/gi,
   /\b(?:WI|EI|F)-\d+\b/g, // work-item / insight ids
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/g, // ISO timestamps
 ];
 
+/** Review fold #1: external-state NOUNS. The motivating incident line — "expect the
+ *  hash to ROLL, count under the new hash" — carries an assertion verb but NO concrete
+ *  token, so a token-only lint skips its own root incident. A noun names the external
+ *  state being asserted about; coverage then means a check/wall row mentions the same
+ *  noun. */
+const CLAIM_NOUN_RE = /\b(hash|sha|generation|watermark|anchor|floor|denominator|tick)\b/gi;
+
 /** Advisory lint (cold-carry-system-hardening-2026-07-19 P-009): find prose lines that
- *  ASSERT external state (assertion verb + a distinctive token — hash, WI/EI id, ISO
- *  instant) where NONE of the line's tokens appear in any check/wall row. Such a line
- *  is a carried claim with no probe — the exact shape of the phantom-re-anchor
- *  incident ("expect the hash to ROLL" with no tick_at-vs-restart check). Returns the
- *  flagged lines (clipped, max 3); never blocks a write. */
+ *  ASSERT external state — assertion verb + a distinctive token (hash, WI/EI id, ISO
+ *  instant) OR an external-state noun — where NONE of those appear in any check/wall
+ *  row. Such a line is a carried claim with no probe — the exact shape of the
+ *  phantom-re-anchor incident ("expect the hash to ROLL" with no tick_at-vs-restart
+ *  check). Returns the flagged lines (clipped, max 3); never blocks a write. */
 export function lintUncheckedExternalClaims(prose: string, probeText: string): string[] {
   const flagged: string[] = [];
   const probes = probeText.toLowerCase();
@@ -420,6 +441,11 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
     for (const re of CLAIM_TOKEN_RES) {
       re.lastIndex = 0;
       for (const m of line.matchAll(re)) tokens.push(m[0]);
+    }
+    if (tokens.length === 0) {
+      // #1: no concrete token — fall back to external-state nouns.
+      CLAIM_NOUN_RE.lastIndex = 0;
+      for (const m of line.matchAll(CLAIM_NOUN_RE)) tokens.push(m[0]);
     }
     if (tokens.length === 0) continue;
     const covered = tokens.some((t) => probes.includes(t.toLowerCase()));

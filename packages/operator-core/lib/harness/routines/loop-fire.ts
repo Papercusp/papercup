@@ -32,7 +32,10 @@ import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import {
   getLoopCarryNote as defaultGetLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+  renderCheckLine,
+  splitCarryNoteChecks,
   splitCarryNoteWalls,
+  type CheckEntry,
   type WallEntry,
 } from '../../carry-note';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
@@ -341,6 +344,19 @@ export function renderLoopWallsBlock(walls: ReadonlyArray<WallEntry>, nowMs: num
   );
 }
 
+/** Render the CARRIED-CHECKS block (cold-carry-system-hardening P-001, delivery
+ *  parity with walls): claims + probes, OUTSIDE the truncatable checkpoint body —
+ *  a probe clipped off a capped note is a dissolved check (the phantom-re-anchor
+ *  shape), exactly what walls-splitting exists to prevent. */
+export function renderLoopChecksBlock(checks: ReadonlyArray<CheckEntry>): string | null {
+  if (!checks.length) return null;
+  return (
+    '🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ? PREDICTED: run the re-check before ' +
+    'relying on it; update/clear via loop:checkpoint { checks }):\n' +
+    checks.map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`).join('\n')
+  );
+}
+
 /**
  * Render the wake-turn text for fire #`fireNumber` (P-001b wake diet):
  *   - FULL form (the whole arm-time kickoff) per isLoopWakeFullForm;
@@ -364,6 +380,9 @@ export function renderLoopWakeText(opts: {
   /** P-006: open walls parsed OUT of the note (splitCarryNoteWalls) — rendered as
    *  their own un-truncatable block in every form. */
   walls?: ReadonlyArray<WallEntry>;
+  /** P-001 (cold-carry-system-hardening): carried checks parsed OUT of the note
+   *  (splitCarryNoteChecks) — same un-truncatable delivery as walls. */
+  checks?: ReadonlyArray<CheckEntry>;
   /** P-006: the pre-rendered turn-settle nag line (renderWallNagLine), when the
    *  previous turn ended on a row-less owner-ask. */
   wallNagLine?: string | null;
@@ -383,7 +402,8 @@ export function renderLoopWakeText(opts: {
     intervalSec: opts.intervalSec,
   });
   const wallsBlock = renderLoopWallsBlock(opts.walls ?? [], opts.nowMs);
-  const priority = [opts.ownerDirectivesBlock || null, opts.wallNagLine || null, wallsBlock].filter(
+  const checksBlock = renderLoopChecksBlock(opts.checks ?? []);
+  const priority = [opts.ownerDirectivesBlock || null, opts.wallNagLine || null, wallsBlock, checksBlock].filter(
     (s): s is string => Boolean(s),
   );
   // WI-5092 (su-behavior audit): an armed loop whose carry-note is NEVER written is the
@@ -557,7 +577,9 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // clipped off a capped note is a dissolved commitment) — split them out and
   // render the block in every form. The pending turn-settle nag is taken
   // (read-and-cleared) here, fail-soft.
-  const { body: checkpointBody, walls } = splitCarryNoteWalls(checkpointMeta.note);
+  const wallSplit = splitCarryNoteWalls(checkpointMeta.note);
+  const walls = wallSplit.walls;
+  const { body: checkpointBody, checks } = splitCarryNoteChecks(wallSplit.body);
   const takeWallNag = deps.takeWallNag ?? defaultTakeLoopWallNag;
   const nag = await takeWallNag({ harness: input.installSlug, ownerId: input.targetOwnerId }).catch(() => null);
   // P-005c: on a SHORT-form wake only, splice the one on-point recipe (the
@@ -591,6 +613,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     intervalSec: input.intervalSec,
     recipeLine,
     walls,
+    checks,
     wallNagLine: nag ? renderWallNagLine(nag) : null,
     ownerDirectivesBlock,
     noteReadFailed: checkpointMeta.readFailed,

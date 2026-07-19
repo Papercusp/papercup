@@ -75,9 +75,25 @@ export interface VerifyResult {
   failures: string[];
 }
 
+/** Realpath-normalize for the containment check: the release root may be reached
+ *  via a symlink (papercusp-release → papercup-release) while the runtime
+ *  resolvers return OS-realpath'd values (process.cwd() follows symlinks), so
+ *  comparing un-normalized forms false-fails "OUTSIDE release root" and rolls
+ *  back a healthy deploy. A missing leaf keeps its name atop its nearest
+ *  existing ancestor's realpath. */
+function toRealPath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    const dir = path.dirname(p);
+    if (dir === p) return p;
+    return path.join(toRealPath(dir), path.basename(p));
+  }
+}
+
 export function verifyReleasePaths(releaseRoot?: string): VerifyResult {
   const cfg = releaseConfig();
-  const root = path.resolve(releaseRoot ?? cfg.releaseRoot);
+  const root = toRealPath(path.resolve(releaseRoot ?? cfg.releaseRoot));
   const decouplePrompts = promptOverrideActive();
   const checks: Check[] = [
     { name: 'sqlMigrations', resolved: resolveSqlDir(), mustExist: true, policy: 'release' },
@@ -93,7 +109,7 @@ export function verifyReleasePaths(releaseRoot?: string): VerifyResult {
   const out: VerifyResult['checks'] = [];
   const failures: string[] = [];
   for (const c of checks) {
-    const resolved = c.resolved ? path.resolve(c.resolved) : null;
+    const resolved = c.resolved ? toRealPath(path.resolve(c.resolved)) : null;
     const underRelease = resolved ? (resolved === root || resolved.startsWith(root + path.sep)) : false;
     const exists = resolved ? fs.existsSync(resolved) : false;
     const decoupled = c.policy === 'prompt' && decouplePrompts;

@@ -100,6 +100,39 @@ export function mergeQuoteMismatchesIntoLint(
 }
 
 /**
+ * P-005 (cold-carry-system-hardening-2026-07-19), PURE: a hand-written [owner:…] tag
+ * is unproven in general (P-014) — but when THIS write happens during an owner-typed
+ * interactive turn, the platform has just witnessed the owner speaking: auto-verify
+ * those tags instead of flagging them (`writtenDuring.ref` is their ready-to-copy
+ * anchor). Nudging an agent for tagging a directive the owner gave seconds ago
+ * teaches it to ignore the lint — the observed 2026-07-19 failure mode. Writes
+ * during machine-injected turns keep the full nudge; owner-attribution phrases and
+ * bare gate imperatives are never auto-cleared this way.
+ */
+export function applyOwnerTurnAutoVerify(
+  lint: CarryProvenanceStamp['lint'],
+  writtenDuring: CurrentTurnStamp | null,
+): { lint: CarryProvenanceStamp['lint']; ownerTagsAutoVerified: number } {
+  if (writtenDuring?.verdict !== 'owner-typed' || !lint) return { lint, ownerTagsAutoVerified: 0 };
+  // Review fold #3 (manufactured-provenance guard): the current owner turn verifies
+  // ONLY a tag citing a directive from TODAY'S contact — an [owner:… 2026-07-16] tag
+  // written during a 2026-07-19 owner turn cites a directive this turn does NOT
+  // contain, and auto-clearing it would upgrade an asserted tag to proof-grade
+  // evidence pointing at the wrong turn (the exact failure class this module
+  // exists to prevent). Constraint: the tag's line must carry the current turn's
+  // YYYY-MM-DD (parsed from writtenDuring.ref). No parseable turn date ⇒ verify
+  // nothing (conservative).
+  const turnDate = /@(\d{4}-\d{2}-\d{2})/.exec(writtenDuring.ref)?.[1] ?? null;
+  if (!turnDate) return { lint, ownerTagsAutoVerified: 0 };
+  const kept = lint.matches.filter((m) => m.kind !== 'manual-owner-tag' || !m.line.includes(turnDate));
+  const dropped = lint.matches.length - kept.length;
+  return {
+    lint: kept.length > 0 ? { ...lint, matches: kept } : undefined,
+    ownerTagsAutoVerified: dropped,
+  };
+}
+
+/**
  * Build the full stamp for one carry-surface write. Returns undefined when
  * there is nothing to say (clean lint, no refs, transcript unreachable) so the
  * common clean case adds no response field — same contract as the lint alone.
@@ -132,21 +165,7 @@ export async function stampCarrySurfaceProvenance(
     [verified, writtenDuring] = value;
   }
 
-  // P-005 (cold-carry-system-hardening-2026-07-19): a hand-written [owner:…] tag is
-  // unproven in general (P-014) — but when THIS write happens during an owner-typed
-  // interactive turn, the platform has just witnessed the owner speaking: auto-verify
-  // those tags instead of flagging them (writtenDuring.ref is their ready-to-copy
-  // anchor). Nudging an agent for tagging a directive the owner gave seconds ago
-  // teaches it to ignore the lint — the observed 2026-07-19 failure. Writes during
-  // machine-injected turns keep the full nudge; owner-attribution phrases and bare
-  // gate imperatives are never auto-cleared this way.
-  let ownerTagsAutoVerified = 0;
-  let effectiveLint = lint;
-  if (writtenDuring?.verdict === 'owner-typed' && lint) {
-    const kept = lint.matches.filter((m) => m.kind !== 'manual-owner-tag');
-    ownerTagsAutoVerified = lint.matches.length - kept.length;
-    effectiveLint = kept.length > 0 ? { ...lint, matches: kept } : undefined;
-  }
+  const { lint: effectiveLint, ownerTagsAutoVerified } = applyOwnerTurnAutoVerify(lint, writtenDuring);
 
   const stamp: CarryProvenanceStamp = {};
   const mergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, verified);
@@ -183,10 +202,11 @@ export async function carryProvenanceFields(
   const out: CarryProvenanceFields = {};
   if (stamp.lint) out.provenanceLint = stamp.lint;
   if (stamp.slotLint) out.typedSlotLint = stamp.slotLint;
-  if (stamp.refs || stamp.writtenDuring) {
+  if (stamp.refs || stamp.writtenDuring || stamp.ownerTagsAutoVerified) {
     out.turnProvenance = {
       ...(stamp.refs ? { refs: stamp.refs } : {}),
       ...(stamp.writtenDuring ? { writtenDuring: stamp.writtenDuring } : {}),
+      ...(stamp.ownerTagsAutoVerified ? { ownerTagsAutoVerified: stamp.ownerTagsAutoVerified } : {}),
     };
   }
   return out;

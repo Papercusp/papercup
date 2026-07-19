@@ -2,8 +2,14 @@
  *  ownerId is withheld so the transcript legs are skipped — these tests pin
  *  the pure composition, not the IO (turn-ref.test.ts covers verification). */
 import { describe, expect, it } from 'vitest';
-import { carryProvenanceFields, mergeQuoteMismatchesIntoLint, stampCarrySurfaceProvenance } from './carry-surface-provenance-stamp';
-import type { TurnRefVerdict } from './turn-provenance/turn-ref';
+import {
+  applyOwnerTurnAutoVerify,
+  carryProvenanceFields,
+  mergeQuoteMismatchesIntoLint,
+  stampCarrySurfaceProvenance,
+} from './carry-surface-provenance-stamp';
+import { lintCarrySurfaceProvenance, PROVENANCE_LINT_NOTE } from './carry-surface-provenance-lint';
+import type { CurrentTurnStamp, TurnRefVerdict } from './turn-provenance/turn-ref';
 
 describe('stampCarrySurfaceProvenance / carryProvenanceFields', () => {
   it('clean text → undefined stamp / empty fields (no response noise)', async () => {
@@ -28,6 +34,44 @@ describe('stampCarrySurfaceProvenance / carryProvenanceFields', () => {
     );
     expect(both.provenanceLint?.flagged).toBe(true);
     expect(both.typedSlotLint?.flagged).toBe(true);
+  });
+});
+
+describe('applyOwnerTurnAutoVerify (cold-carry-system-hardening-2026-07-19 P-005 — pure)', () => {
+  const OWNER_TURN: CurrentTurnStamp = { ref: '[turn:abc123@2026-07-19T03:25:00Z]', verdict: 'owner-typed', origin: null };
+  const LOOP_TURN: CurrentTurnStamp = { ref: '[turn:abc124@2026-07-19T03:30:00Z]', verdict: 'agent-injected', origin: 'loop-fire' };
+  const lintOf = (text: string) => {
+    const r = lintCarrySurfaceProvenance(text);
+    return r.flagged ? { flagged: true as const, note: PROVENANCE_LINT_NOTE, matches: r.matches } : undefined;
+  };
+
+  it('auto-verifies manual [owner:…] tags when the current turn is owner-typed; lint clears when nothing else', () => {
+    const lint = lintOf('[owner:Avi 2026-07-19 "Don\'t do the cut yet"] HOLD ruled — no cut until GO.');
+    expect(lint?.matches[0].kind).toBe('manual-owner-tag');
+    const out = applyOwnerTurnAutoVerify(lint, OWNER_TURN);
+    expect(out.ownerTagsAutoVerified).toBe(1);
+    expect(out.lint).toBeUndefined();
+  });
+
+  it('keeps non-owner-tag matches: only the manual tags are auto-verified', () => {
+    const lint = lintOf(
+      ['[owner:Avi 2026-07-19] the ruling', 'the owner said to ship it dark'].join('\n'),
+    );
+    expect(lint?.matches).toHaveLength(2);
+    const out = applyOwnerTurnAutoVerify(lint, OWNER_TURN);
+    expect(out.ownerTagsAutoVerified).toBe(1);
+    expect(out.lint?.matches).toHaveLength(1);
+    expect(out.lint?.matches[0].kind).toBe('owner-attribution');
+  });
+
+  it('a machine-injected turn auto-verifies NOTHING (the WI-3532 protection stands)', () => {
+    const lint = lintOf('[owner:Avi 2026-07-19] the ruling');
+    expect(applyOwnerTurnAutoVerify(lint, LOOP_TURN)).toEqual({ lint, ownerTagsAutoVerified: 0 });
+    expect(applyOwnerTurnAutoVerify(lint, null)).toEqual({ lint, ownerTagsAutoVerified: 0 });
+  });
+
+  it('clean lint passes through untouched', () => {
+    expect(applyOwnerTurnAutoVerify(undefined, OWNER_TURN)).toEqual({ lint: undefined, ownerTagsAutoVerified: 0 });
   });
 });
 

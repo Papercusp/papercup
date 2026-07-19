@@ -30,7 +30,10 @@ import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-regis
 import { FEATURE_TERMINAL_STATES } from './work-item-dispatch-states';
 import {
   getLoopCarryNoteWithMeta,
+  renderCheckLine,
+  splitCarryNoteChecks,
   splitCarryNoteWalls,
+  type CheckEntry,
   type LoopCarryNoteWithMeta,
   type WallEntry,
 } from './carry-note';
@@ -94,6 +97,10 @@ export interface CarryBrief {
    *  the loop carry-note's `## Walls` section. The brief carries them VERBATIM —
    *  they are open commitments, and prose dissolves them. */
   walls: WallEntry[];
+  /** carried CHECKS (cold-carry-system-hardening P-001): external-state claims +
+   *  probes, parsed out of the note's `## Checks` section — same structured
+   *  delivery as walls so a capped/stale-collapsed note can't dissolve them. */
+  checks?: CheckEntry[];
   /** Owner-scoped standing facts — the softer standing-context carrier (structured
    *  walls live in `walls` since P-006; facts remain for everything else).
    *  `sourceRef`/`sourceProvenance` ride along (when the store has them) purely
@@ -293,14 +300,22 @@ async function defaultHydrateNoteRefs(noteText: string): Promise<string[]> {
   }
 }
 
-/** Default P-003 reader: directed non-own mail strictly after `sinceIso`, bounded. */
+/** Default P-003 reader: directed non-own mail strictly after `sinceIso`, bounded.
+ *  Review fold #7: filtered through the continuation gate's isPendingInterrupt —
+ *  categorized system broadcasts / auto lifecycle chatter / intent declares are
+ *  presence machinery, not "the note predates N messages" evidence (the raw inbox
+ *  held 10.7k rows with 4.6k ambient the night this shipped — an unfiltered count
+ *  is pure noise). */
 async function defaultReadPostNoteInbox(
   ownerId: string,
   sinceIso: string,
 ): Promise<{ count: number; lines: string[] }> {
-  const { readInbox } = await import('./agent-tools/coordination/messages');
+  const [{ readInbox }, { isPendingInterrupt }] = await Promise.all([
+    import('./agent-tools/coordination/messages'),
+    import('./agent-tools/coordination/tools/continuation-gate'),
+  ]);
   const entries = await readInbox(ownerId, { since_ts: sinceIso, excludeOwn: true });
-  const rows = Array.isArray(entries) ? entries : [];
+  const rows = (Array.isArray(entries) ? entries : []).filter((e) => isPendingInterrupt(e as never));
   const lines = rows.slice(-POST_NOTE_INBOX_MAX_LINES).map((e: Record<string, unknown>) => {
     const from = typeof e.from === 'string' ? e.from.slice(0, 12) : '?';
     const ts = typeof e.ts === 'string' ? e.ts : '';
@@ -387,6 +402,10 @@ export async function buildCarryBrief(
       };
       // P-006: walls ride the note's `## Walls` section — surface them structured.
       brief.walls = splitCarryNoteWalls(meta.note).walls;
+      // P-001 delivery parity (review fold): checks get the SAME structured
+      // extraction as walls — a note that later stale-collapses or truncates
+      // must not silently dissolve its carried claims/probes.
+      brief.checks = splitCarryNoteChecks(meta.note).checks;
       // P-002 (cold-carry-system-hardening-2026-07-19): hydrate the note's cited
       // WI-/EI- ids into LIVE one-liners. Best-effort; empty on any failure.
       if (meta.note) {
@@ -656,6 +675,15 @@ export function renderCarryBriefColdExtras(brief: CarryBrief): string {
     );
     sections.push(
       `⛔ OPEN WALLS — owner-gated commitments you still carry (re-check, do not re-litigate or re-declare resolved; clear via loop:checkpoint { walls }):\n${lines.join('\n')}`,
+    );
+  }
+  if (brief.checks && brief.checks.length > 0) {
+    // P-001 delivery parity: same double-delivery rationale as walls — a carried
+    // claim whose probe dissolves in a capped note is the phantom-re-anchor shape.
+    sections.push(
+      `🧪 CARRIED CHECKS — claims + their probes (✓ verified w/ evidence · ? PREDICTED — run the re-check before relying; clear via loop:checkpoint { checks }):\n${brief.checks
+        .map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`)
+        .join('\n')}`,
     );
   }
   if (brief.heldItems.length > 0) {
