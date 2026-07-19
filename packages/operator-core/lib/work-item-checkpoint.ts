@@ -55,6 +55,18 @@ function checkpointScopeHarness(harness: string | null | undefined): string {
   return harness && harness !== CHECKPOINT_WILDCARD_HARNESS ? harness : CHECKPOINT_WILDCARD_HARNESS;
 }
 
+/**
+ * The canonical carry-note scope for a work-item checkpoint. Exported (EI-15232) so
+ * OTHER readers — e.g. the pot placement watchdog, which batch-reads candidate
+ * checkpoints to reconcile a stale-open unit against the cup's own declaration —
+ * address the SAME key (with the same null-harness canonicalization) on every seam,
+ * instead of re-deriving the scope string and risking a write/read namespace drift
+ * (the EI-8805 class this canonicalization exists to prevent).
+ */
+export function workItemCheckpointScope(harness: string | null | undefined, workItemId: string): string {
+  return workItemScope(checkpointScopeHarness(harness), workItemId);
+}
+
 /** P-008 (autonomous-loop-prod-audit-2026-07-02): a checkpoint IS progress — bump
  *  the work item's progress anchor so the stale-claims STALLED leg (holder alive,
  *  last_progress_at > window) never frees a claim from a bee that is checkpointing.
