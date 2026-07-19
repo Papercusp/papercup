@@ -18,11 +18,18 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Table2, Layers, Search } from "lucide-react";
+import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
-import { VirtualGrid, type ColumnDef } from "@papercusp/grid-core";
+import {
+  VirtualGrid,
+  type ColumnDef,
+  type FilterableColumn,
+} from "@papercusp/grid-core";
 import { readListTotal } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import type { PanelComponentProps } from "@/app/harness/dock/panel-registry";
+import { useColumnFilters, ColumnFilterBar } from "@/app/harness/filters";
+import { CardStack } from "@/app/harness/CardStack";
 import { useItemPlanFilter } from "./use-create-data";
 import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
 import { Tooltip } from "@/app/harness/Tooltip";
@@ -128,6 +135,19 @@ export default function ObservationsPanel({
   const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
   const [signalFilter, setSignalFilter] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // #4: shared filter/search libs, mirroring the Working → Work Queue pane.
+  // A global quick-search (`obsq`) sits beside the shared ColumnFilterBar
+  // (scope / role / confidence enums, `obsf` param via useColumnFilters).
+  const [search, setSearch] = useQueryState(
+    "obsq",
+    parseAsString.withDefault(""),
+  );
+  // #7: Table (the rich grid) vs Stacks (same-kind cards overlapping, browsed
+  // one at a time). Owner ask 2026-07-19.
+  const [obsView, setObsView] = useQueryState(
+    "obsview",
+    parseAsStringEnum(["table", "stacks"]).withDefault("table"),
+  );
   const itemPlanKey = itemPlans.join("\0");
   useEffect(() => setLimit(OBSERVATIONS_PAGE), [itemPlanKey]);
 
@@ -153,15 +173,44 @@ export default function ObservationsPanel({
         : allRows,
     [allRows, itemPlans],
   );
-  const rows = useMemo(
-    () =>
-      signalFilter
-        ? scopedRows.filter((row) => (row.kind ?? "other") === signalFilter)
-        : scopedRows,
-    [scopedRows, signalFilter],
+  // Shared column filters (scope / role / confidence) over the plan-scoped rows
+  // — the same engine + bar the Work Queue uses (#4). Kind stays on the count
+  // chips below (they carry authoritative DB counts the enum bar can't).
+  const filterColumns = useMemo<FilterableColumn<ObservationRow>[]>(
+    () => [
+      {
+        key: "scope",
+        header: "Scope",
+        filter: { type: "enum", accessor: (row) => row.scope ?? "—" },
+      },
+      {
+        key: "sourceRole",
+        header: "Role",
+        filter: { type: "enum", accessor: (row) => row.sourceRole ?? "—" },
+      },
+      {
+        key: "confidence",
+        header: "Confidence",
+        filter: { type: "enum", accessor: (row) => row.confidence ?? "—" },
+      },
+    ],
+    [],
   );
+  const cf = useColumnFilters(filterColumns, scopedRows, { ns: "obs" });
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return cf.rows.filter((row) => {
+      if (signalFilter && (row.kind ?? "other") !== signalFilter) return false;
+      if (!q) return true;
+      return `${row.title} ${row.body ?? ""} ${row.kind ?? ""} ${row.refs.join(" ")}`
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [cf.rows, search, signalFilter]);
   const total = readListTotal(query.data);
   const hasMore = allRows.length < total;
+  const isFiltered =
+    cf.hasActive || search.trim() !== "" || signalFilter !== null;
 
   // Build signal counts from the real database counts, not loaded rows
   const signalCounts = useMemo(() => {
@@ -312,6 +361,22 @@ export default function ObservationsPanel({
       }}
     >
       <div className="pc-observations__toolbar">
+        <label className="pc-observations__search">
+          <Search size={12} aria-hidden />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => void setSearch(e.target.value)}
+            placeholder="Search observations…"
+            aria-label="Search observations"
+          />
+        </label>
+        <ColumnFilterBar
+          controller={cf.controller}
+          activeChips={cf.activeChips}
+          hasActive={cf.hasActive}
+          clearAll={cf.clearAll}
+        />
         {signalCounts.length > 0 ? (
           <div
             className="pc-observations__distribution"
@@ -351,17 +416,49 @@ export default function ObservationsPanel({
         {total > 0 ? (
           <span
             data-testid="observations-count"
-            aria-label={`${allRows.length} observations loaded of ${total} total`}
-            title="Loaded observations / total available"
+            aria-label={
+              isFiltered
+                ? `${rows.length} observations match, of ${total} total`
+                : `${allRows.length} observations loaded of ${total} total`
+            }
+            title={
+              isFiltered
+                ? "Observations matching the current filter / search, out of the total"
+                : "Loaded observations / total available"
+            }
             style={{
               color: "var(--fg-mute)",
               fontSize: 11,
               fontVariantNumeric: "tabular-nums",
             }}
           >
-            {allRows.length.toLocaleString()} / {total.toLocaleString()}
+            {isFiltered
+              ? `${rows.length.toLocaleString()} of ${total.toLocaleString()}`
+              : `${allRows.length.toLocaleString()} / ${total.toLocaleString()}`}
           </span>
         ) : null}
+        <div
+          className="pc-observations__viewtoggle"
+          role="group"
+          aria-label="Observation view"
+        >
+          <button
+            type="button"
+            aria-pressed={obsView === "table"}
+            aria-label="Table view"
+            onClick={() => void setObsView("table")}
+          >
+            <Table2 size={13} aria-hidden />
+          </button>
+          <button
+            type="button"
+            aria-pressed={obsView === "stacks"}
+            aria-label="Stacked cards view"
+            onClick={() => void setObsView("stacks")}
+          >
+            <Layers size={13} aria-hidden />
+          </button>
+        </div>
         <button
           type="button"
           className="pc-advpanel__iconbtn"

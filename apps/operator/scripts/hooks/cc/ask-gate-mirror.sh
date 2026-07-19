@@ -35,8 +35,12 @@
 #       2. no `<ask>` tag, but the ending is QUESTION-SHAPED (last non-blank
 #          line, ≤300 chars, ends in "?", not a code fence / quote line) →
 #          BOUNCE: print `{"decision":"block","reason":…}` teaching the
-#          agent to re-emit its ending through coord:escalate or an <ask>
-#          block, then stop for real. NARROW (see question_shaped_ending)
+#          agent to re-emit its ending through the NATIVE AskUserQuestion tool
+#          (preferred — a real terminal dialog that this hook's PreToolUse
+#          branch already mirrors to the Inbox) or coord:escalate, and NOT as a
+#          raw <ask> text tag (which a TUI renders as unreadable XML — owner
+#          flag 2026-07-19, inbox-pane-active-scope-dates-filters). NARROW (see
+#          question_shaped_ending)
 #          and LOOP-GUARDED: Claude sets `stop_hook_active:true` on the
 #          hook-triggered continuation that follows a block — we check it
 #          FIRST and never bounce twice in the same turn no matter what the
@@ -411,13 +415,23 @@ if ask:
     sys.exit(0)  # structured mirror landed — allow the stop.
 
 if question_shaped_ending(final_text):
+    # inbox-pane-active-scope-dates-filters-2026-07-19 P-401 (D-2/b): steer the
+    # re-emit to the NATIVE AskUserQuestion tool, NOT a raw `<ask>` text tag. The
+    # tag is a GUI wire-format that a TERMINAL (TUI) session renders as literal,
+    # unreadable XML — the owner explicitly flagged that (2026-07-19). The native
+    # tool renders a proper interactive dialog in the terminal AND is already
+    # mirrored into the owner's Inbox by this hook's own PreToolUse branch, so it
+    # keeps the durability the convention wants without the raw-XML regression.
     reason = (
-        "This turn ended with what reads as a question to the owner, but no structured "
-        "mirror was found. Per papercusp convention (owner-inbox-single-pane-2026-07-17 "
-        "D-001 / D-004), an owner-directed question MUST ride a durable channel: call "
-        "coord:escalate (preferred — a real card, answerable from the owner's Inbox), or "
-        "at minimum wrap the question in an <ask>{\"question\":\"…\",\"options\":[...]}"
-        "</ask> tag. Re-emit your ending through one of those, then stop for real."
+        "This turn ended with what reads as a question to the owner, but with no "
+        "structured mirror. Per papercusp convention (owner-inbox-single-pane-2026-07-17 "
+        "D-001 / D-004), an owner-directed question must ride a durable, renderable "
+        "channel — re-emit it through ONE of:\n"
+        "  • the native AskUserQuestion tool (preferred: renders a real interactive "
+        "dialog in the terminal AND registers in the owner's Inbox), or\n"
+        "  • coord:escalate (a durable card, answerable from the Inbox).\n"
+        "Do NOT emit a raw <ask>{...}</ask> text block — it renders as unreadable XML "
+        "in a terminal session. Re-emit through one of the above, then stop."
     )
     print(json.dumps({'decision': 'block', 'reason': reason}))
     sys.exit(0)

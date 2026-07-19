@@ -62,7 +62,7 @@ vi.mock('../../harness/filters', () => ({
   useColumnFilters: (_c: unknown, rows: unknown[]) => ({ rows, controller: {}, activeChips: [], hasActive: false, clearAll: vi.fn() }),
   ColumnFilterBar: () => <div data-testid="filter-bar" />,
 }));
-let runsState: { agents: unknown[] | null; loading: boolean; error: string | null; refresh: () => void };
+let runsState: { agents: unknown[] | null; total: number; loading: boolean; error: string | null; refresh: () => void };
 const refreshMock = vi.fn();
 vi.mock('./useHarnessData', () => ({ useHarnessAgents: () => runsState }));
 
@@ -100,7 +100,10 @@ function renderPanel(slug = 'alpha', searchParams = '', onUrlUpdate?: (e: unknow
 
 beforeEach(() => {
   workingState = { loading: false, fetching: false, data: WORKING, error: null };
-  runsState = { agents: RUNS, loading: false, error: null, refresh: refreshMock };
+  // total (5734) is deliberately > RUNS.length (the list read is capped at
+  // RUNS_LIST_CAP, P-004) so the count-label assertion proves it reads the true
+  // store total from _meta, not the loaded window length.
+  runsState = { agents: RUNS, total: 5734, loading: false, error: null, refresh: refreshMock };
   setTitle.mockReset(); invalidateMock.mockReset(); refreshMock.mockReset();
 });
 afterEach(cleanup);
@@ -171,12 +174,12 @@ describe('AdvAgentsPanel · WorkingView', () => {
 
 describe('AdvAgentsPanel · RunsView', () => {
   it('shows the loading state', () => {
-    runsState = { agents: null, loading: true, error: null, refresh: refreshMock };
+    runsState = { agents: null, total: 0, loading: true, error: null, refresh: refreshMock };
     renderPanel('alpha', '?agentsView=runs');
     expect(screen.getByText(/Loading alpha/i)).toBeTruthy();
   });
   it('shows the error state', () => {
-    runsState = { agents: null, loading: false, error: 'nope', refresh: refreshMock };
+    runsState = { agents: null, total: 0, loading: false, error: 'nope', refresh: refreshMock };
     renderPanel('alpha', '?agentsView=runs');
     expect(screen.getByText(/Failed: nope/i)).toBeTruthy();
   });
@@ -199,5 +202,11 @@ describe('AdvAgentsPanel · RunsView', () => {
     await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
     const ev = onUrlUpdate.mock.calls.at(-1)![0] as { searchParams: URLSearchParams };
     expect(ev.searchParams.get('sel')).toBe('F-9');
+  });
+  it('titles the runs view with the TRUE store total, not the capped window length', () => {
+    // P-004: the list read is capped (RUNS_LIST_CAP), so only a window of rows loads
+    // (RUNS has 2) but the label must report the true store total (5734 via _meta).
+    renderPanel('alpha', '?agentsView=runs');
+    expect(setTitle).toHaveBeenCalledWith('Agents · alpha (5734 runs)');
   });
 });

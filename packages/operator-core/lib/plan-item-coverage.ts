@@ -11,14 +11,21 @@
  * `plans:items actionable=true` happily returned items that a linked WI was already
  * fixing → double-starts. This module fuses BOTH signals into one coverage level.
  *
- * TWO SIGNALS, ONE READ each (mirrors issue-blocks-merge.ts's hoisted-batch shape):
+ * THREE SIGNALS, ONE READ each (mirrors issue-blocks-merge.ts's hoisted-batch shape):
  *   1. coord_links work→plan_item edges + the linked work-item's TERMINAL state
  *      (issue: resolved|closed ; feature: passed|deprecated) — ONE query.
  *   2. the canonical fleet_assignment view (listFleetAssignments) — ONE read — for
  *      BOTH the linked work-items' LIVE activity (progressing|alive|stalled|dead)
  *      AND any direct plan_item_claim on the item itself.
- * Both are globally-keyed by the plan_item ref ('<slug>#<item>', globally unique),
- * so the multi-plan readers hoist getAllPlanItemCoverage() out of their plan loop.
+ *   3. (EI-13721) the `payload.plan_item` STAMP on harness_shared.work_items — ONE
+ *      query — a backstop for a work-item bound to a plan item WITHOUT a coord_links
+ *      edge (a hand-built payload, a legacy/ad-hoc creation path, or an edge pruned
+ *      out-of-band). Deduped against signal 1 so an edge-backed work-item is never
+ *      double-counted; a stamp-only link is tagged with the synthetic rel
+ *      STAMP_ONLY_REL so a caller can tell the two apart.
+ * All three are globally-keyed by the plan_item ref ('<slug>#<item>', globally
+ * unique), so the multi-plan readers hoist getAllPlanItemCoverage() out of their
+ * plan loop.
  *
  * STALENESS. Like the issue-block overlay, this rides plans:items' 45s SWR cache —
  * the live-claim leg can lag a claim/release by up to that window. Acceptable for
@@ -33,6 +40,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { listFleetAssignments, deriveActivity } from './fleet/assignments';
 import { planItemRef, PLAN_ITEM_KIND } from './issue-blocks-merge';
+import { ISSUE_FAMILY_KINDS } from './work-items';
 import type { ItemActivity } from './item-activity';
 
 /** The link rels that count a work-item as ADDRESSING a plan item. `blocks` is NOT
@@ -48,6 +56,13 @@ const FEATURE_TERMINAL = new Set<string>(['passed', 'deprecated']);
 function isLiveActivity(a: ItemActivity): boolean {
   return a === 'progressing' || a === 'alive';
 }
+
+/** The synthetic `rel` stamped on a coverage link discovered ONLY via the
+ *  `payload.plan_item` stamp query (no coord_links edge backs it) — see the
+ *  "1b. STAMP-based coverage" block in getAllPlanItemCoverage. Distinguishes it
+ *  from a real coord_links rel ('fixes' | 'relates' | 'duplicates' | 'implements')
+ *  in the compacted `links[]` a caller reads. */
+export const STAMP_ONLY_REL = 'plan_item_stamp';
 
 export type CoverageLevel =
   | 'none' // no linked work-item AND no direct claim → genuinely unworked
@@ -180,6 +195,26 @@ export function compactCoverage(cov: PlanItemCoverage): CompactCoverage {
   };
 }
 
+/** `payload` binds as a jsonb STRING SCALAR under postgres-js's `::jsonb` cast
+ *  (postgres-js-jsonb-binding), not an object, so `payload->'plan_item'` is null
+ *  unless that shape is unwrapped first. Mirrors the identical helper in
+ *  plan-items/reconcile-linked-work-items.ts (kept local — one tiny SQL
+ *  fragment, not worth a cross-module coupling; keep both in sync if the
+ *  payload-binding quirk ever changes). */
+function normalizedPayloadExpr(sql: ReturnType<typeof getOrgPg>['sql'], col: string) {
+  return sql`(CASE WHEN jsonb_typeof(${sql.unsafe(col)}) = 'string'
+            THEN (${sql.unsafe(col)} #>> '{}')::jsonb ELSE ${sql.unsafe(col)} END)`;
+}
+
+interface StampCoverageRow {
+  work_item_id: string;
+  item_kind: string;
+  status: string;
+  updated_ts: string | number | null;
+  plan_slug: string;
+  item_id: string;
+}
+
 interface CoverageLinkRow {
   dst_ref: string;
   rel: string;
@@ -247,7 +282,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     }
   }
 
-  // Group links by plan-item ref, joining each to its live activity.
+  // 3. Group edge-based links by plan-item ref, joining each to its live activity.
   const byRef = new Map<string, CoverageWorkLink[]>();
   const newestByRef = new Map<string, number>();
   for (const row of linkRows) {
@@ -269,7 +304,54 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     }
   }
 
-  // Assemble coverage for the union of refs that have a link OR a direct claim.
+  // 4. STAMP-based coverage (EI-13721). A work-item can carry a durable
+  // `payload.plan_item` stamp as its ONLY plan binding when whatever path
+  // created/stamped it never wrote the coord_links coverage edge above (a
+  // hand-built payload, a legacy/ad-hoc creation path, or an edge pruned
+  // out-of-band — the same "the edge can survive without the stamp or vice
+  // versa" reality convert.ts's findConvertedWorkItemByStamp and
+  // reconcile-linked-work-items.ts's findAllLinkedWorkItems already treat as a
+  // backstop truth source at pickup/reconcile time). Confirmed live (2026-07-19):
+  // WI-1, WI-5141, WI-155 all carry a plan_item stamp with zero coverage edge.
+  // Without this leg such a work-item's plan item reads `coverage: undefined`
+  // (looks genuinely unworked) even though a live assignee is actively on it —
+  // exactly the false "orphaned lane" diagnosis EI-13721 reports. Read the
+  // UNIFIED base table (harness_shared.work_items, migration 374 — one
+  // row-space across both families, feature_id/status/item_kind uniform) so
+  // this is correct regardless of which path bound the work-item — not only
+  // the coord_links-edge path. Merged below, deduped against any edge-based
+  // entry for the same (ref, work-item) pair so a normally-linked item is
+  // never double-counted or given a second synthetic link.
+  const npF = normalizedPayloadExpr(sql, 'payload');
+  const stampRows = await sql<StampCoverageRow[]>`
+    SELECT feature_id AS work_item_id, item_kind, status, updated_ts,
+           ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
+           ${npF}->'plan_item'->>'item_id'  AS item_id
+      FROM harness_shared.work_items
+     WHERE payload IS NOT NULL
+       AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
+       AND ${npF}->'plan_item'->>'item_id'  IS NOT NULL`;
+  for (const row of stampRows) {
+    const ref = planItemRef(row.plan_slug, row.item_id);
+    const arr = byRef.get(ref) ?? [];
+    if (arr.some((l) => l.workItemId === row.work_item_id)) continue; // already covered via a real edge
+    const terminal = ISSUE_FAMILY_KINDS.includes(row.item_kind as (typeof ISSUE_FAMILY_KINDS)[number])
+      ? ISSUE_TERMINAL.has(row.status)
+      : FEATURE_TERMINAL.has(row.status);
+    const live = wiActivity.get(row.work_item_id);
+    const activity: ItemActivity = live?.activity ?? 'free';
+    const holder = isLiveActivity(activity) ? (live?.holder ?? null) : null;
+    arr.push({ workItemId: row.work_item_id, rel: STAMP_ONLY_REL, terminal, activity, holder });
+    byRef.set(ref, arr);
+    if (row.updated_ts != null) {
+      const ts = Number(row.updated_ts);
+      if (Number.isFinite(ts) && ts > (newestByRef.get(ref) ?? 0)) {
+        newestByRef.set(ref, ts);
+      }
+    }
+  }
+
+  // 5. Assemble coverage for the union of refs that have a link OR a direct claim.
   const out = new Map<string, PlanItemCoverage>();
   const refs = new Set<string>([...byRef.keys(), ...directClaim.keys()]);
   for (const ref of refs) {

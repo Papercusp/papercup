@@ -2,6 +2,7 @@
 
 
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Popover } from '@/app/harness/Popover';
 /**
  * OperatorChatSidebar — fixed left, full-height, and collapsible.
  *
@@ -24,7 +25,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
-import { ChevronLeft, ChevronRight, ClipboardList, Inbox as InboxIcon, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardList, Inbox as InboxIcon, SlidersHorizontal, Volume2, VolumeX } from 'lucide-react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { resolveInboxDrillIn } from './chat/curator-card-drill-in';
@@ -57,6 +58,18 @@ import {
 } from './operator-chat-layout';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
+
+/** EI-13551: below this sidebar width, AudienceModeSelector (the biggest
+ *  single piece of the rigid voice-controls cluster — 67px of icon buttons,
+ *  MEASURED in the Tauri shell) collapses from two inline icon buttons into
+ *  one small overflow trigger, so the width it frees goes back to the
+ *  owner-asked-for [🥤 Papercup] / [🫖 Pot Health] identity labels (WI-4793 /
+ *  WI-4789), which were squeezing to literal 0px at the 360px DEFAULT width.
+ *  MEASURED against the 360/460/560/700/900 checkpoints already used by the
+ *  WI-5162 face-label container query above; unlike that query this is a JS
+ *  threshold (not a CSS container query) because collapsing into a Popover
+ *  is a real DOM/state change, not a pure style toggle. */
+const AUDIENCE_MODE_OVERFLOW_WIDTH = 620;
 
 /** The header toggles' view values: the chat body ⇄ the full-height Pot
  *  Health view (WI-4778) ⇄ the human Inbox (EI-13037, owner placement
@@ -332,6 +345,14 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const plansNeedingYou = usePlansNeedingYouCount();
   const plansBadge = plansNeedingYou > 99 ? '99+' : String(plansNeedingYou);
 
+  // EI-13551: collapse AudienceModeSelector into a Popover below
+  // AUDIENCE_MODE_OVERFLOW_WIDTH — see the constant's doc comment. Driven off
+  // the already-tracked `renderedWidth` (the same value the sidebar's own
+  // inline style + the CSS container query respond to), not a separate
+  // ResizeObserver.
+  const audienceModeOverflow = renderedWidth < AUDIENCE_MODE_OVERFLOW_WIDTH;
+  const [audienceMenuOpen, setAudienceMenuOpen] = useState(false);
+
   return (
     <aside
       className="op-chat-sidebar"
@@ -480,7 +501,29 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
               );
             })}
             <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
-              <AudienceModeSelector />
+              {audienceModeOverflow ? (
+                <Popover
+                  open={audienceMenuOpen}
+                  onOpenChange={setAudienceMenuOpen}
+                  ariaLabel="Audience mode"
+                  tooltipLabel="Audience mode — engineer or novice tone"
+                  contentClassName="op-chat-audience-popover"
+                  trigger={
+                    <button
+                      type="button"
+                      className="op-chat-audience-overflow-trigger"
+                      aria-label="Audience mode settings"
+                      aria-expanded={audienceMenuOpen}
+                    >
+                      <SlidersHorizontal size={14} aria-hidden="true" />
+                    </button>
+                  }
+                >
+                  <AudienceModeSelector />
+                </Popover>
+              ) : (
+                <AudienceModeSelector />
+              )}
               <OperatorActiveToggle />
               <VoiceButton />
               <TtsMuteButton />
@@ -981,6 +1024,16 @@ const OP_CHAT_SIDEBAR_CSS = `
     gap: 0;
     padding: 3px 6px;
   }
+  /* The mic-settings gear is a convenience shortcut to /settings/voice
+     (already reachable from the app's main Settings nav) — icon-only since
+     WI-owner-ask-2026-06-23, and the least-essential control left in this
+     cluster. Drop it before the identity labels lose any more room. */
+  .op-chat-controls .pc-voice-settings-link {
+    display: none;
+  }
+  .op-chat-controls {
+    gap: 3px;
+  }
 }
 
 .op-chat-header-main .op-chat-papercup-toggle.is-on,
@@ -1025,6 +1078,38 @@ const OP_CHAT_SIDEBAR_CSS = `
 .op-chat-controls .op-chat-tts:hover {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
   background: color-mix(in srgb, var(--accent), transparent 88%);
+}
+
+/* EI-13551: the AudienceModeSelector overflow trigger — same flat-pill
+   chrome as .op-chat-tts (an icon-only control button already in this
+   cluster), shown only below AUDIENCE_MODE_OVERFLOW_WIDTH. */
+.op-chat-controls .op-chat-audience-overflow-trigger {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1), transparent 4%);
+  color: #eef8ff;
+  cursor: pointer;
+}
+.op-chat-controls .op-chat-audience-overflow-trigger[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 30%);
+  background: color-mix(in srgb, var(--accent), transparent 82%);
+}
+.op-chat-controls .op-chat-audience-overflow-trigger:hover {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+}
+.op-chat-audience-popover {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%);
+  background: var(--bg-popover, var(--bg-1));
+  box-shadow: 0 10px 28px rgba(0,0,0,0.32);
 }
 
 .op-chat-controls .pc-voice-btn-orb {

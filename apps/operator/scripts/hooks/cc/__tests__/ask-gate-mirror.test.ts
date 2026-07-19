@@ -120,7 +120,21 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     const out = JSON.parse(r.stdout);
     expect(out.decision).toBe('block');
     expect(out.reason).toMatch(/coord:escalate/);
-    expect(out.reason).toMatch(/<ask>/);
+  });
+
+  // inbox-pane-active-scope-dates-filters-2026-07-19 P-403 (D-2/b): the bounce
+  // must steer the re-emit to the NATIVE AskUserQuestion tool (renders a proper
+  // terminal dialog + is mirrored to the Inbox), NOT to a raw <ask> text tag
+  // (which a TUI renders as unreadable XML — the owner's 2026-07-19 complaint).
+  it('the bounce steers to the native AskUserQuestion tool and warns AGAINST a raw <ask> tag', () => {
+    const r = run(
+      payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith('Should I proceed with the migration now?') }),
+    );
+    const out = JSON.parse(r.stdout);
+    expect(out.reason).toMatch(/AskUserQuestion/);
+    // It may MENTION <ask> only to prohibit it — assert the prohibition wording
+    // is present, so the reason never reads as a recommendation to emit the tag.
+    expect(out.reason).toMatch(/Do NOT emit a raw <ask>/i);
   });
 
   it('Stop with a question ending but stop_hook_active:true → loop-guarded, allow (no bounce)', () => {
