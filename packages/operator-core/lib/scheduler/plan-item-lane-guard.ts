@@ -138,9 +138,13 @@ function extractPlanItemStampFromPayload(payload: unknown): PlanItemStamp | null
  * to null — unplanned/standalone work, not an error.
  */
 async function resolvePlanItemStampFromColumns(
-  workItem: Pick<WorkItem, 'id' | 'harness' | 'family'>,
+  workItem: Partial<Pick<WorkItem, 'id' | 'harness' | 'family'>>,
 ): Promise<PlanItemStamp | null> {
-  if (workItem.family !== 'feature') return null;
+  // id/family are optional on the wider Pick below (most callers — including
+  // every existing test in this file predating EI-13738 — construct a bare
+  // `{ payload, harness }` object with no id/family; those legitimately have
+  // no DB row to look up, so bail rather than query with an undefined id).
+  if (workItem.family !== 'feature' || !workItem.id) return null;
   const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
     import('@papercusp/db-org'),
     import('../workspace-registry'),
@@ -163,7 +167,7 @@ async function resolvePlanItemStampFromColumns(
  *  (cheap, no I/O), falling back to the DB-column linkage. Fails OPEN (null) on
  *  any lookup error, same contract as the caller `planItemLaneBlockReason`. */
 async function resolvePlanItemStamp(
-  workItem: Pick<WorkItem, 'payload' | 'id' | 'harness' | 'family'>,
+  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
 ): Promise<PlanItemStamp | null> {
   const fromPayload = extractPlanItemStampFromPayload(workItem.payload);
   if (fromPayload) return fromPayload;
@@ -182,7 +186,7 @@ async function resolvePlanItemStamp(
  * lane is clear.
  */
 export async function planItemLaneBlockReason(
-  workItem: Pick<WorkItem, 'payload' | 'harness' | 'id' | 'family'>,
+  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
 ): Promise<PlanItemLaneBlock | null> {
   const stamp = await resolvePlanItemStamp(workItem);
   if (!stamp) return null;

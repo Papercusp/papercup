@@ -47,7 +47,7 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }))
 
 import { planItemLaneBlockReason } from './plan-item-lane-guard';
 
-function planItem(overrides: Partial<{ id: string; storedStatus: string; blockedBy: string[] }> = {}) {
+function planItem(overrides: Partial<{ id: string; storedStatus: string; blockedBy: string[]; text: string }> = {}) {
   return {
     id: 'P-001',
     text: 'an item',
@@ -65,6 +65,9 @@ describe('planItemLaneBlockReason', () => {
     getPlanRowMock.mockReset();
     planItemsForRowMock.mockReset();
     planItemsForRowMock.mockImplementation((row: unknown) => (row as { items: unknown[] }).items);
+    fakeSourcePlanRow = null;
+    fakeSqlError = null;
+    fakeSql.mockClear();
   });
 
   it('returns null when the work-item carries no plan_item payload', async () => {
@@ -289,5 +292,233 @@ describe('planItemLaneBlockReason', () => {
     // P-307 is done, so it drops out of the unresolved set; the reason names exactly the
     // still-open blockers the incident reported (P-302..P-306).
     expect(got?.reason).toMatch(/blocked-by: P-302, P-303, P-304, P-305, P-306/);
+  });
+
+  // EI-13738: the DB-column linkage half. The LIVE promotion path (promote.ts /
+  // POST /features/import) writes source_plan_slug/source_plan_item_ids on
+  // harness_features_consolidated with NO payload.plan_item stamp — so a work-item
+  // exactly like the real WI-3503/WI-3502 incidents (P-401/P-308, no payload back-
+  // pointer) must still resolve via the DB columns.
+  describe('DB-column linkage (source_plan_slug/source_plan_item_ids, EI-13738)', () => {
+    it('does not query the DB for an issue-family item (no such columns exist)', async () => {
+      const got = await planItemLaneBlockReason({
+        payload: {},
+        harness: 'papercusp',
+        id: 'EI-1',
+        family: 'issue',
+      });
+      expect(got).toBeNull();
+      expect(fakeSql).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the feature carries no source_plan_slug (unplanned/standalone work)', async () => {
+      fakeSourcePlanRow = { source_plan_slug: null, source_plan_item_ids: null };
+      const got = await planItemLaneBlockReason({
+        payload: {},
+        harness: 'papercusp',
+        id: 'WI-9001',
+        family: 'feature',
+      });
+      expect(got).toBeNull();
+      expect(getPlanRowMock).not.toHaveBeenCalled();
+    });
+
+    it('reports blocked via the DB-column linkage — the real WI-3503/P-401 shape (no payload stamp)', async () => {
+      fakeSourcePlanRow = {
+        source_plan_slug: 'p2p-git-live-activation-2026-07-09',
+        source_plan_item_ids: ['P-401'],
+      };
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({ id: 'P-308', storedStatus: 'todo', blockedBy: [] }),
+          planItem({ id: 'P-401', storedStatus: 'todo', blockedBy: ['P-308'] }),
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: {}, // no payload.plan_item — the live promote.ts path never stamps it
+        harness: 'papercusp',
+        id: 'WI-3503',
+        family: 'feature',
+      });
+      expect(got).not.toBeNull();
+      expect(got?.effectiveStatus).toBe('blocked');
+      expect(got?.planSlug).toBe('p2p-git-live-activation-2026-07-09');
+      expect(got?.itemId).toBe('P-401');
+      expect(getPlanRowMock).toHaveBeenCalledWith(
+        'p2p-git-live-activation-2026-07-09',
+        expect.objectContaining({ harnessSlug: 'papercusp' }),
+      );
+    });
+
+    it('prefers the payload back-pointer over the DB columns when both are present (cheap path first, no I/O)', async () => {
+      getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-001', storedStatus: 'blocked' })] });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001' } },
+        harness: 'papercusp',
+        id: 'WI-1',
+        family: 'feature',
+      });
+      expect(got?.effectiveStatus).toBe('blocked');
+      expect(fakeSql).not.toHaveBeenCalled();
+    });
+
+    it('checks EVERY linked item id when source_plan_item_ids carries several — one blocked gates the whole work-item', async () => {
+      fakeSourcePlanRow = { source_plan_slug: 'multi-plan', source_plan_item_ids: ['P-001', 'P-002'] };
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({ id: 'P-001', storedStatus: 'done' }),
+          planItem({ id: 'P-002', storedStatus: 'blocked' }),
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: {},
+        harness: 'papercusp',
+        id: 'WI-multi',
+        family: 'feature',
+      });
+      expect(got).not.toBeNull();
+      expect(got?.itemId).toBe('P-002');
+      expect(got?.effectiveStatus).toBe('blocked');
+    });
+
+    it('reports stale-residue terminal ONLY when EVERY linked item id is terminal', async () => {
+      fakeSourcePlanRow = { source_plan_slug: 'multi-plan', source_plan_item_ids: ['P-001', 'P-002'] };
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({ id: 'P-001', storedStatus: 'done' }),
+          planItem({ id: 'P-002', storedStatus: 'todo' }), // still real open work
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: {},
+        harness: 'papercusp',
+        id: 'WI-partial',
+        family: 'feature',
+      });
+      expect(got).toBeNull(); // not ALL linked items are terminal — genuinely open work
+
+      fakeSourcePlanRow = { source_plan_slug: 'multi-plan', source_plan_item_ids: ['P-003', 'P-004'] };
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({ id: 'P-003', storedStatus: 'done' }),
+          planItem({ id: 'P-004', storedStatus: 'dropped' }),
+        ],
+      });
+      const gotAllTerminal = await planItemLaneBlockReason({
+        payload: {},
+        harness: 'papercusp',
+        id: 'WI-all-terminal',
+        family: 'feature',
+      });
+      expect(gotAllTerminal).not.toBeNull();
+      expect(gotAllTerminal?.reason).toMatch(/stale residue/);
+    });
+
+    it('fails open when the DB column lookup throws', async () => {
+      fakeSqlError = new Error('pg unavailable');
+      const got = await planItemLaneBlockReason({
+        payload: {},
+        harness: 'papercusp',
+        id: 'WI-err',
+        family: 'feature',
+      });
+      expect(got).toBeNull();
+    });
+  });
+
+  // EI-13780: a `todo`-status plan item whose plan PROSE marks it owner-gated /
+  // hard-deferred — no structural effectiveStatus/needsHuman signal at all — must
+  // still be reported, exactly the two real near-misses (WI-357/P-008,
+  // WI-1774/P-003) that motivated this.
+  describe('owner-gate prose markers (EI-13780)', () => {
+    it("reports owner-gated for an item whose OWN text carries an inline marker (WI-357/P-008 shape)", async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({
+            id: 'P-008',
+            storedStatus: 'todo',
+            text: 'DS-3 SERVICE rename systemd papercup-*→papercusp-* … (Owner-gated: needs a coordinated quiescent window dev-api/inference-gateway/bg-host restarts bounce the whole live fleet. Not auto-executable. See WI-357 thread + HANDOFF runbook.)',
+          }),
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'papercup-physical-rename-phase5-2026-06-20', item_id: 'P-008' } },
+        harness: 'papercusp',
+      });
+      expect(got).not.toBeNull();
+      expect(got?.itemId).toBe('P-008');
+      expect(got?.effectiveStatus).toBe('todo');
+      expect(got?.reason).toMatch(/owner-gated \("owner-gated"\)/);
+    });
+
+    it("reports owner-gated for an item named (by id) in the plan's ## Now block (WI-1774/P-003 shape)", async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [planItem({ id: 'P-003', storedStatus: 'todo', text: 'W1.1 — Zero-downtime :3070 deploy' })],
+        nowState: "su-01386 [AUTO, route A]. Engine loop loop:end'd — no eligible work left.",
+        nowNext:
+          'NOTHING for su to auto-do: the only open items are P-003 (W1.1 zero-downtime deploy) + P-004 (W5 event-loop scale-out), both HARD-DEFERRED to an owner-attended session (:3170-only, high-stakes, never auto-flip).',
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'backend-reliability-100pct-2026-07-03', item_id: 'P-003' } },
+        harness: 'papercusp',
+      });
+      expect(got).not.toBeNull();
+      expect(got?.itemId).toBe('P-003');
+      expect(got?.reason).toMatch(/owner-gated \("hard-deferred"\)/);
+    });
+
+    it('does NOT block an unrelated todo item merely because the Now block gates a DIFFERENT item in the same plan', async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({ id: 'P-003', storedStatus: 'todo' }),
+          planItem({ id: 'P-099', storedStatus: 'todo', text: 'an unrelated, freely-workable item' }),
+        ],
+        nowState: '',
+        nowNext: 'P-003 is HARD-DEFERRED to an owner-attended session, never auto-flip.',
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-099' } },
+        harness: 'papercusp',
+      });
+      expect(got).toBeNull();
+    });
+
+    it('reports owner-gated for an item scoped to a Decision (via itemRefs) carrying a marker', async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [planItem({ id: 'P-006', storedStatus: 'todo' })],
+        decisions: [
+          {
+            id: 'D-004',
+            title: 'P-006 verification gate is owner-window-gated',
+            body: 'blocked-by the owner-gated trio; not re-placeable.',
+            date: null,
+            itemRefs: ['P-006', 'P-008', 'P-009'],
+          },
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-006' } },
+        harness: 'papercusp',
+      });
+      expect(got).not.toBeNull();
+      expect(got?.itemId).toBe('P-006');
+      expect(got?.reason).toMatch(/owner-gated \("owner-gated"\)/);
+    });
+
+    it('returns null for a clear item even when the plan row carries Now/decisions fields with no marker text', async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [planItem({ id: 'P-001', storedStatus: 'todo' })],
+        nowState: 'routine progress, nothing gated',
+        nowNext: 'keep going',
+        decisions: [
+          { id: 'D-001', title: 'an ordinary decision', body: 'no gating language here', date: null, itemRefs: ['P-001'] },
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001' } },
+        harness: 'papercusp',
+      });
+      expect(got).toBeNull();
+    });
   });
 });

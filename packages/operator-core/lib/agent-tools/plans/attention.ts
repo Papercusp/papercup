@@ -574,7 +574,9 @@ export default defineTool({
                     askerId: typeof c.asker_id === "string" ? c.asker_id : null,
                     harnessSlug: resolveHarness(c.harness_slug, null),
                   }),
-                  occurredAt: toIsoOrNull(tsOf(c.updated_at ?? c.created_at)),
+                  // The conversation store maps its rows to updated_ts/created_ts
+                  // (conversations-store.ts) — NOT updated_at/created_at.
+                  occurredAt: toIsoOrNull(tsOf(c.updated_ts ?? c.created_ts)),
                 });
               }
             } catch {
