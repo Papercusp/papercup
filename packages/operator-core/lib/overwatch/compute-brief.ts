@@ -31,18 +31,22 @@ import { computeSystemHealth, deriveQueenAlive, queenPlacementStalled, ADMISSION
 import type { SystemHealth } from '../system-health/types';
 
 /**
- * EI-13557: the STABLE `coord:escalate` conditionKey for an escalate-type
- * anomaly — derived from the anomaly `kind` alone (a closed, count-free
+ * EI-13557 (escalate) / EI-15448 (every anomaly): the STABLE condition-identity
+ * key for an anomaly `kind` — derived from the kind alone (a closed, count-free
  * enum), never from the live count/duration embedded in that anomaly's
- * `detail`/`message`. Every escalate-type anomaly below carries this on its
- * `suggestedAction.conditionKey` so re-detections of the SAME condition
- * always coalesce onto one open escalation row instead of leaking a fresh
- * one each time the count changes (the "N aging owner-attention escalations"
- * self-inflating advisory was this bug for the `escalation-aging` kind;
- * every other escalate anomaly here embeds a live count/duration too, so the
- * fix is applied uniformly rather than one kind at a time).
+ * `detail`/`message`. EVERY anomaly below carries this on its
+ * `suggestedAction.conditionKey`, regardless of action type, so re-detections
+ * of the SAME condition always coalesce: onto one open `coord:escalate` row for
+ * an escalate action (EI-13557: the "N aging owner-attention escalations"
+ * self-inflating advisory was this bug for `escalation-aging`), AND onto one
+ * open `improvements:capture{lane:'observation'}` row for the D-003 companion
+ * observation any action (nudge/observe/escalate) drops (EI-15448: that
+ * companion observation had no key at all and is what actually flooded the
+ * backlog to 7k+ open items for `escalation-aging` — its escalate side
+ * coalesced fine the whole time). Applied uniformly to every anomaly rather
+ * than one kind at a time, same rationale as the original EI-13557 fix.
  */
-function escalationConditionKey(kind: AnomalyKind): string {
+function anomalyConditionKey(kind: AnomalyKind): string {
   return `overwatch:${kind}`;
 }
 
@@ -96,6 +100,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
+        conditionKey: anomalyConditionKey('queen-dark'),
         message: 'Mug — you have gone dark. Waking you: re-derive your survey and resume placement. If this wake misses (woken:0), escalate — a Mug that will not wake is structural.',
       },
     });
@@ -108,6 +113,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
+        conditionKey: anomalyConditionKey('queen-stalled'),
         message: 'Mug — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
       },
     });
@@ -137,7 +143,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
-        conditionKey: escalationConditionKey('queen-placement-stalled'),
+        conditionKey: anomalyConditionKey('queen-placement-stalled'),
         message:
           `Mug alive but ${queen.consecutiveZeroTokenWakes} consecutive wakes ran 0 LLM tokens while ${workFeed.frontier} items are placeable — ` +
           `she launches but never reaches an LLM turn. Likely the account pool is rate-limit-exhausted (or the launcher host is down); ` +
@@ -161,7 +167,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         suggestedAction: {
           type: 'escalate',
           target: 'owner',
-          conditionKey: escalationConditionKey('token-paused'),
+          conditionKey: anomalyConditionKey('token-paused'),
           message: `All paused (${buckets}) with zero fallback accounts — a structural rate/account fix is needed ` + '(scale-out or rate config). Kettle cannot rebind the gateway or flip rate config.',
         },
       });
@@ -173,6 +179,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         detail: `Paused buckets [${buckets}] with ${tokens.accountsAvailable} account(s) still available — likely transient RPM saturation.`,
         suggestedAction: {
           type: 'observe',
+          conditionKey: anomalyConditionKey('token-paused'),
           message: `Bucket(s) ${buckets} paused on RPM saturation; ${tokens.accountsAvailable} account(s) available. Watching — escalate only if it persists across wakes.`,
         },
       });
@@ -193,7 +200,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
-        conditionKey: escalationConditionKey('gateway-wedge'),
+        conditionKey: anomalyConditionKey('gateway-wedge'),
         message:
           'Gateway wedged (watchdog auto-restarting :8788). If this recurs, it is a structural capacity fix — scale out the account pool or provision per-account egress IPs (B-GW-3). Kettle cannot rebind the gateway or add capacity.',
       },
@@ -206,6 +213,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       detail: 'Inference gateway sustained-throttling — AIMD has cut admission concurrency below its cap, or the pool is fail-fast shedding (all accounts throttled). Capacity pressure, not yet a wedge.',
       suggestedAction: {
         type: 'observe',
+        conditionKey: anomalyConditionKey('gateway-throttle'),
         message: 'Gateway throttling under sustained upstream 429s (AIMD adapting). Watching — escalate if it persists across wakes or tips into a wedge.',
       },
     });
@@ -223,7 +231,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
-        conditionKey: escalationConditionKey('gateway-admission-starved'),
+        conditionKey: anomalyConditionKey('gateway-admission-starved'),
         message:
           `Admission starvation: ${tokens.accountsAvailable} idle account(s) available but the live admission ceiling is starving the queue. Raise the provider floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } } (mirrors the 2026-07-09 manual mitigation). Kettle cannot flip live rate-limit config itself (D-001).`,
       },
@@ -241,7 +249,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
-        conditionKey: escalationConditionKey('work-feed-stuck'),
+        conditionKey: anomalyConditionKey('work-feed-stuck'),
         message: `${workFeed.deadRoutines} work-feed routine(s) dead; auto-eligible items are stranded. A routine restart is structural — overwatch cannot restart it.`,
       },
     });
@@ -271,6 +279,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
+        conditionKey: anomalyConditionKey('work-feed-stuck'),
         message: `Mug — ${freshFrontier} fresh frontier item(s) are ready to place; place them.`,
       },
     });
@@ -285,6 +294,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
+        conditionKey: anomalyConditionKey('work-feed-stuck'),
         message: `Mug — ${workFeed.blockedStranded} item(s) are stranded blocked-on-a-resolved-constraint; re-open them so they re-enter the frontier.`,
       },
     });
@@ -304,6 +314,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
+        conditionKey: anomalyConditionKey('bees-churning'),
         message: `Mug — bees: ${parts.join(', ')}; re-place the abandoned unit(s) and check the churning bee(s) for a wedged loop.`,
       },
     });
@@ -317,7 +328,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
-        conditionKey: escalationConditionKey('invalid-model-config'),
+        conditionKey: anomalyConditionKey('invalid-model-config'),
         message:
           `${bees.invalidModelFailures} recent autonomous-role spawn(s) failed with "selected model" unavailable/access errors. ` +
           `Inspect /settings/agent role model overrides and tier menu; clear or replace unavailable model specs before placing more work.`,
@@ -338,7 +349,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         // EI-13557: the count-free stable key — NOT `agingConditionKey` (that one is
         // per-watchdogKey and belongs to the unrelated known-open-aging code path,
         // EI-14854). This is the count-carrying advisory that was self-inflating.
-        conditionKey: escalationConditionKey('escalation-aging'),
+        conditionKey: anomalyConditionKey('escalation-aging'),
         message: `${plans.agingEscalations} human-attention escalation(s) have aged past the attention threshold. Review the Planning Needs you queue and resolve, answer, or dismiss stale items; the Mug cannot clear owner-decision backlog by being nudged.`,
       },
     });

@@ -14,29 +14,53 @@
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/issues-engineer.collision-resistant-id.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { newCollisionResistantIssueTail } from './issues-engineer';
 
 describe('newCollisionResistantIssueTail (EI-13285 collision-resistant EI id allocator)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('returns a digits-only string (still fits the legacy EI-<n> ^EI-[0-9]+$ shape)', () => {
     const tail = newCollisionResistantIssueTail();
     expect(tail).toMatch(/^[0-9]+$/);
   });
 
-  it('simulates two INDEPENDENT, non-coordinating allocators (two Hive peer devices) and never collides', () => {
-    // The exact failure mode: two callers with no shared state (no DB row scan, no
-    // lock) each mint an id "at the same time". Simulate 5,000 such independent
-    // allocations (interleaved, as two devices racing would be) and assert the
-    // resulting id space has zero duplicates — the old MAX-scan allocator could not
-    // make this claim across two DIFFERENT database instances; this generator can,
-    // because it never reads shared state to decide the next value.
+  it('two INDEPENDENT, non-coordinating allocators minting in the SAME millisecond stay collision-resistant via the random tail', () => {
+    // The exact EI-13285 failure mode was DETERMINISTIC collision: the old MAX(EI-<n>)+1
+    // allocator, given the same shared state, hands two non-coordinating peer devices the
+    // IDENTICAL "next" id every time. The fix replaces that deterministic scan with
+    // time + a random tail, so two devices minting "at the same instant" collide only if
+    // their random tails happen to coincide — no shared state is read to decide the value.
+    //
+    // We pin the clock to a SINGLE millisecond — the worst case, where the ms high-bits
+    // give ZERO disambiguation and ALL collision resistance must come from the 20-bit
+    // random tail (EI_ID_RAND_SPACE = 2**20 ≈ 1.05M in issues-engineer.ts). Then we mint a
+    // large batch of same-instant ids and assert NEAR-TOTAL distinctness.
+    //
+    // Why not assert ZERO collisions (the original assertion)? The tail is deliberately
+    // only 20 bits — a wider tail overflows PG bigint given the fixed 2026 epoch — so over
+    // a batch this size the birthday paradox GUARANTEES a handful of tail collisions
+    // (E[collisions] ≈ N²/(2·2²⁰) ≈ 11.9 for N=5000, and MORE the faster the loop runs).
+    // A zero-collision assertion is therefore statistically impossible and was the source
+    // of a ~17% green-checkpoint flake (WI-5507). The honest, hermetic guarantee is that
+    // distinct count stays FAR above anything a low/zero-entropy (regressed) allocator
+    // could produce — a bound independent of machine speed, so it never flakes.
+    const FIXED_MS = Date.UTC(2026, 5, 15); // a fixed instant inside the id epoch
+    vi.spyOn(Date, 'now').mockReturnValue(FIXED_MS);
+
+    const N = 5000;
+    // Mean ≈ 11.9 collisions; a budget of 100 is ~8× the mean (~25σ) so P(exceeded) is
+    // astronomically small (Poisson tail) — never flakes — while the regressed
+    // deterministic allocator (all N ids identical ⇒ 4999 collisions) misses it by ~4900.
+    const MAX_TAIL_COLLISIONS = 100;
+
     const ids = new Set<string>();
-    for (let i = 0; i < 5000; i++) {
-      const tail = newCollisionResistantIssueTail();
-      expect(ids.has(tail)).toBe(false); // a collision here would be the EI-13285 bug, reproduced
-      ids.add(tail);
-    }
-    expect(ids.size).toBe(5000);
+    for (let i = 0; i < N; i++) ids.add(newCollisionResistantIssueTail());
+
+    const collisions = N - ids.size;
+    expect(collisions).toBeLessThanOrEqual(MAX_TAIL_COLLISIONS);
   });
 
   it('every freshly minted id numerically sorts AFTER any legacy small sequential id (existing numeric-sort assumptions hold)', () => {

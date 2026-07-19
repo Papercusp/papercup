@@ -417,3 +417,86 @@ describe('promote side-effects + the re-promote guard (engine level)', () => {
     expect('error' in second && second.error).toMatch(/already promoted to F-FIX-001/);
   });
 });
+
+// EI-15461: a promoted issue never auto-closed when its F-FIX feature later
+// passed — nothing reverse-synced the issue's own state, so it lingered `open`
+// forever and got re-served to every drain/auto-implement pass. setWorkItemState
+// now fires a best-effort autoResolveSourceIssueOnFeaturePassed hook on the
+// feature's transition INTO `passed`.
+describe('EI-15461 — a feature passing auto-resolves its promoted source issue', () => {
+  // mintFixFeatureRow is mocked in this file (no real per-harness-client DB
+  // insert — see the top-of-file vi.mock), so promoteToPipeline alone never
+  // makes the minted feature exist in harness_features_consolidated. Mirror
+  // its real production INSERT (metadata.sourceIssueId) directly so the row
+  // exists for setWorkItemState to transition.
+  async function insertPromotedFeatureRow(featureId: string, sourceIssueId: string): Promise<void> {
+    await db.sql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (harness_slug, feature_id, title, status, item_kind, metadata, workspace_id, created_ts, updated_ts)
+      VALUES ('papercup', ${featureId}, 'promoted feature', 'todo', 'feature',
+              ${JSON.stringify({ sourceIssueId })}::jsonb, 'default', ${Date.now()}, ${Date.now()})`;
+  }
+
+  it('promote → mint feature row → feature passes → source issue auto-resolves', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'promoted bug', harness: 'papercup', createdBy: 'agA' });
+    const promoted = await wi.promoteToPipeline(bug.id, { harness: 'papercup', actor: 'agA' });
+    if ('error' in promoted) throw new Error(promoted.error);
+    const featureId = promoted.feature.id;
+    await insertPromotedFeatureRow(featureId, bug.id);
+
+    await wi.setWorkItemState(featureId, 'passed', { by: 'agB', completionRef: 'shipped the fix' });
+
+    // The auto-resolve is a fire-and-forget hook off the same write — wait for
+    // its effect rather than racing the microtask/DB round-trip.
+    await vi.waitFor(async () => {
+      const after = await issuesEngineer.getIssue(bug.id);
+      expect(after?.state).toBe('resolved');
+    });
+  });
+
+  it('a feature transitioning to a NON-passed terminal state (deprecated) does not touch the source issue', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'deprecated-fix bug', harness: 'papercup', createdBy: 'agA' });
+    const promoted = await wi.promoteToPipeline(bug.id, { harness: 'papercup', actor: 'agA' });
+    if ('error' in promoted) throw new Error(promoted.error);
+    const featureId = promoted.feature.id;
+    await insertPromotedFeatureRow(featureId, bug.id);
+
+    await wi.setWorkItemState(featureId, 'deprecated', {
+      by: 'agB', completionRef: 'not needed after all', decision: { authority: 'system', riskTier: 'low' },
+    } as never);
+
+    // Give any (incorrectly-firing) fire-and-forget hook a turn, then assert
+    // it did NOT resolve the issue.
+    await new Promise((r) => setImmediate(r));
+    const after = await issuesEngineer.getIssue(bug.id);
+    expect(after?.state).toBe('open');
+  });
+
+  it('is idempotent — an already-resolved source issue is left untouched (no completion-ref overwrite)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'already fixed elsewhere', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agZ', completionRef: 'closed as duplicate' });
+    const featureId = 'F-FIX-777';
+    await insertPromotedFeatureRow(featureId, bug.id);
+
+    await wi.setWorkItemState(featureId, 'passed', { by: 'agB', completionRef: 'shipped' });
+    await new Promise((r) => setImmediate(r));
+    // Call the exported hook directly too, for a deterministic assert alongside
+    // the racy fire-and-forget above — idempotent, so calling it twice is safe.
+    await wi.autoResolveSourceIssueOnFeaturePassed(featureId, 'papercup');
+
+    const after = await issuesEngineer.getIssue(bug.id);
+    expect(after?.state).toBe('resolved');
+    expect(after?.terminalCompletionRef).toBe('closed as duplicate');
+  });
+
+  it('a feature with no sourceIssueId metadata (not promoted) is a no-op', async () => {
+    const featureId = 'F-FIX-778';
+    await db.sql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (harness_slug, feature_id, title, status, item_kind, workspace_id, created_ts, updated_ts)
+      VALUES ('papercup', ${featureId}, 'organic feature', 'todo', 'feature', 'default', ${Date.now()}, ${Date.now()})`;
+    // Must not throw when there is no linked issue to resolve.
+    await expect(wi.setWorkItemState(featureId, 'passed', { by: 'agB', completionRef: 'shipped' })).resolves.toBeTruthy();
+    await wi.autoResolveSourceIssueOnFeaturePassed(featureId, 'papercup');
+  });
+});
