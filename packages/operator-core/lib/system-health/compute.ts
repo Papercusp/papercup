@@ -29,6 +29,7 @@ import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { notifySyncInvalidate } from '../sync-sse';
+import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 import type {
   SystemHealth,
   SystemHealthPanels,
@@ -647,7 +648,7 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
     // below to compute account availability correctly (EI-15875). Only when the gateway is in the
     // egress path AND reachable; fail-soft to null (greyed) otherwise — never blanks the panel.
     let gateway: TokensHealth['gateway'] = null;
-    let gatewayStatsRaw: Awaited<ReturnType<typeof import('../inference-gateway/observability')['fetchGatewayStatsRaw']>> = null;
+    let gatewayStatsRaw: RawGatewayStats | null = null;
     if (ctx.gatewayEnabled && ctx.gatewayReachable) {
       try {
         const { fetchGatewayStatsRaw } = await import('../inference-gateway/observability');

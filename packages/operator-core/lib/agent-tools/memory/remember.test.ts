@@ -42,6 +42,16 @@ vi.mock('../../memory/memory-pause', () => ({
   isMemoryPaused: vi.fn(async () => false),
   MEMORY_PAUSED_REFUSAL: { ok: false, reason: 'memory_paused' },
 }));
+// EI-10048: the embed-text ref-expansion pass. It resolves work-item refs in the
+// body (e.g. `F-001`) via getWorkItem → resolveIssueWorkspace, which issues its
+// OWN getOrgPg().sql read — and that would pollute the anchor-writer tests' exact
+// `sql` call counts (the P-015 block below asserts the anchor writer is the SOLE
+// user of the mocked sql tag), exactly like the memory-pause read above. Stubbed
+// to the real best-effort no-resolve contract (returns undefined, never touching
+// the resolver); ref-expand's own behavior is covered in ref-expand.test.ts.
+vi.mock('../../memory/ref-expand', () => ({
+  expandRefsForEmbed: vi.fn(async () => undefined),
+}));
 
 import remember, { runbookShapeHint } from './remember';
 import { coerceMemoryKind, normalizeMemoryKind } from './remember-coerce';

@@ -93,7 +93,27 @@ if [ -e "$RELEASE_ROOT/.git" ]; then
   # forever). Clean it — node_modules excluded (the hardlink copies from step
   # 3 are untracked by design); submodule SOURCE is re-extracted in step 2
   # anyway, so losing it here is fine.
-  git -C "$RELEASE_ROOT" clean -fdq -e node_modules || true
+  #
+  # WI-5366: `-x` too — a plain `clean -fdq` (no `-x`) leaves every GITIGNORED
+  # artifact untouched, not just node_modules. Verified live in this exact
+  # tree (2026-07-19): package-local `.vitest-tmp/` and `.papercusp-tmp/node-
+  # compile-cache/` dirs dated 2026-07-02 — 17 days and untold checkouts
+  # stale — survived every single `reset --hard` + clean since, because they
+  # are ignored, not untracked-but-unignored. This tree's own header comment
+  # calls it "a throwaway, correctness-critical tree [that] must always
+  # re-copy from integration" (the reasoning that made `--node-modules force`
+  # mandatory here over `auto`); a stale gitignored build/test cache left
+  # over from a PRIOR checkout at a DIFFERENT commit is the exact same class
+  # of correctness risk, just unaddressed for anything outside node_modules.
+  # This is the leading suspect behind WI-5366 (green-checkpoint's stale-
+  # candidate re-triage twice reporting a false "failures REPRODUCE at tip"
+  # verdict for a tip provably clean at that sha) — a stale cache is a much
+  # better fit than a checkout race (assert_checkout_landed, WI-5110, already
+  # proves HEAD lands correctly; the reflog for the incident shows a single
+  # clean transition with nothing interleaved). `-x` makes the clean total:
+  # every ignored file/dir is removed too, `-e node_modules` still spares
+  # the one directory this tree deliberately preserves + refreshes itself.
+  git -C "$RELEASE_ROOT" clean -fdqx -e node_modules || true
 else
   log "creating release worktree at $RELEASE_ROOT"
   git -C "$INTEGRATION_ROOT" worktree add --detach "$RELEASE_ROOT" "$TARGET_SHA"

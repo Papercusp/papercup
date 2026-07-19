@@ -323,7 +323,14 @@ export interface TokensHealth {
   spendUsd: number;
   windowMs: number;
   accountsTotal: number;
+  /** Can actually serve right now: not rate-paused, not weekly/5h usage-walled
+   *  (`accountFull`, WI-3310), and not live edge-throttled. NOT pause-only — an
+   *  account with a lapsed/never-set pause but an exhausted usage window is still
+   *  excluded (EI-15875: counting it as available fabricated a false "artificial
+   *  ceiling" admission-starvation escalation). */
   accountsAvailable: number;
+  /** `accountsTotal - accountsAvailable` — any account that cannot currently serve
+   *  (paused, usage-walled, or edge-throttled), not merely rate-paused. */
   accountsPaused: number;
   /** The gateway's own admission/AIMD metrics + wedge/throttle verdict (B-GW-5). null = not read
    *  (gateway unreachable / flag off / /stats failed) — never fabricated. */
