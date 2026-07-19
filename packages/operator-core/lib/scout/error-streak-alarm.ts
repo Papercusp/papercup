@@ -82,8 +82,12 @@ export async function checkAndFireErrorStreakAlarm(opts: {
     if (!isErrorStreak(rows.map((r) => r.status), threshold)) return;
 
     // Debounce over hive_watchdog_fires (the watchdog-family dedup surface).
+    // EI-16038: cheap non-atomic pre-check first (avoid the transaction round-trip
+    // on the common no-streak tick); the atomic claim below (after the reason is
+    // computed) is authoritative and backs off geometrically once the same error
+    // keeps re-firing unchanged.
     const slug = opts.installSlug ?? '@singleton';
-    const { recentWatchdogFires, recordFire } = await import('../pot/watchdog');
+    const { recentWatchdogFires, claimWatchdogFire } = await import('../pot/watchdog');
     const windowHours = scoutErrorStreakDebounceHours();
     if ((await recentWatchdogFires(ws, slug, windowHours, 'scout-error-streak')) > 0) return;
 
@@ -97,6 +101,14 @@ export async function checkAndFireErrorStreakAlarm(opts: {
           .filter((e): e is string => e !== null),
       ),
     ];
+    const reason = `${threshold}-cycle error streak: ${errors[0] ?? 'no detail'}`;
+    // EI-6777/EI-16038: claim the atomic debounce slot (closes the check-then-act race
+    // the old recentWatchdogFires+recordFire pattern had, and backs off geometrically
+    // once the same error keeps re-firing unchanged) BEFORE paging — only the winner
+    // pages.
+    const claimed = await claimWatchdogFire({ workspaceId: ws, installSlug: slug, source: 'scout-error-streak', windowHours, reason, wakeAt: null });
+    if (!claimed) return;
+
     const summary =
       `Scout cycle ERROR STREAK: the last ${threshold} cycles ALL failed — ideation is down ` +
       `and the circuit gate is only backing off, not fixing it. Distinct errors: ` +
@@ -123,13 +135,6 @@ export async function checkAndFireErrorStreakAlarm(opts: {
         { to: ['@role:mug'], summary, body: summary },
       ),
     );
-    await recordFire({
-      workspaceId: ws,
-      installSlug: slug,
-      source: 'scout-error-streak',
-      reason: `${threshold}-cycle error streak: ${errors[0] ?? 'no detail'}`,
-      wakeAt: null,
-    });
   } catch (e) {
     console.warn(
       `[scout-error-streak] alarm failed (tick recording unaffected): ${e instanceof Error ? e.message : e}`,

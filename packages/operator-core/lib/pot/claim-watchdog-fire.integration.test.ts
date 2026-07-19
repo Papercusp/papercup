@@ -55,7 +55,8 @@ beforeAll(async () => {
       source        text NOT NULL,
       reason        text NOT NULL DEFAULT '',
       wake_at       timestamptz,
-      demand        jsonb NOT NULL DEFAULT '{}'::jsonb
+      demand        jsonb NOT NULL DEFAULT '{}'::jsonb,
+      repeat_count  integer NOT NULL DEFAULT 1
     )
   `);
 });

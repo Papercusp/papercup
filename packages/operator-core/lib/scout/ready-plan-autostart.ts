@@ -45,7 +45,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
 import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
-import { recentWatchdogFires, recordFire } from '../pot/watchdog';
+import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
 import { promotePlanItems } from '../plan-workitem-promotion-run';
 
 // ── tunables ──────────────────────────────────────────────────────────────────
@@ -236,29 +236,38 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
           }
         }
         if (itemless.length > 0) {
-          // Debounce the WAKE (1h window) — the plans stay selected until items land,
-          // so without the debounce every 30s tick would re-wake the Queen.
+          // Debounce the WAKE (1h base window) — the plans stay selected until items
+          // land, so without the debounce every 30s tick would re-wake the Queen.
+          // EI-16038: cheap non-atomic pre-check first (avoid the transaction
+          // round-trip on the common already-fired tick); the atomic claim below is
+          // authoritative and backs off geometrically once the SAME itemless plan set
+          // has re-fired unchanged (previously: a fixed 1h window forever — one stuck
+          // itemless plan re-woke the Queen ~186 times over 15.9 days).
           const alreadyFired =
             (await recentWatchdogFires(workspaceId, installSlug, 1, 'scout-ready-decompose')) > 0;
           if (!alreadyFired) {
-            const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
-            await fireDecomposeWake(workspaceId, queenOwner, itemless, installSlug);
-            await recordFire({
+            const reason = `${itemless.length} ratified itemless scout plan(s): ${itemless
+              .slice(0, 5)
+              .map((c) => c.planSlug)
+              .join(', ')}`;
+            const claimed = await claimWatchdogFire({
               workspaceId,
               installSlug,
               source: 'scout-ready-decompose',
-              reason: `${itemless.length} ratified itemless scout plan(s): ${itemless
-                .slice(0, 5)
-                .map((c) => c.planSlug)
-                .join(', ')}`,
+              windowHours: 1,
+              reason,
               wakeAt: null,
             });
-            results.push({
-              workspaceId,
-              installSlug,
-              outcome: 'decompose-nudged',
-              reason: `${itemless.length} itemless ready plan(s)`,
-            });
+            if (claimed) {
+              const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
+              await fireDecomposeWake(workspaceId, queenOwner, itemless, installSlug);
+              results.push({
+                workspaceId,
+                installSlug,
+                outcome: 'decompose-nudged',
+                reason: `${itemless.length} itemless ready plan(s)`,
+              });
+            }
           }
         }
       } catch (e) {

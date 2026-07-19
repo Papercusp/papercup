@@ -35,6 +35,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { overwatchEnabled } from './watchdog';
+import { computeWatchdogBackoff, watchdogBackoffCapHours } from '../pot/watchdog';
 import { getOverwatchStarted } from './control-state';
 import { getOverwatchControlState } from './snapshot';
 import { checkScorecardFreshness } from '../scorecard-freshness';
@@ -290,20 +291,53 @@ export function synthesizeCoordinationScorecard(
   return r;
 }
 
+/** The base debounce window (hours) `recordScorecardFire` requires between two
+ *  IDENTICAL reasons before EI-16038's geometric backoff (see computeWatchdogBackoff)
+ *  starts widening it further. Kept short so distinct turn-to-turn skips (a genuinely
+ *  new gap each turn) still each land a ledger row; only a byte-identical repeat backs
+ *  off. Default 1h; env-tunable. */
+export function overwatchScorecardFireBaseWindowHours(): number {
+  const n = Number(process.env.PAPERCUSP_OVERWATCH_SCORECARD_FIRE_BASE_WINDOW_HOURS ?? 1);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
 /**
  * Record a "the agent skipped its scorecard; floor synthesized" fire — a countable
  * signal in the shared watchdog-fires table. Replicated (not imported from
- * watchdog.ts) on purpose: it keeps the load-bearing wake path untouched and uses a
- * distinct `overwatch-scorecard` source so a drill-back can separate scorecard
- * skips from forgot-wake fires. Best-effort; never throws.
+ * watchdog.ts's side-effecting recordFire/claimWatchdogFire) on purpose: it keeps the
+ * load-bearing wake path untouched and uses a distinct `overwatch-scorecard` source so
+ * a drill-back can separate scorecard skips from forgot-wake fires. It DOES reuse
+ * watchdog.ts's PURE `computeWatchdogBackoff` decider (EI-16038) — this call is made
+ * on EVERY overwatch turn-end that skipped a scorecard, so a chronically-stuck hive
+ * (the WI-3064 coalesced-floor case above) used to mint a brand new duplicate ledger
+ * row every single turn, forever, with the exact same reason text. Backing off only
+ * suppresses the raw LEDGER duplicate; the floor coalescing (bumpFloorRepeat, above)
+ * still runs on every call regardless. Best-effort; never throws.
  */
 async function recordScorecardFire(workspaceId: string, installSlug: string, reason: string): Promise<void> {
   try {
     const { sql } = getOrgPg();
+    const rows = await sql<Array<{ reason: string; fired_at: Date; repeat_count: number }>>`
+      SELECT reason, fired_at, repeat_count FROM harness_shared.pot_watchdog_fires
+      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
+        AND source = ${'overwatch-scorecard'}
+      ORDER BY fired_at DESC
+      LIMIT 1`;
+    const lastRow = rows[0];
+    const decision = computeWatchdogBackoff({
+      now: Date.now(),
+      baseWindowHours: overwatchScorecardFireBaseWindowHours(),
+      capHours: watchdogBackoffCapHours(),
+      last: lastRow
+        ? { reason: lastRow.reason, firedAtMs: new Date(lastRow.fired_at).getTime(), repeatCount: lastRow.repeat_count ?? 1 }
+        : null,
+      reason,
+    });
+    if (decision.skip) return;
     await sql`
       INSERT INTO harness_shared.pot_watchdog_fires
-        (workspace_id, install_slug, source, reason, wake_at, demand)
-      VALUES (${workspaceId}, ${installSlug}, ${'overwatch-scorecard'}, ${reason}, ${null}, ${'{}'}::text::jsonb)`;
+        (workspace_id, install_slug, source, reason, wake_at, demand, repeat_count)
+      VALUES (${workspaceId}, ${installSlug}, ${'overwatch-scorecard'}, ${reason}, ${null}, ${'{}'}::text::jsonb, ${decision.repeatCount})`;
   } catch (e) {
     console.warn(`[overwatch-scorecard-backstop] fire record failed: ${e instanceof Error ? e.message : e}`);
   }

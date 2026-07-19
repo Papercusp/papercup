@@ -2986,8 +2986,8 @@ export function ScoutView({
   // learning-tab-visibility P-001: the live cadence/firing state. Pre-deploy
   // snapshots lack the field — the card simply doesn't render.
   const cadence = snap?.cadence ?? null;
-  // learning-tab-visibility P-005: drafts-in-iteration rows; same degrade rule.
-  const drafts = snap?.drafts ?? [];
+  // (Drafts-in-iteration moved to the Improvements view — owner ask 2026-07-19;
+  // it reads the thin learning.scoutDrafts resolver there, not this snapshot.)
 
   // Grading (P-006): the note popover's open-state is URL state (`?grade=<ideaId>`)
   // so agents can drive it; in-flight optimistic grades + errors are transient
@@ -3717,20 +3717,23 @@ export function ScoutView({
         </div>
       ) : null}
 
+      {/* Lens weights — always visible under a standard header (owner ask
+          2026-07-19: "should always be visible, it never takes up much space").
+          Drafts-in-iteration moved to the Improvements view the same day (a
+          draft plan awaiting revision is backlog work, not generator ledger). */}
       {lensEntries.length > 0 ? (
-        <LearningDisclosure
-          label="Lens weights"
-          subtitle="the ideator's learned creative-lens steering — raised by wins and good grades"
-          count={lensEntries.length}
-        >
-          <div className="pc-learning__flow" aria-label="Lens sampling weights">
+        <>
+          <div className="pc-learning__sectionhead pc-learning__sectionhead--desc">
+            <h2>Lens weights</h2>
             <span
-              className="pc-learning__flowchip"
+              className="pc-learning__sectionsub"
               title={`${t("scout")} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess).`}
             >
-              <Sparkles size={11} aria-hidden />
-              lens weights
+              the ideator's learned creative-lens steering — raised by wins and
+              good grades
             </span>
+          </div>
+          <div className="pc-learning__flow" aria-label="Lens sampling weights">
             {lensEntries.map(([lens, share]) => (
               <span
                 key={lens}
@@ -3745,49 +3748,7 @@ export function ScoutView({
               </span>
             ))}
           </div>
-        </LearningDisclosure>
-      ) : null}
-
-      {/* Drafts in iteration (learning-tab-visibility P-005): broad-scope ideas
-          that became draft plans, with their revision state — the Queen↔Scout
-          typed-revision loop, watchable instead of invisible. */}
-      {drafts.length > 0 ? (
-        <LearningDisclosure
-          label="Drafts in iteration"
-          subtitle="broad ideas that became draft plans, with revision state"
-          count={drafts.length}
-        >
-          <ul className="pc-learning__draftlist" aria-label={`${t("scout")} draft plans in iteration`}>
-            {drafts.map((d) => {
-              const upMs = d.planUpdatedAt ? Date.parse(d.planUpdatedAt) : NaN;
-              return (
-                <li key={d.ideaId} className="pc-learning__draftrow">
-                  <GitBranch size={11} aria-hidden />
-                  <strong title={d.title ?? d.planSlug}>{d.planSlug}</strong>
-                  {d.planStatus == null ? (
-                    <em title="The draft plan row no longer exists (superseded or deleted).">gone</em>
-                  ) : (
-                    <em title={`Draft plan lifecycle status.`}>{d.planStatus}</em>
-                  )}
-                  {d.planVersion != null ? (
-                    <span
-                      className={`pc-learning__flowchip${d.revised ? " pc-learning__flowchip--wd-good" : ""}`}
-                      title={
-                        d.revised
-                          ? `v${d.planVersion} — revised since ${t("scout", { lower: true })} drafted it: the grade/feedback → typed-revision loop has turned on this draft.`
-                          : "v1 — no revision yet; awaiting review/feedback."
-                      }
-                    >
-                      v{d.planVersion}
-                      {d.revised ? " · revised" : ""}
-                    </span>
-                  ) : null}
-                  {!Number.isNaN(upMs) ? <span className="pc-learning__draftwhen">{whenLabel(upMs)}</span> : null}
-                </li>
-              );
-            })}
-          </ul>
-        </LearningDisclosure>
+        </>
       ) : null}
 
       {/* Rail-filter row (owner ask 2026-07-19): moved to sit DIRECTLY above the
@@ -3825,14 +3786,17 @@ export function ScoutView({
         </div>
       ) : null}
 
-      <div className="pc-learning__sectionhead">
+      {/* One compact header line (owner ask 2026-07-19): the explanation rides
+          small NEXT TO the title instead of standing sections of copy. */}
+      <div className="pc-learning__sectionhead pc-learning__sectionhead--desc">
         <h2>Routed ideas</h2>
         <span
-          className="pc-learning__muted"
-          title="Every idea a cycle turned into an artifact (work item, gym seed, plan, benchmark) — grade them here; the artifact itself lives in its rail's home (Improvements, Gym, Plans, Benchmark)."
+          className="pc-learning__sectionsub"
+          title="Every idea a cycle turned into an artifact (work item, gym seed, plan, benchmark). Ungraded ideas stack by lens below — grade the top of each stack; ★1–5 teaches the generator which lenses win, and the artifact itself lives in its rail's home (Improvements, Gym, Plans, Benchmark)."
         >
-          Every idea a cycle turned into an artifact — grade them here; the
-          work itself lives in its rail's home.
+          every idea a cycle turned into an artifact — grade the top of each
+          lens stack (★1–5 teaches the generator); the work itself lives in its
+          rail's home
         </span>
       </div>
 
@@ -3855,18 +3819,10 @@ export function ScoutView({
             </p>
           ) : null}
           {/* Decision queue — the highest-priority ungraded, grouped into
-              per-lens overlapping stacks. A prominent, always-open section. */}
+              per-lens overlapping stacks, straight under the header (its copy
+              lives in the header's small line — owner ask 2026-07-19). */}
           {decisionQueue.length > 0 ? (
-            <div className="pc-learning__queuesection">
-              <div className="pc-learning__sectionhead">
-                <h3 className="pc-learning__queuehead">Decision queue</h3>
-                <span className="pc-learning__muted">
-                  {decisionQueue.length} ungraded — grade the top of each lens
-                  stack; your 1–5 teaches the generator which lenses win.
-                </span>
-              </div>
-              {renderLensStacks(decisionQueue, "queue")}
-            </div>
+            renderLensStacks(decisionQueue, "queue")
           ) : (
             <LearningVisualEmpty
               icon={CheckCircle2}
@@ -4893,14 +4849,17 @@ export function LearningStyles() {
       .pc-learning__panelbtn--primary { border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.12); color: #fcd34d; }
       .pc-learning__panelbtn:disabled { opacity: 0.5; cursor: default; }
       /* Ungraded ideas as per-lens overlapping stacks (owner ask 2026-07-19). */
-      .pc-learning__queuesection { margin-top: 6px; }
-      .pc-learning__queuehead {
-        margin: 0; font-size: 12px; font-weight: 720; letter-spacing: 0;
-        color: var(--accent, #7dd3fc);
+      /* Section headers that carry their explanation inline (owner ask
+         2026-07-19): title + a small readable line NEXT to it, never a
+         standing block of copy. */
+      .pc-learning__sectionhead--desc { justify-content: flex-start; align-items: baseline; }
+      .pc-learning__sectionsub {
+        flex: 1 1 auto; min-width: 0;
+        font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8);
       }
       .pc-learning__lensstacks {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 12px; margin-top: 8px;
+        gap: 16px; margin-top: 8px;
       }
       /* The lens label + count render as CardStack's on-card header badge
          (pc-cardstack__header-*), so the group carries no separate head row. */

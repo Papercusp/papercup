@@ -28,7 +28,8 @@ const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
 }));
-vi.mock('../../harness-registry', () => ({
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   loadHarnessRegistry: loadHarnessRegistryM,
 }));
 vi.mock('../../events/await/store', () => ({
