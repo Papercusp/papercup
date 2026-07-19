@@ -212,6 +212,13 @@ export default function SessionChatModal({
   const streamUrl = useMemo(() => {
     if (!sessionOwnerId || !resolved) return null;
     const p = new URLSearchParams({ sessionId: resolved.session_id, owner: sessionOwnerId });
+    // EI-16982: an ended session's on-disk transcript is routinely GC'd within
+    // ~2h of archiving (session-dir-gc.ts); the backend already has a
+    // rematerialize-from-archive fallback (WI-3990) gated on `ended=1`, but it
+    // silently never fires unless the caller passes it. `resolved.active` is
+    // the server-stamped liveness we already have in hand here — reuse it
+    // rather than inventing a new signal.
+    if (resolved.active === false) p.set('ended', '1');
     return `/api/adv/session/thinking?${p.toString()}`;
   }, [sessionOwnerId, resolved]);
 

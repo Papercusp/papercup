@@ -171,10 +171,10 @@ export function AnalyzePanel({
         display: flex; align-items: baseline; gap: 10px; margin: 12px 2px 6px;
       }
       .pc-analyze__sectionhead h4 {
-        margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase;
-        color: var(--fg-mute, #7f9bb4);
+        margin: 0; font-size: 13px; font-weight: 740; text-transform: uppercase;
+        color: var(--fg, #e7eef5);
       }
-      .pc-analyze__sectionhead > span { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-analyze__sectionhead > span { font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8); }
       .pc-analyze__slots { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px; }
       .pc-analyze__slots li {
         display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 8px;
@@ -380,10 +380,10 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
       </div>
 
       <div className="pc-analyze__sectionhead">
-        <h4>Divergent generation + critique</h4>
+        <h4>Step 1 · Ideas generated</h4>
         <span>
           one deck per creative lens; each idea's card carries the critics'
-          verdict
+          keep / moonshot / reject verdict
         </span>
       </div>
       {cycle.ideatorSlots.length > 0 ? (
@@ -503,10 +503,11 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
       )}
 
       <div className="pc-analyze__sectionhead">
-        <h4>Debate + recombine</h4>
+        <h4>Step 2 · Fused proposals</h4>
         <span>
-          survivors fuse into proposals; each carries a falsifiable first
-          experiment and routes into the {t("pot", { lower: true })}'s work
+          the ideas that survived Step 1, merged into concrete bets — each
+          carries a falsifiable first experiment, and these are what route into
+          the {t("pot", { lower: true })}'s work
         </span>
       </div>
       {cycle.proposals.length > 0 ? (

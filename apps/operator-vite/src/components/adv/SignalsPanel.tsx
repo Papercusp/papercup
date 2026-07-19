@@ -541,14 +541,16 @@ export function SignalsPanel({
         </>
       )}
       <style>{`
+      /* Section headers you can actually SEE (owner ask 2026-07-19c): real
+         heading size + full foreground, the explainer readable beside it. */
       .pc-signals__sectionhead {
-        display: flex; align-items: baseline; gap: 10px; margin: 14px 2px 6px;
+        display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 16px 2px 8px;
       }
       .pc-signals__sectionhead h3 {
-        margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase;
-        color: var(--fg-mute, #7f9bb4);
+        margin: 0; font-size: 13px; font-weight: 740; text-transform: uppercase;
+        color: var(--fg, #e7eef5);
       }
-      .pc-signals__sectionhead > span { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-signals__sectionhead > span { font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8); }
       .pc-signals__meter {
         position: relative; height: 22px; border-radius: 6px; overflow: hidden;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
