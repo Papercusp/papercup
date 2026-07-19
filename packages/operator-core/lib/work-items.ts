@@ -49,6 +49,7 @@ import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
+import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import {
   autoPickableWhereSql,
@@ -333,7 +334,11 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     title: i.title,
     summary: i.body,
     state: i.state,
-    assignee: i.assignee,
+    // EI-15027: collapse the "unassigned" sentinel (a legacy/foreign "not taken"
+    // placeholder, EI-7939) to null here too — the canonical row-mapping layer, not
+    // just the federation-ingest boundary — so classifyClaimFailure and every other
+    // `!wi.assignee` truthiness check treat it as unclaimed instead of a live holder.
+    assignee: normalizeTakenBy(i.assignee),
     // Issue-family uses engineer_issues.assigned_at as its claim-time anchor.
     // The unified work-item surface must expose it as takenAt so assignment
     // views/reapers do not read a live issue claim as unanchored.
@@ -411,7 +416,9 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     title: r.title ?? '',
     summary: r.summary ?? '',
     state: r.status ?? 'todo',
-    assignee: r.taken_by,
+    // EI-15027: same sentinel-collapse as issueToWorkItem above — taken_by can carry
+    // the same "unassigned" placeholder as engineer_issues.assignee.
+    assignee: normalizeTakenBy(r.taken_by),
     // agent-activity-liveness-truth P-001: the claim time (grace anchor) + last REAL
     // item-scoped progress. Reset on holder-change (claim/release); bumped on a state
     // transition / checkpoint. Feed both to classifyItemActivity (item-activity.ts).

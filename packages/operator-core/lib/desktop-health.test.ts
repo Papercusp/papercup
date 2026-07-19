@@ -104,16 +104,49 @@ describe('probeDesktop', () => {
     expect(r.note).toMatch(/webview eval/);
   });
 
-  it('reports present:false when the liveBridge gatherer itself throws', async () => {
+  it('reports present:false when the liveBridges gatherer itself throws', async () => {
     const r = await probeDesktop(
       signals({
-        liveBridge: async () => {
+        liveBridges: async () => {
           throw new Error('readdir /tmp failed');
         },
       }),
     );
     expect(r.present).toBe(false);
     expect(r.up).toBe(false);
+  });
+
+  // EI-15095: on this shared fleet dev box several concurrently-running
+  // desktop instances (the owner's + any agent's own headless verification
+  // shell) each hold their own live bridge under the same $HOME at once.
+  // `ipcConnectable()` resolves ONE globally-shared target with no way to
+  // correlate it to a specific bridge, so webview health is "any bridge OK",
+  // never "the arbitrarily-first-found bridge OK" — an unrelated instance's
+  // bridge hiccup must not flip the shared alarm to DOWN.
+  it('is up when ONE of several live bridges evals OK, even if another fails', async () => {
+    const otherBridge: LiveBridge = { port: 55555, token: 'tok2', pid: 9999 };
+    const r = await probeDesktop(
+      signals({
+        liveBridges: async () => [otherBridge, BRIDGE],
+        bridgeEval: async (b) => b.pid === BRIDGE.pid, // only the "real" bridge evals OK
+      }),
+    );
+    expect(r.present).toBe(true);
+    expect(r.up).toBe(true);
+    expect(r.note).toBe('up');
+  });
+
+  it('is DOWN only when EVERY live bridge fails its webview eval', async () => {
+    const otherBridge: LiveBridge = { port: 55555, token: 'tok2', pid: 9999 };
+    const r = await probeDesktop(
+      signals({
+        liveBridges: async () => [otherBridge, BRIDGE],
+        bridgeEval: async () => false,
+      }),
+    );
+    expect(r.up).toBe(false);
+    expect(r.note).toMatch(/webview eval/);
+    expect(r.note).toMatch(/2 bridges checked/);
   });
 });
 

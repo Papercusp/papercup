@@ -126,7 +126,11 @@ type StateTable =
   | 'operator_integration_credentials'
   // Migration 604 — context-door / compaction-threshold constant overrides
   // (deterministic-context-carry-2026-07-14 P-023): workspace defaults + per-session:
-  | 'operator_context_doors_config';
+  | 'operator_context_doors_config'
+  // Migration 635 — durable cross-worker flap-episode counters for the
+  // infra-liveness alarm (EI-15126 fix — see the migration's own comment for
+  // the full root-cause story):
+  | 'operator_liveness_flap_state';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //

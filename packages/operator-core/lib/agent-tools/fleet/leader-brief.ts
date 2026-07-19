@@ -303,10 +303,8 @@ export default defineTool({
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (alive but not advancing, ' +
     'or alive+idle with zero claims/queued and unparked — a fleet:bench candidate), ' +
-    'and unownedCriticals (aged unassigned ' +
-    'criticals this fleet\'s spec would admit); summary.strandedFleetAlert (+ top-level ' +
-    'strandedFleetAlertReason) fires when fleet-wide wip is 0, members are parked, AND unowned ' +
-    'criticals exist — the whole-fleet-asleep-on-available-supply shape (EI-15055). Scoped to ONE fleet ' +
+    'unownedCriticals (aged unassigned criticals this fleet\'s spec would admit), and ' +
+    'strandedFleetAlert (0-wip + parked + unowned criticals, EI-15055). Scoped to ONE fleet ' +
     '(yours by default), not the whole workspace roster fleet:assignments returns. ' +
     'Replaces a leader\'s hand-assembled presence+assignments+inbox scan each monitor wake.',
   guidance: {
@@ -321,8 +319,7 @@ export default defineTool({
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
       'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it. ' +
-      '`strandedFleetAlert` true → wake the parked members now (coord:send wake:required) instead of ' +
-      'waiting out their park timeout.',
+      '`strandedFleetAlert` → wake parked members now instead of waiting out the timeout.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,

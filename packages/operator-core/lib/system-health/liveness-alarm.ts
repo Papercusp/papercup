@@ -645,7 +645,7 @@ const lastAlertedAt = new Map<string, number>();
 // never creates more than one episode entry and is completely unaffected;
 // only a fire→resolve→refire PATTERN engages it. Only `blocker`-severity
 // signals participate (advisory signals never call `page()` regardless).
-interface FlapEpisode {
+export interface FlapEpisode {
   /** Fires observed since this episode opened. The episode is NOT time-boxed
    *  by a fixed origin window — it stays open (and, once past threshold,
    *  suppressed) for as long as the signature keeps re-firing, however long
@@ -662,7 +662,57 @@ interface FlapEpisode {
    *  it is genuinely settled and gets exactly one final all-clear. */
   quietSinceMs: number | null;
 }
-const flapEpisodes = new Map<string, FlapEpisode>();
+
+/** Signature → episode. Persisted as a single JSONB blob (see readFlapState /
+ *  writeFlapState below) — a plain object, not a Map, so it round-trips
+ *  through JSON without a serialization seam. */
+export type FlapState = Record<string, FlapEpisode>;
+
+/**
+ * EI-15126: durable cross-worker flap-episode store. `flapEpisodes` used to be
+ * a module-level in-memory `Map` — correct for a single process, but
+ * `startInfraLivenessAlarm()` runs independently on EVERY `:3070` cluster
+ * REQUEST WORKER (see the doc comment on that function), so each worker kept
+ * its OWN counter. Which worker's periodic tick happens to observe a given
+ * fire/recover transition is effectively uncorrelated across cycles, so no
+ * single worker's local counter ever climbed past `flapThreshold` — the
+ * fleet-wide page()/pageResolved() suppression this whole file exists to
+ * provide never actually engaged in production. Confirmed live: `panel:bees`
+ * fire+recovery pairs re-broadcasting every ~1-4min for hours
+ * (harness_shared.coord_event_log, 2026-07-17). Same architecture class as
+ * the EI-2146 / WI-4181 in-memory-dedup bugs already scarred into this file —
+ * applied to newer state. Fixed the same way those were: durable storage
+ * (migration 635, `operator_liveness_flap_state`) via the operator-state-pg
+ * single-JSONB-row-per-workspace helper, read once and written once per tick.
+ *
+ * `hermeticFlapStateFallback` is the single-process fallback used ONLY when a
+ * caller has overridden `readLast` (the test/hermetic signal every other
+ * gated default in this file uses — see `readBeeCapacity`) without also
+ * overriding `readFlapState`/`writeFlapState` — i.e. existing unit tests, for
+ * which a plain in-memory object is exactly correct (no multi-worker concern
+ * in a single-threaded test process) and preserves today's behavior
+ * byte-for-byte.
+ */
+let hermeticFlapStateFallback: FlapState = {};
+
+async function defaultReadFlapState(ws: string): Promise<FlapState> {
+  try {
+    const { readOperatorState } = await import('../operator-state-pg');
+    const state = await readOperatorState<FlapState>('operator_liveness_flap_state', ws);
+    return state ?? {};
+  } catch {
+    return {}; // fail-soft: never crash the request worker, never fabricate a false episode
+  }
+}
+
+async function defaultWriteFlapState(ws: string, state: FlapState): Promise<void> {
+  try {
+    const { writeOperatorState } = await import('../operator-state-pg');
+    await writeOperatorState('operator_liveness_flap_state', state, ws);
+  } catch {
+    /* best-effort: a lost write just re-derives from the next tick's fires */
+  }
+}
 
 /** The SETTLE duration: how long a signature must stay quiet (no re-fire)
  *  before a suppressed flap episode is considered genuinely over and earns
@@ -744,6 +794,16 @@ export interface AlarmDeps {
    *  `readGatewayBeeCapacity` (a live gateway fetch, fail-soft to unknown). Injected
    *  by tests to exercise the gate hermetically without real gateway I/O. */
   readBeeCapacity?: () => Promise<{ dispatchBudget: number | null; restartRecovering: boolean }>;
+  /** EI-15126: read the durable cross-worker flap-episode state (default =
+   *  `defaultReadFlapState`, a real PG read) — gated the same way as
+   *  `readBeeCapacity`: a caller that injects `readLast` (every existing
+   *  hermetic test) falls back to `hermeticFlapStateFallback` instead of
+   *  hitting real I/O. Injectable so a test can also exercise the durable
+   *  path (e.g. simulating two independent "workers" sharing one store). */
+  readFlapState?: (ws: string) => Promise<FlapState>;
+  /** EI-15126: persist the (possibly mutated) flap-episode state for the next
+   *  tick — by any worker. Default = `defaultWriteFlapState`. */
+  writeFlapState?: (ws: string, state: FlapState) => Promise<void>;
 }
 
 async function defaultReadRoutineEngineLiveness(nowMs: number): Promise<RoutineEngineLiveness> {
@@ -911,6 +971,20 @@ export async function runLivenessAlarmTick(
   // test run — see the coord broadcast + apology, 2026-07-11 02:10Z.
   const page = deps.page ?? (async () => {});
   const pageResolved = deps.pageResolved ?? (async () => {});
+  // EI-15126: durable cross-worker flap-episode store — gated identically to
+  // readBeeCapacity (deps.readLast === undefined ⇒ production, real PG;
+  // otherwise the single-process hermetic fallback every existing test relies on).
+  const readFlapState =
+    deps.readFlapState ??
+    (deps.readLast === undefined ? defaultReadFlapState : async () => hermeticFlapStateFallback);
+  const writeFlapState =
+    deps.writeFlapState ??
+    (deps.readLast === undefined
+      ? defaultWriteFlapState
+      : async (_ws: string, state: FlapState) => {
+          hermeticFlapStateFallback = state;
+        });
+  const flapEpisodes = new Map<string, FlapEpisode>(Object.entries(await readFlapState(ws).catch(() => ({}))));
 
   const cached = readLast(ws);
   const localSnapshotAgeMs = cached ? now - cached.evaluatedAt : null;
@@ -1165,6 +1239,10 @@ export async function runLivenessAlarmTick(
       if (ep.fireCount <= flapThreshold) await page(s, ws);
     }
   }
+  // EI-15126: persist this tick's (possibly mutated) flap-episode state so the
+  // NEXT tick — by any worker — sees it, closing the cross-worker gap that let
+  // the fleet-wide suppression above never actually engage in production.
+  await writeFlapState(ws, Object.fromEntries(flapEpisodes)).catch(() => {});
   return { fired, signals, resolved };
 }
 
@@ -1202,5 +1280,5 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
 export function _resetLivenessAlarmDebounce(): void {
   lastAlertedAt.clear();
   lastPostmasterStartMs.clear();
-  flapEpisodes.clear();
+  hermeticFlapStateFallback = {};
 }
