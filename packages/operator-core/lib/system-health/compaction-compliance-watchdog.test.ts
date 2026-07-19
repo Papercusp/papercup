@@ -21,6 +21,7 @@ const {
   setLimitMock,
   deathMock,
   resolveSessionRefMock,
+  resolveLaunchLimitMock,
   openEscalationMock,
   getFlagMock,
   findLiveHostMock,
@@ -38,6 +39,10 @@ const {
   resolveSessionRefMock: vi.fn(
     async (_owner: string) => null as null | { agent: string | null; sessionId: string | null },
   ),
+  // P-005 per-member-declarative-launch-specs: an EXPLICIT psu --compaction-limit
+  // on the recorded launch argv. Default null (no override) keeps every existing
+  // seeding test's spawn-record/resolver precedence expectations unaffected.
+  resolveLaunchLimitMock: vi.fn(async (_owner: string) => null as number | null),
   openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
   // P-012 force-compact deps. Defaults keep the EXISTING over-limit tests unaffected:
   // flag ON but NO live host ⇒ maybeForceCompact no-ops (out.forceCompacted stays []).

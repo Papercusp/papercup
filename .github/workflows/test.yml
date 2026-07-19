@@ -322,6 +322,14 @@ jobs:
       - name: Lint MDX compiles
         run: npm run lint:mdx
 
+      # Shell syntax guard (EI-13192): a concurrent shared-tree edit interleave
+      # corrupted a .sh script (duplicated lines / a truncated assignment) and
+      # git-sync auto-committed it before anyone ran `bash -n` by hand to notice.
+      # GATING — a real `bash -n` parse (not a regex) over every tracked .sh, the
+      # same detector the git-sync content guard already runs pre-commit.
+      - name: Lint shell script syntax
+        run: npm run lint:shell-syntax
+
       # Insight-doc citation guard (WI-1576): an agent-insights doc's `documents:`
       # frontmatter citation that no longer resolves on disk (the cited file was
       # renamed/moved/deleted and the doc never updated) silently points an agent

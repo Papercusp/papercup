@@ -461,9 +461,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (storage-settings-page-2026-06-15 P-003). Reuses the audit introspection
   // (pg table sizes + age distribution + on-disk du). No args.
   'storage.usage': {
+    // PRECOMPUTED (precompute-derived-sync-reads-2026-07-19 P-003). This used to
+    // call computeStorageUsage() inline: a recursive disk walk + PG catalog sizing
+    // measured at 20.0s on a user-facing read. It is now produced by the
+    // `system:precompute-derived-reads` routine; this is a plain snapshot SELECT.
     resolve: async () => {
-      const { computeStorageUsage } = await import('../storage/usage');
-      return computeStorageUsage();
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      return readDerivedSnapshotRows('storage.usage');
     },
   },
 
@@ -2628,9 +2633,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'plans.lint': {
+    // PRECOMPUTED (P-004). Linting the whole plan corpus measured 13.8s inline.
+    // The precomputed snapshot covers the nullary call — the only shape any UI
+    // makes. An explicit ARGS-bearing call (an agent drilling into one plan) is
+    // rare, off the panel path, and still computed live so it stays exact.
     resolve: async (args) => {
+      const hasArgs = args != null && Object.keys(args as Record<string, unknown>).length > 0;
+      if (!hasArgs) {
+        const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+        await import('../derived-reads/producers');
+        return readDerivedSnapshotRows('plans.lint');
+      }
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('lint', (args ?? {}) as Record<string, unknown>)) as {
+      const r = (await callPlansRead('lint', args as Record<string, unknown>)) as {
         reports?: unknown[];
       };
       return Array.isArray(r?.reports) ? r.reports : [];

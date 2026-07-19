@@ -54,6 +54,19 @@ export interface BgHostJournalMetrics {
    *  was clean. computeSoakReport reds on this: a gate that cannot see restarts
    *  must say so, never silently pass. */
   journalError: string | null;
+  /**
+   * False when this PLATFORM has no journal at all — no `journalctl` binary, i.e.
+   * no systemd (macOS, a bare container, and the SHIPPED desktop app's embedded-PG
+   * target). Distinct from `journalError`, which means "there is a journal and we
+   * failed to read it" (precompute-derived-sync-reads-2026-07-19 P-005).
+   *
+   * The distinction is load-bearing. Treating "this OS has no journald" as a read
+   * FAILURE reds the readiness gate permanently for every real user of the shipped
+   * app -- a gate that can never be green is not a gate. Absent journald we simply
+   * have no unit-restart evidence source, so the gate omits that criterion instead
+   * of failing on it; every other criterion still applies.
+   */
+  journalAvailable: boolean;
 }
 
 /** The journal lines the parsers below actually look for. They are ALSO handed to
@@ -161,6 +174,10 @@ export interface PotSoakReport {
   generatedAt: string;
   ready: boolean;
   reasons: string[];
+  /** Non-failing observations — criteria that did not APPLY on this platform (e.g.
+   *  no journald ⇒ no unit-restart evidence source). Distinct from `reasons`, which
+   *  are failures: a note never affects `ready` (P-005). */
+  notes: string[];
   bgHost: BgHostJournalMetrics & { tickerUp: boolean; tickerNote: string | null };
   roleSuccess: RoleTurnSuccess[];
   infraCurse: InfraCurseMetrics;
@@ -228,7 +245,15 @@ export function parseBgHostUnitJournal(text: string): BgHostJournalMetrics {
       if (peakMb >= 3200) highMemoryPeakCount += 1;
     }
   }
-  return { oomKillCount, restartCount, failureCount, peakMemoryMb, highMemoryPeakCount, journalError: null };
+  return {
+    oomKillCount,
+    restartCount,
+    failureCount,
+    peakMemoryMb,
+    highMemoryPeakCount,
+    journalError: null,
+    journalAvailable: true,
+  };
 }
 
 export function parseBgHostGlobalJournal(text: string): number {
@@ -241,12 +266,23 @@ export function parseBgHostGlobalJournal(text: string): number {
 
 export function computeSoakReport(input: SoakReportInput): PotSoakReport {
   const reasons: string[] = [];
+  // Non-failing observations: criteria that did not apply on this platform.
+  const notes: string[] = [];
   if (!input.bgHost.tickerUp) {
     reasons.push(`bg-host ticker unhealthy${input.bgHost.tickerNote ? `: ${input.bgHost.tickerNote}` : ''}`);
   }
   // No journal ⇒ no OOM/restart evidence either way. Say so and red, rather than let
   // the zeros below read as a clean bill of health the gate never actually verified.
-  if (input.bgHost.journalError) {
+  //
+  // But ONLY when this platform HAS a journal (P-005). `journalAvailable: false`
+  // means there is no journald here at all — macOS, a container, and the shipped
+  // desktop app's embedded-PG target. Reding on that would make the gate
+  // permanently, unfixably red for every real user; a gate that can never go green
+  // is not a gate. We omit the unit-restart criterion instead, and say so in the
+  // report, while every other criterion still applies.
+  if (input.bgHost.journalAvailable === false) {
+    notes.push('bg-host unit-restart evidence unavailable on this platform (no journald) — criterion omitted');
+  } else if (input.bgHost.journalError) {
     reasons.push(`bg-host journal unreadable — OOM/restart evidence unavailable (${input.bgHost.journalError})`);
   }
   if (input.bgHost.oomKillCount > 0) {
@@ -331,6 +367,7 @@ export function computeSoakReport(input: SoakReportInput): PotSoakReport {
     generatedAt: new Date(input.generatedAtMs).toISOString(),
     ready: reasons.length === 0,
     reasons,
+    notes,
     bgHost: input.bgHost,
     roleSuccess: input.roleSuccess,
     infraCurse: input.infraCurse,
@@ -479,6 +516,23 @@ export async function readBgHostJournalUncached(windowHours: number): Promise<Bg
         peakMemoryMb: null,
         highMemoryPeakCount: 0,
         journalError: null,
+        journalAvailable: true,
+      };
+    }
+    // PLATFORM CAPABILITY, not a failure (P-005): ENOENT means there is no
+    // `journalctl` binary — no systemd. That is the NORMAL state on macOS, in a
+    // container, and on the shipped desktop app's embedded-PG target. Reporting it
+    // as a read error reds the readiness gate permanently for every such user, so
+    // the gate omits the unit-restart criterion instead of failing on it.
+    if (e.code === 'ENOENT') {
+      return {
+        oomKillCount: 0,
+        restartCount: 0,
+        failureCount: 0,
+        peakMemoryMb: null,
+        highMemoryPeakCount: 0,
+        journalError: null,
+        journalAvailable: false,
       };
     }
     const why = String(e.stderr ?? '').trim() || (err as Error)?.message || 'journalctl read failed';
@@ -489,6 +543,7 @@ export async function readBgHostJournalUncached(windowHours: number): Promise<Bg
       peakMemoryMb: null,
       highMemoryPeakCount: 0,
       journalError: why.slice(0, 200),
+      journalAvailable: true,
     };
   }
 }
