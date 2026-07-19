@@ -17,6 +17,7 @@ vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspaceId: string, fn
 import {
   deriveCupLiveness,
   evaluatePlacement,
+  checkpointDeclaresTerminal,
   evaluateStalePlacementEscalation,
   evaluateTerminalPlacementReconcile,
   buildOpenPlacementSummary,
@@ -425,6 +426,105 @@ describe('evaluatePlacement — WI-1439 a deliberately PARKED unit is never reco
       CFG,
     );
     expect(d.kind).toBe('parked');
+  });
+});
+
+// EI-15232 — the watchdog false-paged the Mug to "re-place/recover" work-items whose
+// cup had already reached terminal/blocked (and recorded it in its checkpoint) but
+// whose state-flip silently failed, leaving the unit stale-open (state=todo). The
+// watchdog keyed purely on (state != terminal AND cup dead/stalled), IGNORING the
+// item's own checkpoint — the EI-8529 liveness-only-misread anti-pattern. The fix
+// reconciles against the checkpoint: a stale-open unit whose checkpoint declares
+// terminal/blocked reconciles the state (a single nudge), it does NOT re-place.
+describe('checkpointDeclaresTerminal (EI-15232)', () => {
+  it('matches the real 2026-07-17 stale-open checkpoints (WI-3503 terminal, WI-3504 blocked)', () => {
+    expect(
+      checkpointDeclaresTerminal(
+        '✅ COMPLETE — PASSED 2026-07-17T06:01Z, STATE: Terminal (passed), claim released, checkpoint cleared',
+      ),
+    ).toBe(true);
+    expect(checkpointDeclaresTerminal('transition to BLOCKED 2026-07-17T05:21Z — waiting on owner')).toBe(true);
+  });
+  it('matches other explicit terminal/park state assertions', () => {
+    for (const cp of [
+      'state = terminal',
+      'Terminal (resolved) — done',
+      'flipped to passed after the soak',
+      'set state to closed',
+      'marked deprecated (superseded by F-9)',
+      'now needs-human',
+      'status: passed',
+      '✅ DONE',
+    ]) {
+      expect(checkpointDeclaresTerminal(cp)).toBe(true);
+    }
+  });
+  it('does NOT match ordinary in-flight prose (conservative — a false positive would strand real work)', () => {
+    for (const cp of [
+      null,
+      undefined,
+      '',
+      'still working on the migration; tests not yet passing',
+      'the terminal output shows a lint error to fix', // "terminal" as a noun, not a state assertion
+      'next: run test:affected then complete', // mentions complete but asserts no state
+      'blocked on nothing yet — proceeding', // "blocked on nothing" is not a blocked transition
+    ]) {
+      expect(checkpointDeclaresTerminal(cp)).toBe(false);
+    }
+  });
+});
+
+describe('evaluatePlacement — EI-15232 stale-open checkpoint reconcile (ZERO re-place pages)', () => {
+  const staleOpen = { hasLiveHolder: false, checkpointDeclaresTerminal: true } as const;
+
+  it('a stale-open unit whose checkpoint declares terminal/blocked → checkpoint-reconcile (NOT recover)', () => {
+    const d = evaluatePlacement(obs({ ...staleOpen }), CFG);
+    expect(d.kind).toBe('checkpoint-reconcile');
+    // The recurrence guard: it must NEVER take a re-place-page path.
+    expect(['recover', 'breaker']).not.toContain(d.kind);
+  });
+
+  it('takes precedence over the reaper-reclaim / dormancy / zombie loss attributions', () => {
+    for (const over of [
+      { servingCupReclaimedWhileActive: true },
+      { postDormancySweep: true },
+      { servingCupMadeNoToolCalls: true },
+    ]) {
+      const d = evaluatePlacement(obs({ ...staleOpen, ...over }), CFG);
+      expect(d.kind).toBe('checkpoint-reconcile');
+    }
+  });
+
+  it('never bumps a curse counter, even at the last strike before the breaker', () => {
+    const d = evaluatePlacement(obs({ ...staleOpen, failCount: CFG.breakerThreshold - 1 }), CFG);
+    expect(d.kind).toBe('checkpoint-reconcile');
+  });
+
+  it('a genuine loss (no terminal checkpoint) still recovers — the fix does not blunt real recovery', () => {
+    const d = evaluatePlacement(obs({ hasLiveHolder: false, checkpointDeclaresTerminal: false }), CFG);
+    expect(d.kind).toBe('recover');
+  });
+
+  it('a live holder / terminal unit still wins over a stale terminal checkpoint', () => {
+    expect(evaluatePlacement(obs({ ...staleOpen, hasLiveHolder: true }), CFG).kind).toBe('healthy');
+    expect(evaluatePlacement(obs({ ...staleOpen, unitTerminal: true }), CFG).kind).toBe('completed');
+  });
+
+  it('a deliberately parked unit still short-circuits first (a park is its own signal path)', () => {
+    expect(evaluatePlacement(obs({ ...staleOpen, unitParked: true }), CFG).kind).toBe('parked');
+  });
+
+  it('stays debounced while already recovering within the window (at most one nudge per window)', () => {
+    const d = evaluatePlacement(
+      obs({ ...staleOpen, placementStatus: 'recovering', lastRecoveryAtMs: NOW - 60_000 }),
+      CFG,
+    );
+    expect(d.kind).toBe('debounced');
+  });
+
+  it('a cursed row stays latched — the reconcile branch sits AFTER the cursed latch (no per-tick storm)', () => {
+    const d = evaluatePlacement(obs({ ...staleOpen, placementStatus: 'cursed', failCount: 3 }), CFG);
+    expect(d.kind).toBe('latched');
   });
 });
 

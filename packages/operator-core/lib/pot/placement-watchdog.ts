@@ -47,6 +47,7 @@ import { openEscalation, resolveEscalation } from '../agent-tools/coordination/e
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
 import { listStartedPots } from './started';
+import { workItemCheckpointScope } from '../work-item-checkpoint';
 
 // ── vocabulary (the canonical work-item terminal + stuck states) ──────────────
 
@@ -99,6 +100,40 @@ export function isStuckBlockerState(status: string | null | undefined): boolean 
  *  EXPECTED, not a failure? */
 export function isUnitParked(status: string | null | undefined): boolean {
   return status != null && UNIT_PARKED_STATES.has(status);
+}
+
+/**
+ * EI-15232 — high-precision markers that a cup's own checkpoint DECLARES it believed
+ * it reached a terminal (passed/deprecated/resolved/closed/done/complete) or a
+ * deliberate blocked/needs-human state. Used to detect a STALE-OPEN unit: the cup
+ * asserts terminal/blocked in its checkpoint, but the unit's `set_state` flip
+ * silently failed to persist, so the row still reads `todo`. Concrete (2026-07-17):
+ * WI-3503 "STATE: Terminal (passed) … checkpoint cleared" and WI-3504 "transition to
+ * BLOCKED" — both left state=todo.
+ *
+ * Deliberately CONSERVATIVE: a FALSE positive would suppress a legitimate re-place
+ * page for an item that still needs work (the worse error), so the scan requires an
+ * explicit state ASSERTION, not a passing mention of the word. A false negative just
+ * preserves today's behavior (the page still fires) — never worse than the status quo.
+ */
+const CHECKPOINT_TERMINAL_MARKERS: ReadonlyArray<RegExp> = [
+  // "STATE: Terminal", "state = terminal"
+  /\bstate\s*[:=]\s*terminal\b/i,
+  // "Terminal (passed)", "Terminal (blocked)", …
+  /\bterminal\s*\(\s*(?:passed|blocked|deprecated|resolved|closed|done|needs-human)/i,
+  // an assertive transition to a terminal/park state: "transition(ed) to BLOCKED",
+  // "flipped to passed", "moved to resolved", "set state to closed", "marked deprecated",
+  // "now needs-human", "status: passed"
+  /\b(?:transition(?:ed|ing)?|flipp?ed|moved|set(?:\s+state)?|marked|status\s*[:=]|now)\s+(?:to\s+|as\s+)?(?:passed|deprecated|resolved|closed|blocked|needs-human|done)\b/i,
+  // an explicit "✅ COMPLETE" / "✅ DONE" completion header the cup writes on finish
+  /✅\s*(?:complete(?:d)?|done|passed)\b/i,
+];
+
+/** EI-15232 — does the cup's checkpoint text DECLARE a terminal/blocked completion?
+ *  Pure; exported for the decider unit tests. */
+export function checkpointDeclaresTerminal(checkpoint: string | null | undefined): boolean {
+  if (!checkpoint) return false;
+  return CHECKPOINT_TERMINAL_MARKERS.some((re) => re.test(checkpoint));
 }
 
 /** The system actor that owns watchdog-fired escalations. */
@@ -325,6 +360,14 @@ export interface PlacementObservation {
    *  days, each one independently re-confirming the same owner-gate and dying).
    *  Default false. */
   unitParked?: boolean;
+  /** EI-15232 — the unit's latest cup checkpoint DECLARES it reached terminal/blocked
+   *  (see {@link checkpointDeclaresTerminal}), yet the unit row is still open
+   *  (non-terminal, no live holder): the cup's `set_state` flip silently failed to
+   *  persist, leaving a STALE-OPEN item. Re-placing a fresh cup would redo already-
+   *  finished work and page the Mug to "re-place/recover" a done item (the EI-8529
+   *  liveness-only-misread class). When true the placement is RECONCILED (a single
+   *  state-reconciliation nudge to the Mug), never re-placed. Default false. */
+  checkpointDeclaresTerminal?: boolean;
   now: number;
 }
 
@@ -332,6 +375,9 @@ export type PlacementDecision =
   | { kind: 'healthy' }
   | { kind: 'completed' }
   | { kind: 'parked'; reason: string }
+  // EI-15232 — the cup's checkpoint declares terminal/blocked but the unit state is
+  // still open (a silently-failed flip): reconcile the state, do NOT re-place a cup.
+  | { kind: 'checkpoint-reconcile'; reason: string }
   | { kind: 'recover'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
   | { kind: 'debounced' }
   | { kind: 'stale-recovery'; reason: string }
@@ -421,6 +467,32 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
     obs.now - obs.lastRecoveryAtMs < cfg.recoveryDebounceMs
   ) {
     return { kind: 'debounced' };
+  }
+
+  // EI-15232 — the cup's OWN checkpoint DECLARES it reached terminal/blocked, but the
+  // unit row is still open (non-terminal, no live holder): the cup believed it flipped
+  // the state and the flip silently failed to persist — a STALE-OPEN item. Re-placing
+  // a fresh cup here would redo already-finished work and page the Mug to "re-place or
+  // recover" a done unit — the EXACT EI-8529 liveness-only-misread anti-pattern this
+  // watchdog otherwise institutionalizes (it keyed purely on state != terminal AND cup
+  // dead/stalled, ignoring the item's own checkpoint). Suppress the re-place page and
+  // emit a single state-reconciliation nudge instead: the Mug VERIFIES + reconciles the
+  // state (flips it), she does NOT re-place. Placed BEFORE every failed-loss path
+  // (reclaim-while-active / dormancy / zombie / breaker) so a dead-cup + declared-done
+  // checkpoint never fires a recovery wake and never bumps a curse counter — a stronger,
+  // more specific signal ("the cup TOLD us it finished") than any loss-attribution.
+  // Debounced by the same recovering-status window above, so at most one nudge per
+  // window until the state is reconciled. (Placed AFTER the cursed latch on purpose: a
+  // cursed row is already latched-silent — no page to suppress — and reconciling it
+  // here would re-introduce a per-tick storm, since a cursed row is not `recovering` and
+  // so bypasses the debounce.)
+  if (obs.checkpointDeclaresTerminal) {
+    return {
+      kind: 'checkpoint-reconcile',
+      reason:
+        'cup checkpoint declares terminal/blocked but the unit state is still open (stale-open) — ' +
+        'reconcile the state, do not re-place',
+    };
   }
 
   // EI-865 / WI-233 — a reaper-reclaim of a STILL-ALIVE cup does NOT count toward the
@@ -1165,6 +1237,32 @@ export async function reconcileOnePot(
       for (const r of liveRows) liveAssigneeAliases.add(r.alias);
     }
 
+    // EI-15232 — batch-read each candidate's latest cup checkpoint (one query over
+    // carry_notes) so the decider can reconcile a STALE-OPEN unit (state=todo, cup
+    // dead) against the cup's OWN declaration that it reached terminal/blocked. Only
+    // NON-terminal units can take the failed path where the checkpoint matters (a
+    // terminal unit is `completed` regardless), so we key just those — keeping the
+    // read bounded to the live frontier. Same canonical scope + null-harness
+    // canonicalization the write/read seams use (workItemCheckpointScope), so no
+    // namespace can drift (the EI-8805 class).
+    const checkpointDeclaredById = new Map<string, boolean>();
+    const scopeToUnitId = new Map<string, string>();
+    for (const unitId of ids) {
+      const u = unitById.get(unitId);
+      if (isUnitTerminal(u?.status)) continue;
+      scopeToUnitId.set(workItemCheckpointScope(u?.harness_slug ?? null, unitId), unitId);
+    }
+    if (scopeToUnitId.size > 0) {
+      const cpScopes = [...scopeToUnitId.keys()];
+      const cpRows = await sql<{ scope: string; note: string | null }[]>`
+        SELECT scope, note FROM harness_shared.carry_notes
+         WHERE workspace_id = ${workspaceId} AND scope = ANY(${cpScopes})`;
+      for (const r of cpRows) {
+        const id = scopeToUnitId.get(r.scope);
+        if (id && checkpointDeclaresTerminal(r.note)) checkpointDeclaredById.set(id, true);
+      }
+    }
+
     for (const unitId of ids) {
       const unit = unitById.get(unitId);
       const existing = placeById.get(unitId);
@@ -1211,6 +1309,7 @@ export async function reconcileOnePot(
         servingCupMadeNoToolCalls, // F-FIX-041 — zombie (no-fair-attempt) → bounded infra breaker
         postDormancySweep, // F-FIX-041 — operator-dormancy grace (item-independent, per-sweep)
         unitParked: isUnitParked(unit?.status), // WI-1439 — deliberate park (e.g. blocked) → never recovered
+        checkpointDeclaresTerminal: checkpointDeclaredById.get(unitId) === true, // EI-15232 — stale-open reconcile
         now,
       };
       const decision = evaluatePlacement(obs, cfg);
@@ -1338,6 +1437,32 @@ export async function reconcileOnePot(
               disposition: 'parked',
             });
           }
+          break;
+        case 'checkpoint-reconcile':
+          // EI-15232 — the cup's checkpoint declares terminal/blocked but the unit
+          // state is STALE-OPEN (a silently-failed flip). Do NOT re-place: track the
+          // placement as `recovering` (so it stays visible + debounced, and the
+          // stale-recovery backstop still bounds it if never reconciled), keep BOTH
+          // counters FLAT (this is not a failed attempt), preserve the loss lineage,
+          // and fire ONE state-reconciliation nudge — NOT the "re-place or recover"
+          // page. The Mug verifies + reconciles the state; she does not spawn a cup.
+          await upsertPlacement(sql, {
+            ...base,
+            status: 'recovering',
+            failCount: obs.failCount,
+            infraLossCount: obs.infraLossCount,
+            lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
+            disposition: 'checkpoint-reconcile',
+            bumpRecovery: true,
+          });
+          await fireReconcileWake(workspaceId, mugOwner, unitId, base.harnessSlug);
+          out.push({
+            workspaceId,
+            installSlug,
+            workItemId: unitId,
+            decision: 'checkpoint-reconcile',
+            detail: decision.reason,
+          });
           break;
         case 'recover':
           await upsertPlacement(sql, {
@@ -1482,6 +1607,30 @@ async function fireRecoveryWake(
       `Placement watchdog: work-item ${unitId}${harness ? ` (${harness})` : ''} is not terminal but its ` +
       `cup is dead/stalled (placement attempt ${attempt}) — re-place or recover it.`,
     payload: { kind: 'placement-recovery', workItemId: unitId, harness, attempt },
+    source: 'pot-placement-watchdog',
+    harnessSlug: harness,
+  });
+}
+
+/** EI-15232 — the cup's checkpoint declares the unit reached terminal/blocked but the
+ *  unit state is still open (a silently-failed `set_state` flip). Fire ONE Mug nudge to
+ *  RECONCILE the state (verify + flip it) — NOT the "re-place or recover" page: re-placing
+ *  redoes finished work + drives the cursed-bee noise this fixes. Debounced identically to
+ *  the recovery wake (the placement is tracked `recovering`). Best-effort like fireRecoveryWake. */
+async function fireReconcileWake(
+  workspaceId: string,
+  mugOwner: string | null,
+  unitId: string,
+  harness: string | null,
+): Promise<void> {
+  await wakeMug({
+    workspaceId,
+    mugOwner,
+    summary:
+      `Placement watchdog: work-item ${unitId}${harness ? ` (${harness})` : ''} has a cup checkpoint ` +
+      `declaring it reached terminal/blocked, but its state is still open (stale-open) — VERIFY and ` +
+      `reconcile the state (flip it); do NOT re-place a fresh cup.`,
+    payload: { kind: 'placement-state-reconcile', workItemId: unitId, harness },
     source: 'pot-placement-watchdog',
     harnessSlug: harness,
   });
