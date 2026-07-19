@@ -12,7 +12,15 @@
  * non-operator port.
  *
  * Registered in ~/.claude/settings.json PreToolUse with matcher:
- *   Bash|mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp
+ *   mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill
+ * (Bash is deliberately NOT matched — see the branch-2 comment below: a
+ * text-scanning Bash matcher would false-positive on anything that merely
+ * MENTIONS these ports, e.g. a commit message, a grep, editing this file.)
+ * Wired via mergeClaudeHookSettings (packages/operator-core/lib/desktop-
+ * install/papercusp-files.ts) + the install-standalone-mcp.sh sibling
+ * (merge_guard_operator_desktop_hook) — KEEP THE TWO IN SYNC (EI-16981: this
+ * hook previously lived at repo-root scripts/cc-hooks/ and was NEVER wired
+ * into either installer, so the block/redirect it documents never fired).
  *
  * Exit 0 = allow; exit 2 = block (stderr is shown to the agent).
  *

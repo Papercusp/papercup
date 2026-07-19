@@ -753,7 +753,7 @@ export function makeAgentBusyGate({
 // Shared dedupe key for non-drill (production) carry-respawns — they have no
 // drillId, so concurrent production respawns collapse to ONE pending retry
 // under this sentinel instead of colliding with the old `!drillId` early-return.
-export const NON_DRILL_REARM_KEY = '__non-drill__';
+const NON_DRILL_REARM_KEY = '__non-drill__';
 
 export function makeCarryRearmController({
   acquireInject, // () => Promise<release()>  — the host's gated-inject mutex

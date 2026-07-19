@@ -18,7 +18,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { getTestPg } from '@papercusp/test-config';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+// The current (mig 517) CREATE OR REPLACE of the authoritative local-write-origin-
+// stamp trigger function — loaded verbatim so this test tracks the REAL function,
+// never a hand-copied drift-prone duplicate.
+const SQL_DIR = resolve(HERE, '../../../../libs/papercusp/libs/db/sql');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, planItems: [{ id: 'P-001' }, { id: 'P-002' }] as { id: string }[] }));
 vi.mock('@papercusp/db-org', async () => {
@@ -57,6 +66,7 @@ beforeAll(async () => {
       strategy text, note text,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
       origin text NOT NULL DEFAULT 'local',
+      author_pubkey text, fed_ts bigint, fed_hlc text,
       fed_key text GENERATED ALWAYS AS ((plan_slug || ':') || item_id) STORED,
       CONSTRAINT plan_item_assignments_pkey PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id),
       CONSTRAINT plan_item_assignments_item_nonempty CHECK (item_id <> '')
@@ -67,6 +77,18 @@ beforeAll(async () => {
   await rootSql.unsafe(`
     CREATE TRIGGER pia_updated_at_trg BEFORE UPDATE ON harness_shared.plan_item_assignments
     FOR EACH ROW EXECUTE FUNCTION harness_shared.set_pia_updated_at()`);
+  // EI-7642/WI-5458: install the REAL, current (mig 517) authoritative local-write
+  // origin/LWW-clock stamp trigger — assignItem/unassignItem no longer hardcode
+  // `origin`/touch `author_pubkey` themselves; this is the ONE place that must.
+  // `hlc_now()` (mig 314+) is stubbed — its own internal correctness is out of
+  // scope here; the trigger only needs it to be callable.
+  await rootSql.unsafe(`
+    CREATE FUNCTION harness_shared.hlc_now() RETURNS text AS $$
+    BEGIN RETURN (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text; END; $$ LANGUAGE plpgsql`);
+  await rootSql.unsafe(readFileSync(resolve(SQL_DIR, '517-fix-stamp-local-federated-write-mask.sql'), 'utf8'));
+  await rootSql.unsafe(`
+    CREATE TRIGGER stamp_local_federated_write_trg BEFORE INSERT OR UPDATE ON harness_shared.plan_item_assignments
+    FOR EACH ROW EXECUTE FUNCTION harness_shared.stamp_local_federated_write()`);
   h.sql = rootSql;
 }, 90_000);
 
@@ -111,6 +133,36 @@ describe('plan-item assignment store (PG)', () => {
     expect(await rootSql`SELECT 1 FROM harness_shared.plan_item_assignments WHERE item_id='P-001'`).toHaveLength(1); // not deleted
     expect(await getAssignment(WS, 'web', 'plan-a', 'P-001')).toBeNull(); // active read skips a released row
     expect(await unassignItem(WS, 'web', 'plan-a', 'P-001')).toBeNull(); // already released → no-op (released_ts IS NULL guard)
+  });
+
+  // EI-7642/WI-5458: assignItem/unassignItem must not hardcode `origin` themselves —
+  // the authoritative stamp_local_federated_write_trg trigger (mig 214/517) is the ONE
+  // choke point that decides it, based on whether the write's own SQL actually touched
+  // a content-bearing column. Prove the delegation is real (not just harmless-because-
+  // redundant) via a row whose CURRENT content genuinely came from a remote peer.
+  it('EI-7642/WI-5458: a claim/release on a remote-authored row still lands origin=local via the trigger alone (no app-level hardcode)', async () => {
+    // Seed a row as a federation projection WOULD (origin='remote', a real author_pubkey) —
+    // exactly the "authoritative content came from a remote peer" precondition WI-5458 named.
+    await rootSql`
+      INSERT INTO harness_shared.plan_item_assignments
+        (workspace_id, harness_slug, plan_slug, item_id, assignee_name, assigned_by_user,
+         assigned_ts, origin, author_pubkey, fed_ts, fed_hlc)
+      VALUES (${WS}, 'web', 'plan-a', 'P-001', 'peer-agent', 'peer-user', now(), 'remote', 'PEER_PUBKEY_ABC', 123, 'hlc-1')`;
+
+    await assignItem({ ...base, itemId: 'P-001', assigneeName: 'alice' }); // ordinary local claim
+
+    const [row] = await rootSql`
+      SELECT origin, author_pubkey FROM harness_shared.plan_item_assignments WHERE item_id = 'P-001'`;
+    // The trigger (not app code) correctly re-attributes this as a local write, since the
+    // claim genuinely changed assignee_name/assigned_ts. `author_pubkey` is deliberately left
+    // to the trigger's own (unchanged-column) semantics — this test pins that behavior so a
+    // future app-level hardcode reintroduction (or a trigger regression) is caught either way.
+    expect(row!.origin).toBe('local');
+
+    await unassignItem(WS, 'web', 'plan-a', 'P-001'); // ordinary local release
+    const [afterRelease] = await rootSql`
+      SELECT origin FROM harness_shared.plan_item_assignments WHERE item_id = 'P-001'`;
+    expect(afterRelease!.origin).toBe('local');
   });
 
   it('listAssignmentsForName / listAssignmentsForPlan return only ACTIVE rows, scoped', async () => {
