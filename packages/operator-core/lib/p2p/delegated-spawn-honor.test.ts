@@ -146,7 +146,9 @@ function row(record: WorkOfferStoreRecord = requestRecord()) {
     publisher_github_user_id: record.publisherGithubUserId,
     offer_id: record.offerId,
     record_json: JSON.stringify(record),
-    fleet_slug: record.fleetSlug,
+    // Every fixture in this file is a fleet-scoped spawn_request (fleetSlug: 'alpha',
+    // never null) — the cast matches honorSpawnRequestFromProjection's row.fleet_slug: string.
+    fleet_slug: record.fleetSlug as string,
   };
 }
 
