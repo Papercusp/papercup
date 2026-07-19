@@ -13,6 +13,8 @@ import {
   CYCLE_ERROR_WINDOW_MS,
   LEDGER_RECONCILE_EPOCH_MS,
   LENS_DIVERSITY_SAMPLE,
+  MIN_ERROR_RATE_DENOMINATOR,
+  STRICT_ERROR_RATE_DENOMINATOR,
   programSuccessReadScopes,
   SCOUT_TICK_INSTALL_SLUG,
   type ProgramSuccessReport,
@@ -132,6 +134,51 @@ describe('evaluateProgramSuccess — cycle error rate', () => {
     const r = evaluateProgramSuccess(inputs(ticks, []));
     expect(bar(r, 'cycle-error-rate').status).toBe('fail');
     expect(bar(r, 'cycle-error-rate').observed).toContain('30.0%');
+  });
+
+  // WI-5397 denominator guard (design ask su-b37b0389 2026-07-19): the bar emitted
+  // status:'pass' on the LIVE 0-errors/1-cycle window after a bg-host restart — a green
+  // its own data could not support. A thin clean window is now 'unknown', never 'pass'.
+  it('REFUSES to pass on a thin clean window — the live 0-errors/1-cycle false green', () => {
+    const r = evaluateProgramSuccess(inputs([ranTick({ detail: { cycleId: 'c1' } })], []));
+    const b = bar(r, 'cycle-error-rate');
+    expect(b.status).toBe('unknown');
+    expect(b.status).not.toBe('pass');
+    expect(b.unknownReason).toContain('denominator too small: n=1');
+    // The measurement is still reported — the refusal is about the CLAIM, not the data.
+    expect(b.observed).toContain('0 error ticks / 1 cycle ticks');
+  });
+
+  it('still refuses one short of the minimum, and passes AT it', () => {
+    const clean = (n: number) => [...Array(n)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } }));
+    expect(bar(evaluateProgramSuccess(inputs(clean(MIN_ERROR_RATE_DENOMINATOR - 1), [])), 'cycle-error-rate').status).toBe(
+      'unknown',
+    );
+    expect(bar(evaluateProgramSuccess(inputs(clean(MIN_ERROR_RATE_DENOMINATOR), [])), 'cycle-error-rate').status).toBe(
+      'pass',
+    );
+  });
+
+  it('labels a pass between the minimum and strict denominators as the WEAKER claim', () => {
+    const ticks = [...Array(MIN_ERROR_RATE_DENOMINATOR)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } }));
+    const b = bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate');
+    expect(b.status).toBe('pass');
+    expect(b.observed).toContain('rejects the ~30% baseline');
+    expect(b.observed).toContain('is NOT yet established');
+  });
+
+  it('claims the literal bound only at the strict denominator', () => {
+    const ticks = [...Array(STRICT_ERROR_RATE_DENOMINATOR)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } }));
+    const b = bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate');
+    expect(b.status).toBe('pass');
+    expect(b.observed).toContain('bound supported at 95%');
+  });
+
+  // The guard is ASYMMETRIC on purpose: an observed error is positive evidence of
+  // breakage, so a FAIL fires at any n — only the green needs the denominator.
+  it('FAILS on a thin window with an error — the guard gates pass only', () => {
+    const r = evaluateProgramSuccess(inputs([{ status: 'error' }] as ScoutTickRecord[], []));
+    expect(bar(r, 'cycle-error-rate').status).toBe('fail');
   });
 
   it('is exclusive at the bar — exactly 5% FAILS (< , not <=)', () => {
@@ -496,9 +543,19 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
   it('only a fully-passing gate closes the program', () => {
     // Two ideas spanning two lenses: a fully-green gate must ALSO satisfy the D-004
     // lens-diversity bar (WI-4482), which a single-lens fixture cannot.
+    // WI-5397: and it must now carry a real error-rate DENOMINATOR — one clean cycle
+    // can no longer close the gate (that was the manufactured green this guard ends),
+    // so the fixture runs MIN_ERROR_RATE_DENOMINATOR clean cycles. The extra cycles
+    // route nothing, which keeps the per-cycle reconciliation bar honest (0 claimed,
+    // 0 ledger rows) while supplying the denominator.
     const r = evaluateProgramSuccess(
       inputs(
-        [ranTick({ ideasRouted: 2, detail: { cycleId: 'c1', signalScore: 30 } })],
+        [
+          ranTick({ ideasRouted: 2, detail: { cycleId: 'c1', signalScore: 30 } }),
+          ...[...Array(MIN_ERROR_RATE_DENOMINATOR - 1)].map((_, i) =>
+            ranTick({ detail: { cycleId: `c-denominator-${i}`, signalScore: 30 } }),
+          ),
+        ],
         [
           idea({
             ideaId: 'i-analogical',

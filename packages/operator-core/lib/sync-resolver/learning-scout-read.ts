@@ -212,10 +212,17 @@ export interface ScoutDigestEntry {
 /**
  * The persisted digest a fired cycle actually READ (P-008, owner ask
  * 2026-07-18: "show the delta and full corpus used for the tick") — the
- * newest scout_digest_snapshots row, flattened with the SAME flattenDigest
- * the ideator prompt renderer uses, split into the delta leg (refs not in
- * previousCycleRefs — the "NEW since your last cycle" the prompt leads with)
- * and the standing corpus.
+ * SELECTED scout_digest_snapshots row (default: newest), flattened with the
+ * SAME flattenDigest the ideator prompt renderer uses, split into the delta
+ * leg (refs not in previousCycleRefs — the "NEW since your last cycle" the
+ * prompt leads with) and the standing corpus.
+ *
+ * WI-5417 turned this from "the newest cycle only" into a browseable history:
+ * {@link ScoutSnapshot.digestHistory} carries a COMPACT summary of the newest
+ * ~10 cycles, and this full-entries shape now ships for whichever ONE of them
+ * the caller selected (or the newest, absent a selection) — never for all 10
+ * at once, to keep the wire payload out of the query-health `payload` warning
+ * band (new-view-data-fetching-defect-class).
  */
 export interface ScoutDigestSnapshot {
   cycleId: string | null;
@@ -229,6 +236,22 @@ export interface ScoutDigestSnapshot {
   standingEntries: ScoutDigestEntry[];
   /** True when caps trimmed either list. */
   truncated: boolean;
+}
+
+/**
+ * One entry in the browseable digest-history strip (WI-5417): a COMPACT
+ * per-cycle summary — counts only, never the entry lists themselves (those
+ * only ship for the SELECTED cycle via {@link ScoutSnapshot.digest}). Newest
+ * first; `newCount`/`standingCount` are that cycle's OWN delta split (each
+ * snapshot carries its own `previousCycleRefs`, stamped at write time — never
+ * re-derived against a sibling row).
+ */
+export interface ScoutDigestHistoryEntry {
+  cycleId: string | null;
+  at: string | null;
+  totalEntries: number;
+  newCount: number;
+  standingCount: number;
 }
 
 /** Improve-stage funnel (WI-5412 item 3): ideas → filed → claimed → done over
@@ -293,10 +316,18 @@ export interface ScoutSnapshot {
    */
   drafts: ScoutDraftIteration[];
   /**
-   * The newest fired cycle's persisted digest (P-008): delta + standing corpus.
-   * null when no snapshot exists yet or the read degrades.
+   * The SELECTED cycle's persisted digest (P-008, browseable per WI-5417):
+   * delta + standing corpus for whichever cycle the caller asked for (default
+   * newest). null when no snapshot exists yet or the read degrades.
    */
   digest: ScoutDigestSnapshot | null;
+  /**
+   * Browseable digest history (WI-5417): a compact summary of the newest
+   * ~{@link DIGEST_HISTORY_LIMIT} cycles, newest first — the UI pages/selects
+   * among these (nuqs `?sdig=<cycleId>`) rather than only ever seeing the
+   * newest. Empty when no snapshots exist yet or the read degrades.
+   */
+  digestHistory: ScoutDigestHistoryEntry[];
 }
 
 const UNDEFINED_TABLE = '42P01';
@@ -484,8 +515,21 @@ export function evaluateIdeasDriftMarkers(input: {
   return { status, markers };
 }
 
-/** Routed-ideas-by-rail + last tick for one workspace. */
-export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<ScoutSnapshot> {
+/** Rows read for the browseable digest-history strip (WI-5417) — days of
+ *  history at the ~hourly-to-30min cadence, while keeping the per-request PG
+ *  read + flatten cost bounded (SNAPSHOT_KEEP in digest-snapshots.ts prunes
+ *  the table itself to 30). */
+const DIGEST_HISTORY_LIMIT = 10;
+
+/** Routed-ideas-by-rail + last tick for one workspace. `selectedCycleId`
+ *  (WI-5417) picks which of the newest {@link DIGEST_HISTORY_LIMIT} digest
+ *  snapshots ships full entries for — omitted/not-found falls back to the
+ *  newest. */
+export async function readScoutSnapshot(
+  sql: Sql,
+  workspaceId: string,
+  opts: { selectedCycleId?: string | null } = {},
+): Promise<ScoutSnapshot> {
   const rails = (await sql`
     SELECT rail, count(*)::int AS count
       FROM harness_shared.scout_routed_ideas
@@ -722,29 +766,60 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
-  // Digest leg (learning-tab-visibility P-008): the newest persisted per-cycle
-  // digest, flattened with the SAME flattenDigest the ideator prompt uses, and
-  // split delta-vs-standing on previousCycleRefs — exactly the "NEW since your
-  // last cycle" leg the prompt leads with. Best-effort.
+  // Digest leg (learning-tab-visibility P-008, browseable history WI-5417):
+  // the newest DIGEST_HISTORY_LIMIT persisted per-cycle digests, each
+  // flattened with the SAME flattenDigest the ideator prompt uses and split
+  // delta-vs-standing on its OWN previousCycleRefs (stamped at write time —
+  // never re-derived against a sibling row's refs). Every row contributes a
+  // COMPACT summary to `digestHistory`; only the SELECTED cycle (or the
+  // newest, absent a match) gets its full entry lists flattened into `digest`
+  // — shipping all N in full would blow the query-health payload budget for
+  // no reader benefit (new-view-data-fetching-defect-class). Best-effort.
   let digest: ScoutDigestSnapshot | null = null;
+  let digestHistory: ScoutDigestHistoryEntry[] = [];
   try {
     const snapRows = (await sql`
       SELECT cycle_id, watermark_at, digest, created_at
         FROM harness_shared.scout_digest_snapshots
        WHERE workspace_id = ${workspaceId}
        ORDER BY created_at DESC
-       LIMIT 1
+       LIMIT ${DIGEST_HISTORY_LIMIT}
     `) as Array<Record<string, unknown>>;
-    const row = snapRows[0];
-    if (row && row.digest && typeof row.digest === 'object') {
-      const { flattenDigest } = await import('../scout/lenses');
-      const raw = row.digest as Record<string, unknown>;
-      const flat = flattenDigest(raw as never) ?? [];
-      const prevRefs = new Set(
-        Array.isArray(raw.previousCycleRefs)
-          ? (raw.previousCycleRefs as unknown[]).filter((r): r is string => typeof r === 'string')
-          : [],
-      );
+    const { flattenDigest } = await import('../scout/lenses');
+
+    const parsed = snapRows
+      .map((row) => {
+        if (!row.digest || typeof row.digest !== 'object') return null;
+        const raw = row.digest as Record<string, unknown>;
+        const flat = flattenDigest(raw as never) ?? [];
+        const prevRefs = new Set(
+          Array.isArray(raw.previousCycleRefs)
+            ? (raw.previousCycleRefs as unknown[]).filter((r): r is string => typeof r === 'string')
+            : [],
+        );
+        return { row, flat, prevRefs };
+      })
+      .filter((x): x is { row: Record<string, unknown>; flat: Array<{ category?: string; summary: string; ref: string; weight?: number }>; prevRefs: Set<string> } => x !== null);
+
+    digestHistory = parsed.map(({ row, flat, prevRefs }) => {
+      // No previousCycleRefs (first-ever snapshot) ⇒ nothing is provably
+      // "new"; the whole corpus reads as standing, same rule `digest` uses.
+      const newCount = prevRefs.size > 0 ? flat.filter((p) => !prevRefs.has(p.ref)).length : 0;
+      return {
+        cycleId: typeof row.cycle_id === 'string' && row.cycle_id ? row.cycle_id : null,
+        at: toIso(row.created_at),
+        totalEntries: flat.length,
+        newCount,
+        standingCount: flat.length - newCount,
+      };
+    });
+
+    const selectedIdx = opts.selectedCycleId
+      ? parsed.findIndex(({ row }) => row.cycle_id === opts.selectedCycleId)
+      : -1;
+    const chosen = parsed[selectedIdx >= 0 ? selectedIdx : 0];
+    if (chosen) {
+      const { row, flat, prevRefs } = chosen;
       const toEntry = (p: { category?: string; summary: string; ref: string; weight?: number }): ScoutDigestEntry => ({
         lane: p.category ?? 'unknown',
         summary: typeof p.summary === 'string' ? p.summary.slice(0, 240) : '',
@@ -754,8 +829,6 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
       const byWeight = (a: ScoutDigestEntry, b: ScoutDigestEntry): number => (b.weight ?? 0) - (a.weight ?? 0);
       const NEW_CAP = 20;
       const STANDING_CAP = 15;
-      // No previousCycleRefs (first-ever snapshot) ⇒ nothing is provably "new";
-      // treat all as standing rather than mislabeling the whole corpus as new.
       const newEntries = prevRefs.size > 0 ? flat.filter((p) => !prevRefs.has(p.ref)).map(toEntry).sort(byWeight) : [];
       const standingEntries = flat
         .filter((p) => prevRefs.size === 0 || prevRefs.has(p.ref))
@@ -828,6 +901,7 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     cadence,
     drafts,
     digest,
+    digestHistory,
     improveFunnel,
   };
 }

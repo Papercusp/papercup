@@ -28,6 +28,7 @@ import launchOnPlan, {
   distributeRemotePlacement,
   remotePlacementUnsupportedArgs,
   resolveRemotePlacementHive,
+  isSelfPublishedSeatOffer,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -651,6 +652,59 @@ describe("distributeRemotePlacement (WI-5211 — cross-machine max-spread round-
     expect(dist.ok).toBe(false);
     if (dist.ok) return;
     expect(dist.error).toMatch(/fleet or its pot/);
+  });
+});
+
+// P-014/D-005 — the local-seat leg: a self-delegated seat must be excluded from
+// the remote-spawn pool (it's consumed LOCALLY via fromSeats instead), so local
+// and remote donors compose into ONE fleet without a self-targeted request that
+// would just sit forever.
+describe('isSelfPublishedSeatOffer (P-014/D-005 — local-seat leg: exclude self-delegated offers from remote placement)', () => {
+  const SELF_GH = 42;
+  const SELF_PUBKEY = 'self-device-pubkey';
+
+  it('excludes an offer published by the caller\'s own identity (self-donation)', () => {
+    const offer = { publisherGithubUserId: SELF_GH, signerDevicePubkey: SELF_PUBKEY };
+    expect(isSelfPublishedSeatOffer(offer, SELF_GH, SELF_PUBKEY)).toBe(true);
+  });
+
+  it('does NOT exclude a genuinely remote donor\'s offer (different github user + pubkey)', () => {
+    const offer = { publisherGithubUserId: 7, signerDevicePubkey: 'other-device-pubkey' };
+    expect(isSelfPublishedSeatOffer(offer, SELF_GH, SELF_PUBKEY)).toBe(false);
+  });
+
+  it('requires BOTH identity halves to match — same github id but a different signer device is NOT self (multi-device owner, or a spoof attempt)', () => {
+    const offer = { publisherGithubUserId: SELF_GH, signerDevicePubkey: 'a-different-device' };
+    expect(isSelfPublishedSeatOffer(offer, SELF_GH, SELF_PUBKEY)).toBe(false);
+  });
+
+  it('fails OPEN (never excludes) when the caller\'s own identity could not be resolved', () => {
+    const offer = { publisherGithubUserId: SELF_GH, signerDevicePubkey: SELF_PUBKEY };
+    expect(isSelfPublishedSeatOffer(offer, null, SELF_PUBKEY)).toBe(false);
+    expect(isSelfPublishedSeatOffer(offer, SELF_GH, null)).toBe(false);
+    expect(isSelfPublishedSeatOffer(offer, null, null)).toBe(false);
+  });
+
+  it('fails OPEN when the offer itself carries no signer identity (malformed/legacy row)', () => {
+    const offer = { publisherGithubUserId: null, signerDevicePubkey: null };
+    expect(isSelfPublishedSeatOffer(offer, SELF_GH, SELF_PUBKEY)).toBe(false);
+  });
+
+  it('composes with distributeRemotePlacement: filtering out a self offer before spreading leaves only genuine remote donors', () => {
+    const rawOffers = [
+      { publisher: SELF_GH, offerId: 'seat-self', host: 'my-own-box', seats: 3, publisherGithubUserId: SELF_GH, signerDevicePubkey: SELF_PUBKEY },
+      { publisher: 7, offerId: 'seat-remote', host: 'peer-box', seats: 2, publisherGithubUserId: 7, signerDevicePubkey: 'other-device-pubkey' },
+    ];
+    const remoteOnly = rawOffers.filter((o) => !isSelfPublishedSeatOffer(o, SELF_GH, SELF_PUBKEY));
+    expect(remoteOnly).toHaveLength(1);
+    expect(remoteOnly[0]!.host).toBe('peer-box');
+
+    const dist = distributeRemotePlacement(2, remoteOnly);
+    expect(dist.ok).toBe(true);
+    if (!dist.ok) return;
+    // The self-donated 3-seat offer never enters the remote pool — only the
+    // genuine 2-seat remote donor does, so count 2 is satisfied entirely from it.
+    expect(dist.allocations).toEqual([expect.objectContaining({ host: 'peer-box', count: 2 })]);
   });
 });
 

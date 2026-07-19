@@ -697,6 +697,35 @@ export type RemotePlacementDistribution =
   | { ok: false; error: string };
 
 /**
+ * PURE (P-014/D-005 — the local-seat leg of "placement/spawn must treat local
+ * and remote seats uniformly"): true when a published seat-offer's signer
+ * identity matches the CALLER's own identity — i.e. this machine delegated the
+ * seat to its own fleet (self-donation), so the seat is consumed LOCALLY via
+ * `fromSeats`/`seat` (D-005: a remote fleet's seats may come from local or
+ * remote donors) rather than via a remote spawn-request. Without this
+ * exclusion a self-delegated seat would ALSO be offered to
+ * `distributeRemotePlacement`, publishing a spawn-request that targets the
+ * caller itself — the honor hook only fires on a REMOTE apply, so a
+ * self-targeted request would just sit forever, silently under-filling the
+ * fleet. Fails OPEN (never excludes) when either identity half is unknown —
+ * the caller's own best-effort identity resolution already logs/handles that
+ * upstream, and `publishSpawnRequest`'s self-target guard backstops any offer
+ * that slips through here.
+ */
+export function isSelfPublishedSeatOffer(
+  offer: { publisherGithubUserId: number | null; signerDevicePubkey: string | null },
+  selfGithubUserId: number | null,
+  selfDevicePubkey: string | null,
+): boolean {
+  return (
+    selfGithubUserId != null &&
+    selfDevicePubkey != null &&
+    offer.publisherGithubUserId === selfGithubUserId &&
+    offer.signerDevicePubkey === selfDevicePubkey
+  );
+}
+
+/**
  * PURE (WI-5211; P-005 pools in pot-scoped offers too): spread `count` members
  * across the fleet's REMOTE seat-offers. `offers` is the CALLER's already-merged
  * pool of this fleet's own fleet-scoped offers AND its pot's shared (potSlug-set)
@@ -1270,14 +1299,9 @@ export default defineTool({
           return err(`Failed to list the pot's federated seat-offers: ${e?.message ?? e}`);
         }
       }
-      const isSelfOffer = (o: (typeof seatOffers)[number]) =>
-        selfGithubUserId != null &&
-        selfDevicePubkey != null &&
-        o.publisherGithubUserId === selfGithubUserId &&
-        o.signerDevicePubkey === selfDevicePubkey;
       const remoteOffers: RemoteSeatOfferSummary[] = [...seatOffers, ...potSeatOffers]
         .filter((o) => !o.localDisposition)
-        .filter((o) => !isSelfOffer(o))
+        .filter((o) => !isSelfPublishedSeatOffer(o, selfGithubUserId, selfDevicePubkey))
         .map((o) => ({
           publisher: o.publisherGithubUserId,
           offerId: o.offerId,

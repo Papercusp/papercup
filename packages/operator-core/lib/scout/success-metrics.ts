@@ -352,6 +352,12 @@ export function evaluateProgramSuccess(
   const soakNote = codeHashFold
     ? ` [soak: code-identical union across restarts, hash ${inputs.cadenceByCodeHash!.codeHash}]`
     : '';
+  // Denominator guard (see MIN_ERROR_RATE_DENOMINATOR): a clean window is only
+  // evidence of health once it is big enough to have caught the regression. Gates
+  // 'pass' only — a 'fail' is positive evidence and fires at any n.
+  const minDenominator = opts.minErrorRateDenominator ?? MIN_ERROR_RATE_DENOMINATOR;
+  const strictDenominator = opts.strictErrorRateDenominator ?? STRICT_ERROR_RATE_DENOMINATOR;
+  const measured = `${errorBarSource.errorTicks} error ticks / ${cycleTicks} cycle ticks (ran + errored) = ${pct(errorRate ?? 0)}`;
   criteria.push({
     key: 'cycle-error-rate',
     bar: `cycle error rate < ${pct(maxErrorRate)} (was ~30%)`,
@@ -361,10 +367,29 @@ export function evaluateProgramSuccess(
           observed: `no cycle ran or errored in the window (${errorBarSource.totalTicks} tick(s), all gated)${capacityNote}${soakNote}`,
           unknownReason: 'empty cycle window — no cycle got a fair shot, so there is no error-rate denominator',
         }
-      : {
-          status: (errorRate < maxErrorRate ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${errorBarSource.errorTicks} error ticks / ${cycleTicks} cycle ticks (ran + errored) = ${pct(errorRate)}${capacityNote}${soakNote}`,
-        }),
+      : errorRate >= maxErrorRate
+        ? {
+            status: 'fail' as const,
+            observed: `${measured}${capacityNote}${soakNote}`,
+          }
+        : cycleTicks < minDenominator
+          ? {
+              status: 'unknown' as const,
+              observed: `${measured} — clean, but the denominator cannot support a pass yet${capacityNote}${soakNote}`,
+              unknownReason:
+                `denominator too small: n=${cycleTicks} cycle(s), need >=${minDenominator} for zero errors to reject ` +
+                `the historical ~30% rate at p<0.05 (rule of three: at n=${cycleTicks} the data is still consistent ` +
+                `with a true error rate far above ${pct(maxErrorRate)})`,
+            }
+          : {
+              status: 'pass' as const,
+              observed:
+                `${measured}${capacityNote}${soakNote}` +
+                (cycleTicks < strictDenominator
+                  ? ` [claim: rejects the ~30% baseline at p<0.05 (n=${cycleTicks}>=${minDenominator}); the literal ` +
+                    `${pct(maxErrorRate)} bound needs n>=${strictDenominator} and is NOT yet established]`
+                  : ` [claim: ${pct(maxErrorRate)} bound supported at 95% (n=${cycleTicks}>=${strictDenominator})]`),
+            }),
   });
 
   // ── 4. ledger rows reconcile with tick routed counts ────────────────────────

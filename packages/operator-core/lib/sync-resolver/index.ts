@@ -3988,14 +3988,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // the empty snapshot — the tab renders "Scout has not routed ideas yet", never
   // a 500. Returns a 1-element array (client reads data[0]). NOT table-backed —
   // refreshes on mount + the panel's manual `invalidate()`.
+  // `cycleId` (WI-5417): selects which of the newest ~10 scout_digest_snapshots
+  // rows ships full digest entries — the Signals view's browseable per-cycle
+  // history (nuqs `?sdig=`). Omitted/not-found falls back to the newest cycle.
   'learning.scout': {
-    resolve: async () => {
+    argsSchema: z.object({ cycleId: z.string().optional() }).optional(),
+    resolve: async (args) => {
+      const { cycleId } = (args ?? {}) as { cycleId?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
       const { readScoutSnapshot } = await import('./learning-scout-read');
       try {
         const ws = activeWorkspaceId();
-        return await routeWithWorkspace(async (tx) => [await readScoutSnapshot(tx, ws)]);
+        return await routeWithWorkspace(async (tx) => [
+          await readScoutSnapshot(tx, ws, { selectedCycleId: cycleId ?? null }),
+        ]);
       } catch (err) {
         console.warn('[learning.scout] scout read failed:', err instanceof Error ? err.message : err);
         return [
@@ -4011,6 +4018,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             cadence: null,
             drafts: [],
             digest: null,
+            digestHistory: [],
           },
         ];
       }
