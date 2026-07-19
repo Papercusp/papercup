@@ -9,7 +9,7 @@
  * loosenable here (use capability_envelope:set_protected to TIGHTEN it further). Audited + revertible.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { defineTool, entityRef, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import { readEnvelopeOverrides, setRoleEnvelope } from '../../capability-envelope-overrides';
 import type { RoleEnvelope } from '../../capability-envelope/policy';

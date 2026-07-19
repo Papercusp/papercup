@@ -7,6 +7,13 @@
  * step fails open) and must never be cached as an empty set.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import {
+  applyEntityRefEnums,
+  collectEntityRefs,
+  entityRef,
+  resolveEntityRefs,
+} from '@papercusp/tooldef';
 import { invalidateEntityCache, makeSetResolver } from './entity-resolvers-papercusp';
 
 afterEach(() => invalidateEntityCache());
@@ -82,5 +89,53 @@ describe('makeSetResolver', () => {
     const out = await r(['a', 'b', 'c', 'd']);
     expect(load).toHaveBeenCalledTimes(1);
     expect(out.unknown).toEqual(['c', 'd']);
+  });
+});
+
+/**
+ * The `role` kind is the one vocabulary here small and static enough to PUBLISH
+ * into `tools/list` (P-004b). It is also OPEN — plugins contribute
+ * `<plugin>:<role>` ids at runtime — so both halves must tolerate the tail.
+ */
+describe('role — the published, open vocabulary', () => {
+  it('publishes the built-in roles as an enum paired with the namespaced pattern', async () => {
+    const schema = z.object({ role: entityRef('role') });
+    const out = await applyEntityRefEnums(schema, z.toJSONSchema(schema) as Record<string, unknown>);
+    const node = (out.properties as Record<string, Record<string, unknown>>).role;
+    const arms = node.anyOf as Array<Record<string, unknown>>;
+    expect(arms).toHaveLength(2);
+    expect(arms[0].enum).toContain('worker');
+    expect(arms[0].enum).toContain('cup');
+    // The tail: a plugin role can never be enumerated, so it must be allowed by
+    // pattern — advertising a closed list would reject legitimate values.
+    expect(new RegExp(arms[1].pattern as string).test('myplugin:reviewer')).toBe(true);
+  });
+
+  it('accepts a namespaced plugin role at dispatch without consulting the set', async () => {
+    const schema = z.object({ role: entityRef('role') });
+    const v = await resolveEntityRefs(collectEntityRefs(schema), { role: 'myplugin:reviewer' });
+    expect(v).toEqual([]);
+  });
+
+  it('still rejects an invented bare role', async () => {
+    const schema = z.object({ role: entityRef('role') });
+    const v = await resolveEntityRefs(collectEntityRefs(schema), { role: 'engineer' });
+    expect(v).toHaveLength(1);
+    expect(v[0].value).toBe('engineer');
+  });
+});
+
+/**
+ * The cap is a token budget, not a style rule — the pot/harness sets are far
+ * past it, so they must publish NOTHING rather than inflating every session's
+ * prompt prefix. (Measured 2026-07-19: pots=142, harness slugs=428.)
+ */
+describe('over-cap vocabularies publish nothing', () => {
+  it('does not publish a pot enum', async () => {
+    const schema = z.object({ pot: entityRef('pot') });
+    const out = await applyEntityRefEnums(schema, z.toJSONSchema(schema) as Record<string, unknown>);
+    const node = (out.properties as Record<string, Record<string, unknown>>).pot;
+    expect(node.enum).toBeUndefined();
+    expect(node.anyOf).toBeUndefined();
   });
 });
