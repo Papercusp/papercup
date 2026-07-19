@@ -45,6 +45,13 @@ test('no budgetUsd → the step REFUSES (unattended-spend guard), pipeline still
     runBattery: async () => {
       battery += 1;
     },
+    // EI-13049 paging fires on a 'refused' outcome — without this mock the
+    // default notifyOutcome hits the REAL notifyAttention → dispatchPush →
+    // sendFcm, making a genuine outbound FCM call in a unit test (a 404
+    // NotRegistered response logs via console.warn, which fails the suite
+    // under vitest-fail-on-console). Every sibling test that can reach a
+    // paging outcome (gen-loop.test.ts) injects this same mock.
+    notifyOutcome: async () => {},
   });
   const out = await run({}); // no budgetUsd
   assert.equal(out.outcome, 'done');
