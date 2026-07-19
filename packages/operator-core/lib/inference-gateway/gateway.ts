@@ -68,6 +68,13 @@ import {
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy } from './egress-dispatcher';
+import {
+  rewriteAnthropicCacheBody,
+  rewriteOpenAiCacheBody,
+  shardedCacheKey,
+  type AnthropicCacheStats,
+  type OpenAiCacheStats,
+} from './cache-policy';
 import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
 import {
   CLIENT_CIRCUIT_ZERO,
@@ -570,6 +577,17 @@ export function normalizeGatewayRequestBody(bodyBuf: Buffer): {
     return { body: bodyBuf, model: null, context1m: false };
   }
 }
+/** Prompt-cache policy kill-switches (gateway-cache-plane-shared-prefix-ttl-2026-07-19 D-002).
+ *  Read per-request so a flip takes effect on the next request, not the next restart. */
+const cachePolicyOn = () => process.env.PAPERCUSP_CACHE_POLICY !== '0';
+const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT !== '0';
+/** How many `prompt_cache_key` buckets the codex traffic is spread across. OpenAI degrades a
+ *  single key past ~15 req/min; fewer buckets = more cross-session sharing. */
+const codexCacheShards = () => {
+  const n = Number(process.env.PAPERCUSP_CACHE_CODEX_SHARDS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 4;
+};
+
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
 const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'x-papercusp-account-pin', 'x-papercusp-owner', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
@@ -1836,6 +1854,42 @@ export function createInferenceGateway(deps: GatewayDeps) {
       : null;
 
   let totalRequests = 0;
+  /**
+   * Prompt-cache policy telemetry (P-002). The measurement of "what breakpoint layout does the
+   * fleet actually send?" happens HERE, as a byproduct of the rewrite, instead of via one-off
+   * body capture: `breakpointHistogram[n]` counts requests that arrived with n markers, so the
+   * headroom for the shared tools-span breakpoint is observable in /stats at any time.
+   */
+  const cachePolicyStats = {
+    anthropicRequests: 0,
+    ttlUpgraded: 0,
+    toolsBreakpointInjected: 0,
+    toolsBreakpointSkippedNoBudget: 0,
+    breakpointHistogram: [0, 0, 0, 0, 0] as number[],
+    codexRequests: 0,
+    codexLegacyRetention: 0,
+    codexModernTtl: 0,
+    codexCacheKeySet: 0,
+  };
+  const cachePolicyEnabled = cachePolicyOn();
+  const cacheToolsBreakpointEnabled = cacheToolsBreakpointOn();
+  function recordCachePolicy(provider: 'anthropic' | 'codex', stats: AnthropicCacheStats | OpenAiCacheStats): void {
+    if (provider === 'anthropic') {
+      const s = stats as AnthropicCacheStats;
+      cachePolicyStats.anthropicRequests++;
+      cachePolicyStats.ttlUpgraded += s.ttlUpgraded;
+      if (s.toolsBreakpointInjected) cachePolicyStats.toolsBreakpointInjected++;
+      if (s.toolsBreakpointSkippedNoBudget) cachePolicyStats.toolsBreakpointSkippedNoBudget++;
+      const idx = Math.min(s.breakpointsBefore, cachePolicyStats.breakpointHistogram.length - 1);
+      cachePolicyStats.breakpointHistogram[idx]++;
+    } else {
+      const s = stats as OpenAiCacheStats;
+      cachePolicyStats.codexRequests++;
+      if (s.retentionSet) cachePolicyStats.codexLegacyRetention++;
+      if (s.ttlSet) cachePolicyStats.codexModernTtl++;
+      if (s.cacheKeySet) cachePolicyStats.codexCacheKeySet++;
+    }
+  }
   let upstream429 = 0;
   let queued429 = 0;
   let shed429 = 0; // load-shed: 429s returned because the admission queue was at maxQueued (backlog cap)
@@ -2163,6 +2217,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       processStartedAt,
       processUptimeMs: Math.max(0, now - processStartedAt),
       totalRequests,
+      // P-002: the live breakpoint-layout measurement (see recordCachePolicy).
+      cachePolicy: { enabled: cachePolicyEnabled, toolsBreakpoint: cacheToolsBreakpointEnabled, ...cachePolicyStats },
       inFlight: admission.running,
       queueDepth: admission.queued,
       healthyAccounts,
@@ -2516,6 +2572,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const normalized = normalizeGatewayRequestBody(bodyBuf);
       bodyBuf = normalized.body;
       context1m = normalized.context1m;
+      // Prompt-cache policy (gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-001/P-003):
+      // extended ttl on every ephemeral marker + the org-shared tools-span breakpoint. Pure
+      // request-body rewrite, idempotent, budget-safe; kill-switch PAPERCUSP_CACHE_POLICY=0.
+      if (cachePolicyEnabled) {
+        const cached = rewriteAnthropicCacheBody(bodyBuf, { injectToolsBreakpoint: cacheToolsBreakpointEnabled });
+        bodyBuf = cached.body;
+        if (cached.stats) recordCachePolicy('anthropic', cached.stats);
+      }
       try {
         const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string; stream?: boolean };
         if (typeof j.model === 'string') model = j.model;
@@ -4144,6 +4208,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // generous headers deadline. Without this a stalled codex STREAM squatted its admission slot for the full
     // GENEROUS upstreamHeadersTimeoutMs (no stream TTFB) and, once headers arrived, had NO body-idle guard —
     // the same slot-squat / connection-leak class the Claude path was hardened against.
+    // Prompt-cache policy (P-005/P-008), model-generation-aware: legacy models take
+    // prompt_cache_retention:'24h' (writes free there), gpt-5.6+ takes prompt_cache_options.ttl
+    // (writes cost 1.25×). The sharded prompt_cache_key steers same-variant sessions onto one
+    // cache shard while respecting OpenAI's ~15 req/min-per-key ceiling. Keyed by the pinned
+    // account id, which is this session's stable routing identity.
+    if (cachePolicyEnabled && bodyBuf.length) {
+      const owner = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
+      const shardSeed = owner || (cli ? cli.accountId : active.accountId);
+      const cached = rewriteOpenAiCacheBody(bodyBuf, {
+        cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
+      });
+      bodyBuf = cached.body;
+      if (cached.stats) recordCachePolicy('codex', cached.stats);
+    }
     let isStream = false;
     if (bodyBuf.length) {
       try {

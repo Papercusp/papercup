@@ -20,6 +20,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { probeBgHostTicker } from '../service-health';
 import { activeWorkspaceId } from '../workspace-registry';
+import { getOperatorCache } from '../cache/instance';
 import { LOOP_WAKE_SOURCE_PREFIX } from '../agent-tools/coordination/inbox-wake';
 import {
   countPlaceableFrontier,
@@ -388,7 +389,48 @@ function toMs(v: string | Date): number {
   return v instanceof Date ? v.getTime() : new Date(v).getTime();
 }
 
+/** Serve-stale-and-revalidate the journal scan after this long. The window it
+ *  summarises is 12–24h, so minutes of staleness are meaningless — but a page
+ *  load paying the scan is not. */
+export const BG_HOST_JOURNAL_SOFT_TTL_MS = 5 * 60_000;
+/** Force a blocking re-scan after this long. */
+export const BG_HOST_JOURNAL_HARD_TTL_MS = 30 * 60_000;
+/** Invalidation tag, so a writer can force an eager refresh via the cache ECA. */
+export const BG_HOST_JOURNAL_CACHE_TAG = 'bg-host-journal';
+
+/**
+ * Cached front door for {@link readBgHostJournalUncached}.
+ *
+ * WHY (WI-5454 follow-up, measured 2026-07-19): this read is HOST-GLOBAL — it takes
+ * only `windowHours`, never a pot slug — but it sat inside `readPotSoakReport`'s
+ * per-pot fan-out. With ~12 hives that meant ~24 concurrent `journalctl` scans of a
+ * 1.2GB journal per Learnings tab load, for byte-identical results: `learning.soakReport`
+ * measured 27.3s and timed out the panel, and because the sync batch endpoint resolves
+ * with `Promise.all` it held every OTHER panel's response (rubrics et al) behind it.
+ *
+ * The shared operator cache fixes both axes at this one seam, with no caller changes:
+ *   - SINGLE-FLIGHT collapses the concurrent per-pot fan-out to ONE scan;
+ *   - the TTL stops a 12–24h rolling window being recomputed on every page load.
+ * A cache failure falls through to a direct read — never a hard dependency.
+ */
 async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetrics> {
+  try {
+    return await getOperatorCache().getOrSet(
+      activeWorkspaceId(),
+      `bg-host-journal:${windowHours}`,
+      () => readBgHostJournalUncached(windowHours),
+      {
+        softTtlMs: BG_HOST_JOURNAL_SOFT_TTL_MS,
+        hardTtlMs: BG_HOST_JOURNAL_HARD_TTL_MS,
+        tags: [BG_HOST_JOURNAL_CACHE_TAG],
+      },
+    );
+  } catch {
+    return readBgHostJournalUncached(windowHours);
+  }
+}
+
+export async function readBgHostJournalUncached(windowHours: number): Promise<BgHostJournalMetrics> {
   const since = `${windowHours} hours ago`;
   // --grep server-side so only candidate lines cross the pipe (~3KB, not ~400MB).
   const base = ['--user', '--since', since, '--no-pager', '--case-sensitive=false'];
@@ -408,7 +450,16 @@ async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetr
         ],
         { maxBuffer },
       ),
-      execFileAsync('journalctl', [...base, '--grep', BG_HOST_OOM_PATTERN], { maxBuffer }),
+      // MUST stay unit-scoped. Without `-u` this walks EVERY unit in the user
+      // journal: measured 25.97s to return 17 bytes on a 1.2GB journal, versus
+      // 7.58s for the unit-scoped scan above. Kernel OOM kills land in the SYSTEM
+      // journal, not `--user`, so the unscoped walk was paying a full-journal scan
+      // for records that cannot appear in it (2026-07-19).
+      execFileAsync(
+        'journalctl',
+        [...base, '-u', 'papercup-bg-host.service', '--grep', BG_HOST_OOM_PATTERN],
+        { maxBuffer },
+      ),
     ]);
     const parsed = parseBgHostUnitJournal(unit.stdout);
     return {

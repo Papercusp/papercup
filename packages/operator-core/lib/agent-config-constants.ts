@@ -440,8 +440,20 @@ export function defaultCompactionLimitForSpec(
   return Math.floor(raw / 1000) * 1000;
 }
 
-/** Clamp a requested compaction limit into [MIN, defaultCompactionLimitForSpec(spec)]. */
-export function clampCompactionLimit(limit: number, spec?: string | null): number {
-  const cap = defaultCompactionLimitForSpec(spec);
+/**
+ * Clamp a requested compaction limit into [MIN, defaultCompactionLimitForSpec(spec, opts)].
+ *
+ * `opts.fleetMember` applies the leaner fleet-member ceiling (300k vs a leader's
+ * 400k) — pass it wherever the requester's fleet role is known, so an explicit
+ * request cannot exceed the cap its role is governed by
+ * (per-member-declarative-launch-specs P-005). Omitted ⇒ the leader/solo ceiling,
+ * which is the pre-existing behavior for every caller that has no role context.
+ */
+export function clampCompactionLimit(
+  limit: number,
+  spec?: string | null,
+  opts?: { fleetMember?: boolean },
+): number {
+  const cap = defaultCompactionLimitForSpec(spec, opts);
   return Math.min(Math.max(Math.floor(limit), MIN_COMPACTION_LIMIT_TOKENS), cap);
 }

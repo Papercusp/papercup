@@ -361,6 +361,43 @@ export function foldMemberSpec(
   };
 }
 
+/** Reasoning-effort tails psu recognizes on a `<model>:<effort>` spec (psu-launcher
+ *  validateModelSpec / modelArgsFor). Anything else after a `:` is part of the model
+ *  id itself (bedrock's `…-v2:0`) and must never be mistaken for an effort. */
+const LAUNCH_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/**
+ * Compose the psu `--model` value from a model id + an optional separate effort
+ * (per-member-declarative-launch-specs D-001). A `MemberSpec` names `model` and
+ * `effort` independently — the wire form psu understands is the single suffixed
+ * spec, so they are joined HERE.
+ *
+ * An explicit `effort` REPLACES a recognized effort tail already on the spec
+ * (member > fleet precedence would otherwise be silently lost to the base spec's
+ * suffix). Effort without a model is refused: psu has no standalone effort flag,
+ * so there is nothing to attach it to and it would vanish.
+ */
+export function composeModelSpec(model?: string, effort?: string): string | undefined {
+  if (!effort) return model;
+  if (!model) {
+    throw new Error(
+      `memberLaunchCommand: effort ${JSON.stringify(effort)} needs a model — psu carries effort only as a ` +
+        `\`<model>:<effort>\` spec, so an effort with no model would be dropped. Set model too, or drop effort.`,
+    );
+  }
+  if (!(LAUNCH_EFFORTS as readonly string[]).includes(effort)) {
+    throw new Error(
+      `memberLaunchCommand: unrecognized effort ${JSON.stringify(effort)} — psu accepts ${LAUNCH_EFFORTS.join('|')}.`,
+    );
+  }
+  const colon = model.lastIndexOf(':');
+  const base =
+    colon > 0 && (LAUNCH_EFFORTS as readonly string[]).includes(model.slice(colon + 1).toLowerCase())
+      ? model.slice(0, colon)
+      : model;
+  return `${base}:${effort}`;
+}
+
 /** Shell-quote free-form values that are embedded in the scripted psu command. */
 function quoteLaunchValue(value: string): string {
   return /^[A-Za-z0-9_.:=/+@-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
@@ -392,12 +429,20 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.account) parts.push(`--account=${quoteLaunchValue(opts.account)}`);
   if (opts.workspace) parts.push(`--workspace=${quoteLaunchValue(opts.workspace)}`);
   if (opts.role) parts.push(`--role=${quoteLaunchValue(opts.role)}`);
-  if (opts.model) parts.push(`--model=${quoteLaunchValue(opts.model)}`);
-  if (opts.effort) parts.push(`--effort=${quoteLaunchValue(opts.effort)}`);
-  // NOTE: `--compaction-limit` (opts.compactionLimit) is emitted only once psu-launcher.mjs
-  // parses + seeds it (per-member-declarative-launch-specs P-005 second half). Emitting a
-  // flag psu does not yet accept would hard-fail every member launch, so it is withheld here
-  // until that lands — tracked in the plan; do not emit before then.
+  // Effort rides the MODEL SPEC, not a flag of its own: psu has no `--effort`
+  // (D-001) — an unrecognized flag is WARNED AND DROPPED by parseArgs, so a
+  // separate `--effort=` emission is a silent no-op. psu's modelArgsFor splits a
+  // `<model>:<effort>` tail per backend (claude → `--model X --effort Y`; codex →
+  // `-c model_reasoning_effort`; omp verbatim), so composing it here is the ONE
+  // form every backend honors.
+  const modelSpec = composeModelSpec(opts.model, opts.effort);
+  if (modelSpec) parts.push(`--model=${quoteLaunchValue(modelSpec)}`);
+  // NOTE: `--compaction-limit` (opts.compactionLimit) is NOT a psu flag yet
+  // (per-member-declarative-launch-specs P-005). psu would warn-and-drop it, so it is
+  // withheld here rather than emitted as a silent no-op. The landing design is NOT a
+  // launcher→presence write (that would violate D-006's single seeding point): it is an
+  // explicit per-spawn limit on `spawned_agents`, which the compaction watchdog's existing
+  // seeding step already resolves ahead of the tier/model default. Do not emit before then.
   if (opts.feature) parts.push(`--feature=${quoteLaunchValue(opts.feature)}`);
   if (opts.launchContext) parts.push(`--launch-context=${quoteLaunchValue(opts.launchContext)}`);
   if (opts.profile) parts.push(`--profile=${quoteLaunchValue(opts.profile)}`);

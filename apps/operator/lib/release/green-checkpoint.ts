@@ -119,6 +119,16 @@ export interface CheckpointDeps {
    *  flag-gated (a no-op `pass` unless PAPERCUSP_DELTA_GATE=1) so existing stubs
    *  need not provide it and the default deploy behaviour is unchanged. */
   deltaGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  /** EI-11118 (cupboard-public-release P-009 durable fix): the Cupboard prod-
+   *  hygiene gate. Runs post-runGreen / pre-advance on a GREEN candidate: scans
+   *  the LIVE prod Cupboard storefront for E2E/smoke test-junk rows (the
+   *  psu-fed-e2e-* / cupboard-verify-smoke / octocat-etc. pattern purged once in
+   *  P-009) and WARNs (default — still advance) or BLOCKs (only when the owner
+   *  armed block-mode) on a re-accumulation. Optional; default-ON unless
+   *  PAPERCUSP_CUPBOARD_HYGIENE_GATE=0 (see cupboard-hygiene-gate.ts for why this
+   *  one gate defaults on, unlike perf/delta-gate) — existing stubs that omit it
+   *  behave exactly as before (no call site fires without the dep). */
+  cupboardHygieneGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
   /** P-016 (release-pipeline-resilience-2026-06-09 D-010): the commit shas between
    *  `from` (exclusive) and `to` (inclusive), OLDEST-FIRST, full shas — the batch the
    *  green-checkpoint is gating. Used by the longest-green-PREFIX salvage to know which
@@ -188,7 +198,7 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'delta-held' | 'skipped-locked';
+  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'delta-held' | 'cupboard-hygiene-held' | 'skipped-locked';
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -1886,6 +1896,30 @@ export async function runGreenCheckpoint(
     }
   }
 
+  // EI-11118 (P-009 durable fix): the Cupboard prod-hygiene gate. Scans the live
+  // prod storefront for E2E/smoke test-junk (default-WARN — surface + still
+  // advance; BLOCK only when the owner armed block-mode), so a re-accumulation
+  // of the P-009 junk pattern is visible at every green deploy instead of
+  // silently piling up until the next manual sweep.
+  const cupboardHygiene = await deps.cupboardHygieneGate?.(candidate).catch(() => undefined);
+  if (cupboardHygiene && cupboardHygiene.action !== 'pass') {
+    deps.log(cupboardHygiene.summary);
+    await deps.broadcast(cupboardHygiene.summary).catch(() => {});
+    if (cupboardHygiene.action === 'block') {
+      await deps
+        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} cupboard prod storefront polluted`, cupboardHygiene.summary)
+        .catch(() => {});
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: true,
+        reason: 'cupboard-hygiene-held',
+        summary: cupboardHygiene.summary,
+      };
+    }
+  }
+
   const adv = await deps.advance(candidate);
   if (adv.advanced && !opts.noPush) {
     await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
@@ -2552,6 +2586,14 @@ export function realCheckpointDeps(
         },
         now: () => Date.now(),
       }),
+    // EI-11118 (P-009 durable fix): the real gate scans the LIVE prod Cupboard
+    // storefront (or PAPERCUSP_CUPBOARD_URL-overridden target). Policy from the
+    // env flags (PAPERCUSP_CUPBOARD_HYGIENE_GATE / _BLOCK). Default-ON warn-only
+    // — see cupboard-hygiene-gate.ts for why this one gate ships enabled.
+    cupboardHygieneGate: async (candidate) => {
+      const { runCupboardHygieneGate, cupboardHygienePolicyFromEnv } = await import('./cupboard-hygiene-gate');
+      return runCupboardHygieneGate(cupboardHygienePolicyFromEnv(), candidate);
+    },
     log,
   };
 }

@@ -2467,8 +2467,67 @@ export function accountRoutingMode(value) {
  * it to clear every higher-precedence Claude credential before restoring the
  * machine's default login. */
 export const ACCOUNT_ROUTING_MODE_ENV = 'PAPERCUSP_ACCOUNT_ROUTING_MODE';
+
+/** The transparent prompt-cache proxy (papercup-cache-proxy.service, P-006). Default-account
+ *  sessions point ANTHROPIC_BASE_URL here so the cache-policy body rewrite (extended ttl + the
+ *  org-shared tools-span breakpoint) covers them too — they are the LARGEST sharing cohort, and
+ *  they deliberately skip the inference gateway, which is the only other rewrite point.
+ *  This is NOT an account change: the proxy forwards this session's own credentials verbatim. */
+export const CACHE_PROXY_URL = () =>
+  process.env.PAPERCUSP_CACHE_PROXY_URL || `http://127.0.0.1:${Number(process.env.PAPERCUSP_CACHE_PROXY_PORT) || 9073}`;
+
+/** Spawn-time liveness gate for the cache proxy, memoized per launcher process.
+ *  A DOWN proxy must never block or break a launch: we simply omit ANTHROPIC_BASE_URL and the
+ *  session talks to Anthropic directly, exactly as it does today (degrade, never fail). The probe
+ *  hits the proxy's LOCAL health route, so it costs nothing upstream. */
+let _cacheProxyUp = null;
+/** Test seam: force the probe result (and reset the memo) so unit tests stay deterministic
+ *  regardless of whether this machine happens to be running the proxy. */
+export function __setCacheProxyReachable(v) {
+  _cacheProxyUp = v;
+}
+export function cacheProxyReachable() {
+  if (_cacheProxyUp !== null) return _cacheProxyUp;
+  if (process.env.PAPERCUSP_CACHE_PROXY_ROUTE === '1') return (_cacheProxyUp = true);
+  if (process.env.PAPERCUSP_CACHE_PROXY_ROUTE === '0') return (_cacheProxyUp = false);
+  // Under vitest the launcher's pure-function contracts are asserted directly; a live probe
+  // would make them depend on this machine's running services. Opt in explicitly instead.
+  if (process.env.VITEST) return (_cacheProxyUp = false);
+  try {
+    const out = execFileSync(
+      'curl',
+      ['-s', '--max-time', '2', '-o', '/dev/null', '-w', '%{http_code}', `${CACHE_PROXY_URL()}/__cache_proxy_health`],
+      { encoding: 'utf8', timeout: 4000 },
+    );
+    _cacheProxyUp = String(out).trim() === '200';
+  } catch {
+    _cacheProxyUp = false;
+  }
+  return _cacheProxyUp;
+}
+
+/** Is this base URL our transparent cache proxy (as opposed to an inference-gateway route)?
+ *  The distinction matters because the default-account enforcement below CLEARS a base URL —
+ *  it exists to stop an inherited GATEWAY route from silently overriding the system login.
+ *  The cache proxy is the opposite: it carries the system login through untouched, so it must
+ *  survive that clearing. Compared structurally (host+port), not by string, so an equivalent
+ *  spelling (localhost vs 127.0.0.1, trailing slash) still matches. */
+export function isCacheProxyUrl(url) {
+  if (!url) return false;
+  try {
+    const a = new URL(String(url));
+    const b = new URL(CACHE_PROXY_URL());
+    const localhost = (h) => (h === 'localhost' || h === '127.0.0.1' || h === '::1' ? '127.0.0.1' : h);
+    return localhost(a.hostname) === localhost(b.hostname) && (a.port || '80') === (b.port || '80');
+  } catch {
+    return false;
+  }
+}
+
 export function defaultAccountEnv() {
-  return { [ACCOUNT_ROUTING_MODE_ENV]: 'default' };
+  const env = { [ACCOUNT_ROUTING_MODE_ENV]: 'default' };
+  if (cacheProxyReachable()) env.ANTHROPIC_BASE_URL = CACHE_PROXY_URL();
+  return env;
 }
 
 /**
@@ -2707,6 +2766,10 @@ export function defaultClaudeAuthSettings(routeEnv = {}) {
     for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']) {
       if (routeEnv?.[key]) routedEnv[key] = routeEnv[key];
     }
+  } else if (isCacheProxyUrl(routeEnv?.ANTHROPIC_BASE_URL)) {
+    // P-006: the cache proxy is a same-credential passthrough, not a route override — keep it
+    // so this settings overlay (which outranks project/user settings) doesn't blank it back out.
+    routedEnv.ANTHROPIC_BASE_URL = routeEnv.ANTHROPIC_BASE_URL;
   }
   return {
     apiKeyHelper: '',
@@ -2747,6 +2810,11 @@ export function applyDefaultClaudeAuthSettingsArgs(wrapperBin, args, env) {
 export function enforceDefaultClaudeAccount(wrapperBin, env) {
   if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return env;
   if (env[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return env;
+  // P-006: preserve a cache-proxy base URL across the credential purge below. The purge targets
+  // inherited GATEWAY/API credentials that would outrank the system login; the cache proxy
+  // forwards that same system login verbatim, so clearing it would only cost us the cache
+  // policy. Re-applied after the loop so the key list stays the single source of truth.
+  const keepCacheProxy = isCacheProxyUrl(env.ANTHROPIC_BASE_URL) ? env.ANTHROPIC_BASE_URL : null;
   for (const key of [
     ...CLAUDE_DEFAULT_AUTH_ENV_KEYS,
     'PAPERCUSP_ANTHROPIC_URL',
@@ -2756,6 +2824,7 @@ export function enforceDefaultClaudeAccount(wrapperBin, env) {
   ]) {
     delete env[key];
   }
+  if (keepCacheProxy) env.ANTHROPIC_BASE_URL = keepCacheProxy;
   return env;
 }
 
@@ -4297,6 +4366,8 @@ export function persistDefaultClaudeAuthSettings({
       for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']) {
         if (env[key]) settingsEnv[key] = env[key];
       }
+    } else if (isCacheProxyUrl(env.ANTHROPIC_BASE_URL)) {
+      settingsEnv.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL; // P-006, same rationale as above
     }
     const next = { ...current, apiKeyHelper: '', env: settingsEnv };
     const tmp = `${path}.${process.pid}.tmp`;
@@ -5181,6 +5252,16 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   // tracked row's coordOwnerId. Only when it exists — sessions launched before
   // EI-155 used the shared store and want no override.
   if (session.agent === 'claude') {
+    // context-trimming parity for RESUMES (P-006 follow-on): claude silently disables tool
+    // search whenever ANTHROPIC_BASE_URL is set (it can't assume a proxy forwards
+    // tool_reference blocks — both of ours do, they are pass-throughs), so a routed session
+    // boots with EVERY schema inline (~106k vs ~60k measured, context-trimming-tiers P-031).
+    // The FRESH path forces it back on; the resume path never did, so every resumed
+    // gateway-routed session has been silently paying that. Force it here too — otherwise
+    // routing default-account sessions through the cache proxy would spread the same defect.
+    if (session.agent === 'claude' && env.ANTHROPIC_BASE_URL && env.ENABLE_TOOL_SEARCH === undefined) {
+      env.ENABLE_TOOL_SEARCH = 'true';
+    }
     const dir = session.configDir
       || (session.coordOwnerId ? sessionClaudeConfigDir(session.coordOwnerId) : null);
     if (dir && existsSync(dir)) {
@@ -5201,7 +5282,11 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
       // forked the symlink into a now-stale real file made a default-account
       // resume "launch logged out". Re-point it at the global CLI login before
       // spawn. Skipped for a gateway-pinned account (auths via ANTHROPIC_BASE_URL).
-      if (!env.ANTHROPIC_BASE_URL) rehealResumeCredentials(dir);
+      // P-006: the CACHE PROXY also sets ANTHROPIC_BASE_URL but carries the SYSTEM login
+      // through verbatim — it is precisely the "default account" case this reheal exists for,
+      // so it must NOT be treated as a gateway route here (skipping it would resurrect the
+      // "default-account resume launches logged out" bug for every default session).
+      if (!env.ANTHROPIC_BASE_URL || isCacheProxyUrl(env.ANTHROPIC_BASE_URL)) rehealResumeCredentials(dir);
     }
   }
   // codex resumes from its per-session CODEX_HOME — derived from the session id

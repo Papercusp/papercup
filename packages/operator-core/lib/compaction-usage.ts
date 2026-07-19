@@ -723,6 +723,56 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
 }
 
 /**
+ * The EXPLICIT compaction limit a session was launched with — `psu
+ * --compaction-limit=<tokens>`, read back off the same recorded launch argv
+ * `resolveModelSpecForOwner` uses (per-member-declarative-launch-specs P-005).
+ *
+ * This is the per-member lever a fleet leader sets declaratively via
+ * `MemberSpec.compactionLimit`. It rides the recorded argv rather than a column
+ * of its own for two reasons: a psu session has NO `spawned_agents` row (that
+ * table tracks hive/blueprint spawns — bootstrap-su never writes it), and
+ * `adv_sessions.launch_argv` is already the per-session source of truth this
+ * seeding path consults. So the value survives death/respawn exactly as the
+ * model spec does, with no new schema.
+ *
+ * The caller CLAMPS: this returns the raw request, which is a ceiling-free number
+ * until `clampCompactionLimit` bounds it by role + model window. null = the launch
+ * named no limit (the overwhelmingly common case — fall through to the default).
+ */
+export async function resolveLaunchCompactionLimitForOwner(ownerId: string): Promise<number | null> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const rows = await getOrgPg().sql<{ launch_argv: unknown }[]>`
+      SELECT launch_argv
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId} AND launch_argv IS NOT NULL
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    const argv = rows[0]?.launch_argv;
+    if (!Array.isArray(argv)) return null;
+    // Both wire forms, mirroring the --model scan above: psu emits the `=` form,
+    // but a hand-run launch may use the space form.
+    for (let i = 0; i < argv.length; i++) {
+      const a = argv[i];
+      if (typeof a !== 'string') continue;
+      let raw: string | null = null;
+      if (a.startsWith('--compaction-limit=')) raw = a.slice('--compaction-limit='.length).trim();
+      else if (a === '--compaction-limit' && typeof argv[i + 1] === 'string') raw = (argv[i + 1] as string).trim();
+      if (!raw) continue;
+      const n = Number(raw);
+      // A malformed value is DROPPED, not defaulted to something arbitrary — psu
+      // already rejects it at parse time, so anything unparseable here is a
+      // hand-edited argv, and falling through to the model default is the safe read.
+      if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Best-effort MODEL SPEC (`<id>[:effort]`, possibly carrying the `[1m]` window
  * marker) for a session owner — the window signal `defaultCompactionLimitForSpec`
  * keys on (context-trimming-tiers P-002/P-006).

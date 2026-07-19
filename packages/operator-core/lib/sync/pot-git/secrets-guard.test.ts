@@ -6,6 +6,8 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/secrets-guard.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   scanTextForSecrets,
@@ -107,5 +109,24 @@ describe('secrets-guard rules', () => {
     expect(hasSecrets([{ path: fixturePath, content: loaded }])).toBe(false);
     // Same content at a non-fixture path still flags — the exemption is path-scoped.
     expect(scanForSecrets([{ path: 'src/config.ts', content: loaded }]).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('BLOCKING publish paths use the exemption-aware entrypoint, never the raw primitive', () => {
+    // The trap this guards (P-402 / EI-13924, 2026-07-19): github-egress called
+    // the per-line `scanTextForSecrets` directly, so it never applied
+    // isFixtureFile. The scanner's own fixture blobs flagged, egress refused
+    // every tick, and origin/staging froze for hours — unrecoverable by any
+    // re-commit, because the offending blob is permanently inside the pushed
+    // range. Only a scanner-code change can clear it, so the fix must be
+    // structural: a path that BLOCKS a publish must scan via `scanForSecrets`.
+    // (content-op-egress-guard is deliberately excluded — it REDACTS lines
+    // rather than blocking, so it cannot deadlock a publish plane.)
+    const blockingPublishPaths = ['github-egress.ts', 'publish-guard.ts', 'foreign-mirror-quarantine.ts'];
+    for (const file of blockingPublishPaths) {
+      const src = readFileSync(join(__dirname, file), 'utf8');
+      const calls = src.match(/\bscanTextForSecrets\s*\(/g) ?? [];
+      expect(calls, `${file} must not call scanTextForSecrets directly — use scanForSecrets`).toEqual([]);
+      expect(src, `${file} must scan via scanForSecrets`).toMatch(/\bscanForSecrets\s*\(/);
+    }
   });
 });

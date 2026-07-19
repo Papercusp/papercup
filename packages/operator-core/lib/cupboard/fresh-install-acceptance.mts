@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { papercuspRoot } from '../papercusp-root';
 import { resolveCupboardBaseUrl } from './base-url';
+import { CUPBOARD_TEST_ROW_PATTERN } from './prod-hygiene';
 import { gitCloneShallow } from './install-io';
 import { installBlueprintFromCupboardCore } from './install-blueprint-core';
 import { installPluginFromCupboardCore } from './install-plugin-core';
@@ -104,12 +105,14 @@ async function main() {
   console.log('## Browse (live prod worker) counts by kind');
   for (const k of KINDS) console.log(`  ${k.padEnd(15)} ${counts[k]}${counts[k] === 0 ? '  (empty → tab MUST hide)' : ''}`);
 
-  const TEST_RE = /psu-fed-e2e|octocat|is-even|hellogitworld|\btest\b|dummy|foobar/i;
+  // EI-11118: shared with the automated release-gate hygiene gate
+  // (cupboard-hygiene-gate.ts) so "what counts as junk" never drifts between
+  // this manual acceptance script and the automated CI check.
   const testRows: string[] = [];
   for (const k of KINDS) {
     for (const r of browseRows[k]) {
       const hay = `${r.title ?? ''} ${r.github_owner ?? ''}/${r.github_name ?? ''} ${r.listing_ref ?? ''}`;
-      if (TEST_RE.test(hay)) testRows.push(`${k}: ${r.title ?? r.id}`);
+      if (CUPBOARD_TEST_ROW_PATTERN.test(hay)) testRows.push(`${k}: ${r.title ?? r.id}`);
     }
   }
   console.log(`\n## Test-row scan: ${testRows.length === 0 ? 'CLEAN — none visible' : 'FOUND ' + testRows.join('; ')}`);

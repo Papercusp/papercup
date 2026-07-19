@@ -45,6 +45,7 @@ import { currentContextTokensForOwner } from "../../../compaction-usage";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
+import { fetchUnansweredDirected } from "../unanswered-directed";
 
 /**
  * SWR backstop for the coord:inbox derive (cache-expensive-tool-reads-2026-06-22 P-008).
@@ -118,6 +119,12 @@ const AMBIENT_CATEGORIES = new Set([
 ]);
 
 const DEFAULT_INBOX_LIMIT = 50;
+
+/** EI-13159: per-recipient cap passed to fetchUnansweredDirected for the
+ *  `unanswered_only` filter — much larger than the fleet-health display cap
+ *  (UNANSWERED_NEWEST_CAP=3) since a single-recipient inbox read wants EVERY
+ *  unanswered msg_id it can filter on, not just the newest few for display. */
+const UNANSWERED_FILTER_CAP = 200;
 
 /** context-trimming-tiers P-012: a trimmed/standard session gets TIGHTER
  *  DEFAULTS (fewer entries, shorter bodies) — explicit `limit`/`max_body_chars`
@@ -306,6 +313,25 @@ export function filterInboxBySender<T extends { from?: unknown }>(
 }
 
 /**
+ * EI-13159: keep only entries whose `msg_id` is in the caller's unanswered-
+ * directed set — the exact set `fleet:assignments`' `unanswered_directed`
+ * counter and `fleet:leader-brief` are built from (unanswered-directed.ts),
+ * so a `coord:inbox { unanswered_only: true }` read can never disagree with
+ * what those surfaces flagged. `undefined`/`null` unansweredMsgIds (the
+ * filter wasn't requested) is a no-op passthrough. Pure — unit-tested without
+ * PG or a live handler.
+ */
+export function filterInboxByUnanswered<T extends { msg_id?: unknown }>(
+  entries: readonly T[],
+  unansweredMsgIds: ReadonlySet<string> | undefined | null,
+): readonly T[] {
+  if (!unansweredMsgIds) return entries;
+  return entries.filter(
+    (e) => typeof e.msg_id === "string" && unansweredMsgIds.has(e.msg_id),
+  );
+}
+
+/**
  * EI-12930: resolve + classify the coord:inbox `from` filter against the SAME roster
  * resolver coord:send uses, so the two verbs cannot DISAGREE on what an ownerId is. The
  * SHORT label rosters/injection lines display (`su-b0fbf`) is what an agent naturally has
@@ -335,7 +361,7 @@ export function classifyInboxFromFilter(
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses, and the per-sync doc-freshness RE-VERIFY digest) are excluded by default — pass include_ambient to see them. Repeated categorized system broadcasts collapse to one row with `repeat_count` + `first_seen_ts`; a stale severe-event alarm whose condition later cleared carries `resolved:true` + `resolved_at` — do not investigate a resolved condition. `since_ts` filters strictly later than the given ISO timestamp; `kinds` narrows to specific entry kinds. CAUTION (WI-1600 since_ts gap): in a tail-poll, never seed since_ts to wall-clock now/poll-start — anything that landed earlier stays invisible to every later poll. Read once unfiltered, then advance the cursor to that read's `summary.newest_ts`; or skip polling via the push-based `coord:await-inbox`.",
+    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses, and the per-sync doc-freshness RE-VERIFY digest) are excluded by default — pass include_ambient to see them. Repeated categorized system broadcasts collapse to one row with `repeat_count` + `first_seen_ts`; a stale severe-event alarm whose condition later cleared carries `resolved:true` + `resolved_at` — do not investigate a resolved condition. `since_ts` filters strictly later than the given ISO timestamp; `kinds` narrows to specific entry kinds. `unanswered_only` (EI-13159) narrows to exactly the directed messages fleet:assignments'/fleet:leader-brief's `unanswered_directed` counter flagged (the SAME primitive, so the two can never disagree) — reach for it the moment that counter is nonzero instead of fetching + eyeballing a broad inbox to find the flagged message. CAUTION (WI-1600 since_ts gap): in a tail-poll, never seed since_ts to wall-clock now/poll-start — anything that landed earlier stays invisible to every later poll. Read once unfiltered, then advance the cursor to that read's `summary.newest_ts`; or skip polling via the push-based `coord:await-inbox`.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you.",
     notWhen:
@@ -381,6 +407,12 @@ export default defineTool({
       .optional()
       .describe(
         "Truncate each entry's body to this many chars in the result (default dynamically budgets to roughly 15KB across entries) so a default read never overflows the agent result cap; truncated entries carry body_truncated:true and the full body is reachable via coord:thread. 0 = no truncation.",
+      ),
+    unanswered_only: z
+      .boolean()
+      .optional()
+      .describe(
+        "EI-13159: narrow to exactly the DIRECTED messages still awaiting your reply — the same unanswered-directed definition fleet:assignments' `unanswered_directed` counter and fleet:leader-brief use (a real correspondent's message, sender explicitly expects a reply, no ack/reply from you yet; excludes broadcasts, machine chatter, and reply-to-your-own-reply ping-pong). Applied after the ambient/intent/sender filters; summary.total reflects it. A lookup failure returns zero entries (never silently falls back to the unfiltered inbox) and sets summary.unanswered_lookup_failed:true.",
       ),
   }),
   async handler(args, ctx) {
@@ -473,7 +505,30 @@ export default defineTool({
     // never collides with the owner-keyed derive cache; it scopes the returned window + the
     // summary counts (byKind/total below run on `filtered`). `all` stays unfiltered for the
     // resolution scan (annotateResolvedConditions).
-    const filtered = filterInboxBySender(intentFiltered, resolvedFrom);
+    const bySender = filterInboxBySender(intentFiltered, resolvedFrom);
+
+    // EI-13159: unanswered_only — narrow to exactly the msg_ids fleet:assignments'
+    // `unanswered_directed` counter / fleet:leader-brief flag, via the SAME shared
+    // primitive (unanswered-directed.ts) so coord:inbox can never disagree with what
+    // those surfaces already told the caller was outstanding. Fail-SAFE, not fail-open:
+    // a lookup failure filters to NOTHING (never silently falls back to the unfiltered
+    // inbox, which would look like "unanswered_only had no effect" and hide the failure).
+    let unansweredMsgIds: Set<string> | undefined;
+    let unansweredLookupFailed = false;
+    if (args.unanswered_only) {
+      try {
+        const unansweredMap = await fetchUnansweredDirected([identity.ownerId], {
+          perRecipientCap: UNANSWERED_FILTER_CAP,
+        });
+        unansweredMsgIds = new Set(
+          (unansweredMap.get(identity.ownerId)?.newest ?? []).map((e) => e.msgId),
+        );
+      } catch {
+        unansweredMsgIds = new Set();
+        unansweredLookupFailed = true;
+      }
+    }
+    const filtered = filterInboxByUnanswered(bySender, unansweredMsgIds);
 
     // EI-6144: fold repeated categorized broadcasts into one ×N row BEFORE the
     // limit slice, so the returned window carries distinct signal instead of a
@@ -514,6 +569,12 @@ export default defineTool({
       ...(args.from
         ? { from_resolved: resolvedFrom, from_unmatched: fromUnmatched }
         : {}),
+      // EI-13159: echo whether the unanswered_only filter ran and whether its
+      // lookup succeeded — a lookup failure filters to zero entries, and this
+      // flag is what distinguishes that from "you genuinely have none".
+      ...(args.unanswered_only
+        ? { unanswered_only: true, unanswered_lookup_failed: unansweredLookupFailed }
+        : {}),
       by_kind: byKind,
       oldest_returned_ts: entries.length ? (entries[0]?.ts ?? null) : null,
       newest_ts: entries.length
@@ -530,9 +591,9 @@ export default defineTool({
     let injectionEntries = entries;
     if (!keepIntents && intentExcluded > 0) {
       const withIntents = coalesceRepeatedBroadcasts(
-        filterInboxBySender(
-          ambientFiltered,
-          resolvedFrom,
+        filterInboxByUnanswered(
+          filterInboxBySender(ambientFiltered, resolvedFrom),
+          unansweredMsgIds,
         ) as unknown as Array<Record<string, unknown>>,
       );
       injectionEntries = (

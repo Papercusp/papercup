@@ -1,0 +1,187 @@
+/**
+ * Transparent Anthropic prompt-cache proxy
+ * (gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-006, D-005).
+ *
+ * WHY: the prompt-cache rewrites (extended ttl + the org-shared tools-span breakpoint) can only
+ * be applied where we control the REQUEST BODY. The inference gateway is that point for
+ * pool-routed sessions — but the fleet launches almost everything with `--account=default`,
+ * which deliberately SKIPS the gateway and uses the machine's own Claude credential. Those
+ * sessions are also the LARGEST single sharing cohort (one org = one cache pool), so leaving
+ * them uncovered would forfeit most of the win.
+ *
+ * WHAT THIS IS NOT: an account substitution. This proxy forwards the client's ORIGINAL
+ * credentials verbatim (Authorization / x-api-key, anthropic-version, anthropic-beta, …). The
+ * upstream sees the same identity, the same org, the same billing as a direct call. The ONLY
+ * difference is the body rewrite. [owner:Avi 2026-07-19 "cant we also make the default-account
+ * take advantage of these features too... the caching is org scoped"]
+ *
+ * WHY NOT REUSE THE GATEWAY: the gateway owns account-pool selection and 503s when no pool
+ * account is available. Default-account traffic must never inherit that failure mode — it has
+ * its own working credential and must keep working when the pool is empty, throttled, or down.
+ * Hence a separate, deliberately minimal process, modeled on the mcp-proxy pattern that has
+ * proven deploy-independent in production (its own systemd unit + liveness watchdog, so a
+ * :3070 deploy never restarts it).
+ *
+ * DESIGN RULES (reliability first — this sits in the path of every inference request):
+ *  - NO retries, NO buffering of responses: bodies stream straight through (SSE included), so
+ *    latency and streaming semantics are unchanged. Claude Code owns its own retry policy.
+ *  - NO timeouts imposed on upstream: an inference request legitimately runs for minutes.
+ *  - A rewrite failure is never fatal — the original bytes forward unchanged.
+ *  - A connect failure surfaces as 502 so the client's own retry handles it.
+ */
+import http from 'node:http';
+import https from 'node:https';
+import { rewriteAnthropicCacheBody } from '@papercusp/operator-core/lib/inference-gateway/cache-policy';
+
+export interface CacheProxyOptions {
+  listenPort: number;
+  listenHost?: string;
+  /** Upstream host — api.anthropic.com in production; a local stub in tests. */
+  upstreamHost?: string;
+  upstreamPort?: number;
+  /** Use plain HTTP upstream (tests only; production is TLS). */
+  upstreamInsecure?: boolean;
+  log?: (msg: string) => void;
+}
+
+/** Headers we must not copy verbatim: hop-by-hop + framing we recompute. `host` is re-derived
+ *  so TLS SNI and the upstream vhost match; `content-length` changes when we rewrite. */
+const STRIP_REQUEST = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'keep-alive', 'proxy-connection']);
+const STRIP_RESPONSE = new Set(['connection', 'transfer-encoding', 'keep-alive']);
+
+/** Only `/v1/messages` carries a cacheable prompt; everything else (models, count_tokens,
+ *  batches) forwards untouched. */
+export function isCacheableAnthropicPath(url: string): boolean {
+  return url.startsWith('/v1/messages') && !url.startsWith('/v1/messages/batches') && !url.includes('count_tokens');
+}
+
+function readBody(req: http.IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+export interface CacheProxyStats {
+  requests: number;
+  rewritten: number;
+  ttlUpgraded: number;
+  toolsBreakpointInjected: number;
+  toolsBreakpointSkippedNoBudget: number;
+  upstreamErrors: number;
+}
+
+export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats: CacheProxyStats } {
+  const log = opts.log ?? ((s: string) => console.log(`[cache-proxy] ${s}`));
+  const upstreamHost = opts.upstreamHost ?? 'api.anthropic.com';
+  const upstreamPort = opts.upstreamPort ?? (opts.upstreamInsecure ? 80 : 443);
+  const transport = opts.upstreamInsecure ? http : https;
+  const stats: CacheProxyStats = {
+    requests: 0,
+    rewritten: 0,
+    ttlUpgraded: 0,
+    toolsBreakpointInjected: 0,
+    toolsBreakpointSkippedNoBudget: 0,
+    upstreamErrors: 0,
+  };
+
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      const url = req.url ?? '/';
+
+      // Liveness endpoint for the launcher's spawn-time check + the watchdog. Answered
+      // LOCALLY (never forwarded) so a probe costs nothing upstream and stays instant.
+      if (url === '/__cache_proxy_health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, upstream: upstreamHost, stats }));
+        return;
+      }
+
+      stats.requests++;
+      let body: Buffer;
+      try {
+        body = await readBody(req);
+      } catch {
+        if (!res.headersSent) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'cache-proxy: request body read failed' } }));
+        }
+        return;
+      }
+
+      if (process.env.PAPERCUSP_CACHE_POLICY !== '0' && body.length && isCacheableAnthropicPath(url)) {
+        try {
+          const out = rewriteAnthropicCacheBody(body, {
+            injectToolsBreakpoint: process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT !== '0',
+          });
+          if (out.stats) {
+            if (out.body !== body) stats.rewritten++;
+            stats.ttlUpgraded += out.stats.ttlUpgraded;
+            if (out.stats.toolsBreakpointInjected) stats.toolsBreakpointInjected++;
+            if (out.stats.toolsBreakpointSkippedNoBudget) stats.toolsBreakpointSkippedNoBudget++;
+          }
+          body = out.body;
+        } catch (e) {
+          // A rewrite must never cost a request — forward the original bytes.
+          log(`rewrite skipped (${(e as Error).message})`);
+        }
+      }
+
+      const headers: Record<string, string | string[]> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (v === undefined) continue;
+        if (STRIP_REQUEST.has(k.toLowerCase())) continue;
+        headers[k] = v;
+      }
+      headers['host'] = upstreamHost;
+      headers['content-length'] = String(body.length);
+
+      const ureq = transport.request(
+        { host: upstreamHost, port: upstreamPort, method: req.method, path: url, headers, servername: opts.upstreamInsecure ? undefined : upstreamHost },
+        (ures) => {
+          const out: Record<string, string | string[]> = {};
+          for (const [k, v] of Object.entries(ures.headers)) {
+            if (v === undefined) continue;
+            if (STRIP_RESPONSE.has(k.toLowerCase())) continue;
+            out[k] = v;
+          }
+          res.writeHead(ures.statusCode ?? 502, out);
+          ures.pipe(res); // stream straight through — SSE stays chunk-for-chunk
+        },
+      );
+      ureq.on('error', (e) => {
+        stats.upstreamErrors++;
+        log(`upstream error: ${e.message}`);
+        if (!res.headersSent) {
+          res.writeHead(502, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `cache-proxy: upstream unreachable (${e.message})` } }));
+        } else {
+          try { res.destroy(); } catch { /* already torn down */ }
+        }
+      });
+      // A client disconnect must tear down the upstream request too, or a long stream leaks.
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          try { ureq.destroy(); } catch { /* already settled */ }
+        }
+      });
+      ureq.end(body);
+    })();
+  });
+  // Inference requests legitimately run for many minutes — never clip them at the socket.
+  server.timeout = 0;
+  server.headersTimeout = 0;
+  server.requestTimeout = 0;
+  return Object.assign(server, { stats });
+}
+
+export function startCacheProxy(opts: CacheProxyOptions): http.Server {
+  const log = opts.log ?? ((s: string) => console.log(`[cache-proxy] ${s}`));
+  const server = createCacheProxy(opts);
+  server.listen(opts.listenPort, opts.listenHost ?? '127.0.0.1', () => {
+    log(`listening on http://${opts.listenHost ?? '127.0.0.1'}:${opts.listenPort} → https://${opts.upstreamHost ?? 'api.anthropic.com'} (credentials passed through verbatim)`);
+  });
+  return server;
+}

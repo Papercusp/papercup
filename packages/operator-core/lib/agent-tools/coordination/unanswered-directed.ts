@@ -86,10 +86,18 @@ export interface UnansweredDirectedRow {
  * PURE: fold the aggregated SQL rows (one row per recipient with >=1
  * unanswered directed message) into the per-recipient summary map.
  * Unit-testable with hand-built rows — no PG required.
+ *
+ * `cap` bounds how many of each recipient's `newest` entries are kept —
+ * default {@link UNANSWERED_NEWEST_CAP} (the fleet-health display cap). A
+ * caller reading for exactly ONE recipient (e.g. coord:inbox's
+ * `unanswered_only` filter, EI-13159) passes a larger cap so it can recover
+ * every unanswered message's msg_id, not just the newest 3 — `count` was
+ * always exact; only `newest` was ever capped.
  */
 export function rowsToUnansweredMap(
   rows: readonly UnansweredDirectedRow[],
   nowMs: number,
+  cap: number = UNANSWERED_NEWEST_CAP,
 ): Map<string, UnansweredDirectedSummary> {
   const out = new Map<string, UnansweredDirectedSummary>();
   for (const r of rows) {
@@ -101,7 +109,7 @@ export function rowsToUnansweredMap(
     const summaries = r.newest_summary ?? [];
     const timestamps = r.newest_ts_ms ?? [];
     const newest: UnansweredDirectedEntry[] = [];
-    for (let i = 0; i < ids.length && newest.length < UNANSWERED_NEWEST_CAP; i++) {
+    for (let i = 0; i < ids.length && newest.length < cap; i++) {
       const msgId = ids[i];
       const from = froms[i];
       if (!msgId || !from) continue;
@@ -134,14 +142,19 @@ export function rowsToUnansweredMap(
  * fleet-health NICE-TO-HAVE decoration, best-effort like its siblings
  * decorateContextPressure/decorateParkedOn — never worth a slow full-scan
  * fallback).
+ *
+ * `opts.perRecipientCap` overrides {@link UNANSWERED_NEWEST_CAP} for both the
+ * SQL array slice and the fold — pass a larger value for a single-recipient
+ * read that needs every unanswered msg_id (EI-13159), not just the newest 3.
  */
 export async function fetchUnansweredDirected(
   recipientIds: string[],
-  opts: { nowMs?: number; lookbackMs?: number } = {},
+  opts: { nowMs?: number; lookbackMs?: number; perRecipientCap?: number } = {},
 ): Promise<Map<string, UnansweredDirectedSummary>> {
   if (recipientIds.length === 0 || !coordHasPgFastPath()) return new Map();
   const nowMs = opts.nowMs ?? Date.now();
   const sinceMs = nowMs - (opts.lookbackMs ?? UNANSWERED_LOOKBACK_MS);
+  const cap = opts.perRecipientCap ?? UNANSWERED_NEWEST_CAP;
   const sql = coordSql();
   const workspaceId = coordWorkspaceId();
   const rows = await sql<UnansweredDirectedRow[]>`
@@ -205,12 +218,12 @@ export async function fetchUnansweredDirected(
     SELECT recipient,
            count(*) AS cnt,
            min(ts_ms) AS oldest_ts_ms,
-           (array_agg(msg_id ORDER BY ts_ms DESC))[1:${UNANSWERED_NEWEST_CAP}] AS newest_ids,
-           (array_agg(from_id ORDER BY ts_ms DESC))[1:${UNANSWERED_NEWEST_CAP}] AS newest_from,
-           (array_agg(summary ORDER BY ts_ms DESC))[1:${UNANSWERED_NEWEST_CAP}] AS newest_summary,
-           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:${UNANSWERED_NEWEST_CAP}] AS newest_ts_ms
+           (array_agg(msg_id ORDER BY ts_ms DESC))[1:${cap}] AS newest_ids,
+           (array_agg(from_id ORDER BY ts_ms DESC))[1:${cap}] AS newest_from,
+           (array_agg(summary ORDER BY ts_ms DESC))[1:${cap}] AS newest_summary,
+           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:${cap}] AS newest_ts_ms
       FROM unanswered
      GROUP BY recipient
   `;
-  return rowsToUnansweredMap(rows, nowMs);
+  return rowsToUnansweredMap(rows, nowMs, cap);
 }

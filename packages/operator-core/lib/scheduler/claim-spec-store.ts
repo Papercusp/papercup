@@ -414,7 +414,20 @@ export async function getNextForBee(args: {
     if (!blocked) return { ...result, specSource: record.source };
     // Confirmed blocked (whether this is attempt 1 or the last) — always release; NEVER
     // serve a row we just confirmed is plan-lane-blocked (EI-9108).
-    await releaseWorkItem(result.workItem.id, { harness: args.harness, expectedAssignee: args.cupId });
+    // EI-14837 (completes the EI-15019 class — see the spec-mismatch release above): this
+    // is the SIBLING internal claim-then-release round-trip. A plan-lane-blocked row is not
+    // genuinely claimable by ANYONE (the lane block is universal, not spec-scoped), so it
+    // was un-claimable before the claim AND after the release — nothing observable changed.
+    // Re-announcing the broad `work-item:claimable` key here only wakes every live awaiter
+    // for a pick the next claimant re-bounces, an N-member spurious wake storm per tick
+    // (the exact symptom EI-14837 reported). Suppress the broad co-fire; the targeted
+    // `claim:released:<id>` still fires, and the real re-announce arrives via the
+    // unblock/requeue path (reason 'unblocked'/'requeued') when the lane genuinely clears.
+    await releaseWorkItem(result.workItem.id, {
+      harness: args.harness,
+      expectedAssignee: args.cupId,
+      announceClaimable: false,
+    });
   }
   return null;
 }

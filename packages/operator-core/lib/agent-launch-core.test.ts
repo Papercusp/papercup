@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildAgentLaunchCommand,
+  composeModelSpec,
   injectAccountArg,
   injectKickoffAfterResume,
   memberLaunchCommand,
@@ -159,6 +160,45 @@ describe('memberLaunchCommand', () => {
     expect(() =>
       memberLaunchCommand({ fleetSlug: 'ops; touch /tmp/pwned', agent: 'claude', harness: 'h', plan: 'p' }),
     ).toThrow(/fleet with shell metacharacters/);
+  });
+
+  // D-001: psu has NO --effort flag, and warn-and-drops unknown flags — so an
+  // effort emitted separately is a SILENT no-op. It must ride the model spec.
+  it('folds effort into the model spec instead of emitting a --effort psu never reads', () => {
+    const cmd = memberLaunchCommand({
+      fleetSlug: 'ops',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      model: 'opus[1m]',
+      effort: 'high',
+    });
+    // `[1m]` is outside quoteLaunchValue's bare-token set, so the composed spec is quoted.
+    expect(cmd).toContain("--model='opus[1m]:high'");
+    expect(cmd).not.toContain('--effort');
+  });
+});
+
+describe('composeModelSpec (D-001: effort rides the model spec)', () => {
+  it('passes the model through untouched when no effort is set', () => {
+    expect(composeModelSpec('opus[1m]', undefined)).toBe('opus[1m]');
+    expect(composeModelSpec(undefined, undefined)).toBeUndefined();
+  });
+
+  it('replaces an effort tail already on the spec (member effort must win)', () => {
+    expect(composeModelSpec('opus[1m]:low', 'xhigh')).toBe('opus[1m]:xhigh');
+  });
+
+  it('leaves a non-effort colon segment alone (bedrock ids end in :0)', () => {
+    expect(composeModelSpec('anthropic.claude-v2:0', 'high')).toBe('anthropic.claude-v2:0:high');
+  });
+
+  it('refuses an effort with no model — psu would drop it', () => {
+    expect(() => composeModelSpec(undefined, 'high')).toThrow(/needs a model/);
+  });
+
+  it('refuses an unrecognized effort', () => {
+    expect(() => composeModelSpec('opus[1m]', 'turbo')).toThrow(/unrecognized effort/);
   });
 });
 

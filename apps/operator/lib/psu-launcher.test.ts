@@ -55,6 +55,10 @@ import {
   ACCOUNT_ROUTING_MODE_ENV,
   CLAUDE_DEFAULT_AUTH_ENV_KEYS,
   defaultAccountEnv,
+  isCacheProxyUrl,
+  cacheProxyReachable,
+  __setCacheProxyReachable,
+  CACHE_PROXY_URL,
   defaultClaudeAuthSettings,
   applyDefaultClaudeAuthSettingsArgs,
   enforceDefaultClaudeAccount,
@@ -5520,5 +5524,75 @@ describe('EI-12938: psu --resume ensures a launch-ready claude config dir', () =
         ensureInteractiveConfigViaOperator('su-remat', dirFor('su-remat'), { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
       ).resolves.toBeNull();
     });
+  });
+});
+
+// ── Transparent cache-proxy routing for default-account sessions ──────────────
+// gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-006 / D-005. The load-bearing
+// property: the cache proxy carries the SYSTEM login through verbatim, so unlike a
+// gateway route it must SURVIVE the default-account credential enforcement — while a
+// real gateway URL must still be stripped exactly as before.
+describe('cache-proxy default-account routing (P-006)', () => {
+  const GATEWAY_URL = 'http://127.0.0.1:8788';
+  afterEach(() => __setCacheProxyReachable(null));
+
+  it('is OFF under vitest unless explicitly forced (pure-function determinism)', () => {
+    __setCacheProxyReachable(null);
+    expect(cacheProxyReachable()).toBe(false);
+    expect(defaultAccountEnv().ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it('adds the proxy base URL to the default-account env when reachable', () => {
+    __setCacheProxyReachable(true);
+    const env = defaultAccountEnv();
+    expect(env.ANTHROPIC_BASE_URL).toBe(CACHE_PROXY_URL());
+    expect(env[ACCOUNT_ROUTING_MODE_ENV]).toBe('default');
+  });
+
+  it('DEGRADES to today’s behavior when the proxy is down — never blocks a launch', () => {
+    __setCacheProxyReachable(false);
+    expect(defaultAccountEnv()).toEqual({ [ACCOUNT_ROUTING_MODE_ENV]: 'default' });
+  });
+
+  it('isCacheProxyUrl matches equivalent spellings but not a gateway route', () => {
+    const p = new URL(CACHE_PROXY_URL());
+    expect(isCacheProxyUrl(CACHE_PROXY_URL())).toBe(true);
+    expect(isCacheProxyUrl(`http://localhost:${p.port}`)).toBe(true);
+    expect(isCacheProxyUrl(`http://127.0.0.1:${p.port}/`)).toBe(true);
+    expect(isCacheProxyUrl(GATEWAY_URL)).toBe(false);
+    expect(isCacheProxyUrl('https://api.anthropic.com')).toBe(false);
+    expect(isCacheProxyUrl(undefined)).toBe(false);
+    expect(isCacheProxyUrl('not a url')).toBe(false);
+  });
+
+  it('enforceDefaultClaudeAccount PRESERVES the cache proxy but still strips a gateway route', () => {
+    const kept = enforceDefaultClaudeAccount('claude', {
+      [ACCOUNT_ROUTING_MODE_ENV]: 'default',
+      ANTHROPIC_BASE_URL: CACHE_PROXY_URL(),
+      ANTHROPIC_AUTH_TOKEN: 'should-be-cleared',
+    });
+    expect(kept.ANTHROPIC_BASE_URL).toBe(CACHE_PROXY_URL());
+    expect(kept.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+
+    const stripped = enforceDefaultClaudeAccount('claude', {
+      [ACCOUNT_ROUTING_MODE_ENV]: 'default',
+      ANTHROPIC_BASE_URL: GATEWAY_URL,
+    });
+    expect(stripped.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it('the --settings overlay keeps the cache proxy and blanks a gateway route', () => {
+    const kept = defaultClaudeAuthSettings({ [ACCOUNT_ROUTING_MODE_ENV]: 'default', ANTHROPIC_BASE_URL: CACHE_PROXY_URL() });
+    expect(kept.env.ANTHROPIC_BASE_URL).toBe(CACHE_PROXY_URL());
+    expect(kept.apiKeyHelper).toBe('');
+
+    const blanked = defaultClaudeAuthSettings({ [ACCOUNT_ROUTING_MODE_ENV]: 'default', ANTHROPIC_BASE_URL: GATEWAY_URL });
+    expect(blanked.env.ANTHROPIC_BASE_URL).toBe('');
+  });
+
+  it('an auto/pin gateway route is still carried through untouched (no regression)', () => {
+    const s = defaultClaudeAuthSettings({ [ACCOUNT_ROUTING_MODE_ENV]: 'pin', ANTHROPIC_BASE_URL: GATEWAY_URL, ANTHROPIC_AUTH_TOKEN: 'tok' });
+    expect(s.env.ANTHROPIC_BASE_URL).toBe(GATEWAY_URL);
+    expect(s.env.ANTHROPIC_AUTH_TOKEN).toBe('tok');
   });
 });

@@ -20,6 +20,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import {
   detectContextDeathForOwner,
   estimateContextTokensForOwner,
+  resolveLaunchCompactionLimitForOwner,
   resolveModelSpecForOwner,
   resolveSessionRef,
 } from '../compaction-usage';
@@ -28,6 +29,7 @@ import {
   COMPACTION_LIMIT_DEFAULT_1M_CAP,
   COMPACTION_OVERSHOOT_FACTOR,
   COMPACTION_WINDOW_MARGIN_TOKENS,
+  clampCompactionLimit,
   defaultCompactionLimitForSpec,
   MODEL_WINDOW_1M,
   modelWindowForSpec,
@@ -772,12 +774,22 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
     for (const r of unseeded) {
       try {
         const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
+        // per-member-declarative-launch-specs P-005: an EXPLICIT `psu
+        // --compaction-limit` on the recorded launch argv outranks every DERIVED
+        // default below — the leader stated this member's limit outright
+        // (MemberSpec.compactionLimit), which is the whole point of the flag.
+        // Still clamped to the role ceiling and the model window: an explicit
+        // request may lower a limit freely but may never raise it past the cap
+        // its fleet role is governed by (a member cannot buy itself a leader's
+        // 400k). Before this, a per-member limit could only be REQUESTED in a
+        // brief the member had to obey by hand.
+        const fromLaunch = await resolveLaunchCompactionLimitForOwner(r.owner_id);
         const fromSpawn = await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu, fleetMember);
+        const spec = await resolveModelSpecForOwner(r.owner_id);
         const limit =
-          fromSpawn ??
-          defaultCompactionLimitForSpec(await resolveModelSpecForOwner(r.owner_id), {
-            fleetMember,
-          });
+          fromLaunch != null
+            ? clampCompactionLimit(fromLaunch, spec, { fleetMember })
+            : (fromSpawn ?? defaultCompactionLimitForSpec(spec, { fleetMember }));
         await setCompactionLimit(r.owner_id, limit);
         out.seeded.push(r.owner_id);
       } catch {

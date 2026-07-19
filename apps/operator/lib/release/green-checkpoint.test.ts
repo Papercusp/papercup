@@ -909,6 +909,48 @@ describe('runGreenCheckpoint', () => {
     expect(r).toMatchObject({ advanced: true, reason: 'advanced' });
     expect(await revParse(repo, 'ready')).toBe(c2);
   });
+
+  // EI-11118 (cupboard-public-release P-009 durable fix): the Cupboard prod-hygiene
+  // gate runs post-runGreen / pre-advance, same call-site shape as perf/delta-gate.
+  it('EI-11118: a cupboard-hygiene BLOCK holds the green pin even when the candidate is green', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.cupboardHygieneGate = async (candidate) => {
+      calls.push('cupboardHygieneGate');
+      return { action: 'block', summary: `cupboard-hygiene BLOCK ${candidate.slice(0, 7)}` };
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: false, green: true, reason: 'cupboard-hygiene-held' });
+    expect(await revParse(repo, 'ready')).toBe(c1); // pin NOT advanced
+    expect(calls).toContain('cupboardHygieneGate');
+    expect(calls).not.toContain('advance'); // blocked before advance
+    expect(calls).toContain('escalate'); // a cupboard-hygiene block opens a durable escalation
+  });
+
+  it('EI-11118: a cupboard-hygiene WARN surfaces (broadcast) but still advances — default-warn', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.cupboardHygieneGate = async () => ({ action: 'warn', summary: 'cupboard-hygiene WARN — junk found but advancing' });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced' });
+    expect(await revParse(repo, 'ready')).toBe(c2); // advanced despite the warn
+    expect(calls).toContain('advance');
+  });
+
+  it('EI-11118: a cupboard-hygiene PASS (and the no-gate default) advances normally — back-compat', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps } = stubDeps(true);
+    deps.cupboardHygieneGate = async () => ({ action: 'pass', summary: 'cupboard clean' });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, reason: 'advanced' });
+    expect(await revParse(repo, 'ready')).toBe(c2);
+  });
 });
 
 describe('extractFailingTests (P-012 failure signature)', () => {

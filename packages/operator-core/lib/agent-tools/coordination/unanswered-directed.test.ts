@@ -82,4 +82,26 @@ describe('rowsToUnansweredMap (pure)', () => {
     );
     expect(map.get('su-a')?.newest).toEqual([{ msgId: 'm2', from: 'su-b', ageMs: 1000 }]);
   });
+
+  // EI-13159 (coord:inbox unanswered_only filter): a caller reading for ONE
+  // recipient passes a larger `cap` to recover every unanswered msg_id, not
+  // just the display-capped newest 3.
+  it('a caller-supplied `cap` overrides UNANSWERED_NEWEST_CAP', () => {
+    const many = Array.from({ length: UNANSWERED_NEWEST_CAP + 5 }, (_, i) => `m${i}`);
+    const map = rowsToUnansweredMap(
+      [
+        row({
+          cnt: many.length,
+          newest_ids: many,
+          newest_from: many.map(() => 'su-b'),
+          newest_summary: many.map(() => null),
+          newest_ts_ms: many.map((_, i) => NOW - i * 1000),
+        }),
+      ],
+      NOW,
+      many.length, // cap = exactly the row count → every entry survives
+    );
+    expect(map.get('su-a')?.newest.length).toBe(many.length);
+    expect(map.get('su-a')?.newest.map((e) => e.msgId)).toEqual(many);
+  });
 });

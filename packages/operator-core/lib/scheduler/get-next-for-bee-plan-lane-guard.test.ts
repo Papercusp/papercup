@@ -182,7 +182,17 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     expect(res?.workItem.id).toBe('F-2');
     expect(getNextWorkItemMock).toHaveBeenCalledTimes(2);
     expect(releaseWorkItemMock).toHaveBeenCalledTimes(1);
-    expect(releaseWorkItemMock).toHaveBeenCalledWith('F-1', { harness: 'papercusp', expectedAssignee: 'me' });
+    // EI-14837 (completes the EI-15019 class asserted in the quarantine test below): the
+    // plan-lane-blocked release is an INTERNAL claim-then-release round-trip — a plan-lane-
+    // blocked row is not genuinely claimable by anyone, so re-announcing the broad
+    // work-item:claimable key here only spam-wakes every live awaiter for a doomed pick.
+    // It MUST suppress the broad co-fire (announceClaimable:false); the targeted
+    // claim:released:<id> still fires and the unblock/requeue path re-announces for real.
+    expect(releaseWorkItemMock).toHaveBeenCalledWith('F-1', {
+      harness: 'papercusp',
+      expectedAssignee: 'me',
+      announceClaimable: false,
+    });
   });
 
   it('returns null (never serves a blocked row) when the queue drains mid-retry', async () => {
@@ -251,6 +261,12 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     expect(res).toBeNull();
     expect(getNextWorkItemMock).toHaveBeenCalledTimes(5);
     expect(releaseWorkItemMock).toHaveBeenCalledTimes(5);
-    expect(releaseWorkItemMock).toHaveBeenLastCalledWith('F-4', { harness: 'papercusp', expectedAssignee: 'me' });
+    // EI-14837: every plan-lane-blocked release on this exhaustion path is likewise an
+    // internal round-trip and suppresses the broad work-item:claimable co-fire.
+    expect(releaseWorkItemMock).toHaveBeenLastCalledWith('F-4', {
+      harness: 'papercusp',
+      expectedAssignee: 'me',
+      announceClaimable: false,
+    });
   });
 });

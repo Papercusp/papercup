@@ -22,7 +22,8 @@
  *     the same layering as integrator.ts.
  *   - SECRETS GATE: the DELTA being published (changed files between the remote's
  *     current head and the egress target) runs through secrets-guard
- *     (`scanTextForSecrets`) before any bytes leave. Findings BLOCK that ref —
+ *     (`scanForSecrets` — the exemption-aware file-set entrypoint, NEVER the raw
+ *     per-line `scanTextForSecrets`) before any bytes leave. Findings BLOCK that ref —
  *     fail-closed, like release-promotion's posture: an outward publish must
  *     never leak a credential. (This is the first live wiring of secrets-guard —
  *     it was built for exactly this boundary.)
@@ -41,7 +42,7 @@
  */
 
 import { type RunGit, defaultRunGit } from './storage';
-import { type SecretFinding, scanTextForSecrets } from './secrets-guard';
+import { type SecretFinding, scanForSecrets } from './secrets-guard';
 
 /** Upper bound on delta files scanned for secrets per egressed ref. Exceeding
  *  it BLOCKS the ref (`secret_scan_overflow`) rather than silently skipping the
@@ -292,7 +293,13 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
         res.errors.push(`secret-scan collect ${spec.remoteRef}: ${collected.error}`);
         continue;
       }
-      const findings = collected.files.flatMap((f) => scanTextForSecrets(f.path, f.content));
+      // MUST be the file-set entrypoint, never the per-line primitive: only
+      // `scanForSecrets` applies the fixture-path exemption (isFixtureFile).
+      // Calling `scanTextForSecrets` directly here froze origin/staging for
+      // hours — the scanner's own test fixtures flagged, egress refused every
+      // tick, and because the offending blob is permanently inside the pushed
+      // range no re-commit could ever clear it (P-402 / EI-13924, 2026-07-19).
+      const findings = scanForSecrets(collected.files);
       if (findings.length > 0 || collected.overflow) {
         res.blockedSecrets.push({
           remoteRef: spec.remoteRef,
