@@ -19,9 +19,8 @@
  * suppress an item the spec would admit (a false-negative would strand the member
  * on a real wake), but it MAY let through an item the spec later rejects (a cheap
  * re-miss — get_next stays the single authoritative claim path). Consequences:
- *   - a leaf on a field the payload does NOT carry (plan_item, tags, paths,
- *     priority, age, risk_tier, redundancy, est_cost, assignee) is dropped
- *     permissively;
+ *   - a leaf on a field the payload does NOT carry (plan_item, paths, priority,
+ *     age, risk_tier, redundancy, est_cost, assignee) is dropped permissively;
  *   - a leaf whose op cannot be evaluated soundly on the payload scalar
  *     (relational `< <= > >=`, which only target numeric non-payload fields) is
  *     dropped permissively;
@@ -37,7 +36,14 @@
  * The `glob` → regex translation mirrors claim-spec-match.ts's `globRegex`
  * byte-for-byte (case-insensitive, anchored) so a translated glob leaf matches
  * exactly what the spec evaluator would; `contains` maps to a case-insensitive
- * literal-substring regex, matching the spec's case-insensitive `includes`.
+ * literal-substring regex, matching the spec's case-insensitive `includes` — EXCEPT
+ * on the array-valued `tags` field, where claim-spec-match.ts's array leaf branch
+ * treats `contains` as EXACT membership (same as `=`), so it is mapped to `equals`
+ * there instead (EI-14161; see ARRAY_VALUED_FIELDS below — a substring mapping would
+ * be sound un-negated but UNDER-cover once wrapped in a `not`). `=`/`!=`/`in`/`glob`
+ * need no field-type branch: `@papercusp/rules`'s mingo backend already does the same
+ * implicit per-element array matching claim-spec-match.ts's array branch does, for
+ * every one of those ops (verified directly against mingo — see the test suite).
  *
  * Pure. No I/O.
  */
@@ -47,12 +53,26 @@ import type { FilterLeaf, FilterNode } from './claim-spec';
 /**
  * Claim-spec filter fields that appear (under the SAME key) on the
  * `work-item:claimable` event payload (`{ id, kind, severity, harness, title,
- * state, reason, plan }` — see emitWorkItemClaimableEvent). `severity`,
+ * state, reason, plan, tags }` — see emitWorkItemClaimableEvent). `severity`,
  * `harness`, `state`, `reason` are payload-only (no claim-spec leaf references
  * them). `plan` is carried on the payload specifically so a plan-drain spec can
- * narrow here (EI-15185).
+ * narrow here (EI-15185); `tags` likewise so a spec that EXCLUDES a whole tagged
+ * category (p2p / rig-needed / etc — the class the title-glob workaround stood
+ * in for when tags went unpopulated) can narrow here too (EI-14161).
  */
-const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'plan']);
+const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'plan', 'tags']);
+
+/** Array-VALUED payload fields — mingo/DataCondition still does implicit
+ *  per-element matching for these (verified: `equals`/`notEquals`/`in`/`matches`
+ *  on an array field behave exactly like claim-spec-match.ts's array leaf branch),
+ *  so the switch below is unchanged for them EXCEPT `contains`: claim-spec-match's
+ *  array branch treats `contains` as EXACT membership (same as `=`), never a
+ *  substring test — reusing the scalar `contains` → regex-substring mapping here
+ *  would over-approximate un-negated (harmless) but UNDER-cover once wrapped in a
+ *  `not` (a tag `'p2p-experimental'` substring-matches `/p2p/` yet is NOT exactly
+ *  `'p2p'`, so `not(contains)` would wrongly suppress an item the spec truly
+ *  admits) — unsound. See leafToCondition. */
+const ARRAY_VALUED_FIELDS = new Set<FilterLeaf['field']>(['tags']);
 
 /** Mirror claim-spec-match.ts `globRegex` EXACTLY (anchored, case-insensitive). */
 function globToRegexSource(pattern: string): string {
@@ -87,7 +107,11 @@ function leafToCondition(leaf: FilterLeaf): DataCondition | null {
     case 'glob':
       return { [field]: { matches: { source: globToRegexSource(String(value)), flags: 'i' } } };
     case 'contains':
-      return { [field]: { matches: { source: literalToRegexSource(String(value)), flags: 'i' } } };
+      // Array fields (tags): `contains` is EXACT membership per claim-spec-match's
+      // array leaf branch, not a substring test — map like `=` (see ARRAY_VALUED_FIELDS).
+      return ARRAY_VALUED_FIELDS.has(field)
+        ? { [field]: { equals: value } }
+        : { [field]: { matches: { source: literalToRegexSource(String(value)), flags: 'i' } } };
     // Relational ops (< <= > >=) only target numeric fields the claimable payload
     // does not carry — drop permissively rather than risk an unsound coercion.
     default:

@@ -1228,7 +1228,12 @@ export default defineTool({
     // plan= filter whenever claimKinds is given. Best-effort throughout: a spec read/write failure
     // never blocks the launch (members still start; get_next's harness floor still scopes them to
     // this pot).
-    let claimSpecApplied: { ok: boolean; revision?: number; warning?: string; errors?: string[] } | null = null;
+    let claimSpecApplied:
+      | { ok: boolean; revision?: number; warning?: string; errors?: string[]; poolEffect?: SpecPoolEffect }
+      | null = null;
+    // P-010: when the claimKinds pool-collapse guard refuses, abort the launch BEFORE any
+    // terminal opens (the whole point — a starving spec must never open members onto nothing).
+    let claimCollapseRefusal: { errors: string[]; poolEffect: SpecPoolEffect | null } | null = null;
     try {
       const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
       const cupId = fleetSpecBeeKey(fleetSlug);
@@ -1238,21 +1243,18 @@ export default defineTool({
       } catch {
         existingSpec = DEFAULT_CLAIM_SPEC; // never block the launch on a read failure
       }
+      const authored = isLeaderAuthoredClaimSpec(existingSpec.specId, fleetSlug);
 
-      if (isLeaderAuthoredClaimSpec(existingSpec.specId, fleetSlug)) {
+      // The spec we WOULD apply (null = preserve the existing authored spec, no write), plus
+      // the EI-10409 merge/preserve note carried onto the applied result.
+      let specToApply: Record<string, unknown> | null = null;
+      let applyWarning: string | null = null;
+      if (authored) {
         if (args.claimKinds?.length) {
-          claimSpecApplied = await setClaimSpec({
-            cupId,
-            workspaceId: claimSpecWorkspaceId,
-            spec: mergeKindIntoClaimSpec(existingSpec, args.claimKinds),
-            updatedBy: ownerId,
-            potSlug: null,
-          });
-          if (claimSpecApplied?.ok) {
-            claimSpecApplied.warning =
-              `EI-10409: merged kind∈[${args.claimKinds.join(',')}] into pre-existing leader-authored ` +
-              `claim spec '${existingSpec.specId}'@${existingSpec.revision} rather than overwriting it`;
-          }
+          specToApply = mergeKindIntoClaimSpec(existingSpec, args.claimKinds);
+          applyWarning =
+            `EI-10409: merged kind∈[${args.claimKinds.join(',')}] into pre-existing leader-authored ` +
+            `claim spec '${existingSpec.specId}'@${existingSpec.revision} rather than overwriting it`;
         } else {
           claimSpecApplied = {
             ok: true,
@@ -1263,21 +1265,98 @@ export default defineTool({
           };
         }
       } else {
-        // planSlug! is safe: the early `plan || claimKinds` guard means this
-        // (no-claimKinds) branch is only reached when a plan was given (P-003).
-        const spec = args.claimKinds?.length
+        // planSlug! is safe: the early `plan || claimKinds` guard means this (no-claimKinds)
+        // branch is only reached when a plan was given (P-003).
+        specToApply = args.claimKinds?.length
           ? buildFleetKindClaimSpec(fleetSlug, args.claimKinds)
           : buildFleetPlanClaimSpec(fleetSlug, planSlug!);
-        claimSpecApplied = await setClaimSpec({
+      }
+
+      // P-010 (WI-5212 pool-collapse guard): run the SAME write-time pool-effect count +
+      // collapse verdict scheduler:set_claim_spec runs, but ONLY on the claimKinds path —
+      // refuse a kind scope matching 0 rows of a nonempty pool (or a cratered authored lane)
+      // BEFORE any terminal opens, and surface poolEffect.matched. The pure plan lane is left
+      // untouched (plan-promoted items vary in status; guarding it risks a false refusal).
+      // FAILS OPEN: a preview/count error never blocks the launch (safety net, not a new SPOF).
+      let poolEffect: SpecPoolEffect | null = null;
+      if (specToApply && args.claimKinds?.length) {
+        try {
+          const validated = validateClaimSpec(specToApply);
+          if (validated.ok && validated.spec) {
+            const { previewSpecPoolEffect, evaluateCollapseGuard } = await import(
+              '../../scheduler/spec-pool-preview'
+            );
+            // Count the REAL work_items partition (the launch's resolved workspace) — NOT the
+            // claim-spec store partition (resolveClaimSpecWorkspace), which is a different key
+            // space. This mirrors scheduler:set_claim_spec's own countScope (ident.workspaceId).
+            const countScope = { workspaceId, harness };
+            poolEffect = await previewSpecPoolEffect(validated.spec, countScope);
+            let previousMatched: number | null = null;
+            if (authored) {
+              try {
+                previousMatched = (await previewSpecPoolEffect(existingSpec, countScope)).matched;
+              } catch {
+                previousMatched = null; // previous unmeasurable → guard degrades to fresh-spec rules
+              }
+            }
+            const verdict = evaluateCollapseGuard({
+              matched: poolEffect.matched,
+              pool: poolEffect.pool,
+              previousMatched,
+              previousSource: authored ? 'authored' : 'default',
+              confirm: args.confirmClaimCollapse === true,
+            });
+            if (verdict.refuse) {
+              claimCollapseRefusal = { errors: verdict.errors, poolEffect };
+            } else if (verdict.warning) {
+              applyWarning = applyWarning ? `${applyWarning}\n${verdict.warning}` : verdict.warning;
+            }
+          }
+        } catch (e: any) {
+          applyWarning = `${applyWarning ? `${applyWarning}\n` : ''}pool-effect preview failed open (spec applied, collapse guard skipped): ${e?.message ?? e}`;
+        }
+      }
+
+      // Apply — unless the guard refused (handled after the try) or we preserved an authored
+      // no-kinds spec (claimSpecApplied already set, specToApply null).
+      if (!claimCollapseRefusal && specToApply) {
+        const applied = await setClaimSpec({
           cupId,
           workspaceId: claimSpecWorkspaceId,
-          spec,
+          spec: specToApply,
           updatedBy: ownerId,
           potSlug: null,
         });
+        const warning =
+          applied.ok && applyWarning
+            ? applied.warning
+              ? `${applied.warning}\n${applyWarning}`
+              : applyWarning
+            : applied.warning;
+        claimSpecApplied = {
+          ...applied,
+          ...(warning ? { warning } : {}),
+          ...(applied.ok && poolEffect ? { poolEffect } : {}),
+        };
       }
     } catch (e: any) {
       claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
+    }
+
+    // P-010: a refused claimKinds guard aborts the launch cleanly — the launch slot is claimed
+    // further below, so NO terminals were opened and NO members land on an empty lane. The
+    // leader reads the counts and either fixes the backlog/kinds or re-sends confirmClaimCollapse.
+    if (claimCollapseRefusal) {
+      const pe = claimCollapseRefusal.poolEffect;
+      return err(
+        `${claimCollapseRefusal.errors.join('\n')}\n` +
+          (pe
+            ? `claimKinds=[${args.claimKinds!.join(',')}] matched ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(
+                ',',
+              )}]${pe.harness ? ` in harness \`${pe.harness}\`` : ''}. `
+            : '') +
+          'NO members were opened. Re-send with confirmClaimCollapse:true to launch anyway (a pre-staged lane whose items are not promoted yet), or fix the claimKinds / backlog first.',
+      );
     }
 
     // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
@@ -2035,6 +2114,14 @@ export default defineTool({
           `⚠ plan \`${planSlug}\` has no open items to promote — members may find nothing to claim. Confirm the plan has items (plans:items) and was started.`,
         );
       }
+    }
+    // P-010: surface the claimKinds pool-effect so the leader sees the lane is actually fed
+    // (matched > 0) — the counter-signal to the silent-starvation shape the guard refuses.
+    if (claimSpecApplied?.poolEffect) {
+      const pe = claimSpecApplied.poolEffect;
+      lines.push(
+        `  ↳ claim-lane pool-effect (P-010): claimKinds=[${(args.claimKinds ?? []).join(',')}] matches ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(',')}]${pe.harness ? ` in \`${pe.harness}\`` : ''} — this lane IS fed.`,
+      );
     }
     const carryMode: 'warm' | 'cold' = args.carry ?? 'warm';
     lines.push(

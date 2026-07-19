@@ -62,6 +62,18 @@
 # exactly like every other cc/ hook; a plain claude session elsewhere has no
 # PAPERCUSP_SID and bails before reading stdin (EPIPE-safe — see
 # __tests__/spawn-hook.ts's header for why the ordering matters).
+#
+# EI-14208: the `|| exit 0` fail-open below (necessary — a hook error must
+# never block the Claude Code Stop event) previously swallowed EVERY failure
+# with zero trace, making "the hook ran and found nothing to mirror" and "the
+# hook silently broke" indistinguishable from the outside. Two backstops now
+# make a real miss inspectable: (1) the python body logs a one-line marker to
+# `~/.papercusp/hooks/cc/ask-gate-mirror.errors.log` whenever a mirror call
+# (sessions:ingest-gate-event / coord:escalate) ultimately fails, with a single
+# retry first for the two Stop-branch calls (the ones a slow/wedged operator
+# or a mid-turn race is most likely to hit); (2) the bash wrapper itself logs
+# if the python process exits non-zero for any OTHER reason (e.g. a crash
+# before it could log itself), closing the outer `|| exit 0`'s own blind spot.
 
 set -euo pipefail
 
@@ -75,8 +87,9 @@ fi
 TOKEN=$(cat "$TOKEN_PATH")
 INPUT=$(cat)
 
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "${PAPERCUSP_HARNESS_SLUG:-}" <<'PYEOF' || exit 0
-import json, os, re, sys, urllib.request, urllib.parse
+PY_STATUS=0
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "${PAPERCUSP_HARNESS_SLUG:-}" <<'PYEOF' || PY_STATUS=$?
+import datetime, json, os, re, sys, time, urllib.request, urllib.parse
 
 raw, operator_url, token, owner, harness = sys.argv[1:6]
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy
@@ -120,43 +133,83 @@ tool_use_id = first('tool_use_id', 'toolCallId', 'tool_call_id') or ''
 GATE_TOOLS = ('AskUserQuestion', 'ExitPlanMode')
 
 
-def call_tool(tool, args, timeout=HTTP_TIMEOUT):
-    """POST one MCP tool call; return its parsed JSON result, or None on any
-    failure (network, timeout, tool error, malformed response) — never raises."""
-    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                        'params': {'name': tool, 'arguments': args}}).encode()
-    req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&client=' + urllib.parse.quote(owner, safe=''),
-        data=body,
-        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-                 'Accept': 'application/json, text/event-stream'},
-        method='POST')
+def log_failure(context, detail=''):
+    """EI-14208: best-effort append a one-line failure marker so a mirror call
+    that fails (even after its retry) is inspectable AFTER the fact, instead of
+    indistinguishable from "the hook ran and legitimately found nothing to
+    mirror". Must never raise, block, or touch stdout — this is pure
+    observability for a fail-open path."""
     try:
-        raw_resp = urllib.request.urlopen(req, timeout=timeout).read().decode('utf-8', 'replace')
+        log_dir = os.path.join(os.path.expanduser('~'), '.papercusp', 'hooks', 'cc')
+        os.makedirs(log_dir, exist_ok=True)
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        line = f'{ts} session={session_id or "?"} hook={name or "?"} {context}: {detail}'
+        with open(os.path.join(log_dir, 'ask-gate-mirror.errors.log'), 'a', encoding='utf-8') as f:
+            f.write(line.replace('\n', ' ')[:2000] + '\n')
     except Exception:
-        return None
-    result = None
-    for line in raw_resp.splitlines():
-        line = line.strip()
-        if line.startswith('data:'):
-            line = line[5:].strip()
-        if not line:
-            continue
+        pass
+
+
+def call_tool(tool, args, timeout=HTTP_TIMEOUT, retries=0, label=None):
+    """POST one MCP tool call; return its parsed JSON result, or None on any
+    failure (network, timeout, tool error, malformed response) — never raises.
+
+    EI-14208: on request failure, retries up to `retries` more times (a short
+    fixed 150ms gap, and a capped 2s timeout on the retry attempt so a single
+    slow call can't silently double the hook's worst-case latency) before
+    giving up; the FINAL failure (post-retry) is logged via log_failure so a
+    genuine miss leaves a trace. retries=0 (the default) preserves the exact
+    prior one-shot fail-open behavior, just now with a log line on failure."""
+    def once(to):
+        # EI-14208: Request(...) construction (URL parsing) can itself raise
+        # (e.g. a malformed operator URL) — keep it INSIDE the try alongside
+        # urlopen so every failure mode funnels through the same retry+log
+        # path instead of crashing the whole hook process uncaught.
         try:
-            cand = json.loads(line)
-            if isinstance(cand, dict) and 'result' in cand:
-                result = cand['result']
-                break
-        except Exception:
-            pass
-    if not result or result.get('isError'):
-        return None
-    for item in (result.get('content') or []):
-        if item.get('type') == 'text':
+            body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                'params': {'name': tool, 'arguments': args}}).encode()
+            req = urllib.request.Request(
+                operator_url.rstrip('/') + '/api/mcp?superuser=1&client=' + urllib.parse.quote(owner, safe=''),
+                data=body,
+                headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                         'Accept': 'application/json, text/event-stream'},
+                method='POST')
+            raw_resp = urllib.request.urlopen(req, timeout=to).read().decode('utf-8', 'replace')
+        except Exception as e:
+            return None, f'{type(e).__name__}: {e}'
+        result = None
+        for line in raw_resp.splitlines():
+            line = line.strip()
+            if line.startswith('data:'):
+                line = line[5:].strip()
+            if not line:
+                continue
             try:
-                return json.loads(item['text'])
+                cand = json.loads(line)
+                if isinstance(cand, dict) and 'result' in cand:
+                    result = cand['result']
+                    break
             except Exception:
                 pass
+        if not result or result.get('isError'):
+            return None, f'isError-or-empty result={str(result)[:300]}'
+        for item in (result.get('content') or []):
+            if item.get('type') == 'text':
+                try:
+                    return json.loads(item['text']), None
+                except Exception:
+                    pass
+        return None, 'no-parseable-content-block'
+
+    last_err = 'unknown'
+    for attempt in range(retries + 1):
+        value, err = once(timeout if attempt == 0 else min(timeout, 2))
+        if err is None:
+            return value
+        last_err = err
+        if attempt < retries:
+            time.sleep(0.15)
+    log_failure(f'{label or tool}-failed', last_err)
     return None
 
 
@@ -396,7 +449,7 @@ call_tool('sessions:ingest-gate-event', {
     'client': 'claude',
     'kind': 'cleared',
     'refId': 'notify:' + (session_id or owner),
-}, timeout=2)
+}, timeout=2, retries=1, label='stop-notify-clear')
 
 transcript_path = first('transcript_path', 'transcriptPath') or ''
 final_text = last_assistant_text(transcript_path)
@@ -411,7 +464,9 @@ if ask:
         escalate_args['options'] = [{'id': o['id'][:64], 'label': o['label'][:200]} for o in ask['options']]
     if ask.get('refs'):
         escalate_args['body'] = 'refs: ' + ', '.join(ask['refs'])
-    call_tool('coord:escalate', escalate_args, timeout=5)
+    # EI-14208: this is the one silent-drop that matters most — an owner-directed
+    # <ask> that never reaches the Inbox — so retry once before giving up + logging.
+    call_tool('coord:escalate', escalate_args, timeout=5, retries=1, label='stop-ask-escalate')
     sys.exit(0)  # structured mirror landed — allow the stop.
 
 if question_shaped_ending(final_text):
@@ -438,4 +493,16 @@ if question_shaped_ending(final_text):
 
 sys.exit(0)  # a normal, non-question ending — nothing to mirror.
 PYEOF
+
+# EI-14208: close the outer fail-open's own blind spot — if the python body
+# itself crashed/exited non-zero for some reason other than its own normal
+# `sys.exit(0)` branches (e.g. before it could reach a log_failure call), log
+# that here so a totally-broken hook run is still inspectable, not silently
+# indistinguishable from "nothing to do this turn".
+if [ "$PY_STATUS" -ne 0 ]; then
+  LOG_DIR="${HOME}/.papercusp/hooks/cc"
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '%s session=%s hook-body-nonzero-exit status=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PAPERCUSP_SID:-?}" "$PY_STATUS" \
+    >> "$LOG_DIR/ask-gate-mirror.errors.log" 2>/dev/null || true
+fi
 exit 0

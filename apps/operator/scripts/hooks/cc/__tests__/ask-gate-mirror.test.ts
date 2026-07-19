@@ -199,6 +199,50 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
   });
+
+  // EI-14208: the Stop-branch mirror calls (notify-clear, ask-escalate) used to
+  // fail completely silently against an unreachable/wedged operator — this hit
+  // in production with zero trace left behind. They now retry once and, on
+  // final failure, append a one-line marker to a local errors log so a real
+  // miss is distinguishable, after the fact, from "legitimately nothing to
+  // mirror" — while the hook itself still stays fail-open (exit 0, empty
+  // stdout: the owner-facing contract is unchanged).
+  it('EI-14208: a Stop mirror-call failure against an unreachable operator is logged, not silently dropped', () => {
+    const logPath = join(home, '.papercusp', 'hooks', 'cc', 'ask-gate-mirror.errors.log');
+    fs.rmSync(logPath, { force: true });
+    const r = run(
+      payload({
+        hook_event_name: 'Stop',
+        session_id: 'log-test-session',
+        transcript_path: transcriptWith('Status: done. <ask>{"question":"Ship it now?"}</ask>'),
+      }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+    const log = fs.readFileSync(logPath, 'utf8');
+    expect(log).toContain('log-test-session');
+    expect(log).toContain('stop-ask-escalate-failed');
+    expect(log).toContain('stop-notify-clear-failed');
+  });
+
+  it('EI-14208: a malformed operator URL (Request() itself raises) still fail-opens, and is caught + logged by call_tool rather than crashing the hook process', () => {
+    // http://[::1 is an invalid IPv6 literal — urllib.request.Request() raises
+    // ValueError at construction, BEFORE urlopen is ever reached. This used to
+    // sit outside call_tool's try/except (see EI-14208), which would crash the
+    // whole python body uncaught; it's now inside the try, so it funnels
+    // through the same retry+log path as any other request failure.
+    const logPath = join(home, '.papercusp', 'hooks', 'cc', 'ask-gate-mirror.errors.log');
+    fs.rmSync(logPath, { force: true });
+    const r = run(
+      payload({ hook_event_name: 'Stop', session_id: 'bad-url-session', transcript_path: transcriptWith('All good.') }),
+      { PAPERCUSP_OPERATOR_URL: 'http://[::1' },
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+    const log = fs.readFileSync(logPath, 'utf8');
+    expect(log).toContain('bad-url-session');
+    expect(log).toContain('stop-notify-clear-failed');
+  });
 });
 
 // ── OPERATOR-DEPENDENT (in-process HTTP stub) ───────────────────────────────

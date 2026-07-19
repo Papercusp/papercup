@@ -32,7 +32,9 @@ import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } 
 import { CLAIM_STATES_ALLOWLIST, getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
 // EI-15185: single-source the plan-slug derivation shared with the claim-spec
 // `plan` field, so the claimable payload's `plan` and a spec's `plan` filter agree.
-import { planSlugOfWorkItem } from './scheduler/claim-spec-match';
+// EI-14161: same single-sourcing for `tags`, so a spec's tag-based exclusion
+// (the p2p/rig-fenced class title-globs used to stand in for) is derivable too.
+import { planSlugOfWorkItem, staticTagsOfWorkItem } from './scheduler/claim-spec-match';
 // Type-only (erased at runtime) — the subscriber inject shape. The concrete
 // fanoutForObject is lazy-imported inside the default seam below so this module
 // keeps no static edge to the fan-out projection (cycle-safe).
@@ -174,6 +176,16 @@ export function emitWorkItemClaimableEvent(
     // can narrow a plan-DRAIN spec at the event layer, not just kind/title.
     // Single-sourced with the claim-spec `plan` field so the two agree.
     plan: planSlugOfWorkItem(wi),
+    // EI-14161: carry the item's own static payload.tags too — a member whose
+    // claim spec excludes an entire tagged category (p2p / rig-needed / etc,
+    // e.g. `not: { field:'tags', op:'contains', value:'p2p' }`) previously had
+    // NO way to build a payload_filter narrow enough to skip these: the payload
+    // carried title/kind/plan but never tags, so a tag-only exclusion derived to
+    // `undefined` (unscoped await) and the member re-woke, cold, on every one of
+    // these releases only for scheduler:get_next to immediately re-reject the
+    // SAME item as out-of-scope. Single-sourced with the claim-spec `tags` field
+    // (staticTagsOfWorkItem) so the two agree exactly.
+    tags: staticTagsOfWorkItem(wi),
   };
   void Promise.resolve()
     .then(() =>

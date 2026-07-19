@@ -82,6 +82,22 @@ vi.mock('../../../scheduler/claim-spec-store', () => ({
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
 }));
 
+// P-010: the WI-5212 pool-collapse guard the claimKinds launch path routes through. The
+// COUNT (previewSpecPoolEffect) hits PG, so it is stubbed; the WIRING is what we test here
+// (the real evaluateCollapseGuard thresholds have their own unit suite). Default: a healthy
+// lane (matches part of a nonempty pool) that does NOT refuse.
+const previewSpecPoolEffectMock = vi.fn(async () => ({
+  matched: 5,
+  pool: 10,
+  states: ['open'],
+  harness: 'papercusp',
+}));
+const evaluateCollapseGuardMock = vi.fn(() => ({ refuse: false, errors: [] as string[] }));
+vi.mock('../../../scheduler/spec-pool-preview', () => ({
+  previewSpecPoolEffect: (...args: unknown[]) => previewSpecPoolEffectMock(...args),
+  evaluateCollapseGuard: (...args: unknown[]) => evaluateCollapseGuardMock(...args),
+}));
+
 // #3 promotion FAILSAFE seam (fleet-launch-promote-workitems-failsafe): the handler idempotently
 // promotes the plan's items → claimable work-items before opening any terminal. Default: the healthy
 // case (items already promoted upstream by plans:start → skipped>0, promoted:0 → no warning line).
@@ -98,6 +114,9 @@ import tool, {
   renderMemberBaseline,
   clampFleetTopUpToCapacity,
   buildFleetPlanClaimSpec,
+  buildFleetKindClaimSpec,
+  mergeKindIntoClaimSpec,
+  claimableStatesForKinds,
   remotePlacementUnsupportedArgs,
   MEMBER_BASELINE_RULES,
   LEADER_STANDING_JOB,
@@ -536,6 +555,37 @@ describe('buildFleetPlanClaimSpec (#4 — plan-scoped fleet claim spec)', () => 
     // items at runtime (members get nothing) — so exercise the actual validator, not just the shape.
     expect(validateClaimSpec(buildFleetPlanClaimSpec('f', 'my-plan')).ok).toBe(true);
     expect(validateClaimSpec(buildFleetPlanClaimSpec('f', 'my-plan', ['bug', 'task'])).ok).toBe(true);
+  });
+});
+
+// P-010: the states-for-kinds derivation that stops an issue-family drain starving on the
+// default ['todo'] floor (the bug-drain-200k trap, EI-11300).
+describe('claimableStatesForKinds + builder states threading (P-010)', () => {
+  it('issue-family kinds → open; feature-family → undefined (default todo fits); mixed → [todo, open]', () => {
+    expect(claimableStatesForKinds(['bug'])).toEqual(['open']);
+    expect(claimableStatesForKinds(['change', 'task'])).toEqual(['open']);
+    expect(claimableStatesForKinds(['feature'])).toBeUndefined();
+    expect(claimableStatesForKinds(['feature', 'chunk'])).toBeUndefined();
+    expect(claimableStatesForKinds(['feature', 'bug'])).toEqual(['todo', 'open']);
+  });
+
+  it('buildFleetKindClaimSpec pins states:["open"] for a bugs-only drain (the trap), omits it for features', () => {
+    expect((buildFleetKindClaimSpec('f', ['bug', 'change']) as { states?: string[] }).states).toEqual(['open']);
+    expect((buildFleetKindClaimSpec('f', ['feature']) as { states?: string[] }).states).toBeUndefined();
+    // Still a valid spec with states present.
+    expect(validateClaimSpec(buildFleetKindClaimSpec('f', ['bug'])).ok).toBe(true);
+  });
+
+  it('buildFleetPlanClaimSpec pins states only for a kind-scoped plan lane, never for a bare plan lane', () => {
+    expect((buildFleetPlanClaimSpec('f', 'p') as { states?: string[] }).states).toBeUndefined();
+    expect((buildFleetPlanClaimSpec('f', 'p', ['bug']) as { states?: string[] }).states).toEqual(['open']);
+  });
+
+  it('mergeKindIntoClaimSpec derives states when the leader spec had none, and PRESERVES a leader-set states', () => {
+    const noStates = { specVersion: '1.0', specId: 'leader-x', revision: 3, view: { filter: { field: 'priority', op: '<=', value: 2 } }, rank: { mode: 'lexicographic' as const, terms: [{ expr: 'priority', dir: 'asc' as const }] } };
+    expect((mergeKindIntoClaimSpec(noStates as never, ['bug']) as { states?: string[] }).states).toEqual(['open']);
+    const withStates = { ...noStates, states: ['failing'] };
+    expect((mergeKindIntoClaimSpec(withStates as never, ['bug']) as { states?: string[] }).states).toEqual(['failing']);
   });
 });
 
@@ -1263,6 +1313,11 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
     setClaimSpecMock.mockReset();
     setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
+    // P-010: restore the healthy-lane guard default (order-independent).
+    previewSpecPoolEffectMock.mockReset();
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 5, pool: 10, states: ['open'], harness: 'papercusp' });
+    evaluateCollapseGuardMock.mockReset();
+    evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [] });
   });
 
   it('applies a kind-only claim spec when claimKinds is passed (EI-10409), BEFORE any member terminal opens', async () => {
@@ -1292,7 +1347,10 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     // PROMOTED from the plan do), so plan-ANDed-with-kind starved the exact backlog-drain
     // flow claimKinds advertises. get_next's harness floor still scopes members to this pot.
     expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
-    expect(payload.claimSpecApplied).toEqual({ ok: true, revision: 1 });
+    // P-010: an issue-family drain auto-pins states:['open'] so it doesn't starve on ['todo'].
+    expect((call.spec as { states?: string[] }).states).toEqual(['open']);
+    // claimSpecApplied now also carries the pool-effect (matched of pool) on the claimKinds path.
+    expect(payload.claimSpecApplied).toMatchObject({ ok: true, revision: 1, poolEffect: { matched: 5, pool: 10 } });
     // Order matters: the spec must land before members can race a get_next pull.
     expect(callOrder.indexOf('setClaimSpec')).toBeLessThan(callOrder.indexOf('spawnConsole'));
   });
@@ -1321,6 +1379,74 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(payload.claimSpecApplied).toMatchObject({ ok: false, errors: ['db unavailable'] });
+  });
+});
+
+// P-010: the claimKinds launch path is routed through scheduler:set_claim_spec's WI-5212
+// pool-collapse guard — a starving kind scope is REFUSED before any terminal opens (the
+// bug-drain-200k trap). The guard's own thresholds are unit-tested in spec-pool-preview; here
+// we test the WIRING: refuse aborts the launch, confirm overrides, and matched is surfaced.
+describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    setClaimSpecMock.mockReset();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
+    previewSpecPoolEffectMock.mockReset();
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 5, pool: 10, states: ['open'], harness: 'papercusp' });
+    evaluateCollapseGuardMock.mockReset();
+    evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [] });
+  });
+
+  it('REFUSES a starving claimKinds fleet BEFORE any terminal opens — no members, no spec write', async () => {
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 0, pool: 12, states: ['open'], harness: 'papercusp' });
+    evaluateCollapseGuardMock.mockReturnValue({
+      refuse: true,
+      errors: ['spec matches 0 of 12 claimable row(s) — the starved-fleet shape'],
+    });
+    const res = await tool.handler(
+      { name: 'Starved Fleet', plan: 'my-plan', harness: 'papercusp', count: 3, claimKinds: ['bug'] } as never,
+      {} as never,
+    );
+    // A refusal is the plain-text err() shape, not a JSON payload.
+    expect((res as any).isError).toBe(true);
+    const text = (res as any).content[0].text as string;
+    expect(text).toMatch(/matches 0 of 12 claimable row/);
+    expect(text).toContain('NO members were opened');
+    expect(text).toContain('confirmClaimCollapse:true');
+    // The guard fired BEFORE terminals AND before the spec write — nothing was opened or stored.
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+  });
+
+  it('confirmClaimCollapse:true forwards confirm to the guard and launches the pre-staged lane anyway', async () => {
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 0, pool: 12, states: ['open'], harness: 'papercusp' });
+    // With confirm the guard does not refuse (verified by its own suite); assert the handler forwards it.
+    evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [], warning: 'pool-collapse confirmed by caller' });
+    const res = await tool.handler(
+      { name: 'Prestaged Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'], confirmClaimCollapse: true } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(evaluateCollapseGuardMock.mock.calls[0][0]).toMatchObject({ confirm: true });
+  });
+
+  it('a fed lane launches and SURFACES poolEffect.matched (the counter-signal to starvation)', async () => {
+    const res = await tool.handler(
+      { name: 'Fed Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'] } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.claimSpecApplied.poolEffect).toMatchObject({ matched: 5, pool: 10 });
+    expect(payload.message).toContain('claim-lane pool-effect');
+    expect(payload.message).toMatch(/matches 5 of 10 claimable row/);
+    // No confirm passed → the guard was consulted with confirm:false.
+    expect(evaluateCollapseGuardMock.mock.calls[0][0]).toMatchObject({ confirm: false });
   });
 });
 

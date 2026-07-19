@@ -58,6 +58,16 @@ export function planSlugOfWorkItem(item: WorkItem): string | null {
   );
 }
 
+/**
+ * Derive the item's own STATIC `payload.tags` (never the viewer-relative
+ * `topicTags` a caller may merge in on top) — single-sourced so the spec
+ * subject below AND the `work-item:claimable` event payload (EI-14161) agree
+ * on exactly the same tag set. Returns `[]` when the item carries no tags.
+ */
+export function staticTagsOfWorkItem(item: WorkItem): string[] {
+  return strings(record(item.payload).tags);
+}
+
 /** Project the fields available on an issue-family WorkItem into spec vocabulary. */
 export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[] = []): ClaimSpecSubject {
   const payload = record(item.payload);
@@ -82,7 +92,7 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     title: item.title,
     kind: item.kind,
     priority: item.priority,
-    tags: [...new Set([...strings(payload.tags), ...topicTags])],
+    tags: [...new Set([...staticTagsOfWorkItem(item), ...topicTags])],
     paths: [...new Set([...strings(payload.paths), ...filePathPaths])],
     plan,
     planItem: itemId ? [itemId] : strings(payload.source_plan_item_ids),

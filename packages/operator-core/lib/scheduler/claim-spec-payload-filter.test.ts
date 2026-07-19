@@ -26,6 +26,7 @@ function payloadOf(p: {
   kind?: string;
   title?: string;
   plan?: string | null;
+  tags?: string[];
 }): Record<string, unknown> {
   return {
     id: p.id ?? 'X-1',
@@ -36,17 +37,24 @@ function payloadOf(p: {
     state: 'todo',
     reason: 'created',
     plan: p.plan ?? null,
+    tags: p.tags ?? [],
   };
 }
 
 /** A ClaimSpecSubject agreeing with `payloadOf` on the payload-visible fields. */
-function subjectOf(p: { id?: string; kind?: string; title?: string; plan?: string | null }): ClaimSpecSubject {
+function subjectOf(p: {
+  id?: string;
+  kind?: string;
+  title?: string;
+  plan?: string | null;
+  tags?: string[];
+}): ClaimSpecSubject {
   return {
     id: p.id ?? 'X-1',
     title: p.title ?? '',
     kind: p.kind ?? 'task',
     priority: null,
-    tags: [],
+    tags: p.tags ?? [],
     paths: [],
     plan: p.plan ?? null,
     planItem: [],
@@ -91,10 +99,29 @@ describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => 
     expect(claimSpecFilterToClaimablePayloadFilter(f)).toBeUndefined();
   });
 
-  it('a leaf on a non-payload field (plan_item / tags / priority) is dropped → undefined', () => {
+  it('a leaf on a non-payload field (plan_item / paths / priority) is dropped → undefined', () => {
     expect(claimSpecFilterToClaimablePayloadFilter({ field: 'plan_item', op: 'in', value: ['P-001'] })).toBeUndefined();
-    expect(claimSpecFilterToClaimablePayloadFilter({ field: 'tags', op: 'contains', value: 'x' })).toBeUndefined();
+    expect(claimSpecFilterToClaimablePayloadFilter({ field: 'paths', op: 'contains', value: 'x' })).toBeUndefined();
     expect(claimSpecFilterToClaimablePayloadFilter({ field: 'priority', op: '<', value: 10 })).toBeUndefined();
+  });
+
+  it('EI-14161: tags is now payload-filterable — `contains` maps to EXACT membership (equals), not a substring regex', () => {
+    const f: FilterNode = { field: 'tags', op: 'contains', value: 'p2p' };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ tags: { equals: 'p2p' } });
+  });
+
+  it('EI-14161: `not(tags contains p2p)` narrows exactly (contains-on-tags is an exact leaf, so NOT is safe)', () => {
+    const f: FilterNode = { not: { field: 'tags', op: 'contains', value: 'p2p' } };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ not: { tags: { equals: 'p2p' } } });
+  });
+
+  it('EI-14161: tags `in` / `!=` translate like any other field (mingo already does implicit array matching)', () => {
+    expect(claimSpecFilterToClaimablePayloadFilter({ field: 'tags', op: 'in', value: ['p2p', 'rig'] })).toEqual({
+      tags: { in: ['p2p', 'rig'] },
+    });
+    expect(claimSpecFilterToClaimablePayloadFilter({ field: 'tags', op: '!=', value: 'p2p' })).toEqual({
+      tags: { notEquals: 'p2p' },
+    });
   });
 
   it('ALL keeps the payload-visible child, drops the non-payload one', () => {
@@ -112,7 +139,7 @@ describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => 
     const f: FilterNode = {
       any: [
         { field: 'plan', op: '=', value: 'A' },
-        { field: 'tags', op: 'contains', value: 'x' },
+        { field: 'paths', op: 'contains', value: 'x' },
       ],
     };
     expect(claimSpecFilterToClaimablePayloadFilter(f)).toBeUndefined();
@@ -163,6 +190,49 @@ describe('EI-15185 reproduction — the wasted wakes stop, real work still wakes
   });
 });
 
+describe('EI-14161 reproduction — a tag-fenced exclusion (title-glob had no signal for) now narrows', () => {
+  // The bug-drain fleet's spec: exclude the whole p2p/rig-fenced class via `tags`
+  // (the mechanism a spec author reaches for once items ARE tagged — the *p2p* title
+  // glob was only ever a workaround for when tags went unpopulated). Before this fix
+  // the claimable payload carried no `tags` at all, so this leaf translated to
+  // `undefined` (unscoped await) and the member re-woke, cold, on every one of these
+  // releases only for scheduler:get_next to immediately re-reject the SAME item.
+  const spec: FilterNode = {
+    all: [
+      { field: 'kind', op: 'in', value: ['feature', 'chunk', 'bug'] },
+      { not: { field: 'tags', op: 'contains', value: 'p2p' } },
+      { not: { field: 'tags', op: 'contains', value: 'rig' } },
+    ],
+  };
+  const derived = claimSpecFilterToClaimablePayloadFilter(spec);
+
+  it('derives a non-empty, scoped payload_filter (not the unscoped await)', () => {
+    expect(derived).toBeDefined();
+  });
+
+  it('an in-scope, untagged claimable item WOULD still wake the member', () => {
+    const p = payloadOf({ id: 'F-9', kind: 'feature', title: 'sheets clone toolbar' });
+    expect(payloadMatchesFilter(derived, p)).toBe(true);
+  });
+
+  it('EI-128 (tags: [p2p]) NO LONGER wakes the member — the exact gap EI-14161 reported', () => {
+    const p = payloadOf({ id: 'EI-128', kind: 'bug', title: 'p2p-perf regression on sync fanout', tags: ['p2p'] });
+    expect(payloadMatchesFilter(derived, p)).toBe(false);
+  });
+
+  it('a rig-fenced item (tags: [rig]) also no longer wakes the member', () => {
+    const p = payloadOf({ id: 'EI-421', kind: 'feature', title: 'federation rig soak', tags: ['rig'] });
+    expect(payloadMatchesFilter(derived, p)).toBe(false);
+  });
+
+  it('a tag that merely SUBSTRING-contains "p2p" (e.g. "p2p-adjacent") is NOT excluded — exact membership only', () => {
+    // Pins the ARRAY_VALUED_FIELDS `contains`→`equals` mapping: a substring mapping would
+    // have wrongly excluded this once wrapped in `not` (the unsoundness the fix avoids).
+    const p = payloadOf({ id: 'F-10', kind: 'feature', title: 'unrelated work', tags: ['p2p-adjacent'] });
+    expect(payloadMatchesFilter(derived, p)).toBe(true);
+  });
+});
+
 describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', () => {
   // A filter that references ONLY payload-visible fields, so the claim-spec verdict
   // is fully determined by the payload projection — the derived filter must agree
@@ -173,10 +243,23 @@ describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', 
     { not: { field: 'title', op: 'glob', value: '*p2p*' } },
     { field: 'title', op: 'contains', value: 'p2p' },
     { field: 'plan', op: '=', value: 'A' },
+    // EI-14161: tags leaves — exact membership (`contains`/`=`), `in`, `!=`, and both
+    // sides of a `not` must agree exactly with matchesClaimSpecFilter's array branch.
+    { field: 'tags', op: 'contains', value: 'p2p' },
+    { not: { field: 'tags', op: 'contains', value: 'p2p' } },
+    { field: 'tags', op: 'in', value: ['p2p', 'rig'] },
+    { field: 'tags', op: '!=', value: 'p2p' },
     {
       all: [
         { field: 'kind', op: 'in', value: ['feature', 'chunk'] },
         { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+      ],
+    },
+    {
+      all: [
+        { field: 'kind', op: 'in', value: ['feature', 'chunk', 'bug'] },
+        { not: { field: 'tags', op: 'contains', value: 'p2p' } },
+        { not: { field: 'tags', op: 'contains', value: 'rig' } },
       ],
     },
     {
@@ -187,13 +270,15 @@ describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', 
     },
   ];
 
-  const items: Array<{ id?: string; kind?: string; title?: string; plan?: string | null }> = [
+  const items: Array<{ id?: string; kind?: string; title?: string; plan?: string | null; tags?: string[] }> = [
     { id: 'F-1', kind: 'feature', title: 'sheets clone', plan: 'A' },
     { id: 'F-2', kind: 'feature', title: 'p2p sync fix', plan: 'B' },
     { id: 'C-1', kind: 'chunk', title: 'grid render', plan: 'A' },
-    { id: 'EI-128', kind: 'bug', title: 'p2p-perf regression', plan: null },
+    { id: 'EI-128', kind: 'bug', title: 'p2p-perf regression', plan: null, tags: ['p2p'] },
+    { id: 'EI-421', kind: 'feature', title: 'federation rig soak', plan: null, tags: ['rig'] },
     { id: 'WI-5013', kind: 'change', title: 'rollout tracking', plan: 'B' },
     { id: 'T-1', kind: 'task', title: 'no plan here', plan: null },
+    { id: 'F-10', kind: 'feature', title: 'unrelated work', plan: null, tags: ['p2p-adjacent'] },
   ];
 
   for (const filter of payloadOnlyFilters) {
