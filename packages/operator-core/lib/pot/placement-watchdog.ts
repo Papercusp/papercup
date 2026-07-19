@@ -2066,10 +2066,6 @@ export async function summarizeOpenPlacements(
   try {
     const { sql } = getOrgPg();
     const graceSec = Math.max(1, Math.round(STALE_CLAIM_GRACE_MS / 1000));
-    // eslint-disable-next-line no-console
-    console.error('[EI-14436 DIAG] p rows=', JSON.stringify(await sql`SELECT workspace_id, install_slug, work_item_id, status FROM harness_shared.pot_placements WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}`));
-    // eslint-disable-next-line no-console
-    console.error('[EI-14436 DIAG] f rows=', JSON.stringify(await sql`SELECT workspace_id, harness_slug, feature_id, status FROM harness_shared.harness_features_consolidated WHERE workspace_id = ${workspaceId}`));
     const countRows = await sql<OpenPlacementCountRow[]>`
       WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
       live_open AS (
@@ -2122,12 +2118,8 @@ export async function summarizeOpenPlacements(
         FROM live_open
        ORDER BY (status = 'cursed') DESC, (status = 'stranded') DESC, (status = 'recovering') DESC, updated_at DESC
        LIMIT ${limit}`;
-    // eslint-disable-next-line no-console
-    console.error('[EI-14436 DIAGNOSTIC] countRows=', JSON.stringify(countRows), 'rows=', JSON.stringify(rows));
     return buildOpenPlacementSummary(countRows, rows);
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error('[EI-14436 DIAGNOSTIC] summarizeOpenPlacements threw:', e);
+  } catch {
     return empty;
   }
 }

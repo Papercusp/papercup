@@ -185,6 +185,27 @@ export async function commitsBetween(
   return out ? out.split('\n').filter(Boolean) : [];
 }
 
+/**
+ * Full-length (40-char) SHA of EVERY commit in `from..to` (EI-14601). A batched
+ * fast-forward deploy lands N commits at once, but the deploy-landed event only ever
+ * carried `payload.sha = targetSha` (the tip) — an agent awaiting the exact sha of an
+ * earlier commit in the same batch (via `deploy:await{sha}`'s per-sha key, or a raw
+ * `events:await` payload_filter on `sha`) would silently time out even though its
+ * commit DID ship, because the exact-match never fires for anything but the tip. This
+ * gives the deploy emitter the full commit list so it can fire the per-sha key for
+ * every commit actually included, not just the target. `from: null` (first deploy —
+ * no meaningful range) or an empty range returns `[]`.
+ */
+export async function commitShasBetween(
+  repo: string,
+  from: string | null,
+  to: string,
+): Promise<string[]> {
+  if (!from) return [];
+  const out = await git(repo, ['rev-list', `${from}..${to}`]);
+  return out ? out.split('\n').filter(Boolean) : [];
+}
+
 /** Push a local ref to a remote (green-checkpoint publishes `ready`). */
 export async function pushRef(repo: string, ref: string, remote = 'origin'): Promise<void> {
   await git(repo, ['push', remote, `${ref}:${ref}`]);
