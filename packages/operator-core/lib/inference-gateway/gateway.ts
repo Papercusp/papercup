@@ -875,6 +875,24 @@ export interface GatewayStats {
    *  bootstrap snapshot from sustained pool exhaustion. Optional for deploy-skew readers. */
   processUptimeMs?: number;
   totalRequests: number;
+  /** Prompt-cache-policy telemetry (gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-002):
+   *  what the request-body rewrite did, as a byproduct of doing it. `breakpointHistogram[n]` =
+   *  requests that arrived carrying n cache_control markers (the headroom for the opt-in
+   *  tools-span breakpoint is observable here). Optional for deploy-skew readers of older gateways. */
+  cachePolicy?: {
+    enabled: boolean;
+    toolsBreakpoint: boolean;
+    anthropicRequests: number;
+    ttlUpgraded: number;
+    toolsBreakpointInjected: number;
+    toolsBreakpointSkippedNoBudget: number;
+    toolsBreakpointSkippedAllDeferred: number;
+    breakpointHistogram: number[];
+    codexRequests: number;
+    codexLegacyRetention: number;
+    codexModernTtl: number;
+    codexCacheKeySet: number;
+  };
   inFlight: number;
   queueDepth: number;
   /** Pool-wide count of accounts that can serve a request RIGHT NOW — in rotation AND not governor-paused
@@ -4220,7 +4238,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // account id, which is this session's stable routing identity.
     if (cachePolicyEnabled && bodyBuf.length) {
       const owner = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
-      const shardSeed = owner || (cli ? cli.accountId : active.accountId);
+      // By here the `if (cli) { …; return }` above has already served every CLI-bridge case,
+      // so `cli` is null and `active` is the resolved bearer account — its id is this session's
+      // stable routing identity. Prefer the owner header (a bee is pinned for its whole life).
+      const shardSeed = owner || active.accountId;
       const cached = rewriteOpenAiCacheBody(bodyBuf, {
         cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
       });
