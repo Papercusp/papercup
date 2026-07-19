@@ -176,10 +176,13 @@ export function AnalyzePanel({
       }
       .pc-analyze__sectionhead > span { font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8); }
       .pc-analyze__slots { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+      /* Compact squared chips, NOT giant pills (owner report 2026-07-19c: the
+         roster ovals above the decks read as broken progress indicators). */
       .pc-analyze__slots li {
-        display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 8px;
-        border-radius: 999px; font-size: 10.5px;
+        display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 7px;
+        border-radius: 6px; font-size: 10px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03));
         color: var(--fg-dim, #b9d4e8);
       }
       .pc-analyze__slots li.is-failed { color: var(--fg-mute, #7f9bb4); border-style: dashed; }
@@ -196,7 +199,7 @@ export function AnalyzePanel({
       .pc-analyze__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
       .pc-analyze__row strong { font-weight: 660; color: var(--fg, #e7eef5); }
       .pc-analyze__chip {
-        display: inline-flex; gap: 4px; padding: 1px 8px; border-radius: 999px;
+        display: inline-flex; gap: 4px; padding: 1px 8px; border-radius: 6px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.24)); font-size: 10px; font-weight: 600;
         color: var(--fg-dim, #b9d4e8); white-space: nowrap;
       }
@@ -222,7 +225,7 @@ export function AnalyzePanel({
       }
       .pc-analyze__completemark {
         display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px;
-        border-radius: 999px; font-size: 10px; color: var(--fg-mute, #7f9bb4);
+        border-radius: 6px; font-size: 10px; color: var(--fg-mute, #7f9bb4);
         border: 1px dashed var(--border, rgba(125, 211, 252, 0.18));
       }
       .pc-analyze__completemark.is-present {

@@ -180,6 +180,24 @@ describe('SessionChatModal', () => {
     expect(captured!.url).toContain('sessionId=claude-live');
   });
 
+  it('EI-16982: appends &ended=1 when the resolved session is not active, so the backend rematerializes the archived transcript', async () => {
+    mockFetchOnce(200, {
+      sessions: [{ source_kind: 'claude', session_id: 'claude-ended', active: false, last_ts: '2026-07-01T00:00:00Z' }],
+    });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured!.url).toBe('/api/adv/session/thinking?sessionId=claude-ended&owner=su-live-1&ended=1');
+  });
+
+  it('does NOT append ended for an active/live session (no regression)', async () => {
+    mockFetchOnce(200, {
+      sessions: [{ source_kind: 'claude', session_id: 'claude-live', active: true, last_ts: null }],
+    });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured!.url).not.toContain('ended=');
+  });
+
   it('shows a not-found state when the owner has no indexed claude session', async () => {
     mockFetchOnce(200, { sessions: [{ source_kind: 'omp', session_id: 'omp-1', last_ts: null }] });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
