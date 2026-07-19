@@ -457,6 +457,14 @@ export function injectIntoHost(
      * carry-respawns and by older hosts (additive v1 fields). */
     drillId?: string;
     sessionClass?: string;
+    /** WI-5510: the loop-fire identity riding a loop-wake delivery (turn/reset/
+     * recycle/carry-respawn) — `su-cold-loop.ts`'s ColdLoopMarker.wakeCount /
+     * .routineId, forwarded so psu-pty-host.mjs's delivery-side STALE-FIRE
+     * GUARD can drop a superseded delivery instead of flushing it mid-turn.
+     * Both additive v1 fields; omitted ⇒ the guard is a no-op (unchanged
+     * behavior) — exactly like every other pre-existing optional field here. */
+    fireNumber?: number;
+    routineId?: string;
   },
   timeoutMs = 2000,
 ): Promise<boolean> {
@@ -468,6 +476,8 @@ export function injectIntoHost(
     systemPromptAddendum?: string;
     drillId?: string;
     sessionClass?: string;
+    fireNumber?: number;
+    routineId?: string;
   } = {
     v: 1,
     mode: msg.mode,
@@ -477,6 +487,8 @@ export function injectIntoHost(
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
   if (msg.drillId !== undefined) envelope.drillId = msg.drillId;
   if (msg.sessionClass !== undefined) envelope.sessionClass = msg.sessionClass;
+  if (msg.fireNumber !== undefined) envelope.fireNumber = msg.fireNumber;
+  if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
   const payload = JSON.stringify(envelope);
   if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) return Promise.resolve(false);
 

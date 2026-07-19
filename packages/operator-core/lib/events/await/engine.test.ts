@@ -3,7 +3,7 @@
  * store/executor/messages mocked (await-event-primitive-2026-06-05 P-006).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AwaitRow, DeliveryWork } from './types';
+import type { AwaitRow, DeliveryWork, WakeOutcome } from './types';
 
 const h = vi.hoisted(() => ({
   store: {
@@ -37,11 +37,12 @@ const h = vi.hoisted(() => ({
   // hoisted mock mirrors that shape (delivered/inbox on success, drop on failure) so
   // engine.ts's exhausted-retries fallback exercises against a faithful double
   // without engine.test.ts depending on wake-executor's internals.
-  degradeToInboxOrDrop: vi.fn(async (_d: DeliveryWork, reason: string) => ({
-    kind: 'delivered' as const,
-    channel: 'inbox' as const,
-    reason,
-  })),
+  degradeToInboxOrDrop: vi.fn(
+    async (_d: DeliveryWork, _reason: string): Promise<WakeOutcome> => ({
+      kind: 'delivered' as const,
+      channel: 'inbox' as const,
+    }),
+  ),
   sendMessage: vi.fn(async () => ({ msg_id: 'm-1' })),
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.

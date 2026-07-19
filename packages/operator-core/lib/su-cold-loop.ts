@@ -36,6 +36,13 @@ export interface ColdLoopMarker {
    *  without a separate routine lookup. Absent ⇒ the caller cannot scope the
    *  carry-note ⇒ stays warm (fail-safe). */
   harness?: string;
+  /** WI-5510: the loop's stable `routines` row id — the loop-INSTANCE identity
+   *  the delivery-side stale-fire guard (psu-pty-host.mjs's makeStaleFireGuard)
+   *  keys on, so a loop that was `loop:end`ed and later re-armed (fire numbers
+   *  restart at 1) is never mistaken for a stale delivery of a PRIOR loop's
+   *  higher fire count. Stamped by loop-fire.ts alongside `wakeCount`. Absent ⇒
+   *  the delivery-side guard is a no-op for this wake (unchanged behavior). */
+  routineId?: string;
 }
 
 export interface ColdLoopCaps {
@@ -53,7 +60,7 @@ export const DEFAULT_COLD_LOOP_CAPS: ColdLoopCaps = { recycleEveryNWakes: 8 };
  *  payload carries neither field (an ordinary warm wake). Pure. */
 export function readColdLoopMarker(payload: unknown): ColdLoopMarker | null {
   if (!payload || typeof payload !== 'object') return null;
-  const p = payload as { carry?: unknown; wakeCount?: unknown; harness?: unknown };
+  const p = payload as { carry?: unknown; wakeCount?: unknown; harness?: unknown; routineId?: unknown };
   const carry = typeof p.carry === 'string' ? p.carry : undefined;
   const wakeCount =
     typeof p.wakeCount === 'number' && Number.isFinite(p.wakeCount) ? p.wakeCount : undefined;
@@ -61,8 +68,11 @@ export function readColdLoopMarker(payload: unknown): ColdLoopMarker | null {
   // it to resolve getLoopCarryNote without a separate routine lookup. A blank/missing
   // harness ⇒ undefined ⇒ decideColdWake's caller cannot scope the note ⇒ stays warm.
   const harness = typeof p.harness === 'string' && p.harness.length > 0 ? p.harness : undefined;
-  if (carry === undefined && wakeCount === undefined && harness === undefined) return null;
-  return { carry, wakeCount, harness };
+  // WI-5510: the loop-instance id (see ColdLoopMarker.routineId doc).
+  const routineId = typeof p.routineId === 'string' && p.routineId.length > 0 ? p.routineId : undefined;
+  if (carry === undefined && wakeCount === undefined && harness === undefined && routineId === undefined)
+    return null;
+  return { carry, wakeCount, harness, routineId };
 }
 
 export type ColdWakeDecision =

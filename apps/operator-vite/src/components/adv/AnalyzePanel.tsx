@@ -26,6 +26,7 @@ import type {
   AnalyzeSnapshot,
   AnalyzeCycle,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-analyze-read";
+import { CardStack } from "@papercusp/card-stack";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { useLexicon } from "@/lib/useLexicon";
 import {
@@ -126,7 +127,43 @@ export function AnalyzePanel({
         </div>
       )}
       <style>{`
-      .pc-analyze__cycles { display: flex; flex-direction: column; gap: 6px; }
+      .pc-analyze__cycles { display: flex; flex-direction: column; gap: 8px; }
+      /* Per-cycle expanders read as REAL headings (owner ask 2026-07-19):
+         larger, brighter, left-justified on a raised bar — not a whisper. */
+      .pc-analyze__cycles .pc-learning-visual__disclosure-trigger {
+        justify-content: flex-start;
+        min-height: 34px; padding: 7px 11px; border-radius: 9px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        background: var(--bg-2, rgba(255, 255, 255, 0.04));
+        color: var(--fg-dim, #b9d4e8);
+      }
+      .pc-analyze__cycles .pc-learning-visual__disclosure-trigger:hover {
+        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 40%, var(--border, rgba(125, 211, 252, 0.16)));
+      }
+      .pc-analyze__cycles .pc-learning-visual__disclosure-label {
+        flex: 0 1 auto; font-size: 12.5px; font-weight: 700;
+        color: var(--fg, #e7eef5); white-space: normal; text-align: left; line-height: 1.35;
+      }
+      /* One overlapping deck per lens, per run (owner ask 2026-07-19). */
+      .pc-analyze__lensstacks {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 16px; margin-top: 6px;
+      }
+      .pc-analyze__lensgroup { display: flex; flex-direction: column; min-width: 0; }
+      .pc-analyze__ideacard {
+        display: flex; flex-direction: column; gap: 6px; padding: 11px 13px;
+        font-size: 12px; color: var(--fg, #e7eef5);
+      }
+      .pc-analyze__ideatitle {
+        font-size: 12.5px; font-weight: 660; line-height: 1.4;
+        color: var(--fg, #e7eef5); overflow-wrap: anywhere;
+      }
+      .pc-analyze__notes {
+        margin: 0; font-size: 11px; line-height: 1.5; color: var(--fg-dim, #b9d4e8);
+        border-left: 2px solid color-mix(in srgb, var(--accent, #7dd3fc) 35%, transparent);
+        padding-left: 8px;
+      }
+      .pc-analyze__notes b { font-weight: 660; color: var(--fg, #e7eef5); }
       .pc-analyze__sectionhead {
         display: flex; align-items: baseline; gap: 10px; margin: 12px 2px 6px;
       }
@@ -232,10 +269,34 @@ function CompletenessMark({
   );
 }
 
+/** Group a cycle's raw ideas by their creative lens — biggest lens first, so
+ *  the dominant decks lead (mirrors the Ideas view's lens stacks). */
+function groupIdeasByLens<T extends { lens?: string | null } | null | undefined>(
+  ideas: readonly T[],
+): Array<[string, T[]]> {
+  const groups = new Map<string, T[]>();
+  for (const idea of ideas) {
+    const lens = (idea && idea.lens) || "unknown";
+    const bucket = groups.get(lens);
+    if (bucket) bucket.push(idea);
+    else groups.set(lens, [idea]);
+  }
+  return [...groups.entries()].sort(
+    (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
+  );
+}
+
 function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
   const t = useLexicon();
   const ideaTitle = (id: string): string =>
     cycle.ideas.find((idea) => idea?.id === id)?.title ?? id;
+  // Critique verdicts joined onto their idea's card (the second "Adversarial
+  // critique" list collapsed into the decks — owner ask 2026-07-19).
+  const scoredById = new Map(
+    cycle.scored
+      .filter((s) => s?.idea?.id)
+      .map((s) => [s.idea.id, s] as const),
+  );
   // Grounding chips (WI-5412 item 2): each idea's addressesPatternRefs — the
   // digest signals it targeted. wi: refs deep-link to the Improvements backlog.
   const [, setLviewRaw] = useQueryState("lview", parseAsString);
@@ -316,10 +377,10 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
       </div>
 
       <div className="pc-analyze__sectionhead">
-        <h4>Divergent generation</h4>
+        <h4>Divergent generation + critique</h4>
         <span>
-          each roster slot rides one creative lens; raw → survived the
-          grounding filter
+          one deck per creative lens; each idea's card carries the critics'
+          verdict
         </span>
       </div>
       {cycle.ideatorSlots.length > 0 ? (
@@ -341,73 +402,100 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
         </ul>
       ) : null}
       {cycle.ideas.length > 0 ? (
-        <ul className="pc-analyze__list" aria-label="Raw ideas by ideator">
-          {cycle.ideas.map((idea, i) => (
-            <li key={idea?.id ?? i}>
-              <div className="pc-analyze__row">
-                <span className="pc-analyze__chip">{idea?.lens ?? "?"}</span>
-                <strong>{idea?.title ?? idea?.id ?? "(untitled idea)"}</strong>
-              </div>
-              {idea?.body ? <p className="pc-analyze__body">{idea.body}</p> : null}
-              {idea?.mechanism ? (
-                <p className="pc-analyze__mech">{idea.mechanism}</p>
-              ) : null}
-              {Array.isArray(idea?.addressesPatternRefs) &&
-              idea.addressesPatternRefs.length > 0 ? (
-                <div
-                  className="pc-analyze__sources"
-                  aria-label="Grounding — the signals this idea addresses"
-                >
-                  {idea.addressesPatternRefs.map(renderGroundingChip)}
-                </div>
-              ) : (
-                <div className="pc-analyze__sources">
-                  <span
-                    className="pc-analyze__chip pc-analyze__chip--ungrounded"
-                    title="No grounding refs recorded — the critics weigh ungroundedness against the idea."
-                  >
-                    ungrounded
-                  </span>
-                </div>
-              )}
-            </li>
+        // The card system, per run (owner ask 2026-07-19): this cycle's ideas
+        // grouped into one overlapping deck per lens; the critique verdict +
+        // scores + notes ride each idea's card instead of a second list.
+        <div className="pc-analyze__lensstacks">
+          {groupIdeasByLens(cycle.ideas).map(([lens, ideas]) => (
+            <section
+              key={lens}
+              className="pc-analyze__lensgroup"
+              aria-label={`${lens} ideas this cycle`}
+            >
+              <CardStack
+                items={ideas}
+                getKey={(idea, i) => idea?.id ?? `idea-${i}`}
+                ariaLabel={`${lens} ideas this cycle`}
+                header={
+                  <>
+                    <span className="pc-cardstack__header-label">{lens}</span>
+                    <span className="pc-cardstack__header-count">
+                      {ideas.length}
+                    </span>
+                  </>
+                }
+                renderCard={(idea) => {
+                  const s = idea?.id ? scoredById.get(idea.id) : undefined;
+                  return (
+                    <div className="pc-analyze__ideacard">
+                      <div className="pc-analyze__row">
+                        {s ? (
+                          <span
+                            className={`pc-analyze__chip is-${s.verdict ?? "reject"}`}
+                          >
+                            {s.verdict ?? "?"}
+                          </span>
+                        ) : (
+                          <span
+                            className="pc-analyze__chip pc-analyze__chip--ungrounded"
+                            title="No critique verdict persisted for this idea."
+                          >
+                            no verdict
+                          </span>
+                        )}
+                        {s ? (
+                          <span className="pc-analyze__scores">
+                            novelty {Math.round((s.novelty ?? 0) * 100)} ·
+                            feasibility {Math.round((s.feasibility ?? 0) * 100)}
+                          </span>
+                        ) : null}
+                      </div>
+                      <strong className="pc-analyze__ideatitle">
+                        {idea?.title ?? idea?.id ?? "(untitled idea)"}
+                      </strong>
+                      {idea?.body ? (
+                        <p className="pc-analyze__body">{idea.body}</p>
+                      ) : null}
+                      {idea?.mechanism ? (
+                        <p className="pc-analyze__mech">{idea.mechanism}</p>
+                      ) : null}
+                      {s?.notes ? (
+                        <p className="pc-analyze__notes">
+                          <b>Critics:</b> {s.notes}
+                        </p>
+                      ) : null}
+                      {Array.isArray(idea?.addressesPatternRefs) &&
+                      idea.addressesPatternRefs.length > 0 ? (
+                        <div
+                          className="pc-analyze__sources"
+                          aria-label="Grounding — the signals this idea addresses"
+                        >
+                          {idea.addressesPatternRefs.map(renderGroundingChip)}
+                        </div>
+                      ) : (
+                        <div className="pc-analyze__sources">
+                          <span
+                            className="pc-analyze__chip pc-analyze__chip--ungrounded"
+                            title="No grounding refs recorded — the critics weigh ungroundedness against the idea."
+                          >
+                            ungrounded
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }}
+              />
+            </section>
           ))}
-        </ul>
+        </div>
       ) : (
         <p className="pc-learning__quietempty">
-          No raw ideas persisted for this cycle.
-        </p>
-      )}
-
-      <div className="pc-analyze__sectionhead">
-        <h4>Adversarial critique</h4>
-        <span>
-          search-first novelty + feasibility critics bucket every idea
-        </span>
-      </div>
-      {cycle.scored.length > 0 ? (
-        <ul className="pc-analyze__list" aria-label="Critique verdicts">
-          {cycle.scored.map((s, i) => (
-            <li key={s?.idea?.id ?? i}>
-              <div className="pc-analyze__row">
-                <span
-                  className={`pc-analyze__chip is-${s?.verdict ?? "reject"}`}
-                >
-                  {s?.verdict ?? "?"}
-                </span>
-                <strong>{s?.idea?.title ?? s?.idea?.id ?? "(idea)"}</strong>
-                <span className="pc-analyze__scores">
-                  novelty {Math.round((s?.novelty ?? 0) * 100)} · feasibility{" "}
-                  {Math.round((s?.feasibility ?? 0) * 100)}
-                </span>
-              </div>
-              {s?.notes ? <p className="pc-analyze__body">{s.notes}</p> : null}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="pc-learning__quietempty">
-          No critique verdicts persisted for this cycle.
+          No raw ideas persisted for this cycle
+          {cycle.scored.length > 0
+            ? ` (${cycle.scored.length} critique verdicts exist without their raw ideas)`
+            : ""}
+          .
         </p>
       )}
 

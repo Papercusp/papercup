@@ -1210,7 +1210,10 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     // Lens + origin, the routed artifact, the grade GAP, and the outcome.
     expect(trace.textContent).toContain("reframing");
     expect(trace.textContent).toContain("scout");
-    expect(trace.textContent).toContain("plan:scout-cache-warmup");
+    // The routed chip shows rail label + prefix-stripped ref ("plan draft ·
+    // scout-cache-warmup"), never the doubled "plan: plan:…" form.
+    expect(trace.textContent).toContain("scout-cache-warmup");
+    expect(trace.textContent).not.toContain("plan:scout-cache-warmup");
     expect(trace.textContent).toContain("ungraded"); // the gap IS the signal
     expect(trace.textContent).toContain("pending");
     // The card TITLE deep-links to the routed artifact (a plan → Create tab).

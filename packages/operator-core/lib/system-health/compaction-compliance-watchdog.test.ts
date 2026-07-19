@@ -222,7 +222,7 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
     expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 400_000);
   });
 
-  it('shapes the [1m] default by fleet role: member → 300k, leader/solo → 400k (owner directive 2026-07-03)', async () => {
+  it('shapes the [1m] default by fleet role: member → 200k, leader/solo → 400k (owner directive 2026-07-19)', async () => {
     specMock.mockResolvedValue('sonnet[1m]:high');
     const out = await checkCompactionCompliance(
       fakeSql({
@@ -239,10 +239,10 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       }),
     );
     expect(out.seeded).toEqual(['su-member', 'su-leader', 'su-solo', 'su-spawned-member']);
-    expect(setLimitMock).toHaveBeenCalledWith('su-member', 300_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-member', 200_000);
     expect(setLimitMock).toHaveBeenCalledWith('su-leader', 400_000);
     expect(setLimitMock).toHaveBeenCalledWith('su-solo', 400_000);
-    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 300_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 200_000);
   });
 
   it('honors the spawn record: explicit tier limit > recorded spec default > resolver (D-006)', async () => {
@@ -758,7 +758,7 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
 });
 
 describe('live-config reach (agent-managed-compaction P-017)', () => {
-  it('lowers a stale-above-cap limit on a running MEMBER to the current shaped default (300k)', async () => {
+  it('lowers a stale-above-cap limit on a running MEMBER to the current shaped default (200k)', async () => {
     estimateMock.mockResolvedValue(40_000); // under the new limit ⇒ no force
     specMock.mockResolvedValue('sonnet[1m]:high');
     const out = await checkCompactionCompliance(
@@ -768,12 +768,12 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
         ],
       }),
     );
-    expect(setLimitMock).toHaveBeenCalledWith('stale', 300_000);
-    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 300_000 }]);
-    expect(out.overLimit).toEqual([]); // 40k < the corrected 300k
+    expect(setLimitMock).toHaveBeenCalledWith('stale', 200_000);
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 200_000 }]);
+    expect(out.overLimit).toEqual([]); // 40k < the corrected 200k
   });
 
-  it('a leader/solo stale limit is lowered to the leader cap (400k), not the member 300k', async () => {
+  it('a leader/solo stale limit is lowered to the leader cap (400k), not the member 200k', async () => {
     estimateMock.mockResolvedValue(40_000);
     specMock.mockResolvedValue('opus[1m]');
     const out = await checkCompactionCompliance(
@@ -805,7 +805,7 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
   });
 
   it('a re-limit CASCADES: a now-over session (est between old & new limit) force-compacts the same pass', async () => {
-    estimateMock.mockResolvedValue(450_000); // < old 500k (was safe) but ≥ the new 300k
+    estimateMock.mockResolvedValue(450_000); // < old 500k (was safe) but ≥ the new 200k
     specMock.mockResolvedValue('sonnet[1m]');
     findLiveHostMock.mockReturnValue({ sock: '/tmp/stale.sock', caps: ['compact'] });
     hostSupportsMock.mockReturnValue(true);
@@ -816,8 +816,8 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
         ],
       }),
     );
-    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 300_000 }]);
-    expect(out.overLimit).toEqual(['stale']); // 450k ≥ the corrected 300k
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 200_000 }]);
+    expect(out.overLimit).toEqual(['stale']); // 450k ≥ the corrected 200k
     expect(out.forceCompacted).toEqual(['stale']); // and the P-012 rung fires on the corrected limit
   });
 });

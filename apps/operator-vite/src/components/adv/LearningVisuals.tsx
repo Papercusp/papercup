@@ -294,9 +294,9 @@ export function LearningVisualStyles() {
       .pc-learning-visual__statline > div.is-warn dd { color: #fbbf24; }
       .pc-learning-visual__statline > div.is-bad dd { color: #fb7185; }
       .pc-learning-visual__statline > div.is-accent dd { color: var(--accent); }
-      .pc-learning-visual__layout { display: grid; grid-template-columns: minmax(140px, .62fr) minmax(300px, 2fr) minmax(170px, .78fr); gap: 7px; align-items: stretch; margin-bottom: 6px; }
+      .pc-learning-visual__layout { display: grid; grid-template-columns: minmax(140px, .62fr) minmax(300px, 2fr) minmax(170px, .78fr); gap: 6px; align-items: stretch; margin-bottom: 5px; }
       .pc-learning-visual__hero, .pc-learning-visual__comparison, .pc-learning-visual__evidence { border: 1px solid color-mix(in srgb, var(--border) 84%, transparent); border-radius: 11px; background: color-mix(in srgb, var(--bg-2) 92%, transparent); }
-      .pc-learning-visual__hero { min-height: 92px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 10px 12px; overflow: hidden; position: relative; }
+      .pc-learning-visual__hero { min-height: 62px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 8px 11px; overflow: hidden; position: relative; }
       .pc-learning-visual__hero::after { content: ''; position: absolute; inset: auto -20% -55% 15%; height: 75%; border-radius: 50%; background: currentColor; opacity: .055; filter: blur(18px); pointer-events: none; }
       .pc-learning-visual__hero.is-good { color: #34d399; }
       .pc-learning-visual__hero.is-warn { color: #fbbf24; }

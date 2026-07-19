@@ -392,13 +392,29 @@ ${beacon}
   return scrubIdentity(html, redact);
 }
 
-/** One download table (Platform / Download / Size / SHA-256) for a set of artifacts. */
+/** High-level platform sections for a release's downloads, in display order
+ *  (owner ask 2026-07-19: a separate section per platform). `Mobile` folds the
+ *  phone builds together; `platforms` lists the ReleaseArtifact platform strings
+ *  that belong to each section. */
+const PLATFORM_SECTIONS: ReadonlyArray<{ label: string; platforms: string[]; desktop: boolean }> = [
+  { label: 'Linux', platforms: ['linux-x86_64'], desktop: true },
+  { label: 'macOS', platforms: ['darwin-universal'], desktop: true },
+  { label: 'Windows', platforms: ['windows-x86_64'], desktop: true },
+  { label: 'Mobile', platforms: ['android-universal', 'ios-arm64'], desktop: false },
+];
+
+/** One download table (Download / Size / SHA-256) for a set of artifacts. Used
+ *  IDENTICALLY for the app (GUI) and the Server within a platform section — the
+ *  Server is a first-class table, never a prose link (owner ask 2026-07-19). The
+ *  platform is the section header and the component is a sub-header, so neither is
+ *  a table column here. */
 function renderDownloadTable(list: ReleaseArtifact[]): string {
   if (list.length === 0) return '';
   const rows = list
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
     .map(
       (a) => `      <tr>
-        <td>${escapeHtml(platformLabel(a.platform))}</td>
         <td><a href="${escapeHtml(a.url)}">${escapeHtml(a.name)}</a></td>
         <td>${escapeHtml(formatBytes(a.size))}</td>
         <td class="sha">${escapeHtml(a.sha256 || '—')}</td>
@@ -406,11 +422,53 @@ function renderDownloadTable(list: ReleaseArtifact[]): string {
     )
     .join('\n');
   return `<table class="dl">
-  <thead><tr><th>Platform</th><th>Download</th><th>Size</th><th>SHA-256</th></tr></thead>
+  <thead><tr><th>Download</th><th>Size</th><th>SHA-256</th></tr></thead>
   <tbody>
 ${rows}
   </tbody>
 </table>`;
+}
+
+/** The GUI↔Server requirement note for ONE desktop platform section. Linux GUI is
+ *  self-contained (Server optional); mac/Windows GUI REQUIRES the Server. If a
+ *  mac/Win section has a GUI but NO Server, warn loudly rather than let a tester
+ *  install a build that can't start. */
+function platformRequirementNote(
+  label: string,
+  hasGui: boolean,
+  hasServer: boolean,
+): string {
+  if (!hasGui) return '';
+  if (label === 'Linux') {
+    return hasServer
+      ? `\n<p class="n">The app runs on its own on Linux — it includes its own backend. <strong>Papercusp Server</strong> is optional here (only to keep agents running with the app closed).</p>`
+      : '';
+  }
+  // macOS / Windows — the GUI has no built-in backend.
+  return hasServer
+    ? `\n<p class="n"><strong>Install both.</strong> On ${escapeHtml(label)} the app needs <strong>Papercusp Server</strong> running alongside it — install the app <em>and</em> the Server below.</p>`
+    : `\n<p class="warn">⚠ On ${escapeHtml(label)} the app also needs <strong>Papercusp Server</strong> to run — it isn't in this release yet, so this build can't start on its own.</p>`;
+}
+
+/** One platform's section: a heading, then the app downloads and (when present)
+ *  the Server downloads, each as its own labelled table of the SAME shape. */
+function renderPlatformSection(label: string, desktop: boolean, list: ReleaseArtifact[]): string {
+  const app = list.filter((a) => a.product === 'gui' || a.product === 'mobile');
+  const server = list.filter((a) => a.product === 'server');
+  // Only label the App/Server sub-sections when BOTH are present — a platform with
+  // just one component doesn't need the distinction.
+  const labelComponents = app.length > 0 && server.length > 0;
+  const parts: string[] = [`<h3 class="platform-h">${escapeHtml(label)}</h3>`];
+  if (app.length > 0) {
+    if (labelComponents) parts.push(`<h4 class="component-h">App</h4>`);
+    parts.push(renderDownloadTable(app));
+  }
+  if (server.length > 0) {
+    if (labelComponents) parts.push(`<h4 class="component-h">Papercusp Server</h4>`);
+    parts.push(renderDownloadTable(server));
+  }
+  if (desktop) parts.push(platformRequirementNote(label, app.length > 0, server.length > 0));
+  return `<section class="platform-section">\n${parts.filter(Boolean).join('\n')}\n</section>`;
 }
 
 function renderArtifacts(artifacts: ReleaseArtifact[]): string {

@@ -275,9 +275,15 @@ export const LOOP_WAKE_FULL_TEMPLATE_EVERY = 10;
  *  and misread the resulting STALE warning as a "lag artifact" instead of "you're
  *  writing the wrong checkpoint" — the two tools are similarly named and easy to
  *  conflate under a WARM loop, where loop:checkpoint feels optional. Re-measured:
- *  shortForm 747 (stale-header case), fullForm 199. */
+ *  shortForm 747 (stale-header case), fullForm 199.
+ *  Raised again 2026-07-19 (EI-17327, deliberate trade-off): the SHORT form's
+ *  first line (the arm-time GOAL text) now carries its own staleness caveat —
+ *  a wake was observed presenting an hours-stale goal line naming a torn-down
+ *  PID/run-id as if current, while the (correct) checkpoint block's "prefer
+ *  this" framing never referenced the goal line specifically enough to catch
+ *  it. Re-measured: shortForm 932 (stale-header case). */
 export const LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS = {
-  shortForm: 760,
+  shortForm: 950,
   fullForm: 210,
   wallsHeader: 220,
   wallsPerRow: 56,
@@ -460,7 +466,13 @@ export function renderLoopWakeText(opts: {
   return [
     // P-006 (fleet-member-dx, EI-9018): label this as the LOOP's own counter so it
     // can't be confused with the event-wake delivery-log id in the same injection.
-    `${firstLine} (your loop's wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes)`,
+    // EI-17327: `firstLine` embeds the arm-time GOAL text verbatim — frozen at
+    // whenever the loop was last (re-)armed, possibly hours ago. A goal that names
+    // concrete facts (a PID, a run id, a leader) reads as CURRENT even long after
+    // those facts are torn down; the checkpoint block below is the fresh state, but
+    // it never said so relative to THIS line specifically. Say it here, right where
+    // the stale claim lives, not just in the checkpoint's own header.
+    `${firstLine} (your loop's wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes. ⚠ that goal text is frozen from arm time — verify any concrete claim in it, e.g. a PID/run-id/leader, against live state before acting; your checkpoint below is the fresher source)`,
     '',
     ...priority.flatMap((s) => [s, '']),
     block,
@@ -671,11 +683,17 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // of 'wake-pump' (both verified agent-origin — a labeling improvement, not a behavior
   // fork). decideColdWake still treats carry!=='cold' as warm unless the caller resolved
   // classDefaultCold, so a warm loop with the P-021 flag off is byte-identical downstream.
+  //
+  // WI-5510: `routineId` additionally rides the marker — the delivery-side stale-fire
+  // guard (psu-pty-host.mjs's makeStaleFireGuard, wired through injectPsuHostWake) needs
+  // a stable LOOP-INSTANCE identity, not just the raw fire number, so a loop that was
+  // `loop:end`ed and re-armed (fire numbers restart at 1) is never mistaken for a stale
+  // delivery of a prior loop's higher fire count. Purely additive on the wire.
   const carry = readLoopCarry(input.payloadTemplate);
-  const loopMarkerPayload: { carry?: 'cold'; wakeCount: number; harness: string } =
+  const loopMarkerPayload: { carry?: 'cold'; wakeCount: number; harness: string; routineId: string } =
     carry === 'cold'
-      ? { carry: 'cold', wakeCount: fireNumber, harness: input.installSlug }
-      : { wakeCount: fireNumber, harness: input.installSlug };
+      ? { carry: 'cold', wakeCount: fireNumber, harness: input.installSlug, routineId: input.routineId }
+      : { wakeCount: fireNumber, harness: input.installSlug, routineId: input.routineId };
 
   const fan = await wake([input.targetOwnerId], {
     summary: kickoff,

@@ -1063,14 +1063,22 @@ async function injectPsuHostWake(
   deps: ExecuteWakeDeps,
 ): Promise<WakeOutcome | null> {
   const sock = host.sock;
+  // WI-5510: read the loop-fire marker ONCE up front — both the warm and cold
+  // branches below need {wakeCount, routineId} to stamp the delivery-side
+  // stale-fire guard (psu-pty-host.mjs), not only the cold path's carry
+  // decision. A non-loop wake (no marker) yields undefined for both — the
+  // guard is then a no-op for this delivery, exactly like today.
+  const loopMarker = readColdLoopMarker(d.payload);
+  const fireNumber = loopMarker?.wakeCount;
+  const routineId = loopMarker?.routineId;
   const injectWarm = async (): Promise<WakeOutcome | null> => {
-    const ok = await injectPsuHost(sock, { mode: 'turn', data: warmText });
+    const ok = await injectPsuHost(sock, { mode: 'turn', data: warmText, fireNumber, routineId });
     return ok ? { kind: 'delivered', channel: 'psu-socket-inject' } : null;
   };
 
   let decision: ColdWakeDecision = { cold: false, reason: 'warm (cold fork not engaged)' };
   try {
-    const marker = readColdLoopMarker(d.payload);
+    const marker = loopMarker;
     // Cheap short-circuit: only a harness-scoped LOOP wake can go cold — either
     // explicitly cold-armed (carry:'cold') or, P-021, a no-carry loop marker whose
     // session class is drill-proven cold-by-default. Anything else resolves nothing
@@ -1126,12 +1134,17 @@ async function injectPsuHostWake(
     // recycle continuation prompt classifies as verified agent-origin.
     // EI-15799: stamp the fire number into the cold-wake text so a receiving agent
     // (or the agent's own reconciliation) can detect a delivery that lagged past a
-    // later fire — see renderColdWakeInjection's wakeCount doc.
-    const coldFireCount = readColdLoopMarker(d.payload)?.wakeCount;
+    // later fire — see renderColdWakeInjection's wakeCount doc. WI-5510 (the
+    // follow-up EI-15799 left open): ALSO stamp {fireNumber, routineId} onto the
+    // envelope itself (not just the text) so the delivery-side stale-fire guard
+    // can DROP a superseded delivery instead of merely labeling it.
+    const coldFireCount = loopMarker?.wakeCount;
     const coldText = tagWakeText(d, renderColdWakeInjection(decision.carryNote, extras, coldFireCount), deps.tagTurn ?? tagTurnForInjection);
     const ok = await injectPsuHost(sock, {
       mode: decision.mode,
       data: coldText,
+      fireNumber: coldFireCount,
+      routineId,
     });
     if (ok) {
       return {

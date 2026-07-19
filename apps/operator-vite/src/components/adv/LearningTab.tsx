@@ -3312,32 +3312,30 @@ export function ScoutView({
     const outcome = item.outcome ?? "pending";
     const outcomeTone =
       outcome === "won" ? "good" : outcome === "lost" ? "bad" : "missing";
-    const arrow = (
-      <span className="pc-learning__tracearrow" aria-hidden>
-        →
-      </span>
-    );
+    // Display the ref WITHOUT its rail prefix — the rail chip already names
+    // the destination (owner ask 2026-07-19: the gym/plan link boxes were
+    // unreadable "gym gym:SP-004" doubles).
+    const shortRef = item.routedRef.replace(/^[a-z]+:/i, "");
     return (
       <div
         className="pc-learning__trace"
         aria-label={`Pipeline trace for ${item.title ?? item.routedRef}`}
       >
         <div
-          className={`pc-learning__tracestage${refs.length === 0 ? " pc-learning__tracestage--missing" : ""}`}
+          className={`pc-learning__tracerow${refs.length === 0 ? " is-missing" : ""}`}
         >
           <em>grounded in</em>
-          {refs.length > 0 ? (
-            <span className="pc-learning__tracechips">
-              {refs.map(renderGroundingChip)}
-            </span>
-          ) : (
-            <strong title="No grounding evidence was recorded for this idea (su-ideate filings often ground informally).">
-              none recorded
-            </strong>
-          )}
+          <span className="pc-learning__tracechips">
+            {refs.length > 0 ? (
+              refs.map(renderGroundingChip)
+            ) : (
+              <strong title="No grounding evidence was recorded for this idea (su-ideate filings often ground informally).">
+                none recorded
+              </strong>
+            )}
+          </span>
         </div>
-        {arrow}
-        <div className="pc-learning__tracestage">
+        <div className="pc-learning__tracerow">
           <em>lens</em>
           <strong
             title={
@@ -3350,24 +3348,27 @@ export function ScoutView({
             {item.origin ? <i> · {item.origin}</i> : null}
           </strong>
         </div>
-        {arrow}
-        <div className="pc-learning__tracestage">
+        <div className="pc-learning__tracerow">
           <em>routed to</em>
-          <Tooltip label={`${meta.desc} — open ${item.routedRef}`}>
-            <button
-              type="button"
-              className="pc-learning__tracechip pc-learning__tracechip--link"
-              onClick={() => openRouted(item)}
-            >
-              <i style={{ color: meta.color }}>{meta.label}</i>
-              {item.routedRef}
-            </button>
-          </Tooltip>
+          <span className="pc-learning__tracechips">
+            <Tooltip label={`${meta.desc} — open ${item.routedRef}`}>
+              <button
+                type="button"
+                className="pc-learning__tracechip pc-learning__tracechip--link"
+                onClick={() => openRouted(item)}
+              >
+                <i
+                  className="pc-learning__tracedot"
+                  style={{ background: meta.color }}
+                  aria-hidden
+                />
+                <span>{meta.label}</span>
+                <b>{shortRef}</b>
+              </button>
+            </Tooltip>
+          </span>
         </div>
-        {arrow}
-        <div
-          className={`pc-learning__tracestage${eff ? "" : " pc-learning__tracestage--missing"}`}
-        >
+        <div className={`pc-learning__tracerow${eff ? "" : " is-missing"}`}>
           <em>grade</em>
           <strong
             title={
@@ -3382,9 +3383,8 @@ export function ScoutView({
               : "ungraded"}
           </strong>
         </div>
-        {arrow}
         <div
-          className={`pc-learning__tracestage${outcomeTone === "missing" ? " pc-learning__tracestage--missing" : ` pc-learning__tracestage--${outcomeTone}`}`}
+          className={`pc-learning__tracerow${outcomeTone === "missing" ? " is-missing" : ` is-${outcomeTone}`}`}
         >
           <em>outcome</em>
           <strong title="Outcome derived from the change feed (won / lost / pending) — did the routed artifact pan out?">
@@ -4815,33 +4815,44 @@ export function LearningStyles() {
 
       /* P-004 pipeline trace: the idea's loop as one row of stages. Spans the
          scout row's grid; stages wrap on narrow panes (the arrows ride along). */
+      /* The pipeline trace as a clean label/value grid (owner ask 2026-07-19:
+         "the whole design needs a lot of work") — one aligned row per stage,
+         no arrow soup, labels in a fixed column so five stages scan as a card
+         ledger in the stacked-card width. */
       .pc-learning__trace {
-        grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 7px; flex-wrap: wrap;
-        margin-top: 7px; padding: 8px 11px; border-radius: 9px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
-        background: var(--bg-2, rgba(255, 255, 255, 0.03));
+        grid-column: 1 / -1;
+        display: grid; grid-template-columns: max-content minmax(0, 1fr);
+        gap: 6px 12px; align-items: start;
+        margin-top: 9px; padding: 9px 12px; border-radius: 9px;
+        border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 10%, var(--border, rgba(125, 211, 252, 0.14)));
+        background: color-mix(in srgb, var(--bg-1, #0d151d) 55%, transparent);
       }
-      .pc-learning__tracestage { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
-      .pc-learning__tracestage > em {
+      .pc-learning__tracerow { display: contents; }
+      .pc-learning__tracerow > em {
         font-style: normal; font-size: 8.5px; font-weight: 720; text-transform: uppercase;
-        letter-spacing: 0; color: var(--fg-mute, #7f9bb4);
+        letter-spacing: 0; color: var(--fg-mute, #7f9bb4); padding-top: 3px; white-space: nowrap;
       }
-      .pc-learning__tracestage > strong {
-        font-size: 11px; font-weight: 650; color: var(--fg-dim, #b9d4e8);
-        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px;
+      .pc-learning__tracerow > strong {
+        font-size: 11px; font-weight: 620; color: var(--fg-dim, #b9d4e8);
+        min-width: 0; overflow-wrap: anywhere;
       }
-      .pc-learning__tracestage > strong i { font-style: normal; font-size: 9.5px; font-weight: 600; color: var(--fg-mute, #7f9bb4); }
-      .pc-learning__tracestage--missing > strong { color: var(--fg-mute, #7f9bb4); font-weight: 550; }
-      .pc-learning__tracestage--good > strong { color: #86efac; }
-      .pc-learning__tracestage--bad > strong { color: #fb7185; }
-      .pc-learning__tracearrow { align-self: center; color: var(--fg-mute, #7f9bb4); font-size: 11px; opacity: 0.7; }
-      .pc-learning__tracechips { display: flex; flex-wrap: wrap; gap: 3px; max-width: 460px; }
+      .pc-learning__tracerow > strong i { font-style: normal; font-size: 9.5px; font-weight: 600; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__tracerow.is-missing > strong { color: var(--fg-mute, #7f9bb4); font-weight: 520; font-style: italic; }
+      .pc-learning__tracerow.is-good > strong { color: #86efac; }
+      .pc-learning__tracerow.is-bad > strong { color: #fb7185; }
+      .pc-learning__tracechips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+      .pc-learning__tracechips > strong {
+        font-size: 11px; font-weight: 520; font-style: italic; color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__tracedot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+      .pc-learning__tracechip b { font-weight: 680; color: var(--fg, #e7eef5); overflow: hidden; text-overflow: ellipsis; }
       .pc-learning__tracechip {
-        display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
-        font-size: 10px; font-weight: 600; border-radius: 999px; font-family: inherit;
+        display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+        font-size: 10.5px; font-weight: 600; border-radius: 6px; font-family: inherit;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
-        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-dim, #b9d4e8);
-        max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        background: var(--bg-2, rgba(255, 255, 255, 0.04)); color: var(--fg-dim, #b9d4e8);
+        max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        transition: border-color 130ms ease, color 130ms ease, background 130ms ease;
       }
       .pc-learning__tracechip i {
         font-style: normal; font-size: 8.5px; font-weight: 720; text-transform: uppercase;

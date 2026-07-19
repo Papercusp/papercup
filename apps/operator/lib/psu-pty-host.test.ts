@@ -1477,9 +1477,78 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(h.order).toEqual(['acquire', 'idle', 'prompt', 'recycle', 'release']);
   });
 
-  it('refuses a message with no drillId (never latches on the empty key)', () => {
+  // WI-5368: a message with NO drillId is a PRODUCTION (non-drill) carry-respawn
+  // — the session:request-compaction path every real agent uses. This used to
+  // be silently dropped here (schedule() unconditionally returned 'duplicate'
+  // for an empty drillId, and the call site only invoked schedule() at all when
+  // msg.drillId was set) — a busy-gate-deferred real compaction request left
+  // ZERO durable trace and NO retry, even though the tool had already told the
+  // calling agent `respawn:true`. It must now queue + retry exactly like a drill.
+  const NON_DRILL_MSG = {
+    mode: 'carry-respawn',
+    data: 'continue + re-orient note',
+    systemPromptAddendum: '## Identity\nownerId: su-r',
+  };
+
+  it('queues one retry for a non-drill (production) carry-respawn, emits respawn-rearm-queued, and recycles at the settled prompt', async () => {
     const h = makeHarness();
-    expect(h.controller.schedule({ ...DRILL_MSG, drillId: '' })).toBe('duplicate');
-    expect(h.events).toEqual([]);
+    expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
+    expect(h.events[0]).toMatchObject({
+      kind: 'respawn-rearm-queued',
+      mode: 'carry-respawn',
+      reason: 'busy-gate-expired',
+      capMs: 1234,
+    });
+    expect(h.events[0].drillId).toBeUndefined();
+    await h.settle();
+    expect(h.recycles).toEqual([
+      {
+        data: NON_DRILL_MSG.data,
+        opts: {
+          systemPromptAddendum: NON_DRILL_MSG.systemPromptAddendum,
+          drillId: '',
+          sessionClass: '',
+        },
+      },
+    ]);
+    expect(h.order).toEqual(['acquire', 'prompt', 'recycle', 'release']);
+    expect(h.events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('a non-drill retry that ALSO defers drops terminally with respawn-carry-dropped { rearmed:true } and never recycles', async () => {
+    const h = makeHarness({ promptResults: [{ deferred: true }] });
+    expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
+    await h.settle();
+    expect(h.recycles).toEqual([]);
+    expect(h.events.at(-1)).toMatchObject({
+      kind: 'respawn-carry-dropped',
+      mode: 'carry-respawn',
+      reason: 'busy-gate-expired',
+      rearmed: true,
+    });
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('a second non-drill schedule while one is pending returns duplicate (shared non-drill key)', () => {
+    const h = makeHarness({ promptResults: [] });
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt: () => new Promise(() => {}),
+      recycle: async () => {},
+      emitEvent: (kind, extra) => h.events.push({ kind, ...extra }),
+      capMs: 1234,
+    });
+    expect(controller.schedule(NON_DRILL_MSG)).toBe('queued');
+    expect(controller.schedule(NON_DRILL_MSG)).toBe('duplicate');
+    expect(controller.pendingCount()).toBe(1);
+    expect(h.events.filter((e) => e.kind === 'respawn-rearm-queued')).toHaveLength(1);
+  });
+
+  it('a drill and a non-drill retry can be pending at the same time (independent keys)', () => {
+    const h = makeHarness({ promptResults: [] });
+    expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
+    expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
+    expect(h.controller.pendingCount()).toBe(2);
   });
 });

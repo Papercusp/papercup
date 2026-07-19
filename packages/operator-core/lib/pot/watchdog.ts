@@ -2,11 +2,14 @@
  * watchdog.ts — the pot LIVENESS BACKSTOP
  * (start-hive-wake-orchestration-2026-06-09 Phase 3: P-008…P-012, D-002/D-003/D-004).
  *
- * One invariant (D-002): **a time wake is ALWAYS armed while the pot is
- * started.** The Mug sets her own cadence (pot:declare-wake — including
- * effectively-continuous); events move the next wake earlier; THIS module
- * guarantees the wake EXISTS when she forgot; Pause (started=false) is the only
- * thing allowed to clear it.
+ * One invariant (D-002, widened by EI-18096707077291323): **SOME next wake is
+ * ALWAYS armed while the pot is started — a time wake, a live event-wake
+ * subscription, or both.** The Mug sets her own cadence (pot:declare-wake —
+ * including effectively-continuous, or a deliberate event-only/`mode:'none'`
+ * dormancy per EI-309's frontier guard); THIS module guarantees a wake
+ * mechanism EXISTS when she forgot BOTH — an explicitly-declared event-only
+ * wake is not "forgot," it's armed via the event leg (see potLivenessCheck).
+ * Pause (started=false) is the only thing allowed to clear it.
  *
  * This is a dead-man's switch, NOT a cadence (D-003): every check is a cheap
  * deterministic SQL read, and the wake it may arm is the exception path. Three
@@ -105,8 +108,14 @@ async function alertMissingStartedPot(workspaceId: string, installSlug: string):
 // ── P-008: the pure liveness read ────────────────────────────────────────────
 
 export interface PotLiveness {
-  /** D-002's one-row check: an ACTIVE pot-wake routine with a next_fire_at exists. */
+  /** D-002's one-row check, widened by EI-18096707077291323: an ACTIVE
+   *  pot-wake routine with a next_fire_at, OR at least one live event-wake
+   *  subscription — either is a validly-armed next wake. */
   armed: boolean;
+  /** true iff armed via the TIME leg specifically (routine row active + next_fire_at). */
+  timeArmed: boolean;
+  /** true iff armed via the EVENT leg specifically (>=1 persisted subscription). */
+  eventArmed: boolean;
   nextFireAt: Date | null;
   lastFiredAt: Date | null;
   /** ms since the last wake activity (launch fire or routine fire); null = never. */
@@ -114,9 +123,21 @@ export interface PotLiveness {
 }
 
 /**
- * The one-row liveness check the whole invariant rests on (P-008/D-002):
- * "is the Mug alive?" ⇒ does an active wake row exist, and how long since
- * the last wake activity if not.
+ * The one-row liveness check the whole invariant rests on (P-008/D-002,
+ * widened by EI-18096707077291323): "is the Mug alive?" ⇒ does an active wake
+ * row exist, and how long since the last wake activity if not.
+ *
+ * EI-18096707077291323: D-002's original invariant treated ONLY a durable
+ * time wake as "armed" — a stale read from before `pot:declare-wake` grew a
+ * legitimate event-only (or `mode:'none'`) dormancy declaration (EI-309's
+ * frontier guard explicitly permits it, e.g. while owner-steering
+ * `pauseNewWork` is on). A pot that deliberately declared event-only wakes
+ * has a real next-wake mechanism — an armed subscription WILL fire her when
+ * its event occurs — so treating it as "forgot to declare" made the turn-end
+ * watchdog re-fire every cycle even though the operator correctly declared
+ * dormancy (measured: 139 fires/24h on a pot paused for a release). `armed`
+ * is now TIME-armed OR EVENT-armed; `timeArmed`/`eventArmed` are exposed
+ * separately for callers (e.g. pot:status) that want to distinguish them.
  */
 export async function potLivenessCheck(
   sql: Sql,
@@ -129,10 +150,13 @@ export async function potLivenessCheck(
   // ON (OFF ⇒ per-pot, unchanged).
   const time = await getPotTimeWake(sql, installSlug, opts.workspaceId ? { workspaceId: opts.workspaceId } : {});
   const state = await readPotWakeState(opts.workspaceId);
-  const armed = Boolean(time?.active && time.nextFireAt);
+  const timeArmed = Boolean(time?.active && time.nextFireAt);
+  const eventArmed = state.subscriptions.length > 0;
   const lastActivity = Math.max(state.lastWakeAt ?? 0, time?.lastFiredAt?.getTime() ?? 0);
   return {
-    armed,
+    armed: timeArmed || eventArmed,
+    timeArmed,
+    eventArmed,
     nextFireAt: time?.nextFireAt ?? null,
     lastFiredAt: time?.lastFiredAt ?? null,
     staleForMs: lastActivity > 0 ? Math.max(0, now - lastActivity) : null,

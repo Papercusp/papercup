@@ -894,8 +894,31 @@ export const ACTIVITY_PERSIST_MS = 15_000;
  * (wake-executor + turn:interrupt) share this format — mirrored in
  * operator-core/lib/events/await/psu-pty-discovery.ts. Pure — exported for tests.
  */
-export function encodeControl({ mode, data }) {
-  return JSON.stringify({ v: 1, mode, data });
+export function encodeControl({ mode, data, ...extra }) {
+  return JSON.stringify({ v: 1, mode, data, ...extra });
+}
+
+/** Parse `{ fireNumber, routineId }` off a raw envelope object, or `{}` when
+ *  either is absent/malformed — the WI-5510 fire-identity fields threaded onto
+ *  a loop-wake delivery (turn/reset/recycle/carry-respawn) so the STALE-FIRE
+ *  GUARD below can tell a superseded delivery from a fresh one. Both fields
+ *  travel together: `routineId` names WHICH loop instance (a fresh loop after
+ *  loop:end + re-arm gets a new id, so its fire #1 is never confused with a
+ *  prior loop's higher fire count), `fireNumber` is that loop's 1-based fire
+ *  count at DECIDE time (loop-fire.ts). Absent on any pre-WI-5510 sender or a
+ *  non-loop wake ⇒ the guard is a no-op for that message (unchanged behavior).
+ *  Pure — exported for tests. */
+function decodeFireIdentity(o) {
+  const fireNumber =
+    typeof o?.fireNumber === 'number' && Number.isFinite(o.fireNumber) && o.fireNumber > 0
+      ? o.fireNumber
+      : undefined;
+  const routineId =
+    typeof o?.routineId === 'string' && o.routineId.length > 0 ? o.routineId.slice(0, 200) : undefined;
+  const out = {};
+  if (fireNumber !== undefined) out.fireNumber = fireNumber;
+  if (routineId !== undefined) out.routineId = routineId;
+  return out;
 }
 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
@@ -926,8 +949,12 @@ export function decodeControl(payload) {
       // them exactly as they defer a wake turn. `data` is the carry-note the fresh
       // context opens on. reset = in-place `/clear` (drop transcript, keep the
       // process + MCP warm); recycle = kill + respawn the child in this same host.
-      if (o.mode === 'reset') return { mode: 'reset', data: String(o.data ?? ''), gated: true };
-      if (o.mode === 'recycle') return { mode: 'recycle', data: String(o.data ?? ''), gated: true };
+      // Both also carry the WI-5510 fire identity (decodeFireIdentity) so the
+      // STALE-FIRE GUARD applies to them exactly like a warm turn.
+      if (o.mode === 'reset')
+        return { mode: 'reset', data: String(o.data ?? ''), gated: true, ...decodeFireIdentity(o) };
+      if (o.mode === 'recycle')
+        return { mode: 'recycle', data: String(o.data ?? ''), gated: true, ...decodeFireIdentity(o) };
       // carry-respawn (deterministic-context-carry P-018): a clean-boundary
       // RECYCLE whose fresh Claude child receives the deterministic carry as a
       // system-prompt addendum. `data` is the optional successor first prompt.
@@ -941,6 +968,7 @@ export function decodeControl(payload) {
           drillId: o.drillId != null ? String(o.drillId).slice(0, 200) : '',
           sessionClass: o.sessionClass != null ? String(o.sessionClass).slice(0, 200) : '',
           gated: true,
+          ...decodeFireIdentity(o),
         };
       // compact — RETIRED (P-022): still DECODED so a stale pre-cutover sender's
       // message reaches the handler's loud drop instead of falling through to the
@@ -960,7 +988,7 @@ export function decodeControl(payload) {
       // 'papercusp-su' applied by the handler).
       if (o.mode === 'mcp-reconnect')
         return { mode: 'mcp-reconnect', data: String(o.data ?? ''), gated: true };
-      return { mode: 'turn', data: String(o.data ?? ''), gated: true };
+      return { mode: 'turn', data: String(o.data ?? ''), gated: true, ...decodeFireIdentity(o) };
     }
   } catch {
     /* not an envelope — fall through to legacy */
@@ -1308,6 +1336,59 @@ export function makeInjectMutex() {
       });
       await prev; // block until the previous holder releases
       return release; // caller releases → frees the next FIFO waiter
+    },
+  };
+}
+
+// ── WI-5510: delivery-side STALE-FIRE GUARD ──────────────────────────────────
+//
+// Follow-up to EI-15799 (whose fix was cosmetic — renderColdWakeInjection just
+// LABELS a cold-wake delivery with its fire number so a receiving agent can
+// notice a lag; it explicitly did NOT drop a superseded delivery, and said so
+// in its own doc comment). The root cause EI-15799 left open: the FIRE-time
+// decision (loop-fire.ts, which computes `fireNumber = priorFires + 1` and
+// stamps it on the wake payload) and the DELIVERY-time execution (the control-
+// socket connection handler below, an EXTERNAL process from loop-fire.ts's
+// point of view) are two separate stages with NO shared state between them.
+// A fire can be decided/queued, gate-wait here (the idle + agent-busy gates can
+// hold a delivery for minutes), and THEN a LATER fire for the SAME loop is
+// decided, wins its own gate race, and delivers FIRST — so when the earlier
+// delivery's wait finally clears, writing it flushes a stale, already-
+// superseded wake mid-turn into the live session (this is exactly the failure
+// EI-15799 was filed against, live-witnessed again during this very fix — see
+// WI-5510's repro comment).
+//
+// makeStaleFireGuard is the shared state loop-fire.ts and the delivery path
+// were missing: "the last fire number this host has committed to deliver, per
+// loop instance". Keyed by `routineId` (the loop's stable `routines` row id,
+// stamped into the wake payload by loop-fire.ts alongside `wakeCount`) rather
+// than a bare fire number, so a loop that was `loop:end`ed and later re-armed
+// (fire numbers restart at 1) is never mistaken for a stale delivery of the
+// OLD loop's higher fire count — a fresh routineId always admits.
+export function makeStaleFireGuard() {
+  const lastByRoutine = new Map();
+  return {
+    /**
+     * Decide + COMMIT in one call (mirrors makeTurnCoalescer's admit/claim
+     * commit-at-delivery style): a message with no `routineId`/`fireNumber`
+     * (not a loop-fire wake, or a pre-WI-5510 sender) always admits and never
+     * touches the map — this guard is opt-in per-message, not a new
+     * requirement on every control-socket write. When both are present,
+     * admits (and records `fireNumber` as the new high-water mark) only when
+     * `fireNumber` is STRICTLY NEWER than the last one committed for this
+     * `routineId`; an equal-or-older fire number is a stale/duplicate
+     * delivery and must be DROPPED (admit:false) without updating state.
+     */
+    admit(routineId, fireNumber) {
+      if (routineId == null || fireNumber == null) return { admit: true, lastDelivered: null };
+      const lastDelivered = lastByRoutine.get(routineId) ?? 0;
+      if (fireNumber <= lastDelivered) return { admit: false, lastDelivered };
+      lastByRoutine.set(routineId, fireNumber);
+      return { admit: true, lastDelivered };
+    },
+    /** Live count of distinct loop instances tracked (diagnostics/tests). */
+    size() {
+      return lastByRoutine.size;
     },
   };
 }
@@ -2029,6 +2110,12 @@ export function hostThroughPty(o) {
   // both pass the at-prompt gate and interleave their bytes into one pty input
   // line (the "/compact swallowed as prose" race). See makeInjectMutex.
   const injectMutex = makeInjectMutex();
+  // WI-5510: per-loop-instance last-delivered fire number — the delivery-side
+  // half of the stale-fire guard (see makeStaleFireGuard's doc block). One
+  // guard per host process is correct: this host serves exactly ONE ownerId
+  // for its whole lifetime (D-006), so it needs no owner-keyed map, only a
+  // loop-instance-keyed (routineId) one.
+  const staleFireGuard = makeStaleFireGuard();
   // EI-12754: one-shot deferred retry for busy-gate-refused carry-respawn
   // drills. The retry window defaults to 2× the live-inject cap (a busy turn
   // that outran the first 3-minute wait gets one more, longer chance to settle);
@@ -2169,6 +2256,43 @@ export function hostThroughPty(o) {
             // P-001a: clear the coalesce slot on defer — wakes folded into this
             // waiter are dropped WITH it (same queue-to-next-turn semantics), and
             // later arrivals must start a fresh cycle, never fold into a dead one.
+            if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+            return;
+          }
+        }
+        // WI-5510: STALE-FIRE GUARD. Once a message has passed every gate above
+        // and is ABOUT to be delivered, check + commit it against the last fire
+        // number this host has delivered for its loop instance (routineId).
+        // Placed here — after the busy-gate wait, before any write/recycle —
+        // because this is the true "about to deliver" moment: a message that was
+        // still gate-waiting while a LATER fire for the same loop already cleared
+        // its own wait and delivered is exactly the stale-mid-turn-flush race
+        // this guard exists to close (see makeStaleFireGuard's doc block). Only
+        // messages carrying BOTH `routineId` + `fireNumber` (a loop-fire wake
+        // from a WI-5510-aware sender) are guarded; an ordinary coord wake or
+        // owner-typed injection (neither field set) always admits, unaffected.
+        if (msg.fireNumber != null && msg.routineId) {
+          const verdict = staleFireGuard.admit(msg.routineId, msg.fireNumber);
+          if (!verdict.admit) {
+            const dropExtra = {
+              routineId: msg.routineId,
+              fireNumber: msg.fireNumber,
+              lastDelivered: verdict.lastDelivered,
+              mode: msg.mode,
+            };
+            appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
+            try {
+              process.stderr.write(
+                `psu-pty-host: STALE fire #${msg.fireNumber} DROPPED for ${ownerId} ` +
+                  `(routine ${msg.routineId} already delivered fire #${verdict.lastDelivered}; ` +
+                  `mode:${msg.mode}) — superseded by a later fire, never written\n`,
+              );
+            } catch {
+              /* diagnostic only */
+            }
+            // Same coalesce-slot hygiene as the busy-gate defer path just above —
+            // a dropped waiter must release any same-source turn folded into it,
+            // never black-hole it; a later arrival starts a fresh cycle.
             if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
             return;
           }

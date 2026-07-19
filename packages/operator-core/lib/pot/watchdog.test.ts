@@ -140,6 +140,28 @@ describe('potLivenessCheck (P-008 / D-002)', () => {
     const live = await potLivenessCheck(fakeSql as never, SLUG, { now: NOW });
     expect(live.staleForMs).toBeNull();
   });
+
+  // EI-18096707077291323: an event-only (or mode:'none', which still ensures
+  // the default demand subscriptions per EI-10525) dormancy declaration is a
+  // validly-armed next wake, not "forgot to declare" — armed via the EVENT
+  // leg even though no time wake exists.
+  it('armed via an event-wake subscription alone (no time wake) — EI-18096707077291323', async () => {
+    getPotTimeWake.mockResolvedValue({ active: false, nextFireAt: null, lastFiredAt: null });
+    readPotWakeState.mockResolvedValue({
+      subscriptions: [{ on: 'pot:set-steering', note: 'dormancy wake' }],
+    });
+    const live = await potLivenessCheck(fakeSql as never, SLUG, { workspaceId: WS, now: NOW });
+    expect(live.armed).toBe(true);
+    expect(live.timeArmed).toBe(false);
+    expect(live.eventArmed).toBe(true);
+  });
+
+  it('unarmed when neither a time wake nor any event subscription exists', async () => {
+    const live = await potLivenessCheck(fakeSql as never, SLUG, { workspaceId: WS, now: NOW });
+    expect(live.armed).toBe(false);
+    expect(live.timeArmed).toBe(false);
+    expect(live.eventArmed).toBe(false);
+  });
 });
 
 describe('armFallbackPotWake (D-004: a default sleep, never an immediate re-invoke)', () => {
@@ -234,6 +256,25 @@ describe('potTurnEndCheck (P-009) + potBootCheck (P-010)', () => {
     expect(res.outcome).toBe('armed');
   });
 
+  // EI-18096707077291323 recurrence guard: turn-end used to re-fire the fallback
+  // every cycle after a valid event-only declare-wake (no time.active, 4 event
+  // subscriptions armed) because potLivenessCheck only recognized the time leg.
+  it('turn-end does NOT re-fire after an event-only declare-wake (EI-18096707077291323)', async () => {
+    getPotTimeWake.mockResolvedValue({ active: false, nextFireAt: null, lastFiredAt: null });
+    readPotWakeState.mockResolvedValue({
+      subscriptions: [
+        { on: 'pot:set-steering', note: 'dormancy wake' },
+        { on: 'plans:start', note: 'default demand wake' },
+        { on: 'work_items:create', note: 'default demand wake' },
+        { on: 'coord:escalate', note: 'default demand wake' },
+      ],
+    });
+    const res = await potTurnEndCheck({ workspaceId: WS, installSlug: SLUG });
+    expect(res.outcome).toBe('skipped');
+    expect(res.reason).toBe('a wake is already armed');
+    expect(declarePotTimeWake).not.toHaveBeenCalled();
+  });
+
   it('boot check sweeps every started pot', async () => {
     listStartedWorkspaceLoops.mockResolvedValue([
       { workspaceId: WS, installSlug: 'h1' },
@@ -265,6 +306,15 @@ describe('potWatchdogSweep (P-011 / D-003: every condition gates)', () => {
 
   it('armed → no fire', async () => {
     getPotTimeWake.mockResolvedValue({ active: true, nextFireAt: new Date(NOW + 9_000), lastFiredAt: null });
+    demandRow = { todo_items: 5, started_plans: 1 };
+    expect(await potWatchdogSweep({ now: NOW })).toHaveLength(0);
+  });
+
+  it('event-armed (no time wake) → no fire (EI-18096707077291323)', async () => {
+    readPotWakeState.mockResolvedValue({
+      subscriptions: [{ on: 'pot:set-steering', note: 'dormancy wake' }],
+      lastWakeAt: NOW - (watchdogStaleSec() + 60) * 1_000,
+    });
     demandRow = { todo_items: 5, started_plans: 1 };
     expect(await potWatchdogSweep({ now: NOW })).toHaveLength(0);
   });
