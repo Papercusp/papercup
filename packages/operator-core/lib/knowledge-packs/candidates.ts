@@ -78,12 +78,13 @@ import {
 // and re-exported below so existing importers of this module are unchanged.
 import {
   AUTO_ADOPT_REVIEWER,
+  FLEET_LESSONS_PACK_ID,
   type CandidateStatus,
   type KnowledgePackCandidate,
 } from './candidates-shared';
 
-/** The owner-curated pack adoption writes into (created on first adoption). */
-export const FLEET_LESSONS_PACK_ID = 'fleet-lessons';
+// FLEET_LESSONS_PACK_ID moved to the client-safe ./candidates-shared (P-006);
+// re-exported below so existing importers of this module are unchanged.
 
 /** Default pending-candidate cap — staging refuses past it (queue, not landfill). */
 export const MAX_PENDING_CANDIDATES = 20;
@@ -97,7 +98,7 @@ export function pendingCandidateCap(): number {
 // Re-exported from the client-safe ./candidates-shared (imported above) so every
 // existing importer of this module keeps resolving CandidateStatus /
 // KnowledgePackCandidate / AUTO_ADOPT_REVIEWER unchanged.
-export { AUTO_ADOPT_REVIEWER };
+export { AUTO_ADOPT_REVIEWER, FLEET_LESSONS_PACK_ID };
 export type { CandidateStatus, KnowledgePackCandidate };
 
 interface CandidateRow {

@@ -375,13 +375,20 @@ async function writeToPg(
     -- when both are known, else by the SYMMETRIC content digest (local rows are
     -- author_pubkey-NULL by design, mig 214), so every replica settles on the
     -- same value in one exchange. The digest covers CONTENT columns only.
+    --
+    -- EI-16756: terminal_owner/terminal_completion_ref MUST be in this digest —
+    -- see the identical fix + rationale in projections/engineer-issues.ts's
+    -- sibling writeToPg (both feature- and issue-family rows carry this
+    -- completion-integrity pair and share the same fed_apply_wins tie-break).
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
-                          EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text)),
+                          EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text,
+                          EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref)),
             work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
             md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
-                          work_items.status, work_items.taken_by, work_items.payload::text)))
+                          work_items.status, work_items.taken_by, work_items.payload::text,
+                          work_items.terminal_owner, work_items.terminal_completion_ref)))
   `;
 }
 

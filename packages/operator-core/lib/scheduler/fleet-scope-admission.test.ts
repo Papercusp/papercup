@@ -227,6 +227,7 @@ describe('fleet scope assignment admission (P-016)', () => {
   // own valid claim every single call).
   it('EI-16710: a feature-family item matches scope using the caller-supplied workspaceId, not an ambient global', async () => {
     admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'bugs', fleetRole: 'member' });
+    admissionMocks.getFleet.mockResolvedValue({ fleetSlug: 'bugs', controlState: 'active', controlReason: null });
     admissionMocks.getClaimSpecRecord.mockResolvedValue({
       source: 'fleet',
       spec: {
