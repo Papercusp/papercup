@@ -68,6 +68,26 @@ export interface WallEntry {
   sinceMs?: number;
 }
 
+/** A carried CLAIM about external state + the probe that falsifies it
+ *  (cold-carry-system-hardening-2026-07-19 P-001/P-010) — the non-owner analog of a
+ *  {@link WallEntry}. Root incident: a cold-carried instruction ("expect the hash to
+ *  ROLL, count under the new hash") was executed to the letter into a wrong soak
+ *  anchor because the note carried the conclusion WITHOUT its verification probe,
+ *  while the walls (claim+recheck rows) never misled all night. A check row makes
+ *  the probe travel with the claim — and distinguishes VERIFIED (evidence attached)
+ *  from PREDICTED (a hypothesis the successor must re-check before relying on). */
+export interface CheckEntry {
+  /** The claim about external state, stated concretely ("post-restart ticks stamp hash b01b01…"). */
+  claim: string;
+  /** A concrete probe a successor runs to falsify/confirm the claim before relying on it. */
+  recheck?: string;
+  /** Evidence pointer for a VERIFIED claim — what was observed, where ("tick 1944 @02:38Z, pg read").
+   *  Absent ⇒ the claim renders as PREDICTED. */
+  verified?: string;
+  /** Epoch ms the check was first recorded — preserved across rewrites of the same claim. */
+  sinceMs?: number;
+}
+
 /** FACTS, not a self-grade (D-004). All fields optional; a plain string is equally
  *  valid (the store is free TEXT). {@link renderCarryNote} produces the canonical
  *  template a cold successor knows how to read. */
@@ -80,6 +100,9 @@ export interface CarryNoteFields {
   insight?: string;
   /** next-action — the single concrete next step to take on the next wake. */
   next?: string;
+  /** carried CHECKS — external-state claims as {claim, recheck} rows (P-001);
+   *  rendered as a `## Checks` section of parseable one-line rows. */
+  checks?: CheckEntry[];
   /** open WALLS — owner-gated commitments as rows (P-006); rendered as a `## Walls`
    *  section of parseable one-line rows, carried until explicitly cleared. */
   walls?: WallEntry[];
@@ -100,6 +123,18 @@ export const CARRY_NOTE_WALLS_HEADING = 'Walls';
 
 /** Bound on carried wall rows — a wall set past this is a triage problem, not a note. */
 export const CARRY_NOTE_MAX_WALLS = 12;
+
+/** The checks section heading (P-001). Rendered after the narrative sections,
+ *  before Walls (walls stay last — the established anchor position). */
+export const CARRY_NOTE_CHECKS_HEADING = 'Checks';
+
+/** Bound on carried check rows — same triage rationale as walls. */
+export const CARRY_NOTE_MAX_CHECKS = 12;
+
+/** Fixed legend rendered under the `## Checks` heading so a cold successor reads the
+ *  rows correctly with zero prior knowledge. Starts with `_` so line-parsers skip it. */
+export const CARRY_NOTE_CHECKS_LEGEND =
+  '_✓ = VERIFIED (evidence attached) · ? = PREDICTED — run the re-check before relying on it_';
 
 /** One wall as a parseable single line: `- <claim> — re-check: <cmd> (since <ISO>)`.
  *  The " — re-check: " and trailing " (since …)" markers are the round-trip anchors. */
@@ -127,14 +162,56 @@ export function parseWallLine(line: string): WallEntry | null {
   return out;
 }
 
+/** One check as a parseable single line: `- ✓|? <claim> — re-check: <cmd> — evidence: <ptr> (since <ISO>)`.
+ *  `✓` = verified (evidence follows), `?` = predicted. The marker, " — re-check: ",
+ *  " — evidence: " and trailing " (since …)" are the round-trip anchors. */
+export function renderCheckLine(c: CheckEntry): string {
+  const recheck = (c.recheck ?? '').trim();
+  const verified = (c.verified ?? '').trim();
+  const since =
+    c.sinceMs != null && Number.isFinite(c.sinceMs) ? ` (since ${new Date(c.sinceMs).toISOString()})` : '';
+  return `- ${verified ? '✓' : '?'} ${c.claim.trim()}${recheck ? ` — re-check: ${recheck}` : ''}${
+    verified ? ` — evidence: ${verified}` : ''
+  }${since}`;
+}
+
+/** Parse one checks-section line back into a {@link CheckEntry}; null for a
+ *  non-row line (blank, the legend, prose, malformed). */
+export function parseCheckLine(line: string): CheckEntry | null {
+  const m =
+    /^-\s+([✓?])\s+(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+—\s+evidence:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
+      line,
+    );
+  if (!m) return null;
+  const claim = (m[2] ?? '').trim();
+  if (!claim) return null;
+  const out: CheckEntry = { claim };
+  const recheck = (m[3] ?? '').trim();
+  if (recheck) out.recheck = recheck;
+  const verified = (m[4] ?? '').trim();
+  if (verified) out.verified = verified;
+  if (m[5]) {
+    const t = Date.parse(m[5]);
+    if (Number.isFinite(t)) out.sinceMs = t;
+  }
+  return out;
+}
+
 /** Render structured fields into the canonical carry-note template (the shared
  *  SHAPE). Blank/omitted sections are skipped; returns '' when nothing is set (⇒ a
- *  clear when passed to {@link setCarryNote}). Walls render last as parseable rows. */
+ *  clear when passed to {@link setCarryNote}). Checks render after the narrative
+ *  sections; walls render last as parseable rows. */
 export function renderCarryNote(fields: CarryNoteFields): string {
   const sections = CARRY_NOTE_SECTIONS.map(({ key, heading }) => {
     const v = (fields[key] ?? '').trim();
     return v.length > 0 ? `## ${heading}\n${v}` : null;
   }).filter((s): s is string => s !== null);
+  const checks = (fields.checks ?? []).filter((c) => (c.claim ?? '').trim().length > 0);
+  if (checks.length > 0) {
+    sections.push(
+      `## ${CARRY_NOTE_CHECKS_HEADING}\n${CARRY_NOTE_CHECKS_LEGEND}\n${checks.map(renderCheckLine).join('\n')}`,
+    );
+  }
   const walls = (fields.walls ?? []).filter((w) => (w.claim ?? '').trim().length > 0);
   if (walls.length > 0) {
     sections.push(`## ${CARRY_NOTE_WALLS_HEADING}\n${walls.map(renderWallLine).join('\n')}`);

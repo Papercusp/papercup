@@ -579,6 +579,13 @@ export interface BuildProgramSuccessOptions extends Pick<
    * bg-host restarts, a rolling window keeps judging PRE-fix errors for up to 48h; a
    * caller that passes the restart instant here judges only what the RUNNING code
    * produced. Omitted ⇒ the rolling default (byte-identical to pre-EI-12148 behavior).
+   *
+   * WI-5451: when present, this is now ALSO threaded into the WI-5397 code-hash union
+   * reads (readNewestScoutCodeHash / readScoutTicksByCodeHash) — intersected with the
+   * code-hash predicate, never replacing it, so a tick from before this floor can no
+   * longer ride into the cycle-error-rate bar's evidence just because it shares the
+   * running code's hash. Omitted ⇒ the union stays unbounded by time exactly as before
+   * this fix (its whole cross-restart soak purpose).
    */
   sinceMs?: number;
   /** Deterministic clock injection for tests. */
