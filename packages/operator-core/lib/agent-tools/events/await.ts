@@ -33,6 +33,9 @@ import { liveBlockedState, liveSettledProbe } from '../../work-items-events';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { resolvePlanScope } from '../plans/source';
+import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
+import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
+import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
@@ -96,7 +99,7 @@ export default defineTool({
     payload_filter: dataConditionSchema
       .optional()
       .describe(
-        "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires.",
+        "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires. Omitted on event:'work-item:claimable'? EI-13846: it is auto-narrowed to YOUR OWN claim spec when one exists (see auto_scoped_payload_filter in the response) — pass this explicitly to override.",
       ),
     fromMsg: hardText(LIMITS.IDENT)
       .optional()
@@ -436,6 +439,45 @@ export default defineTool({
       }
     }
 
+    // ── EI-13846 (hive-wide wake-storm): default the payload_filter for the
+    // canonical `work-item:claimable` key to the CALLER'S OWN claim-spec view
+    // when they didn't pass one explicitly. The member contract (scheduler:get_next's
+    // miss advice, loop.ts's idle-park instruction) has always TOLD callers to copy
+    // a derived filter onto this park, but nothing enforced or defaulted it — a
+    // member that simply calls `events:await({ event: 'work-item:claimable' })`
+    // (no lane yet, or one that just drained) got an UNSCOPED await that fires on
+    // EVERY hive-wide claimable emission. On a ~2000-item board that is constant:
+    // one drained member burned ~54 wakes / 272 tool calls overnight on a
+    // guaranteed-miss scheduler:get_next, purely from an unscoped park. Reuses the
+    // EI-15185 derivation verbatim (claimSpecFilterToClaimablePayloadFilter) — no
+    // new translation logic, just applying it as a DEFAULT instead of advice text.
+    // Best-effort: a claim-spec read failure/timeout must never block registration
+    // — it just leaves the await unscoped, exactly as before this fix.
+    let effectivePayloadFilter = args.payload_filter ?? null;
+    let autoScopedFrom: { source: 'cup' | 'fleet'; specId: string; revision: number | null } | null = null;
+    let unscopedClaimableWarning = false;
+    if (!patternAwait && eventKey === 'work-item:claimable' && effectivePayloadFilter == null) {
+      const probe = await withBoundedTimeout(
+        getClaimSpecRecord({
+          cupId: identity.ownerId,
+          workspaceId: resolveClaimSpecWorkspace(identity.workspaceId ?? undefined),
+        }),
+        { fallback: null, timeoutMs: 1_500, label: 'events-await:claimSpecDefault' },
+      );
+      const record = probe.value;
+      if (record && record.source !== 'default') {
+        const derived = claimSpecFilterToClaimablePayloadFilter(record.spec.view.filter);
+        if (derived) {
+          effectivePayloadFilter = derived;
+          autoScopedFrom = { source: record.source, specId: record.spec.specId, revision: record.revision };
+        } else {
+          unscopedClaimableWarning = true;
+        }
+      } else {
+        unscopedClaimableWarning = true;
+      }
+    }
+
     // ── Capture the wake handle NOW (D-003) ────────────────────────────
     const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
       planRunId: args.plan_run_id,
@@ -449,7 +491,7 @@ export default defineTool({
       wakeHandle: handle,
       timeoutBehavior: args.on_timeout ?? 'wake',
       timeoutSec: args.timeout_sec ?? DEFAULT_TIMEOUT_SEC,
-      payloadFilter: args.payload_filter ?? null,
+      payloadFilter: effectivePayloadFilter,
     });
 
     await extendClaimsForThisAwait(args.timeout_sec ?? DEFAULT_TIMEOUT_SEC);
@@ -481,6 +523,21 @@ export default defineTool({
               ? {
                   family_prefix_missing_param: true,
                   family_prefix_missing_param_advice: `"${eventKey}" is the FAMILY PREFIX for '${requiredParamPrefixMismatch.family}' (template ${requiredParamPrefixMismatch.keyTemplate}), but its '${requiredParamPrefixMismatch.paramName}' param is REQUIRED — no emitter ever fires the bare key, so this await can only TIME OUT. Did you mean the parameterized key (fill in ${requiredParamPrefixMismatch.paramName}), or the glob form "${eventKey}:*" to wake on ANY instance? Registered anyway — this is a warning, not a refusal.`,
+                }
+              : {}),
+            ...(autoScopedFrom
+              ? {
+                  auto_scoped_payload_filter: true,
+                  payload_filter: effectivePayloadFilter,
+                  payload_filter_source: autoScopedFrom,
+                  auto_scoped_payload_filter_advice: `EI-13846: no payload_filter was passed, so this "work-item:claimable" await was AUTOMATICALLY narrowed to your own ${autoScopedFrom.source} claim spec (${autoScopedFrom.specId}@${autoScopedFrom.revision}) — it will fire only on claimable items your spec could actually admit, not on every hive-wide release. Pass an explicit payload_filter to override.`,
+                }
+              : {}),
+            ...(unscopedClaimableWarning
+              ? {
+                  unscoped_claimable_await: true,
+                  unscoped_claimable_advice:
+                    'EI-13846: no payload_filter was passed, and you have no claim spec that narrows over the claimable payload (id/kind/title/plan), so this await is UNSCOPED — it will wake you on EVERY hive-wide work-item:claimable emission, which fires constantly on a large board. If you are fleet-scoped, confirm scheduler:get_claim_spec narrows on one of those fields; otherwise pass an explicit payload_filter or expect frequent guaranteed-miss wakes.',
                 }
               : {}),
             expires_ts: row.expiresTs,

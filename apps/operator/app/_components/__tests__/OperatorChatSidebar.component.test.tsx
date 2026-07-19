@@ -391,6 +391,46 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     const iconRule = css.match(/\.op-chat-sidebar \.oracle-msg-icon\s*\{[^}]*\}/)?.[0] ?? '';
     expect(iconRule).toContain('width: 18px !important');
   });
+
+  it('narrow-width container queries free enough header-row space for the Pot Health / Papercup labels to render (EI-13551)', async () => {
+    // jsdom has no layout engine (no @container evaluation, no real
+    // getBoundingClientRect() widths — see the bug's own live-measured repro,
+    // which required a real Tauri/browser layout), so this pins the CSS RULES
+    // the fix depends on rather than a computed width. Two things regressed
+    // silently before (both invisible to any test that only checks DOM
+    // presence/computed display, per the bug's own root-cause note):
+    //  1. the @container(max-width:480px) block that frees floor space by
+    //     hiding the Inbox label + dropping the Fleet/Peers face pills
+    //     entirely must still exist with those exact rules;
+    //  2. its `.op-chat-header-main` gap override must appear AFTER (later in
+    //     source than) the unconditional `gap: 9px !important` rule from the
+    //     "Simplicity/readability pass" block — same specificity + importance,
+    //     so an EARLIER-declared override is silently defeated by the later
+    //     unconditional one. Re-ordering these back the wrong way is exactly
+    //     the gotcha this guard exists to catch.
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+
+    const narrowBlock = css.match(/@container op-chat \(max-width: 480px\) \{[\s\S]*?\n\}/g) ?? [];
+    expect(narrowBlock.length).toBeGreaterThan(0);
+    const joinedNarrowBlocks = narrowBlock.join('\n');
+    expect(joinedNarrowBlocks).toMatch(/\.op-chat-header-main \.op-chat-inbox-toggle-label\s*\{[^}]*display:\s*none/);
+    expect(joinedNarrowBlocks).toMatch(/\.op-chat-header-main \.op-chat-face-toggle\s*\{[^}]*display:\s*none/);
+    expect(joinedNarrowBlocks).toMatch(/\.op-chat-header-main\s*\{[^}]*gap:\s*6px\s*!important/);
+
+    // Ordering: the unconditional gap:9px rule must appear BEFORE the
+    // container-scoped gap:6px override in source, or the cascade drops it.
+    const unconditionalGapIdx = css.search(/\.op-chat-header-main\s*\{[^}]*gap:\s*9px\s*!important/);
+    const narrowGapIdx = css.search(/@container op-chat \(max-width: 480px\) \{[^]*?\.op-chat-header-main\s*\{[^}]*gap:\s*6px\s*!important/);
+    expect(unconditionalGapIdx).toBeGreaterThanOrEqual(0);
+    expect(narrowGapIdx).toBeGreaterThanOrEqual(0);
+    expect(narrowGapIdx).toBeGreaterThan(unconditionalGapIdx);
+  });
 });
 
 describe('OperatorChatSidebar collapse behavior', () => {

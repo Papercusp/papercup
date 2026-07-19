@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { listBeeRuns, summarizeBeeRuns, applyHealthyLoopExemption } from '../../scheduler/bee-runs';
 import { getLoopStatuses } from '../../harness/routines/loop';
 import { deriveLoopMonitorState } from '../fleet/assignments';
@@ -57,7 +57,11 @@ export default defineTool({
     } catch {
       actorWorkspace = null;
     }
-    const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
+    // EI-13820: ctx.workspaceId is the literal '*' sentinel for an unscoped su
+    // session (EI-9013) — normalize through resolveConcreteWorkspaceId so '*'
+    // never leaks into the workspace filter as if it were a real workspace id
+    // (see fleet:assignments' handler for the full incident writeup).
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
     const runs0 = await listBeeRuns({ harness: args.harness, bee: args.cup, workspaceId });
     // EI-12359: give `stalled` bee runs the SAME healthy-loop exemption fleet:assignments
     // already applies (decorateLoopMonitorStates) — a batch-claiming bee whose engine loop

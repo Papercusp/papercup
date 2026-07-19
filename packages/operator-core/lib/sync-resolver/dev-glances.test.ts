@@ -66,14 +66,21 @@ describe('dev.* glance resolvers', () => {
       vi.doUnmock('../derived-reads/registry');
     });
 
-    it('dev.gitPipeline wraps gitPipelineSnapshot() as a 1-element snapshot', async () => {
+    it('dev.gitPipeline wraps the derived-read dev.gitPipeline snapshot as a 1-element array (precomputed, P-007)', async () => {
+      // whole-app-sync-payload-audit P-007: the resolver no longer calls
+      // gitPipelineSnapshot() on the read path (~6 git fork/execs, 3.1s cold) — it
+      // reads the last precomputed snapshot via readDerivedSnapshotRows (a
+      // `system:precompute-derived-reads` routine fills it off-read-path). Mock the
+      // boundary the resolver actually calls now, mirroring dev.deployState above.
       const snap = { slug: 'papercup', gitSync: { lastStatus: 'synced' }, windows: { day: {}, week: {} }, recent: [] };
-      vi.doMock('../git-pipeline-stats', () => ({ gitPipelineSnapshot: vi.fn(async () => snap) }));
+      const readDerivedSnapshotRows = vi.fn(async () => [snap]);
+      vi.doMock('../derived-reads/registry', () => ({ readDerivedSnapshotRows, registerDerivedRead: vi.fn() }));
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.gitPipeline', {})) as unknown[];
       expect(rows).toHaveLength(1);
       expect(rows[0]).toBe(snap);
-      vi.doUnmock('../git-pipeline-stats');
+      expect(readDerivedSnapshotRows).toHaveBeenCalledWith('dev.gitPipeline');
+      vi.doUnmock('../derived-reads/registry');
     });
 
     it('dev.pgHealth wraps pgHealth() as a 1-element snapshot', async () => {

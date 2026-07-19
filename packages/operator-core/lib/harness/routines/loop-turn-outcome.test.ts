@@ -1,4 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// EI-13818: handleLoopResumeTurnExit reaches these via dynamic `await import(...)` at the
+// call site (not through LoopTurnOutcomeDeps), so they're mocked at the module level —
+// mirroring autoloop-chronic-failure.test.ts's exact pattern for the same primitives.
+vi.mock('../../pot/watchdog', () => ({ claimWatchdogFire: vi.fn() }));
+vi.mock('../improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
+vi.mock('../../overwatch/wake-bridge', () => ({ requestOverwatchWake: vi.fn() }));
+vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
+
 import {
   loopRoutineIdFromSource,
   computeDeathRearmMs,
@@ -7,6 +16,9 @@ import {
 import type { ResumeTurnOutcome } from '../../events/await/resume-turn-outcome';
 import type { DeliveryWork } from '../../events/await/types';
 import type { ResumeTurnExitRaw } from '../../events/await/resume-turn-outcome';
+import { claimWatchdogFire } from '../../pot/watchdog';
+import { captureImprovement } from '../improvements/capture-core';
+import { requestOverwatchWake } from '../../overwatch/wake-bridge';
 
 const INTERVAL_MS = 120_000;
 
@@ -165,6 +177,79 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     const res = await handleLoopResumeTurnExit(loopDelivery(), deathRaw(), { sql: sql as never, recordFire });
     expect(res.handled).toBe(false);
     expect(recordFire).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () => {
+  const wedgeRaw = (over: Partial<ResumeTurnExitRaw> = {}): ResumeTurnExitRaw => ({
+    exitCode: 0,
+    signal: null,
+    stdoutTail: "You've hit your session limit · resets 5:40am (America/New_York)",
+    stderrTail: '',
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.mocked(claimWatchdogFire).mockReset().mockResolvedValue(true);
+    vi.mocked(captureImprovement).mockReset().mockResolvedValue({} as never);
+    vi.mocked(requestOverwatchWake).mockReset().mockResolvedValue({ wired: true, result: { fired: true } } as never);
+  });
+
+  it('a wedged (usage_limit) clean-exit death claims the watchdog debounce + files + wakes overwatch', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(loopDelivery(), wedgeRaw(), { sql: sql as never, recordFire });
+
+    expect(res.handled).toBe(true);
+    expect(res.class).toBe('usage_limit');
+    expect(claimWatchdogFire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-papercusp',
+        installSlug: 'papercusp::loop_su_owner',
+        source: 'loop-wedge-death',
+        windowHours: 6,
+      }),
+    );
+    expect(captureImprovement).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'bug', severity: 'major', title: expect.stringContaining('LOOP WEDGED') }),
+    );
+    expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('a debounced claim (already fired within 6h) skips capture + overwatch wake entirely', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(false);
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(loopDelivery(), wedgeRaw(), { sql: sql as never, recordFire });
+
+    expect(res.handled).toBe(true); // the circuit-feed + re-arm still happen regardless
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(requestOverwatchWake).not.toHaveBeenCalled();
+  });
+
+  it('a non-surfaceToUser death (rate_limited — auto-absorbed, not surfaced) never triggers the wedge alert', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(loopDelivery(), deathRaw(), { sql: sql as never, recordFire }); // deathRaw = 429/rate_limited, not surfaceToUser
+
+    expect(res.handled).toBe(true);
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('a throwing claimWatchdogFire fails soft — the outcome contract is undisturbed', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockRejectedValue(new Error('pg down'));
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(loopDelivery(), wedgeRaw(), { sql: sql as never, recordFire });
+
+    expect(res.handled).toBe(true);
+    expect(res.class).toBe('usage_limit');
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 });
 

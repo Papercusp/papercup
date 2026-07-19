@@ -38,7 +38,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
@@ -122,18 +122,49 @@ export interface LeaderBriefMember {
  *  state: `stalled`'s existing progress-window check is the "blocked for a
  *  while" signal this reuses instead of inventing a separate wake counter. */
 export function computeBenchSuggestion(
-  a: Pick<DecoratedAgent, 'stalled' | 'parkedOn' | 'doing'> & { verdict?: MemberVerdict | null },
+  a: Pick<DecoratedAgent, 'stalled' | 'parkedOn' | 'doing' | 'load' | 'queued'> & {
+    verdict?: MemberVerdict | null;
+  },
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
-  if (a.verdict !== 'speaking' && a.verdict !== 'first-turn-done') return undefined;
-  if (!a.stalled) return undefined;
-  return {
-    reason:
-      "holds a claim not advancing while alive — likely live-loop-polling a peer's " +
-      'critical path instead of parking on an event (fleet:bench).',
-    item: a.doing?.id ?? null,
-    itemTitle: a.doing?.title ?? null,
-  };
+  if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
+    if (a.stalled) {
+      return {
+        reason:
+          "holds a claim not advancing while alive — likely live-loop-polling a peer's " +
+          'critical path instead of parking on an event (fleet:bench).',
+        item: a.doing?.id ?? null,
+        itemTitle: a.doing?.title ?? null,
+      };
+    }
+  }
+  // EI-13846: LANELESS-IDLE. `stalled` requires load>0 (a held claim not advancing), so
+  // it is structurally blind to a member holding NO claim at all — and `deriveMemberVerdict`
+  // returns the loop's `monitorState` (monitoring|waiting|parked-awaiting-capability) BEFORE
+  // it ever considers speaking/first-turn-done/stalled, so any loop-armed member (the norm
+  // for a drain fleet — every member here runs `loop:arm`) never reports 'speaking' or
+  // 'first-turn-done' while its loop is healthy. Together this made benchSuggestion
+  // structurally unable to fire for the exact incident it was built to catch: a member
+  // whose lane drained kept cycling get_next-miss -> re-park -> wake with ZERO claims,
+  // 'monitoring'/'waiting' verdict throughout (54 wakes / 272 tool calls overnight,
+  // benchSuggestion stayed 0 the whole time). This branch is independent of `verdict`
+  // beyond excluding the dead/booting states below, and independent of `stalled` (there is
+  // no claim to be stalled on) — it fires whenever a member is alive, cycling (not merely
+  // freshly booted), holds NO claim, has NOTHING queued, and is not already parked on an
+  // event (excluded above).
+  if (a.verdict == null) return undefined;
+  if (a.verdict === 'dead' || a.verdict === 'booted' || a.verdict === 'joined') return undefined;
+  if (a.load === 0 && (a.queued?.length ?? 0) === 0 && !a.doing) {
+    return {
+      reason:
+        'alive with NO claim, nothing queued, and not parked on an event — likely idle-cycling ' +
+        'a drained or scoped-out lane every wake instead of resting on a scoped completion event ' +
+        '(EI-13846). Confirm its claim spec still admits work, or fleet:bench it onto a scoped event.',
+      item: null,
+      itemTitle: null,
+    };
+  }
+  return undefined;
 }
 
 export type DecoratedAgent = AgentAssignment & {
@@ -291,7 +322,11 @@ export default defineTool({
         },
       };
     }
-    const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
+    // EI-13820: ctx.workspaceId is the literal '*' sentinel for an unscoped su
+    // session (EI-9013) — normalize through resolveConcreteWorkspaceId so '*'
+    // never leaks into the roster/presence workspace filter (see the identical
+    // fix + rationale in fleet:assignments' handler).
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
     // fleet:status's presence-primary roster is the membership authority. The
     // old claim-primary read omitted live idle members whose assignment view had
     // no row, so leader-brief and fleet:status reported different rosters.

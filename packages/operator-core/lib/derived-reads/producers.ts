@@ -155,6 +155,41 @@ registerDerivedRead({
   },
 });
 
+// dev.gitPipeline (whole-app-sync-payload-audit P-007) — measured 3.1s COLD /
+// 13ms warm on the /admin Git panel's `dev.gitPipeline` sync read. The snapshot's
+// PG sub-reads (routines/escalations/pipeline_events) are cheap; the cost is
+// `gitPipelineSnapshot()` → `devDeployState()`, which fans out ~6 `git` fork/execs
+// to resolve staging/main/deployed refs + gaps. That git spawn was pinned TWICE as
+// the #1 application-attributable event-loop cost (P-015, P-009). devDeployState's
+// own 10s single-flight cache did NOT cover this read path in practice: GitClient
+// polls with staleTime 30s > the 10s TTL, so EVERY panel refetch was a cold fan-out.
+//
+// Precompute mirrors the two siblings above (dev.deployState, dev.gitPipelineHives,
+// both precomputed in the same WI-5476 effort) — the resolver becomes a plain
+// snapshot SELECT and no git spawns on the sync read path. This slims ONLY the
+// UI-sync boundary: every DIRECT caller of gitPipelineSnapshot() (git-pipeline-
+// position, why-chain, release-deploy-launch, the green-stall / release-deploy-
+// staleness watchdogs, the release:trace tool) still computes a LIVE snapshot and
+// is untouched — matching the P-005/P-006 "slim at the UI boundary, never the
+// shared loader" pattern.
+//
+// 90s ttl (NOT the 5-min of the deploy-gap siblings): unlike a slow deploy gap,
+// this snapshot carries liveness-sensitive gate-health verdicts (consecutiveReds,
+// verdictStale, fireStale) that a human watches on the /admin Git panel during a
+// pipeline incident. 90s < the routine's 2-min cron floor, so it recomputes on
+// EVERY tick — the freshest the substrate offers, same rationale as serviceHealth.
+// The panel surfaces computedAt via _meta.derivedRead ("as of HH:MM").
+registerDerivedRead({
+  key: 'dev.gitPipeline',
+  ttlMs: 90_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { gitPipelineSnapshot } = await import('../git-pipeline-stats');
+    return [await gitPipelineSnapshot()];
+  },
+});
+
 // serviceHealth is a LIVENESS probe — a stale snapshot is more misleading than
 // for the pipeline ones — so it gets a short ttl (recomputed on essentially every
 // 2-min routine tick). The panel surfaces the snapshot's computedAt via _meta, so

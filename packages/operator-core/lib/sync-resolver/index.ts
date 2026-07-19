@@ -4456,9 +4456,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // state, any OPEN merge conflict, windowed history counts (mig 177 pipeline_events),
   // a recent timeline, and the deploy gap. Snapshot wrapped in a 1-element array.
   'dev.gitPipeline': {
+    // PRECOMPUTED (whole-app-sync-payload-audit P-007): gitPipelineSnapshot() fans
+    // out ~6 `git` fork/execs via devDeployState() on the read path (3.1s cold; the
+    // GitClient's 30s staleTime > devDeployState's 10s cache TTL made every panel
+    // refetch a cold spawn). Served from the derived-read snapshot instead — the git
+    // spawn now runs in the background precompute routine, never on the sync read.
+    // Direct gitPipelineSnapshot() callers (watchdogs, why-chain, position, tools)
+    // still compute live and are untouched.
     resolve: async () => {
-      const { gitPipelineSnapshot } = await import('../git-pipeline-stats');
-      return [await gitPipelineSnapshot()];
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      return readDerivedSnapshotRows('dev.gitPipeline');
     },
   },
 

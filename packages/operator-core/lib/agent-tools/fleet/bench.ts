@@ -37,7 +37,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { groupByAgent, listFleetAssignments } from '../../fleet/assignments';
@@ -164,7 +164,11 @@ export default defineTool({
           },
         };
       }
-      const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
+      // EI-13820: ctx.workspaceId is the literal '*' sentinel for an unscoped su
+      // session (EI-9013) — normalize through resolveConcreteWorkspaceId so '*'
+      // never leaks into the workspace filter as if it were a real workspace id
+      // (see fleet:assignments' handler for the full incident writeup).
+      const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
       const rows = await listFleetAssignments({
         workspaceId,
         harness: args.harness,

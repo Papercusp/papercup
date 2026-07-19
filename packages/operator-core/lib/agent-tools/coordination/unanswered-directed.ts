@@ -22,7 +22,16 @@
  *   - "answered": a sibling row carrying `related_msg_id = <this msg_id>`
  *     AUTHORED BY the recipient — an explicit ack (kind='ack') or a genuine
  *     reply both satisfy it (mirrors reply-deadline-sweep's own NOT EXISTS
- *     check). A message is "unanswered" only while neither exists.
+ *     check). A message is "unanswered" only while neither exists. EI-13819:
+ *     ALSO satisfied by any OTHER reply-shaped message (one that itself
+ *     carries a `related_msg_id`, i.e. is threaded to *something*) the
+ *     recipient sent back to the same original sender after the ask — this
+ *     fleet's agents overwhelmingly converse in loosely-linked standalone
+ *     messages about one topic rather than literally re-threading every
+ *     reply onto the exact msg_id that set `expectsReply`, so requiring an
+ *     exact match left a real, substantively-answered exchange (the
+ *     recipient visibly replying to the SAME correspondent) stuck
+ *     "unanswered" forever — see the EI-13819 postmortem below.
  *
  * WI-4537 — what this counter must NOT count. It is wired to PREEMPT an agent's
  * work ("a directed message awaiting YOUR answer OUTRANKS your own work"), so a
@@ -39,6 +48,19 @@
  *       clearable only by acking the ack — forever (184 rows).
  * All three are excluded below. What remains is what the name promises: a
  * message from a real correspondent, still awaiting this recipient's reply.
+ *
+ * EI-13819 (leader-brief false-sticky postmortem, 2026-07-17): a leader sent a
+ * lane offer with expectsReply:true; the member did the work, then sent a
+ * FRESH "DONE, standing down" message (no `related_msg_id`) followed by a
+ * separate `related_msg_id`-carrying ack of the leader's own later closing
+ * message — a completely normal exchange, but NEITHER reply pointed at the
+ * ORIGINAL lane-offer msg_id, so the strict exact-thread check left it
+ * "unanswered" for good: every leader wake re-read a false "member hasn't
+ * answered me" signal long after the member had visibly replied twice. Fixed
+ * by ALSO accepting any reply-shaped message (carries its own
+ * `related_msg_id`, i.e. is not a bare unthreaded status update) the
+ * recipient sent back to the same sender after the ask — see `unanswered`
+ * below.
  *
  * Batched: ONE query for the whole roster (mirrors fetchContextPressure /
  * fetchWakeability) — enriching N members costs one read, not N. Bounded to a
@@ -211,8 +233,28 @@ export async function fetchUnansweredDirected(
          SELECT 1 FROM harness_shared.coord_event_log e2
           WHERE e2.workspace_id = d.workspace_id
             AND e2.surface = 'messages'
-            AND e2.body->>'related_msg_id' = d.msg_id
             AND e2.body->>'from' = d.recipient
+            AND (
+              -- (1) an EXACT threaded reply/ack to THIS specific ask.
+              e2.body->>'related_msg_id' = d.msg_id
+              -- (2) EI-13819: OR any OTHER reply-shaped message (carries its
+              -- own related_msg_id, i.e. is not a bare unthreaded status
+              -- update) the recipient sent back to the SAME original sender
+              -- strictly after the ask — evidence the recipient is actively
+              -- corresponding with them, even though this fleet's agents
+              -- routinely don't re-thread every reply onto the exact msg_id
+              -- that set expectsReply. Scoped tight: still requires (a) a
+              -- reply-shaped message (not just any message at all — a fresh
+              -- unrelated FYI to the same sender does not count), (b)
+              -- addressed back to the original sender specifically, (c)
+              -- chronologically after the ask.
+              OR (
+                e2.body ? 'related_msg_id'
+                AND jsonb_typeof(e2.body->'to') = 'array'
+                AND e2.body->'to' @> to_jsonb(ARRAY[d.from_id])
+                AND (e2.body->>'ts')::timestamptz >= to_timestamp(d.ts_ms::double precision / 1000)
+              )
+            )
        )
     )
     SELECT recipient,

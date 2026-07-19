@@ -11,7 +11,7 @@
  */
 import { z } from 'zod';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
@@ -578,7 +578,18 @@ export default defineTool({
     // null (= ALL workspaces), so a bare loopback caller no longer reads every
     // workspace's fleet state. The data layer still ORs in GLOBAL + the plan-store
     // DEFAULT_WORKSPACE_ID scope (EI-295), so claim rows are preserved.
-    const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
+    //
+    // EI-13820: `ctx.workspaceId` is the literal '*' sentinel for an unscoped su
+    // session (EI-9013 — the identical class already fixed in coord:orient's
+    // compaction-recovery leg). A bare `?? actorWorkspace ?? activeWorkspaceId()`
+    // treated '*' as a concrete workspace and passed it straight into
+    // listFleetAssignments' `workspace_id = $1` equality filter, which no real row
+    // ever matches — silently zeroing the caller's OWN presence/claims (agents:0,
+    // alive:0, claims:0) even while e.g. fleet:leader-brief showed the same fleet
+    // very much alive. resolveConcreteWorkspaceId skips '*'/blank candidates and
+    // falls through to the concrete active workspace instead of leaking the
+    // sentinel into the query.
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
     const rows = await listFleetAssignments({
       workspaceId,
       agent: args.agent,
