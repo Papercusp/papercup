@@ -174,10 +174,20 @@ export async function readRunningGeneration(): Promise<RunningGeneration> {
   } catch {
     scoutCodeHash = null;
   }
-  const staleHost = !(bootHeadSha != null && deployedSha != null && bootHeadSha.startsWith(deployedSha) === false
-    ? false
-    : bootHeadSha != null && deployedSha != null && (bootHeadSha === deployedSha || bootHeadSha.startsWith(deployedSha)));
+  // staleHost fails toward "not proven fresh": false ONLY when both shas resolved AND
+  // match (a full sha vs a shortened one is still a match via prefix comparison —
+  // getBuildInfo() commonly yields a short `--short HEAD`, while resolveStagingHeadAsOf
+  // always returns the full 40-char sha).
+  const staleHost = !(deployedSha != null && bootHeadSha != null && shaMatches(deployedSha, bootHeadSha));
   return { deployedSha, hostStartedAt, bootHeadSha, scoutCodeHash, staleHost };
+}
+
+/** Two shas "match" when equal, or one is a prefix of the other (a short sha vs the
+ *  full 40-char form). Case-insensitive. */
+function shaMatches(a: string, b: string): boolean {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  return x === y || x.startsWith(y) || y.startsWith(x);
 }
 
 export type WatermarkResolution = { ok: true; ms: number } | { ok: false; error: string };

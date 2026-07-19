@@ -230,14 +230,14 @@ export default defineTool({
   name: 'resource:delegate',
   profile: 'engineer',
   description:
-    "Delegate this host's resources to a fleet OR a whole pot (the /res board write, D-004/P-001): kind 'account'|'gpu' with a share-% cap (autonomous-loop capacity), or 'agent_slot' — N × model·effort agent seats on a gateway account (account 'AUTO' = draw from the fleet's allocated accounts). Exactly one of fleetSlug/potSlug names the grantee; potSlug requires audience ('trusted-members'|'whole-pot' — no silent default). Re-delegating the same grantee+kind+ref UPDATES the cap (idempotent upsert); remove:true revokes. Allotments are LOCAL to this machine (M19); an agent_slot delegation ALSO auto-publishes a standing seat-offer over P2P — to the fleet owner (fleetSlug) or the pot's hive topic, audience-gated (potSlug) — best-effort, the account id stays local. Returns {ok, action, allotment|removed} or a typed store refusal.",
+    "Delegate this host's resources to a fleet OR a whole pot (D-004/P-001): kind 'account'|'gpu' (share-% cap) or 'agent_slot' (N × model·effort seats on a gateway account; account 'AUTO' draws from the fleet's allocated accounts). Exactly one of fleetSlug/potSlug names the grantee; potSlug requires audience ('trusted-members'|'whole-pot', no silent default). Re-delegating the same grantee+kind+ref UPDATES the cap; remove:true revokes. Allotments are LOCAL to this machine (M19); an agent_slot delegation also auto-publishes a standing seat-offer over P2P (fleet owner or the pot's hive topic, audience-gated) — best-effort, account id stays local. Returns {ok, action, allotment|removed} or a typed refusal.",
   guidance: {
     when:
-      "Handing a fleet capacity: 'join fleet X and assign 5 xhigh opus seats' → resource:delegate { fleetSlug:'x', kind:'agent_slot', model:'opus', effort:'xhigh', count:5 } (account omitted = AUTO). 'offer N seats to pot P, trusted members only' → resource:delegate { potSlug:'p', audience:'trusted-members', kind:'agent_slot', model, effort, count }. Account pools / GPUs take sharePct instead of count. Also the revoke path (remove:true — the /res chip's ×).",
+      "Handing fleet capacity: 'assign 5 xhigh opus seats to fleet X' → resource:delegate { fleetSlug:'x', kind:'agent_slot', model:'opus', effort:'xhigh', count:5 } (account omitted = AUTO). 'offer N seats to pot P, trusted members only' → { potSlug:'p', audience:'trusted-members', kind:'agent_slot', model, effort, count }. Account/GPU pools take sharePct instead of count. Also the revoke path (remove:true).",
     notWhen:
-      'READING current allotments — the /res board or the p2p.allotments sync query. Spawning agents that CONSUME delegated seats — the Phase-2 launch path (fleet:launch-on-plan). Registering/editing gateway accounts themselves — accounts:*.',
+      'READING current allotments (the /res board or p2p.allotments query). Spawning agents that CONSUME seats (fleet:launch-on-plan). Registering/editing gateway accounts (accounts:*).',
     chaining:
-      "fleet:create / fleet:join → resource:delegate { kind:'agent_slot', model, effort, count } → the launch-from-seats path consumes them (P-005). Delegate the fleet's account pools FIRST if its slots use account 'AUTO' (D-003: AUTO draws from what the fleet was given).",
+      "fleet:create/join → resource:delegate { kind:'agent_slot', model, effort, count } → launch-from-seats consumes them (P-005). Delegate account pools FIRST if slots use 'AUTO' (D-003).",
   },
   capability: 'operator:write',
   requirePrincipal: false,

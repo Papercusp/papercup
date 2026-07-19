@@ -144,7 +144,7 @@ export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentO
       if (!latest) {
         return { verdict: 'unknown', reason: `no scorecard on record for '${rubricRef}'`, measuredAt: now, evidence: [] };
       }
-      const lineage = latest.gradedGeneration ? { sha: latest.gradedGeneration.sha } : null;
+      const lineage = latest.gradedGeneration ? { sha: latest.gradedGeneration.deployedSha } : null;
       const evidence = [{ ref: latest.issueId, kind: 'scorecard', detail: { sourceHive: latest.sourceHive ?? null } }];
       if (!latest.rubricResolved || latest.missingKeys.length > 0 || latest.extraKeys.length > 0) {
         return {
@@ -176,7 +176,7 @@ export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentO
 
 export interface DeployStalenessGateDeps {
   /** Resolve the DEPLOYED sha (the running generation's identity). Defaults to
-   *  readRunningGeneration().sha. */
+   *  readRunningGeneration().deployedSha. */
   deployedSha?: () => Promise<string | null>;
   currentSha?: typeof defaultCurrentSha;
   commitUnixTime?: typeof defaultCommitUnixTime;
@@ -202,7 +202,7 @@ export function deployStalenessGateComponent(opts: DeployStalenessGateOpts = {})
   const repo = opts.repo ?? process.env.PAPERCUSP_INTEGRATION_ROOT ?? process.cwd();
   const mandatory = opts.mandatory ?? true;
   const deployedShaFn =
-    opts.deps?.deployedSha ?? (async () => (await defaultReadRunningGeneration()).sha);
+    opts.deps?.deployedSha ?? (async () => (await defaultReadRunningGeneration()).deployedSha);
   const currentShaFn = opts.deps?.currentSha ?? defaultCurrentSha;
   const commitUnixTimeFn = opts.deps?.commitUnixTime ?? defaultCommitUnixTime;
   const commitsBetweenFn = opts.deps?.commitsBetween ?? defaultCommitsBetween;
@@ -286,7 +286,7 @@ export async function buildPapercuspReleaseProfile(
 
   return {
     profileRef: opts.profileRef ?? PAPERCUSP_RELEASE_PROFILE_REF,
-    ...(generation.sha ? { expectedLineage: { sha: generation.sha } } : {}),
+    ...(generation.deployedSha ? { expectedLineage: { sha: generation.deployedSha } } : {}),
     components: [
       ...releaseGatingRubrics.map((r) =>
         rubricReleaseComponent(r.rubricId, { ...opts.rubricOpts, deps: rubricDeps }),
