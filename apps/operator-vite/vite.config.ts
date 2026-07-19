@@ -187,6 +187,20 @@ export default defineConfig({
     //   --minify esbuild    -> renders correctly, and still minified
     // Do not drop this to "take the default" without re-running that comparison.
     minify: 'esbuild',
+    // EI-13210: `build.minify` above governs JS minification only. Vite's CSS
+    // minifier is a SEPARATE setting (`build.cssMinify`) that does NOT inherit
+    // the literal 'esbuild' string above — its default is
+    // `cssMinify ?? !!build.minify`, and `!!'esbuild'` is just `true`, which
+    // Vite resolves to **lightningcss**, not esbuild. lightningcss (current
+    // latest, 1.32.0) doesn't recognize the standards-track CSS Custom
+    // Highlight API's `::highlight()` pseudo-element and warns on every
+    // occurrence during minification (harmless — errorRecovery still emits
+    // the selector correctly, but the noise drowns real warnings). Pin CSS
+    // minification to esbuild explicitly, which handles `::highlight()`
+    // cleanly with zero warnings (verified directly against esbuild's CSS
+    // transform) — this also keeps JS and CSS minification on the same
+    // toolchain, avoiding a second one for no benefit.
+    cssMinify: 'esbuild',
   },
   server: {
     port: 3055,

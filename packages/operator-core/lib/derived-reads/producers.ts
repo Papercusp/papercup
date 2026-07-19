@@ -39,19 +39,35 @@ registerDerivedRead({
   },
 });
 
-// ── plans.lint (P-004) — measured 13.8s on the read path ─────────────────────
+// ── plans.lint (P-004) — measured 13.8s on the read path, 158.8s to compute ──
 //
-// Lints the entire plan corpus. The corpus changes on plan writes, which are
-// frequent but not per-page-load; 10 minutes keeps the lint feed useful without
-// re-parsing every plan for each viewer.
+// ⚠ THIS PRODUCER ALSO FIXES A SILENTLY-BROKEN QUERY (found while backfilling).
+//
+// The resolver has always done `Array.isArray(r?.reports) ? r.reports : []`. But
+// the lint tool's ALL-PLANS default branch returns `summarizeLintReports(reports)`
+// — a bounded summary object with NO `reports` field (`reports` exists only on the
+// `full: true` branch, and on the per-slug bulk envelope). So the nullary
+// `plans.lint` sync query has ALWAYS returned `[]`: it linted the entire corpus
+// and threw the result away. The backfill made it obvious — 158.8s of compute
+// producing a 5-byte payload.
+//
+// Passing `full: true` gives the resolver the `reports` array it always declared.
+// `full` is documented as OFF-by-default because the complete dump (484 plans ×
+// hundreds of warnings → 170KB+) can exceed the AGENT result-size cap — a limit
+// that does not apply here: this payload goes into a jsonb column, not an agent's
+// context, and it is no longer on a read path at all.
+//
+// 30-minute ttl, not 10: at ~159s per compute this is by far the most expensive
+// producer, and a lint of the plan corpus does not meaningfully change in 10
+// minutes. See WI-5460 for the follow-up on making the lint itself cheaper.
 registerDerivedRead({
   key: 'plans.lint',
-  ttlMs: 10 * 60_000,
-  producerVersion: 1,
+  ttlMs: 30 * 60_000,
+  producerVersion: 2,
   scope: 'workspace',
   compute: async () => {
     const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-    const r = (await callPlansRead('lint', {})) as { reports?: unknown[] };
+    const r = (await callPlansRead('lint', { full: true })) as { reports?: unknown[] };
     return Array.isArray(r?.reports) ? r.reports : [];
   },
 });

@@ -1,0 +1,86 @@
+/**
+ * Papercusp entity resolvers (tool-arg-referential-integrity-2026-07-19 P-004).
+ *
+ * Exercises `makeSetResolver` against a stub loader — the cache/suggest/allowed
+ * plumbing and, most importantly, the two failure behaviours that keep this
+ * layer from becoming an outage: a load failure must PROPAGATE (so the dispatch
+ * step fails open) and must never be cached as an empty set.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { invalidateEntityCache, makeSetResolver } from './entity-resolvers-papercusp';
+
+afterEach(() => invalidateEntityCache());
+
+describe('makeSetResolver', () => {
+  it('reports values missing from the set and passes the ones present', async () => {
+    const r = makeSetResolver('k1', async () => ['papercusp', 'oddsmith']);
+    expect(await r(['papercusp'])).toMatchObject({ unknown: [] });
+    expect((await r(['nope'])).unknown).toEqual(['nope']);
+  });
+
+  it('offers a nearest match for a near-miss', async () => {
+    const r = makeSetResolver('k2', async () => ['papercusp', 'oddsmith']);
+    const out = await r(['papercsp']);
+    expect(out.suggestions?.['papercsp']).toContain('papercusp');
+  });
+
+  it('offers no suggestion for something unlike anything known', async () => {
+    const r = makeSetResolver('k3', async () => ['papercusp']);
+    const out = await r(['zzzzzzzz']);
+    expect(out.suggestions?.['zzzzzzzz']).toBeUndefined();
+  });
+
+  it('names the full valid set when it is small enough to read', async () => {
+    const r = makeSetResolver('k4', async () => ['a', 'b']);
+    expect((await r(['x'])).allowed).toEqual(['a', 'b']);
+  });
+
+  it('omits a large valid set rather than dumping noise', async () => {
+    const many = Array.from({ length: 60 }, (_v, i) => `p${i}`);
+    const r = makeSetResolver('k5', async () => many);
+    expect((await r(['x'])).allowed).toBeUndefined();
+  });
+
+  it('caches the set — a second call does not re-query', async () => {
+    const load = vi.fn(async () => ['a']);
+    const r = makeSetResolver('k6', load);
+    await r(['a']);
+    await r(['a']);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidateEntityCache forces a reload (a just-created entity resolves at once)', async () => {
+    let known = ['a'];
+    const r = makeSetResolver('k7', async () => known);
+    expect((await r(['b'])).unknown).toEqual(['b']);
+    known = ['a', 'b'];
+    invalidateEntityCache('k7');
+    expect((await r(['b'])).unknown).toEqual([]);
+  });
+
+  // The critical one. Caching an empty set on a DB blip would reject EVERY value
+  // for the whole TTL — turning a transient failure into a fleet-wide outage of
+  // every tool that names that entity. It must throw so the dispatch step's
+  // fail-open path takes over instead.
+  it('PROPAGATES a load failure and does not cache an empty set', async () => {
+    let fail = true;
+    const load = vi.fn(async () => {
+      if (fail) throw new Error('pg down');
+      return ['a'];
+    });
+    const r = makeSetResolver('k8', load);
+    await expect(r(['a'])).rejects.toThrow('pg down');
+    fail = false;
+    // No poisoned empty-set cache: the very next call reloads and succeeds.
+    expect((await r(['a'])).unknown).toEqual([]);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('batches — one load serves every value in the call', async () => {
+    const load = vi.fn(async () => ['a', 'b']);
+    const r = makeSetResolver('k9', load);
+    const out = await r(['a', 'b', 'c', 'd']);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(out.unknown).toEqual(['c', 'd']);
+  });
+});

@@ -1,0 +1,139 @@
+/**
+ * Papercusp's entity resolvers — the host half of
+ * tool-arg-referential-integrity-2026-07-19 P-004 / D-001.
+ *
+ * `@papercusp/tooldef` ships the `entityRef` TYPE and the `entity-check` dispatch
+ * step, but no entity knowledge: the engine cannot know what a "pot" is. This
+ * module supplies the existence checks, registered as a load-time side effect in
+ * the same way `capability-tiers-papercusp.ts` registers the tier resolver.
+ *
+ * REGISTERING A RESOLVER IS WHAT ACTIVATES ENFORCEMENT for a kind — an
+ * `entityRef` arg whose kind has no resolver is skipped, not rejected. That
+ * makes the rollout safely staged: convert args first (inert), land the DB
+ * foreign key, register the resolver last.
+ *
+ * WHY A CACHED SET IS ENOUGH. The entity sets here are small — ~145 pots, ~240
+ * harness slugs — so the whole valid set fits in memory and validation is an
+ * O(1) lookup with ZERO per-call queries. The resolver interface is batched
+ * anyway (it receives every value of its kind at once), so a kind that outgrows
+ * this can switch to one `= ANY($1)` without changing a caller.
+ *
+ * The cache is TTL'd rather than event-driven on purpose: a stale entry can only
+ * ever cause a FALSE REJECTION of a just-created entity, and a short TTL bounds
+ * that to seconds — whereas a missed invalidation event would strand the cache
+ * indefinitely. `invalidateEntityCache()` is exported so a create/dissolve path
+ * can drop it immediately and skip even that window.
+ */
+
+import { setEntityResolver, type EntityResolver } from '@papercusp/tooldef';
+import { similarity } from '@papercusp/operator-core/lib/operator-fuzzy-dedup';
+
+/** How long a loaded entity set is trusted before a refresh. */
+const CACHE_TTL_MS = 30_000;
+/** Below this similarity a "did you mean" is noise, not help. */
+const SUGGEST_THRESHOLD = 0.6;
+/** Name the full valid set in an error only when it is this small. */
+const MAX_ALLOWED_IN_ERROR = 25;
+
+interface CacheEntry {
+  values: Set<string>;
+  loadedAt: number;
+}
+
+const cache = new Map<string, CacheEntry>();
+
+/** Drop a cached set (or all of them) — call after creating/removing an entity. */
+export function invalidateEntityCache(kind?: string): void {
+  if (kind) cache.delete(kind);
+  else cache.clear();
+}
+
+/**
+ * Load-through cache. A LOAD FAILURE IS NOT CACHED and is rethrown, so the
+ * dispatch step's fail-open path takes over rather than us serving an empty set
+ * — an empty set would reject every value, turning a transient DB blip into a
+ * fleet-wide outage of every tool naming that entity.
+ */
+async function loadSet(kind: string, load: () => Promise<string[]>): Promise<Set<string>> {
+  const hit = cache.get(kind);
+  if (hit && Date.now() - hit.loadedAt < CACHE_TTL_MS) return hit.values;
+  const values = new Set(await load());
+  cache.set(kind, { values, loadedAt: Date.now() });
+  return values;
+}
+
+/** Nearest known values for an unknown one, best first. */
+function suggestFor(value: string, known: Iterable<string>): string[] {
+  return [...known]
+    .map((k) => ({ k, s: similarity(value, k) }))
+    .filter((x) => x.s >= SUGGEST_THRESHOLD)
+    .sort((a, b) => b.s - a.s)
+    .slice(0, 3)
+    .map((x) => x.k);
+}
+
+/**
+ * Build a resolver over a small, fully-loadable set. Exported so a host can add
+ * a kind without repeating the cache/suggest/allowed plumbing.
+ */
+export function makeSetResolver(kind: string, load: () => Promise<string[]>): EntityResolver {
+  return async (values) => {
+    const known = await loadSet(kind, load);
+    const unknown = values.filter((v) => !known.has(v));
+    if (!unknown.length) return { unknown: [] };
+    const suggestions: Record<string, string[]> = {};
+    for (const u of unknown) {
+      const near = suggestFor(u, known);
+      if (near.length) suggestions[u] = near;
+    }
+    return {
+      unknown,
+      suggestions,
+      // Only offer the full set when it is short enough to read; otherwise the
+      // nearest-match above is the useful signal and a dump is pure noise.
+      ...(known.size <= MAX_ALLOWED_IN_ERROR ? { allowed: [...known].sort() } : {}),
+    };
+  };
+}
+
+/** Lazily reach the org DB — importing it is side-effect-free, so this stays cheap. */
+async function sql() {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  return getOrgPg().sql;
+}
+
+/** The pot registry: harness_shared.pots.pot_home_slug. */
+async function loadPots(): Promise<string[]> {
+  const s = await sql();
+  const rows = await s<{ pot_home_slug: string }[]>`
+    SELECT DISTINCT pot_home_slug FROM harness_shared.pots WHERE pot_home_slug IS NOT NULL
+  `;
+  return rows.map((r) => r.pot_home_slug);
+}
+
+/**
+ * Harness slugs actually in use. Deliberately sourced from the pot registry PLUS
+ * the distinct slugs already present on work items: `harness_slug` is currently
+ * free text carrying three different value-kinds (real pot slugs, synthetic
+ * `operator:<workspace>` buckets, sentinels like `*`), and rejecting the ones
+ * already in the data would break live tools before the P-006/P-007 backfill
+ * normalizes them. Once that backfill lands, this narrows to the pot registry
+ * alone and the FK becomes the real gate.
+ */
+async function loadHarnessSlugs(): Promise<string[]> {
+  const s = await sql();
+  const rows = await s<{ slug: string }[]>`
+    SELECT DISTINCT pot_home_slug AS slug FROM harness_shared.pots WHERE pot_home_slug IS NOT NULL
+    UNION
+    SELECT DISTINCT harness_slug AS slug FROM harness_shared.work_items WHERE harness_slug IS NOT NULL
+  `;
+  return rows.map((r) => r.slug);
+}
+
+/** Register Papercusp's resolvers. Idempotent; safe to call more than once. */
+export function registerPapercuspEntityResolvers(): void {
+  setEntityResolver('pot', makeSetResolver('pot', loadPots));
+  setEntityResolver('harness', makeSetResolver('harness', loadHarnessSlugs));
+}
+
+registerPapercuspEntityResolvers();

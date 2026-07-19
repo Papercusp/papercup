@@ -5,6 +5,8 @@
  * operator uses in production. Requires bash on PATH.
  */
 import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import {
   spawnPty,
   killPty,
@@ -14,9 +16,20 @@ import {
   writePty,
   findPtyByPid,
   deriveMaxConcurrentPtys,
-  getXtermExportShape,
 } from './pty-bridge';
 import { getResourceProfile } from './resource-profile';
+
+const require = createRequire(import.meta.url);
+
+/** Read a package's shipped ESM ("module" field) build directly off disk —
+ *  the exact file Rolldown/Vite bundles for the production build, bypassing
+ *  Node's own CJS→ESM interop (which resolves "main" instead and SYNTHESIZES
+ *  a `.default` no matter what the package ships, masking the real shape). */
+function readEsmBuild(pkgJsonSpecifier: string, moduleRelPath: string): string {
+  const pkgJsonPath = require.resolve(pkgJsonSpecifier);
+  const dir = pkgJsonPath.slice(0, pkgJsonPath.length - 'package.json'.length);
+  return readFileSync(dir + moduleRelPath, 'utf8');
+}
 
 const liveIds: string[] = [];
 
@@ -51,20 +64,28 @@ async function waitForOutput(id: string, predicate: (s: string) => boolean, time
   return getHistory(id)?.toString('utf8') ?? '';
 }
 
-describe('xterm import shape (EI-13212)', () => {
-  it('resolves Terminal/SerializeAddon off the namespace directly, with no default to fall back to', () => {
-    // Regression for the Rolldown IMPORT_IS_UNDEFINED production-build warning:
-    // getHeadlessTerminal/getSerializeAddon used to fall back to
-    // `(ns as any).default?.X`, which these packages never provide in ANY
-    // shipped build — the primary namespace property is the only real path.
-    // If a future dependency bump ever moves the export behind `default`,
-    // this fails LOUDLY here instead of silently reintroducing dead code (or
-    // worse, an actually-broken fallback) into pty-bridge.ts.
-    const shape = getXtermExportShape();
-    expect(shape.headlessHasTerminal).toBe(true);
-    expect(shape.serializeHasAddon).toBe(true);
-    expect(shape.headlessHasDefault).toBe(false);
-    expect(shape.serializeHasDefault).toBe(false);
+describe('xterm ESM export shape (EI-13212)', () => {
+  // Regression for the Rolldown IMPORT_IS_UNDEFINED production-build warning:
+  // getHeadlessTerminal/getSerializeAddon used to fall back to
+  // `(ns as any).default?.X`. Node's own CJS-interop (via "main") always
+  // synthesizes SOME `.default`, so a runtime check from inside this vitest
+  // process can never see the real problem — the bug only exists in the
+  // ESM ("module" field) build Rolldown/Vite actually bundles. So this reads
+  // that shipped file directly: it must export the named binding the getters
+  // rely on, and it must NOT export a default. If a future dependency bump
+  // ever changes that, this fails LOUDLY here instead of the fallback dead
+  // code (or an actually-broken one) silently creeping back into
+  // pty-bridge.ts.
+  it('@xterm/headless ESM build exports Terminal by name, with no default', () => {
+    const src = readEsmBuild('@xterm/headless/package.json', 'lib-headless/xterm-headless.mjs');
+    expect(src).toMatch(/\bas Terminal\b/);
+    expect(src).not.toMatch(/\bexport\s+default\b|\bas default\b/);
+  });
+
+  it('@xterm/addon-serialize ESM build exports SerializeAddon by name, with no default', () => {
+    const src = readEsmBuild('@xterm/addon-serialize/package.json', 'lib/addon-serialize.mjs');
+    expect(src).toMatch(/\bas SerializeAddon\b/);
+    expect(src).not.toMatch(/\bexport\s+default\b|\bas default\b/);
   });
 });
 
