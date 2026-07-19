@@ -9,7 +9,7 @@
 // tests assert what the setter was CALLED with, not a post-click rerender).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { nuqsParsers } from "@papercusp/test-config/nuqs-mock";
 
 const nuqsState: Record<string, unknown> = {};
@@ -134,7 +134,11 @@ describe("SignalsPanel", () => {
     render(<SignalsPanel />);
     expect(screen.getByText("What will it read?")).toBeTruthy();
     expect(screen.getByRole("tablist", { name: /Digest history/ })).toBeTruthy();
-    const tabs = screen.getAllByRole("tab");
+    // Scope to the HISTORY tablist — the per-lane card decks carry their own
+    // role=tab position dots now.
+    const tabs = within(
+      screen.getByRole("tablist", { name: /Digest history/ }),
+    ).getAllByRole("tab");
     expect(tabs).toHaveLength(2);
     // The newest cycle (index 0) is selected by default (matches digest.cycleId).
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
