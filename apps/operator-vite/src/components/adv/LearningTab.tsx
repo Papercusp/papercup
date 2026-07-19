@@ -1391,14 +1391,47 @@ function GymView({
     staleTime: 30_000,
     enabled: hiveReady,
   });
-  const snap = sync.data?.[0];
+  const scopedSnap = sync.data?.[0];
+  // Client-side safety net (owner report 2026-07-19): a hive-scoped read can come
+  // back with 0 EXPERIMENTS (proposals + archiveSeeds) yet not carry
+  // `scopeFallback` — e.g. the `papercusp` Hive, which owns 1 autoloop config
+  // but no proposals, so the server's fallback (which the config used to make
+  // look non-empty) never fired and the workspace's real proposals sat unseen
+  // behind "No gym experiments". When the scoped read has no experiments and the
+  // server did not already fall back, refetch the workspace-wide rollup and use
+  // it. Once the matching server fix is live, `scopeFallback` is set and this
+  // second read never enables. Mirrors the server's own scoped→wide fallback.
+  const scopedNoExperiments =
+    Boolean(scopedSnap) &&
+    (scopedSnap?.proposals?.length ?? 0) === 0 &&
+    (scopedSnap?.archiveSeeds?.length ?? 0) === 0;
+  const needWide =
+    hiveReady &&
+    Boolean(hive) &&
+    scopedNoExperiments &&
+    !scopedSnap?.scopeFallback;
+  const wideSync = useSyncQuery<GymSnapshot>({
+    queryName: "learning.gym",
+    args: {},
+    staleTime: 30_000,
+    enabled: needWide,
+  });
+  const wideSnap = wideSync.data?.[0];
+  const useWide =
+    needWide &&
+    Boolean(wideSnap) &&
+    ((wideSnap?.proposals?.length ?? 0) > 0 ||
+      (wideSnap?.archiveSeeds?.length ?? 0) > 0);
+  const snap = useWide ? wideSnap : scopedSnap;
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
   // WI-5420: the server fell back to the workspace-wide rollup because this
   // Hive's own gym-scoped read was empty — say so, don't silently reattribute
-  // another harness's experiments to this Hive.
-  const scopeFallback = Boolean(hive) && Boolean(snap?.scopeFallback);
+  // another harness's experiments to this Hive. `useWide` is the client-side
+  // equivalent (the scoped read had no experiments), so it reads the same note.
+  const scopeFallback =
+    Boolean(hive) && (Boolean(scopedSnap?.scopeFallback) || useWide);
   const activeAutoloops = autoloops.filter(
     (autoloop) => autoloop.enabled || autoloop.status === "running",
   );
@@ -1519,7 +1552,7 @@ function GymView({
           gate (or any pre-first-result gap) rendered undefined `snap` as "No gym
           experiments" even though the workspace had proposals (owner report
           2026-07-19; the server returns them correctly — verified end-to-end). */}
-      {!snap && !sync.error ? (
+      {(!snap && !sync.error) || (needWide && !wideSnap && !wideSync.error) ? (
         <p className="pc-learning__empty">Loading gym experiments…</p>
       ) : sync.error ? (
         <LearningVisualError

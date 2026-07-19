@@ -431,6 +431,100 @@ describe('reconcileLoopRoutines — lifecycle-death reclassification (EI-13818)'
   });
 });
 
+describe('reconcileLoopRoutines — presence-quiescence death reclassification (EI-15722)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  it("a presence-quiescence settle whose last turn text is a provider-kill signature feeds 'error' (not a false 'ok') and re-arms past the bare interval — the exact false-positive that let a loop fire on schedule for 22h+ with zero real turns", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-1',
+          target_owner_id: 'su-stuck',
+          interval_sec: 60,
+          parked: true,
+          install_slug: 'papercusp',
+          name: 'loop-su-stuck',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          // NO lifecycle 'ended' marker — the Stop-hook report was lost (the exact reason the
+          // presence-quiescence fallback exists at all: layer 2, "a detached, fail-open POST").
+          lifecycle_completed_at: null,
+          presence_last_active_at: pgString(T0 + 4_000), // one dispatch bumped activity, then quiet
+          last_assistant_text_after_fire: "You've hit your session limit · resets 5:40am (America/New_York)",
+        },
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 70_000, // ≥ FALLBACK_QUIET_MS (60s) past the last activity, so the fallback fires
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('presence-quiescence'); // the signal itself is unchanged — only the outcome is
+    // The whole point: this must NOT be the bare completedAt+interval a false 'ok' would use.
+    expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 4_000 + 60_000);
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-stuck',
+      expect.stringContaining('lifecycle-death:usage_limit'),
+      'error', // NOT 'ok' — previously this via recorded 'ok' unconditionally, with no text check at all
+    );
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-1',
+        targetOwnerId: 'su-stuck',
+        verdict: expect.objectContaining({ reason: 'usage_limit' }),
+      }),
+    );
+  });
+
+  it('a presence-quiescence settle with ORDINARY (or absent) turn text is unaffected — still feeds `ok` at the bare interval', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-1',
+          target_owner_id: 'su-healthy',
+          interval_sec: 60,
+          parked: true,
+          install_slug: 'papercusp',
+          name: 'loop-su-healthy',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: null,
+          presence_last_active_at: pgString(T0 + 4_000),
+          last_assistant_text_after_fire: 'Claimed the next bug and fixed it — ending the turn.',
+        },
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 70_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('presence-quiescence');
+    expect(res.loops[0].nextFireAt).toBe(T0 + 4_000 + 60_000); // byte-identical to the pre-EI-15722 math
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-healthy', expect.stringContaining('presence-quiescence'), 'ok');
+    expect(escalateLifecycleDeath).not.toHaveBeenCalled();
+  });
+});
+
 describe('reconcileLoopRoutines — dead-owner terminal guard (WI-1399)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');

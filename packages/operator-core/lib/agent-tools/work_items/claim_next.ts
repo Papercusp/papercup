@@ -118,7 +118,16 @@ export default defineTool({
     if (reconciliation.scope) {
       const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
       if (pause.windingDown) {
-        const miss = fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { pausedReason: pause.reason });
+        // EI-15777: retire the caller's own standing `work-item:claimable` await(s)
+        // right here — otherwise a peer's compliant stand-down release still fires
+        // it (the admission gate only refuses the ensuing claim), burning a full
+        // session-resume cycle on a pull this member is forbidden to make anyway.
+        // Mirrors the same-purpose cancel on a successful claim below.
+        const claimableAwaitsCancelled = await cancelClaimableAwaits(assignee).catch(() => 0);
+        const miss = fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
+          pausedReason: pause.reason,
+          claimableAwaitsCancelled,
+        });
         return { content: [{ type: 'text' as const, text: JSON.stringify(args.count && args.count > 1 ? { ...miss, claimed: [] } : miss) }] };
       }
     }

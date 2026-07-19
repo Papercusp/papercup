@@ -319,12 +319,24 @@ export default defineTool({
     if (reconciliation.scope) {
       const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
       if (pause.windingDown) {
+        // EI-15777: a member parked on `events:await('work-item:claimable')` from
+        // BEFORE the pause is otherwise still woken by a peer's compliant
+        // stand-down release (the admission gate only refuses the CLAIM, not the
+        // wake itself) — a full session-resume cycle wasted every time, the
+        // "post-mission wake churn" this closes. Retire the caller's own standing
+        // claimable await(s) right here so no future release re-wakes them for a
+        // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
+        // same posture as the successful-claim cancel below.
+        const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
         return {
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify(
-                fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { pausedReason: pause.reason }),
+                fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
+                  pausedReason: pause.reason,
+                  claimableAwaitsCancelled,
+                }),
               ),
             },
           ],

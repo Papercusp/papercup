@@ -208,4 +208,24 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
     expect(() => renderColdWakeInjection('')).not.toThrow();
     expect(renderColdWakeInjection('')).toContain('loop:checkpoint');
   });
+
+  // EI-15799: a stale/superseded cold-wake delivery must be self-identifying (a fire marker +
+  // reconciliation instruction) instead of unconditionally claiming "your context was just reset".
+  it('stamps a "(fire #N)" marker + a reconciliation instruction into the header when wakeCount is a positive finite number', () => {
+    const out = renderColdWakeInjection('note', undefined, 4);
+    expect(out).toContain('(fire #4)');
+    expect(out.toLowerCase()).toContain('stale');
+    expect(out.toLowerCase()).toContain('reconcile');
+  });
+
+  it('is byte-identical to the no-wakeCount rendering when wakeCount is absent, undefined, zero, negative, or non-finite', () => {
+    const base = renderColdWakeInjection('note');
+    expect(renderColdWakeInjection('note', undefined, undefined)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, 0)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, -1)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, Number.NaN)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, Number.POSITIVE_INFINITY)).toBe(base);
+    expect(base).not.toContain('fire #');
+    expect(base.toLowerCase()).not.toContain('stale');
+  });
 });

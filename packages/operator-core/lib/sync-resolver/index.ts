@@ -3172,8 +3172,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return { proposals, autoloops, archiveSeeds };
         });
       const scoped = await fetchSnapshot(harnessSlug);
+      // "Empty" = no EXPERIMENTS (challenger proposals + Scout-seeded archive
+      // niches). A lone autoloop CONFIG row is NOT an experiment and must not
+      // suppress the fallback: the `papercusp` Hive has 1 autoloop config but 0
+      // proposals, which used to (a) keep this fallback from firing and (b) trip
+      // the GymView's own `proposals===0 && archiveSeeds===0` empty state — so
+      // the workspace's 3 real proposals sat unseen behind "No gym experiments"
+      // (owner report 2026-07-19). The view's emptiness test uses these same two
+      // lists; keep the two in lockstep.
       const scopedIsEmpty =
-        scoped.proposals.length === 0 && scoped.autoloops.length === 0 && scoped.archiveSeeds.length === 0;
+        scoped.proposals.length === 0 && scoped.archiveSeeds.length === 0;
       // (WI-5420) The per-Hive lens above assumes a Hive's HOME slug IS the
       // gym's harness_slug — true for a gym that ran through the per-hive
       // autoloop (system:gym-cycle), but NOT for one run any other way (e.g. a
@@ -3190,7 +3198,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       if (harnessSlug && scopedIsEmpty) {
         const fallback = await fetchSnapshot(undefined);
         const fallbackHasData =
-          fallback.proposals.length > 0 || fallback.autoloops.length > 0 || fallback.archiveSeeds.length > 0;
+          fallback.proposals.length > 0 || fallback.archiveSeeds.length > 0;
         if (fallbackHasData) {
           return [{ ...fallback, scopeFallback: true }];
         }

@@ -381,7 +381,15 @@ export function fleetScopedMiss(
   // lapses — the relative `~Ns` reads a perpetually-fresh ~300s and never clears). The
   // old advice told the member NOT to escalate; for the livelock case that was exactly
   // wrong — a leader spec-revision to exclude those rows is the only fix.
-  opts?: { pausedReason?: string | null; cooldownDiag?: CooldownMissDiagnosis | null },
+  // EI-15777: how many of the CALLER's own standing `work-item:claimable` idle-park
+  // await(s) were just cancelled server-side as part of reporting this paused miss
+  // (see the cancelClaimableAwaits call at both self-pull call sites). Only
+  // meaningful while `paused` — a normal/cooldown miss must keep re-parking.
+  opts?: {
+    pausedReason?: string | null;
+    cooldownDiag?: CooldownMissDiagnosis | null;
+    claimableAwaitsCancelled?: number;
+  },
 ) {
   const paused = opts?.pausedReason !== undefined;
   const cooldown = !paused ? (opts?.cooldownDiag ?? null) : null;
@@ -427,9 +435,14 @@ export function fleetScopedMiss(
     // fields (id/kind/title/plan). Copy it verbatim into the idle-park await below.
     ...(claimablePayloadFilter ? { payloadFilter: claimablePayloadFilter } : {}),
     ...(paused ? { paused: true as const } : {}),
+    // EI-15777: surface how many of the caller's OWN pre-pause `work-item:claimable`
+    // idle-park await(s) were just cancelled — so the caller (and anyone reading the
+    // response) can see the standing wake that would have fired on a peer's next
+    // compliant release was actually retired, not merely refused-if-it-fires.
+    ...(paused ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt } : {}),
     advice: paused
-      ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Resume only after a fleet:resume cue.'
+      ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Do NOT re-park a work-item:claimable await while paused (any pre-pause await of yours was just cancelled server-side, EI-15777 — a peer\'s compliant release will no longer re-wake you for nothing). Resume normal pull cadence only after a fleet:resume cue.'
       : cooldown
         ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. BUT if on re-poll cooldownExpiryAt has ADVANCED (the window keeps resetting — you see the same ~Ns every poll and it never counts down), the fleet is round-robin re-releasing these permanently-unfit rows faster than the cooldown lapses (a LIVELOCK, EI-14615): it will NOT clear on its own, so DO report it to your leader to exclude those rows from the claim spec (that is the fix), or wind down.'
         : claimablePayloadFilter
