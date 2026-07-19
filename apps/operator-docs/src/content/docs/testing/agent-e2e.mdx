@@ -200,6 +200,17 @@ Before a real verification run, prove the selected shell is both
 **current** (serving the code you intend to test) and **safe to disturb**.
 `tauri-agent-tools probe` only proves the bridge is reachable; it does
 not prove the webview loaded the newest SPA bundle, that the Hono host
+still answers, or that the shell isn't sitting in a self-recovering flap
+(EI-13218) — `probe`'s "Bridge alive: yes" is the Rust bridge's OWN tiny
+control-plane server answering, which stays true even when the origin the
+webview is displaying (the Hono+SPA host, `:3270` in dev) is refusing
+connections. Prefer **`tauri-agent-tools health`** (bridge v0.7.0+) over
+bare `probe` when you need to know the app itself is actually reachable:
+it live-checks the origin the main webview currently points at and folds
+that into `sidecars_alive` (`--json` exits non-zero on either
+`!webview_ready` or `!sidecars_alive`, so it's CI-gate-able). A connection-
+refused you hit right after a green `probe` is exactly this class — re-run
+`health` before concluding the app crashed.
 can still serve the SPA HTML, or that killing the shell would be safe.
 
 Run the health split first:

@@ -11,6 +11,7 @@ import {
   prettyText,
   resultToText,
   buildMcpUrl,
+  buildCallToolParams,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -229,6 +230,29 @@ describe('ptool buildMcpUrl', () => {
 
   it('omits client for an ordinary untracked terminal invocation', () => {
     expect(buildMcpUrl('http://127.0.0.1:9071').searchParams.has('client')).toBe(false);
+  });
+});
+
+describe('ptool buildCallToolParams', () => {
+  // EI-13245: the MCP SDK's Client.callTool throws "has an output schema but
+  // did not return structured content" for any tool that advertises an
+  // outputSchema unless the caller opts in via `_meta.structured` — the host
+  // only fills structuredContent when explicitly asked. ptool must always ask.
+  it('always requests structuredContent via _meta.structured', () => {
+    const params = buildCallToolParams('work_items:burn_down', { harness: 'papercusp', ids: ['WI-1'] });
+    expect(params).toEqual({
+      name: 'work_items:burn_down',
+      arguments: { harness: 'papercusp', ids: ['WI-1'] },
+      _meta: { structured: true },
+    });
+  });
+
+  it('preserves the args object identity/shape for tools with no args', () => {
+    expect(buildCallToolParams('harness:list', {})).toEqual({
+      name: 'harness:list',
+      arguments: {},
+      _meta: { structured: true },
+    });
   });
 });
 

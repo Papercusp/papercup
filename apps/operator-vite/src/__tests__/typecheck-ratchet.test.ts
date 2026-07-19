@@ -41,7 +41,20 @@ const APP_ROOT = resolve(__dirname, '../..');
  * apps/operator/lib/tauri-bindings.ts). runTsc now throws on a no-output crash so
  * a dead tsc can never read as a clean tree again.
  */
-const FOREIGN_ERROR_WATERMARK = 152;
+/*
+ * 2026-07-19: 152 → 107. The backlog had risen to 170 and redded the release
+ * gate. Root cause was NOT new bad code: operator-core ships ambient shim
+ * .d.ts files (holepunch/sodium-native/rnnoise-wasm) that nothing imports, so
+ * they only enter a program via `include` — and this app's tsconfig included
+ * only ["src", "vite.config.ts"]. Every already-shimmed Holepunch dep therefore
+ * read as TS7016 here, plus a TS7006 implicit-any cascade on the callbacks those
+ * shims type (the new sync/pot-git/* files inherited 36 of them at once).
+ * Adding ../../packages/operator-core/lib/**\/*.d.ts to `include` made the real
+ * types visible: 170 → 107 with no suppression and no source change. Lowered to
+ * the honest measured number from a run that parsed 107 real error lines (not a
+ * WI-4721-style empty/crashed run) and left src/** at zero.
+ */
+const FOREIGN_ERROR_WATERMARK = 107;
 
 interface TscError {
   file: string;

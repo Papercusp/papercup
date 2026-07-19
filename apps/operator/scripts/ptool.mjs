@@ -256,6 +256,19 @@ function readToken() {
   }
 }
 
+/** Build the `tools/call` params for a ptool invocation. Pure and exported so
+ *  the `_meta.structured` opt-in is regression-tested without opening a
+ *  transport (EI-13245): the MCP SDK's `Client.callTool` throws "has an
+ *  output schema but did not return structured content" for ANY tool that
+ *  advertises an `outputSchema` in `tools/list` unless the caller's
+ *  `_meta.structured` flag asks the host to fill `structuredContent` — the
+ *  operator's MCP host leaves it empty by default (token-sensitive agent
+ *  callers opt in explicitly, P-010). ptool is a human/scripting CLI, not a
+ *  token-metered LLM session, so it always asks. */
+export function buildCallToolParams(toolName, callArgs) {
+  return { name: toolName, arguments: callArgs, _meta: { structured: true } };
+}
+
 /** Build ptool's superuser MCP URL. Pure and exported so the identity contract
  *  is regression-tested without opening a transport. */
 export function buildMcpUrl(operatorUrl, { workspace, harness, client } = {}) {
@@ -512,7 +525,7 @@ async function main() {
       console.error(`→ ${toolName}  ${JSON.stringify(callArgs)}`);
     }
 
-    const result = await client.callTool({ name: toolName, arguments: callArgs });
+    const result = await client.callTool(buildCallToolParams(toolName, callArgs));
     const code = printResult(result, { raw: args.raw });
     if (code !== 0) process.exitCode = code;
   } finally {
