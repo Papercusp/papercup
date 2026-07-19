@@ -78,8 +78,8 @@ vi.mock('../chat/SessionChatModal', () => ({
   },
 }));
 
-import InboxPane, { buildDiscussDraft } from './InboxPane';
-import { effectiveTier, useInboxPendingCount } from './use-inbox-pending';
+import InboxPane, { buildDiscussDraft, formatRelativeDate } from './InboxPane';
+import { effectiveTier, useInboxPendingCount, isInboxActive, scopeInboxItems } from './use-inbox-pending';
 import { consumePendingChatSeed } from './chat-seed';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 
@@ -342,5 +342,111 @@ describe('<InboxPane>', () => {
     H.results['plans.attention'] = { data: [], loading: false, fetching: false, error: new Error('coord down'), invalidate: vi.fn() };
     renderPane();
     expect(screen.getByText(/coord down/)).toBeTruthy();
+  });
+});
+
+// inbox-pane-active-scope-dates-filters-2026-07-19
+describe('inbox active scope (P-101)', () => {
+  const DAY = 86_400_000;
+  it('drops the non-decision plan-item backlog but KEEPS needs-human plan decisions', () => {
+    const backlog = mkItem('todo1', { kind: 'plan-item', tier: 'activity', needsHuman: false });
+    const blockedPlan = mkItem('blk1', { kind: 'plan-item', tier: 'alert', needsHuman: false });
+    const planDecision = mkItem('dec1', { kind: 'plan-item', tier: 'decision', needsHuman: true });
+    const kept = scopeInboxItems([backlog, blockedPlan, planDecision]);
+    expect(kept.map((i) => i.id)).toEqual(['dec1']);
+    expect(isInboxActive(backlog)).toBe(false);
+    expect(isInboxActive(blockedPlan)).toBe(false);
+    expect(isInboxActive(planDecision)).toBe(true);
+  });
+
+  it('keeps alerts + decisions regardless of age, recency-bounds only stale activity', () => {
+    const now = Date.now();
+    const oldActivity = mkItem('act-old', { tier: 'activity', needsHuman: false, occurredAt: new Date(now - 30 * DAY).toISOString() });
+    const freshActivity = mkItem('act-new', { tier: 'activity', needsHuman: false, occurredAt: new Date(now - 1 * DAY).toISOString() });
+    const undatedActivity = mkItem('act-undated', { tier: 'activity', needsHuman: false, occurredAt: null });
+    const oldAlert = mkItem('alert-old', { kind: 'coord-escalation', tier: 'alert', needsHuman: false, occurredAt: new Date(now - 90 * DAY).toISOString() });
+    expect(isInboxActive(oldActivity, now)).toBe(false); // stale FYI dropped
+    expect(isInboxActive(freshActivity, now)).toBe(true);
+    expect(isInboxActive(undatedActivity, now)).toBe(true); // undated → kept
+    expect(isInboxActive(oldAlert, now)).toBe(true); // current-state, never expires
+  });
+
+  it('the pane "All" count reflects the SCOPED set (backlog excluded)', () => {
+    seedAttention([
+      mkItem('d1'),
+      mkItem('todo1', { kind: 'plan-item', tier: 'activity', needsHuman: false }),
+      mkItem('todo2', { kind: 'plan-item', tier: 'alert', needsHuman: false }),
+    ]);
+    renderPane('?opci=all');
+    expect(screen.getByTestId('inbox-filter-all').textContent).toContain('1');
+    expect(screen.getByTestId('inbox-row-d1')).toBeTruthy();
+    expect(screen.queryByTestId('inbox-row-todo1')).toBeNull();
+  });
+});
+
+describe('inbox dates (P-2xx)', () => {
+  it('formatRelativeDate renders compact relative labels', () => {
+    const now = Date.parse('2026-07-19T12:00:00Z');
+    expect(formatRelativeDate(new Date(now - 10_000).toISOString(), now)).toBe('just now');
+    expect(formatRelativeDate(new Date(now - 5 * 60_000).toISOString(), now)).toBe('5m');
+    expect(formatRelativeDate(new Date(now - 3 * 3_600_000).toISOString(), now)).toBe('3h');
+    expect(formatRelativeDate(new Date(now - 2 * 86_400_000).toISOString(), now)).toBe('2d');
+    expect(formatRelativeDate(null, now)).toBeNull();
+    expect(formatRelativeDate('not-a-date', now)).toBeNull();
+  });
+
+  it('renders a date element on a row that carries occurredAt', () => {
+    seedAttention([mkItem('d1', { occurredAt: new Date(Date.now() - 2 * 3_600_000).toISOString() })]);
+    renderPane();
+    const date = screen.getByTestId('inbox-date-d1');
+    expect(date.textContent).toBe('2h');
+  });
+
+  it('renders no date element when occurredAt is absent', () => {
+    seedAttention([mkItem('d1', { occurredAt: null })]);
+    renderPane();
+    expect(screen.queryByTestId('inbox-date-d1')).toBeNull();
+  });
+});
+
+describe('inbox search + kind facets (P-3xx)', () => {
+  it('the ?opcq search narrows the list over title/body/owner', () => {
+    seedAttention([
+      mkItem('d1', { title: 'Deploy the release', tier: 'alert', needsHuman: false }),
+      mkItem('d2', { title: 'Rotate the API key', tier: 'alert', needsHuman: false }),
+    ]);
+    renderPane('?opci=all&opcq=release');
+    expect(screen.getByTestId('inbox-row-d1')).toBeTruthy();
+    expect(screen.queryByTestId('inbox-row-d2')).toBeNull();
+  });
+
+  it('typing in the search box writes ?opcq', async () => {
+    seedAttention([mkItem('d1')]);
+    const { lastQuery } = renderPane();
+    fireEvent.change(screen.getByTestId('inbox-search'), { target: { value: 'foo' } });
+    await waitFor(() => expect(lastQuery()).toContain('opcq=foo'));
+  });
+
+  it('a selected ?opck kind facet narrows to that kind', () => {
+    seedAttention([
+      mkItem('d1', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
+      mkItem('d2', { kind: 'coord-message', tier: 'alert', needsHuman: false }),
+    ]);
+    renderPane('?opci=all&opck=coord-escalation');
+    expect(screen.getByTestId('inbox-row-d1')).toBeTruthy();
+    expect(screen.queryByTestId('inbox-row-d2')).toBeNull();
+  });
+
+  it('the Filter toggle reveals data-driven kind facets with counts', () => {
+    seedAttention([
+      mkItem('d1', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
+      mkItem('d2', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
+      mkItem('d3', { kind: 'coord-message', tier: 'alert', needsHuman: false }),
+    ]);
+    renderPane('?opci=all&opcf=true');
+    const facet = screen.getByTestId('inbox-facet-coord-escalation');
+    expect(facet.textContent).toContain('escalation');
+    expect(facet.textContent).toContain('2');
+    expect(screen.getByTestId('inbox-facet-coord-message')).toBeTruthy();
   });
 });

@@ -44,11 +44,15 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
+  foldMemberSpec,
   injectFleetArg,
   injectLaunchedByArg,
+  memberSpecSchema,
   recordAgentLaunchResult,
   resolveResumeTarget,
   verifyResumeStarted,
+  type FleetMemberDefaults,
+  type MemberSpec,
 } from '../../agent-launch-core';
 import type { ColorScheme } from '../../console-color-schemes';
 
@@ -149,7 +153,14 @@ export default defineTool({
       .min(1)
       .max(MAX_AGENTS)
       .optional()
-      .describe(`How many agents to launch with this brief/plan (default 1, max ${MAX_AGENTS}). Not allowed with an in-place resume — one session cannot be resumed N times (fork it instead).`),
+      .describe(`How many agents to launch with this brief/plan (default 1 — or the length of \`members\` when that is given; max ${MAX_AGENTS}). Not allowed with an in-place resume — one session cannot be resumed N times (fork it instead).`),
+    members: z
+      .array(memberSpecSchema)
+      .max(MAX_AGENTS)
+      .optional()
+      .describe(
+        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
+      ),
     cwd: z.string().max(500).optional().describe('Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session\'s own recorded cwd.'),
     label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
     display: z

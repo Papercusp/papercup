@@ -19,6 +19,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import type { ReactNode } from "react";
 
 const { sync, counts, filters } = vi.hoisted(() => ({
@@ -88,8 +89,27 @@ vi.mock("@papercusp/grid-core", () => ({
 vi.mock("./use-create-data", () => ({
   useItemPlanFilter: () => [filters.itemPlans, vi.fn()],
 }));
+// The shared column-filter layer pulls in the grid-core engine (mocked here to
+// just VirtualGrid) and nuqs; stub it to a pass-through so these tests stay
+// focused on the panel's own list/filter logic (#4 wiring is covered by the
+// filters lib's own suite).
+vi.mock("@/app/harness/filters", () => ({
+  useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
+    rows,
+    controller: null,
+    activeChips: [],
+    hasActive: false,
+    clearAll: () => {},
+  }),
+  ColumnFilterBar: () => null,
+}));
 
 import ObservationsPanel from "./ObservationsPanel";
+
+/** All renders go through the nuqs testing adapter — the panel reads `obsq`
+ *  (search) + `obsview` (table/stacks) from the URL (#4/#7). */
+const renderPanel = () =>
+  render(<ObservationsPanel />, { wrapper: withNuqsTestingAdapter() });
 
 interface Row {
   id: string;
@@ -137,14 +157,14 @@ describe("<ObservationsPanel />", () => {
   it("shows the loading copy while loading with no rows yet", () => {
     sync.loading = true;
     sync.data = [];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.getByText(/loading observations…/i)).toBeTruthy();
   });
 
   it("shows the empty-state copy when there are no observations", () => {
     sync.loading = false;
     sync.data = [];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.getByText(/no observations yet/i)).toBeTruthy();
   });
 
@@ -153,7 +173,7 @@ describe("<ObservationsPanel />", () => {
       mkRow({ id: "a", title: "First" }),
       mkRow({ id: "b", title: "Second" }),
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.getAllByTestId("observation-row")).toHaveLength(2);
     expect(screen.getByText("First")).toBeTruthy();
     expect(screen.getByText("Second")).toBeTruthy();
@@ -162,7 +182,7 @@ describe("<ObservationsPanel />", () => {
   it("shows the full observed timestamp, including seconds", () => {
     const createdAt = "2026-06-14T12:34:56.000Z";
     sync.data = [mkRow({ createdAt })];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(
       screen.getByText(
         new Date(createdAt).toLocaleString(undefined, {
@@ -185,7 +205,7 @@ describe("<ObservationsPanel />", () => {
       mkRow({ id: "c", title: "Beta", refs: ["plan-beta"] }),
       mkRow({ id: "d", title: "Prefix only", refs: ["plan-alphabet"] }),
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.getAllByTestId("observation-row")).toHaveLength(2);
     expect(screen.getByText("Alpha exact")).toBeTruthy();
     expect(screen.getByText("Alpha tagged")).toBeTruthy();
@@ -196,9 +216,9 @@ describe("<ObservationsPanel />", () => {
   it("shows a selected-plan empty state when the filter removes every observation", () => {
     filters.itemPlans = ["plan-alpha"];
     sync.data = [mkRow({ id: "b", title: "Beta", refs: ["plan-beta"] })];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(
-      screen.getByText(/no observations match the selected filters/i),
+      screen.getByText(/no observations match the current filter \/ search/i),
     ).toBeTruthy();
   });
 
@@ -207,7 +227,7 @@ describe("<ObservationsPanel />", () => {
       mkRow({ id: "k1", title: "k1", kind: "friction" }),
       mkRow({ id: "k2", title: "k2", kind: "mystery-kind" }),
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.getAllByText("Friction").length).toBeGreaterThanOrEqual(1); // KIND_LABEL.friction
     expect(screen.getAllByText("mystery-kind").length).toBeGreaterThanOrEqual(
       1,
@@ -223,7 +243,7 @@ describe("<ObservationsPanel />", () => {
       { kind: "friction", count: 1 },
       { kind: "gap", count: 1 },
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     const friction = screen.getByRole("button", {
       name: "Filter by Friction, 1",
     });
@@ -248,7 +268,7 @@ describe("<ObservationsPanel />", () => {
       { kind: "surprise", count: 300 },
       { kind: "other", count: 1769 },
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     const chips = screen.getByLabelText(
       "Signal distribution (database counts)",
     );
@@ -273,7 +293,7 @@ describe("<ObservationsPanel />", () => {
         refs: ["F-1", "WI-2"],
       }),
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.queryByText("a longer note")).toBeNull();
     expect(
       screen.queryByText("engineer · repo · high · F-1 · WI-2"),
@@ -311,7 +331,7 @@ describe("<ObservationsPanel />", () => {
         body,
       }),
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     fireEvent.click(
       screen.getByRole("button", {
         name: "Expand observation Deploy-diff triage recipe (long-token real shape)",
@@ -334,7 +354,7 @@ describe("<ObservationsPanel />", () => {
       { ...mkRow({ id: "a", title: "First" }), _meta: { total: 450 } },
       mkRow({ id: "b", title: "Second" }),
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(sync.args).toEqual({ limit: 200 });
     expect(screen.getByTestId("observations-count").textContent).toBe(
       "2 / 450",
@@ -347,14 +367,14 @@ describe("<ObservationsPanel />", () => {
     sync.data = [mkRow({ id: "a", title: "Still here" })];
     sync.loading = true;
     sync.fetching = true;
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.getByText("Still here")).toBeTruthy();
     expect(screen.queryByText(/loading observations/i)).toBeNull();
   });
 
   it("refreshes through the shared sync query", () => {
     sync.data = [mkRow()];
-    render(<ObservationsPanel />);
+    renderPanel();
     fireEvent.click(
       screen.getByRole("button", { name: "Refresh observations" }),
     );
@@ -370,7 +390,7 @@ describe("<ObservationsPanel />", () => {
       { kind: "friction", count: 500 },
       { kind: "gap", count: 600 },
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     // Signal distribution should show database counts, not loaded counts
     const frictionBtn = screen.getByRole("button", {
       name: "Filter by Friction, 500",
@@ -389,7 +409,7 @@ describe("<ObservationsPanel />", () => {
       { kind: "gap", count: 501 },
       { kind: "surprise", count: 499 },
     ];
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(
       screen.getByRole("button", { name: "Filter by Friction, 500" })
         .textContent,
@@ -414,7 +434,7 @@ describe("<ObservationsPanel />", () => {
 
     // Fresh: newest <30min ago
     sync.data = [mkRow({ id: "a", createdAt: fresh })];
-    const { rerender } = render(<ObservationsPanel />);
+    const { rerender } = renderPanel();
     let dist = screen.getByLabelText("Signal distribution (database counts)");
     expect(dist.getAttribute("data-staleness")).toBe("fresh");
 
@@ -433,7 +453,7 @@ describe("<ObservationsPanel />", () => {
 
   it("defaults to very-stale when no observations are loaded", () => {
     sync.data = [];
-    render(<ObservationsPanel />);
+    renderPanel();
     // When empty, staleness defaults to very-stale (no data)
     // The distribution div won't render if there are no signal counts, so check nothing breaks
     expect(screen.queryByText(/no observations yet/i)).toBeTruthy();

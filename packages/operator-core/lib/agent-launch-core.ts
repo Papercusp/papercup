@@ -15,9 +15,11 @@
  *     its presence rows are reaped, so roster-gated coord:wake cannot reach it —
  *     the first turn is delivered through the psu pty-host discovery socket.
  */
+import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { mapAdvSessionRow, type AdvSessionRow } from './adv-sessions';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
+import { MIN_COMPACTION_LIMIT_TOKENS } from './agent-config-constants';
 
 /** Match `psu` as a command token — start of line, or after whitespace / a
  *  shell separator — followed by whitespace. Shared by every injector. */
@@ -192,8 +194,29 @@ export function buildAgentLaunchCommand(opts: {
   harness?: string | null;
   account?: string | null;
   model?: string | null;
+  /** psu reasoning effort — composed onto the model spec via {@link composeModelSpec}
+   *  (psu has no standalone --effort flag), so it REQUIRES a `model` to attach to. */
+  effort?: string | null;
   workspace?: string | null;
   headless?: boolean;
+  /** psu --context-size: 'full' (~180k, whole tool catalog) or 'trimmed' (~50k spine). */
+  contextSize?: 'full' | 'trimmed' | null;
+  /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch. */
+  compactionLimit?: number | null;
+  /** psu --role for the launched agent. */
+  role?: string | null;
+  /** psu --feature id the agent should pick up. */
+  feature?: string | null;
+  /** psu --profile launch profile name. */
+  profile?: string | null;
+  /** psu --brain: launch in brain mode. */
+  brain?: boolean;
+  /** psu --allow-subagents: opt the session back in to its own subagent-launch tool. */
+  allowSubagents?: boolean;
+  /** psu --add-dir (repeatable): extra directories added to the agent's workspace. */
+  addDir?: string[] | null;
+  /** psu --launch-context: path to a brief/markdown file injected as the launch context. */
+  launchContext?: string | null;
   extraArgs?: string[] | null;
   platform?: NodeJS.Platform;
 }): string {
@@ -232,8 +255,21 @@ export function buildAgentLaunchCommand(opts: {
   // stays injectable (wakes AND the resume kickoff both ride that pty). Without it a
   // windowless member parks forever after one turn.
   if (opts.headless) parts.push('--headless');
-  if (opts.model) parts.push(`--model=${safe('model', opts.model)}`);
+  // Effort rides the MODEL SPEC — psu has no --effort flag (D-001), so join them here.
+  // Free-form-safe: a spec like `opus[1m]:high` carries `[]` outside the identity set,
+  // so quote (matching memberLaunchCommand) rather than reject it via safe().
+  const modelSpec = composeModelSpec(opts.model ?? undefined, opts.effort ?? undefined);
+  if (modelSpec) parts.push(`--model=${quoteLaunchValue(modelSpec)}`);
   if (opts.workspace) parts.push(`--workspace=${safe('workspace', opts.workspace)}`);
+  if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
+  if (opts.compactionLimit) parts.push(`--compaction-limit=${Math.floor(opts.compactionLimit)}`);
+  if (opts.role) parts.push(`--role=${quoteLaunchValue(opts.role)}`);
+  if (opts.feature) parts.push(`--feature=${quoteLaunchValue(opts.feature)}`);
+  if (opts.profile) parts.push(`--profile=${quoteLaunchValue(opts.profile)}`);
+  if (opts.brain) parts.push('--brain');
+  if (opts.allowSubagents) parts.push('--allow-subagents');
+  for (const dir of opts.addDir ?? []) if (dir) parts.push(`--add-dir=${quoteLaunchValue(dir)}`);
+  if (opts.launchContext) parts.push(`--launch-context=${quoteLaunchValue(opts.launchContext)}`);
   for (const a of opts.extraArgs ?? []) parts.push(safe('extraArg', a));
   return parts.join(' ');
 }
@@ -315,6 +351,65 @@ export interface MemberSpec {
   display?: string;
   extraArgs?: string[];
 }
+
+/**
+ * The wire (zod) shape of {@link MemberSpec} — the ONE shared schema both launch
+ * doors accept for `members: MemberSpec[]` (per-member-declarative-launch-specs
+ * P-002: `fleet:launch-on-plan` AND `capability:launch-agent`). Kept beside the
+ * `MemberSpec` type so the two never drift. Every field is optional and OVERRIDES
+ * the fleet-wide arg of the same name for THAT member only; an unset field falls
+ * through (member > fleet > system, D-001). `.strict()` so an unknown field is a
+ * loud error, not a silent drop.
+ *
+ * `carry` and `claimKinds` need the fleet baseline / claim-spec machinery only
+ * `fleet:launch-on-plan` builds — `capability:launch-agent` accepts them (schema
+ * parity) but surfaces a warning rather than honoring them silently.
+ */
+export const memberSpecSchema = z
+  .object({
+    model: z.string().optional().describe("psu --model: this member's model spec, overriding the fleet `model`."),
+    effort: z
+      .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+      .optional()
+      .describe(
+        "Reasoning effort for this member. Composed onto the model spec (`<model>:<effort>`) — psu has no separate --effort flag — so it REQUIRES a model (this member's or the fleet's).",
+      ),
+    account: z.string().optional().describe("psu --account: this member's account routing (<pool-id>|auto|default)."),
+    carry: z.enum(['warm', 'cold']).optional().describe("This member's warm/cold auto-mode carry."),
+    contextSize: z.enum(['full', 'trimmed']).optional().describe("psu --context-size for this member."),
+    compactionLimit: z
+      .number()
+      .int()
+      .min(MIN_COMPACTION_LIMIT_TOKENS)
+      .optional()
+      .describe(
+        `psu --compaction-limit: this member's soft compaction limit in TOKENS (>= ${MIN_COMPACTION_LIMIT_TOKENS}). Clamped down to the fleet-role ceiling at seed time — it can lower a member's limit, never raise it past its cap.`,
+      ),
+    role: z.string().optional().describe("psu --role for this member."),
+    agent: z.string().optional().describe("psu --agent (claude|omp|codex) for this member."),
+    launchContext: z.string().optional().describe("psu --launch-context: this member's own brief FILE path."),
+    brief: z
+      .string()
+      .optional()
+      .describe(
+        "Inline brief TEXT for this member — becomes its own first turn / composed launch context. Use instead of `launchContext` when you have the text, not a file. Takes precedence over this member's `perMemberLaunchContext` entry.",
+      ),
+    claimKinds: z
+      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
+      .min(1)
+      .max(5)
+      .optional()
+      .describe("Per-member claim lane — seeds THIS member's claim spec, overriding the fleet-level `claimKinds`."),
+    headless: z.boolean().optional().describe('Launch this member headless (no window).'),
+    addDir: z.array(z.string()).optional().describe("psu --add-dir entries for this member."),
+    allowSubagents: z.boolean().optional().describe('psu --allow-subagents for this member.'),
+    brain: z.boolean().optional().describe('psu --brain for this member.'),
+    feature: z.string().optional().describe('psu --feature for this member.'),
+    profile: z.string().optional().describe('psu --profile for this member.'),
+    display: z.string().optional().describe("Open this member's terminal on this X display."),
+    extraArgs: z.array(z.string()).optional().describe("Extra verbatim psu args for this member."),
+  })
+  .strict();
 
 /**
  * The fleet-wide launch defaults a per-member {@link MemberSpec} folds over

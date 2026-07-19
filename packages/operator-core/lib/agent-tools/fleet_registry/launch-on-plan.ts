@@ -41,7 +41,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
-import { MIN_COMPACTION_LIMIT_TOKENS, validateCloudModelSpec } from '../../agent-config-constants';
+import { validateCloudModelSpec } from '../../agent-config-constants';
 import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
@@ -75,6 +75,7 @@ import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capac
 import {
   foldMemberSpec,
   memberLaunchCommand as sharedMemberLaunchCommand,
+  memberSpecSchema,
   type FleetMemberDefaults,
   type MemberSpec,
 } from '../../agent-launch-core';
@@ -86,62 +87,6 @@ import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 /** Opening more than this many desktop windows in one call is heavy + almost always
  *  a mistake — mirrors capability:terminal's MAX_TERMINALS. */
 const MAX_MEMBERS = 12;
-
-/**
- * The DECLARATIVE per-member launch spec (per-member-declarative-launch-specs
- * P-001/P-002) — the wire shape of `MemberSpec` from agent-launch-core.
- *
- * Every field is optional and OVERRIDES the fleet-wide arg of the same name for
- * that member only; an unset field falls through (member > fleet > system, D-001).
- * `brief` is the inline-text twin of `perMemberLaunchContext`'s file path — it is
- * composed to a launch-context file for that member, so a leader can differentiate
- * members without writing N files first.
- */
-const memberSpecSchema = z
-  .object({
-    model: z.string().optional().describe("psu --model: this member's model spec, overriding the fleet `model`."),
-    effort: z
-      .enum(['low', 'medium', 'high', 'xhigh', 'max'])
-      .optional()
-      .describe(
-        "Reasoning effort for this member. Composed onto the model spec (`<model>:<effort>`) — psu has no separate --effort flag — so it REQUIRES a model (this member's or the fleet's).",
-      ),
-    account: z.string().optional().describe("psu --account: this member's account routing (<pool-id>|auto|default)."),
-    carry: z.enum(['warm', 'cold']).optional().describe("This member's warm/cold auto-mode carry."),
-    contextSize: z.enum(['full', 'trimmed']).optional().describe("psu --context-size for this member."),
-    compactionLimit: z
-      .number()
-      .int()
-      .min(MIN_COMPACTION_LIMIT_TOKENS)
-      .optional()
-      .describe(
-        `psu --compaction-limit: this member's soft compaction limit in TOKENS (>= ${MIN_COMPACTION_LIMIT_TOKENS}). Clamped down to the fleet-role ceiling at seed time — it can lower a member's limit, never raise it past its cap.`,
-      ),
-    role: z.string().optional().describe("psu --role for this member."),
-    agent: z.string().optional().describe("psu --agent (claude|omp|codex) for this member."),
-    launchContext: z.string().optional().describe("psu --launch-context: this member's own brief FILE path."),
-    brief: z
-      .string()
-      .optional()
-      .describe(
-        "Inline brief TEXT for this member — composed to its own launch-context file. Use instead of `launchContext` when you have the text, not a file. Takes precedence over this member's `perMemberLaunchContext` entry.",
-      ),
-    claimKinds: z
-      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
-      .min(1)
-      .max(5)
-      .optional()
-      .describe("Per-member claim lane — seeds THIS member's claim spec, overriding the fleet-level `claimKinds`."),
-    headless: z.boolean().optional().describe('Launch this member headless (no window).'),
-    addDir: z.array(z.string()).optional().describe("psu --add-dir entries for this member."),
-    allowSubagents: z.boolean().optional().describe('psu --allow-subagents for this member.'),
-    brain: z.boolean().optional().describe('psu --brain for this member.'),
-    feature: z.string().optional().describe('psu --feature for this member.'),
-    profile: z.string().optional().describe('psu --profile for this member.'),
-    display: z.string().optional().describe("Open this member's terminal on this X display."),
-    extraArgs: z.array(z.string()).optional().describe("Extra verbatim psu args for this member."),
-  })
-  .strict();
 
 /** The operator's own base URL for the spawned terminal's API-callback env. Mirrors
  *  capability:terminal's resolver (strip a trailing /api/mcp back to the origin). */

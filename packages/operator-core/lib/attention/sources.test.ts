@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { parsePlan } from '@papercusp/plan-parser';
-import { planItemsToAttention, dropConvertedPlanItems } from './sources';
+import { planItemsToAttention, dropConvertedPlanItems, reportTurnsToAttention, toIsoOrNull } from './sources';
 import { buildAttentionGroups } from './group';
 import { smokeFailToAttention } from './adapters';
 import { planItemRef } from '../issue-blocks-merge';
@@ -185,5 +185,34 @@ describe('write ↔ read round-trip (writers produce parser-readable markdown)',
     const parsed = parsePlan(wrap(line));
     expect(parsed.items[0].blockedBy).toEqual(['P-001']);
     expect(parsed.items[0].importance).toBe('high');
+  });
+});
+
+// inbox-pane-active-scope-dates-filters-2026-07-19 P-2xx: occurredAt plumbing.
+describe('toIsoOrNull', () => {
+  it('coerces ISO strings, epoch-ms numbers and Dates; null on absent/invalid', () => {
+    expect(toIsoOrNull('2026-07-19T12:00:00.000Z')).toBe('2026-07-19T12:00:00.000Z');
+    const ms = Date.parse('2026-07-19T12:00:00.000Z');
+    expect(toIsoOrNull(ms)).toBe('2026-07-19T12:00:00.000Z');
+    expect(toIsoOrNull(new Date(ms))).toBe('2026-07-19T12:00:00.000Z');
+    expect(toIsoOrNull(null)).toBeNull();
+    expect(toIsoOrNull(undefined)).toBeNull();
+    expect(toIsoOrNull('not-a-date')).toBeNull();
+  });
+});
+
+describe('reportTurnsToAttention occurredAt', () => {
+  it('stamps occurredAt from the turn createdAt', () => {
+    const createdAt = Date.parse('2026-07-19T09:30:00.000Z');
+    const [item] = reportTurnsToAttention([
+      {
+        turnId: 't1',
+        conversationId: 'c1',
+        report: { title: 'Status', plans: [{ title: 'Plan A', status: 'active' }] },
+        text: 'status',
+        createdAt,
+      },
+    ]);
+    expect(item?.occurredAt).toBe('2026-07-19T09:30:00.000Z');
   });
 });

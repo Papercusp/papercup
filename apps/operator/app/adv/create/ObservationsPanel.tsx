@@ -482,10 +482,12 @@ export default function ObservationsPanel({
         </div>
       ) : rows.length === 0 ? (
         <div style={{ color: "var(--fg-mute)", padding: 12 }}>
-          {itemPlans.length || signalFilter
-            ? "No observations match the selected filters."
+          {isFiltered || itemPlans.length
+            ? "No observations match the current filter / search."
             : "No observations yet — they appear as agents reflect at the end of their turns."}
         </div>
+      ) : obsView === "stacks" ? (
+        <ObservationStacks rows={rows} selectedId={selectedId} onSelect={setSelectedId} />
       ) : (
         <VirtualGrid<ObservationRow>
           columns={columns}
@@ -500,7 +502,26 @@ export default function ObservationsPanel({
         />
       )}
       <style>{`
-        .pc-observations__toolbar { min-height: 30px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+        .pc-observations__toolbar { min-height: 30px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
+        .pc-observations__search { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-2); color: var(--fg-mute); }
+        .pc-observations__search:focus-within { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); color: var(--fg); }
+        .pc-observations__search input { border: 0; background: none; outline: none; color: var(--fg); font: inherit; font-size: 11px; width: 150px; }
+        .pc-observations__search input::placeholder { color: var(--fg-mute); }
+        .pc-observations__viewtoggle { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+        .pc-observations__viewtoggle button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 22px; border: 0; border-radius: 6px; background: none; color: var(--fg-mute); cursor: pointer; }
+        .pc-observations__viewtoggle button:hover { color: var(--fg); }
+        .pc-observations__viewtoggle button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, var(--bg-2)); color: var(--fg); }
+        .pc-observations__stacks { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-content: start; padding: 2px; }
+        .pc-observations__stackgroup { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+        .pc-observations__stackgroup-head { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; color: var(--fg); }
+        .pc-observations__stackgroup-head > i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+        .pc-observations__stackgroup-head > strong { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--fg-mute); font-variant-numeric: tabular-nums; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; }
+        .pc-observations__card { display: flex; flex-direction: column; gap: 5px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); color: inherit; text-align: left; font: inherit; cursor: pointer; }
+        .pc-observations__card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+        .pc-observations__card.is-selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+        .pc-observations__card-head { display: flex; align-items: center; gap: 8px; }
+        .pc-observations__card-title { font-size: 12.5px; font-weight: 620; color: var(--fg); overflow-wrap: anywhere; }
+        .pc-observations__card.is-selected .pc-observations__card-title { color: var(--accent); }
         .pc-observations__distribution { display: flex; flex: 1 1 auto; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; opacity: 1; transition: opacity 140ms ease; }
         .pc-observations__distribution[data-staleness="stale"] { opacity: 0.72; }
         .pc-observations__distribution[data-staleness="very-stale"] { opacity: 0.5; }
@@ -526,6 +547,119 @@ export default function ObservationsPanel({
         .pc-observations__sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
       `}</style>
     </div>
+  );
+}
+
+/**
+ * #7 (owner ask 2026-07-19): the Stacks view — observations of the SAME kind
+ * overlap into one deck the user browses one card at a time (via CardStack).
+ * Groups render biggest-first with "other" pinned last, mirroring the count
+ * chips' ordering so the two views read consistently.
+ */
+function ObservationStacks({
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  rows: ObservationRow[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+}) {
+  const groups = useMemo(() => {
+    const byKind = new Map<string, ObservationRow[]>();
+    for (const row of rows) {
+      const kind = row.kind ?? "other";
+      const bucket = byKind.get(kind);
+      if (bucket) bucket.push(row);
+      else byKind.set(kind, [row]);
+    }
+    return [...byKind.entries()].sort((a, b) => {
+      if (a[0] === "other") return 1;
+      if (b[0] === "other") return -1;
+      return b[1].length - a[1].length || a[0].localeCompare(b[0]);
+    });
+  }, [rows]);
+  return (
+    <div className="pc-observations__stacks">
+      {groups.map(([kind, group]) => (
+        <section
+          key={kind}
+          className="pc-observations__stackgroup"
+          aria-label={`${KIND_LABEL[kind] ?? kind} observations`}
+        >
+          <header className="pc-observations__stackgroup-head">
+            <i
+              aria-hidden
+              style={{
+                background: OBSERVATION_KIND_COLOR[kind] ?? "var(--fg-mute)",
+              }}
+            />
+            <span>{KIND_LABEL[kind] ?? kind}</span>
+            <strong>{group.length}</strong>
+          </header>
+          <CardStack
+            items={group}
+            getKey={(row) => row.id}
+            ariaLabel={`${KIND_LABEL[kind] ?? kind} observations`}
+            renderCard={(row) => (
+              <ObservationCard
+                row={row}
+                selected={selectedId === row.id}
+                onToggle={() =>
+                  onSelect(selectedId === row.id ? null : row.id)
+                }
+              />
+            )}
+          />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ObservationCard({
+  row,
+  selected,
+  onToggle,
+}: {
+  row: ObservationRow;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const context = [row.sourceRole, row.scope, row.confidence, ...row.refs]
+    .filter(Boolean)
+    .join(" · ");
+  const subsumed =
+    selected && row.body ? bodySubsumesTitle(row.title, row.body) : false;
+  const split = subsumed ? splitBodyHeadline(row.body ?? "") : null;
+  const headline = split ? split.headline : row.title;
+  const bodyTail = selected ? (split ? split.rest || null : row.body) : null;
+  return (
+    <button
+      type="button"
+      className={`pc-observations__card${selected ? " is-selected" : ""}`}
+      aria-expanded={selected}
+      aria-label={`${selected ? "Collapse" : "Expand"} observation ${row.title}`}
+      onClick={onToggle}
+    >
+      <span className="pc-observations__card-head">
+        <span className="pc-observations__time">
+          {new Date(row.createdAt).toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })}
+        </span>
+      </span>
+      <strong className="pc-observations__card-title">{headline}</strong>
+      {selected && bodyTail ? (
+        <span className="pc-observations__body">{bodyTail}</span>
+      ) : null}
+      {selected && context ? (
+        <em className="pc-observations__context">{context}</em>
+      ) : null}
+    </button>
   );
 }
 
