@@ -3782,6 +3782,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             'peer_rejected',
             peerLabel(keyHex, ip),
           );
+          // WI-5355/WI-5481 diagnosability: onPeerRejected/onPeerRateLimited
+          // previously ONLY wrote to the in-process boot-history ring buffer
+          // (no HTTP surface reachable from these rig containers was found
+          // during live debugging of the "topic never re-pairs" class) — a
+          // banned/rejected peer was invisible in serve.log, so a process-
+          // global swarm-guard ban (see swarm-guard.ts's CONN_RATE + 10-minute
+          // DEFAULT_BAN_TTL_MS) looked identical to "the DHT/discovery layer
+          // never recovers", sending prior investigation down the topic-
+          // gossip escalation-ladder path instead. Log it plainly so the next
+          // live rig run makes this branch directly visible.
+          console.warn(
+            `[swarm] ⚠ peer_rejected harness=${opts.harnessSlug}` +
+              (keyHex ? ` peer=${keyHex.slice(0, 12)}…` : '') +
+              (ip ? ` ip=${ip}` : ''),
+          );
         },
         onPeerRateLimited: (keyHex, ip) => {
           recordBootEvent(
@@ -3789,6 +3804,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             opts.harnessSlug,
             'peer_rate_limited',
             peerLabel(keyHex, ip),
+          );
+          // WI-5355/WI-5481: this peer key+IP just tripped the process-global
+          // swarm-guard connection-rate ceiling (CONN_RATE) and is now BANNED
+          // for DEFAULT_BAN_TTL_MS (10 minutes) — Hyperswarm's firewall will
+          // reject its key pre-handshake for the whole cooldown, so EVERY
+          // topic/harness sharing this peer goes dark simultaneously. That
+          // symptom ("never paired"/"severed" for minutes at a time despite
+          // refresh() ticking) is otherwise indistinguishable from a stale-
+          // DHT-state discovery-layer wedge — see this same rig's serve.log
+          // for a burst of rapid "swarm connection #N" churn just before this
+          // line, which is the likely trigger.
+          console.error(
+            `[swarm] ⚠ peer_rate_limited harness=${opts.harnessSlug}` +
+              (keyHex ? ` peer=${keyHex.slice(0, 12)}…` : '') +
+              (ip ? ` ip=${ip}` : '') +
+              ' — peer is now BANNED for the guard cooldown; every topic/harness sharing it will look wedged until the ban expires.',
           );
         },
         // P-008 (harden-shared-hive-to-256-peers): turn P-004's process-global
