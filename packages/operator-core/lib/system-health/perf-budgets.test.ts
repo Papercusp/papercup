@@ -222,11 +222,34 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(melt.reasons.join(' ')).toMatch(/starved for CPU/);
   });
 
+  // ── memory PSI (WI-5471, 2026-07-19): captured all along, never evaluated ──────
+  it('warns on sustained memory PSI some avg60 (early reclaim pressure)', () => {
+    const v = evaluatePerfSignals(sig({ psi: { memory: { some: { avg60: 15 } } } }), NOW);
+    expect(v.status).toBe('warn');
+    expect(v.psiMemorySome60).toBe(15);
+    expect(v.reasons.join(' ')).toMatch(/memory reclaim pressure/);
+  });
+
+  it('crits on sustained memory PSI full avg60 (real thrashing — the WI-5471 root cause)', () => {
+    const v = evaluatePerfSignals(sig({ psi: { memory: { some: { avg60: 11.15 }, full: { avg60: 8.17 } } } }), NOW);
+    expect(v.status).toBe('crit');
+    expect(v.degraded).toBe(true);
+    expect(v.psiMemoryFull60).toBe(8.17);
+    expect(v.reasons.join(' ')).toMatch(/all tasks stalled on memory/);
+  });
+
+  it('does not alarm on a healthy memory PSI reading', () => {
+    const v = evaluatePerfSignals(sig({ psi: { memory: { some: { avg60: 2 }, full: { avg60: 0 } } } }), NOW);
+    expect(v.status).toBe('ok');
+  });
+
   it('absent inotify/psi signals never alarm (older captures stay evaluable)', () => {
     const v = evaluatePerfSignals(sig(), NOW);
     expect(v.status).toBe('ok');
     expect(v.inotifyTotalWatches).toBeNull();
     expect(v.psiCpuSome60).toBeNull();
+    expect(v.psiMemorySome60).toBeNull();
+    expect(v.psiMemoryFull60).toBeNull();
   });
 
   // ── session-dir population (session-db-archive-retire-dirs P-007) ─────────
