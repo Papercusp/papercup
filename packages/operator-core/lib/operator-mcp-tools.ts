@@ -150,6 +150,10 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // This is the DONATE verb of the pot-seat-pools-prose-ux-2026-07-18 D-004
   // donate/spend/debug prose set ("offer two sonnet seats to the design pot").
   'mcp__agentmcp__resource:delegate',
+  // pot-seat-pools-prose-ux-2026-07-18 P-013 — the READ counterpart: "what agent
+  // seats are available?" had no chat-reachable answer before this (the /res
+  // board is human-UI-only) — resource:delegate stays the one write path.
+  'mcp__agentmcp__resource:offers',
   // pot-seat-pools-prose-ux-2026-07-18 P-006/D-004 — the rest of the
   // donate/spend/debug verb set the prose-first UX needs on the chat surface
   // (previously agent-reachable but NOT exposed here, so the brain could never

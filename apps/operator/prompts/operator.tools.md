@@ -108,8 +108,15 @@ with "let me know what you need" — you're delivering substance.
 
 ### Offer / spend / debug remote agent seats (fleet-scoped or pot-scoped)
 
-Three distinct prose intents map to three distinct tools — donating capacity,
-spending it, and debugging why a spend didn't land. Don't conflate them:
+Four distinct prose intents map to four distinct tools — checking what's
+available, donating capacity, spending it, and debugging why a spend didn't
+land. Don't conflate them:
+
+0. **"what agent seats are available?" / "who's donated seats to this
+   pot?"** — CHECK. Call `resource:offers` (optionally `fleetSlug` to scope
+   to one fleet) — a read-only list of open standing seat-offers (donor
+   `hostLabel` when the donor set one, model, effort, count, audience).
+   Read-only; never mutates.
 
 1. **"offer N seats to pot X"** (or "assign N seats to fleet X") — a DONATE.
    Call `resource:delegate` with `potSlug, audience, kind:'agent_slot', model,

@@ -3956,31 +3956,33 @@ function LearningsView({
             <Brain size={11} aria-hidden />
             <strong>{rows.length}</strong> learnings retained
           </span>
-          <button
-            type="button"
-            className="pc-learning__flowchip pc-learning__flowchip--link"
-            title="Improvements filed in the trailing 7 days — open the Improvements backlog."
-            onClick={() => void setLviewNav("improvements")}
-          >
-            <Sparkles size={11} aria-hidden />
-            <strong>{extrasSnap?.banked.improvementsFiled7d ?? "—"}</strong>{" "}
-            improvements filed
-            <em>7d</em>
-          </button>
-          <button
-            type="button"
-            className="pc-learning__flowchip pc-learning__flowchip--link"
-            title="Plans drafted in the trailing 7 days — open the Plans board."
-            onClick={() => {
-              void setCreateViewNav("plans");
-              void setTabNav("plans");
-            }}
-          >
-            <GitBranch size={11} aria-hidden />
-            <strong>{extrasSnap?.banked.plansDrafted7d ?? "—"}</strong> plans
-            drafted
-            <em>7d</em>
-          </button>
+          <Tooltip label="Improvements filed in the trailing 7 days — open the Improvements backlog.">
+            <button
+              type="button"
+              className="pc-learning__flowchip pc-learning__flowchip--link"
+              onClick={() => void setLviewNav("improvements")}
+            >
+              <Sparkles size={11} aria-hidden />
+              <strong>{extrasSnap?.banked.improvementsFiled7d ?? "—"}</strong>{" "}
+              improvements filed
+              <em>7d</em>
+            </button>
+          </Tooltip>
+          <Tooltip label="Plans drafted in the trailing 7 days — open the Plans board.">
+            <button
+              type="button"
+              className="pc-learning__flowchip pc-learning__flowchip--link"
+              onClick={() => {
+                void setCreateViewNav("plans");
+                void setTabNav("plans");
+              }}
+            >
+              <GitBranch size={11} aria-hidden />
+              <strong>{extrasSnap?.banked.plansDrafted7d ?? "—"}</strong> plans
+              drafted
+              <em>7d</em>
+            </button>
+          </Tooltip>
         </div>
 
         {hive === "" ? (

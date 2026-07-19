@@ -629,6 +629,29 @@ describe("distributeRemotePlacement (WI-5211 — cross-machine max-spread round-
       expect(dist.error).toMatch(/resource:delegate/);
     }
   });
+
+  it('P-005: pools fleet-scoped and pot-scoped offers together, spreading across BOTH and carrying potSlug through each allocation', () => {
+    // The caller (launch-on-plan.ts) merges this fleet's own fleet-scoped offers
+    // with its pot's shared (potSlug-set) offers into ONE list before calling
+    // here — this function stays scope-blind and just spreads over what it's given.
+    const dist = distributeRemotePlacement(2, [
+      offer(1, 'seat-aaaa', 'fleet-vm', 1), // fleet-scoped: no potSlug
+      offer(2, 'seat-bbbb', 'pot-vm', 1, 'shared-pot'), // pot-scoped
+    ]);
+    expect(dist.ok).toBe(true);
+    if (!dist.ok) return;
+    expect(dist.allocations).toHaveLength(2);
+    const byHost = new Map(dist.allocations.map((a) => [a.host, a]));
+    expect(byHost.get('fleet-vm')?.potSlug).toBeUndefined();
+    expect(byHost.get('pot-vm')?.potSlug).toBe('shared-pot');
+  });
+
+  it('the no-usable-offers refusal mentions BOTH the fleet and pot delegation paths (P-005)', () => {
+    const dist = distributeRemotePlacement(1, []);
+    expect(dist.ok).toBe(false);
+    if (dist.ok) return;
+    expect(dist.error).toMatch(/fleet or its pot/);
+  });
 });
 
 describe("placement arg + remotePlacementUnsupportedArgs (WI-5211)", () => {
