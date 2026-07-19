@@ -453,9 +453,13 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     vi.mocked(readRecentDispatches).mockResolvedValue([
       row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 2 }), // fired before boot → restart victim
     ]);
-    const releaseClaim = vi.fn(async () => null);
-    const rollbackAttempt = vi.fn(async () => null);
-    const escalateThrash = vi.fn(async () => null);
+    // Non-null stubs: a null return now means "the write matched zero rows" (a
+    // genuine no-op, EI-15486) and is EXCLUDED from the recovered/thrashEscalated
+    // counts below — these tests exercise the success path, so the mocks return a
+    // truthy sentinel, same as the real mergeIssuePayload/releaseIssue on a hit.
+    const releaseClaim = vi.fn(async () => ({}));
+    const rollbackAttempt = vi.fn(async () => ({}));
+    const escalateThrash = vi.fn(async () => ({}));
     const result = await collectOrphanedDispatchSignals('ws-1', {
       bootMs,
       recover: { releaseClaim, rollbackAttempt, escalateThrash },
@@ -471,6 +475,51 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     expect(result.note).toMatch(/recovered 1 host-restart victim/);
   });
 
+  it('EI-15486: a recovery write that matches zero rows (WI-5261-class wrong-workspace no-op) is NOT counted as recovered, and is surfaced in the note', async () => {
+    const bootMs = NOW - 0.5 * 3_600_000; // booted 30 min ago
+    vi.mocked(markDispatchOrphaned).mockResolvedValue(true);
+    vi.mocked(readRecentDispatches).mockResolvedValue([
+      row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 2 }), // fired before boot → restart victim
+    ]);
+    // rollbackAttempt silently no-ops (null) — the real mergeIssuePayload's shape when
+    // its conditional UPDATE matches zero rows (e.g. resolved the wrong workspace).
+    const releaseClaim = vi.fn(async () => ({}));
+    const rollbackAttempt = vi.fn(async () => null);
+    const escalateThrash = vi.fn(async () => ({}));
+    const result = await collectOrphanedDispatchSignals('ws-1', {
+      bootMs,
+      recover: { releaseClaim, rollbackAttempt, escalateThrash },
+    });
+    expect(rollbackAttempt).toHaveBeenCalledWith('EI-1', 1);
+    // NOT counted as a recovery — the write never actually touched the row.
+    expect(result.note).not.toMatch(/recovered 1 host-restart victim/);
+    expect(result.note).toMatch(/1 host-restart-recovery write\(s\) matched ZERO rows/);
+  });
+
+  it('EI-15486: escalateThrash matching zero rows is NOT counted as thrashEscalated — the breaker silently failing to stick is surfaced, not hidden', async () => {
+    const bootMs = NOW - 0.5 * 3_600_000; // booted 30 min ago
+    vi.mocked(markDispatchOrphaned).mockResolvedValue(true);
+    vi.mocked(readRecentDispatches).mockResolvedValue([
+      row({ id: 'd4', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 4 }),
+      row({ id: 'd3', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' }),
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(2), resolvedBy: 'host-restart-recovery' }),
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), resolvedBy: 'host-restart-recovery' }),
+    ]);
+    const releaseClaim = vi.fn(async () => ({}));
+    const rollbackAttempt = vi.fn(async () => ({}));
+    // The exact EI-10524 shape: the thrash breaker trips, but the payload write silently
+    // matches zero rows — needsHuman never actually persists, so nothing stops the item
+    // re-dispatching next tick even though the collector was ABOUT to report it handled.
+    const escalateThrash = vi.fn(async () => null);
+    const result = await collectOrphanedDispatchSignals('ws-1', {
+      bootMs,
+      recover: { releaseClaim, rollbackAttempt, escalateThrash },
+    });
+    expect(escalateThrash).toHaveBeenCalledWith('EI-1');
+    expect(result.note).not.toMatch(/routed 1 thrashing item/);
+    expect(result.note).toMatch(/1 host-restart-recovery write\(s\) matched ZERO rows/);
+  });
+
   it('EI-1689: trips the re-dispatch breaker after the cap — routes to human, does NOT re-dispatch', async () => {
     const bootMs = NOW - 0.5 * 3_600_000; // booted 30 min ago
     vi.mocked(markDispatchOrphaned).mockResolvedValue(true);
@@ -482,9 +531,13 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
       row({ id: 'd2', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(2), resolvedBy: 'host-restart-recovery' }),
       row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), resolvedBy: 'host-restart-recovery' }),
     ]);
-    const releaseClaim = vi.fn(async () => null);
-    const rollbackAttempt = vi.fn(async () => null);
-    const escalateThrash = vi.fn(async () => null);
+    // Non-null stubs: a null return now means "the write matched zero rows" (a
+    // genuine no-op, EI-15486) and is EXCLUDED from the recovered/thrashEscalated
+    // counts below — these tests exercise the success path, so the mocks return a
+    // truthy sentinel, same as the real mergeIssuePayload/releaseIssue on a hit.
+    const releaseClaim = vi.fn(async () => ({}));
+    const rollbackAttempt = vi.fn(async () => ({}));
+    const escalateThrash = vi.fn(async () => ({}));
     const result = await collectOrphanedDispatchSignals('ws-1', {
       bootMs,
       recover: { releaseClaim, rollbackAttempt, escalateThrash },
@@ -508,9 +561,13 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
       row({ id: 'd2', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' }),
       row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(2), resolvedBy: 'host-restart-recovery' }),
     ]);
-    const releaseClaim = vi.fn(async () => null);
-    const rollbackAttempt = vi.fn(async () => null);
-    const escalateThrash = vi.fn(async () => null);
+    // Non-null stubs: a null return now means "the write matched zero rows" (a
+    // genuine no-op, EI-15486) and is EXCLUDED from the recovered/thrashEscalated
+    // counts below — these tests exercise the success path, so the mocks return a
+    // truthy sentinel, same as the real mergeIssuePayload/releaseIssue on a hit.
+    const releaseClaim = vi.fn(async () => ({}));
+    const rollbackAttempt = vi.fn(async () => ({}));
+    const escalateThrash = vi.fn(async () => ({}));
     await collectOrphanedDispatchSignals('ws-1', {
       bootMs,
       recover: { releaseClaim, rollbackAttempt, escalateThrash },
@@ -523,9 +580,13 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     const bootMs = NOW - 0.5 * 3_600_000;
     vi.mocked(readRecentDispatches).mockResolvedValue([row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 1 })]);
     vi.mocked(markDispatchOrphaned).mockResolvedValue(false);
-    const releaseClaim = vi.fn(async () => null);
-    const rollbackAttempt = vi.fn(async () => null);
-    const escalateThrash = vi.fn(async () => null);
+    // Non-null stubs: a null return now means "the write matched zero rows" (a
+    // genuine no-op, EI-15486) and is EXCLUDED from the recovered/thrashEscalated
+    // counts below — these tests exercise the success path, so the mocks return a
+    // truthy sentinel, same as the real mergeIssuePayload/releaseIssue on a hit.
+    const releaseClaim = vi.fn(async () => ({}));
+    const rollbackAttempt = vi.fn(async () => ({}));
+    const escalateThrash = vi.fn(async () => ({}));
     await collectOrphanedDispatchSignals('ws-1', { bootMs, recover: { releaseClaim, rollbackAttempt, escalateThrash } });
     expect(releaseClaim).not.toHaveBeenCalled();
     expect(rollbackAttempt).not.toHaveBeenCalled();
