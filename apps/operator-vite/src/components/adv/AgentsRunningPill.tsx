@@ -437,6 +437,12 @@ export default function AgentsRunningPill() {
   // a bare `{}` — the guard also tolerates their single-shared-value stubs.
   const [searchQRaw, setSearchQ] = useQueryState('agentsQ');
   const searchQ = typeof searchQRaw === 'string' ? searchQRaw : '';
+  // Deep-link focus (WI-5517): ?agentsFocus=<ownerId> — an Overview Agents-tile
+  // row click opens this popover pinned to that agent, with the inactive
+  // session-history section auto-expanded + filtered to them. Cleared when the
+  // popover closes so the next manual open starts neutral.
+  const [focusOwnerRaw, setFocusOwner] = useQueryState('agentsFocus');
+  const focusOwner = typeof focusOwnerRaw === 'string' && focusOwnerRaw ? focusOwnerRaw : null;
   // Shown = isRunningAgent (present OR loop-armed) — the SAME predicate the
   // left-sidebar Fleet pane filters through, so the two rosters agree. Memoed on
   // `data` so the identities stay stable across the 1s nowMs ticks while the
@@ -458,7 +464,10 @@ export default function AgentsRunningPill() {
     <div className="pc-advshell__agents-pill-wrap">
       <Popover
         open={open}
-        onOpenChange={(next: boolean) => void setOpen(next)}
+        onOpenChange={(next: boolean) => {
+          void setOpen(next);
+          if (!next) void setFocusOwner(null);
+        }}
         trigger={(
           <button
             type="button"
@@ -505,8 +514,8 @@ export default function AgentsRunningPill() {
             <SessionSearchResults query={q} nowMs={nowMs} />
           ) : (
             <>
-              <AgentsRoster agents={running} nowMs={nowMs} />
-              <InactiveSessionsSection activeOwnerIds={activeOwnerIds} nowMs={nowMs} />
+              <AgentsRoster agents={running} nowMs={nowMs} focusOwner={focusOwner} />
+              <InactiveSessionsSection activeOwnerIds={activeOwnerIds} nowMs={nowMs} focusOwnerId={focusOwner} />
             </>
           )}
         </div>
@@ -518,7 +527,17 @@ export default function AgentsRunningPill() {
 
 /** The fleet-grouped roster list rendered inside the popover. Hovering a row
  *  previews that agent's plan/work-item in the detail strip; clicking pins it. */
-export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: number }) {
+export function AgentsRoster({
+  agents,
+  nowMs,
+  focusOwner = null,
+}: {
+  agents: RosterAgent[];
+  nowMs: number;
+  /** Deep-link target (?agentsFocus=): pin + scroll this agent's row into view
+   *  once per focus value (WI-5517 — the Overview Agents-tile click-through). */
+  focusOwner?: string | null;
+}) {
   // The cast words shown in the kind legend come from the LEXICON, never from the
   // internal pane-kind ids (owner 2026-07-12 — the legend was leaking "queen /
   // overwatch / bee / sentinel" into the UI).

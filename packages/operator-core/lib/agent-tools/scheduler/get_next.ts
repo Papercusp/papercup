@@ -294,42 +294,6 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    // EI-16057: an unresolvable `harness` (a workspace id passed by mistake, a typo,
-    // a slug from the wrong workspace) must fail LOUD, before anything else runs.
-    // Left unchecked, it silently matches zero rows in the claim query — a fleet
-    // member sees that as `windDown:true`, the SAME authoritative "your lane is
-    // genuinely drained" signal a real empty queue produces (fleetScopedMiss below),
-    // so the member ends its loop and reports a false all-clear to its leader. Resolve
-    // the harness against the registry FIRST: an unregistered slug returns a plain
-    // invalid_input naming both the bad value and the known slugs, and — critically —
-    // never sets windDown. Cached read (loadHarnessRegistry); a read hiccup fails
-    // OPEN (treated as "can't verify, don't block") rather than ever wedging a
-    // legitimate claim on a registry blip.
-    const registry = await loadHarnessRegistry(
-      ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined,
-    ).catch(() => null);
-    if (registry && !registry.projects.some((p) => p.slug === args.harness)) {
-      const knownSlugs = registry.projects.map((p) => p.slug).slice(0, 30);
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: 'invalid_input',
-              reason: 'harness_not_found',
-              message:
-                `harness '${args.harness}' does not resolve to a registered harness in this workspace — ` +
-                'pass the harness SLUG (e.g. \'papercusp\'), not a workspace id or typo; see harness:list for ' +
-                'valid slugs. This is a scope/argument problem, not a drained queue, so it is reported as ' +
-                'invalid_input and windDown is never set for it.',
-              passedHarness: args.harness,
-              knownHarnesses: knownSlugs,
-            }),
-          },
-        ],
-      };
-    }
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;
@@ -458,6 +422,28 @@ export default defineTool({
     if (res?.workItem) {
       await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
     }
+    // EI-16057: on a MISS ONLY, resolve `harness` against the registry before deciding
+    // between "genuinely drained" (fleetScopedMiss / missDiagnosis below) and "the
+    // `harness` arg itself never resolved" (a workspace id passed by mistake, a typo,
+    // a slug from the wrong workspace) — the actual EI-16057 bug. An unresolvable
+    // harness silently matches zero rows in the claim query, so left unchecked it
+    // renders as `windDown:true`, the SAME authoritative "your lane is genuinely
+    // drained" signal a real empty queue produces — a fleet member reading that stands
+    // its loop down and reports a false all-clear to its leader. Checked HERE (only on
+    // a miss, never on the hot successful-claim path) so a correct pull never pays the
+    // extra read. Cached (loadHarnessRegistry); a read hiccup fails OPEN — "can't
+    // verify" must never block/mis-report a claim path it's only annotating.
+    const invalidHarnessKnownSlugs = !res
+      ? await loadHarnessRegistry(
+          ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined,
+        )
+          .then((registry) =>
+            registry.projects.some((p) => p.slug === args.harness)
+              ? null
+              : registry.projects.map((p) => p.slug).slice(0, 30),
+          )
+          .catch(() => null)
+      : null;
     // WI-4413: a MISS must explain itself. `work_items:claim_next` has run diagnoseClaimNextMiss
     // on a miss since EI-5803 — but THIS path (the one every fleet member self-pulls through, and
     // the one a leader's claim spec drives) returned a static, floor-blind string. Live cost
@@ -465,7 +451,7 @@ export default defineTool({
     // DIFFERENT floors, and each took a manual payload dig to find while members idled.
     // FAILS SOFT: any error here degrades to exactly the old static message — a diagnosis must
     // never be able to break the claim path it is only annotating.
-    const missDiagnosis = res || reconciliation.scope
+    const missDiagnosis = res || reconciliation.scope || invalidHarnessKnownSlugs
       ? { error: '' as string, diagnosis: undefined, floors: undefined }
       : await buildMissDiagnosis({
           ownerId: ident.ownerId,
@@ -480,7 +466,7 @@ export default defineTool({
     // true cause. Only reached when reconciliation.scope is set AND res is null AND we
     // did not already return early on the paused/default-source branches above.
     const cooldownDiag =
-      !res && reconciliation.scope
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs
         ? await diagnoseFleetScopeCooldownMiss({
             scope: reconciliation.scope,
             harness: args.harness,
@@ -510,19 +496,32 @@ export default defineTool({
                       }
                     : {}),
                 }
-              : reconciliation.scope
-                ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { cooldownDiag })
-                : {
-                  ok: false,
-                  error: missDiagnosis.error,
-                  // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
-                  // (when the spec names ids) the exact floor refusing each one.
-                  ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
-                  ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
-                  // P-006: teach the composed-await idle recipe exactly where the idle
-                  // moment happens, instead of leaving the caller to a 60s re-poll.
-                  advice: IDLE_PULL_MISS_ADVICE,
-                },
+              : invalidHarnessKnownSlugs
+                ? {
+                    ok: false,
+                    error: 'invalid_input',
+                    reason: 'harness_not_found',
+                    message:
+                      `harness '${args.harness}' does not resolve to a registered harness in this workspace — ` +
+                      "pass the harness SLUG (e.g. 'papercusp'), not a workspace id or typo; see harness:list " +
+                      'for valid slugs. This is a scope/argument problem, not a drained queue, so it is reported ' +
+                      'as invalid_input and windDown is never set for it.',
+                    passedHarness: args.harness,
+                    knownHarnesses: invalidHarnessKnownSlugs,
+                  }
+                : reconciliation.scope
+                  ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { cooldownDiag })
+                  : {
+                    ok: false,
+                    error: missDiagnosis.error,
+                    // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
+                    // (when the spec names ids) the exact floor refusing each one.
+                    ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
+                    ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
+                    // P-006: teach the composed-await idle recipe exactly where the idle
+                    // moment happens, instead of leaving the caller to a 60s re-poll.
+                    advice: IDLE_PULL_MISS_ADVICE,
+                  },
           ),
         },
       ],

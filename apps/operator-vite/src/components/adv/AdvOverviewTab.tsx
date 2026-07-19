@@ -88,7 +88,6 @@ interface CoordFeedRow {
 }
 
 const TILE_LIMIT = 6;
-const ACTIVITY_LIMIT = 12;
 
 /**
  * Tile → AdvShell tab the tile clicks through to (D-007). Exported so the
@@ -99,7 +98,9 @@ export const OVERVIEW_TILE_TARGETS = {
   plans: 'plans',
   needsYou: 'plans',
   agents: 'harnesses',
-  activity: 'harnesses',
+  // The Activity tile now reads the coordination stream, whose full surface is
+  // Conversations → Raw events — so that's where its "open" goes (WI-5517).
+  activity: 'conversations',
 } as const;
 
 /** done / (todo+wip+blocked+needs-human+done) — dropped/unknown excluded. */
@@ -234,37 +235,39 @@ export default function AdvOverviewTab() {
   const decisions = useMemo(() => selectDecisions(attentionItems), [attentionItems]);
   const alertCount = useMemo(() => countAlerts(attentionItems), [attentionItems]);
 
-  // Map PresenceRecord rows → OverviewRosterEntry (deriving live/idle from the
-  // heartbeat), then top-N live via the pinned pure selector.
-  const roster = useMemo<OverviewRosterEntry[]>(() => {
-    const now = Date.now();
-    return (rosterQ.data ?? [])
-      .filter((p) => !p.stale)
-      .map((p) => ({
-        ownerId: p.ownerId,
-        label: p.ownerLabel,
-        intent: p.intent,
-        currentFiles: p.currentFiles ?? [],
-        liveness: deriveLiveness(p.heartbeatAt, now),
-        currentPlanSlug: p.currentPlanSlug,
-        role: p.agentRole,
-        agent: p.source,
-      }));
-  }, [rosterQ.data]);
+  // Map roster entries → OverviewRosterEntry through the SAME membership
+  // predicate the header pill uses (isRunningAgent: present OR loop-armed), so
+  // the tile's count and the pill's "N agents running" can never disagree.
+  const roster = useMemo<OverviewRosterEntry[]>(
+    () =>
+      ((rosterQ.data?.[0]?.active ?? []) as RosterAgent[]).filter(isRunningAgent).map((a) => ({
+        ownerId: a.ownerId,
+        label: a.label,
+        intent: a.intent,
+        liveness: a.liveness,
+        currentPlanSlug: a.currentPlanSlug,
+        role: a.role,
+        agent: a.agent,
+      })),
+    [rosterQ.data],
+  );
   const liveAgents = useMemo(() => selectLiveAgents(roster), [roster]);
 
-  // Map user_actions rows → the Activity tile's render shape (actor = `actor`,
-  // title = `summary ?? kind`). Newest-first already (resolver orders by
-  // startedAt desc); take the top 10 the tile shows.
+  // Map coord-feed rows → the Activity tile's render shape: agent-authored rows
+  // only (system telemetry belongs to Conversations → Raw events), actor =
+  // envelope `from`, title = `summary ?? body ?? kind`. Newest-first already.
   const recentActivity = useMemo<OverviewActivityRow[]>(
     () =>
-      (activityQ.data ?? []).slice(0, 10).map((r) => ({
-        id: String(r.id),
-        agent: r.actor,
-        kind: r.kind,
-        summary: r.summary,
-        status: r.status,
-      })),
+      (activityQ.data ?? [])
+        .filter((r) => !isSystemConversationActor(r.from))
+        .slice(0, 10)
+        .map((r) => ({
+          id: r.msg_id,
+          agent: r.from,
+          kind: r.kind,
+          summary: r.summary ?? r.body ?? null,
+          status: null,
+        })),
     [activityQ.data],
   );
 
@@ -303,19 +306,27 @@ export default function AdvOverviewTab() {
           {plans.map((p) => {
             const { done, total, pct } = planProgress(p.itemCounts);
             return (
-              <div key={p.slug} className="pc-overview__plan">
-                <div className="pc-overview__plan-head">
+              <button
+                key={p.slug}
+                type="button"
+                className="pc-overview__plan pc-overview__rowbtn"
+                aria-label={`Open plan ${p.title ?? p.slug}`}
+                onClick={() => void openPlan(p.slug)}
+              >
+                {/* spans, not divs: a <button> takes phrasing content only —
+                    the classes carry the flex layout either way. */}
+                <span className="pc-overview__plan-head">
                   <span className="pc-overview__plan-title" title={p.title ?? p.slug}>
                     {p.title ?? p.slug}
                   </span>
                   <span className="pc-overview__plan-frac">
                     {done}/{total}
                   </span>
-                </div>
-                <div className="pc-overview__bar" aria-hidden>
-                  <div className="pc-overview__bar-fill" style={{ width: `${pct}%` }} />
-                </div>
-              </div>
+                </span>
+                <span className="pc-overview__bar" aria-hidden>
+                  <span className="pc-overview__bar-fill" style={{ width: `${pct}%` }} />
+                </span>
+              </button>
             );
           })}
         </OverviewTile>
@@ -345,9 +356,10 @@ export default function AdvOverviewTab() {
         <OverviewTile
           icon={<Users size={14} aria-hidden />}
           title="Agents"
-          count={liveAgents.length}
+          count={roster.length}
           accent="#a78bfa"
           loading={rosterQ.loading && !rosterQ.data}
+          error={rosterQ.error}
           empty={liveAgents.length === 0}
           emptyLabel="No live agents"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.agents)}
@@ -355,13 +367,18 @@ export default function AdvOverviewTab() {
           {liveAgents.map((a) => {
             const label = agentDisplayLabel(a.label, lex);
             return (
-              <div key={a.ownerId} className="pc-overview__row">
+              <button
+                key={a.ownerId}
+                type="button"
+                className="pc-overview__row pc-overview__rowbtn"
+                aria-label={`Open ${label}'s session history`}
+                title={a.intent || label}
+                onClick={() => void openAgent(a.ownerId)}
+              >
                 <span className="pc-overview__row-dot" data-live={a.liveness} aria-hidden />
-                <span className="pc-overview__row-title" title={a.intent || label}>
-                  {a.intent || label}
-                </span>
+                <span className="pc-overview__row-title">{a.intent || label}</span>
                 {a.role && <span className="pc-overview__row-tag">{agentRoleLabel(a.role, lex)}</span>}
-              </div>
+              </button>
             );
           })}
         </OverviewTile>
@@ -371,17 +388,23 @@ export default function AdvOverviewTab() {
           title="Activity"
           accent="#34d399"
           loading={activityQ.loading && !activityQ.data}
+          error={activityQ.error}
           empty={recentActivity.length === 0}
-          emptyLabel="No recent activity"
+          emptyLabel="No recent agent activity"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.activity)}
         >
           {recentActivity.map((r) => (
-            <div key={r.id} className="pc-overview__row">
+            <button
+              key={r.id}
+              type="button"
+              className="pc-overview__row pc-overview__rowbtn"
+              aria-label="Open this event in Conversations"
+              title={r.summary ?? r.kind}
+              onClick={() => void openActivity(r.id)}
+            >
               <span className="pc-overview__row-actor">{r.agent ?? '—'}</span>
-              <span className="pc-overview__row-title" title={r.summary ?? r.kind}>
-                {r.summary ?? r.kind}
-              </span>
-            </div>
+              <span className="pc-overview__row-title">{r.summary ?? r.kind}</span>
+            </button>
           ))}
         </OverviewTile>
       </div>
@@ -507,8 +530,9 @@ export default function AdvOverviewTab() {
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .pc-overview__plan-frac { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
-        .pc-overview__bar { height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+        .pc-overview__bar { display: block; height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
         .pc-overview__bar-fill {
+          display: block;
           height: 100%;
           border-radius: 999px;
           background: linear-gradient(90deg, var(--accent, #38bdf8), var(--good, #34d399));
@@ -516,6 +540,26 @@ export default function AdvOverviewTab() {
         }
         /* Generic list rows (needs-you / agents / activity) */
         .pc-overview__row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+        /* Clickable rows (plans / agents / activity deep-links) — a quiet
+           button reset that keeps the row layout, plus a soft hover. */
+        .pc-overview__rowbtn {
+          border: none;
+          background: transparent;
+          font: inherit;
+          color: inherit;
+          text-align: left;
+          width: 100%;
+          margin: 0 -6px;
+          padding: 3px 6px;
+          border-radius: 7px;
+          cursor: pointer;
+          transition: background-color 120ms ease;
+        }
+        .pc-overview__rowbtn:hover { background: rgba(255, 255, 255, 0.05); }
+        .pc-overview__rowbtn:focus-visible {
+          outline: 1px solid var(--tile-accent, #7dd3fc);
+          outline-offset: -1px;
+        }
         .pc-overview__row-dot {
           width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: #475569;
         }

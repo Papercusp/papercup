@@ -3427,7 +3427,6 @@ export function ScoutView({
     const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
     const eff = effectiveGrade(item);
     const isOpen = gradeOpen === item.ideaId;
-    const isTraceOpen = traceOpen === item.ideaId;
     const saving = savingId === item.ideaId;
     return (
       <div className="pc-learning__ideacard">
@@ -3508,23 +3507,18 @@ export function ScoutView({
             </Popover>
           </span>
         </div>
-        <Tooltip
-          label={
-            isTraceOpen
-              ? "Hide this idea's pipeline trace"
-              : "Show this idea's pipeline trace — grounding, lens, route, grade, outcome"
-          }
-        >
+        <Tooltip label={`Open the routed artifact — ${item.routedRef}`}>
           <button
             type="button"
             className="pc-learning__ideacard-title"
-            aria-expanded={isTraceOpen}
-            onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
+            onClick={() => openRouted(item)}
           >
             {item.title ?? item.routedRef}
           </button>
         </Tooltip>
-        {isTraceOpen ? renderTrace(item) : null}
+        {/* The FULL story rides the card (owner ask 2026-07-19): the pipeline
+            trace is always visible — never behind a click-to-reveal. */}
+        {renderTrace(item)}
       </div>
     );
   };

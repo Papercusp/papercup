@@ -24,6 +24,13 @@ const getNextForBeeM = vi.hoisted(() => vi.fn());
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
 }));
+// EI-16057: the harness-existence gate (checked on every miss) resolves `harness` against
+// the registry — stub it so every miss here still resolves 'papercusp' as registered and
+// falls through to the concurrency/pool-floor diagnosis these tests actually exercise.
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercusp' }] })),
+}));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getFlag: vi.fn(async () => true),

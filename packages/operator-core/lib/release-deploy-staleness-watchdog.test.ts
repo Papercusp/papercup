@@ -7,8 +7,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 
 const recentWatchdogFires = vi.fn().mockResolvedValue(0);
-const recordFire = vi.fn().mockResolvedValue(undefined);
-vi.mock('./pot/watchdog', () => ({ recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...a), recordFire: (...a: unknown[]) => recordFire(...a) }));
+const claimWatchdogFire = vi.fn().mockResolvedValue(true);
+vi.mock('./pot/watchdog', () => ({ recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...a), claimWatchdogFire: (...a: unknown[]) => claimWatchdogFire(...a) }));
 
 const gitPipelineSnapshot = vi.fn().mockResolvedValue({});
 vi.mock('./git-pipeline-stats', () => ({ gitPipelineSnapshot: (...a: unknown[]) => gitPipelineSnapshot(...a) }));
@@ -93,7 +93,7 @@ describe('releaseDeployStalenessSweep', () => {
     recentWatchdogFires.mockResolvedValueOnce(0);
     const res = await releaseDeployStalenessSweep({});
     expect(res.outcome).toBe('alerted');
-    expect(recordFire).toHaveBeenCalledWith(
+    expect(claimWatchdogFire).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'release-deploy-staleness', wakeAt: null }),
     );
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[release-deploy-staleness] ALERT'));
@@ -105,14 +105,22 @@ describe('releaseDeployStalenessSweep', () => {
     recentWatchdogFires.mockResolvedValueOnce(1);
     const res = await releaseDeployStalenessSweep({});
     expect(res.outcome).toBe('skipped');
-    expect(recordFire).not.toHaveBeenCalled();
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
+  });
+
+  it('skips (debounced) when the atomic claim loses the race / backs off', async () => {
+    computeDeployStatus.mockReturnValue(status('green-deployable', Date.now() - 999 * HOUR));
+    recentWatchdogFires.mockResolvedValueOnce(0);
+    claimWatchdogFire.mockResolvedValueOnce(false);
+    const res = await releaseDeployStalenessSweep({});
+    expect(res.outcome).toBe('skipped');
   });
 
   it('is a no-op (healthy) when the pipeline is not in green-deployable', async () => {
     computeDeployStatus.mockReturnValue(status('up-to-date', Date.now() - 999 * HOUR));
     const res = await releaseDeployStalenessSweep({});
     expect(res.outcome).toBe('healthy');
-    expect(recordFire).not.toHaveBeenCalled();
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
   });
 
   it('kill switch skips entirely without touching PG', async () => {

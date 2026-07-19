@@ -525,6 +525,61 @@ const DIGEST_HISTORY_LIMIT = 10;
  *  (WI-5417) picks which of the newest {@link DIGEST_HISTORY_LIMIT} digest
  *  snapshots ships full entries for — omitted/not-found falls back to the
  *  newest. */
+/**
+ * Drafts-in-iteration: rail='plan' routed-ledger rows joined to the draft
+ * plans they became (version > 1 = the grade/feedback → typed-revision loop
+ * has turned). Workspace-scoped join (harness_plans is multi-tenant — never a
+ * bare-slug read); the newest plan row per slug wins. Best-effort: returns []
+ * on error. Serves BOTH the full scout snapshot and the thin
+ * `learning.scoutDrafts` resolver (the Improvements view's read).
+ */
+export async function readScoutDraftIterations({
+  workspaceId,
+  sql,
+}: {
+  workspaceId: string;
+  sql: Sql;
+}): Promise<ScoutDraftIteration[]> {
+  try {
+    const draftRows = (await sql`
+      SELECT DISTINCT ON (r.idea_id)
+             r.idea_id, r.title, r.routed_at,
+             substring(r.routed_ref from 'plan:(.*)') AS plan_slug,
+             p.status AS plan_status, p.version AS plan_version, p.updated_at AS plan_updated_at
+        FROM harness_shared.scout_routed_ideas r
+        LEFT JOIN harness_shared.harness_plans p
+          ON p.workspace_id = r.workspace_id
+         AND p.plan_slug = substring(r.routed_ref from 'plan:(.*)')
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.rail = 'plan'
+         AND r.routed_ref LIKE 'plan:%'
+       ORDER BY r.idea_id, p.updated_at DESC NULLS LAST
+    `) as Array<Record<string, unknown>>;
+    return draftRows
+      .map((r) => {
+        const planVersion = r.plan_version == null ? null : Number(r.plan_version);
+        return {
+          ideaId: String(r.idea_id ?? ''),
+          planSlug: String(r.plan_slug ?? ''),
+          title: typeof r.title === 'string' && r.title ? r.title : null,
+          routedAt: toIso(typeof r.routed_at === 'string' ? Number(r.routed_at) : r.routed_at),
+          planStatus: typeof r.plan_status === 'string' && r.plan_status ? r.plan_status : null,
+          planVersion: planVersion != null && Number.isFinite(planVersion) ? planVersion : null,
+          planUpdatedAt: toIso(r.plan_updated_at),
+          revised: planVersion != null && Number.isFinite(planVersion) && planVersion > 1,
+        };
+      })
+      .filter((d) => d.planSlug)
+      .sort((a, b) => (b.routedAt ?? '').localeCompare(a.routedAt ?? ''))
+      .slice(0, 12);
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] drafts read failed:', err instanceof Error ? err.message : err);
+    }
+    return [];
+  }
+}
+
 export async function readScoutSnapshot(
   sql: Sql,
   workspaceId: string,
@@ -724,47 +779,10 @@ export async function readScoutSnapshot(
 
   // Drafts-in-iteration leg (learning-tab-visibility P-005): the newest
   // rail='plan' ledger rows joined to the draft plans they became, so the
-  // Queen↔Scout revision loop is watchable (version > 1 = revised). The join
-  // is workspace-scoped (harness_plans is multi-tenant on workspace+harness —
-  // never a bare-slug read); the newest plan row per slug wins. Best-effort.
-  let drafts: ScoutDraftIteration[] = [];
-  try {
-    const draftRows = (await sql`
-      SELECT DISTINCT ON (r.idea_id)
-             r.idea_id, r.title, r.routed_at,
-             substring(r.routed_ref from 'plan:(.*)') AS plan_slug,
-             p.status AS plan_status, p.version AS plan_version, p.updated_at AS plan_updated_at
-        FROM harness_shared.scout_routed_ideas r
-        LEFT JOIN harness_shared.harness_plans p
-          ON p.workspace_id = r.workspace_id
-         AND p.plan_slug = substring(r.routed_ref from 'plan:(.*)')
-       WHERE r.workspace_id = ${workspaceId}
-         AND r.rail = 'plan'
-         AND r.routed_ref LIKE 'plan:%'
-       ORDER BY r.idea_id, p.updated_at DESC NULLS LAST
-    `) as Array<Record<string, unknown>>;
-    drafts = draftRows
-      .map((r) => {
-        const planVersion = r.plan_version == null ? null : Number(r.plan_version);
-        return {
-          ideaId: String(r.idea_id ?? ''),
-          planSlug: String(r.plan_slug ?? ''),
-          title: typeof r.title === 'string' && r.title ? r.title : null,
-          routedAt: toIso(typeof r.routed_at === 'string' ? Number(r.routed_at) : r.routed_at),
-          planStatus: typeof r.plan_status === 'string' && r.plan_status ? r.plan_status : null,
-          planVersion: planVersion != null && Number.isFinite(planVersion) ? planVersion : null,
-          planUpdatedAt: toIso(r.plan_updated_at),
-          revised: planVersion != null && Number.isFinite(planVersion) && planVersion > 1,
-        };
-      })
-      .filter((d) => d.planSlug)
-      .sort((a, b) => (b.routedAt ?? '').localeCompare(a.routedAt ?? ''))
-      .slice(0, 12);
-  } catch (err) {
-    if (!isUndefinedTable(err)) {
-      console.warn('[learning.scout] drafts read failed:', err instanceof Error ? err.message : err);
-    }
-  }
+  // Queen↔Scout revision loop is watchable (version > 1 = revised). Shared
+  // with the thin `learning.scoutDrafts` resolver (the Improvements view's
+  // read — owner ask 2026-07-19 moved the Drafts-in-iteration section there).
+  const drafts = await readScoutDraftIterations({ workspaceId, sql });
 
   // Digest leg (learning-tab-visibility P-008, browseable history WI-5417):
   // the newest DIGEST_HISTORY_LIMIT persisted per-cycle digests, each
