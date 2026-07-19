@@ -245,6 +245,31 @@ describe('hasThinking (pure — WI-2680: transcript-resolvability veto)', () => 
   });
 });
 
+describe('thinkingStreamUrl (pure — EI-16982: ended=1 for archive-rematerialize fallback)', () => {
+  it('appends &ended=1 for a claude session the server stamped unresolvable (thinkingResolvable===false)', () => {
+    const url = thinkingStreamUrl({ sessionId: 's1', thinkingResolvable: false });
+    expect(url).toContain('/api/adv/session/thinking?sessionId=s1');
+    expect(url).toContain('&ended=1');
+  });
+
+  it('does NOT append ended for a resolvable (true) or unknown (omitted/undefined) session — no regression', () => {
+    expect(thinkingStreamUrl({ sessionId: 's1', thinkingResolvable: true })).not.toContain('ended=');
+    expect(thinkingStreamUrl({ sessionId: 's1' })).not.toContain('ended=');
+    expect(thinkingStreamUrl({ sessionId: 's1', thinkingResolvable: undefined })).not.toContain('ended=');
+  });
+
+  it('composes with the owner hint (both params present) when both are available', () => {
+    const url = thinkingStreamUrl({ sessionId: 's1', ownerId: 'su-x', thinkingResolvable: false });
+    expect(url).toBe('/api/adv/session/thinking?sessionId=s1&owner=su-x&ended=1');
+  });
+
+  it('thinkingResolvable is irrelevant to non-claude backends (bee run-log / codex / omp)', () => {
+    expect(thinkingStreamUrl({ runId: 'r1', harnessSlug: 'h', thinkingResolvable: false })).not.toContain('ended=');
+    expect(thinkingStreamUrl({ agent: 'codex', advSessionId: 42, thinkingResolvable: false })).not.toContain('ended=');
+    expect(thinkingStreamUrl({ ompThreadId: 't1', thinkingResolvable: false })).not.toContain('ended=');
+  });
+});
+
 describe('<AgentsRunningPill>', () => {
   it('renders nothing when no non-stale agents are present', () => {
     H.active = [agent({ liveness: 'stale' })];

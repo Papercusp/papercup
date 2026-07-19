@@ -92,7 +92,7 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolvePotHomeSlug(args.harness, undefined);
+    const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {
       return {
         data: {

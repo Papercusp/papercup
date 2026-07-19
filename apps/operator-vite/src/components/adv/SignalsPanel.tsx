@@ -428,35 +428,54 @@ export function SignalsPanel({
                 {digest.at ? ` · ${formatTime(digest.at)}` : ""}
               </p>
               {digest.newEntries.length > 0 ? (
-                <ul
-                  className="pc-signals__cards"
+                // The delta leg as per-lane DECKS too (owner ask 2026-07-19c:
+                // "convert What will it read? to cards") — same grouping the
+                // standing corpus uses; the NEW flag rides each deck's badge.
+                <div
+                  className="pc-signals__cardstack"
                   aria-label="New digest entries since the previous cycle"
                 >
-                  {digest.newEntries.map((e) => (
-                    <li
-                      key={e.ref}
-                      className="pc-signals__card is-new"
+                  {groupByLane(digest.newEntries).map(([lane, entries]) => (
+                    <section
+                      key={`new-${lane}`}
+                      className="pc-signals__lanegroup"
                       style={
                         {
                           "--lane-color":
-                            FED_LANE_COLOR[e.lane] ?? hashLaneColor(e.lane),
+                            FED_LANE_COLOR[lane] ?? hashLaneColor(lane),
                         } as CSSProperties
                       }
                     >
-                      <header className="pc-signals__card-head">
-                        <Tooltip label={FED_LANE_DOCS[e.lane] ?? e.lane}>
-                          <span className="pc-signals__lane">
-                            <i aria-hidden />
-                            {laneLabel(e.lane)}
-                          </span>
-                        </Tooltip>
-                        <span className="pc-signals__newflag">new</span>
-                      </header>
-                      <p className="pc-signals__card-summary">{e.summary}</p>
-                      {renderSourceChip(e.ref)}
-                    </li>
+                      <CardStack
+                        items={entries}
+                        getKey={(e) => e.ref}
+                        ariaLabel={`New ${laneLabel(lane)} entries`}
+                        header={
+                          <>
+                            <Tooltip label={FED_LANE_DOCS[lane] ?? lane}>
+                              <span className="pc-signals__lane">
+                                <i aria-hidden />
+                                {laneLabel(lane)}
+                              </span>
+                            </Tooltip>
+                            <span className="pc-signals__newflag">new</span>
+                            <span className="pc-cardstack__header-count">
+                              {entries.length}
+                            </span>
+                          </>
+                        }
+                        renderCard={(e) => (
+                          <div className="pc-signals__card pc-signals__card--stacked">
+                            <p className="pc-signals__card-summary">
+                              {e.summary}
+                            </p>
+                            {renderSourceChip(e.ref)}
+                          </div>
+                        )}
+                      />
+                    </section>
                   ))}
-                </ul>
+                </div>
               ) : (
                 <p className="pc-signals__digest-none">
                   No new entries vs the previous cycle — the delta leg was
