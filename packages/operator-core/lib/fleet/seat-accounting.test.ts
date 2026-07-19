@@ -34,6 +34,8 @@ const avail = (over: Partial<SeatAvailability> = {}): SeatAvailability => ({
 const allotment = (over: Partial<ResourceAllotment> = {}): ResourceAllotment => ({
   workspaceId: 'ws-1',
   fleetSlug: 'alpha',
+  potSlug: null,
+  audience: null,
   resourceKind: 'agent_slot',
   resourceRef: 'opus:xhigh:AUTO',
   sharePct: 0,

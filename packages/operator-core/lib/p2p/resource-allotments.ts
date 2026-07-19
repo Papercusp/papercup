@@ -357,38 +357,49 @@ export async function setResourceAllotment(
   // object as `${JSON.stringify(x)}::jsonb` instead. Do NOT "fix" this back to sql.json().
   // The ON CONFLICT target differs per grantee kind (two partial unique indexes,
   // mig 626 — a compound PK can't have a nullable column) so the insert branches.
-  const rows = (
-    potSlug
-      ? ((await sql`
-          INSERT INTO harness_shared.resource_allotments
-            (workspace_id, pot_slug, audience, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
-          VALUES
-            (${ws}, ${potSlug}, ${audience}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
-             ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
-          ON CONFLICT (workspace_id, pot_slug, resource_kind, resource_ref) WHERE pot_slug IS NOT NULL
-          DO UPDATE SET share_pct = EXCLUDED.share_pct,
-                        quantity = EXCLUDED.quantity,
-                        axis = EXCLUDED.axis,
-                        status = EXCLUDED.status,
-                        audience = EXCLUDED.audience,
-                        updated_at = now()
-          RETURNING *
-        `) as unknown as AllotmentRow[])
-      : ((await sql`
-          INSERT INTO harness_shared.resource_allotments
-            (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
-          VALUES
-            (${ws}, ${fleetSlug}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
-             ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
-          ON CONFLICT (workspace_id, fleet_slug, resource_kind, resource_ref) WHERE fleet_slug IS NOT NULL
-          DO UPDATE SET share_pct = EXCLUDED.share_pct,
-                        quantity = EXCLUDED.quantity,
-                        axis = EXCLUDED.axis,
-                        status = EXCLUDED.status,
-                        updated_at = now()
-          RETURNING *
-        `) as unknown as AllotmentRow[])
-  );
+  //
+  // Two independent `if`/`else` statements (NOT one ternary expression) deliberately:
+  // a ternary sharing one expression context makes TS unify both `sql\`...\`` tagged-
+  // template calls' overload resolution, and the second branch's optional (`| undefined`)
+  // grantee then fails against the type already pinned by the first branch (TS2769
+  // "No overload matches this call" / parameter type resolved to `never`). Splitting
+  // into separate statements gives each call its own independent overload resolution.
+  let rows: AllotmentRow[];
+  if (potSlug) {
+    rows = (await sql`
+      INSERT INTO harness_shared.resource_allotments
+        (workspace_id, pot_slug, audience, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
+      VALUES
+        (${ws}, ${potSlug}, ${audience}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
+         ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
+      ON CONFLICT (workspace_id, pot_slug, resource_kind, resource_ref) WHERE pot_slug IS NOT NULL
+      DO UPDATE SET share_pct = EXCLUDED.share_pct,
+                    quantity = EXCLUDED.quantity,
+                    axis = EXCLUDED.axis,
+                    status = EXCLUDED.status,
+                    audience = EXCLUDED.audience,
+                    updated_at = now()
+      RETURNING *
+    `) as unknown as AllotmentRow[];
+  } else {
+    // fleetSlug is guaranteed non-empty here: the grantee_required/grantee_conflict
+    // checks above already enforce exactly one of fleetSlug/potSlug is set.
+    const fleetSlugSafe = fleetSlug as string;
+    rows = (await sql`
+      INSERT INTO harness_shared.resource_allotments
+        (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
+      VALUES
+        (${ws}, ${fleetSlugSafe}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
+         ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
+      ON CONFLICT (workspace_id, fleet_slug, resource_kind, resource_ref) WHERE fleet_slug IS NOT NULL
+      DO UPDATE SET share_pct = EXCLUDED.share_pct,
+                    quantity = EXCLUDED.quantity,
+                    axis = EXCLUDED.axis,
+                    status = EXCLUDED.status,
+                    updated_at = now()
+      RETURNING *
+    `) as unknown as AllotmentRow[];
+  }
   return { ok: true, allotment: rowToAllotment(rows[0]) };
 }
 
