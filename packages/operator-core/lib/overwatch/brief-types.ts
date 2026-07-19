@@ -211,23 +211,29 @@ export interface SuggestedAction {
   /** The nudge / escalation / observation text overwatch would send. */
   message?: string;
   /**
-   * EI-13557: for `type: 'escalate'` ONLY — the STABLE `coord:escalate`
-   * `conditionKey` to pass verbatim for this recurring condition. Derived
-   * from the anomaly `kind` alone (never from a live count/duration in
-   * `message`/`detail`), so re-detections of the SAME condition always
-   * produce the SAME key regardless of how the count has moved.
+   * EI-13557 (escalate) / EI-15448 (nudge + observe): the STABLE condition
+   * identity for this anomaly's `kind` — pass it verbatim as `coord:escalate`'s
+   * `conditionKey` for an escalate action, and/or as `improvements:capture`'s
+   * `conditionKey` for the observation this anomaly's action drops (every
+   * anomaly's companion observation, per D-003 — not just `type:'observe'`
+   * ones). Derived from the anomaly `kind` alone (never from a live
+   * count/duration in `message`/`detail`), so re-detections of the SAME
+   * condition always produce the SAME key regardless of how the count has
+   * moved.
    *
-   * Why this exists: overwatch/Kettle escalates via an LLM turn reading the
-   * rendered anomaly line, not a code-side `coord:escalate` call — so the
-   * dedup key can't be enforced by code alone. Before this field, the agent
-   * had to invent its own `conditionKey` (or forget to pass one), and a
-   * `message` that embeds a live count (e.g. "283 human-attention escalations
-   * are aging") produced a fresh, un-coalesced `coord:escalate` row on every
-   * wake once the agent's phrasing or the count changed — the exact
-   * detector-eats-its-own-tail bug this field fixes for every escalate-type
-   * anomaly (`escalation-aging` was the observed case, but every other
-   * escalate anomaly embeds a live count/duration too). The renderers below
-   * surface it explicitly so the agent copies it rather than inventing one.
+   * Why this exists: overwatch/Kettle acts via an LLM turn reading the
+   * rendered anomaly line, not a code-side call — so the dedup key can't be
+   * enforced by code alone. Before this field (for escalate, EI-13557), the
+   * agent had to invent its own `conditionKey` (or forget to pass one), and a
+   * `message`/observation `title` that embeds a live count (e.g. "283
+   * human-attention escalations are aging") produced a fresh, un-coalesced row
+   * on every wake once the agent's phrasing or the count changed. EI-13557
+   * fixed this for `coord:escalate`; EI-15448 closed the identical gap on the
+   * `improvements:capture{lane:'observation'}` side — the escalation-aging
+   * anomaly's escalate action already coalesced, but its D-003 companion
+   * observation had no key at all and re-filed a fresh open work-item every
+   * wake (7k+ row backlog flood). The renderers below surface the key
+   * explicitly so the agent copies it rather than inventing one.
    */
   conditionKey?: string;
 }
@@ -467,11 +473,14 @@ function renderAnomalyLine(a: Anomaly, i: number): string {
   const verb = ACTION_VERB[act.type];
   const target = act.target ? ` ${act.target}` : '';
   const message = act.message ? `: ${act.message}` : '';
-  // EI-13557: for escalate actions, surface the stable conditionKey inline so the
-  // agent copies it into coord:escalate's `conditionKey` arg instead of inventing
-  // one (or omitting it) — that inconsistency is what let the aging-escalation
-  // advisory self-inflate (a fresh un-coalesced row every time its live count changed).
-  const conditionKey = act.type === 'escalate' && act.conditionKey ? ` [conditionKey: ${act.conditionKey}]` : '';
+  // EI-13557 (escalate) / EI-15448 (nudge + observe): surface the stable
+  // conditionKey inline, for EVERY action type, so the agent copies it into
+  // coord:escalate's `conditionKey` (escalate) and/or improvements:capture's
+  // `conditionKey` (the D-003 companion observation any action drops) instead
+  // of inventing one or omitting it — that gap is what let the escalation-aging
+  // anomaly's escalate action coalesce fine while its companion observation
+  // self-inflated into a 7k+ row backlog flood, one fresh open item per wake.
+  const conditionKey = act.conditionKey ? ` [conditionKey: ${act.conditionKey}]` : '';
   return `${i + 1}. [${a.severity}] ${a.kind} — ${a.subject}: ${a.detail} → ${verb}${target}${conditionKey}${message}`;
 }
 

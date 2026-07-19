@@ -1716,7 +1716,48 @@ export async function setWorkItemState(
     const blocked = result;
     void import('./work-items-events').then((m) => m.emitWorkItemBlockedEvent(blocked)).catch(() => {});
   }
+  // EI-15461: a feature transitioning INTO `passed` that was minted by
+  // promote-issue.ts (metadata.sourceIssueId) auto-resolves its SOURCE issue —
+  // otherwise the promoted issue lingers `open` forever (nothing previously
+  // reverse-synced it) and gets re-served to every drain/auto-implement pass
+  // as if it were still unfixed. Best-effort + fire-and-forget, same shape as
+  // the other post-write hooks above: a failure here never breaks the
+  // feature's own settle.
+  if (result && result.family === 'feature' && result.state === 'passed' && wi.state !== 'passed') {
+    void autoResolveSourceIssueOnFeaturePassed(id, wi.harness ?? undefined).catch(() => {});
+  }
   return result;
+}
+
+/**
+ * EI-15461: when a promoted F-FIX-NNN feature (minted by promote-issue.ts,
+ * which stamps `metadata.sourceIssueId` on the feature row — a column NOT
+ * exposed through the generic work-item `payload`/getWorkItem read path, so a
+ * dedicated lookup is required) reaches `passed`, auto-resolve the issue it
+ * was promoted from. Idempotent (skips an already-terminal issue) and
+ * best-effort — every failure is swallowed by the caller.
+ */
+export async function autoResolveSourceIssueOnFeaturePassed(
+  featureId: string,
+  harness: string | undefined,
+): Promise<void> {
+  if (!harness) return;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ source_issue_id: string | null }[]>`
+    SELECT metadata ->> 'sourceIssueId' AS source_issue_id
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${harness} AND feature_id = ${featureId}
+     LIMIT 1`;
+  const sourceIssueId = rows[0]?.source_issue_id;
+  if (!sourceIssueId) return;
+  const issue = await getIssue(sourceIssueId);
+  if (!issue || ISSUE_TERMINAL_STATUSES.has(issue.state)) return;
+  await setIssueState(
+    sourceIssueId,
+    'resolved',
+    'system:auto-issue-resolve',
+    `Auto-resolved: source feature ${featureId} passed (EI-15461).`,
+  );
 }
 
 /** The alias/no-op discriminator every lifecycle verb's result row should carry (EI-7712). */
