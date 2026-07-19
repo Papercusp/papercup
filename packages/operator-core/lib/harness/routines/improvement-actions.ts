@@ -259,6 +259,26 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
   } catch (e) {
     console.warn('[improvement-triage] recurrence escalation failed:', e instanceof Error ? e.message : e);
   }
+
+  // Fleet-lesson candidate auto-adopt (WI-5414 — owner reversal of the
+  // owner-gate contract, 2026-07-19): every PENDING knowledge-pack candidate
+  // (staged above or on an earlier tick) gets the automated review, then
+  // auto-adopts/auto-dismisses via the machine identity — no human gate.
+  // Best-effort — never fails the triage pass; a candidate whose decide()
+  // itself fails (e.g. the transfer bar) just stays pending for the next tick.
+  try {
+    const autoAdoptCap = intFromEnv('PAPERCUSP_KNOWLEDGE_CANDIDATE_AUTO_ADOPT_MAX_PER_RUN', 10, { min: 0 });
+    const { autoAdoptPendingCandidates } = await import('../../knowledge-packs/candidates');
+    const auto = await autoAdoptPendingCandidates({ maxPerRun: autoAdoptCap });
+    if (auto.reviewed > 0) {
+      console.log(
+        `[improvement-triage] fleet-lesson candidate auto-adopt: reviewed ${auto.reviewed}, ` +
+          `adopted ${auto.adopted}, dismissed ${auto.dismissed}, ${auto.failed} still pending`,
+      );
+    }
+  } catch (e) {
+    console.warn('[improvement-triage] fleet-lesson candidate auto-adopt failed:', e instanceof Error ? e.message : e);
+  }
 });
 
 // ── WI-5017: the weekly invalid-args miner (capture only) ────────────────────

@@ -193,7 +193,15 @@ export async function runSuccessMetrics(
     // itself could not be read at all (resolvedWindow stays undefined, pre-EI-12146
     // behavior).
     const runningGeneration = resolvedWindow
-      ? await readRunningGeneration().catch(() => ({ sha: null, hostStartedAt: null }))
+      ? await readRunningGeneration().catch(
+          (): RunningGeneration => ({
+            deployedSha: null,
+            hostStartedAt: null,
+            bootHeadSha: null,
+            scoutCodeHash: null,
+            staleHost: true,
+          }),
+        )
       : undefined;
     return {
       ok: true,
@@ -208,7 +216,7 @@ export async function runSuccessMetrics(
 export default defineTool({
   name: 'blender:success-metrics',
   description:
-    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the release-readiness rubric's own declared window (default: its structured 48h-rolling `window`; or an explicit sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Every resolved window (rubric-derived or explicit) also returns resolvedWindow + runningGeneration {sha, hostStartedAt} for parity evidence — absent only if the rubric itself couldn't be read. verdict='pass' only when every bar passes; 'incomplete' when evidence is missing; 'fail' on a regression.",
+    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the release-readiness rubric's own declared window (default: its structured 48h-rolling `window`; or an explicit sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Every resolved window (rubric-derived or explicit) also returns resolvedWindow + runningGeneration {deployedSha, hostStartedAt, bootHeadSha, scoutCodeHash, staleHost} for parity evidence — staleHost:true means the running scout loop has NOT been proven to be executing deployedSha's code; absent only if the rubric itself couldn't be read. verdict='pass' only when every bar passes; 'incomplete' when evidence is missing; 'fail' on a regression.",
   capability: 'curation:read',
   guidance: {
     when: 'Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.',

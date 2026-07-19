@@ -1,6 +1,7 @@
 /**
  * candidates — the fleet→pack candidate staging area
- * (self-improvement-consume-edges-2026-06-12 P-032, brief B-11).
+ * (self-improvement-consume-edges-2026-06-12 P-032, brief B-11; auto-adopt
+ * reversal owner-auto-adopt-fleet-lessons-2026-07-19 / WI-5414).
  *
  * The recurrence-escalation cross-scope promotion (P-052 lite) notices a
  * friction signature recurring across ≥2 DISTINCT scopes — cross-Hive pain
@@ -13,13 +14,29 @@
  *            so a dismissed lesson never re-nags) and capped (pending ≤
  *            {@link pendingCandidateCap}), like the lite promotion itself.
  *   list     the Learnings view + knowledge_packs:candidates read.
- *   decide   the OWNER adopts or dismisses. Adoption materializes the item
- *            into the `fleet-lessons` pack under the installed packs root and
- *            bumps the pack's patch version — it NEVER touches a hive pool.
- *            Hives then adopt the new item through the EXISTING
- *            install/upgrade conflict review (knowledge-packs D-003), which is
- *            exactly the never-auto-published contract: a candidate becomes
- *            recallable wisdom only after two deliberate human acts.
+ *   review   {@link reviewCandidateForAutoAdopt} — the AUTOMATED review (WI-5414
+ *            reverses the old owner-gate contract: "the whole point of the
+ *            learnings tab is that the things there do NOT need human
+ *            supervision"). Reuses the EXISTING knowledge-pack sweep-scoring
+ *            machinery (memory/conflict-check.ts + the same LLM-judge pattern
+ *            manage.ts's install/upgrade review and sweepHiveConflicts already
+ *            run) — the candidate's draft is judged against the fleet-lessons
+ *            pack's OWN current items; a reported contradiction fails review.
+ *   decide   adopt or dismiss. Adoption materializes the item into the
+ *            `fleet-lessons` pack under the installed packs root and bumps the
+ *            pack's patch version — it NEVER touches a hive pool directly.
+ *            {@link autoAdoptPendingCandidates} runs the review then calls this
+ *            with a MACHINE `by` identity ({@link AUTO_ADOPT_REVIEWER}) on the
+ *            improvement-triage cadence — a passing review auto-adopts, a
+ *            failing one auto-dismisses with the verdict recorded as the
+ *            decision note. The owner can still adopt/dismiss manually at any
+ *            time (a race with the sweep is harmless: decide() only acts on a
+ *            still-`pending` row). Hives then adopt the new pack item through
+ *            the EXISTING install/upgrade conflict review (knowledge-packs
+ *            D-003) — which already has its OWN no-human path
+ *            (knowledge_packs:upgrade { acceptDefaults: true }), so a hive that
+ *            wants hands-off fleet-lessons updates already can without any
+ *            further change here.
  *
  * PG layer mirrors scout/routed-ledger.ts (getOrgPg + harness_shared table);
  * the pack-write helpers are exported pure-ish (injectable root) so tests pin
@@ -34,11 +51,13 @@ import { installedKnowledgePacksRoot } from './load-packs';
 import {
   APPLIES_TO_SHAPES,
   LEARNING_KINDS,
+  memoryTextOf,
   parseManifest,
   type AppliesTo,
   type LearningKind,
   type KnowledgePackManifest,
 } from './pack-format';
+import type { LlmJudge } from '../memory/conflict-check';
 
 /** The owner-curated pack adoption writes into (created on first adoption). */
 export const FLEET_LESSONS_PACK_ID = 'fleet-lessons';
@@ -467,4 +486,140 @@ export async function decideKnowledgePackCandidate(
   // upgrade review is the adoption path into pools.
   invalidate(['knowledgePacks.candidates', 'knowledgePacks.list', 'learning.hive']);
   return { ok: true, action: 'adopt', id: input.id, ...written };
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Automated review + auto-adopt (WI-5414 — owner reversal of the owner-gate
+ * contract: "the fleet lesson candidates should be auto adopted ... if we
+ * still want a 'review' step, that should be an AUTOMATED review step, we
+ * already have many mechanisms for this we use for other types of learnings")
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** The machine `by` identity stamped on every auto-decided candidate. */
+export const AUTO_ADOPT_REVIEWER = 'fleet-candidate-auto-review';
+
+/** Default cap on candidates auto-reviewed per sweep tick. */
+export const AUTO_ADOPT_MAX_PER_RUN = 10;
+
+export interface AutoReviewVerdict {
+  verdict: 'pass' | 'fail';
+  reason: string;
+}
+
+function lazyConflictJudge(): LlmJudge {
+  // Lazy — mirrors manage.ts's realJudge(): pulling the Anthropic client at
+  // module load would tax every importer of this module.
+  return async (input) => {
+    const { createAnthropicJudge } = await import('../memory/anthropic-judge');
+    return createAnthropicJudge()(input);
+  };
+}
+
+/**
+ * The automated review: reuses the SAME conflict-check machinery the
+ * install/upgrade review + sweepHiveConflicts already run (manage.ts) —
+ * here judged against the fleet-lessons pack's OWN current items (the pack
+ * itself is the dedup surface; there is no hive pool at this point). A
+ * reported contradiction fails the review; an empty pack, no neighbors, or a
+ * degraded/errored judge call all PASS — checkConflicts fails OPEN (same
+ * posture as memory:remember's own dedup: this is hygiene, not a human gate).
+ */
+export async function reviewCandidateForAutoAdopt(
+  candidate: Pick<KnowledgePackCandidate, 'title' | 'draftText'>,
+  opts: { packsRoot?: string; judge?: LlmJudge } = {},
+): Promise<AutoReviewVerdict> {
+  const { loadKnowledgePack } = await import('./load-packs');
+  const { checkConflicts } = await import('../memory/conflict-check');
+  const loaded = await loadKnowledgePack(
+    FLEET_LESSONS_PACK_ID,
+    opts.packsRoot ? { roots: [{ dir: opts.packsRoot, source: 'installed' }] } : undefined,
+  ).catch(() => null);
+  const existing = loaded?.pack.items ?? [];
+  if (existing.length === 0) {
+    return { verdict: 'pass', reason: 'fleet-lessons pack is empty — nothing to conflict with (knowledge-pack sweep scoring)' };
+  }
+
+  const neighbors = existing.map((i) => ({ id: i.id, text: memoryTextOf(i) }));
+  const judge = opts.judge ?? lazyConflictJudge();
+  const report = await checkConflicts({ newText: candidate.draftText, neighbors, judge });
+  if (report.conflicts.length > 0) {
+    const summary = report.conflicts.map((c) => c.summary).join('; ');
+    return {
+      verdict: 'fail',
+      reason: `conflicts with existing fleet-lessons item(s) (knowledge-pack sweep scoring): ${summary}`,
+    };
+  }
+  return { verdict: 'pass', reason: 'no conflict with existing fleet-lessons content (knowledge-pack sweep scoring)' };
+}
+
+export interface AutoAdoptSweepResult {
+  reviewed: number;
+  adopted: number;
+  dismissed: number;
+  /** A decide() call that didn't succeed (e.g. the D-006 transfer bar refused
+   *  an adopt) — the candidate stays pending and the next tick retries it. */
+  failed: number;
+}
+
+/** Injectable seam (unit tests pin this without PG/LLM). */
+export interface AutoAdoptDeps {
+  list?: typeof listKnowledgePackCandidates;
+  decide?: typeof decideKnowledgePackCandidate;
+  review?: typeof reviewCandidateForAutoAdopt;
+}
+
+/**
+ * Sweep every PENDING candidate (however it was staged, and whichever tick it
+ * arrived on) through the automated review, then auto-decide via
+ * {@link decideKnowledgePackCandidate} with the {@link AUTO_ADOPT_REVIEWER}
+ * machine identity — a passing review adopts, a failing one dismisses with the
+ * verdict recorded as the decision note. Run on the improvement-triage cadence
+ * (see harness/routines/improvement-actions.ts); best-effort per candidate —
+ * one failure never stops the sweep, and a candidate whose decide() call
+ * itself fails (e.g. the transfer bar) simply stays pending for the next tick.
+ */
+export async function autoAdoptPendingCandidates(
+  opts: { maxPerRun?: number; packsRoot?: string; workspaceId?: string } = {},
+  deps: AutoAdoptDeps = {},
+): Promise<AutoAdoptSweepResult> {
+  const list = deps.list ?? listKnowledgePackCandidates;
+  const decide = deps.decide ?? decideKnowledgePackCandidate;
+  const review = deps.review ?? reviewCandidateForAutoAdopt;
+  const maxPerRun = Math.max(0, opts.maxPerRun ?? AUTO_ADOPT_MAX_PER_RUN);
+  const result: AutoAdoptSweepResult = { reviewed: 0, adopted: 0, dismissed: 0, failed: 0 };
+  if (maxPerRun === 0) return result;
+
+  const pending = (await list({ status: 'pending', limit: maxPerRun })).slice(0, maxPerRun);
+  for (const candidate of pending) {
+    result.reviewed += 1;
+    let verdict: AutoReviewVerdict;
+    try {
+      verdict = await review(candidate, opts.packsRoot ? { packsRoot: opts.packsRoot } : {});
+    } catch (e) {
+      // The review is hygiene, never load-bearing (checkConflicts already
+      // fails open on a judge error) — a harder failure (e.g. pack fs I/O)
+      // still must not strand the candidate mid-sweep; degrade to pass.
+      verdict = {
+        verdict: 'pass',
+        reason: `automated review errored, defaulting to pass: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+    const note = `Automated review (${AUTO_ADOPT_REVIEWER}): ${verdict.reason}`;
+    const res = await decide({
+      id: candidate.id,
+      action: verdict.verdict === 'fail' ? 'dismiss' : 'adopt',
+      by: AUTO_ADOPT_REVIEWER,
+      note,
+      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+      ...(verdict.verdict === 'pass' && opts.packsRoot ? { packsRoot: opts.packsRoot } : {}),
+    });
+    if (!res.ok) {
+      result.failed += 1;
+    } else if (res.action === 'adopt') {
+      result.adopted += 1;
+    } else {
+      result.dismissed += 1;
+    }
+  }
+  return result;
 }

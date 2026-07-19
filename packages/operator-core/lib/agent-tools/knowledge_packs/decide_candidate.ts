@@ -1,12 +1,25 @@
 /**
- * knowledge_packs:decide_candidate — the owner's adopt/dismiss on one OR many
- * staged fleet→pack candidates (self-improvement-consume-edges-2026-06-12 P-032,
- * brief B-11; bulk-standardized per bulk-endpoint-standardization-2026-06-21).
+ * knowledge_packs:decide_candidate — adopt/dismiss on one OR many staged
+ * fleet→pack candidates (self-improvement-consume-edges-2026-06-12 P-032,
+ * brief B-11; bulk-standardized per bulk-endpoint-standardization-2026-06-21;
+ * auto-adopt reversal owner-auto-adopt-fleet-lessons-2026-07-19 / WI-5414).
  *
- * Adoption materializes the (optionally owner-edited) draft into the
- * fleet-lessons pack under the installed packs root and bumps the pack's
- * patch version — it NEVER writes a hive's memory pool. Hives adopt the new
- * item through the existing knowledge_packs:install/upgrade conflict review.
+ * Most candidates are decided AUTOMATICALLY: an improvement-triage-cadence
+ * sweep (knowledge-packs/candidates.ts's autoAdoptPendingCandidates) runs an
+ * automated review (the same conflict-check machinery the install/upgrade
+ * review already runs) against every pending candidate and calls THIS core
+ * with the machine `by` identity ('fleet-candidate-auto-review') — adopt on a
+ * passing review, dismiss (with the verdict as the note) on a failing one.
+ * This tool remains the OWNER'S manual override — adopt/dismiss any
+ * still-pending candidate ahead of (or instead of) the automated sweep;
+ * calling it after the sweep already decided a candidate returns
+ * `not_pending`, never a double-decide.
+ *
+ * Adoption materializes the (optionally edited) draft into the fleet-lessons
+ * pack under the installed packs root and bumps the pack's patch version — it
+ * NEVER writes a hive's memory pool. Hives adopt the new item through the
+ * existing knowledge_packs:install/upgrade conflict review (which already has
+ * its own no-human path: `acceptDefaults: true`).
  *
  * Bulk by default (the house keyed-array contract): decide ONE inline ({ id,
  * action, note?, title?, text? }), MANY with the SAME action (ids:[…] + action),

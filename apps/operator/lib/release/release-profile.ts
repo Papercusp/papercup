@@ -373,7 +373,7 @@ export async function buildAutoloopReleaseProfile(
 
   return {
     profileRef: opts.profileRef ?? AUTOLOOP_RELEASE_PROFILE_REF,
-    ...(generation.sha ? { expectedLineage: { sha: generation.sha } } : {}),
+    ...(generation.deployedSha ? { expectedLineage: { sha: generation.deployedSha } } : {}),
     components: [
       ...AUTOLOOP_COMPONENT_RUBRIC_REFS.map((ref) => rubricReleaseComponent(ref, { ...opts.rubricOpts, deps: rubricDeps })),
       deployStalenessGateComponent(opts.gateOpts),

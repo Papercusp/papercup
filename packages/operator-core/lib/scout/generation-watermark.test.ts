@@ -10,6 +10,7 @@ import {
   BG_HOST_RESTART_WATERMARK,
   KNOWN_WATERMARK_REFS,
   parseSystemdTimestamp,
+  resolveStagingHeadAsOf,
   resolveWatermarkRef,
 } from './generation-watermark';
 
@@ -43,13 +44,38 @@ describe('parseSystemdTimestamp', () => {
   });
 });
 
-describe('readRunningGeneration — the stampable generation identity (EI-12147)', () => {
-  it('returns { sha, hostStartedAt } with each leg string-or-null, never throwing', async () => {
+describe('readRunningGeneration — the stampable generation identity (EI-12147, reworked WI-5397)', () => {
+  it('returns every leg string-or-null (deployedSha/hostStartedAt/bootHeadSha/scoutCodeHash) plus a boolean staleHost, never throwing', async () => {
     const { readRunningGeneration } = await import('./generation-watermark');
     const gen = await readRunningGeneration();
-    expect(gen.sha === null || typeof gen.sha === 'string').toBe(true);
+    expect(gen.deployedSha === null || typeof gen.deployedSha === 'string').toBe(true);
     // On a systemd box with the bg-host running this is its start ISO; elsewhere null.
     expect(gen.hostStartedAt === null || !Number.isNaN(Date.parse(gen.hostStartedAt!))).toBe(true);
+    expect(gen.bootHeadSha === null || typeof gen.bootHeadSha === 'string').toBe(true);
+    expect(gen.scoutCodeHash === null || typeof gen.scoutCodeHash === 'string').toBe(true);
+    expect(typeof gen.staleHost).toBe('boolean');
+  });
+
+  it('staleHost fails toward "not proven fresh" — unresolved bootHeadSha or deployedSha ⇒ true, never a false all-clear', async () => {
+    const { readRunningGeneration } = await import('./generation-watermark');
+    const gen = await readRunningGeneration();
+    if (gen.bootHeadSha === null || gen.deployedSha === null) {
+      expect(gen.staleHost).toBe(true);
+    }
+  });
+});
+
+describe('resolveStagingHeadAsOf — retroactive git-history reconstruction of a boot-time HEAD', () => {
+  it('resolves a 40-char sha for a timestamp within this repo\'s own history', async () => {
+    const sha = await resolveStagingHeadAsOf(new Date().toISOString());
+    // best-effort: null is acceptable (no git / not a repo in some sandboxes), but if it
+    // resolves it must be a well-formed sha, never garbage.
+    expect(sha === null || /^[0-9a-f]{7,40}$/i.test(sha!)).toBe(true);
+  });
+
+  it('degrades to null rather than throwing on a bogus cwd', async () => {
+    const sha = await resolveStagingHeadAsOf(new Date().toISOString(), { cwd: '/nonexistent-dir-xyz' });
+    expect(sha).toBeNull();
   });
 });
 

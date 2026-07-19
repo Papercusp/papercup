@@ -258,30 +258,57 @@ export interface ScorecardRow {
    */
   linkedItems: { rel: string; dst: { kind: string; ref: string } }[];
   /**
-   * The GENERATION this scorecard graded (EI-12147) — stamped SERVER-SIDE by
-   * improvements:capture at file time (never caller-supplied): the serving
-   * checkout's sha + the bg-host's start instant. A reader comparing an older
+   * The GENERATION this scorecard graded (EI-12147; reworked WI-5397): stamped
+   * SERVER-SIDE by improvements:capture at file time (never caller-supplied) via
+   * generation-watermark.ts's readRunningGeneration(). A reader comparing an older
    * `hostStartedAt` to the current one knows the scorecard judged a DIFFERENT
    * generation (stale evidence after a restart/deploy), which is the ambiguity
-   * that stalled the 2026-07-14 GO call. Absent on pre-stamp scorecards.
+   * that stalled the 2026-07-14 GO call. WI-5397 widened the stamp to make that
+   * staleness EXPLICIT (`staleHost`) instead of relying on the reader to notice a
+   * hostStartedAt mismatch by hand — see generation-watermark.ts's RunningGeneration
+   * doc comment for the full shape rationale. Absent on pre-stamp scorecards.
    */
-  gradedGeneration?: { sha: string | null; hostStartedAt: string | null };
+  gradedGeneration?: GradedGeneration;
+}
+
+/** The projected {@link parseGradedGeneration} shape — see RunningGeneration
+ *  (generation-watermark.ts) for what each field means. `bootHeadSha`/`scoutCodeHash`/
+ *  `staleHost` are optional: a pre-WI-5397 stamp (or a row this parser degrades) never
+ *  carried them, so their ABSENCE means "not recorded", never "known false/null". */
+export interface GradedGeneration {
+  deployedSha: string | null;
+  hostStartedAt: string | null;
+  bootHeadSha?: string | null;
+  scoutCodeHash?: string | null;
+  staleHost?: boolean;
 }
 
 /**
- * PURE: validate a raw payload `gradedGeneration` into the projected shape — an object
- * with string-or-null `sha`/`hostStartedAt`; anything else (malformed / absent /
- * pre-stamp rows) is null so a bad row degrades, never throws.
+ * PURE: validate a raw payload `gradedGeneration` into the projected shape.
+ * Backward-compatible with pre-WI-5397 rows, which carried `{ sha, hostStartedAt }`
+ * only — `sha` is read as `deployedSha` when the new key is absent (a read-time
+ * projection of history, not a write-time shim: every NEW stamp writes
+ * `deployedSha` directly). Anything unparseable (malformed / absent / pre-stamp
+ * rows) is null so a bad row degrades, never throws.
  */
-export function parseGradedGeneration(
-  raw: unknown,
-): { sha: string | null; hostStartedAt: string | null } | null {
+export function parseGradedGeneration(raw: unknown): GradedGeneration | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const o = raw as { sha?: unknown; hostStartedAt?: unknown };
-  const sha = typeof o.sha === 'string' && o.sha ? o.sha : null;
+  const o = raw as Record<string, unknown>;
+  const deployedShaRaw = 'deployedSha' in o ? o.deployedSha : o.sha;
+  const deployedSha = typeof deployedShaRaw === 'string' && deployedShaRaw ? deployedShaRaw : null;
   const hostStartedAt = typeof o.hostStartedAt === 'string' && o.hostStartedAt ? o.hostStartedAt : null;
-  if (sha === null && hostStartedAt === null) return null; // an all-null stamp carries no identity
-  return { sha, hostStartedAt };
+  const bootHeadSha = typeof o.bootHeadSha === 'string' && o.bootHeadSha ? o.bootHeadSha : null;
+  const scoutCodeHash = typeof o.scoutCodeHash === 'string' && o.scoutCodeHash ? o.scoutCodeHash : null;
+  const staleHost = typeof o.staleHost === 'boolean' ? o.staleHost : undefined;
+  // An all-null/absent stamp carries no identity at all.
+  if (deployedSha === null && hostStartedAt === null && bootHeadSha === null && scoutCodeHash === null) return null;
+  return {
+    deployedSha,
+    hostStartedAt,
+    ...(bootHeadSha !== null ? { bootHeadSha } : {}),
+    ...(scoutCodeHash !== null ? { scoutCodeHash } : {}),
+    ...(staleHost !== undefined ? { staleHost } : {}),
+  };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
