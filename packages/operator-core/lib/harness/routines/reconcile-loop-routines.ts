@@ -68,7 +68,26 @@
  *     Once that dwell exceeds the same generous terminal window, consult the SAME
  *     `checkUnreachableTerminalGuard` — its own reachability veto (a live owner is NEVER
  *     terminated, regardless of dwell) is what actually protects a healthy long-interval
- *     loop; the window just avoids probing a freshly-armed one for no reason. An armed loop
+ *     loop; the window just avoids probing a freshly-armed one for no reason.
+ *  5. LIFECYCLE-DEATH RECLASSIFICATION (EI-13818) — the 'lifecycle' completion signal (the
+ *     Stop-hook 'ended' marker) means the woken turn RAN AND EXITED CLEANLY — it does NOT mean
+ *     the turn succeeded. A provider rate-limit/session-limit/auth/context-overflow kill lands
+ *     as an ORDINARY assistant turn ("You've hit your session limit · resets 5:40am") that the
+ *     CLI completes normally: the Stop hook fires, `completionSignal` reads it as a healthy
+ *     settle, and the circuit below was recording 'ok' for what was actually a dead wake — so a
+ *     rate-limited loop kept re-firing at its bare interval into the SAME wall, forever, with
+ *     the failure-streak fire-gate never tripping and nothing alerting (the observed incident:
+ *     4 wakes in 10min, each 2-turn/0-tool-call, each dying on the identical session-limit
+ *     text). The existing P0a/P0b/P1a machinery (classify → recordFire('error') → rate-limit-
+ *     aware re-arm) already solves exactly this for the `resume-headless` detached-subprocess
+ *     channel (resume-turn-outcome.ts); it never covered the live-inject / cold-spawn channel
+ *     because there is no subprocess exit to observe there. This layer closes that gap for the
+ *     lifecycle-signal path specifically: re-classify the completed turn's OWN text (reusing
+ *     `classifySessionEnd`, the same text-pattern classifier session digests trust) and, on a
+ *     kill signature, override the verdict to 'error' + a rate-limit-aware re-arm delay (reusing
+ *     `parseUsageResetMs`) instead of the blind interval, and raise one loud advisory escalation
+ *     so a human sees a loop is dying on a provider wall instead of discovering it via
+ *     session-archaeology hours later. An armed loop
  *     has no discrete "failed fire attempt" streak to gate on (it isn't failing to fire — it
  *     just hasn't been checked), so the dwell window itself is this leg's blip protection and
  *     `stuckFireCount` is passed pre-satisfied.
@@ -114,6 +133,8 @@ import { cancelInboxWake as defaultCancelInboxWake } from '../../events/await/in
 import { openEscalation } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
+import { parseUsageResetMs } from '@papercusp/papercusp-shared/agent';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
@@ -232,6 +253,100 @@ async function defaultEscalateDeadLoop(info: DeadLoopInfo): Promise<void> {
   });
 }
 
+/** Re-arm backoff is never longer than this (mirrors loop-turn-outcome.ts's identical cap for
+ *  the resume-headless channel — kept as a local constant rather than importing across the
+ *  fire/reconcile seam, since the two moved independently before EI-13818 unified their intent). */
+const LIFECYCLE_DEATH_REARM_CAP_MS = 3_600_000;
+
+/** Reasons a `classifySessionEnd` verdict on a LIFECYCLE-COMPLETED loop turn's own text means
+ *  the 'ended' marker was a KILL, not a success (EI-13818 — see module header point 5). */
+const LOOP_LIFECYCLE_DEATH_REASONS: ReadonlySet<SessionEndReason> = new Set<SessionEndReason>([
+  'auth_wall',
+  'usage_limit',
+  'model_error',
+  'context_limit',
+]);
+
+export interface LoopLifecycleDeathVerdict {
+  reason: SessionEndReason;
+  evidence: string | null;
+  /** ms from `now` to re-arm at, instead of the blind interval — reset-aware for usage_limit
+   *  (parsed from the turn's own "resets 5:40am" text), else the plain interval (the fire-gate's
+   *  own exponential backoff, now correctly fed by the 'error' this verdict causes, owns further
+   *  escalation for a repeat). */
+  rearmDelayMs: number;
+}
+
+/**
+ * Re-classify a completed loop turn's OWN text for a provider-kill signature a clean 'ended'
+ * lifecycle marker cannot distinguish from a real success (EI-13818). Pure + reuses the
+ * existing text-pattern classifier (`classifySessionEnd`) and reset-time parser
+ * (`parseUsageResetMs`) rather than inventing a second taxonomy. Returns null when the text is
+ * a genuine settle (or absent — a read miss must never manufacture a false death).
+ */
+export function classifyLoopLifecycleTurn(
+  text: string | null | undefined,
+  intervalMs: number,
+  nowMs: number,
+): LoopLifecycleDeathVerdict | null {
+  if (!text || !text.trim()) return null;
+  const cls = classifySessionEnd({ lastAssistantText: text, lastTsMs: nowMs, nowMs, activeWithinMs: 0 });
+  if (!LOOP_LIFECYCLE_DEATH_REASONS.has(cls.reason)) return null;
+  let rearmDelayMs = intervalMs;
+  if (cls.reason === 'usage_limit') {
+    const resetAt = parseUsageResetMs(text, nowMs);
+    if (resetAt != null && resetAt > nowMs) {
+      rearmDelayMs = Math.min(Math.max(resetAt - nowMs, intervalMs), LIFECYCLE_DEATH_REARM_CAP_MS);
+    }
+  }
+  return { reason: cls.reason, evidence: cls.evidence, rearmDelayMs };
+}
+
+/** WI-2339-style advisory identity for the lifecycle-death alert — distinct from
+ *  LOOP_DEATH_WATCHDOG_IDENTITY (that one means "owner is unreachable, loop paused"; this one
+ *  means "owner is alive and reachable, but its wakes are dying on a provider wall"). */
+export const LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY: AgentIdentity = {
+  ownerId: 'system:loop-lifecycle-death-watchdog',
+  ownerLabel: 'system · loop-lifecycle-death-watchdog',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+/** Diagnostics passed to the lifecycle-death escalation seam. */
+export interface LifecycleDeathInfo {
+  routineId: string;
+  targetOwnerId: string;
+  installSlug: string;
+  name: string;
+  verdict: LoopLifecycleDeathVerdict;
+}
+
+/**
+ * Loud (but non-terminating) human escalation for a loop whose completed turn was actually a
+ * provider kill (EI-13818, ask (c)): the loop is NOT paused (it re-arms at `verdict.rearmDelayMs`
+ * and will retry on its own), but a human should see it rather than discover it via
+ * session-archaeology. Advisory severity; may throw if the coord context is unavailable — the
+ * caller swallows it (a lost escalation must never abort the reconcile pass).
+ */
+async function defaultEscalateLifecycleDeath(info: LifecycleDeathInfo): Promise<void> {
+  const mins = Math.round(info.verdict.rearmDelayMs / 60_000);
+  await openEscalation(LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary: `Loop '${info.name}' wake died on a provider '${info.verdict.reason}' — re-arming in ~${mins}m instead of the bare interval.`,
+    body:
+      `The loop-lifecycle-death watchdog (EI-13818) found that loop '${info.name}' (routine ${info.routineId}, ` +
+      `harness ${info.installSlug}, owner ${info.targetOwnerId})'s most recently woken turn completed CLEANLY ` +
+      `(the Stop hook fired normally) but its own text was a provider kill signature, not real work:\n\n` +
+      `${info.verdict.evidence ?? '(no evidence captured)'}\n\n` +
+      `Without this check the loop would have recorded a false 'ok' and kept re-firing at its bare interval into ` +
+      `the same wall. Instead this fire was recorded as an 'error' (feeding the existing failure-streak circuit) ` +
+      `and the loop is re-armed ~${mins}m out instead of immediately. This is inform-only — no action needed unless ` +
+      `the reason recurs after the re-arm.`,
+    harness_slug: info.installSlug,
+  });
+}
+
 export type RebaseVia = 'lifecycle' | 'note-refresh' | 'presence-quiescence' | 'stuck-backstop';
 
 export interface LoopRebaseResult {
@@ -293,6 +408,11 @@ interface LoopRow {
   note_updated_ts: string | number | null;
   /** The session's most-recent genuine-activity timestamp (presence-v2, mig 277). */
   presence_last_active_at: Date | string | null;
+  /** EI-13818: the most recent ASSISTANT turn text for this owner strictly after the fire —
+   *  read regardless of which completion signal fires below, but only CONSULTED on a
+   *  'lifecycle' via (see classifyLoopLifecycleTurn). null when no such turn is indexed yet
+   *  (session_turns ingest lag) — never treated as a death, only ever as "nothing to check". */
+  last_assistant_text_after_fire: string | null;
 }
 
 /**
@@ -390,6 +510,10 @@ export async function reconcileLoopRoutines(
      *  cancelInboxWake — stops the ghost standing await from matching-without-consuming and
      *  poisoning EVERY other wake source for the dead owner. Fail-soft at the call site. */
     cancelInboxWake?: (ownerId: string, workspaceId?: string) => Promise<number>;
+    /** EI-13818: injected loud human-escalation for a loop turn reclassified from a false
+     *  'ok' lifecycle settle to a provider-kill 'error'. Default opens an advisory coord
+     *  escalation. Fail-soft at the call site — never blocks the re-arm it accompanies. */
+    escalateLifecycleDeath?: (info: LifecycleDeathInfo) => Promise<void>;
   } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
@@ -400,6 +524,7 @@ export async function reconcileLoopRoutines(
   const circuitThreshold = opts.circuitThreshold ?? defaultCircuitThreshold;
   const escalateDeadLoop = opts.escalateDeadLoop ?? defaultEscalateDeadLoop;
   const cancelInboxWake = opts.cancelInboxWake ?? defaultCancelInboxWake;
+  const escalateLifecycleDeath = opts.escalateLifecycleDeath ?? defaultEscalateLifecycleDeath;
 
   // Loop routines in scope: a PARKED pure loop (rebase off completion), an armed cron+loop
   // (fold the sooner — unchanged), OR (EI-11407) an ARMED pure loop that has fired at least
@@ -438,7 +563,18 @@ export async function reconcileLoopRoutines(
                AND cn.note IS NOT NULL) AS note_updated_ts,
            (SELECT max(p.last_active_at)
               FROM harness_shared.coord_presence p
-             WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at
+             WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at,
+           -- EI-13818: the most recent assistant turn text after this fire — the lifecycle-death
+           -- reclassification's only evidence source. Cheap: one correlated single-row lookup per
+           -- in-scope loop, ordered by ts (falls back to turn_idx on a tie) so a multi-session
+           -- (cold-spawn) owner still resolves to its TRUE most-recent turn, not an arbitrary one.
+           (SELECT st.text
+              FROM harness_shared.session_turns st
+             WHERE st.owner = r.target_owner_id
+               AND st.speaker = 'assistant'
+               AND st.ts > r.last_fired_at
+             ORDER BY st.ts DESC, st.turn_idx DESC
+             LIMIT 1) AS last_assistant_text_after_fire
       FROM harness_shared.routines r
      WHERE r.active = TRUE
        AND r.reschedule_interval_sec IS NOT NULL
@@ -557,9 +693,17 @@ export async function reconcileLoopRoutines(
       let via: RebaseVia;
       let quickRetry = false;
       const signal = completionSignal(row, lastFiredMs, nowMs);
+      // EI-13818: a 'lifecycle' signal means the Stop hook fired — the turn EXITED cleanly —
+      // not that it SUCCEEDED. Re-classify its own text before trusting that as an 'ok'; every
+      // other via (note-refresh / presence-quiescence / stuck-backstop) has no turn text to
+      // check and is left exactly as before.
+      let turnDeath: LoopLifecycleDeathVerdict | null = null;
       if (signal) {
         completedAt = signal.completedAt;
         via = signal.via;
+        if (via === 'lifecycle') {
+          turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
+        }
       } else {
         // No healthy completion signal. A PARKED loop with NO post-fire activity is a
         // dead-or-stuck candidate — a legitimately long turn keeps producing activity, so its
@@ -641,11 +785,16 @@ export async function reconcileLoopRoutines(
         if (quickRetryEligible && !stuckParkElapsed) quickRetry = true;
       }
 
+      // EI-13818: a reclassified lifecycle-death re-arms after `turnDeath.rearmDelayMs` (reset-
+      // aware for usage_limit, else the plain interval) instead of the blind interval — never
+      // shorter than the interval either way, so this can only push the next fire LATER.
+      const rearmMs = turnDeath?.rearmDelayMs ?? intervalMs;
+
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's
       // pooled `prepare: false` connection rejects a Date bind param ("the string argument must
       // be … Received an instance of Date") — the write-side mirror of the string-read quirk
       // (EI-2549). A string + cast binds cleanly on BOTH that connection and a direct one.
-      const reArmIso = new Date(completedAt + intervalMs).toISOString();
+      const reArmIso = new Date(completedAt + rearmMs).toISOString();
 
       // ONE statement for BOTH kinds (d5a84's LEAST tip):
       //   pure loop parked  → next_fire_at='infinity' matches → LEAST(infinity, X) = X (re-arm)
@@ -669,7 +818,7 @@ export async function reconcileLoopRoutines(
           id: row.id,
           targetOwnerId: row.target_owner_id,
           completedAt,
-          nextFireAt: completedAt + intervalMs,
+          nextFireAt: completedAt + rearmMs,
           via,
           ...(quickRetry ? { quickRetry: true } : {}),
         });
@@ -680,14 +829,37 @@ export async function reconcileLoopRoutines(
         // the resume-exit observer can't see, and is the durable fallback when that observer
         // is missed (operator restart between spawn and exit). Run under the loop's own
         // workspace so the (ws, install_slug, name) key matches the fire side exactly.
-        const outcome: 'ok' | 'error' = via === 'stuck-backstop' ? 'error' : 'ok';
+        // EI-13818: a reclassified lifecycle-death is ALSO an 'error' (a false 'ok' is exactly
+        // the bug) — checked first since it overrides an otherwise-'ok' lifecycle via.
+        const outcome: 'ok' | 'error' = turnDeath || via === 'stuck-backstop' ? 'error' : 'ok';
+        const fireDetail = turnDeath ? `loop-lifecycle-death:${turnDeath.reason}` : `loop-${via}`;
         await runWithWorkspace(row.routine_workspace_id, () =>
-          recordFire(row.install_slug, row.name, `loop-${via}`, outcome),
+          recordFire(row.install_slug, row.name, fireDetail, outcome),
         ).catch((e) =>
           console.warn(
             `[loop-reconcile] recordFire('${outcome}') failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
           ),
         );
+        if (turnDeath) {
+          console.warn(
+            `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) turn completed CLEANLY but its ` +
+              `text was a provider kill ('${turnDeath.reason}') — recorded 'error' + re-armed ` +
+              `+${Math.round(rearmMs / 1000)}s instead of the bare interval`,
+          );
+          await runWithWorkspace(row.routine_workspace_id, () =>
+            escalateLifecycleDeath({
+              routineId: row.id,
+              targetOwnerId: row.target_owner_id,
+              installSlug: row.install_slug,
+              name: row.name,
+              verdict: turnDeath!,
+            }),
+          ).catch((e) =>
+            console.warn(
+              `[loop-reconcile] escalateLifecycleDeath failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
+            ),
+          );
+        }
         if (via === 'stuck-backstop') {
           console.warn(
             `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) parked ` +

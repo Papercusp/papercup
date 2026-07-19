@@ -60,6 +60,16 @@ vi.mock('../../dev-data', async (orig) => ({
   ...(await orig<typeof import('../../dev-data')>()),
   testFlakeRollup: async () => ({ entries: [] }),
 }));
+// EI-13723: dispatchReleaseFixer's notify step (notifyAttention) reaches the real SSE
+// invalidation bus (notifySyncInvalidate → pg-adapter's `sql` template-tag), which the fakeSql
+// stub above doesn't implement — left unmocked this throws, and the bus's own onError handler
+// logs via a raw `console.error` (not caught by notifyAttention's try/catch before it fires),
+// tripping vitest-fail-on-console. Stub the module boundary like every other test that exercises
+// a dispatch path (deploy.test.ts, green-stall-watchdog.test.ts, ...).
+const notifyAttention = vi.fn(async (..._a: unknown[]) => {});
+vi.mock('../../attention-notify', () => ({
+  notifyAttention: (...a: unknown[]) => notifyAttention(...a),
+}));
 
 // per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
 // route per-hive (green-checkpoint) / guard leg-3 (release-trigger). Make the fixture's

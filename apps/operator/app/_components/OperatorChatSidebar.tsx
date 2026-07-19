@@ -1055,6 +1055,21 @@ const OP_CHAT_SIDEBAR_CSS = `
     padding: 0 6px;
     gap: 0;
   }
+  /* Even with every other lever above pulled, the row exactly BREAKS EVEN
+     at the 360px default (339px of content for 339px of room) — there is
+     no slack left for the two owner-mandated labels to render at all. The
+     Fleet/Peers faces (WI-5162, added AFTER WI-4789/WI-4793) are the one
+     remaining non-essential element still taking floor space (icon +
+     padding + gap, even with their own labels already dropped at 860px
+     above) — drop them ENTIRELY below 480px, the same "cut cleanly" call
+     already made for their labels, just carried one step further. This
+     trades their one-click header access at the narrowest widths for the
+     two owner-mandated labels actually rendering — worth revisiting
+     (e.g. folding them into the audience-mode-style overflow popover) if
+     that trade turns out to be wrong. */
+  .op-chat-header-main .op-chat-face-toggle {
+    display: none;
+  }
 }
 
 .op-chat-header-main .op-chat-papercup-toggle.is-on,
