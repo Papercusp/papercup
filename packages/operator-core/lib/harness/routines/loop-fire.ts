@@ -274,9 +274,16 @@ export const LOOP_WAKE_FULL_TEMPLATE_EVERY = 10;
  *  every checkpoint header so a reader can detect a fire→delivery delivery-gap the
  *  relative "X ago" age (computed at fire time, silently wrong once delivery is
  *  delayed) cannot reveal on its own — see the function's doc for the mechanism.
- *  Re-measured: shortForm 672 (stale-header case), fullForm 199. */
+ *  Raised again 2026-07-19 (EI-14876, deliberate trade-off): the STALE header now
+ *  explicitly names `work_items:checkpoint` as NOT the store this wake reads —
+ *  a live session was observed calling ONLY work_items:checkpoint every wake for
+ *  10+ consecutive fires (~45min) while its loop:checkpoint carry-note sat frozen,
+ *  and misread the resulting STALE warning as a "lag artifact" instead of "you're
+ *  writing the wrong checkpoint" — the two tools are similarly named and easy to
+ *  conflate under a WARM loop, where loop:checkpoint feels optional. Re-measured:
+ *  shortForm 747 (stale-header case), fullForm 199. */
 export const LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS = {
-  shortForm: 700,
+  shortForm: 760,
   fullForm: 210,
   wallsHeader: 220,
   wallsPerRow: 56,
@@ -342,7 +349,8 @@ export function renderLoopCheckpointBlock(
     ? `⚠ Your loop:checkpoint is STALE (written${stamp} ${humanAge(ageMs!)} ago as of fire time — if delivery was ` +
       'delayed past fire time, the true gap is larger than this — turns you cannot see may have happened since). ' +
       'Treat it as a LEAD, not the truth: RECONCILE against live state first, and do NOT re-execute its "next action" ' +
-      'verbatim (it may already be done). Refresh it with loop:checkpoint { did, left, insight, next } before this turn ends:'
+      'verbatim (it may already be done). Refresh it with loop:checkpoint { did, left, insight, next } — NOT ' +
+      'work_items:checkpoint, a different store this wake never reads — before this turn ends:'
     : `Current loop:checkpoint (you wrote it${stamp} ${ageMs != null ? humanAge(ageMs) + ' ago as of fire time' : 'earlier'}; if this wake's delivery was delayed, that gap may be larger now) — this is the authority for what to do this wake:`;
   return `${header}\n${clipped}`;
 }
