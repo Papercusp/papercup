@@ -72,7 +72,15 @@ const okResult = (plan: DeployPlan): DeployResult => ({
   rolledBack: false,
 });
 
-const silent = { out: () => {}, err: () => {} };
+// EI-13729: main() now wraps the --execute path in the release-deploy
+// single-flight lock. Stub it to "always acquire" so the existing tests keep
+// exercising the flow directly, without touching PG/su-lock-store.
+const alwaysAcquires = async <T>(fn: () => Promise<T>): Promise<{ acquired: true; result: T }> => ({
+  acquired: true,
+  result: await fn(),
+});
+
+const silent = { out: () => {}, err: () => {}, runUnderDeployLock: alwaysAcquires };
 
 describe('deploy-cli main() — the gate chokepoint', () => {
   it('REFUSES a non-green target without --force → exit 2, executeDeploy NEVER called', async () => {
@@ -204,6 +212,43 @@ describe('deploy-cli main() — the gate chokepoint', () => {
     expect(executeDeploy).toHaveBeenCalledTimes(1);
     expect(broadcast).toHaveBeenCalledTimes(1); // un-green → loud broadcast
     expect(code).toBe(0);
+  });
+
+  it('EI-13729: a COALESCED lock (another deploy in flight) → exit 0, gatherPlan and executeDeploy NEVER called', async () => {
+    const gatherPlan = vi.fn<GatherFn>(async () => makePlan({ green: true }));
+    const executeDeploy = vi.fn<ExecuteFn>();
+    const runUnderDeployLock = vi.fn(async () => ({ acquired: false as const, holder: 'release-deploy:9999:abc' }));
+    const code = await main({
+      ...silent,
+      runUnderDeployLock,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan,
+      makeDeps: () => makeStubDeps(),
+      executeDeploy,
+    });
+
+    expect(code).toBe(0);
+    // The whole point: a coalesced attempt never even computes a plan against
+    // state that may already be stale by the time it would run.
+    expect(gatherPlan).not.toHaveBeenCalled();
+    expect(executeDeploy).not.toHaveBeenCalled();
+    expect(runUnderDeployLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a PLAN-ONLY invocation (no --execute) never consults the deploy lock', async () => {
+    const runUnderDeployLock = vi.fn(alwaysAcquires);
+    const code = await main({
+      ...silent,
+      runUnderDeployLock,
+      argv: ['node', 'deploy-cli.ts'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: true }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: vi.fn<ExecuteFn>(),
+    });
+    expect(code).toBe(0);
+    expect(runUnderDeployLock).not.toHaveBeenCalled();
   });
 
   it('--no-rollback is threaded into executeDeploy opts', async () => {

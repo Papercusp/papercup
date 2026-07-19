@@ -45,6 +45,22 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: fakeSql }),
 }));
 
+// EI-13723: dispatchReleaseFixer's actual fire step (dynamic-imported, so it's invisible to a
+// plain function-level mock) — stubbed so the EI-13723 dispatch-convergence tests below can
+// assert the fire was ATTEMPTED without touching the real blueprint-launch machinery.
+const fireLaunchBlueprintForEvent = vi.fn(async (..._a: unknown[]) => null);
+vi.mock('../../blueprint/launch-blueprint', () => ({
+  fireLaunchBlueprintForEvent: (...a: unknown[]) => fireLaunchBlueprintForEvent(...a),
+}));
+// EI-13723: dispatchReleaseFixer's best-effort flake annotation (testFlakeRollup) reaches
+// @papercusp/db-org's `sql` template-tag directly (not sql.unsafe) — the fakeSql stub above only
+// implements `.unsafe`, so left unmocked this throws (non-fatally, caught) but still trips
+// vitest-fail-on-console via its own warn. Stub it out to an empty rollup for a clean fire test.
+vi.mock('../../dev-data', async (orig) => ({
+  ...(await orig<typeof import('../../dev-data')>()),
+  testFlakeRollup: async () => ({ entries: [] }),
+}));
+
 // per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
 // route per-hive (green-checkpoint) / guard leg-3 (release-trigger). Make the fixture's
 // `my-harness` BE the operator-home so these tests exercise the home (default) path; other
@@ -897,5 +913,45 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     const opts = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
     expect(opts.env?.PAPERCUSP_GATE_VERDICT_WORKSPACE).toBe('ws-42');
     expect(opts.env?.PAPERCUSP_GATE_VERDICT_HARNESS).toBe('my-harness');
+  });
+});
+
+describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (not just the routine)', () => {
+  beforeEach(() => {
+    appendPipelineEvent.mockClear();
+    fakeSql.unsafe.mockClear();
+    fireLaunchBlueprintForEvent.mockClear();
+    fireLaunchBlueprintForEvent.mockResolvedValue(null);
+  });
+
+  it('⭐ a manual run (release:checkpoint-run) — which self-records via recordCheckpointVerdict and never touches the routine handler — still fires the release-fixer for a fresh red', async () => {
+    // The candidate must survive isStaleReleaseFixerCandidate's live re-verify: exists (cat-file -e
+    // exit 0) and NOT yet promoted onto origin/main (rev-list --count > 0 ⇒ not an ancestor).
+    spawnMock
+      .mockImplementationOnce(() => fakeSpawn('', 0)) // cat-file -e <candidate>^{commit} → exists
+      .mockImplementationOnce(() => fakeSpawn('3', 0)); // rev-list --count origin/main..<candidate> → not promoted
+
+    const recorded = await recordCheckpointVerdict(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      { reason: 'not-green', green: false, candidate: 'deadbeefcafe0123', failingTests: ['lib/y.test.ts'] },
+    );
+
+    expect(recorded).toBe(true);
+    // The bug: before EI-13723 this fire NEVER happened for a verdict recorded outside the
+    // routine handler — exactly the shape a manual release:checkpoint-run self-records through.
+    expect(fireLaunchBlueprintForEvent).toHaveBeenCalledWith(
+      'green-checkpoint:red',
+      expect.objectContaining({ installSlug: 'my-harness', workspaceId: 'ws-42' }),
+    );
+  });
+
+  it('does NOT double-dispatch when the routine ALSO sees a recorded:true verdict — recordCheckpointVerdict already covered it', async () => {
+    const GREEN_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+    // Modern CLI: self-records (recorded:true) — the routine's OWN post-processing must defer
+    // entirely rather than re-run (now-redundant) dispatch logic for the same verdict.
+    const stdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'not-green', green: false, candidate: 'deadbeefcafe0123', failingTests: ['lib/y.test.ts'], recorded: true })}\n`;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(fireLaunchBlueprintForEvent).not.toHaveBeenCalled();
   });
 });

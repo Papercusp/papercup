@@ -14,14 +14,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
   calls: [] as Array<{ pathname: string; body: Record<string, unknown> }>,
+  /** When set, the mock returns this JSON as the tool's text envelope for the
+   *  next call (else the default `{ ok: true }`). */
+  nextResult: null as unknown,
 }));
 
 vi.mock('@papercusp/agent-mcp', () => ({
   handleHttpToolRequest: vi.fn(async (req: { pathname: string; body: Record<string, unknown> }) => {
     H.calls.push({ pathname: req.pathname, body: req.body });
+    const payload = H.nextResult ?? { ok: true };
+    H.nextResult = null;
     return {
       status: 200,
-      body: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
+      body: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
     };
   }),
 }));
@@ -34,6 +39,7 @@ import { callPlansReadRaw } from './read-dispatch';
 
 beforeEach(() => {
   H.calls = [];
+  H.nextResult = null;
 });
 
 describe('callPlansReadRaw payload-tier contract (WI-5078)', () => {
@@ -47,5 +53,27 @@ describe('callPlansReadRaw payload-tier contract (WI-5078)', () => {
   it('keeps a caller-specified payloadTier (opt-in shaped reads stay possible)', async () => {
     await callPlansReadRaw('attention', { payloadTier: 'trimmed' });
     expect(H.calls[0].body.payloadTier).toBe('trimmed');
+  });
+});
+
+describe('callPlansReadRaw UI display projection (P-005)', () => {
+  it('applies the plans:items slim (clips item.text, drops coverage) to the returned data', async () => {
+    H.nextResult = {
+      items: [
+        { plan: 'p', archived: false, coverage: { level: 'full' }, item: { id: 'P-1', text: 'y'.repeat(1000) } },
+      ],
+    };
+    const r = await callPlansReadRaw('items', {});
+    const data = r.data as { items: Array<{ coverage?: unknown; item: { text: string } }> };
+    expect(data.items[0]).not.toHaveProperty('coverage');
+    expect(data.items[0].item.text.length).toBe(280);
+    expect(data.items[0].item.text).toMatch(/…$/);
+  });
+
+  it('leaves plans:attention data unprojected (WI-5078 — bodies must survive)', async () => {
+    const att = { groups: [{ key: 'g', items: [{ id: 'a', body: 'z'.repeat(2000) }] }] };
+    H.nextResult = att;
+    const r = await callPlansReadRaw('attention', {});
+    expect(r.data).toEqual(att);
   });
 });

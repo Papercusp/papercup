@@ -80,7 +80,13 @@ export async function callPlansReadRaw(
     const text = rb.content?.find((c) => c.type === 'text')?.text;
     if (text !== undefined) {
       try {
-        return { status: 200, data: JSON.parse(text) };
+        // UI-only display projection (whole-app-sync-payload-audit P-005): slim
+        // the fat scan-list payloads (plans:list/items) to the display shape —
+        // clip preview text + drop non-display blobs. Attention/get/etc. pass
+        // through unchanged; agent/MCP sessions never reach callPlansReadRaw, so
+        // the agent shapers are untouched. See ui-read-projection.ts.
+        const { projectPlansReadForUi } = await import('./ui-read-projection');
+        return { status: 200, data: projectPlansReadForUi(verb, JSON.parse(text)) };
       } catch {
         return { status: 200, data: text };
       }

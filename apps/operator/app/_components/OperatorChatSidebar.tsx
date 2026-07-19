@@ -1048,9 +1048,6 @@ const OP_CHAT_SIDEBAR_CSS = `
    to the row — and the row's own gap tightens to match .op-chat-controls'.
    480px (not 860) because Plans/Inbox reads fine with labels down to ~560. */
 @container op-chat (max-width: 480px) {
-  .op-chat-header-main {
-    gap: 6px;
-  }
   .op-chat-header-main .op-chat-inbox-toggle-label {
     display: none;
   }
@@ -1509,6 +1506,19 @@ body.has-op-chat .pc-header {
 
 .op-chat-header-main {
   gap: 9px !important;
+}
+
+/* EI-13551: the "Simplicity/readability pass" above hardcodes gap:9px
+   !important UNCONDITIONALLY — it silently defeated the container-query gap
+   tightening added earlier in this file (same specificity, but that rule's
+   !important loses to this later, also-!important one, regardless of
+   container width). Re-assert the narrow-width tightening here, AFTER it in
+   source order, so the cascade actually reaches the container query — same
+   specificity + !important + later source wins. */
+@container op-chat (max-width: 480px) {
+  .op-chat-header-main {
+    gap: 6px !important;
+  }
 }
 
 .op-chat-header-main .op-chat-wordmark-title {

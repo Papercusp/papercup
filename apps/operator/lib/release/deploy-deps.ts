@@ -17,6 +17,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { guardResource } from '@papercusp/operator-core/lib/agent-tools/locks/resource-lock-guard';
 import { lockCoordinationDomain } from '@papercusp/operator-core/lib/agent-tools/locks/coordination-domain';
@@ -37,7 +38,17 @@ import type { DeployDeps, SnapshotInfo } from './deploy';
 import { applyStagedMigrations } from './migrate';
 import { probeHealth } from './health-probe';
 
-const DEPLOY_OWNER = 'release-deploy';
+// EI-13729: this MUST be per-PROCESS-unique, generated ONCE at module load —
+// NOT a shared static string. resource-lock-store.ts's exclusive-acquire check
+// is `holders.some(h => h.mode === 'exclusive' && h.owner !== owner)`: two
+// concurrent deploy-cli processes that both used the same static ownerId each
+// had their acquire treated as "the same owner refreshing its own lock" and
+// silently GRANTED instead of drained/refused — the root cause of the observed
+// :3070 old/new-build flap (both processes believed they alone held the lock
+// and raced runSetup/migrate/restart against the same shared release
+// checkout). `ownerLabel` stays the stable human-readable 'release-deploy' for
+// broadcasts/telemetry; only the lock-identity `ownerId` needs to be unique.
+const DEPLOY_OWNER = `release-deploy:${process.pid}:${randomUUID()}`;
 const DEFAULT_DRAIN_SEC = 120;
 
 function deployIdentity(): AgentIdentity {
@@ -48,6 +59,40 @@ function deployIdentity(): AgentIdentity {
     workspaceId: safeWorkspaceId(),
     userId: null,
   };
+}
+
+/**
+ * EI-13729: the single-flight lock around deploy-cli.ts main()'s ENTIRE
+ * gather+execute flow — the one chokepoint all three deploy triggers (the
+ * auto-serve release-trigger routine, a manual `deploy-cli --execute`, and
+ * `release:deploy { op: 'trigger' }`) funnel through. TRY-ONLY (`maxDrainSec:
+ * 0`): a concurrent attempt COALESCES (returns `acquired: false`) instead of
+ * draining and then redeploying a plan that may already be stale by the time
+ * it would run — see the migration registering the `release-deploy` resource
+ * (libs/papercusp/packages/locks/src/sql/021-register-release-deploy-resource.sql)
+ * for the full incident writeup.
+ */
+export async function realRunUnderDeployLock<T>(
+  fn: () => Promise<T>,
+): Promise<{ acquired: true; result: T } | { acquired: false; holder: string | null }> {
+  const id = deployIdentity();
+  const outcome = await guardResource(
+    {
+      coordinationDomain: lockCoordinationDomain(),
+      ownerId: id.ownerId,
+      ownerLabel: id.ownerLabel,
+      coordIdentity: id,
+      resource: 'release-deploy',
+      mode: 'exclusive',
+      maxDrainSec: 0,
+      reason: 'deploy-cli main() gather+execute (single-flight)',
+    },
+    fn,
+  );
+  if (outcome.acquired) return { acquired: true, result: outcome.result };
+  const exclusiveHolder = outcome.holders.find((h) => h.mode === 'exclusive');
+  const holder = (exclusiveHolder ?? outcome.holders[0])?.owner_label ?? (exclusiveHolder ?? outcome.holders[0])?.owner ?? null;
+  return { acquired: false, holder };
 }
 
 function safeWorkspaceId(): string | null {

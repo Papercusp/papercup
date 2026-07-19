@@ -98,11 +98,25 @@ async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: s
 const stamp = (plan: string, item: string) => ({ plan_item: { plan_slug: plan, item_id: item } });
 
 async function insertIssue(o: { id: string; state: string; plan: string; item: string; asStringScalar?: boolean }) {
-  const payload = o.asStringScalar
-    ? rootSql`to_jsonb(${JSON.stringify(stamp(o.plan, o.item))}::text)`
-    : rootSql.json(stamp(o.plan, o.item));
+  if (o.asStringScalar) {
+    // The engineer_issues compat VIEW's INSTEAD OF trigger merges NEW.payload with
+    // jsonb_build_object('_ei', ...) via `||` — per PG semantics, `||` on a non-object
+    // jsonb value (our scalar quirk) converts BOTH sides to single-element arrays and
+    // concatenates them, so routing the scalar case through the view wouldn't exercise
+    // getAllPlanItemCoverage's normalizedPayloadExpr unwrap at all — it would exercise an
+    // unrelated, pre-existing trigger bug that mangles a scalar payload into an array
+    // (filed separately: EI-13835). Insert straight into the base table instead, which is
+    // exactly what getAllPlanItemCoverage reads and is where the postgres-js
+    // string-scalar binding quirk (a client binding a JS object as a jsonb-cast param)
+    // actually lands undisturbed.
+    await rootSql`INSERT INTO harness_shared.work_items
+                    (workspace_id, harness_slug, feature_id, item_kind, status, payload, updated_ts)
+                  VALUES (${WS}, 'web', ${o.id}, 'bug', ${o.state},
+                          to_jsonb(${JSON.stringify(stamp(o.plan, o.item))}::text), 100)`;
+    return;
+  }
   await rootSql`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, state, payload)
-                VALUES (${WS}, ${o.id}, ${o.state}, ${payload})`;
+                VALUES (${WS}, ${o.id}, ${o.state}, ${rootSql.json(stamp(o.plan, o.item))})`;
 }
 
 async function insertFeature(o: {

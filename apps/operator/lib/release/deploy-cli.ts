@@ -34,7 +34,7 @@ import {
   type DeployResult,
   type ExecuteOpts,
 } from './deploy';
-import { realDeps } from './deploy-deps';
+import { realDeps, realRunUnderDeployLock } from './deploy-deps';
 import type { RealDepsOpts } from './deploy-deps';
 
 /** The marker the deploy CLI prints its plan JSON behind, so the release-trigger routine
@@ -68,6 +68,14 @@ export interface DeployCliDeps {
    *  otherwise the refused-path test (and the gate's own `test:affected` run) would spew
    *  fake `refused` rows with the fixture sha into production pipeline_events. */
   recordRefused?: (targetSha: string) => Promise<void>;
+  /** EI-13729: single-flight the ENTIRE gather+execute flow (default
+   *  `realRunUnderDeployLock` — the `release-deploy` resource, try-only). A
+   *  concurrent `--execute` while another holds it COALESCES (skips, exit 0)
+   *  instead of racing the shared release checkout. Tests inject a stub that
+   *  always "acquires" so they exercise the flow without touching PG. */
+  runUnderDeployLock?: <T>(
+    fn: () => Promise<T>,
+  ) => Promise<{ acquired: true; result: T } | { acquired: false; holder: string | null }>;
 }
 
 /**
@@ -87,6 +95,7 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const makeDeps = injected.makeDeps ?? realDeps;
   const executeDeploy = injected.executeDeploy ?? realExecuteDeploy;
   const recordRefused = injected.recordRefused ?? recordRefusedDeploy;
+  const runUnderDeployLock = injected.runUnderDeployLock ?? realRunUnderDeployLock;
 
   const arg = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
@@ -100,63 +109,87 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const target = deployCommit ?? arg('--target');
   const execute = has('--execute');
 
-  const plan = await gatherPlan(cfg, { target, force });
+  // EI-13729: the full gather-through-execute flow, extracted so the
+  // --execute path can run it UNDER the release-deploy single-flight lock
+  // (below) instead of directly. Read-only / unchanged when `execute` is
+  // false — a plan-only invocation never touches the lock.
+  const runDeployFlow = async (): Promise<number> => {
+    const plan = await gatherPlan(cfg, { target, force });
 
-  // The pretty plan goes to STDERR (human-readable); STDOUT carries ONLY the single
-  // marker line. CRITICAL for cross-version compat: the release-trigger runs this CLI
-  // from the integration tree, so a DEPLOYED (older) release-trigger — which still
-  // brace-slices stdout `slice(indexOf('{'), lastIndexOf('}'))` — runs THIS newer CLI.
-  // Two JSON objects on stdout (pretty + marker) made that slice span both + the marker
-  // text → invalid JSON → "could not parse deploy plan" → NO deploys (the pipeline
-  // wedged on 2026-06-09). One object on stdout keeps the old brace-slice (it lands on
-  // the marker JSON, which carries `.plan`) AND the new marker parse both working.
-  err(JSON.stringify({ mode: execute ? 'execute' : 'plan', config: { releaseRoot: cfg.releaseRoot, releaseRef: cfg.releaseRef, unit: cfg.systemdUnit }, plan }, null, 2));
-  out(`${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: execute ? 'execute' : 'plan', plan })}`);
+    // The pretty plan goes to STDERR (human-readable); STDOUT carries ONLY the single
+    // marker line. CRITICAL for cross-version compat: the release-trigger runs this CLI
+    // from the integration tree, so a DEPLOYED (older) release-trigger — which still
+    // brace-slices stdout `slice(indexOf('{'), lastIndexOf('}'))` — runs THIS newer CLI.
+    // Two JSON objects on stdout (pretty + marker) made that slice span both + the marker
+    // text → invalid JSON → "could not parse deploy plan" → NO deploys (the pipeline
+    // wedged on 2026-06-09). One object on stdout keeps the old brace-slice (it lands on
+    // the marker JSON, which carries `.plan`) AND the new marker parse both working.
+    err(JSON.stringify({ mode: execute ? 'execute' : 'plan', config: { releaseRoot: cfg.releaseRoot, releaseRef: cfg.releaseRef, unit: cfg.systemdUnit }, plan }, null, 2));
+    out(`${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: execute ? 'execute' : 'plan', plan })}`);
 
-  if (plan.warnings.length) {
-    err('\n⚠ WARNINGS:');
-    for (const w of plan.warnings) err(`   - ${w}`);
-  }
+    if (plan.warnings.length) {
+      err('\n⚠ WARNINGS:');
+      for (const w of plan.warnings) err(`   - ${w}`);
+    }
 
-  if (!execute) {
-    err('\n[deploy] PLAN ONLY — pass --execute to run. (The release-manager reviews this diff + the staged migrations before go/no-go.)');
+    if (!execute) {
+      err('\n[deploy] PLAN ONLY — pass --execute to run. (The release-manager reviews this diff + the staged migrations before go/no-go.)');
+      return 0;
+    }
+
+    if (plan.noop) {
+      err('[deploy] release checkout already at target — nothing to deploy.');
+      return 0;
+    }
+
+    // Safe default: refuse a non-green target unless explicitly forced (D-009).
+    if (!plan.green && !force) {
+      err(`\n[deploy] REFUSING: target is not the green \`${cfg.releaseRef}\` pin.`);
+      err('         Override with --deploy-commit <sha> or --force (deploys an UN-GREEN state; loud + audited).');
+      // P-008: record the gate refusal so /admin/git's deploy stats fold it — the 'refused'
+      // status was counted by the fold but never written by anything. Best-effort.
+      await recordRefused(plan.targetSha).catch(() => {});
+      return 2;
+    }
+
+    const deps = makeDeps(cfg, {
+      noDrain: has('--no-drain'),
+      drainSec: arg('--drain-sec') ? Number(arg('--drain-sec')) : undefined,
+    });
+
+    // D-009: a forced un-green deploy is loud + audited before it runs.
+    if (!plan.green) {
+      err(`\n🚨 FORCED UN-GREEN DEPLOY — deploying a commit that is NOT the green \`${cfg.releaseRef}\` pin. This bypasses the quality gate.`);
+      await deps
+        .broadcast(
+          `🚨 FORCED un-green deploy of ${plan.targetSha.slice(0, 8)} (NOT green \`${cfg.releaseRef}\`) — escape hatch (D-009), by release-deploy`,
+          `Target ${plan.targetSha} is not the green ${cfg.releaseRef} pin. Commits: ${plan.commits.length}. Staged migrations: ${plan.migrations.join(', ') || 'none'}.`,
+        )
+        .catch(() => {});
+    }
+
+    const res = await executeDeploy(cfg, plan, deps, { rollbackOnFailure: !has('--no-rollback') });
+    out(JSON.stringify({ ok: res.ok, rolledBack: res.rolledBack, error: res.error, steps: res.steps }, null, 2));
+    return res.ok ? 0 : 1;
+  };
+
+  if (!execute) return runDeployFlow();
+
+  // EI-13729: single-flight the whole gather+execute flow around the ONE
+  // chokepoint every deploy trigger (auto-serve, manual --execute,
+  // release:deploy op:trigger) funnels through. TRY-ONLY — a concurrent
+  // attempt COALESCES instead of computing (and then racing) a plan that may
+  // already be stale by the time it would run.
+  const lockOutcome = await runUnderDeployLock(runDeployFlow);
+  if (!lockOutcome.acquired) {
+    err(
+      `\n[deploy] COALESCED — another deploy already holds the release-deploy lock ` +
+        `(${lockOutcome.holder ?? 'unknown holder'}); skipping this attempt rather than racing the shared release checkout.`,
+    );
+    out(`${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: 'execute', coalesced: true, holder: lockOutcome.holder })}`);
     return 0;
   }
-
-  if (plan.noop) {
-    err('[deploy] release checkout already at target — nothing to deploy.');
-    return 0;
-  }
-
-  // Safe default: refuse a non-green target unless explicitly forced (D-009).
-  if (!plan.green && !force) {
-    err(`\n[deploy] REFUSING: target is not the green \`${cfg.releaseRef}\` pin.`);
-    err('         Override with --deploy-commit <sha> or --force (deploys an UN-GREEN state; loud + audited).');
-    // P-008: record the gate refusal so /admin/git's deploy stats fold it — the 'refused'
-    // status was counted by the fold but never written by anything. Best-effort.
-    await recordRefused(plan.targetSha).catch(() => {});
-    return 2;
-  }
-
-  const deps = makeDeps(cfg, {
-    noDrain: has('--no-drain'),
-    drainSec: arg('--drain-sec') ? Number(arg('--drain-sec')) : undefined,
-  });
-
-  // D-009: a forced un-green deploy is loud + audited before it runs.
-  if (!plan.green) {
-    err(`\n🚨 FORCED UN-GREEN DEPLOY — deploying a commit that is NOT the green \`${cfg.releaseRef}\` pin. This bypasses the quality gate.`);
-    await deps
-      .broadcast(
-        `🚨 FORCED un-green deploy of ${plan.targetSha.slice(0, 8)} (NOT green \`${cfg.releaseRef}\`) — escape hatch (D-009), by release-deploy`,
-        `Target ${plan.targetSha} is not the green ${cfg.releaseRef} pin. Commits: ${plan.commits.length}. Staged migrations: ${plan.migrations.join(', ') || 'none'}.`,
-      )
-      .catch(() => {});
-  }
-
-  const res = await executeDeploy(cfg, plan, deps, { rollbackOnFailure: !has('--no-rollback') });
-  out(JSON.stringify({ ok: res.ok, rolledBack: res.rolledBack, error: res.error, steps: res.steps }, null, 2));
-  return res.ok ? 0 : 1;
+  return lockOutcome.result;
 }
 
 /** P-008: append a `refused` deploy event to the /admin/git pipeline history when the

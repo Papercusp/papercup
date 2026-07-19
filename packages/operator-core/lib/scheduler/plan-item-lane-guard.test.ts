@@ -60,6 +60,13 @@ function planItem(overrides: Partial<{ id: string; storedStatus: string; blocked
   };
 }
 
+// Most tests below exercise the payload-back-pointer path (extractPlanItemStampFromPayload
+// succeeds first, so id/family are never actually read) — a fixed, meaningless-but-typed
+// stand-in keeps every call site satisfying planItemLaneBlockReason's
+// Pick<WorkItem, 'payload' | 'harness' | 'id' | 'family'> without cluttering each call.
+const UNUSED_ID = 'WI-unused';
+const UNUSED_FAMILY = 'feature' as const;
+
 describe('planItemLaneBlockReason', () => {
   beforeEach(() => {
     getPlanRowMock.mockReset();
@@ -71,15 +78,22 @@ describe('planItemLaneBlockReason', () => {
   });
 
   it('returns null when the work-item carries no plan_item payload', async () => {
-    const got = await planItemLaneBlockReason({ payload: {}, harness: 'papercusp' });
+    const got = await planItemLaneBlockReason({ payload: {}, harness: 'papercusp', id: UNUSED_ID, family: UNUSED_FAMILY });
     expect(got).toBeNull();
     expect(getPlanRowMock).not.toHaveBeenCalled();
   });
 
   it('returns null when payload is not an object / plan_item is malformed', async () => {
-    expect(await planItemLaneBlockReason({ payload: null, harness: 'papercusp' })).toBeNull();
     expect(
-      await planItemLaneBlockReason({ payload: { plan_item: { plan_slug: 'p' } }, harness: 'papercusp' }),
+      await planItemLaneBlockReason({ payload: null, harness: 'papercusp', id: UNUSED_ID, family: UNUSED_FAMILY }),
+    ).toBeNull();
+    expect(
+      await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'p' } },
+        harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
+      }),
     ).toBeNull();
   });
 
@@ -88,6 +102,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'missing-plan', item_id: 'P-001' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).toBeNull();
   });
@@ -97,6 +113,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).toBeNull();
   });
@@ -106,6 +124,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'p2p-git-live-activation-2026-07-09', item_id: 'P-503' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).not.toBeNull();
     expect(got?.effectiveStatus).toBe('blocked');
@@ -124,6 +144,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-002' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got?.reason).toMatch(/blocked-by: P-001/);
   });
@@ -138,6 +160,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-002' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).toBeNull();
   });
@@ -149,6 +173,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'agent-operability-improvements-implementation-2026-07-13', item_id: 'P-018' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).not.toBeNull();
     expect(got?.effectiveStatus).toBe('done');
@@ -162,6 +188,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-007' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).not.toBeNull();
     expect(got?.effectiveStatus).toBe('dropped');
@@ -181,6 +209,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-002' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).toBeNull();
   });
@@ -190,6 +220,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-009' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got?.reason).toMatch(/needs a human decision/);
   });
@@ -199,6 +231,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).toBeNull();
   });
@@ -208,6 +242,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).toBeNull();
   });
@@ -242,6 +278,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'p2p-git-live-activation-2026-07-09', item_id: 'P-401' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).not.toBeNull();
     expect(got?.effectiveStatus).toBe('blocked');
@@ -285,6 +323,8 @@ describe('planItemLaneBlockReason', () => {
     const got = await planItemLaneBlockReason({
       payload: { plan_item: { plan_slug: 'p2p-git-live-activation-2026-07-09', item_id: 'P-308' } },
       harness: 'papercusp',
+      id: UNUSED_ID,
+      family: UNUSED_FAMILY,
     });
     expect(got).not.toBeNull();
     expect(got?.effectiveStatus).toBe('blocked');
@@ -444,6 +484,8 @@ describe('planItemLaneBlockReason', () => {
       const got = await planItemLaneBlockReason({
         payload: { plan_item: { plan_slug: 'papercup-physical-rename-phase5-2026-06-20', item_id: 'P-008' } },
         harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
       });
       expect(got).not.toBeNull();
       expect(got?.itemId).toBe('P-008');
@@ -461,6 +503,8 @@ describe('planItemLaneBlockReason', () => {
       const got = await planItemLaneBlockReason({
         payload: { plan_item: { plan_slug: 'backend-reliability-100pct-2026-07-03', item_id: 'P-003' } },
         harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
       });
       expect(got).not.toBeNull();
       expect(got?.itemId).toBe('P-003');
@@ -479,6 +523,8 @@ describe('planItemLaneBlockReason', () => {
       const got = await planItemLaneBlockReason({
         payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-099' } },
         harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
       });
       expect(got).toBeNull();
     });
@@ -499,6 +545,8 @@ describe('planItemLaneBlockReason', () => {
       const got = await planItemLaneBlockReason({
         payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-006' } },
         harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
       });
       expect(got).not.toBeNull();
       expect(got?.itemId).toBe('P-006');
@@ -517,6 +565,8 @@ describe('planItemLaneBlockReason', () => {
       const got = await planItemLaneBlockReason({
         payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001' } },
         harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
       });
       expect(got).toBeNull();
     });
