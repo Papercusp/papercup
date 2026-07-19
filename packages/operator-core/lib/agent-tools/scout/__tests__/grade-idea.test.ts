@@ -45,6 +45,10 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
   return {
     gradeRoutedIdea: vi.fn(async () => ({ applied: true })),
     resolveIdeaIdFromRef: vi.fn(async () => 'idea-1'),
+    // EI-15389: default resolves an ideaId-keyed call to itself (identity) — a
+    // real ledger idea_id. Per-test overrides model the bare-work-item-id
+    // resolution (a bare `EI-…` → the cycle-prefixed idea_id, or null on a miss).
+    resolveIdeaIdFromKey: vi.fn(async (id: string) => id),
     readIdeaSummary: vi.fn(async () => summary()),
     // D-012: default row is UNattributed (created_by null) — no self-grade path.
     readCreatedBy: vi.fn(async () => null),
@@ -183,6 +187,43 @@ describe('runGradeIdea', () => {
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 4, feedback: 'good' }, undefined, deps);
     expect(out.applied).toBe(true);
     expect(out.idea).toMatchObject({ ideaId: 'idea-1', humanGrade: 4, humanFeedback: 'good', gradedBy: 'owner' });
+  });
+});
+
+describe('EI-15389: bare work-item id keyed as ideaId resolves to the ledger PK', () => {
+  it('resolves a bare work-item id (EI-*) to its cycle-prefixed idea_id before the write, so the grade LANDS (does not silently no-op)', async () => {
+    // A Scout-dispatched row is keyed by the full idea_id and found only via
+    // routed_ref 'wi:EI-15375' — the resolver maps the bare id to it.
+    const deps = fakeDeps({
+      resolveIdeaIdFromKey: vi.fn(async () => 'scout-1784334639774:scout-idea-reframing-1-1'),
+      readIdeaSummary: vi.fn(async () =>
+        summary({ ideaId: 'scout-1784334639774:scout-idea-reframing-1-1', routedRef: 'wi:EI-15375', humanGrade: 4 }),
+      ),
+    });
+    const out = await runGradeIdea({ ideaId: 'EI-15375', grade: 4, feedback: 'sharp' }, { role: 'mug' }, deps);
+
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenCalledWith('EI-15375');
+    // The write and read-back use the RESOLVED full idea_id, not the bare key.
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({
+      ideaId: 'scout-1784334639774:scout-idea-reframing-1-1',
+      grade: 4,
+      feedback: 'sharp',
+      gradedBy: 'Queen',
+    });
+    expect(out.applied).toBe(true);
+    expect(out.ideaId).toBe('scout-1784334639774:scout-idea-reframing-1-1');
+    expect(out.idea?.humanGrade).toBe(4);
+    // The routedRef resolver is for the routedRef path only — never the ideaId path.
+    expect(deps.resolveIdeaIdFromRef).not.toHaveBeenCalled();
+  });
+
+  it('LOUD not-found (isError) when the ideaId key resolves to nothing — never a success-shaped no-op, and no write is attempted', async () => {
+    const deps = fakeDeps({ resolveIdeaIdFromKey: vi.fn(async () => null) });
+    const out = await runGradeIdea({ ideaId: 'EI-does-not-exist', grade: 3, feedback: 'x' }, { role: 'mug' }, deps);
+
+    expect(out).toEqual({ applied: false, reason: 'not-found', gradedBy: 'Queen', ideaId: null, idea: null });
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+    expect(toToolResult(out).isError).toBe(true); // surfaced loudly to the grader
   });
 });
 

@@ -145,6 +145,34 @@ async function resolveIdeaIdFromRef(routedRef: string): Promise<string | null> {
 }
 
 /**
+ * EI-15389: resolve an `ideaId`-keyed call to the real ledger PK. A caller
+ * routinely holds the routed WORK-ITEM id (`EI-15375`, `SP-002`), NOT the
+ * cycle-prefixed ledger idea_id (`scout-<ts>:scout-idea-…`). A Scout-dispatched
+ * row is keyed by that full idea_id and found only via its `routed_ref`
+ * (`wi:EI-15375` for a work item, `gym:SP-002` for a gym idea); a su re-route
+ * row is keyed by the bare work-item id DIRECTLY. So a natural `{ ideaId: 'EI-…' }`
+ * used to silently no-op (the direct idea_id lookup missed → grades vanished,
+ * the ungraded backlog grew). This unifies both: a direct idea_id match OR a
+ * routed_ref match, direct winning ties, newest routed_at breaking a ref tie.
+ * Returns null only when NOTHING matches — the caller then surfaces a LOUD
+ * not-found (isError) rather than a success-shaped no-op. Deliberately NOT
+ * workspace-narrowed — same EI-346 reasoning as {@link resolveIdeaIdFromRef}
+ * (in-process dispatch runs under the 'default' ALS workspace).
+ */
+async function resolveIdeaIdFromKey(ideaId: string): Promise<string | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ idea_id: string }[]>`
+    SELECT idea_id FROM harness_shared.scout_routed_ideas
+     WHERE idea_id = ${ideaId}
+        OR routed_ref = ${`wi:${ideaId}`}
+        OR routed_ref = ${`gym:${ideaId}`}
+        OR routed_ref = ${ideaId}
+     ORDER BY (idea_id = ${ideaId}) DESC, routed_at DESC
+     LIMIT 1`;
+  return rows[0]?.idea_id ?? null;
+}
+
+/**
  * Read back the (post-write) row for the result summary. PK-keyed and not
  * workspace-narrowed for the same reason as the resolver above; the ledger's
  * list reader (readRoutedIdeas) stays the home for scoped multi-row reads.
@@ -322,6 +350,8 @@ async function deliverRevisionNotice(notice: RevisionNotice): Promise<{ woken: n
 export interface GradeIdeaDeps {
   gradeRoutedIdea: typeof gradeRoutedIdea;
   resolveIdeaIdFromRef: typeof resolveIdeaIdFromRef;
+  /** EI-15389: resolve an ideaId-keyed call (bare work-item id or full idea_id) to the ledger PK. */
+  resolveIdeaIdFromKey: typeof resolveIdeaIdFromKey;
   readIdeaSummary: typeof readIdeaSummary;
   /** D-012: pre-write originator lookup for the no-self-grade guard. */
   readCreatedBy: typeof readCreatedBy;
@@ -332,6 +362,7 @@ export interface GradeIdeaDeps {
 const defaultDeps: GradeIdeaDeps = {
   gradeRoutedIdea,
   resolveIdeaIdFromRef,
+  resolveIdeaIdFromKey,
   readIdeaSummary,
   readCreatedBy,
   sendRevisionNotice: deliverRevisionNotice,
@@ -346,7 +377,15 @@ export async function runGradeIdea(
   const gradedBy = deriveGradedBy(ctx);
   const feedback = clampText(args.feedback, LIMITS.ANNOTATION);
 
-  const ideaId = args.ideaId ?? (await deps.resolveIdeaIdFromRef(args.routedRef as string));
+  // EI-15389: resolve the key to the real ledger PK. An ideaId-keyed call may
+  // carry a bare routed work-item id (`EI-15375`) rather than the cycle-prefixed
+  // idea_id — resolveIdeaIdFromKey handles both (direct idea_id OR routed_ref
+  // match), so a natural `{ ideaId: 'EI-15375' }` lands instead of silently
+  // no-op'ing. An unresolvable key returns null → the LOUD not-found below.
+  const ideaId =
+    args.ideaId != null
+      ? await deps.resolveIdeaIdFromKey(args.ideaId)
+      : await deps.resolveIdeaIdFromRef(args.routedRef as string);
   if (ideaId == null) {
     return { applied: false, reason: 'not-found', gradedBy, ideaId: null, idea: null };
   }
