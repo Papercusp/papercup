@@ -963,6 +963,21 @@ async function upsertPlacement(
       last_disposition  = EXCLUDED.last_disposition,
       escalation_msg_id = COALESCE(EXCLUDED.escalation_msg_id, harness_shared.pot_placements.escalation_msg_id),
       last_recovery_at  = COALESCE(EXCLUDED.last_recovery_at, harness_shared.pot_placements.last_recovery_at),
+      -- EI-15990 — recovery_started_at must be a durable TIMELINE marker (when did the
+      -- most recent recovery episode START), not an ephemeral "currently recovering"
+      -- flag. It used to fall to NULL the instant status left 'recovering' (the ELSE
+      -- NULL branch below, now removed) — but nothing in this codebase ever reads the
+      -- column outside a `status = 'recovering'` guard (evaluatePlacement's stale-recovery
+      -- check, soak-report's stale_recovering aggregate), so that NULL-on-exit served no
+      -- functional purpose while making the column read NULL on effectively every
+      -- placement (recoveries usually resolve within one sweep, so an analytical
+      -- snapshot query almost never catches a row mid-episode) — confirmed live:
+      -- 0 of 180 papercusp placements ever had a non-null recovery_started_at despite
+      -- 110 recorded infra losses. Now it is only ever (re)stamped on a FRESH entry into
+      -- 'recovering' (old status != 'recovering') and otherwise PRESERVED verbatim, so a
+      -- completed/cursed/abandoned row keeps a durable record of when its last recovery
+      -- began (pairing with last_recovery_at to reconstruct episode duration after the
+      -- fact).
       recovery_started_at = CASE
         WHEN EXCLUDED.status = 'recovering' THEN
           CASE
@@ -970,7 +985,7 @@ async function upsertPlacement(
               THEN COALESCE(harness_shared.pot_placements.recovery_started_at, EXCLUDED.recovery_started_at)
             ELSE EXCLUDED.recovery_started_at
           END
-        ELSE NULL
+        ELSE harness_shared.pot_placements.recovery_started_at
       END,
       last_seen_at      = EXCLUDED.last_seen_at,
       updated_at        = EXCLUDED.updated_at`;

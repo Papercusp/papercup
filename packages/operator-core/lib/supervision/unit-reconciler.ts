@@ -19,6 +19,21 @@
  * `papercup-live-federation-gate.service` (and any other `autoRestart:false` registry entry)
  * is REPORT-ONLY by construction — the decision layer never proposes a restart for it.
  *
+ * WI-5378: an `autoRestart:true` entry (e.g. `papercup-live-federation-gate.timer`, added under
+ * WI-5376 so the timer self-heals if something kills it unexpectedly) must NOT fight a
+ * DELIBERATE pause. `systemctl --user stop <unit>` alone reads identically to a crash (`active:
+ * inactive`) — indistinguishable to `isUnitDown()` — so a "leader-ordered pause" that only
+ * stops the unit gets silently re-armed by this very reconciler within its normal backoff
+ * window. The authoritative pause signal is therefore the unit's persisted enablement
+ * (`UnitFileState`, from `systemctl --user show -p UnitFileState`): `disable --now` (not just
+ * `stop`) is the supported way to pause a supervised systemd-user unit, and
+ * `decideReconcile` treats `disabled`/`masked` as an intentional pause — report-only, never a
+ * restart target — regardless of `autoRestart`/`FLAGS.supervisorAutoRestart`. Re-`enable` (or
+ * `enable --now`) resumes normal supervision. `papercup-live-federation-gate.timer` HAS an
+ * `[Install]` section (`WantedBy=timers.target`), so `disable` genuinely persists on it (unlike
+ * the `.service`, which is `static` and can't be enabled/disabled at all — `systemctl disable`
+ * on it is already a documented no-op, hence pausing the GATE means disabling the TIMER).
+ *
  * Runs as a bespoke `tier:'ephemeral'` routine (`system:supervision-reconcile`, 60s cadence),
  * mirroring `harness/git-sync/hive-git-gc-routine.ts`'s shape: this is an operator-HOME-level
  * concern (systemd units on ONE box), not a per-blueprint-install generic cadence, so it gets
@@ -85,6 +100,18 @@ export function parseSystemctlShowProperties(output: string): Record<string, str
 export function isUnitDown(status: SystemctlUnitStatus | undefined): boolean {
   if (!status) return true;
   return !['active', 'activating', 'reloading', 'deactivating'].includes(status.active);
+}
+
+/**
+ * WI-5378: is this unit's persisted enablement an INTENTIONAL pause? `disabled` (`systemctl
+ * --user disable`) and `masked` (`systemctl --user mask`) both mean "a human/agent explicitly
+ * told systemd not to run this" — as opposed to `enabled`/`static`/`linked`/`generated`/etc,
+ * none of which express pause intent. Unknown/unavailable (`systemctl show` failed this tick)
+ * is NOT treated as paused — silently suppressing restarts on a read failure would be worse
+ * than the bug this guards against.
+ */
+export function isAdministrativelyPaused(unitFileState: string | undefined): boolean {
+  return unitFileState === 'disabled' || unitFileState === 'masked';
 }
 
 // ── Flap-damping decision (pure) ────────────────────────────────────────────
@@ -233,7 +260,7 @@ export function checkSilentCrashLoop(
 export type ReconcileAction =
   | { kind: 'healthy'; unit: string }
   | { kind: 'recovered'; unit: string } // transition down -> healthy, damping reset
-  | { kind: 'report-only'; unit: string; reason: 'down-report-only' | 'unit-not-found'; notify: boolean }
+  | { kind: 'report-only'; unit: string; reason: 'down-report-only' | 'unit-not-found' | 'paused'; notify: boolean }
   | { kind: 'waiting-backoff'; unit: string }
   | { kind: 'already-escalated'; unit: string }
   | { kind: 'restart'; unit: string; backoffSec: number }
@@ -245,7 +272,7 @@ export interface DecideInput {
   status: SystemctlUnitStatus | undefined;
   /** `systemctl --user show <unit> -p Result,NRestarts` — only fetched/needed when we're
    *  actually about to consider restarting (the caller may omit it otherwise). */
-  show: { result?: string } | undefined;
+  show: { result?: string; unitFileState?: string } | undefined;
   state: UnitFlapState;
   autoRestartFlagOn: boolean;
   now: number;

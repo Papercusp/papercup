@@ -184,6 +184,31 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     expect(mocks.wakeRecipients.mock.calls[0]![0]).toEqual([MUG]);
   });
 
+  it('EI-15990: recovery_started_at survives exit from recovering — a durable timeline marker, not wiped on completion', async () => {
+    const recoveryStart = NOW - 5 * 60_000;
+    await sql`
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         status, fail_count, last_recovery_at, recovery_started_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${POT}, 'F-RECOVERY-THEN-DONE', ${POT}, ${MUG},
+              'recovering', 1, ${new Date(recoveryStart)}, ${new Date(recoveryStart)}, now(), now(), now())`;
+    // Unit reaches TERMINAL while the placement row was still 'recovering' — the
+    // completion sweep converges it to 'completed'.
+    await seedUnit({ id: 'F-RECOVERY-THEN-DONE', status: 'resolved', takenBy: null });
+
+    await reconcileOnePot(sql, WS, POT, CFG, NOW);
+
+    const p = await readPlacement('F-RECOVERY-THEN-DONE');
+    expect(p?.status).toBe('completed');
+    // Before the EI-15990 fix this column was unconditionally NULLed the instant
+    // status left 'recovering' (a CASE ... ELSE NULL), so a completed placement's
+    // recovery history was unobservable — confirmed live: 0 of 180 real papercusp
+    // placements ever had a non-null recovery_started_at despite 110 recorded infra
+    // losses. It must now be PRESERVED verbatim as a durable timeline marker.
+    expect(p?.recovery_started_at).not.toBeNull();
+    expect(new Date(p!.recovery_started_at!).getTime()).toBe(recoveryStart);
+  });
+
   it('EI-12108: a cup-less open placement is still reconciled and a parked unit converges to blocked', async () => {
     await sql`
       INSERT INTO harness_shared.pot_placements
@@ -211,11 +236,14 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     const first = await reconcileOnePot(sql, WS, POT, CFG, NOW);
     const second = await reconcileOnePot(sql, WS, POT, CFG, NOW + 30_000);
 
-    expect((await readPlacement('F-RECOVERY-TIMEOUT'))?.status).toBe('stranded');
+    const stranded = await readPlacement('F-RECOVERY-TIMEOUT');
+    expect(stranded?.status).toBe('stranded');
     expect(first.find((r) => r.workItemId === 'F-RECOVERY-TIMEOUT')?.decision).toBe('stale-recovery');
     expect(second.find((r) => r.workItemId === 'F-RECOVERY-TIMEOUT')?.decision).toBe('latched');
     expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
     expect(mocks.wakeRecipients).not.toHaveBeenCalled();
+    // EI-15990 — stranding (leaving 'recovering') must not wipe the timeline marker.
+    expect(stranded?.recovery_started_at).not.toBeNull();
   });
 
   // WI-3977 — the duplicate-placement false-positive this reconcile fixes: a cup

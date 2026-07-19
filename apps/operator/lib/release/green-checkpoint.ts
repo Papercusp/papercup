@@ -80,6 +80,14 @@ export interface CheckpointDeps {
      *  and a timestamp). Absent when the write itself failed (best-effort — see the
      *  realCheckpointDeps writer). */
     logPath?: string;
+    /** isolation-retry-resilience-2026-07-19 (EI-15849): the load-flake / worker-crash
+     *  absorption attempt's own verdict note, present WHENEVER that absorber actually ran —
+     *  regardless of whether it flipped the gate green. Before this, a NOT-absorbed
+     *  attempt's reasoning existed only as a console.log inside the detached checkpoint
+     *  child process (truncated to ~200-500 chars by the parent's own logging), making a
+     *  held-gate incident undiagnosable after the fact without grepping raw suite logs that
+     *  don't even contain the isolation re-run's own output. */
+    isolationNote?: string;
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -232,6 +240,11 @@ export interface CheckpointResult {
   /** WI-4957: the full-suite output log THIS run wrote, when produced (not-green paths
    *  only — an advance/up-to-date verdict has no failing suite output to reference). */
   logPath?: string;
+  /** isolation-retry-resilience-2026-07-19 (EI-15849): see CheckpointDeps.runGreen's
+   *  `isolationNote` — carried through verbatim so a NOT-absorbed verdict's reasoning is
+   *  durably recorded (release-actions.ts persists it via buildCheckpointDetail), not lost
+   *  to a truncated console log. */
+  isolationNote?: string;
 }
 
 export interface CheckpointRunLock {
@@ -958,6 +971,38 @@ export function decideFlakeAbsorption(input: {
  *  affected-tests.mjs's FRESH_RETRY_MAX_FILES (15). */
 export const ISOLATION_MAX_FILES = 15;
 
+/**
+ * isolation-retry-resilience-2026-07-19 (EI-15849): the SINGLE-concurrency isolation
+ * re-run above only removes the checkpoint suite's OWN 8-fork contention — it does
+ * NOTHING about AMBIENT host-wide load from OTHER processes (other pots' gate suites,
+ * federation, concurrent SU builds). On a box at loadavg 99+/128-core, a single isolated
+ * `vitest run <file>` can itself be CPU-starved and fail/timeout on its first attempt even
+ * though the file is perfectly deterministic and would pass the moment the box settles —
+ * exactly the incident this const is named for (a 14-file operator-core/endpoint-route
+ * cluster reproduced clean in isolation once load had dropped, but the gate had already
+ * frozen `main` for hours on the FIRST, load-starved isolation attempt). One bounded retry
+ * per file gives a transient ambient-load blip a second chance without weakening the
+ * fail-safe guarantee: {@link decideFlakeAbsorption} still requires every file to produce
+ * a clean PASS to flip red→green, so a deterministically-broken test — which fails the
+ * same way on every attempt — is never absorbed. */
+export const ISOLATION_RETRY_MAX = 1;
+
+/** Delay between a failed isolation attempt and its retry. Short — just enough to let a
+ *  transient scheduling burst clear, not a real backoff (this is a re-verify, not a
+ *  rate-limited API call). */
+export const ISOLATION_RETRY_DELAY_MS = 5_000;
+
+/** isolation-retry-resilience-2026-07-19 (EI-15849): overall wall-clock budget for the
+ *  WHOLE per-file retry phase (summed across every originally-failing file), NOT a
+ *  per-file cap. Bounds the worst-case extra time this hardening can ever add on top of
+ *  the existing one-pass isolation cost, so a broad ambient-load incident (many failing
+ *  files, each eligible for a retry) can never balloon the checkpoint run past its outer
+ *  suite timeout. Once the budget is exhausted, no further retries are attempted — a
+ *  file's most-recent result stands, exactly matching pre-retry behavior. Because the
+ *  budget can only ever ADD absorption chances (never remove the baseline first-pass
+ *  attempt), the worst case never regresses below what the gate did before this fix. */
+export const ISOLATION_RETRY_BUDGET_MS = 20 * 60_000;
+
 /** The outcome of the whole flake-absorption attempt — what {@link runGreenCheckpoint}
  *  needs to (maybe) flip the verdict, plus the suspects to surface. */
 export interface FlakeAbsorptionOutcome {
@@ -986,6 +1031,17 @@ export interface FlakeAbsorptionOutcome {
  *   4. {@link decideFlakeAbsorption}: only `all-flakes` (every file re-ran and PASSED)
  *      flips to green. `real-break` / `inconclusive` keep the gate red.
  *
+ * isolation-retry-resilience-2026-07-19 (EI-15849): step 3 above is now ITSELF retried —
+ * a file that fails or errors is re-attempted up to {@link ISOLATION_RETRY_MAX} more
+ * times (bounded overall by {@link ISOLATION_RETRY_BUDGET_MS} across every file, so a
+ * broad ambient-load incident can never balloon past the checkpoint's outer suite
+ * timeout), because the SINGLE-concurrency re-run only removes the checkpoint's OWN
+ * contention — it does nothing about ambient host-wide load from OTHER processes, which
+ * can starve even an isolated re-run on its first attempt. This can only ever ADD
+ * absorption chances, never remove the fail-safe: {@link decideFlakeAbsorption} still
+ * sees exactly one (the FINAL) result per file, and a deterministically-broken file fails
+ * that final result too, on every attempt, so it is never absorbed.
+ *
  * The whole attempt is itself wrapped so that ANY unexpected throw defaults to the
  * ORIGINAL (red) verdict — uncertainty NEVER manufactures a false green.
  */
@@ -993,8 +1049,25 @@ export async function attemptFlakeAbsorption(
   fullOutput: string,
   isolationRun: (input: { workspace: string; file: string }) => Promise<IsolationResult>,
   log: (s: string) => void = () => {},
+  opts: {
+    /** Extra attempts per file beyond the first. Default {@link ISOLATION_RETRY_MAX}. */
+    retryMax?: number;
+    /** Delay before each retry. Default {@link ISOLATION_RETRY_DELAY_MS}. Injected for tests. */
+    retryDelayMs?: number;
+    /** Overall wall-clock budget for the whole retry phase. Default {@link ISOLATION_RETRY_BUDGET_MS}. */
+    retryBudgetMs?: number;
+    /** Clock seam — injected for tests. Default `Date.now`. */
+    now?: () => number;
+    /** Sleep seam — injected for tests (never real-sleeps in a unit test). Default a real `setTimeout`. */
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<FlakeAbsorptionOutcome> {
   const keep = (note: string): FlakeAbsorptionOutcome => ({ absorbedToGreen: false, flakeSuspects: [], note });
+  const retryMax = opts.retryMax ?? ISOLATION_RETRY_MAX;
+  const retryDelayMs = opts.retryDelayMs ?? ISOLATION_RETRY_DELAY_MS;
+  const retryBudgetMs = opts.retryBudgetMs ?? ISOLATION_RETRY_BUDGET_MS;
+  const now = opts.now ?? (() => Date.now());
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   try {
     const originalFailing = parseFailingFilesByWorkspace(fullOutput);
     if (originalFailing.length === 0) {
@@ -1010,16 +1083,34 @@ export async function attemptFlakeAbsorption(
         .map((f) => f.file)
         .join(', ')}`,
     );
-    const isolationResults: IsolationResult[] = [];
-    for (const f of originalFailing) {
+    // isolation-retry-resilience-2026-07-19: ONE shared deadline for the whole phase (not
+    // per-file), computed once up front, so N failing files can never multiply the retry
+    // budget by N — the worst-case extra time this hardening can ever add is bounded.
+    const retryDeadline = now() + retryBudgetMs;
+    const runOnce = async (f: FailingFile): Promise<IsolationResult> => {
       try {
-        isolationResults.push(await isolationRun(f));
+        return await isolationRun(f);
       } catch (e) {
         // An isolation re-run that ITSELF errored cannot prove the file is a flake →
-        // record errored:true so decideFlakeAbsorption counts it as still-failing.
+        // record errored:true so decideFlakeAbsorption counts it as still-failing
+        // (unless a retry below still has budget to try again).
         log(`isolation: re-run of ${f.workspace}::${f.file} errored (${e instanceof Error ? e.message : e}) — treated as still-failing`);
-        isolationResults.push({ workspace: f.workspace, file: f.file, passed: false, errored: true });
+        return { workspace: f.workspace, file: f.file, passed: false, errored: true };
       }
+    };
+    const isolationResults: IsolationResult[] = [];
+    for (const f of originalFailing) {
+      let result = await runOnce(f);
+      let attempt = 1;
+      while (!result.passed && attempt <= retryMax && now() < retryDeadline) {
+        log(
+          `isolation: ${f.workspace}::${f.file} still failing after attempt ${attempt} (ambient host load, not just the checkpoint's own concurrency, can starve even an isolated re-run) — retrying (${retryDeadline - now()}ms of retry budget remaining)`,
+        );
+        await sleep(retryDelayMs);
+        result = await runOnce(f);
+        attempt++;
+      }
+      isolationResults.push(result);
     }
     const decision = decideFlakeAbsorption({ originalFailing, isolationResults });
     if (decision.verdict === 'all-flakes') {
@@ -2278,8 +2369,14 @@ export function realCheckpointDeps(
       // This is what AFFECTED_RETRY_FAILED=1 couldn't absorb for runner-aggregate.test.ts
       // + scheduler-workspace-scope.test.ts (the 2026-06-23 4h gate stall).
       let flakeSuspects: string[] | undefined;
+      // isolation-retry-resilience-2026-07-19 (EI-15849): the absorber's own note,
+      // persisted REGARDLESS of whether it absorbed — see CheckpointDeps.runGreen's
+      // isolationNote doc for why (a not-absorbed verdict's reasoning was previously
+      // undiagnosable after the fact).
+      let isolationNote: string | undefined;
       if (r.code !== 0 && buildOk) {
         const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log);
+        isolationNote = outcome.note;
         if (outcome.absorbedToGreen) {
           green = true;
           flakeSuspects = outcome.flakeSuspects;

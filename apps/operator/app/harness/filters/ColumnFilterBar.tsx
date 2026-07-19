@@ -24,7 +24,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  */
 
 import { useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { ListFilter, X } from 'lucide-react';
+import { ChevronDown, ListFilter, X } from 'lucide-react';
 import { FLAGS } from '@papercusp/flags';
 import type { ColumnFilterValue, FilterableColumn, NumberFilterValue } from '@papercusp/grid-core';
 import { useFlag } from '@/lib/flag-hooks';
@@ -330,11 +330,26 @@ export function ColumnFilterBar<TRow>({
   activeChips,
   hasActive,
   clearAll,
+  layout = 'compact',
+  inlineMax = 8,
 }: {
   controller: ColumnFilterController<TRow>;
   activeChips: { colKey: string; label: string; clear: () => void }[];
   hasActive: boolean;
   clearAll: () => void;
+  /**
+   * 'compact' (default): the original single row — active-filter chips + one
+   *  `+Add filter…` Select. Space-frugal; used by the wide dock panels.
+   * 'facets': every filterable column is ALWAYS visible as a labeled group of
+   *  value chips with live counts (QueueFilterBar-style), so the filters read
+   *  as filters at a glance. An enum column with ≤ `inlineMax` options renders
+   *  its values inline as toggle chips; a higher-cardinality (or non-enum)
+   *  column renders one picker-chip that opens the same popover editor.
+   */
+  layout?: 'compact' | 'facets';
+  /** In 'facets' layout, the max enum options rendered inline before a column
+   *  collapses to a picker-chip (default 8, mirroring ENUM_SEARCH_THRESHOLD). */
+  inlineMax?: number;
 }) {
   // Gate the WHOLE bar behind the flag — when off, render nothing (the panel
   // still lists unfiltered rows). Hook order is stable: useFlag + useState run
@@ -349,6 +364,8 @@ export function ColumnFilterBar<TRow>({
   const activeKeys = new Set(activeChips.map((c) => c.colKey));
   const addable = controller.filterableColumns.filter((c) => !activeKeys.has(c.key));
   const editingCol = controller.filterableColumns.find((c) => c.key === editingKey) ?? null;
+  // Active-filter label per column (for the facets picker-chip summary).
+  const chipLabelByKey = new Map(activeChips.map((c) => [c.colKey, c.label]));
 
   // Open an editor on a fresh MACROTASK, never synchronously inside the click
   // gesture that requested it — whether that's the Add-filter Select closing OR
@@ -362,6 +379,114 @@ export function ColumnFilterBar<TRow>({
   const openEditor = (key: string) => {
     setTimeout(() => setEditingKey(key), 0);
   };
+
+  // Toggle one enum VALUE for a column (the facets inline chips). Multi-select
+  // unless the column declares `multi: false`.
+  const toggleEnumValue = (colKey: string, value: string, on: boolean, multi: boolean) => {
+    const cur = asArray(controller.valueFor(colKey));
+    if (!multi) {
+      controller.setValue(colKey, on ? [value] : []);
+      return;
+    }
+    controller.setValue(colKey, on ? [...cur, value] : cur.filter((v) => v !== value));
+  };
+
+  // One Popover, anchored to a 0-size sentinel, opened for the column being
+  // edited. Shared by BOTH layouts (compact chips/Select + facets picker-chips).
+  const editorPopover = (
+    <Popover
+      open={editingCol != null}
+      onOpenChange={(open) => {
+        if (!open) setEditingKey(null);
+      }}
+      trigger={<span aria-hidden style={{ width: 0, height: 0 }} />}
+      side="bottom"
+      align="start"
+      ariaLabel={editingCol ? `Edit ${headerText(editingCol as FilterableColumn<unknown>)} filter` : 'Edit filter'}
+      autoFocusOnOpen
+      contentStyle={EDITOR_STYLE}
+    >
+      {editingCol ? (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={EDITOR_HEADING_STYLE}>{headerText(editingCol as FilterableColumn<unknown>)}</span>
+            <button
+              type="button"
+              className="pc-advpanel__iconbtn"
+              style={{ marginLeft: 'auto', width: 22, height: 22 }}
+              aria-label="Close filter editor"
+              onClick={() => setEditingKey(null)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <FilterEditor key={editingCol.key} col={editingCol} controller={controller} onClose={() => setEditingKey(null)} />
+        </>
+      ) : null}
+    </Popover>
+  );
+
+  if (layout === 'facets') {
+    return (
+      <div className="pc-advpanel__filterbar pc-advpanel__filterbar--facets">
+        {controller.filterableColumns.map((col) => {
+          const spec = col.filter;
+          const isEnum = spec?.type === 'enum';
+          const selected = asArray(controller.valueFor(col.key));
+          const options = isEnum ? controller.optionsFor(col.key) : [];
+          const label = headerText(col as FilterableColumn<unknown>);
+          // Bounded enum ⇒ inline value chips with counts.
+          if (isEnum && options.length > 0 && options.length <= inlineMax) {
+            const multi = spec?.type === 'enum' ? spec.multi !== false : true;
+            return (
+              <div key={col.key} className="pc-advpanel__facetgroup">
+                <span className="pc-advpanel__facetlabel">{label}</span>
+                {options.map((opt) => {
+                  const on = selected.includes(opt.value);
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      className="pc-advpanel__chip"
+                      aria-pressed={on}
+                      onClick={() => toggleEnumValue(col.key, opt.value, !on, multi)}
+                    >
+                      <span>{opt.label ?? opt.value}</span>
+                      <span className="pc-advpanel__chipcount">{opt.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          }
+          // High-cardinality enum / text / number / boolean ⇒ one picker-chip
+          // that opens the shared popover editor.
+          const active = activeKeys.has(col.key);
+          return (
+            <Tooltip key={col.key} label={active ? 'Edit filter' : `Filter by ${label}`}>
+              <button
+                type="button"
+                className="pc-advpanel__chip"
+                aria-pressed={active}
+                onClick={() => openEditor(col.key)}
+              >
+                {active ? (chipLabelByKey.get(col.key) ?? label) : label}
+                <ChevronDown size={11} aria-hidden />
+              </button>
+            </Tooltip>
+          );
+        })}
+
+        {hasActive ? (
+          <button type="button" className="pc-advpanel__chip" onClick={clearAll}>
+            Clear all
+          </button>
+        ) : null}
+
+        {editorPopover}
+      </div>
+    );
+  }
 
   const addOptions = [
     { value: ADD_FILTER, label: 'Add filter…', disabled: true },
@@ -415,38 +540,7 @@ export function ColumnFilterBar<TRow>({
         </button>
       ) : null}
 
-      {/* One Popover, anchored to a 0-size sentinel, opened for the column being
-          edited. The chip / Select pick sets editingKey; closing clears it. */}
-      <Popover
-        open={editingCol != null}
-        onOpenChange={(open) => {
-          if (!open) setEditingKey(null);
-        }}
-        trigger={<span aria-hidden style={{ width: 0, height: 0 }} />}
-        side="bottom"
-        align="start"
-        ariaLabel={editingCol ? `Edit ${headerText(editingCol as FilterableColumn<unknown>)} filter` : 'Edit filter'}
-        autoFocusOnOpen
-        contentStyle={EDITOR_STYLE}
-      >
-        {editingCol ? (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={EDITOR_HEADING_STYLE}>{headerText(editingCol as FilterableColumn<unknown>)}</span>
-              <button
-                type="button"
-                className="pc-advpanel__iconbtn"
-                style={{ marginLeft: 'auto', width: 22, height: 22 }}
-                aria-label="Close filter editor"
-                onClick={() => setEditingKey(null)}
-              >
-                <X size={12} />
-              </button>
-            </div>
-            <FilterEditor key={editingCol.key} col={editingCol} controller={controller} onClose={() => setEditingKey(null)} />
-          </>
-        ) : null}
-      </Popover>
+      {editorPopover}
     </div>
   );
 }
