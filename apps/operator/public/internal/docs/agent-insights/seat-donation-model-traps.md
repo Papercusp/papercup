@@ -80,7 +80,7 @@ code** (WI-5403/WI-5409's logic is unit- and integration-green, including
 a real two-peer federation integration test that passes on the
 local-parity path) — start from WI-953's "likely contributors / next
 steps" list and its diagnostic toolkit
-(`/internal/docs/agent-insights/shared-hive-federation-diagnosis-toolkit`),
+(`/internal/docs/agent-insights/shared-pot-federation-diagnosis-toolkit`),
 and treat a working cross-machine seat-offer as an **acceptance test for
 WI-953's fix**, not a separate investigation.
 

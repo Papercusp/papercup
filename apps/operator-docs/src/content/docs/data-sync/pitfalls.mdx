@@ -271,3 +271,50 @@ truncated window. (b) The resolver returns a **bare array**, so the panel shows
   so the header shows `"N of TOTAL"`, never the downloaded length.
 
 Reference: `WorkItemsPanel.tsx` + the `workItems.byHarness` resolver.
+
+## 13. Expensive derived work on a sync-resolver read path
+
+**Symptom**: a panel takes **seconds** to load in a *local desktop app* — and
+worse, *unrelated* panels on the same screen stall with it. Measured on
+`:3070`: `learning.soakReport` **27.3s**, `storage.usage` **20.0s**,
+`plans.lint` **13.8s**, while pure DB reads on the same host were **3–20ms**.
+
+**Why**: it is never Postgres. Each of those resolvers performed **expensive
+derived work synchronously, on the user-facing read, per page load, uncached** —
+a subprocess (`journalctl`), a recursive disk walk (`du`-style sizing), or a
+full-corpus parse (linting every plan). `soakReport` was the worst case: a
+host-global `journalctl` scan sat *inside* a per-pot fan-out, so ~12 hives meant
+~24 concurrent scans of a 1.2GB journal; one of the two calls was also missing
+`-u <unit>`, so it walked **every** unit on the box — 25.97s to return 17 bytes.
+
+**Amplifier**: `zero-harness/rest-query-batch` resolves with `Promise.all`, so
+the batch response waits for the **slowest** query in it. One slow resolver
+holds every other panel in that batch hostage — which is why an unrelated
+rubrics panel felt ~10s.
+
+**Fix — precompute into Postgres; do not just cache.** A background routine
+writes the derived rows; the resolver becomes a plain `SELECT`.
+
+- A cache still pays the **full cost on cold load**, so the first user of every
+  TTL window eats the 27s. It is a stopgap, not the fix.
+- More decisively: the **shipped desktop app runs embedded Postgres on hosts
+  where `journalctl` does not exist at all** (no systemd on macOS; none in a
+  bare container). A resolver that shells out to a host-only binary does not
+  degrade — it *fails*, permanently, for every real user.
+
+**Rules for any new sync query** (see
+[named queries](/internal/docs/data-sync/named-queries)):
+
+1. A resolver does **I/O against Postgres and nothing else**. No `child_process`,
+   no recursive `fs` walk, no full-corpus parse.
+2. Derived/aggregate values are **materialized by a scheduled routine** into a
+   table the resolver reads. Push the cost to write-time, off the user's path.
+3. Never assume host binaries (`journalctl`, `systemctl`, `du`, `git`) exist.
+   The shipping target is a desktop app, not this dev box.
+4. If a resolver is unavoidably slow, keep it **out of a batch** with
+   interactive queries, or it becomes everyone's latency.
+
+Reference: `packages/operator-core/lib/pot/soak-report.ts` (the fan-out +
+missing `-u`), `lib/storage/usage.ts` (the disk walk, which mitigated with a
+wall-clock budget rather than precompute), and WI-5460 for the full timing
+sweep of all 200 registered query names.
