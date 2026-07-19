@@ -173,7 +173,7 @@ export function latestRespawnNativeId(
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
       if (!line) continue;
-      let ev: { kind?: unknown; nativeId?: unknown };
+      let ev: { kind?: unknown; nativeId?: unknown; ts?: unknown };
       try {
         ev = JSON.parse(line) as typeof ev;
       } catch {

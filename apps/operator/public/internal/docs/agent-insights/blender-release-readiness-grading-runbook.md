@@ -189,7 +189,7 @@ ship):
   rubric-seeded ideation, routing, and the grading surface, while organic
   metrics remain unchanged.
 * `mode: 'capacity-storm'` — three synthetic failure legs through the deployed
-  scheduler: a typed `all-accounts-paused` denial must gate `'no-capacity'`; a
+  scheduler: a typed `rate-limit-blocked` denial must gate `'no-capacity'`; a
   real cycle timeout and a `no-free-slot` admission defect (dressed in
   capacity-looking prose) must stay errors on write AND read-back; zero
   non-drill-origin leakage. Require `ok: true`, `failures: []`.
