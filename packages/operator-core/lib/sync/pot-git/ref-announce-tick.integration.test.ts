@@ -15,8 +15,13 @@ import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity
 import { defaultRunGit, ensurePotGitRepo, writeNamespaceRef, readNamespaceRef } from './storage';
 import { readSigrefs } from './sigrefs';
 import { serveUploadPack } from './fetch-transport';
+import { Duplex } from 'node:stream';
 import { buildRefAnnouncement, type SignedRefAnnouncement } from './ref-announce';
-import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from './ref-announce-tick';
+import {
+  runRefAnnouncePublishTick,
+  runRefAnnounceReceiveTick,
+  decideRefAnnounceReceiveCursor,
+} from './ref-announce-tick';
 
 /** git with STDIN — RunGit (defaultRunGit) is (args, cwd) only; `hash-object
  *  --stdin` / `mktree` need piped input. Mirrors publish-guard.ts's own
@@ -303,6 +308,57 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       expect(out.results[1].result.action).toBe('fetched');
       expect(openedForForged).toBe(true); // opened once, for the legit entry only
       expect(await readNamespaceRef(repoA, devD.pubkeyBase64, 'refs/heads/work')).toBe(shaD1);
+    });
+
+    it('EI-15335: a FAILED device-fetch reports fetch-failed and the cursor is held (never advanced past a missed announce)', async () => {
+      // Live-incident path (WI-3499 Leg D): the announcing peer has no live
+      // swarm dial yet, so `openStream` yields an already-destroyed duplex —
+      // exactly the prod "no live swarm join for this harness yet" stub. The
+      // fetch MUST fail (not silently no-op) and the caller MUST hold the
+      // fed-event cursor below the failed row so the next tick re-dials.
+      const devG = mkDevice();
+      const shaG1 = await mintCommit(repoB, 'G work 1');
+      await writeNamespaceRef(repoB, devG.pubkeyBase64, 'refs/heads/work', shaG1);
+      const tG = await runRefAnnouncePublishTick({
+        repoPath: repoB,
+        devicePubkeyBase64: devG.pubkeyBase64,
+        sign: devG.sign,
+        nowMs: 10_000,
+      });
+      const announcement = tG.announcement as SignedRefAnnouncement;
+      expect(announcement).not.toBeNull();
+
+      const out = await runRefAnnounceReceiveTick({
+        repoPath: repoA,
+        pending: [announcement],
+        selfDevice: devA.pubkeyBase64,
+        allowedDevices: [...members(), devG.pubkeyBase64],
+        nowMs: 10_000,
+        openStream: () => {
+          // Mirror the prod stub: a destroyed duplex, error listener attached
+          // BEFORE destroy so the host never dies on an uncaught 'error'.
+          const stub = new Duplex({ read() {}, write(_c, _e, cb) { cb(); } });
+          stub.on('error', () => {});
+          stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
+          return stub;
+        },
+        timeoutMs: 5_000,
+      });
+
+      expect(out.ran).toBe(true);
+      expect(out.results).toHaveLength(1);
+      expect(out.results[0].result.action).toBe('fetch-failed');
+      // The mirror never gained the announced ref — the whole point of the bug.
+      expect(await readNamespaceRef(repoA, devG.pubkeyBase64, 'refs/heads/work')).toBeNull();
+
+      // The caller's cursor decision must HOLD below this failed row (id 4321),
+      // not advance to the batch max — so the next tick re-reads + re-dials it.
+      const decision = decideRefAnnounceReceiveCursor(out.results, [4321], 4321);
+      expect(decision.held).toBe(true);
+      expect(decision.cursor).toBe(4320);
+      expect(decision.fetchFailed).toEqual([
+        { rowId: 4321, device: devG.pubkeyBase64, stderr: expect.any(String) },
+      ]);
     });
   });
 });

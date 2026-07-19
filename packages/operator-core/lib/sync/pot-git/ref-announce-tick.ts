@@ -285,13 +285,73 @@ export async function runRefAnnounceReceiveTick(
     } catch (e) {
       // handleRefAnnouncement is documented never-throw, but the tick must
       // survive a seam bug (a broken openStream, etc.) without losing the
-      // rest of the batch.
-      errors.push(
-        `handleRefAnnouncement(${device.slice(0, 12)}@v${incoming.version}) threw: ${
-          e instanceof Error ? e.message : e
-        }`,
-      );
+      // rest of the batch. EI-15335: surface the throw as a `fetch-failed`
+      // result (positionally aligned to `pending`, exactly one result per
+      // incoming) rather than silently dropping this announcement's slot — a
+      // thrown receive is a failed receive, so the caller's cursor logic can
+      // hold + re-dial it next tick instead of advancing past a lost announce.
+      const stderr = e instanceof Error ? e.message : String(e);
+      errors.push(`handleRefAnnouncement(${device.slice(0, 12)}@v${incoming.version}) threw: ${stderr}`);
+      results.push({
+        device,
+        version: incoming.version,
+        result: { action: 'fetch-failed', stderr, budgetState: budgetStates.get(device) ?? null },
+      });
     }
   }
   return { ran: true, results, budgetStates, errors };
+}
+
+// ── Receive fed-event cursor decision ─────────────────────────────────────
+
+export interface RefAnnounceReceiveCursorDecision {
+  /** The fed-event cursor the caller MUST persist. Held BELOW the oldest
+   *  `fetch-failed` row (so the next tick re-reads AND re-dials it) whenever
+   *  any announcement's fetch failed; otherwise the full `fallbackCursor`
+   *  (advance past everything). */
+  cursor: number;
+  /** true when the cursor was held back for retry (≥1 fetch-failed). */
+  held: boolean;
+  /** Ordered fetch-failed rows for the caller to LOG loudly — a transient
+   *  transport failure that left the announced namespace UN-mirrored. */
+  fetchFailed: { rowId: number; device: string; stderr: string }[];
+}
+
+/**
+ * EI-15335 — decide the fed-event cursor after a receive tick.
+ *
+ * `results` are positionally aligned to the fed-event rows they were built
+ * from (one result per pending announcement, in order — the receive tick
+ * guarantees this even on a seam-bug throw), and `rowIds[i]` is the
+ * `coord_event_log` id that produced `results[i]`.
+ *
+ * A `fetch-failed` result means the announced namespace was NEVER mirrored (a
+ * transient transport failure — e.g. no live swarm dial yet). Advancing the
+ * cursor past it drops the announce forever, leaving a silent, permanent
+ * namespace-mirror gap until the remote happens to announce again. So we HOLD
+ * the cursor just below the OLDEST fetch-failed row: the next tick re-reads it
+ * (and every later row) and re-dials. Re-reading later rows is cheap — an
+ * already-mirrored success re-rejects as `stale-version` (before the budget is
+ * charged), so only the genuinely-failed fetch actually re-dials.
+ *
+ * Pure + never-throws — a missing/short `results[i]` (defensive) is skipped.
+ */
+export function decideRefAnnounceReceiveCursor(
+  results: readonly (RefAnnounceReceiveResult | undefined)[],
+  rowIds: readonly number[],
+  fallbackCursor: number,
+): RefAnnounceReceiveCursorDecision {
+  const fetchFailed: { rowId: number; device: string; stderr: string }[] = [];
+  let oldestFailedRowId: number | null = null;
+  for (let i = 0; i < rowIds.length; i++) {
+    const res = results[i];
+    const rowId = rowIds[i];
+    if (!res || rowId === undefined) continue;
+    if (res.result.action === 'fetch-failed') {
+      fetchFailed.push({ rowId, device: res.device, stderr: res.result.stderr });
+      if (oldestFailedRowId === null || rowId < oldestFailedRowId) oldestFailedRowId = rowId;
+    }
+  }
+  if (oldestFailedRowId === null) return { cursor: fallbackCursor, held: false, fetchFailed };
+  return { cursor: Math.min(fallbackCursor, oldestFailedRowId - 1), held: true, fetchFailed };
 }

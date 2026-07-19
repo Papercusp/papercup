@@ -48,7 +48,11 @@ import { runWorktreeBridgeTick } from '../../sync/pot-git/worktree-bridge-tick';
 import { deriveIntegratorGrant, deriveMaxGrantedEpoch } from '../../sync/pot-git/authority-epoch';
 import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
 import { lockAuthorityForHive } from '../../authority/lock-authority';
-import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from '../../sync/pot-git/ref-announce-tick';
+import {
+  runRefAnnouncePublishTick,
+  runRefAnnounceReceiveTick,
+  decideRefAnnounceReceiveCursor,
+} from '../../sync/pot-git/ref-announce-tick';
 import {
   REF_ANNOUNCE_EVENT_KEY,
   isSignedRefAnnouncement,
@@ -1811,12 +1815,12 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     `;
     if (feRows.length === 0) return; // fast no-op — nothing new to receive
 
-    const pending: SignedRefAnnouncement[] = [];
+    const pending: { rowId: number; announcement: SignedRefAnnouncement }[] = [];
     let maxRowId = lastEventId;
     for (const row of feRows) {
       maxRowId = Math.max(maxRowId, row.id);
       const fe = row.body?.fed_event as { payload?: unknown } | undefined;
-      if (fe && isSignedRefAnnouncement(fe.payload)) pending.push(fe.payload);
+      if (fe && isSignedRefAnnouncement(fe.payload)) pending.push({ rowId: row.id, announcement: fe.payload });
     }
     if (pending.length === 0) {
       // Rows existed (e.g. a malformed payload) but nothing usable — still
@@ -1829,7 +1833,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
 
     const receiveOutcome = await runRefAnnounceReceiveTick({
       repoPath,
-      pending,
+      pending: pending.map((p) => p.announcement),
       selfDevice: actor.devicePubkey,
       allowedDevices: memberDevicePubkeysBase64,
       budgetStates: priorBudgetStates,
@@ -1867,14 +1871,36 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       timeoutMs: 15_000,
     });
 
+    // EI-15335: the receive tick returns one result per pending announcement,
+    // positionally aligned. A `fetch-failed` result means the announced
+    // namespace was NEVER mirrored (a transient transport failure — e.g. no
+    // live swarm dial yet). Do NOT advance the fed-event cursor past it: hold
+    // the cursor below the oldest failed row so the next tick re-dials, rather
+    // than silently dropping the announce and leaving a permanent
+    // namespace-mirror gap until the remote happens to announce again.
+    const cursorDecision = decideRefAnnounceReceiveCursor(
+      receiveOutcome.results,
+      pending.map((p) => p.rowId),
+      maxRowId,
+    );
+
     await patchRoutineMetadata(slug, {
       ref_announce: {
-        lastEventId: maxRowId,
+        lastEventId: cursorDecision.cursor,
         budgetStates: Object.fromEntries(receiveOutcome.budgetStates),
         at: Date.now(),
       },
     });
 
+    // Log fetch failures LOUDLY (the bootstrap leg already does) — otherwise a
+    // missed receive is invisible: no operator signal distinguishes "nothing
+    // to receive" from "receive failed".
+    for (const f of cursorDecision.fetchFailed) {
+      console.warn(
+        `[git-sync] ${slug}: ref-announce receive fetch FAILED for ${f.device.slice(0, 12)} (event ${f.rowId}); ` +
+          `holding cursor at ${cursorDecision.cursor} to re-dial next tick: ${f.stderr}`,
+      );
+    }
     if (receiveOutcome.errors.length) {
       console.warn(`[git-sync] ${slug}: ref-announce receive reported errors: ${receiveOutcome.errors.join('; ')}`);
     }
