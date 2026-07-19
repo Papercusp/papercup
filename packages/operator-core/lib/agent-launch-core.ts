@@ -287,7 +287,9 @@ export interface MemberLaunchOpts {
   fleetSlug: string;
   agent: string;
   harness: string;
-  plan: string;
+  /** psu --plan the member self-pulls on. OPTIONAL (P-003): a pure claim-spec fleet
+   *  launches with no plan — members pull via their claim spec, so `--plan` is omitted. */
+  plan?: string;
   headless?: boolean;
   account?: string;
   workspace?: string;
@@ -521,8 +523,10 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
     `--fleet=${identifier('fleet', opts.fleetSlug)}`,
     `--agent=${identifier('agent', opts.agent)}`,
     `--harness=${identifier('harness', opts.harness)}`,
-    `--plan=${identifier('plan', opts.plan)}`,
   ];
+  // P-003: `plan` is optional — a pure claim-spec fleet (launched without a plan)
+  // omits `--plan`; its members self-pull via the fleet claim spec, not a plan lane.
+  if (opts.plan) parts.push(`--plan=${identifier('plan', opts.plan)}`);
   if (opts.headless) parts.push('--headless');
   if (opts.account) parts.push(`--account=${quoteLaunchValue(opts.account)}`);
   if (opts.workspace) parts.push(`--workspace=${quoteLaunchValue(opts.workspace)}`);

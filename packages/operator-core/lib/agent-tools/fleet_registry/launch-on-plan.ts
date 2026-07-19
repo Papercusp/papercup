@@ -456,7 +456,9 @@ export const LEADER_STANDING_JOB: readonly string[] = [
  *  byte-identical to before (nothing silently goes cold). */
 export function renderMemberBaseline(opts: {
   fleetSlug: string;
-  plan: string;
+  /** OPTIONAL (P-003): a pure claim-spec fleet has no plan — the baseline then points
+   *  at the fleet's claim lane instead of a named plan. */
+  plan?: string | null;
   count: number;
   carry?: 'warm' | 'cold';
 }): string {
@@ -478,7 +480,7 @@ export function renderMemberBaseline(opts: {
   return [
     '# Fleet member — operating baseline',
     '',
-    `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, working plan \`${plan}\`. The session that launched you is your LEADER — report notable completions and blockers to them.`,
+    `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, ${plan ? `working plan \`${plan}\`` : 'draining your fleet claim-lane backlog'}. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
     "Your loop, until nothing is claimable: **pull** via `scheduler:get_next` (NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader's call, PICKUP is yours.",
     '',
@@ -492,7 +494,8 @@ export function renderMemberBaseline(opts: {
  *  exported for tests. */
 export function composeMemberLaunchContext(opts: {
   fleetSlug: string;
-  plan: string;
+  /** OPTIONAL (P-003): absent for a pure claim-spec fleet. */
+  plan?: string | null;
   count: number;
   carry?: 'warm' | 'cold';
   customBriefText?: string | null;
@@ -813,7 +816,13 @@ export default defineTool({
       .string()
       .min(1)
       .describe('Fleet name — created (you become leader) if new, else joined. Slugified to the durable handle.'),
-    plan: z.string().min(1).describe('Plan slug (filename without .md) the members should work. Must already exist.'),
+    plan: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Plan slug (filename without .md) the members should work — must already exist. OPTIONAL (P-003): omit it to launch a PURE CLAIM-SPEC fleet (members self-pull by `claimKinds`, no plan lane). When omitted, `claimKinds` is REQUIRED so the members have a lane to drain.',
+      ),
     harness: z
       .string()
       .optional()
@@ -1016,6 +1025,16 @@ export default defineTool({
     const { agent, model: memberModel } = agentResolution;
     const count = args.count ?? 1;
 
+    // P-003: `plan` is optional. A pure claim-spec fleet launches with no plan — its
+    // members self-pull by `claimKinds`, so require a lane when no plan is given (else
+    // the fleet would drain the whole harness backlog under the empty DEFAULT_CLAIM_SPEC).
+    const planSlug = args.plan?.trim() || null;
+    if (!planSlug && !args.claimKinds?.length) {
+      return err(
+        'Give the fleet a lane: pass a `plan` (members self-pull that plan\'s items) OR `claimKinds` for a pure claim-spec fleet (e.g. claimKinds:["bug"]). Without either, members would drain the entire harness backlog under the default claim spec.',
+      );
+    }
+
     // P-005 launch-from-seats: the delegated slot pins model+effort+account (D-002/
     // D-003) — an explicit model/account alongside it would silently contradict the
     // delegation, so refuse the combination outright.
@@ -1038,6 +1057,15 @@ export default defineTool({
           )}. Drop them (name/plan/count/launchContext/claimKinds still apply).`,
         );
       }
+      // P-003: the pure-claim-spec (no-plan) fleet is a LOCAL feature. Remote members
+      // pull work-items under their OWN machine's claim spec (the claim spec set here is
+      // machine-local — claimKinds does NOT federate), and the signed spawn-request carries
+      // a required planSlug, so a remote placement without a plan has no lane. Require one.
+      if (!planSlug) {
+        return err(
+          "placement:'remote' requires a `plan`: remote members pull under their own machine's claim spec (claimKinds does not federate), so a plan is the only lane that reaches them. Launch a pure claim-spec fleet LOCALLY (drop `placement:'remote'`), or pass a `plan`.",
+        );
+      }
     }
 
     // Harness scope: explicit arg, else the session's scope (never the '*' wildcard).
@@ -1057,17 +1085,21 @@ export default defineTool({
       const resolved = await resolveHarnessPlansDir(harness, { workspaceId });
       planHarnessSlug = resolved.harnessSlug;
       planWorkspaceId = resolved.workspaceId;
-      const found = await readPlanBySlug(args.plan, {
-        harnessSlug: resolved.harnessSlug,
-        workspaceId: resolved.workspaceId,
-      });
-      if (!found) {
-        return err(
-          `Plan \`${args.plan}\` not found in harness \`${harness}\`. Create it first (plans:apply-plan-block / plans:new + plans:add-item), then launch the fleet.`,
-        );
+      // P-003: only a plan-scoped launch validates a plan exists; a pure claim-spec
+      // fleet (no plan) skips this — there is nothing to look up.
+      if (planSlug) {
+        const found = await readPlanBySlug(planSlug, {
+          harnessSlug: resolved.harnessSlug,
+          workspaceId: resolved.workspaceId,
+        });
+        if (!found) {
+          return err(
+            `Plan \`${planSlug}\` not found in harness \`${harness}\`. Create it first (plans:apply-plan-block / plans:new + plans:add-item), then launch the fleet.`,
+          );
+        }
       }
     } catch (e: any) {
-      return err(`Could not resolve plan \`${args.plan}\` in harness \`${harness}\`: ${e?.message ?? e}`);
+      return err(`Could not resolve ${planSlug ? `plan \`${planSlug}\`` : `harness \`${harness}\``}: ${e?.message ?? e}`);
     }
 
     // #3 FAILSAFE (fleet-launch-promote-workitems-failsafe, 2026-07-08): members self-pull via
@@ -1080,18 +1112,22 @@ export default defineTool({
     // upstream plans:start makes this a no-op (promoted:0). Best-effort: a failure NEVER blocks the
     // launch. This is a BACKSTOP, not a replacement for plans:start (which ALSO flips op_status=started
     // for Queen/orchestrator visibility — the failsafe deliberately does not).
+    // P-003: promotion only applies to a plan-scoped launch — a pure claim-spec fleet
+    // has no plan items to promote (its lane is `claimKinds` over the existing backlog).
     let promotionFailsafe: (PromotePlanResult & { ran: boolean }) | null = null;
-    try {
-      const { promotePlanItems } = await import('../../plan-workitem-promotion-run');
-      const res = await promotePlanItems({
-        workspaceId: planWorkspaceId,
-        harnessSlug: planHarnessSlug,
-        planSlug: args.plan,
-        createdBy: ownerId,
-      });
-      promotionFailsafe = { ...res, ran: true };
-    } catch {
-      promotionFailsafe = null; // never block the launch on the failsafe
+    if (planSlug) {
+      try {
+        const { promotePlanItems } = await import('../../plan-workitem-promotion-run');
+        const res = await promotePlanItems({
+          workspaceId: planWorkspaceId,
+          harnessSlug: planHarnessSlug,
+          planSlug,
+          createdBy: ownerId,
+        });
+        promotionFailsafe = { ...res, ran: true };
+      } catch {
+        promotionFailsafe = null; // never block the launch on the failsafe
+      }
     }
 
     // Ensure the fleet (idempotent) with the caller as owner + leader, then label the
@@ -1171,9 +1207,11 @@ export default defineTool({
           };
         }
       } else {
+        // planSlug! is safe: the early `plan || claimKinds` guard means this
+        // (no-claimKinds) branch is only reached when a plan was given (P-003).
         const spec = args.claimKinds?.length
           ? buildFleetKindClaimSpec(fleetSlug, args.claimKinds)
-          : buildFleetPlanClaimSpec(fleetSlug, args.plan);
+          : buildFleetPlanClaimSpec(fleetSlug, planSlug!);
         claimSpecApplied = await setClaimSpec({
           cupId,
           workspaceId: claimSpecWorkspaceId,

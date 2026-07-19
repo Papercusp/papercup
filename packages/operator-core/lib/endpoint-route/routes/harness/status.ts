@@ -16,7 +16,11 @@ export default defineTool({
   async handler(req, ctx) {
     const url = new URL(req.url);
     const phase = phasePhaseLabel(url.searchParams.get('phase') ?? undefined);
-    const payload = await getHarnessStatusFull(ctx.params.slug as string, phase);
+    // P-008: drop the 20.6MB `features` array (no live consumer renders it here;
+    // per-feature UI uses featuresConsolidated.*). `counts` still carries the totals.
+    const payload = await getHarnessStatusFull(ctx.params.slug as string, phase, {
+      includeFeatures: false,
+    });
     if (!payload) return Response.json({ error: 'unknown project' }, { status: 404 });
     return Response.json(payload);
   },

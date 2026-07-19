@@ -5,9 +5,15 @@
  * into `<workspaceRoot>/db-dumps/` so kopia captures them in the same
  * snapshot as the file tree. Restoration path:
  *   1. Restore the snapshot to a clone.
- *   2. `gzip -d` and `psql -f` the dumps into a fresh PG to rebuild
- *      live DB state (faster + more robust than restoring the raw
- *      data dir).
+ *   2. Import `pg-embedded.sql.gz` into a fresh PG via
+ *      `scripts/restore-pg-dump.sh` (faster + more robust than restoring
+ *      the raw data dir). Don't hand-roll `gzip -d` + `psql -f` — PG18's
+ *      pg_dump wraps the dump in `\restrict`/`\unrestrict` markers that
+ *      desync plain psql's COPY parser part-way through and eventually
+ *      OOM it (EI-13868), and the import needs a superuser-capable role
+ *      to run the dump's `CREATE EXTENSION` statements. The script strips
+ *      the markers (safe for this self-generated, trusted dump) and runs
+ *      the import as a superuser — see that script for the full story.
  *
  * The hook only handles per-workspace state. Host PG (:5432) and host
  * sqlite (Restart harness DBs) are the systemd kopia job's concern,
@@ -206,7 +212,20 @@ async function dumpPg(opts: {
       '--no-owner',
       '--no-privileges',
       '-n', 'harness_shared',
+      // Every extension the harness_shared schema actually depends on at
+      // DDL time must be dumped, not just `vector`. EI-13868: a restore
+      // drill found the dump omitted `pg_trgm`, so importing into a fresh
+      // DB failed 3x with "gin_trgm_ops does not exist for access method
+      // gin" the moment the trigram GIN index (594-memory-canonical-trgm-
+      // lexical.sql) tried to create — CREATE INDEX validates the operator
+      // class at DDL time, unlike a plpgsql function body's pgcrypto calls
+      // (000-baseline.sql: pgp_sym_encrypt/gen_salt), which aren't checked
+      // until called. Include `pgcrypto` too so those functions actually
+      // work post-restore instead of failing silently the first time
+      // they're invoked.
       '-e', 'vector',
+      '-e', 'pg_trgm',
+      '-e', 'pgcrypto',
       ...EXCLUDED_TABLE_DATA.map((table) => `--exclude-table-data=${table}`),
     ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });

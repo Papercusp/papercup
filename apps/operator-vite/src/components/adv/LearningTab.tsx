@@ -3455,19 +3455,22 @@ export function ScoutView({
             </Popover>
           </span>
         </div>
-        <button
-          type="button"
-          className="pc-learning__ideacard-title"
-          aria-expanded={isTraceOpen}
-          onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
-          title={
+        <Tooltip
+          label={
             isTraceOpen
               ? "Hide this idea's pipeline trace"
               : "Show this idea's pipeline trace — grounding, lens, route, grade, outcome"
           }
         >
-          {item.title ?? item.routedRef}
-        </button>
+          <button
+            type="button"
+            className="pc-learning__ideacard-title"
+            aria-expanded={isTraceOpen}
+            onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
+          >
+            {item.title ?? item.routedRef}
+          </button>
+        </Tooltip>
         {isTraceOpen ? renderTrace(item) : null}
       </div>
     );
@@ -4852,7 +4855,7 @@ export function LearningStyles() {
       /* Ungraded ideas as per-lens overlapping stacks (owner ask 2026-07-19). */
       .pc-learning__queuesection { margin-top: 6px; }
       .pc-learning__queuehead {
-        margin: 0; font-size: 12px; font-weight: 720; letter-spacing: 0.01em;
+        margin: 0; font-size: 12px; font-weight: 720; letter-spacing: 0;
         color: var(--accent, #7dd3fc);
       }
       .pc-learning__lensstacks {

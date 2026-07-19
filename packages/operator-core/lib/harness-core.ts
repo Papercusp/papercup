@@ -552,7 +552,19 @@ export async function resolvePhasedProject(slug: string, phase: Phase | undefine
 export async function getHarnessStatusFull(
   slug: string,
   phaseOverride?: Phase,
+  opts?: { includeFeatures?: boolean },
 ): Promise<Record<string, unknown> | null> {
+  // whole-app-sync-payload-audit P-008: the `features` array is the entire weight of
+  // this payload — measured 20.6MB (20,228 features) on the /harness/:slug/status
+  // route, 2.2s to serialize. The two HTTP boundaries that call this (harness/status.ts,
+  // device/harnesses.ts) have NO live consumer that renders the raw array (the desktop
+  // route's only reader is the RETIRED apps-web HarnessDashboard; the device UI works off
+  // the aggregate `counts`, as its slim list route already proves) — a per-feature UI must
+  // use the dedicated, already-slimmed `featuresConsolidated.*` query (P-001's guidance),
+  // never this dashboard snapshot. So both routes pass includeFeatures:false to drop the
+  // array off the wire. Default stays `true` so the shared function's contract is unchanged
+  // for any other/future caller. `counts` (derived from features) is ALWAYS returned.
+  const includeFeatures = opts?.includeFeatures ?? true;
   const project = await resolvePhasedProject(slug, phaseOverride);
   if (!project) return null;
 
@@ -602,7 +614,9 @@ export async function getHarnessStatusFull(
 
   return {
     project: { slug: project.slug, path: project.path },
-    features,
+    // P-008: omit the 20MB features array unless explicitly requested (see the
+    // includeFeatures note above). `counts` below carries the per-status totals.
+    ...(includeFeatures ? { features } : {}),
     counts,
     iteration,
     lastDecision,

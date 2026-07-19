@@ -171,6 +171,19 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(c.args).toContain('vector');
   });
 
+  it('also dumps pg_trgm and pgcrypto — EI-13868: a restore drill found these missing, ' +
+    'breaking a trigram GIN index (CREATE INDEX validates the operator class at DDL ' +
+    'time) and leaving pgcrypto-dependent functions non-functional post-restore', async () => {
+    await runPreSnapshotHook(ctx);
+    const c = pgDumpCall()!;
+    const eIndexes = c.args.reduce<number[]>((acc, a, i) => {
+      if (a === '-e') acc.push(i);
+      return acc;
+    }, []);
+    const eValues = eIndexes.map((i) => c.args[i + 1]);
+    expect(eValues).toEqual(expect.arrayContaining(['vector', 'pg_trgm', 'pgcrypto']));
+  });
+
   it('does not prefix a schema preamble because pg_dump -n emits schema DDL', async () => {
     await runPreSnapshotHook(ctx);
     expect(h.stdinWrites.join('')).not.toContain('CREATE SCHEMA IF NOT EXISTS harness_shared;');

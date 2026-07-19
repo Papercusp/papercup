@@ -270,14 +270,12 @@ export default defineTool({
     'current claims (doing/workItemIds/queuedCount/load), healthy loop state (monitoring|waiting|' +
     'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
-    '(ok|high|critical), bench state (parkedOn), benchSuggestion (EI-9943: alive+speaking ' +
-    'but not advancing, not yet benched; EI-13846: also flags LANELESS-IDLE — alive, zero ' +
-    'claims/queued, not parked — a drained-lane member cycling get_next-miss every wake), ' +
-    'and unownedCriticals (WI-5213: aged unassigned ' +
-    'critical work-items this fleet\'s spec would admit). Scoped to ONE fleet ' +
-    '(yours by default) instead of the whole workspace roster fleet:assignments returns. ' +
-    'Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats ' +
-    'every monitor wake.',
+    '(ok|high|critical), bench state (parkedOn), benchSuggestion (alive but not advancing, ' +
+    'or alive+idle with zero claims/queued and unparked — a fleet:bench candidate), ' +
+    'and unownedCriticals (aged unassigned ' +
+    'criticals this fleet\'s spec would admit). Scoped to ONE fleet ' +
+    '(yours by default), not the whole workspace roster fleet:assignments returns. ' +
+    'Replaces a leader\'s hand-assembled presence+assignments+inbox scan each monitor wake.',
   guidance: {
     when:
       "On a leader's repeating monitor tick: "

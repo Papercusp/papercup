@@ -78,7 +78,9 @@ const harnessDetail = defineTool({
       return Response.json({ error: 'harness_not_in_workspace' }, { status: 404 });
     }
     const { getHarnessStatusFull } = await import('../../../harness-core');
-    const status = await getHarnessStatusFull(slug, undefined);
+    // P-008: the device detail must not push the 20MB features array to a paired
+    // phone — the mobile UI works off `counts` (its slim list route already does).
+    const status = await getHarnessStatusFull(slug, undefined, { includeFeatures: false });
     if (!status) return Response.json({ error: 'harness_not_found' }, { status: 404 });
     return Response.json(status);
   },
