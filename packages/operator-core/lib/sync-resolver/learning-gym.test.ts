@@ -9,6 +9,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * to the two control-plane readers. The readers themselves (the SQL `AND
  * harness_slug = …`) are covered at the control-plane/integration layer; here we
  * pin the resolver's arg threading + the workspace-wide default.
+ *
+ * WI-5420: a Hive-scoped read that comes back COMPLETELY empty falls back to
+ * the unscoped workspace-wide rollup (flagged `scopeFallback: true`) rather
+ * than silently rendering the empty state while real gym data sits recorded
+ * under an unaffiliated harness_slug (e.g. a manual `gym-loop-run.ts` run
+ * defaulting to 'gymloopharness') — see the fallback describe block below.
  */
 
 const listRecentProposalsForWorkspace = vi.fn();
@@ -83,5 +89,69 @@ describe('learning.gym — per-Hive lens (P-041)', () => {
     const rows = (await resolveNamedQueryV2('learning.gym', {})) as Array<{ archiveSeeds: unknown[] }>;
     expect(rows[0].archiveSeeds).toEqual([]);
     warn.mockRestore();
+  });
+});
+
+describe('learning.gym — workspace-wide fallback when the Hive-scoped read is empty (WI-5420)', () => {
+  it('falls back to the unscoped rollup + flags scopeFallback when the Hive-scoped read is completely empty but the workspace has real data', async () => {
+    // First call = hive-scoped (empty); second call = unscoped (has data) —
+    // mirrors real proposals recorded under an unaffiliated harness_slug
+    // (e.g. gymloopharness) that a Hive-scoped filter would otherwise hide.
+    listRecentProposalsForWorkspace
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'p1', harnessSlug: 'gymloopharness' }]);
+    listAutoloopsForWorkspace.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    listScoutArchiveSeeds.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const rows = (await resolveNamedQueryV2('learning.gym', { hive: 'papercusp' })) as Array<{
+      proposals: unknown[];
+      scopeFallback?: boolean;
+    }>;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].proposals).toEqual([{ id: 'p1', harnessSlug: 'gymloopharness' }]);
+    expect(rows[0].scopeFallback).toBe(true);
+    // The scoped call first, then the unscoped fallback call — both readers.
+    expect(listRecentProposalsForWorkspace).toHaveBeenNthCalledWith(
+      1,
+      { tag: 'tx' },
+      { workspaceId: 'ws-test', limit: 50, harnessSlug: 'papercusp' },
+    );
+    expect(listRecentProposalsForWorkspace).toHaveBeenNthCalledWith(
+      2,
+      { tag: 'tx' },
+      { workspaceId: 'ws-test', limit: 50 },
+    );
+  });
+
+  it('stays scoped (no fallback, no flag) when the Hive-scoped read genuinely has data', async () => {
+    listRecentProposalsForWorkspace.mockResolvedValueOnce([{ id: 'p1' }]);
+    const rows = (await resolveNamedQueryV2('learning.gym', { hive: 'papercusp' })) as Array<{
+      proposals: unknown[];
+      scopeFallback?: boolean;
+    }>;
+    expect(rows[0].proposals).toEqual([{ id: 'p1' }]);
+    expect(rows[0].scopeFallback).toBeUndefined();
+    expect(listRecentProposalsForWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays empty (no fallback call) when BOTH the Hive-scoped AND the workspace-wide reads are empty', async () => {
+    // All three readers stay [] on every call — nothing anywhere to fall back to.
+    const rows = (await resolveNamedQueryV2('learning.gym', { hive: 'papercusp' })) as Array<{
+      proposals: unknown[];
+      autoloops: unknown[];
+      archiveSeeds: unknown[];
+      scopeFallback?: boolean;
+    }>;
+    expect(rows[0]).toEqual({ proposals: [], autoloops: [], archiveSeeds: [] });
+    expect(rows[0].scopeFallback).toBeUndefined();
+    // 2 calls: the scoped attempt + the fallback attempt (both come back empty).
+    expect(listRecentProposalsForWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it('never falls back with no hive arg (already unscoped)', async () => {
+    const rows = (await resolveNamedQueryV2('learning.gym', {})) as Array<{ scopeFallback?: boolean }>;
+    expect(rows[0].scopeFallback).toBeUndefined();
+    expect(listRecentProposalsForWorkspace).toHaveBeenCalledTimes(1);
   });
 });

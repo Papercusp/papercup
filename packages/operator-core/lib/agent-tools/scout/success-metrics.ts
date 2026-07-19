@@ -216,14 +216,14 @@ export async function runSuccessMetrics(
 export default defineTool({
   name: 'blender:success-metrics',
   description:
-    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the release-readiness rubric's own declared window (default: its structured 48h-rolling `window`; or an explicit sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Every resolved window (rubric-derived or explicit) also returns resolvedWindow + runningGeneration {deployedSha, hostStartedAt, bootHeadSha, scoutCodeHash, staleHost} for parity evidence — staleHost:true means the running scout loop has NOT been proven to be executing deployedSha's code; absent only if the rubric itself couldn't be read. verdict='pass' only when every bar passes; 'incomplete' when evidence is missing; 'fail' on a regression.",
+    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the rubric's own declared window (default: its 48h-rolling `window`; or a sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Also returns resolvedWindow + runningGeneration (parity evidence; staleHost:true = scout loop not proven to run deployedSha's code). verdict='pass' only when every bar passes; 'incomplete' if evidence is missing; 'fail' on regression.",
   capability: 'curation:read',
   guidance: {
-    when: 'Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.',
+    when: 'Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live.',
     notWhen:
-      'Asking whether Scout ideas are getting BETTER over time (that is the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).',
+      'Asking whether Scout ideas are getting BETTER over time (the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).',
     chaining:
-      "Read verdict and each bar's evidence/unknownReason. Always cite resolvedWindow + runningGeneration alongside the verdict (EI-12146: the default window now comes from the rubric itself, not a fixed 48h) — an explicit sinceMs/watermarkRef only overrides which window judges it.",
+      "Read verdict and each bar's evidence/unknownReason. Cite resolvedWindow + runningGeneration alongside the verdict (EI-12146: default window comes from the rubric, not a fixed 48h) — sinceMs/watermarkRef only overrides which window judges it.",
     seeAlso: ['blender:ideation-feedback (your own graded-idea priming)', 'blender:grade-idea (grade one routed idea)'],
   },
   requirePrincipal: false,

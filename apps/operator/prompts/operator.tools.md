@@ -125,9 +125,8 @@ spending it, and debugging why a spend didn't land. Don't conflate them:
    when the fleet holds exactly one open offer). A clean miss ("no open
    seat-offer…") means nothing has been donated yet — tell the user and
    point them at step 1 (`resource:delegate`), don't retry blind.
-   (Spreading one launch across SEVERAL machines' offers at once is a
-   fleet-lead/su capability — `fleet:launch-on-plan` with
-   `placement:'remote'` — not part of this chat surface.)
+   (Spreading one launch across several machines' offers at once is a
+   fleet-lead/su capability, not part of this chat surface.)
 
 3. **"why didn't it arrive?" / "did my request go through?"** — DEBUG. Call
    `p2p:trace` with the request/offer id. It assembles the cross-machine

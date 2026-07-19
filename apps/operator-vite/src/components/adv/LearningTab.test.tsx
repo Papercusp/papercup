@@ -726,6 +726,35 @@ describe("LearningTab — Gym view", () => {
     render(<LearningTab />);
     expect(screen.getByText("No gym experiments")).toBeTruthy();
   });
+
+  // WI-5420: the server flags scopeFallback:true when the requested Hive's own
+  // gym-scoped read was empty and it fell back to the workspace-wide rollup —
+  // the view must say so, not silently render the fallback data as if it were
+  // this Hive's own.
+  it("shows the scope-fallback note when the server flags scopeFallback", () => {
+    gymResult = {
+      data: [{ proposals: [{ id: "p1", status: "pending" }], autoloops: [], scopeFallback: true }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(
+      screen.getByText(
+        "Showing gym experiments from all pots — none are scoped to this Hive yet.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("omits the scope-fallback note when the data is genuinely scoped (no flag)", () => {
+    render(<LearningTab />);
+    expect(
+      screen.queryByText(
+        "Showing gym experiments from all pots — none are scoped to this Hive yet.",
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("LearningTab — unified Signals views", () => {

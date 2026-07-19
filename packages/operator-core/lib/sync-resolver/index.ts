@@ -3080,20 +3080,46 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       );
       const ws = activeWorkspaceId();
       const harnessSlug = a.hive || undefined;
-      return await routeWithWorkspace(async (tx) => {
-        const [proposals, autoloops, archiveSeeds] = await Promise.all([
-          listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50, ...(harnessSlug ? { harnessSlug } : {}) }),
-          listAutoloopsForWorkspace(tx, { workspaceId: ws, ...(harnessSlug ? { harnessSlug } : {}) }),
-          // WI-5412 item 4: the Scout-seeded MAP-Elites niches — where the
-          // Ideas view's gym-rail pills (`gym:SP-…`) actually land. Best-effort:
-          // a missing archive table degrades to an absent section, never a 500.
-          listScoutArchiveSeeds(tx, { workspaceId: ws, ...(harnessSlug ? { harnessSlug } : {}) }).catch((err) => {
-            console.warn('[learning.gym] archive-seed read failed:', err instanceof Error ? err.message : err);
-            return [];
-          }),
-        ]);
-        return [{ proposals, autoloops, archiveSeeds }];
-      });
+      const fetchSnapshot = (slug: string | undefined) =>
+        routeWithWorkspace(async (tx) => {
+          const [proposals, autoloops, archiveSeeds] = await Promise.all([
+            listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50, ...(slug ? { harnessSlug: slug } : {}) }),
+            listAutoloopsForWorkspace(tx, { workspaceId: ws, ...(slug ? { harnessSlug: slug } : {}) }),
+            // WI-5412 item 4: the Scout-seeded MAP-Elites niches — where the
+            // Ideas view's gym-rail pills (`gym:SP-…`) actually land. Best-effort:
+            // a missing archive table degrades to an absent section, never a 500.
+            listScoutArchiveSeeds(tx, { workspaceId: ws, ...(slug ? { harnessSlug: slug } : {}) }).catch((err) => {
+              console.warn('[learning.gym] archive-seed read failed:', err instanceof Error ? err.message : err);
+              return [];
+            }),
+          ]);
+          return { proposals, autoloops, archiveSeeds };
+        });
+      const scoped = await fetchSnapshot(harnessSlug);
+      const scopedIsEmpty =
+        scoped.proposals.length === 0 && scoped.autoloops.length === 0 && scoped.archiveSeeds.length === 0;
+      // (WI-5420) The per-Hive lens above assumes a Hive's HOME slug IS the
+      // gym's harness_slug — true for a gym that ran through the per-hive
+      // autoloop (system:gym-cycle), but NOT for one run any other way (e.g. a
+      // manual `gym-loop-run.ts` CLI invocation, which defaults its
+      // harness_slug to the fixed 'gymloopharness' bucket rather than the
+      // target hive — the observed WI-5420 case: 3 real pending proposals sat
+      // invisible under a Hive-scoped read). A Hive whose scoped read is empty
+      // can genuinely have never run a gym cycle — OR it can be hiding real
+      // proposals recorded under such an unaffiliated slug. Rather than render
+      // the empty state while real rows sit unseen, fall back to the unscoped
+      // workspace-wide rollup and flag it (`scopeFallback: true`) so the UI can
+      // say so explicitly — never a silent re-attribution of another harness's
+      // data to this Hive.
+      if (harnessSlug && scopedIsEmpty) {
+        const fallback = await fetchSnapshot(undefined);
+        const fallbackHasData =
+          fallback.proposals.length > 0 || fallback.autoloops.length > 0 || fallback.archiveSeeds.length > 0;
+        if (fallbackHasData) {
+          return [{ ...fallback, scopeFallback: true }];
+        }
+      }
+      return [scoped];
     },
   },
 
