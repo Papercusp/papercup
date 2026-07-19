@@ -117,9 +117,32 @@ describe('work_items:complete (keyed-array)', () => {
   it('errors cleanly per item when the work-item does not exist', async () => {
     getWorkItem.mockResolvedValue(null);
     const out = await env({ id: 'F-404', completion: { workItem: 'F-404', summary: 'x' } });
-    expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    // EI-14676: for the single-item shorthand, top-level `ok` IS the item's own outcome —
+    // a not-found is a real non-convergence, so the envelope-level `ok` must say so too,
+    // not just the nested per-item result.
+    expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(out.results[0]).toEqual({ ok: false, id: 'F-404', error: "work_item 'F-404' not found" });
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('EI-14676: single-item envelope-level `ok` mirrors the item outcome (false when the state write did not land)', async () => {
+    getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'task', family: 'issue' });
+    setWorkItemStateWithAliasInfo.mockRejectedValue(new Error('boom'));
+    const out = await env({ id: 'WI-9', state: 'resolved', completion: { summary: 'landed' } });
+    expect(out.ok).toBe(false); // envelope-level, not just results[0].ok
+    expect(out.results[0].ok).toBe(false);
+  });
+
+  it('EI-14676: explicit items:[…] batch keeps envelope-level `ok:true` ("the batch ran") even with a partial failure', async () => {
+    getWorkItem.mockImplementation(async (id: string) => (id === 'F-404' ? null : { ...item, id }));
+    const out = await env({
+      items: [
+        { id: 'F-1', completion: { summary: 'a' } },
+        { id: 'F-404', completion: { summary: 'b' } },
+      ],
+    });
+    expect(out.ok).toBe(true); // batch semantics unchanged — check counts.failed / per-item ok
+    expect(out.counts).toEqual({ ok: 1, failed: 1 });
   });
 
   it('records + returns the completion WITHOUT changing state when `state` omitted', async () => {

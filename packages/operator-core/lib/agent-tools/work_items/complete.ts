@@ -630,7 +630,7 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded / migrations / tests / deferred) — the system renders + broadcasts it, so you never narrate in prose. A terminal `state` converges the whole finish: work-item state + linked plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning`. The `finish` receipt is idempotent; ok:false means a leg did not converge — re-call the SAME completion to resume it.",
+    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded / migrations / tests / deferred) — the system renders + broadcasts it, so you never narrate in prose. A terminal `state` converges the whole finish: work-item state + linked plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning`. The `finish` receipt is idempotent; ok:false means a leg did not converge — re-call the SAME completion to resume it. Single-item call ({id,completion}): the top-level `ok` IS this item's own outcome (EI-14676) — ok:false means it did NOT converge, do not treat it as done. Explicit `items:[…]` batch: top-level `ok:true` only means the batch ran — check each result's own `ok` + `counts.failed`.",
   guidance: {
     when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue-family `status:\'resolved\'|\'closed\'` alone DOES infer + close, EI-12027). `completion.verifiedHow` is a CLOSED ENUM — \'unit\'|\'integration\'|\'live-drove-ui\'|\'manual\'|\'already-passing\' — not free text; prose → testsRun/testResult. Duplicate? Set `completion.duplicateOf` to the surviving id (auto-links + notifies the prior assignee).',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
@@ -735,10 +735,26 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const list: CompleteItem[] = args.items?.length
-      ? args.items.map((it) => ({ ...it, harness: it.harness ?? args.harness }))
+    const isBulkForm = Boolean(args.items?.length);
+    const list: CompleteItem[] = isBulkForm
+      ? args.items!.map((it) => ({ ...it, harness: it.harness ?? args.harness }))
       : [{ id: args.id as string, harness: args.harness, state: args.state, completion: args.completion!, outputPayload: args.outputPayload }];
     const env = await runBulk(list, (it) => completeOne(it, ident, ctx), { keyOf: (it) => ({ id: it.id }) });
-    return bulkContent(env);
+    // EI-14676: the generic bulk contract's top-level `ok` means "the batch ran" (see
+    // _bulk.ts) — correct for an explicit N-item `items:[…]` batch, where partial failure
+    // across items is expected and `counts.failed` is the right signal to check. But the
+    // single-item shorthand ({ id, completion }) is how the overwhelming majority of callers
+    // use this tool, and to them there is no "batch": there is exactly one completion that
+    // either converged or it didn't. Reporting a structurally-hardcoded `ok:true` there, while
+    // the ONE item's own `ok` is false (a state write that failed to land, a close-intent state
+    // that landed non-terminal, or a finish leg — plan-status/claim-release/checkpoint-clear —
+    // that didn't converge), is exactly how an agent can read the envelope, see `ok:true`, and
+    // write a "TERMINAL — do not re-open" checkpoint off a call that never actually closed the
+    // item (EI-14676: WI-5218 stayed state:'open'/terminalOwner:null while the completing agent
+    // believed, and recorded, that it had converged). So for the single-item form the
+    // caller-visible top-level `ok` IS the item's own `ok` — impossible to miss without opening
+    // `results[0]`. The explicit-batch form keeps the standard bulk semantics unchanged.
+    const result = isBulkForm || env.results.length !== 1 ? env : { ...env, ok: env.results[0].ok };
+    return bulkContent(result);
   },
 });

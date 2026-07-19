@@ -36,6 +36,7 @@ function makePlan(over: Partial<DeployPlan> = {}): DeployPlan {
     green: true,
     forced: false,
     commits: ['c1', 'c2'],
+    commitShas: ['a'.repeat(40), 'c'.repeat(40)],
     migrations: [],
     warnings: [],
     noop: false,

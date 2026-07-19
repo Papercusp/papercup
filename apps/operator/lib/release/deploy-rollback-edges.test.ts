@@ -81,6 +81,7 @@ function basePlan(): DeployPlan {
     green: true,
     forced: false,
     commits: ['c1', 'c2'],
+    commitShas: ['abcdef1234567890', 'cccccccccccccccc'],
     migrations: ['libs/papercusp/libs/db/sql/200-x.sql'],
     warnings: [],
     noop: false,

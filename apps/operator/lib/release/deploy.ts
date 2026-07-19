@@ -28,6 +28,7 @@ import {
   currentSha,
   isAncestor,
   commitsBetween,
+  commitShasBetween,
   migrationsBetween,
   changedFiles,
 } from './git-ops';
@@ -75,6 +76,10 @@ export interface DeployPlan {
   green: boolean;
   forced: boolean;
   commits: string[];
+  /** EI-14601: full-length SHA of every commit in `currentReleaseSha..targetSha`
+   *  (any order) — lets the deploy-landed emit fire the per-sha awaitable key for
+   *  every commit this deploy actually included, not just `targetSha` (the tip). */
+  commitShas: string[];
   migrations: string[];
   warnings: string[];
   noop: boolean;
@@ -215,6 +220,7 @@ export async function gatherPlan(
     ? await isAncestor(cfg.integrationRoot, currentReleaseSha, targetSha)
     : true;
   const commits = await commitsBetween(cfg.integrationRoot, currentReleaseSha, targetSha);
+  const commitShas = await commitShasBetween(cfg.integrationRoot, currentReleaseSha, targetSha);
   const migrations = await migrationsBetween(cfg.integrationRoot, currentReleaseSha, targetSha);
 
   // Phase 5 risk-tier: classify from ALL changed files + the staged migrations'
@@ -249,6 +255,7 @@ export async function gatherPlan(
     green,
     forced: !!opts.force,
     commits,
+    commitShas,
     migrations,
     warnings,
     noop: currentReleaseSha === targetSha,
@@ -357,6 +364,21 @@ export async function executeDeploy(
         // PER-SHA key (event-await-… P-102) — "did MY sha land?" without payload-
         // filtering the global. An agent that knows its target sha awaits exactly it.
         await deps.emitEvent({ key: `release:deployed:${plan.targetSha}`, summary, payload, source: 'release-gate' });
+        // EI-14601: a batched fast-forward lands EVERY commit in `plan.commitShas`, not
+        // just the tip — an agent awaiting the exact sha of an EARLIER commit in this
+        // same batch would otherwise time out forever (its sha never equals
+        // `plan.targetSha`) despite its fix actually shipping. Fire the same per-sha key
+        // for each other commit this deploy included so `deploy:await{sha}` (and a raw
+        // events:await keyed on it) wakes for any of them, not only the batch's tip.
+        for (const sha of plan.commitShas) {
+          if (sha === plan.targetSha) continue; // already emitted above
+          await deps.emitEvent({
+            key: `release:deployed:${sha}`,
+            summary: `deployed (as part of ${short(plan.targetSha)}, ${short(sha)} included)`,
+            payload: { sha, deployedAs: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations },
+            source: 'release-gate',
+          });
+        }
       } catch {
         /* a bus hiccup must never fail an otherwise-successful deploy */
       }

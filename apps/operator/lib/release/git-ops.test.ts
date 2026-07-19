@@ -15,6 +15,7 @@ import {
   changedFiles,
   migrationsBetween,
   commitsBetween,
+  commitShasBetween,
   submodulePins,
 } from './git-ops';
 
@@ -106,6 +107,28 @@ describe('diff helpers', () => {
     const commits = await commitsBetween(repo, c1, c4);
     expect(commits.length).toBe(3); // lock, mig, code
     expect(await commitsBetween(repo, null, c4)).toEqual([]);
+  });
+
+  // EI-14601: commitShasBetween gives the FULL-length sha of every commit in the
+  // range (not just the tip) — this is what lets the deploy emitter fire the
+  // per-sha awaitable key for every commit a batched fast-forward actually landed,
+  // not only `targetSha`. `--oneline`'s abbreviated shas (commitsBetween) can't be
+  // used for this: they're not guaranteed to line up with the full sha a caller
+  // awaits.
+  it('commitShasBetween returns every full-length commit sha in the range (not just the tip), oldest excluded from', async () => {
+    const c1 = await commit('a.txt', '1', 'c1');
+    const c2 = await commit('package-lock.json', '{}', 'lock');
+    const c3 = await commit('libs/papercusp/libs/db/sql/200-thing.sql', 'SELECT 1;', 'mig');
+    const c4 = await commit('apps/operator/lib/x.ts', 'x', 'code');
+
+    const shas = await commitShasBetween(repo, c1, c4);
+    expect(shas).toHaveLength(3); // c2, c3, c4 — c1 itself is the exclusive `from`
+    expect(shas).toContain(c2);
+    expect(shas).toContain(c3);
+    expect(shas).toContain(c4);
+    expect(shas.every((s) => /^[0-9a-f]{40}$/.test(s))).toBe(true); // full-length, not abbreviated
+
+    expect(await commitShasBetween(repo, null, c4)).toEqual([]);
   });
 
   // EI-856: a migration landing entirely inside the `libs/papercusp` SUBMODULE

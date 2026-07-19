@@ -94,6 +94,7 @@ const plan: DeployPlan = {
   green: true,
   forced: false,
   commits: ['c1', 'c2'],
+  commitShas: ['abcdef1234567890', 'cccccccccccccccc'],
   migrations: ['libs/papercusp/libs/db/sql/200-x.sql'],
   warnings: [],
   noop: false,
@@ -155,6 +156,21 @@ describe('executeDeploy — happy path', () => {
     // (wake only on MY target) — so a caller can await either without payload-filtering.
     expect(emittedKeys).toContain('release:deployed');
     expect(emittedKeys).toContain(`release:deployed:${plan.targetSha}`);
+  });
+
+  it("EI-14601: also fires release:deployed:<sha> for EVERY other commit in the batch, not just the tip", async () => {
+    emittedKeys.length = 0;
+    const { deps } = makeDeps();
+    await executeDeploy(cfg, plan, deps);
+    // plan.commitShas carries the tip (plan.targetSha) plus an earlier commit in the
+    // same fast-forward batch — an agent that awaited THAT earlier commit's exact sha
+    // (deploy:await{sha}, or a raw events:await keyed on it) must still wake, because
+    // its fix DID ship as part of this deploy even though it isn't the tip.
+    const earlierSha = plan.commitShas.find((sha) => sha !== plan.targetSha);
+    expect(earlierSha).toBeTruthy();
+    expect(emittedKeys).toContain(`release:deployed:${earlierSha}`);
+    // The tip's own key still fires exactly once (not double-emitted by the batch loop).
+    expect(emittedKeys.filter((k) => k === `release:deployed:${plan.targetSha}`)).toHaveLength(1);
   });
 });
 

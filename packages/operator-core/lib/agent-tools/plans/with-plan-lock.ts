@@ -250,6 +250,39 @@ export async function withPlanLock<T>(
       // re-derived on every content write. `template_data` (the instance data) is
       // NOT touched here — it is preserved on conflict (omitted from the SET) and
       // written only by the structured path / plans:set-template-data.
+      //
+      // EI-14579: that "preserved on conflict" guarantee holds ONLY for an actual
+      // SQL UPDATE (omitted-from-SET keeps the existing value) — it is FALSE for
+      // the INSERT branch below. When `cur` is null (no row found) this is either
+      // a genuinely brand-new plan (fine — it never had template_data) OR a
+      // RESURRECTION: the row previously existed (has plan_revisions history) and
+      // was deleted out from under a concurrent process, and this ordinary content
+      // write is silently re-creating it with `template_data` defaulted to NULL —
+      // a real, live incident (the WI-5244 PG-discovery-hijack recovery window)
+      // produced exactly this: a rubric row reappeared with title/body/template
+      // intact but template_data NULL and ZERO attributable trail, because
+      // `planRevisionCapture`'s `afterWrite` best-effort no-ops whenever the
+      // caller's ctx has no resolvable identity (D-014) — so the loss was
+      // completely silent. There is nothing here to recover the lost jsonb from
+      // (harness_plans holds no history of it), so the only honest fix is to make
+      // the loss LOUD and unconditionally attributable instead of invisible.
+      let resurrectionWarning: string | null = null;
+      if (!cur && idx.template) {
+        const priorRevision = await tx<{ seq: number }[]>`
+          SELECT seq FROM harness_shared.plan_revisions
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+             AND plan_slug = ${slug}
+           LIMIT 1
+        `;
+        if (priorRevision.length > 0 && !writesTemplateData) {
+          resurrectionWarning =
+            `EI-14579: template-bearing plan '${slug}' (template=${idx.template}) was ` +
+            `resurrected via a generic content write with no template_data supplied — ` +
+            `its previous structured template_data is LOST (harness_plans keeps no ` +
+            `history of it) and this row must be re-populated via the template's own ` +
+            `repair/seed path (e.g. rubrics:propose) before it is trusted.`;
+        }
+      }
       await tx`
         INSERT INTO harness_shared.harness_plans (
           workspace_id, harness_slug, plan_slug, content, content_hash, version,
@@ -286,6 +319,29 @@ export async function withPlanLock<T>(
           -- never reaches the outbox/log (so a later replay reverts it).
           origin        = 'local'
       `;
+
+      // EI-14579: land the resurrection marker UNCONDITIONALLY, inside this same
+      // transaction, so it is never subject to the caller-identity best-effort
+      // skip that made the original incident silent — it records against the
+      // plan's own revision spine (COALESCE(MAX(seq),0)+1, the same race-free
+      // pattern as recordPlanRevision) using a fixed system identity rather than
+      // depending on the calling ctx resolving one.
+      if (resurrectionWarning) {
+        console.warn(`[with-plan-lock] ${resurrectionWarning}`);
+        await tx`
+          INSERT INTO harness_shared.plan_revisions (
+            workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
+            author_kind, author_id, session_id, session_kind, created_at
+          )
+          SELECT
+            ${workspaceId}, ${harnessSlug}, ${slug}, COALESCE(MAX(seq), 0) + 1,
+            ${hash}, ${newBody}, ${resurrectionWarning},
+            'system', 'with-plan-lock:template-data-loss-guard', null, null, ${Date.now()}
+          FROM harness_shared.plan_revisions
+          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+            AND plan_slug = ${slug}
+        `;
+      }
     }
     if (writesTemplateData && (cur || newBody !== null)) {
       // template_data write (plans:set-template-data, P-005) — structured-only OR
