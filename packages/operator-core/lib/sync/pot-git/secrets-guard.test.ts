@@ -29,6 +29,20 @@ describe('secrets-guard rules', () => {
     expect(f[0].excerpt).not.toContain(AKIA); // masked
   });
 
+  it('does NOT flag AWS documented EXAMPLE keys (shape-rule example exemption)', () => {
+    // AWS reserves the literal EXAMPLE suffix for its non-functional docs keys.
+    // A runbook that merely CITES AKIAIOSFODNN7EXAMPLE must not wedge the publish
+    // plane — this false positive was the P-402 canonical-stall root cause.
+    const example = 'AKIA' + 'IOSFODNN7' + 'EXAMPLE'; // = AKIAIOSFODNN7EXAMPLE
+    const doc = scanTextForSecrets(
+      'agent-insights/desktop-release-upload-runbook.mdx',
+      `Real example: \`${example}\` is AWS's own non-functional example key.`,
+    );
+    expect(doc).toEqual([]);
+    // But a genuinely-shaped key that does NOT end in EXAMPLE still flags.
+    expect(scanTextForSecrets('c.ts', `k="${AKIA}"`).some((x) => x.rule === 'aws-access-key-id')).toBe(true);
+  });
+
   it('flags a GitHub token and a PEM private-key block', () => {
     const gh = scanTextForSecrets('a.env', `GITHUB_TOKEN=${GH}`);
     expect(gh.some((x) => x.rule === 'github-token')).toBe(true);

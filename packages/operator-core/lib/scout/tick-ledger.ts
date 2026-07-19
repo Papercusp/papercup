@@ -187,9 +187,18 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
  * code identity without any new cross-process channel: the tick ledger IS the channel,
  * already shared. Null when no tick has ever stamped a hash (pre-WI-5397 history, or a
  * process whose scout source files were unreadable at hash time).
+ *
+ * `sinceMs` (WI-5451): an optional inclusive floor. Pass it when the CALLER explicitly
+ * requested a window floor (an explicit `sinceMs`/`watermarkRef`) so "the running code"
+ * is resolved from evidence AT OR AFTER that floor, never from a tick the previous
+ * generation wrote before it. Omitting it (the default, un-floored rolling-window path)
+ * preserves the pre-WI-5451 behavior of finding the literal newest tick regardless of
+ * age — correct there because nothing narrower was asked for. See
+ * {@link readScoutTicksByCodeHash}'s docblock for why this must NOT be applied
+ * unconditionally.
  */
 export async function readNewestScoutCodeHash(
-  opts: { workspaceId?: string; installSlug?: string; origin?: string } = {},
+  opts: { workspaceId?: string; installSlug?: string; origin?: string; sinceMs?: number } = {},
 ): Promise<string | null> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
@@ -200,6 +209,7 @@ export async function readNewestScoutCodeHash(
      WHERE workspace_id = ${ws}
        AND origin = ${origin}
        ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
+       ${opts.sinceMs != null ? sql`AND tick_at >= to_timestamp(${opts.sinceMs} / 1000.0)` : sql``}
      ORDER BY tick_at DESC
      LIMIT 1`;
   const hash = rows[0]?.hash;
@@ -218,6 +228,16 @@ export async function readNewestScoutCodeHash(
  * bound, NOT a release-window definition — unlike {@link readScoutTicks}'s `sinceMs`,
  * there is no time floor here by design: two code-identical generations a month apart
  * are still the SAME evidence.
+ *
+ * `sinceMs` (WI-5451 — the intersect-not-replace fix): an optional inclusive floor,
+ * ANDed with the code-hash predicate — the union answers "which code produced these?",
+ * the floor answers "which period counts?", and a caller-requested floor must have BOTH
+ * hold, never one replacing the other. Pass it ONLY when the caller explicitly requested
+ * a window floor (an explicit `sinceMs`/`watermarkRef` arg reaching `buildProgramSuccessReport`)
+ * — omitting it on the default rolling-window path is deliberate and load-bearing: that is
+ * this reader's whole reason to exist (surviving a bg-host restart the rolling window can't
+ * absorb; alpha-011-soak-unreachable-as-planned). Time-floor the union unconditionally and
+ * you silently defeat the soak method on every call that doesn't ask for a floor.
  */
 export async function readScoutTicksByCodeHash(opts: {
   codeHash: string;
@@ -225,6 +245,7 @@ export async function readScoutTicksByCodeHash(opts: {
   installSlug?: string;
   limit?: number;
   origin?: string;
+  sinceMs?: number;
 }): Promise<ScoutTickRow[]> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
@@ -238,6 +259,7 @@ export async function readScoutTicksByCodeHash(opts: {
        AND origin = ${origin}
        AND detail->>'scoutCodeHash' = ${opts.codeHash}
        ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
+       ${opts.sinceMs != null ? sql`AND tick_at >= to_timestamp(${opts.sinceMs} / 1000.0)` : sql``}
      ORDER BY tick_at DESC
      LIMIT ${limit}`;
   return rows.map((r) => {

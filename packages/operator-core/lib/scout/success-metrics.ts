@@ -96,6 +96,17 @@ export interface ProgramSuccessInputs {
    * alpha-011-soak-unreachable-as-planned). Undefined ⇒ the bar falls back to the
    * time-windowed `cadence.ticks` (pre-WI-5397 behavior — also the path every
    * existing pure-core fixture takes, since they don't set this).
+   *
+   * WI-5451: when the assembly layer resolved this from a caller-EXPLICIT window floor
+   * (`sinceMs`/`watermarkRef`), `ticks` here is ALREADY intersected with that floor at
+   * the PG read (readScoutTicksByCodeHash's own `sinceMs` — see tick-ledger.ts) — this
+   * pure core never re-derives or re-applies the floor itself, it just folds whatever
+   * union it was handed. The floor and the code-hash predicate are independent and BOTH
+   * must hold: the union alone answers "which code produced these ticks", not "which
+   * period counts" — replacing the windowed read with an un-floored union let a
+   * pre-floor, same-hash tick silently count as post-floor evidence (the defect this
+   * item closes). On the implicit rolling-default path (no explicit floor requested)
+   * `ticks` stays unbounded by time exactly as before WI-5451.
    */
   cadenceByCodeHash?: { ticks: readonly ScoutTickRecord[]; codeHash: string | null };
 }
@@ -337,10 +348,17 @@ export function evaluateProgramSuccess(
   // WI-5397: judge this bar over the CODE-HASH-scoped tick union when the caller
   // supplied one (buildProgramSuccessReport always does) — the soak-method fix.
   // Falls back to the time-windowed `report` (computed above from inputs.cadence)
-  // when no code-hash union is available (a pure-core fixture, or a process whose
-  // scout source files were unreadable at hash time — never silently substitute a
+  // when no code-hash union is available (a pure-core fixture, a process whose
+  // scout source files were unreadable at hash time, or — WI-5451 — a caller-
+  // requested floor with no tick at/after it yet: UNKNOWN over a wrong name is
+  // preferred to naming the previous generation's tick as current). WI-5451: the
+  // union itself is now INTERSECTED with the caller's explicit window floor, never
+  // just replaced by it — buildProgramSuccessReport threads `opts.sinceMs` into
+  // BOTH tick-ledger reads only when a floor was actually requested, so a tick
+  // predating an explicit watermark can no longer ride into this bar's evidence
+  // under a same-hash union with a post-floor tick — never silently substitute a
   // DIFFERENT window than what was actually asked for; the fallback is the same
-  // pre-WI-5397 time-windowed read either way).
+  // pre-WI-5397 time-windowed read either way.
   const codeHashFold =
     inputs.cadenceByCodeHash?.codeHash != null ? foldScoutTickStats(inputs.cadenceByCodeHash.ticks) : null;
   const errorBarSource = codeHashFold ?? report;
@@ -645,6 +663,13 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
         const readOpts = {
           ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
           installSlug: SCOUT_TICK_INSTALL_SLUG,
+          // WI-5451: intersect the code-hash union with the CALLER'S EXPLICIT window floor
+          // — `opts.sinceMs`, never `scopes.tickSinceMs` (which is always populated, even
+          // on the plain rolling-default path, and would silently re-impose a time box on
+          // the union's entire cross-restart purpose). Only an explicit sinceMs/watermarkRef
+          // reaching this function counts as "a floor was requested"; the implicit rolling
+          // default leaves the union unbounded by time exactly as before this fix.
+          ...(opts.sinceMs != null ? { sinceMs: opts.sinceMs } : {}),
         };
         const codeHash = await readNewestScoutCodeHash(readOpts);
         if (!codeHash) return undefined;

@@ -81,6 +81,17 @@ function mask(secret: string): string {
   return `${secret.slice(0, 4)}…${secret.slice(-2)} (${secret.length} chars)`;
 }
 
+/** Documented, non-functional example credentials that must NOT be treated as
+ *  secrets by the placeholder-blind shape rules. AWS reserves the literal
+ *  `EXAMPLE` suffix for its docs keys (AKIAIOSFODNN7EXAMPLE, ASIAIOSFODNN7EXAMPLE,
+ *  the AKIAI44QH8DHBEXAMPLE family) — a real issued access-key id never ends in
+ *  "EXAMPLE", so skipping them costs no real-secret recall while it stops a doc
+ *  that merely CITES the example key from wedging the entire publish plane. */
+function isDocumentedExample(ruleId: string, match: string): boolean {
+  if (ruleId === 'aws-access-key-id') return match.endsWith('EXAMPLE');
+  return false;
+}
+
 /** Scan one file's text for secrets. Pure. */
 export function scanTextForSecrets(path: string, content: string): SecretFinding[] {
   const findings: SecretFinding[] = [];
@@ -100,6 +111,14 @@ export function scanTextForSecrets(path: string, content: string): SecretFinding
           if (PLACEHOLDER_RE.test(value)) continue; // an obvious example/placeholder, not a secret
           findings.push({ path, line: i + 1, rule: rule.id, excerpt: mask(value) });
         } else {
+          // Documented example credentials are not secrets. AWS reserves the
+          // literal `EXAMPLE` suffix for its non-functional docs keys
+          // (AKIAIOSFODNN7EXAMPLE / ASIAIOSFODNN7EXAMPLE, etc.), used verbatim in
+          // runbooks — and a real issued key ending in "EXAMPLE" is not a thing.
+          // The shape rules are otherwise placeholder-blind, so without this a doc
+          // that merely CITES the example key wedges the whole publish plane
+          // (canonical stall root-caused in the P-402 soak, 2026-07-19).
+          if (isDocumentedExample(rule.id, m[0])) continue;
           findings.push({ path, line: i + 1, rule: rule.id, excerpt: mask(m[0]) });
         }
         if (m.index === rule.re.lastIndex) rule.re.lastIndex++; // guard zero-width
