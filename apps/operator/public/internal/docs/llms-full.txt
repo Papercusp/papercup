@@ -15417,6 +15417,57 @@ The gym judge rubric (d1/d2/d3, weights 0.5/0.25/0.25 — `buildRubric()` in `pa
 * The apiary fixture now carries live-scale values (4.06/5.95) — keep it that way; new fixtures for beekeeper data should copy magnitudes from live rows.
 * Before trusting any scale/shape assumption about beekeeper data, look at a real row: `SELECT composite FROM harness_shared.beekeeper_scores LIMIT 5` (read-only, via `getOrgPg`).
 
+# Isolated-instance launchers must `env -u` ambient PAPERCUSP_*/DATABASE_URL vars
+
+> `env VAR=val cmd` INHERITS any var it doesn't list — so a two-instance federation launcher that only sets HOME="$home" silently leaks the caller's ambient PAPERCUSP_HOME / DATABASE_URL / PAPERCUSP_BACKGROUND_WORKERS, collapsing "isolated" instances onto the caller's live shared operator home. Scrub with `env -u`. Bitten 3× (WI-1666, EI-13590, EI-15308).
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+`env VAR=val ... cmd` sets only the listed vars and **inherits every other var from the calling shell** — it does *not* start from a clean environment. So a launcher that spawns an “isolated” instance with
+
+```bash
+env HOME="$home" NODE_ENV=production ... node serve.mjs
+```
+
+still leaks whatever the caller had exported. On a fleet/dev box **every su/dev session ambiently carries** its own per-workspace operator vars — `PAPERCUSP_HOME` (e.g. `~/.papercusp-workspaces/<ws>/.papercusp`), `DATABASE_URL`/`*_DATABASE_URL` (the shared native `:5432`), `PAPERCUSP_BACKGROUND_WORKERS`, `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` — and each one rides straight through into the “isolated” child.
+
+## Why PAPERCUSP\_HOME is especially nasty (EI-15308)
+
+[Section titled “Why PAPERCUSP\_HOME is especially nasty (EI-15308)”](#why-papercusp_home-is-especially-nasty-ei-15308)
+
+`apps/operator/bin/serve.ts` resolves `PAPERCUSP_DIR = process.env.PAPERCUSP_HOME || homedir()+"/.papercusp"`. `PAPERCUSP_HOME` **wins over** the isolated `HOME="$home"` override — so if it leaks, both local instances point their operator home at the **caller’s real, live, shared** dir instead of their own `$home`. They then fight the live operator (and each other) over the same `operator.lock` / `operator-port.json` / embedded-pg — signature: `"another `serve` holds the cold-start lock; aborting"`. Isolation is silently, completely defeated (100% reproducible from an su fleet session).
+
+## The fix — scrub with `env -u`
+
+[Section titled “The fix — scrub with env -u”](#the-fix--scrub-with-env--u)
+
+List every ambient var to clear with `env -u` (**not** `VAR=` — an empty DSN string breaks spawn-mcp downstream; `-u` truly removes it):
+
+```bash
+env -u DATABASE_URL -u PAPERCUSP_DATABASE_URL \
+    -u HARNESS_DATABASE_URL -u HARNESS_ADMIN_DATABASE_URL \
+    -u PAPERCUSP_HOME \
+    HOME="$home" ... node serve.mjs
+```
+
+## The rule for any NEW isolated-instance launcher
+
+[Section titled “The rule for any NEW isolated-instance launcher”](#the-rule-for-any-new-isolated-instance-launcher)
+
+If you write a launcher that spawns an operator instance meant to be isolated (anything setting `HOME="$home"`), you MUST `env -u` **all** ambient `PAPERCUSP_*` / `DATABASE_URL`-family vars the box’s shells export — the ones that leak silently are the ones that resolve *before* your explicit overrides. This is a **recurring class**, not a one-off:
+
+* **WI-1666** — `DATABASE_URL` / `*_DATABASE_URL` (isolated instance read/wrote the tower’s shared PG)
+* **EI-13590** — `PAPERCUSP_BACKGROUND_WORKERS` (request-only ambient mode skipped the hyperbee substrate)
+* **EI-15308** — `PAPERCUSP_HOME` (both instances collapsed onto the caller’s shared operator home)
+
+## Where this lives + the regression guard
+
+[Section titled “Where this lives + the regression guard”](#where-this-lives--the-regression-guard)
+
+The shared launchers are `fed_local_launch` (GUI) and `fed_local_launch_sidecar` in `papercusp-desktop/bin/lib/federation-asserts.sh`; the from-repo smoke has its own script-local `sc_launch`. `federation-asserts.selftest.sh` section 7/7b now statically guards the scrub (`declare -f` body grep for the library functions + a static grep for the smoke-local `sc_launch`) — extend that list when you add a new launcher or a new ambient var to scrub.
+
 # Build a throwaway isolated operator+DB stack for mutation E2E
 
 > When a desktop E2E must CREATE state but you can't touch the live fleet, stand up a disposable operator (:3370) on a fresh cloned-schema PG DB and point a dedicated Tauri webview at it. The exact recipe + the two traps (extensions-before-restore, pg_dump-can't-lock-plugin-schemas).
@@ -31158,6 +31209,66 @@ The bug is specific to the **single-enum** state model. The other SSE chat consu
 
 See EI-577.
 
+# :3170 flaps to ERR_CONNECTION_REFUSED every ~5-7min — it's papercup-staging-sync, not load or a crash
+
+> The staging operator (:3170) self-restarts on its own schedule via papercup-staging-sync.timer, outside dev:restart's drain/coalesce path — a real ~10-13s hard-down window roughly every 5-7 minutes, whenever staging has advanced (near-continuous under git-sync). dev:service_health now surfaces a recentRestartNote so this is diagnosable instead of mysterious (EI-13221).
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A session actively using the staging operator (`http://127.0.0.1:3170`) — a `verdict` browser session, a raw `curl`, a health probe — gets a clean 200, then moments later `ERR_CONNECTION_REFUSED` / `net::ERR_CONNECTION_REFUSED` / a raw `fetch failed` against the exact same URL, with no code change and no one having run `dev:restart` or `systemctl restart`. It “self-recovers” a few seconds later. Easy to misdiagnose as load, a memory-watchdog recycle, or a regression in whatever you were just testing.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`:3170` (`papercup-staging-api.service`) is NOT a static long-running process that only restarts when a human/agent asks. Since **isolated-staging-tier- 2026-06-21**, it runs from an **isolated checkout** (`papercusp-staging`, a sibling of the main `papercup`/`papercusp` tree — see the branch-discipline note in the root CLAUDE.md about never editing sibling worktrees), which **`papercup-staging-sync.timer`** auto-fast-forwards to the latest *committed* `staging` HEAD on its own schedule:
+
+```plaintext
+OnActiveSec=5min                 # first fire
+OnUnitInactiveSec=5min           # then 5min after each run FINISHES
+```
+
+Its driven service, `papercup-staging-sync.service`, runs `apps/operator/bin/release/sync-staging-checkout.sh`, which:
+
+1. No-ops if `staging` HEAD hasn’t moved since the checkout’s last sync (cheap git compare).
+
+2. Otherwise fast-forwards the isolated checkout + rebuilds the SPA (reusing `setup-release-checkout.sh`, same machinery as a real release cutover).
+
+3. **Then runs a plain `systemctl --user restart papercup-staging-api.service`** — a genuine SIGKILL-then-restart cycle, \~10-13s hard down, confirmed live via `journalctl --user -u papercup-staging-api.service`:
+
+   ```plaintext
+   Stopping papercup-staging-api.service ...
+   papercup-staging-api.service: Main process exited, code=killed, status=9/KILL
+   papercup-staging-api.service: Failed with result 'signal'.
+   Stopped papercup-staging-api.service ...
+   Started papercup-staging-api.service ...          # ~10-13s later
+   ```
+
+Given git-sync auto-commits the whole fleet’s work to `staging` continuously (step 1’s no-op almost never fires on a busy fleet), this restart cycle fires essentially **every 5-7 minutes, indefinitely**, for as long as the fleet is active. Anyone probing `:3170` for more than a couple of minutes has real odds of landing a request inside that window.
+
+**This is a real gap against the repo’s own restart policy.** CLAUDE.md / `repo-conventions.mdx` (and `dev:restart`’s own tool guidance) are explicit: *“Never a raw `systemctl --user restart papercup-staging-api.service`”* — that’s exactly what step 3 does, just from automation instead of a human. It bypasses:
+
+* **the drain** (`dev:restart`’s `guardResource` exclusive-hold — existing users are given a chance to finish before the restart lands),
+* **the coalesce cooldown** (`staging-server-cooldown`, `STAGING_COOLDOWN_SEC` = 120s in `dev/restart.ts`) — so an agent’s `dev:restart` and the timer’s own restart don’t know about each other and can compound.
+
+The timer’s 5-minute cadence is an explicit, documented owner tradeoff (freshness vs. thrash — see the `.timer` unit’s own comment), not itself a bug; the bug is that the *mechanism* it uses to apply that tradeoff is the exact uncoordinated raw-restart anti-pattern WI-4221 already named and fixed for humans/agents, just never closed for this one automated caller.
+
+## Fix (EI-13221)
+
+[Section titled “Fix (EI-13221)”](#fix-ei-13221)
+
+1. **`sync-staging-checkout.sh`** now skips its own restart when the unit’s current MainPID already started less than `PAPERCUSP_STAGING_SYNC_RESTART_GRACE_SEC` (default 45s) ago — most likely a peer’s `dev:restart` (or the previous tick) already cycled it, so restarting again would just double the outage for no freshness benefit. Fail-soft: any probe hiccup falls through to the normal restart (matches `probeServiceStart`’s own contract).
+2. **`dev:service_health`** (`packages/operator-core/lib/agent-tools/dev/service_health.ts`) gained `overlaySystemdRestartRecency` — for every `systemd-user` supervised unit, it live-probes `secondsSinceStart` (the same OS ground-truth `dev:restart`’s coalesce check already trusts, `systemd-service-probe.ts`) and, when the unit started in the last `RECENT_RESTART_WINDOW_SEC` (20s), attaches a `recentRestartNote` explaining a concurrent connection-refused is very likely that restart, not an outage. This closes a real blind spot: `staging-api` isn’t in the HTTP-probed `HEALTH_ENDPOINTS` rotation and its restarts (being timer-driven, not down-then-up transitions the reconciler’s own flap counter observes) never tripped `flapState` either — before this fix, NOTHING in `dev:service_health` reflected this unit’s actual restart cadence at all.
+3. Documented the independent restart cadence + the diagnostic path in `repo-conventions.mdx`’s two-port section (previously silent on it — the section described only the deliberate human/agent restart path).
+
+## The tell
+
+[Section titled “The tell”](#the-tell)
+
+If you hit a connection-refused against `:3170` and it clears on its own within \~15s: call `dev:service_health` and look at the `staging-api` supervision entry’s `secondsSinceStart` / `recentRestartNote` before treating it as a real outage, a memory-watchdog recycle, or evidence your own change broke something.
+
 # A papercup-staging-api restart does NOT boot-apply migrations
 
 > :3170 is a secondary host (PAPERCUSP_BACKGROUND_WORKERS=0) and skips the A1 boot-apply by design — apply pending sql/*.sql via the runner directly, not by restarting staging
@@ -33669,6 +33780,47 @@ Against a live Tauri bridge (`--pid <papercusp-desktop pid>`):
 * If a CLI’s bridge/IPC layer stringifies primitives, every downstream strict-equality/truthiness check against that value needs to account for it — grep for `=== true`, `if (result)` style checks after any bridge change.
 * A bug that “returns a timeout error” can be hiding a second bug that would make it “return false success” once you fix the first — verify the *actual elapsed time and actual correctness*, not just “no longer NaN”, before closing out a timing-related ticket. This is why WI-4991’s “add elapsed-time regression coverage” ask mattered: a bare unit test on `parsePositiveInt` would have missed root cause 2 entirely.
 
+# tauri-agent-tools probe said 'alive' while the app was unreachable — health now checks the real origin (EI-13218)
+
+> The dev bridge's /health endpoint computed sidecars_alive from PID-liveness only, over a sidecar registry that is ALWAYS EMPTY in production (register_sidecar/spawn_sidecar_monitored are #[cfg(test)]-only, never wired to the real dev-operator spawn path) — a vacuous true regardless of whether the Hono+SPA origin the webview displays was actually reachable. /health now live-probes that origin and folds it into sidecars_alive.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+`tauri-agent-tools probe` reports a live PID and a healthy-looking bridge, but in-webview `fetch('/api/health')` / `fetch('/')` fail with `Load failed` right around the same time. The rendered DOM stays visible (stale-capable), so a verification pass that trusts bare `probe` alone can report success against an app that cannot actually serve a request.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+Two compounding gaps in `papercusp-desktop/src-tauri/src/dev_bridge.rs`:
+
+1. **The sidecar registry is always empty in production.** `register_sidecar` and `spawn_sidecar_monitored` — the only two ways anything ever gets added to `SidecarRegistry` — are both `#[cfg(test)]`-only. Nothing outside this file’s own unit tests calls them. The real dev operator (`:3270`) is spawned by a *shell script* (`bin/dev-operator-ifneeded.sh`), not by this Rust process, so it was never registered as a “sidecar” in the first place.
+2. **`sidecars_alive` was PID-liveness only, and `all()` over an empty iterator is vacuously `true`.** `sidecars.iter().all(|s| matches!(s.alive, Some(true) | None))` on an empty `sidecars` Vec is always `true` — so `/health`’s headline signal reported “sidecars alive: yes” unconditionally, regardless of whether the operator origin was actually up. `webview_ready` (`!app_handle.webview_windows().is_empty()`) only proves a window object exists, not that it can load anything.
+
+Net effect: nothing in the bridge’s own health surface ever reflected real HTTP reachability of the origin the webview is supposed to be displaying. `tauri-agent-tools probe`’s “Bridge alive: yes” is, by the external tool’s own design, just “the bridge’s tiny control-plane HTTP server answered” — accurate on its own terms, but easy to over-read as “the app works.”
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+`/health` now does a real, bounded (800ms) HTTP GET against `<current-webview-URL>/api/health` (via `reqwest::blocking`, a client built once at bridge start) and folds the result into `sidecars_alive`:
+
+```rust
+let sidecars_alive = pid_sidecars_alive && operator_reachable.unwrap_or(true);
+```
+
+`operator_reachable: Option<bool>` is also exposed as its own field — `None` when there’s no main webview / its URL can’t be read (nothing to check, never a false failure), `Some(false)` only on a confirmed connect-refused/timeout/transport error. The check itself is a small, pure, injectable-client function (`origin_reachable`) so it’s unit-testable without a real Tauri `AppHandle` — tests spin up a real `tiny_http` responder for the true case and a bind-then-drop `TcpListener` for a deterministic connection-refused (no timeout wait) for the false case.
+
+**No external-tool change needed.** `tauri-agent-tools health` (bridge v0.7.0+, distinct from `probe`) already reads `sidecars_alive` and exits non-zero when it’s false (`--json` mode) — so this fix makes an already-shipped, already-CI-gateable command correctly detect the exact failure class the ticket describes, with zero changes to the (external, unmodifiable) npm package. `probe` itself is unaffected — its “Bridge alive” line was never reading this field, and still isn’t; the fix is to prefer `health` over bare `probe` for a real liveness verdict, per the updated `agent-e2e.mdx` §1.3.
+
+## The tell
+
+[Section titled “The tell”](#the-tell)
+
+If `probe` looks healthy but the app is misbehaving, reach for `tauri-agent-tools health` (or `--json`) before concluding load/a crash — its `operator_reachable` / `sidecars_alive` fields now reflect the origin, not just the bridge’s own control-plane process.
+
 # "Couldn't find callback id" console flood = stale IPC Channels, not event listeners
 
 > A webview reload orphans every in-flight endpoint-IPC Channel (the JS finally that sends CANCEL never runs), so Rust keeps fanning stream frames into dead callbacks. Fixed by an on_page_load flush; this page records the diagnosis path — including why Tauri event listeners CANNOT cause this warning.
@@ -36136,6 +36288,23 @@ So the `papercup`-orphan class (a green-checkpoint escalation under a dead/renam
 
 5. **For the two green-checkpoint phases, the durable fix already landed** (EI-8396): `collectEscalationSignals` now suppresses a dead-install orphan of those phases, so it should no longer recur from a renamed slug. If you still see a green-checkpoint phantom, the row’s install-slug probably DOES have a live `green-checkpoint` routine (a same-slug clear-miss, not the dead-install case) — check for the `shouldWarnOnStallClearMiss` warning and clear the row manually. For any OTHER phase, a stale presence row still loops; the manual clear (step 3) is the remediation, and a per-phase durable clear on a protected surface is the real fix to file.
 
+### The DISABLED-gate variant (EI-13114) — `gate_health` lies; read `pipeline_events`
+
+[Section titled “The DISABLED-gate variant (EI-13114) — gate\_health lies; read pipeline\_events”](#the-disabled-gate-variant-ei-13114--gate_health-lies-read-pipeline_events)
+
+A third same-slug flavor, distinct from both the dead-install orphan and the stuck-red clear-miss: the green-checkpoint routine is **live AND present, but the gate is now DISABLED**. A gated hive whose gate is later turned off (`resolveCheckpointRouting` → `routing.skip`, `reason: gate_disabled`) makes `green-checkpoint` **return early BEFORE `trackGateStall` ever runs** (release-actions.ts) — and `trackGateStall`’s green branch is the ONLY code that clears a `green-checkpoint-stall` row. So an escalation that was OPEN when the gate went red **can never self-clear**: the gate will never again produce a green verdict, and every run records `skipped-disabled` instead. The EI-8396 guard does **not** save you — it only suppresses a **missing** green-checkpoint routine, not a **present-but-disabled** one (the row’s install-slug still has a live, `active` `green-checkpoint` routine, so the guard’s `NOT EXISTS` is false).
+
+⚠ **`gate_health` is a trap here.** It stays frozen at the last real verdict — e.g. quartermaster-hive showed `consecutiveReds: 26, lastGreenAt: null, stallAlerted: true`, which reads exactly like a gate that is genuinely stuck red. It is NOT: a `skipped-disabled` run touches neither `gate_health` nor the escalation. **The authoritative tell is `harness_shared.pipeline_events`**, not `gate_health`:
+
+```sql
+SELECT status, detail->>'reason' AS reason, created_at
+  FROM harness_shared.pipeline_events
+ WHERE workspace_id = '<ws>' AND install_slug = '<slug>' AND kind = 'green_checkpoint'
+ ORDER BY created_at DESC LIMIT 5;
+```
+
+An unbroken run of `skipped-disabled` / `gate_disabled` ⇒ the gate is **off**, the stall is moot (nothing to promote), and the escalation is a **permanent phantom**. Remediation is the same manual clear (step 3 via the resolve route with `?phase=green-checkpoint-stall`) + resolve `fixed`; the durable class-fix — *disabling a gate should clear its open stall escalation* — is a protected-surface (release-machinery) change, filed as **EI-17065**, not auto-implemented.
+
 ## The `git-sync-watchdog` phase is different — it SELF-clears (verify, don’t rush to manually clear)
 
 [Section titled “The git-sync-watchdog phase is different — it SELF-clears (verify, don’t rush to manually clear)”](#the-git-sync-watchdog-phase-is-different--it-self-clears-verify-dont-rush-to-manually-clear)
@@ -37914,6 +38083,54 @@ Remove-Item "$env:LOCALAPPDATA\com.papercusp.desktop","$env:LOCALAPPDATA\Papercu
 * **First-run self-restart.** After the WSL import the app relaunches itself (the PID changes) to spawn the sidecar through the freshly-set-up `wsl.exe` — expected (see `main.rs` / `wsl_setup.rs`).
 * **Spaces-in-username** is testable without switching console users: create a `First Last` account, grant `SeBatchLogonRight` (secedit), then install + launch the app via a task `/ru "First Last"`. The startup log proves all Windows-side paths resolve with the space (`shared sidecar home: C:\Users\First Last`, `\\?\C:\Users\First Last\…`). The operator boot under the spaces profile needs interactive onboarding (a fresh user has no distro), so it’s a partial test.
 * **SmartScreen is NOT exercised by an scp’d installer** — it has no Mark-of-the-Web. Testing the “unknown publisher” wall needs a real browser download (and is moot once the installer is Authenticode-signed).
+
+# Work-item writes must resolve the workspace by id, not from ambient activeWorkspaceId()
+
+> Why a work-item mutation deep in a tool call chain can silently no-op (report success, persist nothing) — the WI-5261 lost-ALS-scope class — and the resolve-by-id fix.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A work-item write “succeeds” but nothing persists. Classic tell: `release {claimHold:true}` returns ok, yet `work_items:get` shows `payload:{}` and the item keeps getting re-served by `scheduler:get_next` (EI-15345 / WI-1281 re-served \~2h apart, twice, despite repeated holds). The scheduler read-side is a red herring — it correctly applies the `_claimHold` feature floor (`claimFloorsWhereSql`). The bug is write-side.
+
+## Root cause — the WI-5261 lost-ALS-scope class
+
+[Section titled “Root cause — the WI-5261 lost-ALS-scope class”](#root-cause--the-wi-5261-lost-als-scope-class)
+
+`activeWorkspaceId()` resolves the request’s workspace from AsyncLocalStorage. Several `await`s deep in a tool call chain (e.g. release handler → releaseOne → `setWorkItemClaimHold`), the ALS request scope can be **lost**, so `activeWorkspaceId()` silently falls through to the process-global default (`workspace-registry.ts`; “confirmed live for papercusp-workspace, 2026-07-17”).
+
+If a write derives its target workspace from that bare `activeWorkspaceId()` (or an item lookup like `getWorkItem`/`getFeatureWorkItemOnly` that PINS to it), and the resolved value doesn’t match the item’s OWN workspace, the `WHERE workspace_id = …` matches zero rows — the write no-ops. With an INSTEAD OF view trigger in the path, `RETURNING` can even echo a “success” payload while the inner table UPDATE matched nothing.
+
+`scheduler/get-next.ts` was already hardened against this (WI-5261): it threads the caller’s resolved workspace via `opts.workspaceId` instead of trusting `activeWorkspaceId()`. Sibling write paths that trust the ambient value are still exposed.
+
+## Fix pattern
+
+[Section titled “Fix pattern”](#fix-pattern)
+
+Resolve the item’s ACTUAL workspace by id, ambient-independent, then scope the write to it:
+
+```plaintext
+SELECT harness_slug, workspace_id
+  FROM harness_shared.work_items
+ WHERE feature_id = ${id} AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
+ ORDER BY (workspace_id = ${activeWorkspaceId()}) DESC, updated_ts DESC NULLS LAST
+ LIMIT 1
+```
+
+The `(workspace_id = active) DESC` primary sort still PREFERS the active-workspace row when present (unchanged healthy behavior + disambiguates a cross-workspace id collision, F-B3), but falls back to the item’s real row when the ambient value is wrong. Then `UPDATE … WHERE workspace_id = <that row's workspace_id> AND feature_id = ${id}`. Never `WHERE workspace_id IN (issuesScopeWorkspace(), activeWorkspaceId())`.
+
+## When you hit this
+
+[Section titled “When you hit this”](#when-you-hit-this)
+
+Any work-item mutation that keys on `workspace_id` and runs deep in a tool handler. Grep for `activeWorkspaceId()` / `issuesScopeWorkspace()` used directly in a write’s WHERE. If the write can run for an item whose workspace differs from the caller’s window, it’s exposed — resolve by id.
+
+## Test-schema caveat
+
+[Section titled “Test-schema caveat”](#test-schema-caveat)
+
+`work-items-claim-hold.integration.test.ts` uses an INVERTED schema: `work_items` is the BASE table (PK `(harness_slug, feature_id)`, no workspace column) and `harness_features_consolidated` is a passthrough view — the opposite of production (`work_items` is a UNION view over the two family tables with an INSTEAD OF trigger). So that harness cannot represent the same id in two workspaces; exercise the workspace-mismatch case with the ambient `activeWorkspaceId()` mock set to a workspace that differs from the seeded item’s.
 
 # worker:chunk-loop dark-launch — the metrics surface + ramp gate, and how to run it
 
@@ -45771,7 +45988,13 @@ To add one: register a producer in `derived-reads/producers.ts` and make the res
 3. Never assume host binaries (`journalctl`, `systemctl`, `du`, `git`) exist. The shipping target is a desktop app, not this dev box.
 4. If a resolver is unavoidably slow, keep it **out of a batch** with interactive queries, or it becomes everyone’s latency.
 
-Reference: `packages/operator-core/lib/pot/soak-report.ts` (the fan-out + missing `-u`), `lib/storage/usage.ts` (the disk walk, which mitigated with a wall-clock budget rather than precompute), and WI-5460 for the full timing sweep of all 200 registered query names.
+**The guard that keeps rule 1 true:** `packages/operator-core/lib/sync-resolver/no-heavy-io-on-read-path.test.ts` statically walks the resolver registry and fails if any directly-reached module spawns a subprocess. When first written it found **six** more offenders below the 12s bar (WI-5476); all are now resolved and it holds at **zero** known offenders. Note the three treatments — not every hit is a precompute:
+
+* **`storage.usage`, `plans.lint`, `learning.soakReport`, `dev.serviceHealth`, `dev.deployState`, `dev.gitPipelineHives`** → precomputed producers.
+* **`adv-sessions`** → the read functions were pure Postgres; only sibling `wmctrl` window helpers spawned. Splitting them into `adv-session-windows.ts` took the subprocess off the read graph — no precompute needed. Watch for this: a module flagged by the guard may not spawn in the function the resolver calls.
+* **`viewer-identity`, `featureTimeline.byFeature`** → deliberately allow-listed. The first is a per-viewer-*machine* `git config` read, module-cached to one spawn per process — precomputing it on the operator host would compute the wrong identity for a remote peer. The second is a click-to-open drill-down, not a page-load panel. Precompute is the wrong tool for both; the guard’s ALLOW list documents why.
+
+Reference: `packages/operator-core/lib/pot/soak-report.ts` (the fan-out + missing `-u`), `lib/storage/usage.ts` (the disk walk, which mitigated with a wall-clock budget rather than precompute), and WI-5460 / WI-5476 for the full timing sweep of all 200 registered query names.
 
 # RichGrid
 
@@ -76715,7 +76938,8 @@ From `staging`, work reaches `main` automatically: **green-checkpoint** (hourly)
 **Server-side code has no hot-reload.** The **Hono host** (`bin/hono-host.ts` — the MCP tools, the `lib/endpoint-route` handlers, and everything in `apps/operator/lib/**` they import) runs under `tsx` with no file-watch. How an edit goes live depends on which host:
 
 * **`:3070` (`papercup-dev-api`) is the GREEN/stable operator** — it runs from the separate **release checkout** (`papercupai-workspace/papercup-release`), pinned to the green **`main` branch**. Restarting it just reboots the same green snapshot; **your `staging` edits are invisible to it** until the auto-serve pipeline carries them (green-checkpoint hourly FF, then release-trigger ≤15 min auto-deploy). A manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` still works for an immediate deploy. See `apps/operator/lib/release/README.md`.
-* **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from the integration tree (the `staging` branch). To test a server-side edit live: `dev:restart { target: 'staging', confirm: true }`, then probe `:3170`. **Never** a raw `systemctl --user restart papercup-staging-api.service` — on a heavily-parallel fleet that fired every \~5-6min for hours with zero coordination (WI-4221); `dev:restart` drains concurrent users first and coalesces a restart requested within \~2min of a peer’s real one.
+* **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from an ISOLATED `papercusp-staging` checkout (not the shared integration tree directly), which `papercup-staging-sync.timer` auto-fast-forwards to the latest COMMITTED `staging` HEAD roughly every 5 minutes (isolated-staging- tier-2026-06-21). To test YOUR OWN uncommitted server-side edit live: `dev:restart { target: 'staging', confirm: true }`, then probe `:3170`. **Never** a raw `systemctl --user restart papercup-staging-api.service` — on a heavily-parallel fleet that fired every \~5-6min for hours with zero coordination (WI-4221); `dev:restart` drains concurrent users first and coalesces a restart requested within \~2min of a peer’s real one.
+  * ⚠ **`:3170` also self-restarts independently of any human/agent action, roughly every 5-7 minutes.** Whenever `staging` has advanced (true almost continuously — git-sync auto-commits the whole fleet’s work on a schedule), the sync timer rebuilds the isolated checkout and cycles the unit — outside `dev:restart`’s drain/coalesce path, so it’s a real (if brief, \~10-13s) hard-down/`ERR_CONNECTION_REFUSED` window each time (EI-13221). This is expected freshness behavior, not a crash or a load signal — a session actively probing `:3170` for more than a couple of minutes can legitimately see one. Before concluding `:3170` is down or overloaded, check **`dev:service_health`**: its `supervision` entry for `staging-api` carries `secondsSinceStart` + a `recentRestartNote` whenever the unit came up in the last \~20s, naming the sync timer as the likely cause instead of leaving you to guess. (The sync script also skips its own restart when the unit already cycled in the last \~45s, so it doesn’t compound with a concurrent `dev:restart`.)
 * **The Tauri dev shell** spawns its own operator from the integration tree — reloading the desktop shell picks up `staging` edits in that context.
 
 (The `:3055` **Vite** dev server *does* hot-reload its own routes/components.) The tell that you’re testing stale server code: a probe lands in the *old* place — e.g. during the coord FS→PG cutover a `coord:send` kept writing `coord/*.jsonl` instead of Postgres because the host hadn’t reloaded. Probe where the write actually lands; if it’s stale, restart the *right* host (or deploy) and re-probe before trusting any result.
@@ -78540,7 +78764,7 @@ If multiple bridges show up, several Tauri dev instances are running (stale toke
 
 [Section titled “1.3 Current + safe-to-drive shell”](#13-current--safe-to-drive-shell)
 
-Before a real verification run, prove the selected shell is both **current** (serving the code you intend to test) and **safe to disturb**. `tauri-agent-tools probe` only proves the bridge is reachable; it does not prove the webview loaded the newest SPA bundle, that the Hono host can still serve the SPA HTML, or that killing the shell would be safe.
+Before a real verification run, prove the selected shell is both **current** (serving the code you intend to test) and **safe to disturb**. `tauri-agent-tools probe` only proves the bridge is reachable; it does not prove the webview loaded the newest SPA bundle, that the Hono host still answers, or that the shell isn’t sitting in a self-recovering flap (EI-13218) — `probe`’s “Bridge alive: yes” is the Rust bridge’s OWN tiny control-plane server answering, which stays true even when the origin the webview is displaying (the Hono+SPA host, `:3270` in dev) is refusing connections. Prefer **`tauri-agent-tools health`** (bridge v0.7.0+) over bare `probe` when you need to know the app itself is actually reachable: it live-checks the origin the main webview currently points at and folds that into `sidecars_alive` (`--json` exits non-zero on either `!webview_ready` or `!sidecars_alive`, so it’s CI-gate-able). A connection- refused you hit right after a green `probe` is exactly this class — re-run `health` before concluding the app crashed. can still serve the SPA HTML, or that killing the shell would be safe.
 
 Run the health split first:
 

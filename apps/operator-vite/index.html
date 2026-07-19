@@ -9,6 +9,46 @@
          wins); flag off leaves this cup. restore-pot-lexicon P-011. -->
     <link rel="icon" type="image/svg+xml" href="/brand/papercup/favicon.svg" />
     <title>Papercusp Operator</title>
+    <!-- TEMP DIAGNOSTIC for EI-13224 — captures resource/fetch/XHR failures the
+         native "Failed to load resource" console line hides from JS-level
+         console monitors. Remove once the culprit request is identified. -->
+    <script>
+      (() => {
+        const tag = '[EI-13224-diag]';
+        window.addEventListener('error', (e) => {
+          const t = e.target;
+          if (t && t !== window && (t.src || t.href)) {
+            console.error(tag, 'resource-error', t.tagName, t.src || t.href);
+          }
+        }, true);
+        const origFetch = window.fetch;
+        window.fetch = function (...args) {
+          const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+          return origFetch.apply(this, args).then((res) => {
+            if (!res.ok) console.error(tag, 'fetch-fail', res.status, url);
+            return res;
+          }).catch((err) => {
+            console.error(tag, 'fetch-error', url, String(err));
+            throw err;
+          });
+        };
+        const OrigXHR = window.XMLHttpRequest;
+        const origOpen = OrigXHR.prototype.open;
+        OrigXHR.prototype.open = function (method, url, ...rest) {
+          this.__diagUrl = url;
+          return origOpen.call(this, method, url, ...rest);
+        };
+        const origSend = OrigXHR.prototype.send;
+        OrigXHR.prototype.send = function (...args) {
+          this.addEventListener('loadend', () => {
+            if (this.status === 0 || this.status >= 400) {
+              console.error(tag, 'xhr-fail', this.status, this.__diagUrl);
+            }
+          });
+          return origSend.apply(this, args);
+        };
+      })();
+    </script>
     <script>
       (() => {
         const suppress =

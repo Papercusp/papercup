@@ -107,6 +107,37 @@ stale row under any other phase, still re-fires and still needs the manual clear
    the manual clear (step 3) is the remediation, and a per-phase durable clear on a protected
    surface is the real fix to file.
 
+### The DISABLED-gate variant (EI-13114) — `gate_health` lies; read `pipeline_events`
+
+A third same-slug flavor, distinct from both the dead-install orphan and the stuck-red
+clear-miss: the green-checkpoint routine is **live AND present, but the gate is now DISABLED**.
+A gated hive whose gate is later turned off (`resolveCheckpointRouting` → `routing.skip`,
+`reason: gate_disabled`) makes `green-checkpoint` **return early BEFORE `trackGateStall` ever
+runs** (release-actions.ts) — and `trackGateStall`'s green branch is the ONLY code that clears a
+`green-checkpoint-stall` row. So an escalation that was OPEN when the gate went red **can never
+self-clear**: the gate will never again produce a green verdict, and every run records
+`skipped-disabled` instead. The EI-8396 guard does **not** save you — it only suppresses a
+**missing** green-checkpoint routine, not a **present-but-disabled** one (the row's install-slug
+still has a live, `active` `green-checkpoint` routine, so the guard's `NOT EXISTS` is false).
+
+⚠ **`gate_health` is a trap here.** It stays frozen at the last real verdict — e.g. quartermaster-hive
+showed `consecutiveReds: 26, lastGreenAt: null, stallAlerted: true`, which reads exactly like a
+gate that is genuinely stuck red. It is NOT: a `skipped-disabled` run touches neither `gate_health`
+nor the escalation. **The authoritative tell is `harness_shared.pipeline_events`**, not `gate_health`:
+
+```sql
+SELECT status, detail->>'reason' AS reason, created_at
+  FROM harness_shared.pipeline_events
+ WHERE workspace_id = '<ws>' AND install_slug = '<slug>' AND kind = 'green_checkpoint'
+ ORDER BY created_at DESC LIMIT 5;
+```
+
+An unbroken run of `skipped-disabled` / `gate_disabled` ⇒ the gate is **off**, the stall is moot
+(nothing to promote), and the escalation is a **permanent phantom**. Remediation is the same
+manual clear (step 3 via the resolve route with `?phase=green-checkpoint-stall`) + resolve `fixed`;
+the durable class-fix — *disabling a gate should clear its open stall escalation* — is a
+protected-surface (release-machinery) change, filed as **EI-17065**, not auto-implemented.
+
 ## The `git-sync-watchdog` phase is different — it SELF-clears (verify, don't rush to manually clear)
 
 The `git-sync-watchdog` phase (written by `git-sync-stall-watchdog.ts`, **not** a green-checkpoint

@@ -338,7 +338,27 @@ cold-load stall this exists to remove.
 4. If a resolver is unavoidably slow, keep it **out of a batch** with
    interactive queries, or it becomes everyone's latency.
 
+**The guard that keeps rule 1 true:**
+`packages/operator-core/lib/sync-resolver/no-heavy-io-on-read-path.test.ts`
+statically walks the resolver registry and fails if any directly-reached module
+spawns a subprocess. When first written it found **six** more offenders below
+the 12s bar (WI-5476); all are now resolved and it holds at **zero** known
+offenders. Note the three treatments — not every hit is a precompute:
+
+* **`storage.usage`, `plans.lint`, `learning.soakReport`, `dev.serviceHealth`,
+  `dev.deployState`, `dev.gitPipelineHives`** → precomputed producers.
+* **`adv-sessions`** → the read functions were pure Postgres; only sibling
+  `wmctrl` window helpers spawned. Splitting them into `adv-session-windows.ts`
+  took the subprocess off the read graph — no precompute needed. Watch for this:
+  a module flagged by the guard may not spawn in the function the resolver calls.
+* **`viewer-identity`, `featureTimeline.byFeature`** → deliberately allow-listed.
+  The first is a per-viewer-*machine* `git config` read, module-cached to one
+  spawn per process — precomputing it on the operator host would compute the
+  wrong identity for a remote peer. The second is a click-to-open drill-down, not
+  a page-load panel. Precompute is the wrong tool for both; the guard's ALLOW
+  list documents why.
+
 Reference: `packages/operator-core/lib/pot/soak-report.ts` (the fan-out +
 missing `-u`), `lib/storage/usage.ts` (the disk walk, which mitigated with a
-wall-clock budget rather than precompute), and WI-5460 for the full timing
-sweep of all 200 registered query names.
+wall-clock budget rather than precompute), and WI-5460 / WI-5476 for the full
+timing sweep of all 200 registered query names.

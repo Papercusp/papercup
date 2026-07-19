@@ -248,12 +248,30 @@ edit goes live depends on which host:
   apps/operator/lib/release/deploy-cli.ts --execute` still works for an immediate
   deploy. See `apps/operator/lib/release/README.md`.
 * **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from
-  the integration tree (the `staging` branch). To test a server-side edit live:
+  an ISOLATED `papercusp-staging` checkout (not the shared integration tree
+  directly), which `papercup-staging-sync.timer` auto-fast-forwards to the
+  latest COMMITTED `staging` HEAD roughly every 5 minutes (isolated-staging-
+  tier-2026-06-21). To test YOUR OWN uncommitted server-side edit live:
   `dev:restart { target: 'staging', confirm: true }`, then probe `:3170`.
   **Never** a raw `systemctl --user restart papercup-staging-api.service` — on a
   heavily-parallel fleet that fired every \~5-6min for hours with zero
   coordination (WI-4221); `dev:restart` drains concurrent users first and
   coalesces a restart requested within \~2min of a peer's real one.
+  * ⚠ **`:3170` also self-restarts independently of any human/agent action,
+    roughly every 5-7 minutes.** Whenever `staging` has advanced (true almost
+    continuously — git-sync auto-commits the whole fleet's work on a schedule),
+    the sync timer rebuilds the isolated checkout and cycles the unit —
+    outside `dev:restart`'s drain/coalesce path, so it's a real (if brief,
+    \~10-13s) hard-down/`ERR_CONNECTION_REFUSED` window each time (EI-13221).
+    This is expected freshness behavior, not a crash or a load signal — a
+    session actively probing `:3170` for more than a couple of minutes can
+    legitimately see one. Before concluding `:3170` is down or overloaded,
+    check **`dev:service_health`**: its `supervision` entry for `staging-api`
+    carries `secondsSinceStart` + a `recentRestartNote` whenever the unit came
+    up in the last \~20s, naming the sync timer as the likely cause instead of
+    leaving you to guess. (The sync script also skips its own restart when the
+    unit already cycled in the last \~45s, so it doesn't compound with a
+    concurrent `dev:restart`.)
 * **The Tauri dev shell** spawns its own operator from the integration tree —
   reloading the desktop shell picks up `staging` edits in that context.
 
