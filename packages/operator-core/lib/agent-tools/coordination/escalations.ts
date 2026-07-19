@@ -414,7 +414,12 @@ function boundBodyForList(rec: EscalationRecord): EscalationRecord {
  */
 export async function listEscalationsPaginated(
   opts: { status?: 'open' | 'resolved'; maxRecords?: number } = {},
-): Promise<{ escalations: EscalationRecord[]; truncated: boolean; total: number }> {
+): Promise<{
+  escalations: EscalationRecord[];
+  truncated: boolean;
+  total: number;
+  trueOpenTotal?: number;
+}> {
   // EI-1548: bound the READ at the storage layer instead of loading the ENTIRE
   // escalations surface into memory and truncating after.
   //
@@ -426,9 +431,20 @@ export async function listEscalationsPaginated(
   // entirely: `escalations:[]` with a nonzero `total`/`truncated:true`, which
   // read as broken rather than "no matches in a resolve-heavy window."
   const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
-  const [opensRaw, firstResolvePage] = await Promise.all([
+  // EI-16170: a bounded/windowed page's `total` (== `escalations.length`, see
+  // below) is NOT the backlog size — it's just how many fit in this window,
+  // and a small `maxRecords` window silently reads like ground truth (a
+  // maxRecords:10 open-scan reporting "total:2" was mistaken for "only 2
+  // escalations open" when the real open backlog was 279+; the OverwatchBrief
+  // aging-escalations panel, which reads the UNBOUNDED set, was correct all
+  // along). For status:'open' only, also fetch the true unbounded open count
+  // via `listEscalations` (already the panel's own source of truth) so a
+  // caller has an honest total to compare its bounded page against instead of
+  // conflating the two.
+  const [opensRaw, firstResolvePage, trueOpenTotal] = await Promise.all([
     coordLog.readEventsBounded('escalations', { limit: maxRecords, kinds: ['escalation'] }),
     coordLog.readEventsBoundedCursor('escalations', { limit: maxRecords, kinds: ['escalation_resolved'] }),
+    opts.status === 'open' ? listEscalations({ status: 'open' }).then((rows) => rows.length) : Promise.resolve(undefined),
   ]);
   const opens = opensRaw as EscalationRecord[];
 

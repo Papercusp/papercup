@@ -31,6 +31,7 @@ import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { potHomeSlugForHarness } from '../../hive-federation';
+import { isTerminalItemStatus } from '../../fleet-drained-events';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -674,6 +675,37 @@ export async function planSlugExistsInWorkspace(
     `;
   });
   return rows.length > 0;
+}
+
+/**
+ * EI-16176: is this plan slug TERMINAL (shipped/superseded) or already has
+ * zero OPEN (non-terminal) items? Either means there is genuinely nothing
+ * left to claim on it — used by claim-discipline-watch to stop nagging a
+ * leader whose declared plan has since shipped (nudging "claim your lane" on
+ * a plan with no claimable lane left is undischargeable noise, the same
+ * family as `planSlugExistsInWorkspace`/EI-7402). A slug-only lookup
+ * (mirrors planSlugExistsInWorkspace — presence rows carry no harnessSlug).
+ * Null when the slug isn't store-backed in this workspace (a distinct signal
+ * from "found but has open items" — callers fail OPEN on null).
+ */
+export async function planTerminalityInWorkspace(
+  workspaceId: string,
+  slug: string,
+): Promise<{ status: string | null; hasOpenItems: boolean } | null> {
+  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ status: string | null; items: unknown }[]>`
+      SELECT status, items FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND plan_slug = ${slug}
+       ORDER BY updated_at DESC
+       LIMIT 1
+    `;
+  });
+  const row = rows[0];
+  if (!row) return null;
+  const items = Array.isArray(row.items) ? (row.items as PlanIndexItem[]) : [];
+  const hasOpenItems = items.some((i) => !isTerminalItemStatus(i.status));
+  return { status: row.status, hasOpenItems };
 }
 
 /**

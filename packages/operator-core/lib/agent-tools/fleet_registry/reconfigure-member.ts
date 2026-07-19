@@ -113,7 +113,10 @@ export default defineTool({
             updatedBy: callerId,
             potSlug,
           });
-          applied.claimSpec = { ok: true, ...res };
+          // `res` already carries its own `ok` (setClaimSpec can itself report `ok: false`
+          // — e.g. a pool-collapse guard rejection — even though no exception was thrown),
+          // so trust it verbatim rather than forcing `ok: true` ahead of it.
+          applied.claimSpec = { ...res };
         } catch (e) {
           applied.claimSpec = { ok: false, errors: [e instanceof Error ? e.message : String(e)] };
         }

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
 // The production entrypoint deliberately stays executable by plain Node.
-// @ts-expect-error — the .mjs CLI has no declaration file.
 import {
   aggregateGroupResults,
   discoverVitestRoute,
@@ -9,6 +8,8 @@ import {
   groupRoutes,
   listedFiles,
   REPO_ROOT,
+  // @ts-expect-error — the .mjs CLI has no declaration file; the diagnostic lands
+  // on the `from` line of this multi-line import, not the line above the import.
 } from '../../../../scripts/test-files.mjs';
 
 describe('test-files router', () => {

@@ -351,7 +351,7 @@ function validBackend(v: unknown): AgentConfig['backend'] | undefined {
  * misconfigured host fails LOUD before the first wake burns a turn discovering it.
  */
 export function agentCmdBootWarning(
-  env: Pick<NodeJS.ProcessEnv, 'AGENT_CMD' | 'CLAUDE'>,
+  env: Partial<Pick<NodeJS.ProcessEnv, 'AGENT_CMD' | 'CLAUDE'>>,
 ): string | null {
   if (env.AGENT_CMD || env.CLAUDE) return null;
   return (

@@ -28,7 +28,8 @@ import { STALE_MS } from '../../liveness';
 import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import { planSlugExistsInWorkspace } from '../../agent-tools/plans/source';
+import { planSlugExistsInWorkspace, planTerminalityInWorkspace } from '../../agent-tools/plans/source';
+import { isTerminalPlanStatus } from '../../agent-tools/plans/plan-start-state';
 import { inspectEventKey, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { getLoopStatuses } from './loop';
 
@@ -134,6 +135,39 @@ export function filterStoreBackedTargets<T extends { agentId: string; declaredPl
     keep.push(t);
   }
   return { keep, skippedStoreAbsent };
+}
+
+/**
+ * EI-16176: a plan that has SHIPPED/superseded, or has zero OPEN (non-terminal)
+ * items left, has genuinely nothing left to claim — nudging its declared-but-
+ * unclaimed agent every tick with "claim your lane" is undischargeable noise,
+ * the same family as `filterStoreBackedTargets` (EI-7402: a store-absent plan
+ * can never be claimed either). Pure over a precomputed terminality map so the
+ * decision is unit-testable without PG. A slug missing from the map (a lookup
+ * failure, or genuinely not found — filterStoreBackedTargets already dropped
+ * those) fails OPEN — kept, not silently dropped — matching every other
+ * filter's convention in this file.
+ */
+export function filterTerminalPlanTargets<T extends { agentId: string; declaredPlanSlug: string | null }>(
+  targets: readonly T[],
+  workspaceByAgent: ReadonlyMap<string, string>,
+  terminalityByKey: ReadonlyMap<string, { status: string | null; hasOpenItems: boolean } | null>,
+): { keep: T[]; skippedTerminalPlan: number } {
+  const keep: T[] = [];
+  let skippedTerminalPlan = 0;
+  for (const t of targets) {
+    const plan = t.declaredPlanSlug;
+    if (plan) {
+      const workspaceId = workspaceByAgent.get(t.agentId) ?? 'default';
+      const info = terminalityByKey.get(storeExistsKey(workspaceId, plan));
+      if (info && (isTerminalPlanStatus(info.status) || !info.hasOpenItems)) {
+        skippedTerminalPlan += 1;
+        continue;
+      }
+    }
+    keep.push(t);
+  }
+  return { keep, skippedTerminalPlan };
 }
 
 /**
@@ -393,6 +427,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   // (workspace, plan) pair once, then let the pure filter decide who's kept.
   const workspaceByAgent = new Map(presenceRows.map((p) => [p.ownerId, p.workspaceId]));
   const existsByKey = new Map<string, boolean>();
+  const terminalityByKey = new Map<string, { status: string | null; hasOpenItems: boolean } | null>();
   const distinctKeys = new Set(
     preTargets
       .filter((t): t is typeof t & { declaredPlanSlug: string } => !!t.declaredPlanSlug)
@@ -405,6 +440,10 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
       // transient PG hiccup; only an AFFIRMED absence skips the nudge.
       const exists = await planSlugExistsInWorkspace(workspaceId, plan).catch(() => true);
       existsByKey.set(key, exists);
+      // EI-16176: fail-open (null) on lookup error — filterTerminalPlanTargets
+      // treats a missing/null entry as "keep nudging" (unchanged behavior).
+      const terminality = await planTerminalityInWorkspace(workspaceId, plan).catch(() => null);
+      terminalityByKey.set(key, terminality);
     }),
   );
 
@@ -414,6 +453,16 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     existsByKey,
   );
 
+  // EI-16176: a shipped/superseded plan, or one with zero open items left, has
+  // nothing left to claim — stop nudging it (same existence/state-of-the-plan
+  // family as filterStoreBackedTargets above, before the AGENT-state filters
+  // below).
+  const { keep: notTerminalPlan, skippedTerminalPlan } = filterTerminalPlanTargets(
+    storeBacked,
+    workspaceByAgent,
+    terminalityByKey,
+  );
+
   // EI-13286: work_items:complete closes the linked item and releases its claim
   // synchronously, while presence can retain that plan slug until the next
   // turn. A same-owner completion AFTER the current declaration is therefore a
@@ -421,7 +470,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   // declaration after an old completion is not suppressed. Read failures fail
   // open to preserving real nudges.
   const completionNowMs = Date.now();
-  const completionWorkspaces = [...new Set(storeBacked.map((target) => workspaceByAgent.get(target.agentId) ?? 'default'))];
+  const completionWorkspaces = [...new Set(notTerminalPlan.map((target) => workspaceByAgent.get(target.agentId) ?? 'default'))];
   const completedAtByKey = await loadRecentTerminalPlanCompletionTimes(
     completionWorkspaces,
     completionNowMs - RECENT_COMPLETION_GRACE_MS,
@@ -430,7 +479,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     presenceRows.map((row) => [row.ownerId, row.intentDeclaredAt] as const),
   );
   const { keep: activePlans, skippedRecentlyCompleted } = filterRecentlyCompletedTargets(
-    storeBacked,
+    notTerminalPlan,
     workspaceByAgent,
     completedAtByKey,
     intentDeclaredAtByAgent,
@@ -522,6 +571,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   console.log(
     `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${targets.length} nudged` +
       (skippedStoreAbsent ? `, ${skippedStoreAbsent} skipped (declared plan not in store — undischargeable remedy)` : '') +
+      (skippedTerminalPlan ? `, ${skippedTerminalPlan} skipped (declared plan is terminal or has zero open items)` : '') +
       (skippedRecentlyCompleted ? `, ${skippedRecentlyCompleted} skipped (recent same-owner plan completion)` : '') +
       (skippedParked.length
         ? `, ${skippedParked.length} skipped (parked on events:await: ${skippedParked
