@@ -100,4 +100,52 @@ describe('evaluateGateVerdictFreshness', () => {
     });
     expect(v.stale).toBe(true);
   });
+
+  /** EI-13288: the gate's own stale-candidate re-triage already re-ran its named failing files at
+   *  a newer tip and they PASSED, but the auto-refire cap was reached before a full suite could
+   *  confirm that tip green — so this verdict's failing-test names are unconfirmed AT RECORD
+   *  TIME, not merely aged. Neither the pin (unmoved — the gate correctly held) nor the writer
+   *  (fresh, on-time fire) is stale here; only Rule 3 can catch it. */
+  describe('Rule 3 — RETRIAGE-PROVEN (EI-13288)', () => {
+    it('⭐ flags a FRESH, on-time verdict whose own retriage proved the named files pass at tip', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000, // the last fire DID produce this verdict — not starved
+        // pin unmoved (LIVE_INCIDENT default) — the gate correctly held, this is not a pin-advance
+        retriageStaleTip: '9f8e7d6c5b4a',
+      });
+      expect(v.stale).toBe(true);
+      expect(v.reason).toMatch(/re-triage/);
+      expect(v.reason).toMatch(/9f8e7d6c5b4a/);
+      expect(v.reason).toMatch(/PASSED/);
+    });
+
+    it('does not flag a genuinely-broken red whose retriage never found a stale-candidate', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000,
+        retriageStaleTip: null,
+      });
+      expect(v.stale).toBe(false);
+    });
+
+    it('is inert on a green (0-red) verdict, same as every other rule', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        consecutiveReds: 0,
+        observedAtMs: LAST_FIRE - 60_000,
+        retriageStaleTip: 'abc123def456',
+      });
+      expect(v.stale).toBe(false);
+    });
+
+    it('takes priority over the other rules — checked first, independent of pin/writer state', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT, // pin unmoved, writer starved (the rule-2 fixture)
+        retriageStaleTip: 'deadbeef0000',
+      });
+      expect(v.stale).toBe(true);
+      expect(v.reason).toMatch(/re-triage/); // rule 3's reason, not rule 2's
+    });
+  });
 });

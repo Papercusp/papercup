@@ -73,7 +73,7 @@ function mkDeps(over: Partial<ScorecardEmissionPulseDeps> = {}): {
 }
 
 describe('runScorecardEmissionPulse', () => {
-  it('empty window → files the floor (all 14 criteria, synthesized, synthSource scheduled-pulse) + records the fire', async () => {
+  it('empty window → files the floor (all 15 criteria, synthesized, synthSource scheduled-pulse) + records the fire', async () => {
     const { deps, capture, recordFire } = mkDeps();
     const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
     expect(r.outcome).toBe('filed');

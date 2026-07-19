@@ -16,6 +16,7 @@ import {
   type OpenBackstopFloor,
 } from './scorecard-backstop';
 import type { SystemHealth } from '../system-health/types';
+import { resolveLocalRubric } from '../cupboard/rubric-store';
 
 // ── builders ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,19 @@ function assertWellFormed(ratings: Record<string, { rating: string; evidence: st
 describe('synthesizeCoordinationScorecard', () => {
   it('returns all 15 keys, each with non-empty evidence', () => {
     assertWellFormed(synthesizeCoordinationScorecard(mkHealth()));
+  });
+
+  // EI-13292 recurrence guard: COORDINATION_CRITERIA drifted to 14 keys (missing
+  // `context-burn`) after the first-party bundle (rubrics/pot-coordination-health/
+  // rubric.json) was extended to 15 — the auto-synth floor then filed a 14/15
+  // scorecard the capture completeness gate rejected as INCOMPLETE every time it
+  // fired. Pin this local copy to the bundle's own criteria list so it can't
+  // silently diverge again.
+  it('keeps COORDINATION_CRITERIA in lockstep with the first-party rubric bundle (EI-13292)', () => {
+    const bundled = resolveLocalRubric('pot-coordination-health');
+    expect(bundled).not.toBeNull();
+    const bundledKeys = bundled!.criteria.map((c) => c.key);
+    expect([...COORDINATION_CRITERIA].sort()).toEqual([...bundledKeys].sort());
   });
 
   it('a stuck / no-placement / no-bee brief → end-to-end-flow is NOT healthy', () => {

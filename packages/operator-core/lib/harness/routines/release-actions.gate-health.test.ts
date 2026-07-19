@@ -171,3 +171,97 @@ describe('trackGateStall persists failingTests into gate_health (EI-7505)', () =
     expect(written!.failingTests).toEqual([]);
   });
 });
+
+/**
+ * EI-13288: green-checkpoint's stale-candidate re-triage (`classifyRedAgainstTip`) can PROVE a
+ * red's named failing files pass at a newer tip, but discarded that proof before recording — a
+ * reader (dev:why / coord:orient) then saw a "fresh" red naming files the gate's own evidence
+ * already knew didn't reproduce. These tests assert `trackGateStall` now threads the CLI's
+ * `retriage` verdict into `gate_health` (`retriageStaleTip` / `retriageDetail`), so
+ * gate-verdict-freshness's Rule 3 can report the verdict as `stale-verdict` instead of a
+ * misleading `red`.
+ */
+describe('trackGateStall persists retriage staleness into gate_health (EI-13288)', () => {
+  const retriage = {
+    classification: 'stale-candidate' as const,
+    tip: '6d9aff3704c9c5937a0ffe13e139021d9101cff3',
+    detail: '2 failing file(s) PASS at tip 6d9aff37 — the red is stale; refire cap reached',
+  };
+
+  it('persists retriageStaleTip/retriageDetail on a RED tick classified stale-candidate', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', ['pkgA/foo.test.ts'], null, retriage);
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    // Short-sha'd, matching the observedCandidate / lastFrom convention elsewhere in this blob.
+    expect(written!.retriageStaleTip).toBe('6d9aff3704c9');
+    expect(written!.retriageDetail).toBe(retriage.detail);
+    // The streak still counts this tick — retriage staleness qualifies the FAILING-TEST NAMES,
+    // it does not relax the gate's held/not-held decision (the bug's own requirement #4).
+    expect(written!.consecutiveReds).toBe(1);
+  });
+
+  it('does NOT persist retriage fields for a genuinely real-red (no phantom note on a true break)', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', ['pkgA/foo.test.ts'], null, {
+      classification: 'real-red',
+      tip: '6d9aff3704c9c5937a0ffe13e139021d9101cff3',
+      detail: 'failures REPRODUCE at tip — genuine red, holding the gate',
+    });
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.retriageStaleTip).toBeNull();
+    expect(written!.retriageDetail).toBeNull();
+  });
+
+  it('does NOT persist retriage fields when the caller has none (old CLI / no retriage available)', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', ['pkgA/foo.test.ts']);
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.retriageStaleTip).toBeNull();
+    expect(written!.retriageDetail).toBeNull();
+  });
+
+  it('a stale-candidate note does NOT outlive the red streak it was recorded on — cleared the very next tick when retriage is absent', async () => {
+    seededGh = {
+      consecutiveReds: 1,
+      stallAlerted: false,
+      lastGreenAt: Date.now() - 60_000,
+      retriageStaleTip: '6d9aff3704c9',
+      retriageDetail: 'stale from a prior tick',
+    };
+
+    // The NEXT red tick has no retriage info of its own (e.g. resolveTip failed) — the prior
+    // tick's stale note must not linger and be misread as still describing THIS verdict.
+    await trackGateStall(ctx, 'not-green', 'cafebabe1234', ['pkgA/foo.test.ts']);
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.retriageStaleTip).toBeNull();
+    expect(written!.retriageDetail).toBeNull();
+  });
+
+  it('clears retriage fields on a GREEN/reset tick (recovery clears the stale note)', async () => {
+    seededGh = {
+      consecutiveReds: 5,
+      stallAlerted: true,
+      lastGreenAt: Date.now() - 60_000,
+      retriageStaleTip: '6d9aff3704c9',
+      retriageDetail: 'stale from a prior red streak',
+    };
+
+    await trackGateStall(ctx, 'advanced');
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.retriageStaleTip).toBeNull();
+    expect(written!.retriageDetail).toBeNull();
+  });
+});

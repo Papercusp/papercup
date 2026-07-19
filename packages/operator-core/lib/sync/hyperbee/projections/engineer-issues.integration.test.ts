@@ -7,7 +7,7 @@
  * trigger.integration.test.ts; this proves the read side applies a remote op where the
  * issues:* surface reads it.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, SUBSTRATE_OUTBOX_DDL } from '../../../../test/_work-items-schema';
 import { buildEngineerIssuesProjection, _testing, type EngineerIssueRow } from './engineer-issues';
@@ -221,6 +221,58 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       authorPubkey: 'peer',
     });
     expect((await getIssue('EI-9'))?.title).toBe('v300');
+  });
+
+  // EI-13285: two INDEPENDENT writers (this device's local capture + a Hive peer's
+  // own local allocation) can allocate the SAME EI-<n> id with zero coordination
+  // (nextIssueId's old MAX-scan allocator was only unique per-Postgres-instance).
+  // When the peer's op later federates in, it must NOT be treated as an edit of the
+  // pre-existing distinct local record just because the id matches — created_at
+  // (part of the federated document, never touched by an UPDATE) is the tell: a
+  // genuine edit always carries the SAME created_at as what's already stored; a
+  // colliding, unrelated issue carries a DIFFERENT one.
+  it('refuses to apply a remote op whose created_at disagrees with the existing row — a distinct-entity id collision (EI-13285)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      // The local row: created first, at t=1000 (issueRow()'s default created_at).
+      await p.writeToPg(issueRow({ issue_id: 'EI-13236', title: 'freshly captured local improvement' }), {
+        ts: 100,
+        origin: 'remote',
+        authorPubkey: 'peer-a',
+      });
+      expect((await getIssue('EI-13236'))?.title).toBe('freshly captured local improvement');
+
+      // A colliding remote op for the SAME id, but a genuinely DIFFERENT issue
+      // (different created_at) — even with a NEWER fed_ts that would otherwise win
+      // the LWW race, it must be dropped, not applied.
+      await p.writeToPg(
+        issueRow({
+          issue_id: 'EI-13236',
+          title: 'unrelated remote replication-liveness issue',
+          state: 'resolved',
+          created_at: new Date(999_000).toISOString(),
+        }),
+        { ts: 999, origin: 'remote', authorPubkey: 'peer-b' },
+      );
+      const afterCollision = await getIssue('EI-13236');
+      expect(afterCollision?.title).toBe('freshly captured local improvement'); // NOT clobbered
+      expect(afterCollision?.fed_ts).toBe(100); // the peer-b write never applied at all
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('EI-13285 id collision'));
+
+      // A genuine follow-up edit of the SAME issue (identical created_at, newer
+      // fed_ts) must still apply normally — the guard must not block real convergence.
+      await p.writeToPg(issueRow({ issue_id: 'EI-13236', title: 'edited by the same author', state: 'resolved' }), {
+        ts: 999,
+        origin: 'remote',
+        authorPubkey: 'peer-a',
+      });
+      const afterRealEdit = await getIssue('EI-13236');
+      expect(afterRealEdit?.title).toBe('edited by the same author');
+      expect(afterRealEdit?.state).toBe('resolved');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('deleteFromPg removes by issue_id (ts-guarded)', async () => {

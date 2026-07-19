@@ -89,6 +89,39 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   return true;
 }
 
+// EI-13285: `created_at` is part of the federated document (see the module header)
+// and — for a genuine edit or re-delivery of the SAME logical issue — is ALWAYS
+// identical to what's already stored: it's set once at INSERT and deliberately never
+// touched by the `ON CONFLICT ... DO UPDATE SET` list below. So an existing row whose
+// `created_ts` disagrees with an incoming remote op's `created_at` by more than clock-
+// skew slop is NOT an edit of that row — it's a DIFFERENT logical issue that happens
+// to have been allocated the same issue_id (root cause + the fix to the allocator
+// itself: issues-engineer.ts's nextIssueId / newCollisionResistantIssueTail). Refuse
+// to apply the write in that case rather than upserting over it: a dropped op is
+// bounded, logged, recoverable data loss (the authoring peer's own local copy is
+// untouched); silently overwriting was unbounded, silent, PERMANENT local data loss —
+// the actual EI-13285 incident (a freshly captured local improvement replaced by an
+// unrelated remote issue).
+const COLLISION_CREATED_AT_TOLERANCE_MS = 5_000;
+
+async function isDistinctEntityCollision(
+  sql: postgres.Sql,
+  harnessSlug: string,
+  featureId: string,
+  incomingCreatedAtIso: string,
+): Promise<{ collided: boolean; existingCreatedAtIso?: string }> {
+  const rows = await sql<{ created_ts: string | number }[]>`
+    SELECT created_ts FROM harness_shared.work_items
+     WHERE harness_slug = ${harnessSlug} AND feature_id = ${featureId}`;
+  const existing = rows[0];
+  if (!existing) return { collided: false };
+  const incomingMs = Date.parse(incomingCreatedAtIso);
+  const existingMs = Number(existing.created_ts);
+  if (!Number.isFinite(incomingMs) || !Number.isFinite(existingMs)) return { collided: false };
+  if (Math.abs(incomingMs - existingMs) <= COLLISION_CREATED_AT_TOLERANCE_MS) return { collided: false };
+  return { collided: true, existingCreatedAtIso: new Date(existingMs).toISOString() };
+}
+
 export interface EngineerIssuesProjectionOpts {
   workspaceId: string;
   harnessSlug: string;
@@ -169,6 +202,20 @@ async function writeToPg(
     typeof row.scope === 'string' && row.scope.startsWith('harness:')
       ? row.scope.slice(8)
       : `operator:${opts.workspaceId || 'default'}`;
+  // EI-13285: id-collision guard — see isDistinctEntityCollision's header. Must run
+  // BEFORE the upsert below, which would otherwise blindly clobber a distinct local
+  // record sharing this issue_id.
+  const collision = await isDistinctEntityCollision(sql, vSlug, row.issue_id, row.created_at);
+  if (collision.collided) {
+    console.warn(
+      `[engineer-issues projection] EI-13285 id collision: refusing to apply remote op for ` +
+        `issue_id=${row.issue_id} (harness_slug=${vSlug}) — the existing local row was created at ` +
+        `${collision.existingCreatedAtIso}, but the incoming op claims created_at=${row.created_at}. ` +
+        `These are two distinct issues that were allocated the same id; the incoming op is DROPPED ` +
+        `(not applied) to avoid destroying the local record. The authoring peer's own copy is unaffected.`,
+    );
+    return;
+  }
   const basePayload = row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
   const payloadText = JSON.stringify({
     ...basePayload,
