@@ -869,6 +869,13 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
           (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
         VALUES (${HIVE_HOME}, 'F-init', 'Initial owner feature', 'soak init', 'todo', 0, 'local', 6001, 6001, 6001)
       `;
+      // The sidecar host stubs wireOutbox as a no-op (bootViaSidecarHost) — nothing
+      // reaches the owner's OWN LOG (and therefore the wire) without an explicit
+      // drain. This is the AUTHOR-side app boundary (CDC capture → outbox → own log),
+      // a distinct concern from the RECEIVE-side merge this test deliberately leaves
+      // to the real poll+onAnnounce path — draining here is not a "manual merge".
+      const initDrained = await drainOutboxOnce(owner.handle, dbOwner.sql);
+      expect(initDrained, 'owner outbox (roster + F-init) did not drain to its own log').toBeGreaterThanOrEqual(3);
 
       const initOk = await pollUntil(
         async () => {
@@ -910,6 +917,10 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
             (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
           VALUES (${HIVE_HOME}, ${fidOM}, ${'soak cycle ' + cycle + ' owner->member'}, 'soak', 'todo', 0, 'local', ${7000 + cycle}, ${7000 + cycle}, ${7000 + cycle})
         `;
+        // Author-side drain (see the initOk comment above) — NOT a receive-side
+        // merge; the owner is the one authoring this op regardless of which side
+        // restarted this cycle.
+        await drainOutboxOnce(owner.handle, dbOwner.sql);
 
         const landedOM = await pollUntil(
           async () => (await readFeature(orgDb.adminSql, HIVE_HOME, fidOM)) ?? undefined,
