@@ -1221,6 +1221,7 @@ export async function setIssueState(
     }
   }
   const { sql } = getOrgPg();
+  const ws = await resolveIssueWorkspace(id);
   const evidencePayloadJson = completionEvidencePayloadJson(opts.completionEvidence);
   const rows = isTerminal
     ? await sql<IssueRowDb[]>`
@@ -1232,11 +1233,11 @@ export async function setIssueState(
                               THEN payload
                               ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
                          END
-         WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+         WHERE workspace_id = ${ws} AND issue_id = ${id}
         RETURNING ${sql.unsafe(ISSUE_COLS)}`
     : await sql<IssueRowDb[]>`
         UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
-         WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+         WHERE workspace_id = ${ws} AND issue_id = ${id}
         RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);

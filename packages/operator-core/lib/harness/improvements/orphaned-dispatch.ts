@@ -619,6 +619,7 @@ export async function collectOrphanedDispatchSignals(
   const marked: ImprovementDispatchRow[] = [];
   let recovered = 0;
   let thrashEscalated = 0;
+  let recoveryNoOps = 0;
   for (const row of toMark) {
     const hostRestart = isHostRestartVictim(row, bootMs);
     // EI-1689: count this item's PRIOR host-restart recoveries in the window — each

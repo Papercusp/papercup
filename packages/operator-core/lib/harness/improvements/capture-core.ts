@@ -443,12 +443,67 @@ export async function captureImprovement(
     topics.push(`improvement-source:${sourceRole}`);
   }
 
+  // EI-15448: an observation capture carrying a stable `watchdogKey` COALESCES onto
+  // its existing OPEN row (bump repeatCount, refresh lastSeenAt + title/body) instead
+  // of minting a fresh row every call — observations otherwise skip dedup entirely by
+  // design (recurrence IS the signal Scout clusters, `isObservation` branch below), so
+  // a repeat reading of an unresolved condition (e.g. the Kettle's escalation-aging
+  // drift) self-inflated the backlog to 7k+ near-identical open items. A caller that
+  // omits the key keeps the original always-re-file behavior — correct for a genuinely
+  // novel/one-off reading.
+  if (isObservation && input.watchdogKey) {
+    const priorHits = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(
+      () => [] as EngineerIssue[],
+    );
+    const prior = priorHits.find(
+      (i) => i.state === 'open' && (i.payload as Record<string, unknown> | undefined)?.lane === 'observation',
+    );
+    if (prior) {
+      const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
+      const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
+      const mergePatch: Record<string, unknown> = {
+        watchdogKey: input.watchdogKey,
+        repeatCount,
+        lastSeenAt: new Date().toISOString(),
+      };
+      if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+      if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
+      if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+      const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
+      // Best-effort title/body refresh — never blocks the coalesce (a shrink-guard
+      // trip or transient error just keeps the prior text; the payload bump above is
+      // the load-bearing part). Silent: a routine status refresh shouldn't fan out
+      // subscriber notifications every wake.
+      const refreshed = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
+        title: input.title,
+        body: input.body,
+        silent: true,
+        confirmShrink: true,
+      }).catch(() => null);
+      const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? prior;
+      return {
+        ok: true,
+        created: false,
+        reason: 'coalesced',
+        kind: finalIssue.kind as 'bug' | 'change',
+        improvementKind: input.kind,
+        issue: finalIssue,
+        topics,
+        possibleDuplicates,
+        ...(alreadyDecided.length ? { alreadyDecided } : {}),
+      };
+    }
+  }
+
   // Kind-specific payload: the 'feature' refinement + candidate paths (close-loop D-002) + sourceRole (P-010).
   const payload: Record<string, unknown> = {};
   if (isObservation) {
     // A PRE-IDEA sensor reading (D-005): mark the lane; carry no auto-implement
     // lifecycle / paths — it is never dispatchable. Structured fields ride payloadExtra.
     payload.lane = 'observation';
+    // EI-15448: stamp the key on first filing too, so the NEXT repeat call's
+    // findIssuesByWatchdogKeys lookup above actually finds this row.
+    if (input.watchdogKey) payload.watchdogKey = input.watchdogKey;
   } else {
     if (input.kind === 'feature') payload.improvementKind = 'feature';
     if (input.paths?.length) payload.paths = input.paths;

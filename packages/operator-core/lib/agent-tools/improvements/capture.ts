@@ -144,6 +144,14 @@ export default defineTool({
           .describe(
             "'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Blender's corpus-digest + the Observations pane read it. Default 'improvement'.",
           ),
+        conditionKey: z
+          .string()
+          .min(1)
+          .max(160)
+          .optional()
+          .describe(
+            "EI-15448, lane:'observation' ONLY: a STABLE identity for a RECURRING condition (e.g. an OverwatchBrief anomaly line's `[conditionKey: overwatch:escalation-aging]` — copy it verbatim). A still-OPEN prior observation carrying the SAME conditionKey is updated in place (repeatCount bumped, title/body refreshed to this call's latest reading) instead of minting a fresh row every call — fixes the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Omit for a genuinely novel/one-off reading, which always re-files as before. Ignored outside lane:'observation'.",
+          ),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
         // envelope from silently stripping a scorecard while keeping observation.* as
@@ -407,6 +415,7 @@ export default defineTool({
         checkDuplicatesOnly: args.checkDuplicatesOnly,
         origin: args.origin,
         lane: args.lane,
+        watchdogKey: args.lane === 'observation' ? args.conditionKey : undefined,
         payloadExtra:
           observation || hasIdeation
             ? { ...(observation ? { observation } : {}), ...(hasIdeation ? { ideation } : {}) }
