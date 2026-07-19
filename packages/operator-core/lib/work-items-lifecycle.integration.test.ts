@@ -445,6 +445,15 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
     await insertPromotedFeatureRow(featureId, bug.id);
 
     await wi.setWorkItemState(featureId, 'passed', { by: 'agB', completionRef: 'shipped the fix' });
+    // DEBUG
+    try {
+      await wi.autoResolveSourceIssueOnFeaturePassed(featureId, 'papercup');
+    } catch (e) {
+      console.error('DEBUG autoResolveSourceIssueOnFeaturePassed threw:', e);
+    }
+    const dbgRows = await db.sql`SELECT feature_id, harness_slug, status, metadata FROM harness_shared.harness_features_consolidated WHERE feature_id = ${featureId}`;
+    console.error('DEBUG feature rows:', JSON.stringify(dbgRows));
+    console.error('DEBUG bug.id:', bug.id);
 
     // The auto-resolve is a fire-and-forget hook off the same write — wait for
     // its effect rather than racing the microtask/DB round-trip.

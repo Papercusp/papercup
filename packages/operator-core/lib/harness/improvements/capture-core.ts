@@ -28,6 +28,9 @@ import {
   createIssue,
   getIssue,
   searchIssuesForDedup,
+  findIssuesByWatchdogKeys,
+  updateIssue,
+  mergeIssuePayload,
   type EngineerIssue,
   type IssueSeverity,
   type IssueSource,
@@ -219,6 +222,15 @@ export interface CaptureDeps {
    *  rubrics.ts autoRatifyRubricOnFirstScorecard; injectable so tests can assert the
    *  hook fired (and with which args) without touching PG. */
   autoRatifyRubric?: (rubricId: string, graderId: string) => Promise<Rubric | null>;
+  /** EI-15448 observation-coalescing seams. OPTIONAL — default to the real
+   *  issues-engineer.ts implementations; injectable so tests drive the coalesce
+   *  path without PG. */
+  findIssuesByWatchdogKeys?: (keys: string[]) => Promise<EngineerIssue[]>;
+  updateIssuePatch?: (
+    id: string,
+    patch: { title?: string; body?: string; silent?: boolean; confirmShrink?: boolean },
+  ) => Promise<EngineerIssue | null>;
+  mergeIssuePayload?: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
 }
 
 // WI-4308: use the dedup-widened search (also checks the legacy DEFAULT_COORD_WORKSPACE

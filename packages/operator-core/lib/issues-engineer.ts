@@ -880,7 +880,46 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
 }
 
 export async function getIssue(id: string): Promise<EngineerIssue | null> {
-  return getIssueInWorkspace(issuesScopeWorkspace(), id);
+  return getIssueInWorkspace(await resolveIssueWorkspace(id), id);
+}
+
+/**
+ * Resolve the workspace an issue-family row ACTUALLY lives under, by id —
+ * AMBIENT-INDEPENDENT (does not trust a bare `issuesScopeWorkspace()` derivation).
+ *
+ * EI-15486 class (dispatch-orphan-rate SLO regression root cause, 2026-07-19): a
+ * background/routine WRITE that scopes itself via `issuesScopeWorkspace()` several
+ * `await`s deep — with no HTTP request driving it, so there is no ALS request scope
+ * to read — silently falls through to the process-global default workspace (the
+ * WI-5261 class, "confirmed live for papercusp-workspace 2026-07-17"; same root as
+ * EI-15345's work-items.ts fix, "resolve the item's OWN workspace by id (ambient-
+ * independent, prefer active-ws row) then scope the write to it — pattern to apply
+ * to any similar work-item write"). Concretely: the orphaned-dispatch collector's
+ * host-restart thrash breaker (EI-1689) calls `mergeIssuePayload(id, {needsHuman:true})`
+ * from a bare routine tick; when the ambient workspace resolved wrong, the UPDATE's
+ * `WHERE workspace_id = ambient AND issue_id = id` matched ZERO rows and silently
+ * no-op'd (returns null, not a throw) — so the breaker's "routed to human, NOT
+ * re-dispatched" note was RECORDED on the dispatch ledger while the issue itself was
+ * NEVER flagged, and the SAME item kept re-dispatching every ~30min for 11+ hours,
+ * which is exactly what blew the dispatch-orphan-rate SLO past its budget.
+ *
+ * Issue ids are globally unique (see releaseIssue's EI-6480 comment), so resolving
+ * by id alone — no workspace needed up front — is safe: look the row up directly,
+ * preferring a match under the ambient/ACTIVE workspace when the id exists in more
+ * than one (a legacy federated dupe), else use whichever workspace actually holds
+ * the row. Falls back to the ambient workspace when no row is found at all (a
+ * brand-new id about to be inserted) — never throws, so an ordinary correctly-
+ * ambient-scoped call is byte-identical to the old behavior.
+ */
+export async function resolveIssueWorkspace(id: string, fallback?: string): Promise<string> {
+  const ambient = fallback ?? issuesScopeWorkspace();
+  const { sql } = getOrgPg();
+  const rows = await sql<{ workspace_id: string }[]>`
+    SELECT workspace_id FROM harness_shared.engineer_issues
+     WHERE issue_id = ${id}
+     ORDER BY (workspace_id = ${ambient}) DESC, updated_at DESC NULLS LAST
+     LIMIT 1`;
+  return rows[0]?.workspace_id ?? ambient;
 }
 
 /**
@@ -1106,7 +1145,7 @@ export async function releaseIssue(
   opts: { expectedAssignee?: string } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
-  const ws = issuesScopeWorkspace();
+  const ws = await resolveIssueWorkspace(id);
   // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
   // stale per-Hive claim lease below — else the just-freed issue stays lease-poisoned (reads
   // unclaimed yet fails lease arbitration for every new claimer) until the lease TTL lapses.
@@ -1291,12 +1330,13 @@ export async function listIssueAgesByTopic(topic: string): Promise<IssueAgeRow[]
  */
 export async function mergeIssuePayload(id: string, patch: Record<string, unknown>): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
+  const ws = await resolveIssueWorkspace(id);
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues
        SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb,
            origin = 'local',
            updated_at = now()
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+     WHERE workspace_id = ${ws} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   return rows[0] ? toIssue(rows[0]) : null;
 }
