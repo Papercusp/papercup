@@ -348,10 +348,10 @@ describe('merged view (assignment/claim drift coherence)', () => {
   });
 
   it('myItemsWithStateForIdentities merges items under an adopted name AND the raw ownerId, deduped, with no throw for an unadopted caller', async () => {
-    await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-004', assigneeName: 'builder-2', assignedByUser: 'user-x' });
-    await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-005', assigneeName: 'sess-C', assignedByUser: 'user-x' });
+    await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-001', assigneeName: 'builder-2', assignedByUser: 'user-x' });
+    await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-002', assigneeName: 'sess-C', assignedByUser: 'user-x' });
     const mine = await liveness.myItemsWithStateForIdentities(WS, ['builder-2', 'sess-C']);
-    expect(new Set(mine.map((m) => m.assignment.itemId))).toEqual(new Set(['P-004', 'P-005']));
+    expect(new Set(mine.map((m) => m.assignment.itemId))).toEqual(new Set(['P-001', 'P-002']));
     // No identities (never adopted, no explicit override) → empty, never throws.
     await expect(liveness.myItemsWithStateForIdentities(WS, [])).resolves.toEqual([]);
   });

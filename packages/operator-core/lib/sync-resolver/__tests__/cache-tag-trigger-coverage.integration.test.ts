@@ -105,6 +105,11 @@ const COVERAGE_EXEMPT: Record<string, string> = {
   toast_log: 'append-heavy toast log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
   feature_audit_consolidated:
     'append-heavy audit log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
+  agent_usage_samples:
+    'append-heavy usage-telemetry log — one row per governed agent LLM call, fleet-wide; per-row ' +
+    'notify = notify-storm. Verified audit_log-scale volume (WI-5374, 2026-07-19: 810 rows/24h, ' +
+    '~26k accumulated vs audit_log\'s 2156/24h, ~25.6k). The evals.benchRunLive read wants a ' +
+    'debounced follow-up, not a per-row trigger. Debounced invalidation TODO (P-005).',
   // (2) compat views over work_items (mig-374) — cannot carry a row trigger; producer is work_items.
   engineer_issues: 'compat VIEW over work_items (mig-374); invalidation fires from the mapped work_items base-table trigger.',
   harness_features_consolidated:

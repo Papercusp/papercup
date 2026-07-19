@@ -587,20 +587,30 @@ function ObservationStacks({
           className="pc-observations__stackgroup"
           aria-label={`${KIND_LABEL[kind] ?? kind} observations`}
         >
-          <header className="pc-observations__stackgroup-head">
-            <i
-              aria-hidden
-              style={{
-                background: OBSERVATION_KIND_COLOR[kind] ?? "var(--fg-mute)",
-              }}
-            />
-            <span>{KIND_LABEL[kind] ?? kind}</span>
-            <strong>{group.length}</strong>
-          </header>
           <CardStack
             items={group}
             getKey={(row) => row.id}
             ariaLabel={`${KIND_LABEL[kind] ?? kind} observations`}
+            // The kind badge rides ON the active card's top edge (CardStack
+            // renders it overlapping), keeping it attached to its deck.
+            header={
+              <>
+                <i
+                  className="pc-observations__kinddot"
+                  aria-hidden
+                  style={{
+                    background:
+                      OBSERVATION_KIND_COLOR[kind] ?? "var(--fg-mute)",
+                  }}
+                />
+                <span className="pc-cardstack__header-label">
+                  {KIND_LABEL[kind] ?? kind}
+                </span>
+                <span className="pc-cardstack__header-count">
+                  {group.length}
+                </span>
+              </>
+            }
             renderCard={(row) => (
               <ObservationCard
                 row={row}

@@ -170,9 +170,14 @@ describe('plan_items:* tool handlers (real PG, through dispatch glue)', () => {
   });
 
   it('my_items merges items under BOTH an adopted name and the raw ownerId for the same session', async () => {
-    await call(adoptName, { name: 'builder-9' }, ctxB);
+    // Both assignments come from the same assigner (ctxA) so the cross-user (D-005)
+    // refusal never enters it — 'builder-9' is a fresh name ctxA assigns first, then
+    // ctxB independently adopts it (adoption is a session↔name lookup binding, not
+    // an ownership check). ctxB's my_items must then see BOTH: P-001 via the
+    // adopted name and P-002 via its own raw ownerId ('sess-B').
     await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-9' }, ctxA);
     await call(assign, { plan: 'demo-plan', item: 'P-002', assignee: 'sess-B' }, ctxA);
+    await call(adoptName, { name: 'builder-9' }, ctxB);
     const env = await call(myItems, {}, ctxB);
     expect(env.ok).toBe(true);
     expect(new Set(env.items.map((m: { assignment: { itemId: string } }) => m.assignment.itemId))).toEqual(new Set(['P-001', 'P-002']));

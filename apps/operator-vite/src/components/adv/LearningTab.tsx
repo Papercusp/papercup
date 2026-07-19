@@ -3531,18 +3531,25 @@ export function ScoutView({
             className="pc-learning__lensgroup"
             aria-label={`${lens} ideas`}
           >
-            <header className="pc-learning__lensgroup-head">
-              <span className="pc-learning__lens" title="Creative lens">
-                {lens}
-              </span>
-              <span className="pc-learning__lensgroup-count">
-                {group.length}
-              </span>
-            </header>
             <CardStack
               items={group}
               getKey={(it) => it.ideaId}
               ariaLabel={`${lens} ungraded ideas`}
+              // The lens badge rides ON the active card's top edge (CardStack
+              // renders it overlapping), so the association is unmistakable.
+              header={
+                <>
+                  <span
+                    className="pc-cardstack__header-label"
+                    title="Creative lens"
+                  >
+                    {lens}
+                  </span>
+                  <span className="pc-cardstack__header-count">
+                    {group.length}
+                  </span>
+                </>
+              }
               renderCard={(it) => renderIdeaCard(it)}
             />
           </section>
@@ -4895,20 +4902,9 @@ export function LearningStyles() {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
         gap: 12px; margin-top: 8px;
       }
+      /* The lens label + count render as CardStack's on-card header badge
+         (pc-cardstack__header-*), so the group carries no separate head row. */
       .pc-learning__lensgroup { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-      .pc-learning__lensgroup-head {
-        display: flex; align-items: center; gap: 8px;
-      }
-      .pc-learning__lensgroup-head .pc-learning__lens {
-        color: var(--fg, #e7eef5);
-        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 30%, var(--border));
-      }
-      .pc-learning__lensgroup-count {
-        font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
-        color: var(--fg-mute, #7f9bb4);
-        padding: 1px 7px; border-radius: 999px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
-      }
       .pc-learning__ideacard {
         display: flex; flex-direction: column; gap: 7px;
         padding: 10px 12px; border-radius: 10px;

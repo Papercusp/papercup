@@ -578,6 +578,41 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── EI-15982: `stateWarning` (and every other loud caller-facing signal) must serialize
+  // BEFORE the bulky `workItem`/`completion`/`reflect` echoes. The per-result context door
+  // (result-door.ts) truncates an oversized result's serialized JSON text from the FRONT of
+  // the budget — i.e. it keeps a PREFIX and cuts the tail — so a warning key placed after the
+  // two large echoed objects is exactly what gets silently sliced off on a big completion. A
+  // real incident: an agent's `stateWarning` ("recorded but NOT closed") never reached it
+  // because the response's `workItem`+`completion` echo alone pushed the JSON past the door,
+  // and the warning — serialized last — was in the cut tail.
+  describe('response field order — warnings precede bulky echoes so result-door truncation cannot hide them (EI-15982)', () => {
+    it('places `stateWarning` before `workItem`/`completion`/`reflect` in key order', async () => {
+      getWorkItem.mockResolvedValue(item); // state: 'in_progress', no terminal `state` passed below
+      const r = await one({ id: 'F-12', completion: { summary: 'all done', status: 'done' } });
+      expect(r.stateWarning).toMatch(/NOT closed/);
+      const keys = Object.keys(r);
+      const warningIdx = keys.indexOf('stateWarning');
+      const workItemIdx = keys.indexOf('workItem');
+      const completionIdx = keys.indexOf('completion');
+      expect(warningIdx).toBeGreaterThanOrEqual(0);
+      expect(workItemIdx).toBeGreaterThan(warningIdx);
+      expect(completionIdx).toBeGreaterThan(warningIdx);
+    });
+
+    it('places `stateInferredFromCompletionStatus` before the bulky echoes too', async () => {
+      const issue = { id: 'WI-7', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({ id: 'WI-7', completion: { summary: 'fixed it', status: 'resolved', tests: '5 green' } });
+      const keys = Object.keys(r);
+      const inferredIdx = keys.indexOf('stateInferredFromCompletionStatus');
+      expect(inferredIdx).toBeGreaterThanOrEqual(0);
+      expect(keys.indexOf('workItem')).toBeGreaterThan(inferredIdx);
+      expect(keys.indexOf('completion')).toBeGreaterThan(inferredIdx);
+    });
+  });
+
   // ── EI-12027: `completion.status: 'resolved'|'closed'` on an ISSUE-family item, with NO
   // top-level `state`, is unambiguous close-intent (the issue's own native terminal words,
   // never the schema's 'done' default) — infer + apply the close instead of only warning.

@@ -602,18 +602,26 @@ async function completeOne(
     ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. Re-call the SAME completion; finish is idempotent and resumes the missing legs.`
     : undefined;
 
+  // EI-15982: every LOUD signal (anything the caller must not miss — a hard failure
+  // OR a soft "recorded but not closed"/"evidence dropped"/etc warning) is placed
+  // BEFORE the bulky echoed data (`workItem`, `completion`, `reflect`, `finish`).
+  // The per-result context door (result-door.ts) truncates an oversized tool
+  // result's serialized text FROM THE FRONT of the budget — i.e. it keeps a
+  // PREFIX of the JSON and cuts the tail — so a warning key that serializes
+  // AFTER the two large echoed objects is exactly the content most likely to be
+  // silently sliced off (the reported failure: `stateWarning` on a completion
+  // whose `workItem`+`completion` echo alone pushed the response past the
+  // ~1500-token door, so the one field telling the caller "this did NOT close"
+  // never reached them). Warnings are cheap (short strings); ordering them first
+  // costs nothing and makes them survive truncation whenever ANYTHING fits.
   return {
     ok: !stateNotApplied && !finishFailed,
     id: it.id,
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
-    workItem,
-    completion,
-    reflect,
-    ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
     ...(stateError ? { stateError } : {}),
+    ...(stateWarning ? { stateWarning } : {}),
     ...(aliased !== undefined ? { aliased, requestedState, appliedState } : {}),
     ...(aliasNote ? { aliasNote } : {}),
-    ...(stateWarning ? { stateWarning } : {}),
     ...(inferredCloseState
       ? {
           stateInferredFromCompletionStatus: `no top-level \`state\` was passed, but completion.status ('${inferredCloseState}') is this issue's own terminal vocabulary — inferred state:'${inferredCloseState}' and closed it (EI-12027). Pass top-level \`state\` explicitly to avoid relying on this inference.`,
@@ -622,6 +630,10 @@ async function completeOne(
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
+    workItem,
+    completion,
+    reflect,
+    ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
     ...(finish ? { finish } : {}),
   };
 }
