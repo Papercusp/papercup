@@ -295,21 +295,58 @@ seats are placed uniformly by the same spread logic.</li>
 
 <table><thead><tr><th>File</th><th>Role</th></tr></thead><tbody><tr><td><code dir="auto">agent-tools/resource/delegate.ts</code></td><td>the donate verb — fleet- or pot-scoped allotment + P2P offer publish</td></tr><tr><td><code dir="auto">agent-tools/resource/offers.ts</code></td><td>the offer-visibility read (<code dir="auto">/res</code> Agent-seats group, <code dir="auto">potShared</code> view)</td></tr><tr><td><code dir="auto">p2p/delegated-spawn-honor.ts</code></td><td>the host-side honor gate ladder (1 → 2 → 2.5/3.5 → 4 → 4.5 → 4.6 → 5)</td></tr><tr><td><code dir="auto">agent-tools/fleet_registry/request-remote-spawn.ts</code></td><td>the spend verb — resolves fleet- then pot-scoped offers, deterministic host selection</td></tr><tr><td><code dir="auto">agent-tools/plans/launch-prompt.ts</code></td><td>the routing-gate prose (inventory disclosure, own-slots ask, exact-verb naming)</td></tr><tr><td><code dir="auto">p2p/capabilities.ts</code></td><td>the grant/assignment vocabulary v1.5 stays wire-compatible with</td></tr><tr><td><code dir="auto">p2p/pool-broker.ts</code></td><td>the v2 dual-signature broker (reference only — not used by v1.5)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="known-limitation--cross-machine-spend-is-currently-unverifiable-live">Known limitation — cross-machine spend is currently unverifiable live</h2><a class="sl-anchor-link" href="#known-limitation--cross-machine-spend-is-currently-unverifiable-live"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Known limitation — cross-machine spend is currently unverifiable live”</span></a></div>
-<aside aria-label="WI-5446 — cross-machine seat-offers do not federate" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>WI-5446 — cross-machine seat-offers do not federate </p>  <div class="starlight-aside__content"><p>As of this writing, <strong>P-011’s live two-machine verify is blocked on a
-diagnosed federation bug, not staffing.</strong> A donor’s <code dir="auto">resource:delegate</code>
-succeeds locally (confirmed with <code dir="auto">hive</code> correctly passed, so this is
-distinct from EI-16667 below) and the offer never reaches the spending
-machine: <code dir="auto">fleet:request_remote_spawn</code> on the spender only ever sees its
-<strong>own</strong> machine’s offer, and <code dir="auto">p2p:trace</code> returns zero receipts on <strong>both</strong>
-machines — not a refusal, no traffic at all. Every gate and spend-path
-described above is unit- and integration-green (12 of 14 items on this
-plan) — the gap is specifically in <strong>getting the offer from donor to
-spender across machines</strong>, i.e. below this model, in the P2P federation
-layer itself. Suspect area: whether both operators actually booted the
-same shared-hive home at startup (a joiner only peers a home its operator
-booted at startup — see the WI-560 fed-a/fed-b rig notes) before
-concluding the publish path is broken. Tracked as <strong>WI-5446</strong>; treat any
-cross-machine seat-donation claim as unverified until it resolves.</p></div> </aside>
+<aside aria-label="WI-5446 — cross-machine seat-offers do not federate (likely = WI-953)" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>WI-5446 — cross-machine seat-offers do not federate (likely = WI-953) </p>  <div class="starlight-aside__content"><p><strong>P-011’s live two-machine verify is blocked on a diagnosed federation
+bug, not staffing or cooperation.</strong> Staged correctly (donor-side
+<code dir="auto">resource:delegate</code> fired directly on the peer machine, <code dir="auto">hive</code> passed
+explicitly — so this is distinct from EI-16667 below): the delegation
+succeeds locally, and the offer <strong>never reaches the spending machine</strong>.
+<code dir="auto">fleet:request_remote_spawn</code> on the spender only ever auto-selects its
+<strong>own</strong> machine’s offer (proof, not just absence-by-silence: the tool
+refuses and asks the caller to disambiguate whenever 2+ open offers
+exist, and only auto-selects when exactly one exists — so seeing exactly
+one confirms the peer’s offer is genuinely absent, not merely
+deprioritized), and <code dir="auto">p2p:trace</code> returns zero receipts on <strong>both</strong>
+machines — not a refusal, no traffic at all.</p><p>Be explicit about the boundary this draws: <strong>every gate and spend path
+described above is verified — unit- and integration-green, 12 of 14 plan
+items done.</strong> What is <strong>not</strong> verified is a real cross-machine round
+trip; that gap is entirely in the P2P federation layer <em>underneath</em> this
+model, not in the seat-donation logic itself.</p><p>Tracked as <strong>WI-5446</strong>, and — per the pot-seat-pools fleet leader’s
+diagnosis, linked caused-by — <strong>likely not a new bug at all</strong>: it matches
+the same publisher-reports-success / receiver-gets-silence shape already
+open as <strong>WI-953</strong> (“shared-hive directory announce never reaches the
+joiner”), one layer further down the same federation path. If that
+linkage holds, a working cross-machine seat-offer is really an
+<strong>acceptance test for WI-953’s eventual fix</strong>, not a separate
+investigation — don’t start by re-debugging the seat-offer publish code.
+Treat any cross-machine seat-donation claim as unverified until one of
+the two resolves.</p></div> </aside>
+<aside aria-label="WI-5445 — the umbrella: four inconsistent hive-disambiguation behaviors" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>WI-5445 — the umbrella: four inconsistent hive-disambiguation behaviors </p>  <div class="starlight-aside__content"><p>A <strong>separate</strong>, narrower finding from the same drill, worth citing
+whenever multi-hive ambiguity comes up on this path: on a workspace with
+more than one shared hive, four different surfaces handle “which hive did
+you mean?” four different ways —</p><ol>
+<li><code dir="auto">coord:send { scope: 'hive' }</code> — refuses <code dir="auto">ambiguous_hive_scope</code> with
+<strong>no way to comply at all</strong> (no per-message hive argument); cross-
+machine coord messaging is simply impossible from an un-scoped
+session.</li>
+<li><code dir="auto">resource:delegate</code> (potSlug + agent_slot) — <strong>silently skips</strong> its
+P2P publish when <code dir="auto">hive</code> is omitted (EI-16667) — the most dangerous of
+the four, since silence is indistinguishable from success.</li>
+<li><code dir="auto">resource:offers</code> — has no disambiguation argument at all, so
+<code dir="auto">potShared</code> visibility can never resolve (EI-16673).</li>
+<li><code dir="auto">fleet:request_remote_spawn</code> — <strong>refuses loudly</strong>, names the
+candidate hives, and accepts an explicit <code dir="auto">hive</code> argument. This is the
+correct behavior and the model the other three should be fixed to
+match.</li>
+</ol><p>See <strong>WI-5445</strong> for the full write-up and proposed fix order.</p></div> </aside>
+<aside aria-label="WI-5447 — revoke is not symmetric with donate" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>WI-5447 — revoke is not symmetric with donate </p>  <div class="starlight-aside__content"><p><code dir="auto">resource:delegate { remove: true }</code> deletes the <strong>local allotment</strong> row
+but does <strong>not</strong> retract the already-published seat-offer, which stays
+<code dir="auto">status: 'open'</code>. A revoked delegation therefore keeps shadowing the
+fleet’s offer picker (a stale self-offer plus a legitimate remote one
+means the picker can no longer auto-select and demands an explicit
+publisher+offer). This contradicts P-001’s own requirement that
+<code dir="auto">remove:true</code> “must work exactly like the fleet-scoped form” — a caller
+who revokes reasonably believes the seat is withdrawn; it is not, from
+the spend path’s point of view. Tracked as <strong>WI-5447</strong> (minor).</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="open-question">Open question</h2><a class="sl-anchor-link" href="#open-question"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Open question”</span></a></div>
 <p><code dir="auto">resource:offers</code>’ pot-wide (<code dir="auto">potShared</code>) visibility currently resolves
 only on a workspace with exactly one shared hive, with no explicit

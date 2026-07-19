@@ -25,3 +25,26 @@ export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
   const base = proxy && proxy.length > 0 ? proxy : operatorBaseUrl;
   return base.replace(/\/$/, '');
 }
+
+/**
+ * Resolve an INHERITED `PAPERCUSP_OPERATOR_URL` (which may already carry a
+ * `/api/mcp` suffix — some producers, e.g. dbos/orchestrator-runner.ts, set it
+ * that way) down to the bare origin a native MCP client's OWN `.mcp.json`
+ * template expects, routed through the resilient `:9071` proxy when
+ * configured.
+ *
+ * WHY: a client's own MCP template (`~/.claude.json`'s `papercusp-su` entry)
+ * unconditionally appends `/api/mcp` itself. A resumed session that inherits
+ * the already-suffixed form ends up with the doubled, 404ing path
+ * `.../api/mcp/api/mcp` and its papercusp-su MCP never connects. Use this for
+ * any `PAPERCUSP_OPERATOR_URL` export a spawned `claude`/`omp` child will feed
+ * straight into its own MCP config — for a raw-HTTP consumer that expects the
+ * suffix preserved as originally set, see capability-bash's own
+ * suffix-preserving wrapper instead.
+ */
+export function resolveInheritedOperatorBaseUrl(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) return raw;
+  const base = trimmed.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
+  return resolveAgentMcpBaseUrl(base);
+}

@@ -145,21 +145,66 @@ assume all seats in an allocated fleet are remote:
 
 ## Known limitation — cross-machine spend is currently unverifiable live
 
-As of this writing, **P-011's live two-machine verify is blocked on a
-diagnosed federation bug, not staffing.** A donor's `resource:delegate`
-succeeds locally (confirmed with `hive` correctly passed, so this is
-distinct from EI-16667 below) and the offer never reaches the spending
-machine: `fleet:request_remote_spawn` on the spender only ever sees its
-**own** machine's offer, and `p2p:trace` returns zero receipts on **both**
-machines — not a refusal, no traffic at all. Every gate and spend-path
-described above is unit- and integration-green (12 of 14 items on this
-plan) — the gap is specifically in **getting the offer from donor to
-spender across machines**, i.e. below this model, in the P2P federation
-layer itself. Suspect area: whether both operators actually booted the
-same shared-hive home at startup (a joiner only peers a home its operator
-booted at startup — see the WI-560 fed-a/fed-b rig notes) before
-concluding the publish path is broken. Tracked as **WI-5446**; treat any
-cross-machine seat-donation claim as unverified until it resolves.
+**P-011's live two-machine verify is blocked on a diagnosed federation
+bug, not staffing or cooperation.** Staged correctly (donor-side
+`resource:delegate` fired directly on the peer machine, `hive` passed
+explicitly — so this is distinct from EI-16667 below): the delegation
+succeeds locally, and the offer **never reaches the spending machine**.
+`fleet:request_remote_spawn` on the spender only ever auto-selects its
+**own** machine's offer (proof, not just absence-by-silence: the tool
+refuses and asks the caller to disambiguate whenever 2+ open offers
+exist, and only auto-selects when exactly one exists — so seeing exactly
+one confirms the peer's offer is genuinely absent, not merely
+deprioritized), and `p2p:trace` returns zero receipts on **both**
+machines — not a refusal, no traffic at all.
+
+Be explicit about the boundary this draws: **every gate and spend path
+described above is verified — unit- and integration-green, 12 of 14 plan
+items done.** What is **not** verified is a real cross-machine round
+trip; that gap is entirely in the P2P federation layer *underneath* this
+model, not in the seat-donation logic itself.
+
+Tracked as **WI-5446**, and — per the pot-seat-pools fleet leader's
+diagnosis, linked caused-by — **likely not a new bug at all**: it matches
+the same publisher-reports-success / receiver-gets-silence shape already
+open as **WI-953** ("shared-hive directory announce never reaches the
+joiner"), one layer further down the same federation path. If that
+linkage holds, a working cross-machine seat-offer is really an
+**acceptance test for WI-953's eventual fix**, not a separate
+investigation — don't start by re-debugging the seat-offer publish code.
+Treat any cross-machine seat-donation claim as unverified until one of
+the two resolves.
+
+A **separate**, narrower finding from the same drill, worth citing
+whenever multi-hive ambiguity comes up on this path: on a workspace with
+more than one shared hive, four different surfaces handle "which hive did
+you mean?" four different ways —
+
+1. `coord:send { scope: 'hive' }` — refuses `ambiguous_hive_scope` with
+   **no way to comply at all** (no per-message hive argument); cross-
+   machine coord messaging is simply impossible from an un-scoped
+   session.
+2. `resource:delegate` (potSlug + agent\_slot) — **silently skips** its
+   P2P publish when `hive` is omitted (EI-16667) — the most dangerous of
+   the four, since silence is indistinguishable from success.
+3. `resource:offers` — has no disambiguation argument at all, so
+   `potShared` visibility can never resolve (EI-16673).
+4. `fleet:request_remote_spawn` — **refuses loudly**, names the
+   candidate hives, and accepts an explicit `hive` argument. This is the
+   correct behavior and the model the other three should be fixed to
+   match.
+
+See **WI-5445** for the full write-up and proposed fix order.
+
+`resource:delegate { remove: true }` deletes the **local allotment** row
+but does **not** retract the already-published seat-offer, which stays
+`status: 'open'`. A revoked delegation therefore keeps shadowing the
+fleet's offer picker (a stale self-offer plus a legitimate remote one
+means the picker can no longer auto-select and demands an explicit
+publisher+offer). This contradicts P-001's own requirement that
+`remove:true` "must work exactly like the fleet-scoped form" — a caller
+who revokes reasonably believes the seat is withdrawn; it is not, from
+the spend path's point of view. Tracked as **WI-5447** (minor).
 
 ## Open question
 

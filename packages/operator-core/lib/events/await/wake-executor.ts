@@ -48,6 +48,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { resolveInheritedOperatorBaseUrl } from '../../mcp-base-url';
 import { capInjectionText, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
 import {
@@ -1499,6 +1500,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // 'coord-wake' is unconditionally correct here — no branching needed.
       PAPERCUSP_TURN_TRIGGER: 'coord-wake',
     };
+    // Bug fix (found chasing a coord-wake papercusp-su MCP disconnect): this
+    // env is inherited from the operator process, which some producers (e.g.
+    // dbos/orchestrator-runner.ts) set to the full `.../api/mcp` endpoint
+    // rather than a bare origin. claude's/omp's own `.mcp.json` templates
+    // append `/api/mcp` themselves, so an inherited suffixed value doubles
+    // into a 404ing `.../api/mcp/api/mcp` and the resumed session comes up
+    // with zero papercusp-su tools. Normalize it down to a bare (proxy-routed)
+    // origin before the child spawns.
+    const normalizedOperatorUrl = resolveInheritedOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL);
+    if (normalizedOperatorUrl) env.PAPERCUSP_OPERATOR_URL = normalizedOperatorUrl;
     // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
     // + plugin isolation) at a conventional path — point the resumed claude at
     // it so `--resume <sessionId>` finds the session file (D-010 resume leg).
