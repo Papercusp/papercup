@@ -13,6 +13,8 @@
  * clean, with zero behavior change: every helper is best-effort and returns
  * null/false on any failure (no wmctrl, no DISPLAY, pid not yet windowed).
  */
+import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './windows-desktop-windows';
+
 /**
  * Resolve a pid → X11 window id via `wmctrl -lp`. Best-effort: returns
  * null on any failure (no wmctrl, no DISPLAY, pid not yet windowed,

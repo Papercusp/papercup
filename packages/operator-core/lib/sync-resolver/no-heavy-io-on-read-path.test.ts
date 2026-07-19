@@ -52,6 +52,26 @@ const ALLOW: Array<{ file: string; why: string }> = [
       'P-003: precomputed. Still reachable via the FLAGS.PRECOMPUTE_DERIVED_READS=off ' +
       'escape hatch, which deliberately restores the pre-fix inline behavior.',
   },
+  {
+    file: 'lib/agent-tools/plans/viewer-identity.ts',
+    why:
+      'WI-5476: getViewerOwnerEmail spawns `git config user.email` ONCE per process ' +
+      '(module-cached), not per read — it is not the page-load-storm class this guard ' +
+      'targets. It CANNOT be precomputed: the value is the VIEWER machine\'s git ' +
+      'identity, so a background routine on the operator host would compute the wrong ' +
+      'identity for a remote peer in a shared hive. git is present on the desktop ' +
+      'target and the read is fail-soft (null → the mine/others plan views hide).',
+  },
+  {
+    file: 'lib/endpoint-route/routes/harness/feature-views.ts',
+    why:
+      'WI-5476: getFeatureTimeline (featureTimeline.byFeature) is a DRILL-DOWN — it ' +
+      'fires only when a single feature slide-over opens in PlanDetail, never on a ' +
+      'page-load panel — so its per-feature `git diff` is off the hot path, mirroring ' +
+      'the soak-report windowHours drill-down. Precompute keyed per (slug,featureId) ' +
+      'would add unbounded snapshot rows + per-feature invalidation for a click-to-open ' +
+      'view; not worth it. Tracked for a lazy-git-diff follow-up if it ever regresses.',
+  },
 ];
 
 /**
@@ -70,16 +90,18 @@ const ALLOW: Array<{ file: string; why: string }> = [
  * fixing one and deleting its line. This is a debt ledger, not a mute button.
  */
 const KNOWN_OFFENDERS: string[] = [
-  'lib/adv-sessions.ts',
-  'lib/endpoint-route/routes/harness/feature-views.ts',
-  'lib/agent-tools/plans/viewer-identity.ts',
-  'lib/service-health.ts',
-  'lib/dev-deploy-state.ts',
-  'lib/git-pipeline-hives.ts',
+  // All six original offenders (WI-5476) are now resolved:
+  //   adv-sessions.ts       → the wmctrl helpers were split into
+  //                           adv-session-windows.ts; the read path is pure DB.
+  //   service-health.ts     → precomputed (dev.serviceHealth producer).
+  //   dev-deploy-state.ts   → precomputed (dev.deployState producer).
+  //   git-pipeline-hives.ts → precomputed (dev.gitPipelineHives producer).
+  //   viewer-identity.ts    → ALLOW (per-viewer-local, module-cached singleton).
+  //   feature-views.ts      → ALLOW (off-hot-path drill-down).
 ];
 
-/** The count at the time this guard was written. May only go DOWN. */
-const KNOWN_OFFENDER_HIGH_WATERMARK = 6;
+/** The count at the time this guard was written. May only go DOWN. Now 0. */
+const KNOWN_OFFENDER_HIGH_WATERMARK = 0;
 
 const allowed = new Set([...ALLOW.map((a) => a.file), ...KNOWN_OFFENDERS]);
 

@@ -15,7 +15,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { _resetForTests } from '@papercusp/db-org';
 import { getSystemAction, type SystemActionCtx } from '@papercusp/operator-core/lib/harness/routines/system-actions';

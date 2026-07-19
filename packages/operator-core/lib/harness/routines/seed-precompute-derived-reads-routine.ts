@@ -3,14 +3,18 @@
  * (precompute-derived-sync-reads-2026-07-19 P-002, WI-5460; handler in
  * `precompute-derived-reads-action.ts`).
  *
- *   - `precompute-derived-reads` (every 5 min): run each registered derived-read
+ *   - `precompute-derived-reads` (every 2 min): run each registered derived-read
  *     producer whose snapshot is past its ttl and write the result to
  *     `harness_shared.derived_read_snapshots`, so the sync resolvers for
- *     `storage.usage` / `plans.lint` / `learning.soakReport` are plain SELECTs.
+ *     `storage.usage` / `plans.lint` / `learning.soakReport` / the `dev.*`
+ *     diagnostics are plain SELECTs.
  *
- * The 5-minute cron is the FLOOR on freshness; each producer's own ttl (10-30
- * min) decides whether it actually recomputes on a given fire, so a cheap tick
- * that finds everything fresh costs three SELECTs.
+ * The 2-minute cron is the FLOOR on freshness; each producer's own ttl decides
+ * whether it actually recomputes on a given fire (storage 30m, plans.lint 6h,
+ * soakReport/deployState/gitPipelineHives 5-10m, serviceHealth 90s). So a cheap
+ * tick that finds everything fresh costs a handful of SELECTs, while the one
+ * liveness-sensitive producer (serviceHealth) refreshes on essentially every
+ * tick — the short cadence exists for it.
  *
  * NOT flag-gated at the routine level (the read side carries
  * FLAGS.PRECOMPUTE_DERIVED_READS as its kill-switch). Seeded ACTIVE by default,
@@ -28,8 +32,8 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.PRECOMPUTE_DERIVED_READS_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
-/** Every 5 minutes. Per-producer ttl governs the actual recompute rate. */
-const CRON = '0 */5 * * * *';
+/** Every 2 minutes. Per-producer ttl governs the actual recompute rate. */
+const CRON = '0 */2 * * * *';
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');

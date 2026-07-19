@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { previousCutAt } from './release-registry';
 
 let sql: postgres.Sql;

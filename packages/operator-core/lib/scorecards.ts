@@ -174,10 +174,18 @@ export function evaluateScorecardInstrumentContract(input: {
   };
 }
 
-/** The canonical 14 keys for pot-coordination-health. This is a fallback for
+/** The canonical 15 keys for pot-coordination-health. This is a fallback for
  * read-side completeness only: if the rubric-template store is temporarily
- * unreachable/unresolvable, the monitor-of-monitor must not mark a 14-key
- * owner-mandated scorecard partial. Unknown rubrics still stay unresolved. */
+ * unreachable/unresolvable, the monitor-of-monitor must not mark a 15-key
+ * owner-mandated scorecard partial. Unknown rubrics still stay unresolved.
+ *
+ * EI-13292: this list drifted to 14 keys (missing `context-burn`, added by the
+ * loop-wake context-diet work / EI-7624) after the rubric itself was extended to
+ * 15 criteria — so a scorecard rating all 15 (correctly) would be misread as
+ * carrying an "extra" key whenever this fallback was consulted (rubric store
+ * briefly unreachable). Keep this in sync with `rubrics/pot-coordination-health/rubric.json`
+ * (the first-party seed bundle) — the true source of truth — whenever a criterion
+ * is added/removed there. */
 export const HIVE_COORDINATION_HEALTH_KEYS = [
   'end-to-end-flow',
   'ideation-quality',
@@ -193,6 +201,7 @@ export const HIVE_COORDINATION_HEALTH_KEYS = [
   'coordination-utilization',
   'tool-utilization',
   'scheduler-usage',
+  'context-burn',
 ] as const;
 
 export function builtInCriterionKeysForRubric(rubricRef: string): string[] | null {

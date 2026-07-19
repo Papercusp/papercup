@@ -38,6 +38,14 @@ export default defineTool({
     notWhen: 'Not for file freedom (locks:queue), not as a default every-turn poll when coord deltas already cover changes, and not for a full historical ended-agent dump. Presence is liveness truth, NOT edit-activity: fleet labels persist while parked and a declared intent can be hours stale (the [idle 2h41m] prefix + intentStale mark this) — to check whether anyone is ACTUALLY editing files, read locks:list + git status + file mtimes instead.',
     chaining:
       'Read once, then follow coord deltas. If you must re-poll, pass since:<etag>; unchanged state returns a tiny stub instead of the full roster.',
+    // EI-13298: the roster array lives at the TOP-LEVEL key `active` — an agent guessing
+    // `p?.agents || p?.presence || (Array.isArray(p) ? p : [])` in a code:run script misses
+    // it entirely and silently gets `[]` (a live incident: 35 active agents read back as
+    // "no defect... wait, zero agents", which was then nearly reported to the owner as a
+    // coordination-layer bug). `summary.active` is a COUNT, not the roster — do not confuse
+    // the two `active` keys at different nesting levels.
+    returns:
+      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), self?: string (your own ownerId, only when resolvable), etag, as_of, scope }. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }.',
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always

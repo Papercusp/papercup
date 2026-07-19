@@ -116,3 +116,57 @@ registerDerivedRead({
     return [{ hives: reports }];
   },
 });
+
+// ── The three dev.* diagnostics (WI-5476) ────────────────────────────────────
+//
+// `dev.serviceHealth` / `dev.deployState` / `dev.gitPipelineHives` each spawned a
+// subprocess (systemctl / git) on the /admin/git panel's read (measured 1.34s /
+// and the git ones per-hive). They are DEV-only — the rail that reads them is
+// gated `import.meta.env.DEV` and absent from user builds — so the shipped-desktop
+// hard-fail hazard is muted, but they still spawned on a sync read and the
+// no-heavy-io-on-read-path guard rightly flagged them. Precompute takes the
+// subprocess off the read entirely, so the resolver is a plain snapshot SELECT.
+//
+// These share the substrate's per-producer ttl, so the routine's short (2-min)
+// cadence keeps them fresh without re-running the expensive storage/plans/soak
+// producers, which stay gated behind their own long ttls.
+
+// deployState + gitPipelineHives track the deploy pipeline, which moves on a
+// ~15-min cadence, so a 5-minute snapshot is amply fresh.
+registerDerivedRead({
+  key: 'dev.deployState',
+  ttlMs: 5 * 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { devDeployState } = await import('../dev-deploy-state');
+    return [await devDeployState()];
+  },
+});
+
+registerDerivedRead({
+  key: 'dev.gitPipelineHives',
+  ttlMs: 5 * 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async ({ workspaceId }) => {
+    const { gitPipelineHiveRows } = await import('../git-pipeline-hives');
+    return gitPipelineHiveRows(workspaceId);
+  },
+});
+
+// serviceHealth is a LIVENESS probe — a stale snapshot is more misleading than
+// for the pipeline ones — so it gets a short ttl (recomputed on essentially every
+// 2-min routine tick). The panel surfaces the snapshot's computedAt via _meta, so
+// a viewer sees "as of HH:MM:SS" rather than mistaking stale for live.
+registerDerivedRead({
+  key: 'dev.serviceHealth',
+  ttlMs: 90_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { probeAll } = await import('../service-health');
+    const services = await probeAll();
+    return [{ services }];
+  },
+});

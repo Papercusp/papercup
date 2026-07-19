@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import postgres from 'postgres';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { git, revParse } from './git-ops';
 import { gatherPlan, executeDeploy, type DeployDeps, type SnapshotInfo } from './deploy';
 import { releaseConfig } from './release-config';

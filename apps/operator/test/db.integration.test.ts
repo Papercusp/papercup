@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { withTestSchema } from '@papercusp/test-config';
+import { withTestSchema } from '@papercusp/test-config/pg';
 
 let sql: postgres.Sql;
 let schema: string;

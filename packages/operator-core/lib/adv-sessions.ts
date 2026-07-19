@@ -15,7 +15,6 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
-import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './windows-desktop-windows';
 
 /**
  * Log a best-effort read/write failure UNLESS it's PG's undefined_table

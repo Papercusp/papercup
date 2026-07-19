@@ -30,7 +30,10 @@ export default defineTool({
     'OPTIONAL pre-check of typed signatures for code:run — not required before a run (code:run ' +
     'returns the signatures inline if you name a tool wrong). No args → the namespace index (cheap). ' +
     '{ namespaces } / { names } → full TS `tools.ns.verb(args)` signatures for just those, scoped ' +
-    'to your allowed set. Read the signatures, then write a code:run script.',
+    'to your allowed set — each signature\'s `Promise<...>` return type + `@returns` comment is the ' +
+    'tool\'s REAL response shape when it declared one (EI-13298): read it before mapping the result, ' +
+    'do not guess keys — a wrong-key `||`-fallback fails SILENTLY (empty, not an error). Read the ' +
+    'signatures, then write a code:run script.',
   guidance: {
     when:
       'OPTIONAL — only when you want to pre-check exact arg shapes before authoring a code:run ' +

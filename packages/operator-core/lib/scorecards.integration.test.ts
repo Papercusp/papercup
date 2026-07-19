@@ -33,6 +33,7 @@ const { builtInCriterionKeysForRubric, listScorecards, scorecardTrend } = await 
 const { createIssue } = await import('./issues-engineer');
 const { proposeRubric } = await import('./rubrics');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
+const { resolveLocalRubric } = await import('./cupboard/rubric-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
 const RUBRIC = 'test-coord-health';
@@ -180,8 +181,9 @@ describe('listScorecards (P-013) — real PG', () => {
   });
 
   it('has a built-in completeness fallback only for the owner-mandated hive coordination rubric', () => {
-    expect(builtInCriterionKeysForRubric('pot-coordination-health')).toHaveLength(14);
+    expect(builtInCriterionKeysForRubric('pot-coordination-health')).toHaveLength(15);
     expect(builtInCriterionKeysForRubric('pot-coordination-health')).toContain('scheduler-usage');
+    expect(builtInCriterionKeysForRubric('pot-coordination-health')).toContain('context-burn');
     expect(builtInCriterionKeysForRubric('no-such-rubric')).toBeNull();
   });
 

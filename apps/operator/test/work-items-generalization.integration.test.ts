@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 let adminUri: string;
 let dbName: string;

@@ -12,7 +12,7 @@ import { mkdtempSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
-import { withTestSchema } from '@papercusp/test-config';
+import { withTestSchema } from '@papercusp/test-config/pg';
 import {
   listSavedPrompts,
   upsertSavedPrompt,

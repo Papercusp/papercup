@@ -4372,19 +4372,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // dev.serviceHealth — up/down + latency probe of the dev endpoints now.
   'dev.serviceHealth': {
+    // PRECOMPUTED (WI-5476): probeAll spawned systemctl on the read path. Served
+    // from the derived-read snapshot; the 90s producer ttl + 2-min routine keep it
+    // near-live, and _meta.derivedRead.computedAt lets the panel show "as of …".
     resolve: async () => {
-      const { probeAll } = await import('../service-health');
-      const services = await probeAll();
-      return [{ services }];
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      return readDerivedSnapshotRows('dev.serviceHealth');
     },
   },
 
   // dev.deployState — read-only release-gate snapshot: green :3070's ref vs
   // `ready` vs `main`, how far behind, last deploy time (the #10 antidote).
   'dev.deployState': {
+    // PRECOMPUTED (WI-5476): devDeployState spawned git (log/rev-list) on the read
+    // path. Served from the derived-read snapshot; the pipeline moves slowly so a
+    // 5-min snapshot is amply fresh.
     resolve: async () => {
-      const { devDeployState } = await import('../dev-deploy-state');
-      return [await devDeployState()];
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      return readDerivedSnapshotRows('dev.deployState');
     },
   },
 
@@ -4406,9 +4413,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // deploy. Empty until a coding hive with a repo is gated (PER_POT_RELEASE_GATE is
   // default-OFF during rollout — D-008).
   'dev.gitPipelineHives': {
+    // PRECOMPUTED (WI-5476): gitPipelineHiveRows spawned git per hive on the read
+    // path. Served from the derived-read snapshot.
     resolve: async () => {
-      const { gitPipelineHiveRows } = await import('../git-pipeline-hives');
-      return await gitPipelineHiveRows();
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      return readDerivedSnapshotRows('dev.gitPipelineHives');
     },
   },
 

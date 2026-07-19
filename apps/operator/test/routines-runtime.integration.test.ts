@@ -12,7 +12,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { upsertRoutine } from '@papercusp/db-org';
 import { computeNextFireAt } from '@papercusp/operator-core/lib/harness/routines/cron';
 import {

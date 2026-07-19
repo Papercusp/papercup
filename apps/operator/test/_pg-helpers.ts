@@ -18,7 +18,7 @@
  * integration run doesn't pay the ~2s boot per file.
  */
 import postgres from 'postgres';
-import { createFreshTestDb } from '@papercusp/test-config';
+import { createFreshTestDb } from '@papercusp/test-config/pg';
 
 export interface FreshPgDb {
   sql: postgres.Sql;

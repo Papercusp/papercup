@@ -3,7 +3,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { withTestSchema } from '@papercusp/test-config';
+import { withTestSchema } from '@papercusp/test-config/pg';
 import {
   savePluginReloadState,
   popPluginReloadState,
