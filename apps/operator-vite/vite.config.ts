@@ -223,6 +223,11 @@ export default defineConfig({
       target: 'react',
       routesDirectory: './src/routes',
       generatedRouteTree: './src/routeTree.gen.ts',
+      // EI-13211: co-located *.test.ts(x) files live inside src/routes/** (e.g.
+      // index.test.ts, login.test.tsx, harness/$.test.tsx) and don't export a
+      // Route — every production build re-scanned and warned on each one. Skip
+      // them at the generator level instead of the ignore-prefix-rename dance.
+      routeFileIgnorePattern: '\\.test\\.tsx?$',
       // Automatic route code-splitting (perf: FCP). Without this, every route's
       // `component` (all 81 — admin, pi, gym, editors, dockview panes, …) is
       // statically imported into routeTree.gen.ts → the eager boot bundle
