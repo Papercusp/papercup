@@ -512,10 +512,9 @@ export default function ObservationsPanel({
         .pc-observations__viewtoggle button:hover { color: var(--fg); }
         .pc-observations__viewtoggle button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, var(--bg-2)); color: var(--fg); }
         .pc-observations__stacks { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-content: start; padding: 2px; }
+        /* The kind label + count render as CardStack's on-card header badge. */
         .pc-observations__stackgroup { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
-        .pc-observations__stackgroup-head { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; color: var(--fg); }
-        .pc-observations__stackgroup-head > i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-        .pc-observations__stackgroup-head > strong { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--fg-mute); font-variant-numeric: tabular-nums; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; }
+        .pc-observations__kinddot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
         .pc-observations__card { display: flex; flex-direction: column; gap: 5px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); color: inherit; text-align: left; font: inherit; cursor: pointer; }
         .pc-observations__card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
         .pc-observations__card.is-selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
