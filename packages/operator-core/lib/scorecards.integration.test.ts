@@ -187,6 +187,19 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(builtInCriterionKeysForRubric('no-such-rubric')).toBeNull();
   });
 
+  // EI-13292 recurrence guard: the built-in fallback drifted to 14 keys (missing
+  // `context-burn`) after the first-party bundle (rubrics/pot-coordination-health/
+  // rubric.json) was extended to 15 — a scorecard rating all 15 (correctly) then read
+  // as "unexpected criterion key(s): context-burn" whenever this fallback was consulted.
+  // Pin the fallback to the bundle's OWN criteria list so the two can never silently
+  // diverge again.
+  it('keeps the built-in fallback in lockstep with the first-party rubric bundle (EI-13292)', () => {
+    const bundled = resolveLocalRubric('pot-coordination-health');
+    expect(bundled).not.toBeNull();
+    const bundledKeys = bundled!.criteria.map((c) => c.key);
+    expect(builtInCriterionKeysForRubric('pot-coordination-health')).toEqual(bundledKeys);
+  });
+
   it('respects the limit (newest-first)', async () => {
     const rows = await listScorecards({ limit: 2 });
     expect(rows.map((r) => r.createdAt)).toEqual(['2026-06-20T12:00:00.000Z', '2026-06-20T11:00:00.000Z']);

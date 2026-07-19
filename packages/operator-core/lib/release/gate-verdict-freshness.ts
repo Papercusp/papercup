@@ -67,6 +67,14 @@ export interface GateVerdictFreshnessInput {
   lastFiredAtMs: number | null;
   /** Fire interval; defaults to {@link GATE_FIRE_INTERVAL_MS}. */
   intervalMs?: number;
+  /** EI-13288 — Rule 3 input. Non-null ⇒ the checkpoint run that produced THIS verdict already
+   *  re-ran its own named failing files at this (short) tip sha, via the stale-candidate
+   *  re-triage, and they PASSED — the auto-refire cap was reached before a full suite could
+   *  confirm that tip green (`gate_health.retriageStaleTip`). This is hard evidence from the
+   *  SAME run, not a heuristic: the verdict's own failure signature does not reproduce at a sha
+   *  it already checked. Null/absent when the run's retriage never found a stale-candidate (the
+   *  common, genuinely-broken case) or ran on a blob predating this field. */
+  retriageStaleTip?: string | null;
 }
 
 export interface GateVerdictFreshness {
@@ -85,11 +93,28 @@ const short = (sha: string): string => sha.slice(0, 12);
  * green stale would only invent a second phantom pointing the other way.
  */
 export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): GateVerdictFreshness {
-  const { consecutiveReds, observedAtMs, observedFromPin, currentGreenPinSha, lastFiredAtMs } = input;
+  const { consecutiveReds, observedAtMs, observedFromPin, currentGreenPinSha, lastFiredAtMs, retriageStaleTip } =
+    input;
   const intervalMs = input.intervalMs ?? GATE_FIRE_INTERVAL_MS;
 
   // Only a RED verdict can misdirect. A stale green is inert.
   if (consecutiveReds <= 0) return { stale: false, reason: null };
+
+  // Rule 3 — RETRIAGE-PROVEN (EI-13288). Checked first: this is the run's OWN evidence about
+  // ITSELF (a real re-test it performed, not an inference from surrounding state), so it is the
+  // most direct of the three rules. The gate held (correctly — the auto-refire cap bounds how
+  // long we chase a moving tip), but the specific failing-test NAMES this verdict carries are
+  // proven, by the run's own hand, not to reproduce at `retriageStaleTip`.
+  if (retriageStaleTip) {
+    return {
+      stale: true,
+      reason:
+        `this verdict's own stale-candidate re-triage already re-ran its named failing file(s) at tip ` +
+        `${short(retriageStaleTip)} and they PASSED — the auto-refire cap was reached before a full ` +
+        `suite could confirm ${short(retriageStaleTip)} green, so the recorded failing-test names are ` +
+        `unconfirmed at record time (they may already be fixed)`,
+    };
+  }
 
   // Rule 1 — PIN-ADVANCE. The pin only advances on a green checkpoint, so if it has moved past
   // the pin this red was recorded against, a green provably happened AFTER this verdict.

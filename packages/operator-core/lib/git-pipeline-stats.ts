@@ -113,6 +113,15 @@ export interface GitPipelineSnapshot {
      *  Empty on a green gate — and NEVER to be trusted when `verdictStale` (WI-4489: those names
      *  are what a phantom dispatch chases). */
     failingTests: string[];
+    /** EI-13288: when THIS verdict's own stale-candidate re-triage already proved its named
+     *  `failingTests` pass at a newer tip (auto-refire cap reached before a full suite could
+     *  confirm that tip green), the short sha of that tip — feeds Rule 3 of
+     *  gate-verdict-freshness.ts. Null when this red's retriage was real-red/unknown, or on a
+     *  blob predating this field. */
+    retriageStaleTip: string | null;
+    /** Human-readable detail for `retriageStaleTip` (from the re-triage classifier), for a
+     *  reader who wants the "why" without re-deriving it. Null alongside `retriageStaleTip`. */
+    retriageDetail: string | null;
   };
 
   /** A currently-OPEN merge conflict (resolver still working / unresolved), or null. */
@@ -274,6 +283,8 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
   // advances on a green checkpoint); `gate_health` is a cache of it that a starved writer can
   // freeze indefinitely. Needs `deploy.greenPinSha`, so it is derived here rather than above.
   const verdictObservedAtMs = num(gateHealth.observedAt);
+  const retriageStaleTip = typeof gateHealth.retriageStaleTip === 'string' ? gateHealth.retriageStaleTip : null;
+  const retriageDetail = typeof gateHealth.retriageDetail === 'string' ? gateHealth.retriageDetail : null;
   const { stale: gcVerdictStale, reason: gcVerdictStaleReason } = evaluateGateVerdictFreshness({
     consecutiveReds: num(gateHealth.consecutiveReds) ?? 0,
     observedAtMs: verdictObservedAtMs,
@@ -281,6 +292,8 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
     // The release ("ready") pin — the green-checkpoint's own durable verdict, in git.
     currentGreenPinSha: deploy.greenPin?.sha ?? null,
     lastFiredAtMs: gcLastFiredMs,
+    // EI-13288 — Rule 3: this verdict's own re-triage evidence, when it has any.
+    retriageStaleTip,
   });
 
   return {
@@ -326,6 +339,8 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
       // WI-4533: the gate's OWN verdict about what is failing (see the type's note).
       failingTests: strArr(gateHealth.failingTests),
+      retriageStaleTip,
+      retriageDetail,
       flakyWorkspaces: Object.entries(flakeHistory)
         .filter(([, v]) => (v?.flakes ?? 0) >= 3)
         .map(([ws]) => ws),

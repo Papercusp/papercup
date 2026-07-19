@@ -51,6 +51,7 @@ import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
+import { randomInt } from 'node:crypto';
 
 /**
  * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
@@ -382,14 +383,66 @@ function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence 
     : null;
 }
 
-/** Allocate the next globally-unique EI-<n> id. */
+// EI-13285: a fixed epoch (arbitrary — keeps the millis component shorter) so the
+// numeric tail stays well inside a bigint/JS-safe-integer range for centuries.
+const EI_ID_EPOCH_MS = Date.UTC(2026, 0, 1);
+// 20 random bits (~1M values) appended per millisecond of entropy — same-millisecond
+// collision odds are ~1-in-a-million even with ZERO cross-writer coordination.
+const EI_ID_RAND_BITS = 20n;
+const EI_ID_RAND_SPACE = 2 ** 20;
+
+/**
+ * Mint the numeric tail of a fresh, collision-resistant EI-<n> id (EI-13285).
+ *
+ * Exported so the Hyperbee→PG issue projection (engineer-issues.ts) can mint the
+ * SAME kind of id when it needs to re-key a genuinely colliding incoming remote op
+ * (see writeToPg's collision guard there) — both callers need the identical
+ * "no shared state required" property.
+ */
+export function newCollisionResistantIssueTail(): string {
+  const ms = BigInt(Math.max(0, Date.now() - EI_ID_EPOCH_MS));
+  const rand = BigInt(randomInt(0, EI_ID_RAND_SPACE));
+  return ((ms << EI_ID_RAND_BITS) + rand).toString();
+}
+
+/**
+ * Allocate the next globally-unique EI-<n> id.
+ *
+ * EI-13285 (root cause): this USED TO scan `MAX(existing EI-<n>) + 1` under a local
+ * advisory lock. That is only unique WITHIN one Postgres instance — it does nothing
+ * to stop a DIFFERENT Hive peer device (its own separate, federation-lagged copy of
+ * `engineer_issues`) from independently computing the exact same "next" integer with
+ * zero coordination. When the two ops later federate together, the projection's
+ * upsert (keyed on the shared issue_id) treats the second writer's op as an EDIT of
+ * the first, silently replacing a distinct, unrelated record — proven live: a freshly
+ * captured local improvement (EI-13236) was clobbered by an unrelated remote
+ * replication-liveness issue that happened to allocate the same id.
+ *
+ * Fix: derive the id from wall-clock time + a wide random tail (no dependency on
+ * scanning replicated, possibly-stale state at all — see
+ * {@link newCollisionResistantIssueTail}), then verify LOCAL uniqueness with a bounded
+ * retry loop. This is:
+ *   - Cross-device collision-SAFE by construction (no shared mutable state to race on).
+ *   - Still ordered close to chronologically (useful for the rare human eyeballing an
+ *     id), and every id minted this way sorts numerically after every legacy
+ *     sequential id (small integers), so existing numeric-sort assumptions hold.
+ *   - Locally exact (the advisory lock + EXISTS-check retry loop below still
+ *     hard-guarantees no two SAME-process racers can walk away with the same id,
+ *     which the entropy alone only makes astronomically unlikely).
+ *
+ * Defense-in-depth for a colliding id that federates in anyway (e.g. from a peer
+ * still running pre-fix code) lives in the projection's writeToPg — see
+ * engineer-issues.ts.
+ */
 async function nextIssueId(sql = getOrgPg().sql): Promise<string> {
   await sql`SELECT pg_advisory_xact_lock(hashtext('papercusp:engineer_issues:next-id'))`;
-  const rows = await sql<{ n: number }[]>`
-    SELECT COALESCE(MAX((substring(issue_id from 4))::int), 0) AS n
-      FROM harness_shared.engineer_issues
-     WHERE issue_id ~ '^EI-[0-9]+$'`;
-  return `EI-${(Number(rows[0]?.n) || 0) + 1}`;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const candidate = `EI-${newCollisionResistantIssueTail()}`;
+    const rows = await sql<{ taken: boolean }[]>`
+      SELECT EXISTS(SELECT 1 FROM harness_shared.engineer_issues WHERE issue_id = ${candidate}) AS taken`;
+    if (!rows[0]?.taken) return candidate;
+  }
+  throw new Error('nextIssueId: exhausted retries allocating a collision-free EI id');
 }
 
 /** Per-op notify_kind, as data (mirrors the fanout-projection registry shape —

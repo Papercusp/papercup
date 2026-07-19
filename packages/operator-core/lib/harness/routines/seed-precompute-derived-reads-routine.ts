@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-precompute-derived-reads-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `5-min sweep of registered derived-read producers.`,
+      `2-min sweep of registered derived-read producers.`,
   );
 
   if (backfill) {

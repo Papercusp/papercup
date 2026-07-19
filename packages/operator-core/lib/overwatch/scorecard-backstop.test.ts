@@ -45,8 +45,8 @@ function mkHealth(over: Partial<Record<keyof typeof BASE, unknown>> = {}): Syste
 }
 
 function assertWellFormed(ratings: Record<string, { rating: string; evidence: string }>) {
-  // exactly the rubric criteria (COORDINATION_CRITERIA — the founding 13 + scheduler-usage),
-  // each with a non-empty rating + non-empty evidence
+  // exactly the rubric criteria (COORDINATION_CRITERIA — the founding 13 + scheduler-usage +
+  // context-burn), each with a non-empty rating + non-empty evidence
   expect(Object.keys(ratings).sort()).toEqual([...COORDINATION_CRITERIA].sort());
   for (const k of COORDINATION_CRITERIA) {
     expect(ratings[k].rating.trim().length).toBeGreaterThan(0);
@@ -58,7 +58,7 @@ function assertWellFormed(ratings: Record<string, { rating: string; evidence: st
 // ── the pure synthesizer ────────────────────────────────────────────────────────
 
 describe('synthesizeCoordinationScorecard', () => {
-  it('returns all 14 keys, each with non-empty evidence', () => {
+  it('returns all 15 keys, each with non-empty evidence', () => {
     assertWellFormed(synthesizeCoordinationScorecard(mkHealth()));
   });
 

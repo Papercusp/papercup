@@ -108,11 +108,17 @@ async function defaultBumpFloorRepeat(id: string, priorCount: number, firstFired
 /** The rubric the Overwatch scorecards against (Owner requirement #1). */
 export const COORDINATION_RUBRIC_REF = 'pot-coordination-health';
 
-/** The 14 pot-coordination-health rubric criterion keys (must cover the rubric —
+/** The 15 pot-coordination-health rubric criterion keys (must cover the rubric —
  *  the capture completeness gate rejects an omitted key). Kept here so the pure
  *  synthesizer is self-contained + unit-testable without a rubric read.
  *  `scheduler-usage` (14th) added by hybrid-bee-scheduler-work-stealing-2026-06-22
- *  P-004 (rubric mig 371) — the within-hive scheduler-usage health characteristic. */
+ *  P-004 (rubric mig 371) — the within-hive scheduler-usage health characteristic.
+ *  `context-burn` (15th) added by the loop-wake context-diet work (EI-7624).
+ *  EI-13292: this list drifted to 14 (missing `context-burn`) after the rubric was
+ *  extended to 15 — the auto-synth floor then filed a 14/15 scorecard that the
+ *  capture completeness gate rejected as INCOMPLETE ("missing required criterion
+ *  key(s): context-burn") every time it fired. Keep in lockstep with
+ *  `rubrics/pot-coordination-health/rubric.json` (the true source of truth). */
 export const COORDINATION_CRITERIA = [
   'end-to-end-flow',
   'ideation-quality',
@@ -128,6 +134,7 @@ export const COORDINATION_CRITERIA = [
   'coordination-utilization',
   'tool-utilization',
   'scheduler-usage',
+  'context-burn',
 ] as const;
 
 export interface ScorecardRating {
@@ -254,6 +261,9 @@ export function synthesizeCoordinationScorecard(
   // judgment-only criteria — honest 'unknown' (a deterministic floor can't assess them).
   // scheduler-usage (per-bee spec authorship + get_next pickup + dedup-floor health) is a
   // claim-path read the floor doesn't make, so it is honest 'unknown' here too.
+  // context-burn (mean wake chars / compaction cadence / post-compaction error markers,
+  // per loop:soak-report) is likewise a read the health-panel-only floor doesn't make —
+  // EI-13292: it must still be RATED (unknown, not omitted) or the scorecard reads INCOMPLETE.
   for (const k of [
     'parallel-distribution',
     'bee-observation-quality',
@@ -261,6 +271,7 @@ export function synthesizeCoordinationScorecard(
     'chatter-economy',
     'coordination-utilization',
     'scheduler-usage',
+    'context-burn',
   ]) {
     r[k] = unknown();
   }

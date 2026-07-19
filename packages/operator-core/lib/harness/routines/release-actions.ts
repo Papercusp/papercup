@@ -251,6 +251,18 @@ export interface CheckpointVerdict {
   /** WI-4957: the full-suite output log this run wrote (structural mirror of
    *  CheckpointResult.logPath), when produced. */
   logPath?: string;
+  /** EI-13288: structural mirror of green-checkpoint.ts's `RedTriage & { tip }` (stale-candidate
+   *  re-triage, 2026-07-10). Present on the not-green path whenever the CLI could re-run the named
+   *  failing files at a newer tip. When `classification === 'stale-candidate'` the CLI's OWN
+   *  re-test already PROVED these exact files pass at `tip` — the auto-refire cap was reached
+   *  before that tip could be confirmed green by a full suite, so this red's failing-test names
+   *  must not be reported as a trustworthy, currently-reproducing verdict (see
+   *  gate-verdict-freshness.ts Rule 3). Never used to change the gate's green/red decision. */
+  retriage?: {
+    classification: 'real-red' | 'stale-candidate' | 'unknown';
+    tip: string | null;
+    detail: string;
+  };
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
@@ -304,7 +316,7 @@ export async function recordCheckpointVerdict(
     status: verdict.reason,
     detail: buildCheckpointDetail(verdict),
   });
-  await trackGateStall(target, verdict.reason, verdict.candidate, verdict.failingTests, verdict.from ?? null);
+  await trackGateStall(target, verdict.reason, verdict.candidate, verdict.failingTests, verdict.from ?? null, verdict.retriage);
   return true;
 }
 
@@ -556,6 +568,9 @@ export async function trackGateStall(
   candidate?: string,
   failingTests?: string[],
   from?: string | null,
+  /** EI-13288: the CLI's own stale-candidate re-triage verdict (see CheckpointVerdict.retriage
+   *  above), when the caller has one. */
+  retriage?: { classification: 'real-red' | 'stale-candidate' | 'unknown'; tip: string | null; detail: string },
 ): Promise<void> {
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
@@ -576,7 +591,7 @@ export async function trackGateStall(
     `SELECT metadata->'gate_health' AS gh FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[] } | null }>;
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null } | null }>;
   const gh = rows[0]?.gh ?? {};
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
@@ -618,7 +633,9 @@ export async function trackGateStall(
     // value with no provenance, and a consumer cannot tell a live verdict from one frozen hours ago
     // by a starved writer (a `skipped-locked` no-op leaves gate_health untouched while still
     // refreshing `last_fired_at`, so `fireStale` reads FRESH). See release/gate-verdict-freshness.ts.
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null };
+    // EI-13288: a stale-candidate note from a PRIOR red streak must not linger once the gate is
+    // green again — same recovery-clear convention as `failingTests` just above.
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -713,6 +730,15 @@ export async function trackGateStall(
     // WI-4489: `observedAt`/`observedCandidate` — see the reset path above. This is the branch that
     // MATTERS: a RED is what misdirects (it dispatches the release-fixer at the tests it names), so
     // a red MUST carry the provenance that lets a reader judge whether it is still true.
+    // EI-13288: the CLI's own re-triage already re-ran these EXACT named failing files at a
+    // newer tip and they PASSED — the auto-refire cap was reached before a full suite could
+    // confirm that tip green, so this verdict's failing-test names are proven-unreliable AT
+    // RECORD TIME, not merely aged. Persist that alongside the (still-recorded, for the streak/
+    // history) failingTests, so a reader (gate-verdict-freshness Rule 3) can tell "still broken"
+    // from "the gate's own evidence says this doesn't reproduce at `tip`" without re-running
+    // anything. Cleared whenever this red's retriage was NOT stale-candidate, so a stale note
+    // from an earlier red in the same streak can never outlive the verdict that produced it.
+    const retriageStale = retriage?.classification === 'stale-candidate';
     next = {
       consecutiveReds,
       lastGreenAt,
@@ -723,6 +749,8 @@ export async function trackGateStall(
       failingTests: (failingTests ?? []).slice(0, 20),
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
+      retriageStaleTip: retriageStale ? (retriage!.tip?.slice(0, 12) ?? null) : null,
+      retriageDetail: retriageStale ? retriage!.detail : null,
     };
   }
   await sql.unsafe(
