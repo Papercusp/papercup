@@ -298,6 +298,7 @@ describe('pot:declare-wake', () => {
     // contradicting the tool's own documented default ("ctx harness or
     // PAPERCUSP_POT_HOME_SLUG"). Fixed: ctx.harnessSlug is now threaded through.
     const res = parse(await tool.handler({ at: '2026-07-01T00:00:00.000Z' }, ctx({ harnessSlug: 'ctx-slug' })));
+    console.log('DEBUG res', res);
     expect(res.ok).toBe(true);
     expect(res.harness).toBe('ctx-slug');
   });
