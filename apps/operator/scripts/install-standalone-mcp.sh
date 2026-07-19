@@ -287,6 +287,7 @@ CC_TURN_JOURNAL_HOOK="${CC_HOOK_DEST_DIR}/stop-turn-journal.sh"
 # question-shaped ending with no structured mirror (loop-guarded via
 # stop_hook_active). Own settings entries (4 — see the script's own header).
 CC_ASK_GATE_HOOK="${CC_HOOK_DEST_DIR}/ask-gate-mirror.sh"
+CC_GUARD_OPERATOR_DESKTOP_HOOK="${CC_HOOK_DEST_DIR}/guard-operator-desktop.mjs"
 
 # Merge our PreToolUse + PostToolUse lock hooks into a settings.json
 # (Claude's ~/.claude/settings.json or a codex-su CODEX_HOME). Idempotent
@@ -863,6 +864,45 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# Merge the desktop-guard hook (EI-16981) as its own PreToolUse entry, matcher-
+# scoped to the browser-navigation MCP tools + the Skill tool. Bash is
+# deliberately NOT matched — see the script's own header (a text-scanning Bash
+# matcher would false-positive on anything that merely mentions these ports).
+# Idempotent: drops any prior entry pointing at our script.
+#   $1 = settings.json path
+merge_guard_operator_desktop_hook() {
+  python3 - "$1" "$CC_GUARD_OPERATOR_DESKTOP_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, guard = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {guard, os.path.basename(guard)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
+arr.append({'matcher': 'mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill',
+            'hooks': [{'type': 'command', 'command': guard}]})
+hooks['PreToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
 # OMP looks for its MCP server config at ~/.omp/agent/mcp.json. The
 # directory may not exist on a fresh OMP install — create it.
 OMP_CONFIG_DIR="${HOME}/.omp/agent"
@@ -1228,6 +1268,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/ask-gate-mirror.sh" "$CC_ASK_GATE_HOOK"
     chmod 755 "$CC_ASK_GATE_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/guard-operator-desktop.mjs" ]; then
+    cp "${CC_HOOK_SRC_DIR}/guard-operator-desktop.mjs" "$CC_GUARD_OPERATOR_DESKTOP_HOOK"
+    chmod 755 "$CC_GUARD_OPERATOR_DESKTOP_HOOK"
+  fi
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
@@ -1252,6 +1296,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_TURN_MEMORY_HOOK" ] && merge_turn_memory_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_JOURNAL_HOOK" ] && merge_turn_journal_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_ASK_GATE_HOOK" ] && merge_ask_gate_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_GUARD_OPERATOR_DESKTOP_HOOK" ] && merge_guard_operator_desktop_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"
   echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
 else

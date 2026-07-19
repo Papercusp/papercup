@@ -16,19 +16,24 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
 
     // PreToolUse: lock-acquire (Edit|Write|MultiEdit) + activity-pre (*) + bash-gate (Bash)
     // + plans-read-guard (Read|Grep, P-003(b)) + ask-gate-mirror
-    // (AskUserQuestion|ExitPlanMode, owner-inbox-single-pane P-001), in install order.
+    // (AskUserQuestion|ExitPlanMode, owner-inbox-single-pane P-001) + guard-operator-desktop
+    // (browser-navigation MCP tools + Skill, EI-16981), in install order.
     expect(commandsFor(cfg, 'PreToolUse')).toEqual([
       `${DEST}/pretooluse-locks-acquire.sh`,
       `${DEST}/pretooluse-activity-report.sh`,
       `${DEST}/pretooluse-bash-resource-gate.sh`,
       `${DEST}/pretooluse-plans-read-guard.sh`,
       `${DEST}/ask-gate-mirror.sh`,
+      `${DEST}/guard-operator-desktop.mjs`,
     ]);
     expect(cfg.hooks.PreToolUse[0].matcher).toBe('Edit|Write|MultiEdit');
     expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
     expect(cfg.hooks.PreToolUse[2].matcher).toBe('Bash');
     expect(cfg.hooks.PreToolUse[3].matcher).toBe('Read|Grep');
     expect(cfg.hooks.PreToolUse[4].matcher).toBe('AskUserQuestion|ExitPlanMode');
+    expect(cfg.hooks.PreToolUse[5].matcher).toBe(
+      'mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill',
+    );
 
     // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge +
     // ask-gate-mirror (in install order). The separate coord-inbox entry is retired —

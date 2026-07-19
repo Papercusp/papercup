@@ -50,15 +50,16 @@ that instead (see [Built-in packs](#built-in-packs-three-of-them)).
 
 ## Where things live
 
-| Piece                  | Location                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Built-in packs         | `libs/papercusp/packages/harness/learnings/<pack-id>/` (manifest.yaml + one-learning-per-file md) — three ship: `papercusp-default`, `coding`, `work`                                                                                                                                                                                                                                                                                                                                                             |
-| Comb-installed packs   | `~/.papercusp/knowledge-packs/<pack-id>/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| A pot's live learnings | mem0 rows, scope `pot:<home-slug>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Pack mute state        | pot setting `knowledge-packs:disabled` (federated hive\_settings)                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Seeding                | `pot:create` step 6b (flag `KNOWLEDGE_PACKS`, default ON; undo-stacked, best-effort)                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Pre-turn injection     | `buildMemoryContextBlock` — pot pool resolved member→pot via the registry's `hive_slug`; token-budgeted (\~4k default, `PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS`), priority user > harness > pot-organic > pot-pack; muted packs filtered                                                                                                                                                                                                                                                                            |
-| Runtime recall scope   | `memory:search` default fan-out is **confined to the session's pot subtree** (P-018, `narrowHarnessSlugsToSessionHive`, `lib/memory/pot-scope.ts`). A pot-scoped agent never cross-recalls sibling pots' harness pools. Workspace-spanning sessions (`harness='*'`) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by `FLAGS.SCOPED_SUPERUSER_CLAMP`; fail-open (flag read error → full fan-out retained). `memory:list` is unaffected (it only adds explicitly-passed pot pools). |
+| Piece                    | Location                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Built-in packs           | `libs/papercusp/packages/harness/knowledge-packs/<pack-id>/` (manifest.yaml + one-learning-per-file md; renamed from `harness/learnings/` — the loader hard-fails on a missing builtin dir, never a soft miss) — three ship: `papercusp-default`, `coding`, `work`                                                                                                                                                                                                                                                |
+| Comb-installed packs     | per-workspace `papercuspRoot()/knowledge-packs/<pack-id>/` (the legacy `learning-packs/` root is migrated on boot)                                                                                                                                                                                                                                                                                                                                                                                                |
+| The `fleet-lessons` pack | **shared root** `workspacesRoot()/shared/knowledge-packs/fleet-lessons/` — workspace-INDEPENDENT, so every workspace resolves the same pack (candidates are fleet-global). Resolution order: builtin → shared → installed; a stray per-workspace copy is shadowed, not merged                                                                                                                                                                                                                                     |
+| A pot's live learnings   | mem0 rows, scope `pot:<home-slug>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Pack mute state          | pot setting `knowledge-packs:disabled` (federated hive\_settings)                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Seeding                  | `pot:create` step 6b (flag `KNOWLEDGE_PACKS`, default ON; undo-stacked, best-effort)                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Pre-turn injection       | `buildMemoryContextBlock` — pot pool resolved member→pot via the registry's `hive_slug`; token-budgeted (\~4k default, `PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS`), priority user > harness > pot-organic > pot-pack; muted packs filtered                                                                                                                                                                                                                                                                            |
+| Runtime recall scope     | `memory:search` default fan-out is **confined to the session's pot subtree** (P-018, `narrowHarnessSlugsToSessionHive`, `lib/memory/pot-scope.ts`). A pot-scoped agent never cross-recalls sibling pots' harness pools. Workspace-spanning sessions (`harness='*'`) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by `FLAGS.SCOPED_SUPERUSER_CLAMP`; fail-open (flag read error → full fan-out retained). `memory:list` is unaffected (it only adds explicitly-passed pot pools). |
 
 ## Built-in packs (three of them)
 
@@ -76,20 +77,76 @@ bindings; project specifics belong in the per-pot override and a separate
 project pack. Because a coding pot defaults to `coding` and a work pot to
 `work`, `papercusp-default` is **not** seeded for those blueprints.
 
-## Candidate-promotion loop (fleet → pack)
+## Candidate-promotion loop (fleet → pack) — auto-adopt behind a transferability bar
 
 A recurring cross-scope friction signature (the recurrence-escalation
 promotion noticing the same pain across ≥2 distinct scopes) is staged as a
-`knowledge_pack_candidates` row — deduped structurally so a dismissed lesson
-never re-nags, and capped (default 20 pending). The **owner** then adopts or
-dismisses it (`knowledge_packs:decide_candidate`); adoption **materializes**
-the item into the `fleet-lessons` pack under the installed-packs root and
-bumps that pack's patch version — it **never** writes into a pot pool
-directly. Pots pick the new item up only through the normal install/upgrade
-conflict review (D-003) — so a candidate becomes recallable wisdom only after
-two deliberate human acts. Surfaced in the Learnings view and via the
-`knowledge_packs:candidates` + `knowledge_packs:decide_candidate` verbs
-(self-improvement-consume-edges P-032).
+`knowledge_pack_candidates` row — deduped by a **normalized** signature
+(instance tokens stripped: hex runs ≥8, pure numbers, uuids) so one lesson
+stages once across instances and a dismissed lesson never re-nags; capped
+(default 20 pending). Staging also admits a `transfer_lessons` row
+(`admitTransferLesson`, sourceKind `pack-candidate`) so the transfer-lesson
+machinery sees pack candidates through the same edge.
+
+Candidates are then **auto-reviewed** on the improvement-triage cadence
+(WI-5414 — the owner reversed the original human adopt gate) through a
+**two-stage review** (`candidates.ts` + `candidate-review.ts`,
+knowledge-pack-loop-integrity P-001):
+
+1. **Transferability judge + distiller** (gateway-routed LLM,
+   `LessonDistillerLlm` port): adoptable only if another agent, given it
+   BEFORE a similar task in a DIFFERENT project, would do measurably better.
+   Raw incident reports, ephemeral operational state, and instance-bound text
+   **fail** (dismissed with a note). A **pass** REWRITES the draft into the
+   compact rule (title ≤120 chars, text ≤1,200) — the pack carries the
+   distilled text; the candidate row keeps the raw provenance.
+2. **Contradiction check** against the existing fleet-lessons items (the
+   original WI-5414 review).
+
+Failure posture (D-004 — the reverse of the old fail-open-to-adopt): a judge
+**error** leaves the candidate PENDING for the next tick; never
+adopt-by-default. Adoption **materializes** the distilled item into the
+`fleet-lessons` pack at the **shared root** and bumps its patch version — it
+**never** writes into a pot pool directly; pools pick it up via the delivery
+routine below (still D-003: the install review, defaults skip clashes).
+`knowledge_packs:candidates` + `knowledge_packs:decide_candidate` remain the
+manual surfaces (Learnings view; self-improvement-consume-edges P-032).
+
+## Last mile + hygiene — the two scheduled routines
+
+Both are `registerSystemAction` system actions
+(`lib/harness/routines/knowledge-pack-actions.ts`), seeded as routines by
+`seed-improvement-routines.ts` and gated by the same master
+`FLAGS.KNOWLEDGE_PACKS` that gates seeding and every `knowledge_packs:*` verb:
+
+* **`knowledge-pack-delivery`** (every 6 h at :30) — the fleet-lessons last
+  mile. Before it, adoption was inert: the pack version bumped, but
+  `updateAvailable` only lights for pools already carrying the pack, and no
+  pool had ever installed it. Each tick, for every LOCAL hive (bounded per
+  tick) unless the hive muted the pack (`knowledge-packs:disabled`):
+  `planPackUpgrade(fleet-lessons)` → `applyPackInstall` with default
+  resolutions — clean items install; duplicates/conflicts **skip** (D-003
+  preserved: existing pool content outranks the incoming pack, nothing is
+  overwritten). For a pool with zero pack rows the NEW-items set is the whole
+  pack, so install and upgrade are one code path. `pot:create` also seeds
+  fleet-lessons alongside the blueprint pack when it has items.
+* **`knowledge-pack-hygiene`** (daily 05:00) — knowledge decays; one bounded
+  tick, three passes, conservative-by-construction (**only PRISTINE pack rows
+  are ever auto-deleted**; organic/edited content is filed, never deleted):
+  1. **Pack re-review** — fleet-lessons items whose adoption is older than
+     `minAgeDays` are re-run through the SAME transferability judge; a FAIL
+     retires the item (pack file removed + manifest patch-bumped + each
+     hive's pristine pool rows of it forgotten — edited rows kept, same rule
+     as uninstall). Judge error ⇒ untouched (D-004: never destroy on a broken
+     judge); hand-authored items with no candidate row are never auto-retired.
+  2. **Conflict sweep** — `sweepHiveConflicts` per local hive (bounded);
+     auto-resolved ONLY when exactly one side is a pristine pack row and the
+     other organic — the pack row is forgotten (organic outranks pack,
+     mirroring install-review D-003). Every other pair (organic vs organic,
+     edited, pack vs pack) is FILED via improvements capture.
+  3. **Queue prune** — dismissed candidate rows older than
+     `pruneDismissedDays` are deleted; adopted rows are provenance and kept
+     forever.
 
 ## Surfaces
 

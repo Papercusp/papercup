@@ -40,7 +40,13 @@ export interface PerfSignalsV1 {
     psi?: {
       cpu?: { some?: { avg60?: number | null } | null } | null;
       io?: { some?: { avg60?: number | null } | null } | null;
-      memory?: { some?: { avg60?: number | null } | null } | null;
+      memory?: {
+        some?: { avg60?: number | null } | null;
+        /** WI-5471: `full` (%time ALL non-idle tasks stalled) is the meaningful
+         *  memory-thrashing signal — captured by capture-signals.py all along,
+         *  now also read by the budget evaluator. */
+        full?: { avg60?: number | null } | null;
+      } | null;
     } | null;
     /** Per-uid inotify usage (2026-07-10 meltdown class: a silent watch balloon —
      *  94.5k watches/process × 16 workers — starved the host with no signal). */
@@ -93,6 +99,21 @@ export interface PerfBudgets {
    *  cores). Meltdown 2026-07-10: 94.8; healthy: <1. */
   psiCpuSomeWarn: number;
   psiCpuSomeCrit: number;
+  /** PSI memory `some avg60` (%time ≥1 task stalled on memory reclaim/swap over the
+   *  last minute) — WARN tier: early reclaim pressure, before it graduates to a
+   *  full stall. */
+  psiMemorySomeWarn: number;
+  /** PSI memory `full avg60` (%time ALL non-idle tasks were stalled on memory at
+   *  once — true thrashing). Unlike cpu `full` (near-impossible on a 128-core box,
+   *  hence not budgeted), memory `full` is routinely nonzero under real reclaim/
+   *  swap pressure and is the CRIT tier here. WI-5471 (2026-07-19) traced a chronic
+   *  bg-host event-loop-lag / PG-pool-starvation regression (600s scout timeouts,
+   *  120s outbox-drain pass-timeouts) to sustained memory PSI full avg60 of
+   *  2.6-9.4% while cpu PSI stayed flat at 0 the whole time — this class was
+   *  captured (capture-signals.py always reads psi.memory) but silently NEVER
+   *  evaluated by this budget, so the actual driver was invisible to the infra
+   *  panel and only found via manual /proc/pressure/memory + vmstat forensics. */
+  psiMemoryFullCrit: number;
   /** Per-session dir population (either root) above this is a stalled
    *  archive-at-death lifecycle (warn — the reconciler/exit-hook stopped).
    *  Steady state post-backfill ≈ live sessions (~60) + churn; the pre-plan
@@ -122,6 +143,8 @@ export const PERF_BUDGETS: PerfBudgets = {
   inotifyLimitCritFrac: 0.8,
   psiCpuSomeWarn: 40,
   psiCpuSomeCrit: 85,
+  psiMemorySomeWarn: 10,
+  psiMemoryFullCrit: 5,
   sessionDirsWarn: 2_000,
   staleMs: 10 * 60_000,
   blindMs: 30 * 60_000,
@@ -145,6 +168,11 @@ export interface PerfVerdict {
   inotifyMaxPerProc: { pid: number; comm: string; watches: number } | null;
   /** PSI cpu `some avg60` — %time ≥1 task starved for CPU. */
   psiCpuSome60: number | null;
+  /** PSI memory `some avg60` — %time ≥1 task stalled on memory reclaim/swap. */
+  psiMemorySome60: number | null;
+  /** PSI memory `full avg60` — %time ALL non-idle tasks stalled on memory (real
+   *  thrashing; WI-5471's actual root-cause signal). */
+  psiMemoryFull60: number | null;
   /** Per-session dir populations (archive-at-death lifecycle gauge). */
   sessionDirs: { claudeOwnerDirs: number | null; codexHomes: number | null } | null;
   ageMs: number | null;
@@ -188,6 +216,7 @@ export function evaluatePerfSignals(
     worstWorkerCpuPct: null, worstWorkerRssKb: null, closeWait: null,
     eventLoopLagP95Ms: null, operatorReachable: null,
     inotifyTotalWatches: null, inotifyMaxPerProc: null, psiCpuSome60: null,
+    psiMemorySome60: null, psiMemoryFull60: null,
     sessionDirs: null,
     ageMs: null, stale: false, suppressedReasons: [],
   };
@@ -205,6 +234,8 @@ export function evaluatePerfSignals(
   const inotifyMax = s.inotify?.maxPerProcess ?? null;
   const inotifyLimit = typeof s.inotify?.limits?.maxUserWatches === 'number' ? s.inotify.limits.maxUserWatches : null;
   const psiCpu = typeof s.psi?.cpu?.some?.avg60 === 'number' ? s.psi.cpu.some.avg60 : null;
+  const psiMemSome = typeof s.psi?.memory?.some?.avg60 === 'number' ? s.psi.memory.some.avg60 : null;
+  const psiMemFull = typeof s.psi?.memory?.full?.avg60 === 'number' ? s.psi.memory.full.avg60 : null;
   const sessionDirs = s.sessionDirs
     ? {
         claudeOwnerDirs: typeof s.sessionDirs.claudeOwnerDirs === 'number' ? s.sessionDirs.claudeOwnerDirs : null,
@@ -217,6 +248,7 @@ export function evaluatePerfSignals(
     worstWorkerCpuPct: worstCpu, worstWorkerRssKb: worstRss, closeWait,
     eventLoopLagP95Ms: lag, operatorReachable: reachable,
     inotifyTotalWatches: inotifyTotal, inotifyMaxPerProc: inotifyMax, psiCpuSome60: psiCpu,
+    psiMemorySome60: psiMemSome, psiMemoryFull60: psiMemFull,
     sessionDirs,
     ageMs,
     stale: ageMs !== null && ageMs > budgets.staleMs,
@@ -260,6 +292,9 @@ export function evaluatePerfSignals(
     crit.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitCritFrac * 100)}% of max_user_watches ${inotifyLimit} — ENOSPC imminent, fs.watch boots will fail fleet-wide`);
   }
   if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) crit.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`);
+  if (psiMemFull !== null && psiMemFull >= budgets.psiMemoryFullCrit) {
+    crit.push(`PSI memory full avg60 ${psiMemFull} ≥ ${budgets.psiMemoryFullCrit} — all tasks stalled on memory reclaim/swap (WI-5471 class: real thrashing, not a CPU issue)`);
+  }
   if (crit.length) return { ...v, status: 'crit', degraded: true, reasons: crit, suppressedReasons: suppressed };
 
   // ── WARN: hot-but-not-fatal ────────────────────────────────────────────────────
@@ -275,6 +310,7 @@ export function evaluatePerfSignals(
     warn.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitWarnFrac * 100)}% of max_user_watches ${inotifyLimit}`);
   }
   if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeWarn) warn.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeWarn} — sustained CPU starvation pressure`);
+  if (psiMemSome !== null && psiMemSome >= budgets.psiMemorySomeWarn) warn.push(`PSI memory some avg60 ${psiMemSome} ≥ ${budgets.psiMemorySomeWarn} — sustained memory reclaim pressure`);
   for (const [label, n] of [
     ['session-claude owner dirs', sessionDirs?.claudeOwnerDirs],
     ['codex per-session homes', sessionDirs?.codexHomes],

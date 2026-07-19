@@ -162,16 +162,32 @@ export function hasThinking(
  *  (claude sessionId · codex adv-row id · omp thread id); null when none. Pure.
  *  The claude leg gets the agent's `ownerId` as a hint so the backend jumps
  *  straight to that session's isolation dir instead of sweeping all of them (the
- *  ~3s → ms fix). */
+ *  ~3s → ms fix).
+ *
+ *  EI-16982: the claude leg also passes `ended=1` whenever the server already
+ *  told us (`thinkingResolvable === false`) that no on-disk transcript exists
+ *  for this session. Without it, the backend `/adv/session/thinking` route has
+ *  no way to distinguish "a live agent that hasn't taken its first turn yet"
+ *  (keep polling) from "an ended agent whose transcript was archived + deleted"
+ *  (rematerialize from `harness_shared.session_archives`, WI-3990) — and always
+ *  took the former branch, so a parked/ended session's history silently never
+ *  loaded even though the archive held it. This was true for ~97% of agents
+ *  (measured), not an edge case. `ended` is omitted (not `0`) when resolvable —
+ *  the backend treats its absence as "don't know", same as before, for the
+ *  live-session case where this signal isn't yet available. */
 export function thinkingStreamUrl(
-  a: Pick<RosterAgent, 'ownerId' | 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId'>,
+  a: Pick<
+    RosterAgent,
+    'ownerId' | 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'
+  >,
 ): string | null {
   if (a.runId && a.harnessSlug) {
     return `/api/harness/${encodeURIComponent(a.harnessSlug)}/agents/${encodeURIComponent(a.runId)}/stream?phase=staging`;
   }
   if (a.sessionId) {
     const owner = a.ownerId ? `&owner=${encodeURIComponent(a.ownerId)}` : '';
-    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(a.sessionId)}${owner}`;
+    const ended = a.thinkingResolvable === false ? '&ended=1' : '';
+    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(a.sessionId)}${owner}${ended}`;
   }
   if (a.agent === 'codex' && a.advSessionId != null) {
     return `/api/adv/session/thinking?codexSessionKey=${encodeURIComponent(String(a.advSessionId))}`;

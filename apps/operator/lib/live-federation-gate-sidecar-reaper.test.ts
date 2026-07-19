@@ -51,9 +51,11 @@ describe('EI-14500 — live-federation-gate reaps its leaked packaged-server sid
 
   it('the EXIT trap fires the reaper — so it runs on EVERY exit path, not just the happy one', () => {
     // The single EXIT trap already reaped the port-guard sweep; the reaper joins it there
-    // (an EXIT trap fires on early/non-zero/normal exit alike — the fix requirement).
+    // (an EXIT trap fires on early/non-zero/normal exit alike — the fix requirement). It
+    // also cleans up the EI-16828 self-snapshot dir (bash traps don't stack — only ONE
+    // EXIT trap handler is ever active — so every EXIT-time cleanup lives in this one line).
     expect(src).toContain(
-      `trap 'guard_prod_ports exit-trap; reap_gate_sidecars; kill "$GUARD_SWEEP_PID" 2>/dev/null || true' EXIT`,
+      `trap 'guard_prod_ports exit-trap; reap_gate_sidecars; kill "$GUARD_SWEEP_PID" 2>/dev/null || true; rm -rf -- "${GATE_SELF_SNAPSHOT_DIR:-}" 2>/dev/null || true' EXIT`,
     );
     // And it is a real reaper, not a no-op.
     expect(src).toContain('reap_gate_sidecars() {');

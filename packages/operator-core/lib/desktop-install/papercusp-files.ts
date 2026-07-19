@@ -519,6 +519,13 @@ const CC_HOOK_FILES = [
   // permission-wait capture, and a Stop `<ask>`-tag mirror + question-shaped-ending
   // bounce. See the script's own header for the full four-branch contract.
   'ask-gate-mirror.sh',
+  // EI-16981: keep agents on the Tauri desktop shell, not the retired browser
+  // webapp — blocks browser-navigation MCP tools + the verdict skill when
+  // pointed at the operator's desktop-internal ports (:3055/:3070/:3170).
+  // Previously lived at repo-root scripts/cc-hooks/ and was never wired into
+  // any installer (dead code with a misleading "Registered" comment); moved
+  // here and wired below.
+  'guard-operator-desktop.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1436,6 +1443,15 @@ export function mergeClaudeHookSettings(
     for (const e of ['Notification', 'Stop'])
       hooks[e] = replaceOurHookEntries(ev(e), ours('ask-gate-mirror.sh'), { hooks: cmd('ask-gate-mirror.sh') });
   }
+  // merge_guard_operator_desktop_hook — PreToolUse, matcher scoped to the
+  // browser-navigation MCP tools + the Skill tool (NOT Bash — see the script's
+  // own header). EI-16981: this hook existed in-repo but was never wired.
+  if (has('guard-operator-desktop.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('guard-operator-desktop.mjs'), {
+      matcher:
+        'mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill',
+      hooks: cmd('guard-operator-desktop.mjs'),
+    });
 
   return cfg;
 }
