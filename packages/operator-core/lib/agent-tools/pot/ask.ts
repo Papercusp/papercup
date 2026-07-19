@@ -12,7 +12,7 @@
  * pot:asks first.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText } from '../limits';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -42,7 +42,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    pot: z.string().min(1).max(120).describe("THIS Pot's home slug — the asking Pot (signer + boundary are scoped to it)."),
+    pot: entityRef('pot', { soft: true, max: 120, describe: "THIS Pot's home slug — the asking Pot (signer + boundary are scoped to it)." }),
     peerPotPubkey: z.string().min(1).max(400).describe('The peer Pot\'s pubkey (from discovery:pots) to address the ask to.'),
     subject: z.string().min(1).max(200).describe('A short subject line for the ask.'),
     body: hardText(8000).describe('The question body.'),

@@ -68,8 +68,17 @@ describe('readDerivedSnapshot', () => {
     expect(compute).not.toHaveBeenCalled();
   });
 
-  it('returns a MISSING result rather than computing when no snapshot exists yet', async () => {
-    const compute = vi.fn().mockResolvedValue(['fresh']);
+  it('returns MISSING immediately on a cold read — never inlining the compute', async () => {
+    // The invariant is that the read does not WAIT on the expensive work. It may
+    // (and does) kick a background warm-up; what it must never do is block on it,
+    // because blocking is precisely the cold-load stall precompute removes.
+    let resolveCompute: (v: unknown) => void = () => {};
+    const compute = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCompute = resolve;
+        }),
+    );
     registerDerivedRead({
       key: 'test.slow',
       ttlMs: 60_000,
@@ -77,15 +86,15 @@ describe('readDerivedSnapshot', () => {
       scope: 'workspace',
       compute,
     });
-    sqlResults = [[]];
+    sqlResults = [[], []];
 
+    // The compute promise is deliberately left PENDING: if the read awaited it,
+    // this line would hang rather than resolve.
     const { payload, meta } = await readDerivedSnapshot('test.slow');
 
     expect(payload).toBeNull();
     expect(meta.missing).toBe(true);
-    // A cold read must NOT fall back to a 20s inline walk — that is the stall
-    // this whole change exists to remove.
-    expect(compute).not.toHaveBeenCalled();
+    resolveCompute([]);
   });
 
   it('treats a snapshot from an older producerVersion as absent, not as data', async () => {
@@ -202,7 +211,13 @@ describe('readDerivedSnapshot', () => {
   it('prefers the precomputed path when the flag read itself fails', async () => {
     // A flag-service blip must not silently reintroduce the 20s inline walk.
     getFlagMock.mockRejectedValue(new Error('flag service down'));
-    const compute = vi.fn();
+    let resolveCompute: (v: unknown) => void = () => {};
+    const compute = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCompute = resolve;
+        }),
+    );
     registerDerivedRead({
       key: 'test.slow',
       ttlMs: 60_000,
@@ -210,11 +225,15 @@ describe('readDerivedSnapshot', () => {
       scope: 'workspace',
       compute,
     });
-    sqlResults = [[]];
+    sqlResults = [[], []];
 
-    await readDerivedSnapshot('test.slow');
+    const { payload, meta } = await readDerivedSnapshot('test.slow');
 
-    expect(compute).not.toHaveBeenCalled();
+    // Took the SNAPSHOT path (a miss), not the flag-off inline-compute path —
+    // an inline result would have come back with precomputed:false and a payload.
+    expect(meta.precomputed).toBe(true);
+    expect(payload).toBeNull();
+    resolveCompute([]);
   });
 });
 

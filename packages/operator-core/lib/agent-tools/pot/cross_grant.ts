@@ -13,7 +13,7 @@
  * Swarm of this Pot (uniform policy).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -45,7 +45,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    pot: z.string().min(1).max(120).describe("This Pot's home slug (grants are Pot-scoped + federate to its Swarms)."),
+    pot: entityRef('pot', { soft: true, max: 120, describe: "This Pot's home slug (grants are Pot-scoped + federate to its Swarms)." }),
     action: z.enum(['grant', 'revoke', 'list']),
     direction: z
       .enum(['in', 'out'])

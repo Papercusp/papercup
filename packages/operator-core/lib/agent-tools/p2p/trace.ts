@@ -11,7 +11,7 @@
  * threads through every receipt/audit/log line on both sides).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { listP2pReceipts, listRefusedOpCounters } from '../../p2p/receipts';
@@ -33,7 +33,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    pot: z.string().min(1).describe('the pot HOME slug whose P2P timeline to read'),
+    pot: entityRef('pot', { soft: true, max: 120, describe: 'the pot HOME slug whose P2P timeline to read' }),
     offerId: z
       .string()
       .min(1)

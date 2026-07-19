@@ -88,6 +88,21 @@ export function shouldNudgeHive(args: { staleCount: number; alreadyFiredRecently
   return args.staleCount > 0 && !args.alreadyFiredRecently;
 }
 
+/**
+ * PURE (EI-13220): human-readable elapsed duration for "unreviewed for …" messaging —
+ * days+hours once past a day, otherwise whole hours, otherwise "<1h". Never negative
+ * (a clock skew or a draft touched after `now` reads as "<1h", never "-3h").
+ */
+export function formatStaleDuration(ms: number): string {
+  const clamped = Math.max(0, ms);
+  const totalHours = Math.floor(clamped / 3_600_000);
+  if (totalHours < 1) return '<1h';
+  if (totalHours < 24) return `${totalHours}h`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+}
+
 // ── the PG sweep ──────────────────────────────────────────────────────────────
 
 interface DraftRow {
@@ -163,14 +178,28 @@ export async function fireReviewWake(
   stale: readonly ScoutDraftCandidate[],
   staleSec: number,
   harnessSlug: string | null = null,
+  now: number = Date.now(),
 ): Promise<void> {
   const hours = Math.max(1, Math.round(staleSec / 3_600));
   const shown = stale.slice(0, 5);
-  const list = shown.map((s) => `• ${s.planSlug}${s.title ? ` — ${s.title}` : ''}`).join('\n');
+  // EI-13220: the message used to report only the fixed THRESHOLD (e.g. "> 1h"),
+  // never each draft's actual elapsed staleness — so a draft stuck for WEEKS
+  // (confirmed live: scout-rubric-hive-coordination-health-scorecard-2026-06-26
+  // fired hourly from 2026-06-29 to 2026-07-17, unreviewed the entire time) read
+  // identically to one that just barely crossed the threshold, making a genuine
+  // multi-week starvation look like near-miss noise — which is very likely why
+  // that exact fire was mistaken for a "phantom"/nonexistent draft rather than
+  // investigated as the real, severe backlog it was. Surface each draft's actual
+  // age so the alert can't be mistaken for noise again.
+  const list = shown
+    .map((s) => `• ${s.planSlug}${s.title ? ` — ${s.title}` : ''} (unreviewed for ${formatStaleDuration(now - s.updatedAtMs)})`)
+    .join('\n');
   const more = stale.length > shown.length ? `\n…and ${stale.length - shown.length} more.` : '';
+  const oldestStaleMs = shown.length > 0 ? now - shown[0].updatedAtMs : 0;
   const summary =
-    `Scout-draft review backstop: ${stale.length} scout-routed draft(s) unreviewed > ${hours}h (the ` +
-    `plan-review idle activity never ran — the hive has been saturated, so the Queen was never idle). ` +
+    `Scout-draft review backstop: ${stale.length} scout-routed draft(s) unreviewed > ${hours}h ` +
+    `(oldest: ${formatStaleDuration(oldestStaleMs)} since last update — the plan-review idle activity ` +
+    `never ran — the hive has been saturated, so the Queen was never idle). ` +
     `This is a backstop WAKE, not an idle activity: review each and either promote it (= ready), coord:send ` +
     `feedback to its scout owner to iterate, or deprecate it WITH learnings (never just leave it). Clearing ` +
     `or progressing them stops this wake.\n\n${list}${more}`;
@@ -178,7 +207,12 @@ export async function fireReviewWake(
     workspaceId,
     mugOwner: queenOwner,
     summary,
-    payload: { kind: 'scout-draft-review', slugs: stale.map((s) => s.planSlug), staleHours: hours },
+    payload: {
+      kind: 'scout-draft-review',
+      slugs: stale.map((s) => s.planSlug),
+      staleHours: hours,
+      oldestStaleMs,
+    },
     source: 'scout-draft-review',
     body: `${list}${more}`,
     harnessSlug,
@@ -215,8 +249,15 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
         // EI-XXXX: use atomic claimWatchdogFire (with advisory lock) instead of non-atomic
         // check-then-act pattern (recentWatchdogFires + recordFire) to prevent race-condition
         // duplicate fires when concurrent sweeps run. Same pattern as watchdog.ts EI-6760.
+        //
+        // EI-13220: `reason` (the row this lands on, in hive_watchdog_fires) used to report
+        // only the fixed threshold ("> Nh"), never the oldest draft's ACTUAL elapsed
+        // staleness — indistinguishable from a near-miss even after weeks unreviewed
+        // (confirmed live). Include it so the fire ledger itself is self-explanatory.
+        const oldestStaleMs = now - stale[0].updatedAtMs;
         const reason =
-          `${stale.length} scout-routed draft(s) unreviewed > ${windowHours}h: ` +
+          `${stale.length} scout-routed draft(s) unreviewed > ${windowHours}h ` +
+          `(oldest: ${formatStaleDuration(oldestStaleMs)}): ` +
           stale.slice(0, 5).map((s) => s.planSlug).join(', ');
         const claimed = await claimWatchdogFire({
           workspaceId,
@@ -230,9 +271,9 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
           results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced' });
           continue;
         }
-        
+
         const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
-        await fireReviewWake(workspaceId, queenOwner, stale, staleSec, installSlug);
+        await fireReviewWake(workspaceId, queenOwner, stale, staleSec, installSlug, now);
         results.push({ workspaceId, installSlug, outcome: 'nudged', staleCount: stale.length, reason });
       } catch (e) {
         results.push({

@@ -5,7 +5,7 @@
  * is the standalone teardown for a demo / when a hive no longer needs GUI work.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { hiveDesktop, releaseHiveDesktop } from './desktop-lease';
 
@@ -33,7 +33,7 @@ export default defineTool({
   agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z
     .object({
-      pot: z.string().min(1).max(120).describe("The pot's home-harness slug whose desktop to release."),
+      pot: entityRef('pot', { soft: true, max: 120, describe: "The pot's home-harness slug whose desktop to release." }),
     })
     .strict(),
   async handler(args) {

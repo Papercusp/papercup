@@ -290,9 +290,13 @@ implemented: `harness_shared.derived_read_snapshots` + the producer registry in
 
 | query                 | before | after      |
 | --------------------- | ------ | ---------- |
-| `learning.soakReport` | 27.3s  | **0.010s** |
-| `storage.usage`       | 20.0s  | **0.056s** |
-| `plans.lint`          | 13.8s  | **0.003s** |
+| `learning.soakReport` | 27.3s  | **0.091s** |
+| `storage.usage`       | 20.0s  | **0.092s** |
+| `plans.lint`          | 13.8s  | **0.130s** |
+
+And the amplifier, measured directly: a batch requesting all three together
+returns in **0.54s**. Before, that same batch took as long as its slowest member
+— over 27 seconds — because `Promise.all` waits for the last one.
 
 To add one: register a producer in `derived-reads/producers.ts` and make the
 resolver `return readDerivedSnapshotRows('<key>')`. A read NEVER computes on a

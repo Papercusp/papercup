@@ -14,7 +14,7 @@
  * automatically on pot:dissolve.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { ensureHiveDesktop, hiveDesktop } from './desktop-lease';
 
@@ -46,7 +46,7 @@ export default defineTool({
   agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z
     .object({
-      pot: z.string().min(1).max(120).describe("The pot's home-harness slug to equip with a desktop."),
+      pot: entityRef('pot', { soft: true, max: 120, describe: "The pot's home-harness slug to equip with a desktop." }),
       apps: z
         .array(z.array(z.string().min(1)).min(1).max(16))
         .max(16)

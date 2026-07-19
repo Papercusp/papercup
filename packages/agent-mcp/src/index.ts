@@ -25,6 +25,10 @@ import './capability-tiers-papercusp';
 import './entity-resolvers-papercusp';
 
 export { defineTool } from '@papercusp/tooldef';
+// tool-arg-referential-integrity P-001: re-exported beside `defineTool` so an arg
+// naming a durable entity is declared `entityRef('pot')` right where the tool is
+// written, with no extra import path to discover.
+export { entityRef, type EntityKind } from '@papercusp/tooldef';
 // Payload tiers (context-trimming-tiers-2026-07-01 D-004): the trimmed/standard/full
 // axis over WHAT a tool returns. Hosts parse the session tier (parsePayloadTier) into
 // ctx.contextTier; tools declare per-tier `shape` projections on defineTool.

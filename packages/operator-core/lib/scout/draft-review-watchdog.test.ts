@@ -18,6 +18,7 @@ import {
   shouldNudgeHive,
   scoutDraftReviewStaleSec,
   fireReviewWake,
+  formatStaleDuration,
   type ScoutDraftCandidate,
 } from './draft-review-watchdog';
 
@@ -88,6 +89,50 @@ describe('fireReviewWake (WI-2187 — stable Mug seam)', () => {
   it('still invokes the durable seam when the prior wake has no current owner', async () => {
     await fireReviewWake('ws-1', null, [draft('scout-y', 24)], 43_200, 'pot-1');
     expect(wakeMug).toHaveBeenCalledWith(expect.objectContaining({ mugOwner: null, harnessSlug: 'pot-1' }));
+  });
+
+  // EI-13220: a draft stuck for WEEKS (confirmed live:
+  // scout-rubric-hive-coordination-health-scorecard-2026-06-26 fired hourly for
+  // ~3 weeks unreviewed) used to read identically to one that just crossed the
+  // fixed threshold — indistinguishable from noise. Assert the real elapsed
+  // staleness now reaches both the wake summary/body and the payload.
+  it('surfaces each draft\'s ACTUAL elapsed staleness, not just the fixed threshold', async () => {
+    const now = NOW;
+    await fireReviewWake('ws-1', 'queen-owner-1', [draft('scout-stale-for-weeks', 21 * 24)], 3_600, 'pot-1', now);
+    const call = wakeMug.mock.calls[0][0];
+    expect(call.summary).toContain('21d');
+    expect(call.body).toContain('21d');
+    expect(call.payload.oldestStaleMs).toBe(21 * 24 * HOUR);
+  });
+
+  it('defaults `now` to Date.now() when omitted (real-world call sites never pass a stale clock)', async () => {
+    const before = Date.now();
+    await fireReviewWake('ws-1', 'queen-owner-1', [{ planSlug: 'x', title: null, updatedAtMs: before }], 3_600);
+    const call = wakeMug.mock.calls[0][0];
+    expect(call.payload.oldestStaleMs).toBeGreaterThanOrEqual(0);
+    expect(call.payload.oldestStaleMs).toBeLessThan(5_000); // sanity: not some huge stale default
+  });
+});
+
+describe('formatStaleDuration (EI-13220)', () => {
+  it('reports sub-hour staleness as "<1h" (never a misleading "0h")', () => {
+    expect(formatStaleDuration(0)).toBe('<1h');
+    expect(formatStaleDuration(30 * 60_000)).toBe('<1h');
+  });
+
+  it('reports whole hours under a day', () => {
+    expect(formatStaleDuration(5 * HOUR)).toBe('5h');
+    expect(formatStaleDuration(23 * HOUR)).toBe('23h');
+  });
+
+  it('reports days once past 24h, with leftover hours', () => {
+    expect(formatStaleDuration(24 * HOUR)).toBe('1d');
+    expect(formatStaleDuration(25 * HOUR)).toBe('1d 1h');
+    expect(formatStaleDuration(21 * 24 * HOUR)).toBe('21d');
+  });
+
+  it('never goes negative (a clock skew reads as "<1h", never "-3h")', () => {
+    expect(formatStaleDuration(-10_000)).toBe('<1h');
   });
 });
 
