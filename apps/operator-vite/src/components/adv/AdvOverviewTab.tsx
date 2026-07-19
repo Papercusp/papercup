@@ -1,10 +1,10 @@
 import { useMemo } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { ArrowRight, ListChecks, Users, Bell, Activity as ActivityIcon } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
-import { deriveLiveness } from '@papercusp/operator-core/lib/liveness';
-import { getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 import FleetRateControl from './FleetRateControl';
+import { isRunningAgent, type RosterAgent } from './AgentsRunningPill';
+import { isSystemConversationActor } from './AdvConversationsTab';
 import {
   usePlanList,
   usePlanAttention,
@@ -36,50 +36,39 @@ import { useLexicon } from '@/lib/useLexicon';
  *
  * Both tiles read via @papercusp/sync (one audited path), replacing the old 8s
  * setInterval over /api/adv/roster + /api/agent-tools/activity/recent
- * (data-sync-push-completion P-006). Both are now SSE PUSH-driven — by different producers:
- *  - Roster → `dev.coordPresence`: coord_presence carries the per-row emit_change_notify
- *    trigger, so a heartbeat/intent/claim write invalidates live.
- *  - Activity → `userActions.byHarness` / `userActions.recent` (All-Pots): user_actions is an
- *    APPEND-HEAVY log INTENTIONALLY without the per-row trigger (per-row pg_notify on a
- *    high-write log = notify-storm; COVERAGE_EXEMPT, mig 376). Its live invalidation is the
- *    server-side DEBOUNCED change-detector (append-heavy-invalidator.ts; P-005/D-012): one
- *    max(id) poll/table → a synthesized `<table>.changed` invalidation when it advances. So
- *    NO client poll is needed here (D-011's stopgap pollIntervalMs dropped); the 180s
- *    drift-repair is the gap insurance if the detector is flag-off/down.
+ * (data-sync-push-completion P-006). Both are SSE PUSH-driven:
+ *  - Agents → `advRoster.list` (the SAME query + `isRunningAgent` predicate the
+ *    header AgentsRunningPill and the sidebar Fleet pane use), so the tile can
+ *    never disagree with the "N agents running" pill. WI-5517: this tile
+ *    previously re-derived liveness client-side from raw `dev.coordPresence`
+ *    heartbeats — `heartbeat_at` reaches the wire as a PG-text timestamp
+ *    ("2026-07-19 15:23:28-04"), which WebKit's Date parser rejects (NaN),
+ *    so EVERY row derived 'stale' and the tile showed "No live agents" in the
+ *    Tauri webview while the header pill (server-derived liveness) was right.
+ *    Liveness derivation belongs to the server oracle; never re-derive it
+ *    client-side from timestamps.
+ *  - Activity → `dev.coordFeed` (the coordination stream, agent-authored rows):
+ *    the previous `user_actions` source is a DEAD TABLE (last write 2026-05-11,
+ *    workspace_id ''/'default' only) — the fleet's real activity rides the
+ *    coord stream (completions, handoffs, escalations, reports), same source
+ *    the Conversations Raw-events view reads. Rows deep-link into it.
  */
 
-// ── roster: the subset of a `dev.coordPresence` PresenceRecord the Agents tile
-//    renders, after mapping (ownerLabel→label, agentRole→role, source→agent) +
-//    a client-derived liveness (deriveLiveness on heartbeatAt). ─────────────
+// ── roster: the subset of an `advRoster.list` active entry the Agents tile
+//    renders. Liveness is SERVER-derived on the roster entry (the shared
+//    oracle) — never re-derived client-side from timestamps (WI-5517). ──────
 export interface OverviewRosterEntry {
   ownerId: string;
   label: string;
   intent: string;
-  currentFiles: string[];
   liveness: 'live' | 'idle' | 'stale' | string;
   currentPlanSlug: string | null;
   role: string | null;
   agent: string | null;
 }
 
-// ── one `dev.coordPresence` row (PresenceRecord — the fields this tile maps).
-//    The resolver already filters out stale rows server-side; we still derive
-//    a live/idle class for the dot from heartbeatAt. ────────────────────────
-interface PresenceRow {
-  ownerId: string;
-  ownerLabel: string;
-  intent: string;
-  currentFiles: string[];
-  currentPlanSlug: string | null;
-  agentRole: string | null;
-  source: string;
-  heartbeatAt: string;
-  stale?: boolean;
-}
-
-// ── activity: the subset of a `userActions.byHarness` row the Activity tile
-//    renders. `user_actions` has no agent/tool_name/created_at columns — the
-//    actor is `actor`, the title is `summary ?? kind`, keyed by `id`. ───────
+// ── activity: the subset of a `dev.coordFeed` row the Activity tile renders.
+//    The actor is the coord envelope's `from`; the title is `summary ?? body`. ─
 export interface OverviewActivityRow {
   id: string;
   agent: string | null;
@@ -88,16 +77,14 @@ export interface OverviewActivityRow {
   status: string | null;
 }
 
-// ── one `userActions.byHarness` row (the `harness_shared.user_actions` shape:
-//    drizzle camelCase columns). ─────────────────────────────────────────────
-interface UserActionRow {
-  id: string | number;
-  harnessSlug: string;
+// ── one `dev.coordFeed` row (the fields this tile reads). ────────────────────
+interface CoordFeedRow {
+  ts: string;
+  msg_id: string;
+  from: string;
   kind: string;
-  status: string;
-  summary: string | null;
-  actor: string | null;
-  startedAt: number;
+  summary?: string;
+  body?: string;
 }
 
 const TILE_LIMIT = 6;
@@ -186,51 +173,57 @@ export default function AdvOverviewTab() {
     await setInboxTier(tier);
   };
 
-  // The selected harness (AdvShell's `?slug=`). The Activity tile scopes to it when
-  // set (userActions.byHarness); in the All-Pots default (null) it falls back to the
-  // fleet-wide userActions.recent feed so the tile is never blank (D-008 follow-up to
-  // the P-006 behavior shift).
-  const [activeSlug] = useQueryState('slug', parseAsString);
+  // Row click-throughs (WI-5517, owner ask 2026-07-19): a plan row opens THAT
+  // plan in the Plans tab (?plan=, PlansClient's selection param); an agent row
+  // opens the header Agents-running dropdown focused on that agent's session
+  // history (?agentsRoster + ?agentsFocus, AgentsRunningPill); an activity row
+  // opens the coordination event in Conversations → Raw events (?conv=feed).
+  const [, setPlanSlug] = useQueryState('plan', parseAsString);
+  const [, setAgentsRosterOpen] = useQueryState('agentsRoster', parseAsBoolean);
+  const [, setAgentsFocus] = useQueryState('agentsFocus', parseAsString);
+  const [, setFeedParams] = useQueryStates({
+    conv: parseAsString,
+    fmsg: parseAsString,
+    fsys: parseAsString,
+  });
+  const openPlan = async (slug: string) => {
+    await setActiveTab(OVERVIEW_TILE_TARGETS.plans);
+    await setPlanSlug(slug);
+  };
+  const openAgent = async (ownerId: string) => {
+    await setAgentsRosterOpen(true);
+    await setAgentsFocus(ownerId);
+  };
+  const openActivity = async (msgId: string) => {
+    await setActiveTab('conversations');
+    await setFeedParams({ conv: 'feed', fmsg: msgId, fsys: 'all' });
+  };
 
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
   const attentionQ = usePlanAttention();
 
-  // Roster (live fleet) — LIVE via dev.coordPresence (push-driven by the
-  // coord_presence→query bridge). EI-1541: the resolver's `workspace` arg is
-  // NOT optional-but-workspace-scoped-by-default — omitting it passes
-  // `workspaceId: null` straight through to PgPresenceStore.list, which reads
-  // `WHERE TRUE` (every workspace, unfiltered) rather than falling back to the
-  // caller's own workspace. Pass it explicitly, exactly like the Activity tile
-  // below (`userActions.byHarness`/`.recent`) already does — otherwise an
-  // isolated workspace's Overview/Working AGENTS panel shows every OTHER
-  // workspace's live agents. The resolver already drops stale rows; we keep
-  // selectLiveAgents' stale filter as a belt-and-braces guard on the
-  // client-derived liveness.
-  const rosterQ = useSyncQuery<PresenceRow>({
-    queryName: 'dev.coordPresence',
-    args: { workspace: getBrowserWorkspaceId() },
+  // Roster (live fleet) — the SAME `advRoster.list` subscription the header
+  // AgentsRunningPill holds (identical args ⇒ one shared cache entry), with
+  // liveness derived SERVER-side. See the file header for why this must never
+  // go back to client-side heartbeat parsing (WI-5517: PG-text timestamps are
+  // NaN under WebKit ⇒ every agent read 'stale' ⇒ "No live agents").
+  const rosterQ = useSyncQuery<{ active: RosterAgent[] }>({
+    queryName: 'advRoster.list',
+    args: { workspaceId: null, endedLimit: 20 },
     staleTime: 8_000,
   });
 
-  // Activity (recent action stream). A harness selected → userActions.byHarness (that
-  // harness + workspace); All-Pots (no harness) → the fleet-wide userActions.recent feed.
-  // One unconditional hook with a computed query (rules-of-hooks safe); the cache key
-  // carries the queryName + args so switching scope re-subscribes. SSE push-driven via the
-  // server-side append-heavy DEBOUNCED change-detector (see the file header) — no client poll.
-  const activityWsId = getBrowserWorkspaceId();
-  const activityQ = useSyncQuery<UserActionRow>(
-    activeSlug
-      ? {
-          queryName: 'userActions.byHarness',
-          args: { harnessSlug: activeSlug, workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
-          staleTime: 8_000,
-        }
-      : {
-          queryName: 'userActions.recent',
-          args: { workspaceId: activityWsId, limit: ACTIVITY_LIMIT },
-          staleTime: 8_000,
-        },
-  );
+  // Activity — the coordination stream (fleet-wide; agent-authored rows only,
+  // system telemetry filtered out client-side like the curated Conversations
+  // views). Over-fetch, then filter + slice: system-origin rows dominate the
+  // raw feed, so a bare limit-10 read could filter down to nothing.
+  const activityQ = useSyncQuery<CoordFeedRow>({
+    queryName: 'dev.coordFeed',
+    // system_only EXPLICITLY false: the tile wants the whole stream so the
+    // client-side actor filter below decides — never the server's default.
+    args: { system_only: false, limit: 80 },
+    staleTime: 8_000,
+  });
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);

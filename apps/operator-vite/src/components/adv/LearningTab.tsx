@@ -3116,11 +3116,17 @@ export function ScoutView({
     void setSrcSel(null);
     void setLviewRaw("improvements");
   };
+  // Deep-link a plan slug into Create → Plans — shared by the routed-artifact
+  // chip AND the plan: grounding chips (owner ask 2026-07-19: a plan in
+  // "grounded in" must be clickable and land on the plan in the Create tab).
+  const openPlan = (slug: string) => {
+    void setPlanSel(slug);
+    void setCreateView("plans");
+    void setTab("plans");
+  };
   const openRouted = (item: ScoutRoutedItem) => {
     if (item.rail === "plan" && item.routedRef.startsWith("plan:")) {
-      void setPlanSel(item.routedRef.slice("plan:".length));
-      void setCreateView("plans");
-      void setTab("plans");
+      openPlan(item.routedRef.slice("plan:".length));
     } else if (item.rail === "gym") {
       // WI-5412 item 4: carry the idea's hive so the Gym view opens on the
       // seed's data, not the default hive's (empty) challengers. The ledger
@@ -3164,6 +3170,20 @@ export function ScoutView({
           >
             <i>{kind}</i>
             {title ? `${rest} · ${title}` : rest}
+          </button>
+        </Tooltip>
+      );
+    }
+    if (kind === "plan") {
+      return (
+        <Tooltip key={ref} label={`${rest} — open the plan in Create → Plans`}>
+          <button
+            type="button"
+            className="pc-learning__tracechip pc-learning__tracechip--link"
+            onClick={() => openPlan(rest)}
+          >
+            <i>{kind}</i>
+            {rest}
           </button>
         </Tooltip>
       );
