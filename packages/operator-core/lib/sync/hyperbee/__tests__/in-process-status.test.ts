@@ -256,4 +256,52 @@ describe('getInProcessSubstrateStatus', () => {
       expect(r.harnesses[0]).toMatchObject({ workspaceId: 'ws-1', harnessSlug: 'remote-a' });
     });
   });
+
+  // WI-5307: a request-only secondary host (dedicated-bg-host topology's :3070/:3270)
+  // is a node:cluster PRIMARY (never a forked worker) that has DECLARED itself
+  // request-only, so it never boots the substrate — the DEFAULT isSubstrateOwnerProcess
+  // computation (no isSubstrateOwnerProcessForTest override) must exclude it, not just
+  // trust `nodeCluster.isPrimary`. Exercised via the real env-derived `requestOnlyHost()`
+  // (background-workers.ts) — no isSubstrateOwnerProcessForTest override, so this is the
+  // production default path.
+  describe('request-only secondary default (WI-5307)', () => {
+    const ENV_KEYS = ['PAPERCUSP_BACKGROUND_WORKERS', 'PAPERCUSP_HONO_PORT'] as const;
+    let saved: Record<string, string | undefined>;
+
+    function setRequestOnly(): void {
+      saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+      process.env.PAPERCUSP_BACKGROUND_WORKERS = '0';
+    }
+    function restoreEnv(): void {
+      for (const k of ENV_KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+
+    afterEach(() => {
+      restoreEnv();
+    });
+
+    it('PAPERCUSP_BACKGROUND_WORKERS=0 (request-only) + a local handle set + no default override ⇒ reachedSubstrateOwner:false, NOT a false-confident empty', () => {
+      _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+      setRequestOnly();
+      const r = getInProcessSubstrateStatus();
+      expect(r.reachedSubstrateOwner).toBe(false);
+      expect(r.bootedCount).toBe(0);
+      expect(r.harnesses).toEqual([]);
+    });
+
+    it('PAPERCUSP_BACKGROUND_WORKERS=0 (request-only) + a fresh resolveRemoteBootedHandles ⇒ uses the remote handles', () => {
+      setRequestOnly();
+      const r = getInProcessSubstrateStatus({
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+        }),
+      });
+      expect(r.reachedSubstrateOwner).toBe(true);
+      expect(r.bootedCount).toBe(1);
+    });
+  });
 });

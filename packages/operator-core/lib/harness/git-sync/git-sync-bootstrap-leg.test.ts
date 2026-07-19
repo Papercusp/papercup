@@ -125,7 +125,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 });
 
 // Import AFTER the mocks so the module resolves the mocked deps.
-import { runBootstrapLeg } from './git-sync-action';
+import { __resetBootstrapDialBackoffForTest, runBootstrapLeg } from './git-sync-action';
 
 const SLUG = 'shop-hive';
 const WS = 'ws-1';
@@ -187,6 +187,10 @@ beforeEach(() => {
   }));
   getBootedHarnessMock.mockReturnValue(null); // default: no live swarm join — the fail-soft floor
   openHiveGitDuplexToDeviceMock.mockImplementation(async () => ({ on: (_ev: string, _cb: () => void) => {} }));
+  // EI-15333: the backoff map is module-scope state shared across every test
+  // in this file — clear it each test or an earlier no-such-repo test would
+  // silently starve a later test's dial of the same (slug, peer) pair.
+  __resetBootstrapDialBackoffForTest();
 });
 
 describe('runBootstrapLeg', () => {
@@ -477,5 +481,95 @@ describe('runBootstrapLeg', () => {
     await expect(runBootstrapLeg(SLUG, WS)).resolves.toBeUndefined();
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
     expect((bootstrapFromPeerMock.mock.calls[0][2] as Record<string, unknown>).selfDevicePubkey).toBeUndefined();
+  });
+
+  // ── EI-15333: no-such-repo dial backoff ──
+  // A peer that definitively refuses a bootstrap dial with `no-such-repo`
+  // (it genuinely has no store for this repo) used to be re-dialed every
+  // single tick forever — a wasted live handshake plus an identical
+  // permanent error line. It should back off instead: not be live-dialed
+  // again for a bounded window, without disturbing dialing of OTHER
+  // candidates or of a DIFFERENT repo/slug.
+
+  it('EI-15333: does not re-dial a peer within the backoff window after a no-such-repo refusal', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => ({
+        on: (_ev: string, _cb: () => void) => {},
+        destroyed: false,
+        errored: new Error('pot-git serve refused: no-such-repo'),
+      }));
+      bootstrapFromPeerMock.mockImplementation(
+        bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'no-such-repo' }),
+      );
+
+      // First tick: a real live dial happens and refuses no-such-repo.
+      await runBootstrapLeg(SLUG, WS);
+      expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
+      expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+
+      // Second tick (same process, backoff window still open): the peer is
+      // skipped WITHOUT a live dial — the leg falls straight to the "no live
+      // dial path" branch since it's the only candidate.
+      warnSpy.mockClear();
+      await runBootstrapLeg(SLUG, WS);
+      expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1); // unchanged — no new dial
+      expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1); // unchanged
+      const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('no live dial path'));
+      expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:backoff(no-such-repo)`);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('EI-15333: a generic (non-no-such-repo) dial failure does NOT arm the backoff — retried next tick', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false)); // live, no .errored
+      bootstrapFromPeerMock.mockImplementation(
+        bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'fetch-failed: half-dead channel' }),
+      );
+
+      await runBootstrapLeg(SLUG, WS);
+      await runBootstrapLeg(SLUG, WS);
+      // Both ticks actually dialed — no backoff was armed for a non-no-such-repo failure.
+      expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(2);
+      expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('EI-15333: backoff on one peer does not block dialing a DIFFERENT candidate', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    listHiveMembersMock.mockResolvedValue([
+      { deviceAttestations: [{ device_pubkey: PEER_DEVICE }, { device_pubkey: PEER_DEVICE_2 }] },
+    ]);
+    openHiveGitDuplexToDeviceMock.mockImplementation(async (_t: Buffer, device: string) => ({
+      on: (_ev: string, _cb: () => void) => {},
+      destroyed: false,
+      errored: device === PEER_DEVICE ? new Error('pot-git serve refused: no-such-repo') : undefined,
+    }));
+    bootstrapFromPeerMock
+      .mockImplementationOnce(bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'no-such-repo' }))
+      .mockImplementation(bootstrapOutcome({ ok: true, namespaces: ['abcd1234'], skippedExisting: [], skippedSelf: null, stderr: '' }));
+
+    await runBootstrapLeg(SLUG, WS); // arms backoff on PEER_DEVICE, succeeds via PEER_DEVICE_2
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(2);
+
+    // Reset and re-run: PEER_DEVICE_2's namespace is now present locally
+    // (as bootstrapFromPeer's real effect would leave it), so the warm gate
+    // short-circuits before any dialing on this next tick — never even
+    // reaching the point where PEER_DEVICE's backoff would matter.
+    const peer2Hex = Buffer.from(PEER_DEVICE_2, 'base64').toString('hex');
+    listNamespacesMock.mockResolvedValue([peer2Hex]);
+    openHiveGitDuplexToDeviceMock.mockClear();
+    bootstrapFromPeerMock.mockClear();
+    await runBootstrapLeg(SLUG, WS);
+    expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled(); // warm — no dialing needed at all
   });
 });

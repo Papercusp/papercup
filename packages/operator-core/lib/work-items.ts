@@ -3530,9 +3530,10 @@ export async function observeWorkItem(
 ): Promise<WorkItemObservation | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  // EI-15027: treat the literal 'unassigned' sentinel the same as NULL/empty — see
-  // isUnclaimedAssignee's doc comment.
-  const unclaimed = isUnclaimedAssignee(wi.assignee);
+  // EI-15027: treat the literal 'unassigned' sentinel the same as NULL/empty. `wi` came
+  // through getWorkItem's mapping layer (normalizeTakenBy already applied there), so this
+  // is belt-and-suspenders — mirrors classifyClaimFailure's own defense-in-depth call.
+  const unclaimed = !normalizeTakenBy(wi.assignee);
   if (unclaimed && wi.family === 'feature') {
     // Cheap path first — local/admitted items (the vast majority) resolve without
     // touching the DB at all; only a remote+un-admitted item needs the trust-list
@@ -3962,7 +3963,7 @@ export async function reorderWorkItem(
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   // EI-15027: a literal 'unassigned' sentinel assignee is unclaimed too, not a real holder.
-  if (isUnclaimedAssignee(wi.assignee)) {
+  if (!normalizeTakenBy(wi.assignee)) {
     return { error: `work_item '${id}' is unassigned — claim it before ranking` };
   }
 

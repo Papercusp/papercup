@@ -303,8 +303,8 @@ export default defineTool({
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (alive but not advancing, ' +
     'or alive+idle with zero claims/queued and unparked — a fleet:bench candidate), ' +
-    'unownedCriticals (aged unassigned criticals this fleet\'s spec would admit), and ' +
-    'strandedFleetAlert (0-wip + parked + unowned criticals, EI-15055). Scoped to ONE fleet ' +
+    'and unownedCriticals (aged unassigned ' +
+    'criticals this fleet\'s spec would admit). Scoped to ONE fleet ' +
     '(yours by default), not the whole workspace roster fleet:assignments returns. ' +
     'Replaces a leader\'s hand-assembled presence+assignments+inbox scan each monitor wake.',
   guidance: {

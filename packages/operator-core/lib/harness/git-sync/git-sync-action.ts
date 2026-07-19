@@ -1515,6 +1515,33 @@ async function resolveHiveGitTopicHex(
   return handle?.swarm?.topicHex;
 }
 
+/**
+ * EI-15333: a peer that refuses a bootstrap dial with a definitive
+ * `no-such-repo` (serve-wiring.ts's `pathExists(join(repoPath, 'HEAD'))`
+ * check — the peer genuinely does not have this repo's store on disk, not a
+ * transient dial/connectivity failure) will keep refusing every future tick
+ * until something about ITS store changes — which does not happen on a
+ * ~5-minute cadence. Without this, `runBootstrapLeg` re-dials that exact
+ * (repoKey, peer) pair every single tick forever: a wasted live-handshake
+ * plus an identical permanent error line every ~5 min (live-caught: tower
+ * bg-host dialing a mac joiner that only replicates a member repo, never
+ * the pot-home store). Back off that specific pair for a bounded window
+ * instead — long enough to stop the spam/waste, short enough to notice if
+ * the peer's store later comes into existence (e.g. it runs its own
+ * bootstrap and gains the repo). In-memory, per-process: resets harmlessly
+ * on restart (one extra dial next tick costs nothing), keyed by
+ * `${slug}:${peerDevicePubkeyBase64}` since a dial always addresses
+ * `repoKey: slug` (see the openHiveGitDuplexToDevice call below).
+ */
+const NO_SUCH_REPO_BACKOFF_MS = 30 * 60 * 1000; // 30 min ≈ 6 ticks at the ~5-min cadence
+const noSuchRepoBackoffUntil = new Map<string, number>();
+const noSuchRepoBackoffKey = (slug: string, peerDevicePubkeyBase64: string): string =>
+  `${slug}:${peerDevicePubkeyBase64}`;
+/** Test-only: clear all backoff state so tests don't leak it across cases. */
+export function __resetBootstrapDialBackoffForTest(): void {
+  noSuchRepoBackoffUntil.clear();
+}
+
 export async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
@@ -1631,6 +1658,15 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     let liveAttempts = 0;
     for (const peerDevicePubkeyBase64 of candidateDevicePubkeys) {
       if (liveAttempts >= MAX_LIVE_ATTEMPTS) break;
+      // EI-15333: skip a peer we already know (within the backoff window)
+      // definitively refuses this exact repo — never counts as a live
+      // attempt (nothing was dialed), same as a registry no-path miss.
+      const backoffKey = noSuchRepoBackoffKey(slug, peerDevicePubkeyBase64);
+      const backoffUntil = noSuchRepoBackoffUntil.get(backoffKey);
+      if (backoffUntil !== undefined && backoffUntil > Date.now()) {
+        dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:backoff(no-such-repo)`);
+        continue;
+      }
       const duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
         repoKey: slug,
         peerGithubUserId: actor?.githubUserId,
@@ -1659,6 +1695,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
           outcome.ok ? 'ok' : `failed${dialErr?.message ? `(${dialErr.message})` : ''}`
         }`,
       );
+      // EI-15333: a definitive no-such-repo refusal (not a generic/transient
+      // dial failure) arms the backoff so this exact pair stops being
+      // re-dialed every tick.
+      if (!outcome.ok && dialErr?.message?.includes('no-such-repo')) {
+        noSuchRepoBackoffUntil.set(backoffKey, Date.now() + NO_SUCH_REPO_BACKOFF_MS);
+      }
       if (outcome.ok) break;
     }
     await patchRoutineMetadata(slug, {
