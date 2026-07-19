@@ -2158,11 +2158,18 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     const stale = fakeCloseableRemoteLog(keyHex);
     handle.admitted.set(keyHex, stale);
 
+    // EI-13317/WI-5481: this test exercises the EXHAUSTION → forced-rejoin path,
+    // now reached via the `frozen` kind. connected_never_replicated fast-paths
+    // straight to a prompt forced rejoin on its first episode (see the dedicated
+    // test below), so it never walks the 3-attempt ladder; `frozen` still walks
+    // it (a session re-attach DOES heal frozen — WI-4241), so it is the kind that
+    // reaches exhaustion. A fresh log created already-behind (knownLength >
+    // mergedPosition, peersCount>0) alarms `frozen` on each fire.
     async function fireEpisodeAndDrain(): Promise<void> {
       sampleReplicationLiveness(
         workspaceId,
         harnessSlug,
-        { keyHex, knownLength: 0, swarmConnections: 1 },
+        { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
         { graceMs: 0 },
       );
       await handle.mergeNow();
@@ -2279,11 +2286,15 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     // EI-13317 rung (b) test above.
     const joinCallsBeforeEscalation = joinSpy.mock.calls.length;
 
-    // ONE episode — this process's first ever for this log.
+    // ONE episode — this process's first ever for this log. Uses the `frozen`
+    // kind: connected_never_replicated now fast-paths to a prompt forced rejoin
+    // on its first episode (covered by its own test below), so the WI-5332
+    // chronic-zombie shortcut — which still applies to `frozen` — is exercised
+    // here without the prompt path deduping it.
     sampleReplicationLiveness(
       workspaceId,
       harnessSlug,
-      { keyHex, knownLength: 0, swarmConnections: 1 },
+      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
       { graceMs: 0 },
     );
     await handle.mergeNow();
@@ -2293,7 +2304,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     // to resolve before asserting.
     await vi.waitFor(() => expect(hasOpenSpy).toHaveBeenCalledTimes(1));
     expect(hasOpenSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ harnessSlug, logKeyHex: keyHex, kind: 'connected_never_replicated' }),
+      expect.objectContaining({ harnessSlug, logKeyHex: keyHex, kind: 'frozen' }),
     );
     await vi.waitFor(() => expect(exhaustedEvents()).toHaveLength(1));
     expect(exhaustedEvents()[0]!.message).toContain('chronic zombie');
@@ -2306,7 +2317,83 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     expect(sessions).toHaveLength(1);
   });
 
-  // WI-5340 (WI-5332 Direction #1): the two describes above only ever reach
+  // EI-13317 / WI-5481: connected_never_replicated (the zombie-socket class) is
+  // the kind that fails the replication_soak SLA — a per-log session re-attach
+  // cannot heal a DEAD socket, and reaching the forced rejoin via the 3-attempt
+  // ladder (each attempt judged after REPLICATION_STALL_GRACE_MS = 180s) takes
+  // ~540s, far past the soak's 90s SLA. This proves the fix: THIS kind escalates
+  // to a forced topic rejoin PROMPTLY on its very first episode — no ladder wait.
+  it('EI-13317/WI-5481: connected_never_replicated escalates to a forced rejoin PROMPTLY on the first episode — no 3-attempt ladder wait (soak SLA)', async () => {
+    const workspaceId = 'ws-repair-prompt-5481';
+    const harnessSlug = 's-repair-prompt-5481';
+    const keyHex = 'ef'.repeat(32);
+
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh = fakeCloseableRemoteLog(k);
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    const leaveSpy = vi.fn(() => {});
+    const joinSpy = vi.fn(() => ({ flushed: async () => {}, refresh: () => {} }));
+    const swarm: HyperswarmLike = {
+      join: joinSpy,
+      leave: leaveSpy,
+      on: () => {},
+      off: () => {},
+      connections: [],
+    };
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+      swarmBinding: { kind: 'topic', topic_hex: 'fa'.repeat(32) },
+      swarmOverride: swarm,
+    });
+    cleanups.push(() => handle.close());
+
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    function rejoinEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair_exhausted' as BootHistoryKind],
+      });
+    }
+
+    const joinCallsBeforeEpisode = joinSpy.mock.calls.length;
+
+    // ── ONE connected_never_replicated episode — the FIRST for this log (no
+    // prior attempts, no prior durable EI). The prompt path must fire the forced
+    // rejoin immediately, WITHOUT walking the 3-attempt session-re-attach ladder. ──
+    sampleReplicationLiveness(
+      workspaceId,
+      harnessSlug,
+      { keyHex, knownLength: 0, swarmConnections: 1 },
+      { graceMs: 0 },
+    );
+    await handle.mergeNow();
+
+    // forceRejoin (leave() then a fresh join()) fired on the FIRST episode.
+    await vi.waitFor(() => expect(leaveSpy).toHaveBeenCalledTimes(1));
+    expect(joinSpy.mock.calls.length).toBe(joinCallsBeforeEpisode + 1);
+    const events = rejoinEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.message).toContain('connected_never_replicated');
+    expect(events[0]!.message).toContain('prompt forced rejoin');
+    // The session re-attach fallback also ran once (harmless — covers the
+    // broken-session-over-good-socket sub-case), but did NOT need 3 attempts.
+    expect(sessions).toHaveLength(1);
+  });
+
+  // WI-5340 (WI-5332 Direction #1): the describes above only ever reach
   // attempt 2/3 by manually calling `dropReplicationLogState` between fires —
   // simulating a re-arm that a genuinely ineffective re-attach (the common
   // case per the gate-run-211750/223011 evidence: "attempt 1/3" forever) can

@@ -214,9 +214,40 @@ Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md
 `);
 }
 
+/**
+ * EI-2743: `run`/`replay` are the only verbs that make LLM calls — the SUT
+ * (targets/su.ts's in-process anthropic-direct transport), sim-user, and judge
+ * (llm-client.ts → chat-stream.ts) all egress DIRECT to api.anthropic.com on the
+ * single `~/.claude` OAuth credential unless `PAPERCUSP_ANTHROPIC_URL` /
+ * `ANTHROPIC_BASE_URL` point them at the localhost pacing gateway — this CLI is
+ * the ONE call site for `runScenario` (ad-hoc, the nightly matrix via
+ * llm-test-nightly.sh, AND the delta-gate's S23/S24/S25 Lane-C proof runs), so a
+ * missing patch here 429s every one of those on one account's cap while the
+ * pooled gateway accounts sit idle (spawn-env.ts D-011) — observed twice trying
+ * to record the Lane-C de-risk verdict for agent-tool-delta-protocol. Same class
+ * as gym/autoloop-cycle.ts + scout/register-scout-action.ts. Flag-OFF or a
+ * pre-set override leaves env untouched.
+ */
+async function applyGatewayEnv(): Promise<void> {
+  const { FLAGS } = await import('@papercusp/flags');
+  const { getFlag } = await import('@papercusp/flags/server');
+  if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
+    const { gatewayLlmEnv, gatewayPort } = await import('@papercusp/operator-core/lib/inference-gateway/spawn-env');
+    for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
+      if (!process.env[k]) process.env[k] = v;
+    }
+    console.log(`[llm-test] inference-gateway ON → routing LLM calls through http://127.0.0.1:${gatewayPort()}`);
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { usage(); return; }
+  // Only the verbs that actually make LLM calls need the gateway patch —
+  // lint/promote-candidates/promote/export-fixture/--list never call an LLM.
+  if (args.verb === 'run' || args.verb === 'replay') {
+    await applyGatewayEnv();
+  }
 
   if (args.verb === 'lint') {
     const { lintScenarios, formatViolations } = await import('@papercusp/testing-shell/llm');

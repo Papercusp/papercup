@@ -128,22 +128,9 @@ export function AnalyzePanel({
       )}
       <style>{`
       .pc-analyze__cycles { display: flex; flex-direction: column; gap: 8px; }
-      /* Per-cycle expanders read as REAL headings (owner ask 2026-07-19):
-         larger, brighter, left-justified on a raised bar — not a whisper. */
-      .pc-analyze__cycles .pc-learning-visual__disclosure-trigger {
-        justify-content: flex-start;
-        min-height: 34px; padding: 7px 11px; border-radius: 9px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
-        background: var(--bg-2, rgba(255, 255, 255, 0.04));
-        color: var(--fg-dim, #b9d4e8);
-      }
-      .pc-analyze__cycles .pc-learning-visual__disclosure-trigger:hover {
-        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 40%, var(--border, rgba(125, 211, 252, 0.16)));
-      }
-      .pc-analyze__cycles .pc-learning-visual__disclosure-label {
-        flex: 0 1 auto; font-size: 12.5px; font-weight: 700;
-        color: var(--fg, #e7eef5); white-space: normal; text-align: left; line-height: 1.35;
-      }
+      /* Per-cycle expanders: the raised-heading treatment is now the GLOBAL
+         LearningDisclosure style (LearningVisuals) — cycle labels just wrap. */
+      .pc-analyze__cycles .pc-learning-visual__disclosure-label { white-space: normal; }
       /* One overlapping deck per lens, per run (owner ask 2026-07-19). */
       .pc-analyze__lensstacks {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));

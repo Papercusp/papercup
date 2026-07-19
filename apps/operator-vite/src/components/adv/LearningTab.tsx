@@ -4787,7 +4787,9 @@ export function LearningStyles() {
       .pc-learning__flow { display: flex; flex-wrap: wrap; gap: 6px; }
       .pc-learning__flowchip {
         display: inline-flex; align-items: center; gap: 5px;
-        padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 999px;
+        /* Squared chip language (owner design pass 2026-07-19) — pills are
+           reserved for tiny STATUS badges, refs/metrics ride rounded rects. */
+        padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 7px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
       }
@@ -4944,7 +4946,7 @@ export function LearningStyles() {
       .pc-learning__section { display: flex; flex-direction: column; gap: 7px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .pc-learning__sectionhead--tools { justify-content: flex-start; min-height: 28px; }
-      .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0; color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 740; text-transform: uppercase; letter-spacing: 0; color: var(--fg, #e7eef5); }
       .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       /* Work-Queue-parity search + filter affordances (owner ask 2026-07-19). */
       .pc-learning__search {
@@ -5071,6 +5073,7 @@ export function LearningStyles() {
         margin: 2px 2px 4px; font-size: 12px; color: var(--fg-dim, #b9d4e8);
       }
       .pc-learning__glance > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+      .pc-learning__glance > span + span::before { content: "·"; margin-right: 10px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__glance strong { font-weight: 700; color: var(--fg, #e7eef5); font-variant-numeric: tabular-nums; }
       .pc-learning__glance .is-warn { color: var(--warn, #fbbf24); font-weight: 600; }
       .pc-learning__lensstacks {

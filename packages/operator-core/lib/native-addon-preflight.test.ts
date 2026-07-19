@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
   DEFAULT_REQUIRED_ADDONS,
@@ -206,4 +206,52 @@ describe('real load (integration against installed binaries)', () => {
     // test's Node ABI — exactly the 2026-06-19 outage condition.
     expect(r.ok).toBe(true);
   });
+});
+
+// EI-2634 regression guard — every REQUIRED addon (DEFAULT_REQUIRED_ADDONS /
+// a PAPERCUSP_PREFLIGHT_ADDONS override) must actually SHIP in the packaged
+// desktop .deb, or the boot preflight above is testing a binary the packaged
+// app doesn't have. The gap this closes: better-sqlite3 (mem0's store) is
+// loaded via a plain dynamic `require('better-sqlite3')` (not a static
+// import), so esbuild never sees it and it ships ONLY if it's externalized +
+// closure-copied via papercusp-desktop/bin/build-desktop-sidecar.sh's
+// NATIVE_PKGS array (apps/operator/bin/bundle-host-common.sh). Nothing
+// previously asserted that DEFAULT_REQUIRED_ADDONS ⊆ NATIVE_PKGS, so a future
+// addition to DEFAULT_REQUIRED_ADDONS without a matching NATIVE_PKGS entry
+// would pass every unit test (the addon loads fine from the hoisted dev
+// node_modules) and only fail at boot in the packaged app — silently, since
+// the boot preflight is non-fatal by default (PAPERCUSP_ADDON_PREFLIGHT_FATAL
+// is off). This test fails HERE instead.
+describe('required addons are shipped in the desktop sidecar bundle (EI-2634)', () => {
+  const LIB_DIR = import.meta.dirname ?? __dirname;
+  // packages/operator-core/lib → operator-core → packages → repo root
+  const REPO_ROOT = join(LIB_DIR, '..', '..', '..');
+  const HOST_COMMON_SCRIPT = join(REPO_ROOT, 'apps', 'operator', 'bin', 'bundle-host-common.sh');
+
+  it.skipIf(!existsSync(HOST_COMMON_SCRIPT))(
+    'every DEFAULT_REQUIRED_ADDONS entry is listed in bundle-host-common.sh NATIVE_PKGS',
+    () => {
+      const script = readFileSync(HOST_COMMON_SCRIPT, 'utf8');
+      const arr = /NATIVE_PKGS=\(([\s\S]*?)\)/.exec(script);
+      expect(arr, 'NATIVE_PKGS=( ... ) array not found in bundle-host-common.sh — scanner broke').not.toBeNull();
+
+      const nativePkgs = new Set<string>();
+      for (const rawLine of (arr?.[1] ?? '').split('\n')) {
+        const line = rawLine.replace(/#.*$/, '').trim(); // strip comments
+        for (const tok of line.split(/\s+/)) {
+          if (tok && /^[A-Za-z0-9@._/-]+$/.test(tok)) nativePkgs.add(tok.replace(/^"|"$/g, ''));
+        }
+      }
+
+      const missing = [...DEFAULT_REQUIRED_ADDONS].filter((name) => !nativePkgs.has(name));
+      expect(
+        missing,
+        `These addon(s) are REQUIRED by the boot preflight (native-addon-preflight.ts ` +
+          `DEFAULT_REQUIRED_ADDONS) but are NOT in NATIVE_PKGS in ` +
+          `apps/operator/bin/bundle-host-common.sh, so they will be MISSING from the ` +
+          `packaged desktop .deb's sidecar/node_modules and the boot preflight will FAIL ` +
+          `in every real install (EI-2634's bug class). Add each to NATIVE_PKGS:`,
+      ).toEqual([]);
+    },
+  );
 });

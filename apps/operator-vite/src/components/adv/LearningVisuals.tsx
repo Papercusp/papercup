@@ -274,7 +274,9 @@ export function LearningVisualStyles() {
       .pc-learning-visual__head { min-height: 26px; display: flex; align-items: center; gap: 7px; margin: 0 0 3px; }
       .pc-learning-visual__head h2 { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--fg); font-size: 13px; font-weight: 680; letter-spacing: 0; }
       .pc-learning-visual__headspace { flex: 1 1 auto; }
-      .pc-learning-visual__question { color: var(--fg-mute); font-size: 11px; font-weight: 550; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+      /* The page's "what is this view for" line WRAPS instead of truncating —
+         an ellipsized explainer explains nothing (owner design pass 2026-07-19). */
+      .pc-learning-visual__question { color: var(--fg-dim, #b9d4e8); font-size: 11.5px; line-height: 1.4; font-weight: 550; font-style: italic; white-space: normal; min-width: 0; }
       /* Quiet header signal (owner ask 2026-07-19): the former uppercase, bordered,
          tone-filled pill read as a confusing "info pill". Now plain inline text —
          a small muted label with the number tone-tinted, the ONE accent the header
@@ -337,14 +339,23 @@ export function LearningVisualStyles() {
       .pc-learning-visual__error button { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; min-height: 25px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-2); color: var(--fg); cursor: pointer; font: inherit; font-size: 10px; font-weight: 650; }
       .pc-learning-visual__error button:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--accent); }
       .pc-learning-visual__disclosure { border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent); }
-      .pc-learning-visual__disclosure-trigger { width: 100%; min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 5px 3px; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 10.5px; font-weight: 650; text-align: left; }
-      .pc-learning-visual__disclosure-trigger:hover { color: var(--fg); }
-      .pc-learning-visual__disclosure-trigger svg { transition: transform var(--dur-fast); }
+      /* Disclosure triggers read as REAL headings everywhere (owner design
+         pass 2026-07-19: expanders were whisper-grey one-liners you'd miss) —
+         left-justified label at full foreground on a raised bar. */
+      .pc-learning-visual__disclosure-trigger {
+        width: 100%; min-height: 32px; display: flex; align-items: center; gap: 7px;
+        padding: 6px 11px; border-radius: 9px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        background: var(--bg-2, rgba(255, 255, 255, 0.04));
+        color: var(--fg-dim, #b9d4e8); cursor: pointer; font: inherit; text-align: left;
+      }
+      .pc-learning-visual__disclosure-trigger:hover { color: var(--fg); border-color: color-mix(in srgb, var(--accent, #7dd3fc) 40%, var(--border, rgba(125, 211, 252, 0.16))); }
+      .pc-learning-visual__disclosure-trigger svg { flex: none; transition: transform var(--dur-fast); }
       .pc-learning-visual__disclosure-trigger[data-state='open'] svg { transform: rotate(180deg); }
-      .pc-learning-visual__disclosure-label { flex: none; }
-      .pc-learning-visual__disclosure-subtitle { min-width: 0; overflow: hidden; color: var(--fg-mute); font-size: 9.5px; font-weight: 500; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
-      .pc-learning-visual__disclosure-trigger em { margin-left: auto; min-width: 20px; border-radius: 999px; padding: 1px 6px; background: color-mix(in srgb, var(--fg) 7%, transparent); color: var(--fg-mute); font-size: 9.5px; font-style: normal; font-variant-numeric: tabular-nums; text-align: center; }
-      .pc-learning-visual__disclosure-content { padding-top: 2px; }
+      .pc-learning-visual__disclosure-label { flex: 0 1 auto; font-size: 12px; font-weight: 700; color: var(--fg, #e7eef5); line-height: 1.35; }
+      .pc-learning-visual__disclosure-subtitle { min-width: 0; overflow: hidden; color: var(--fg-mute); font-size: 10.5px; font-weight: 500; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-learning-visual__disclosure-trigger em { flex: none; margin-left: auto; min-width: 20px; border-radius: 999px; padding: 1px 7px; background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg-dim, #b9d4e8); font-size: 10px; font-style: normal; font-variant-numeric: tabular-nums; text-align: center; }
+      .pc-learning-visual__disclosure-content { padding-top: 8px; }
       .pc-learning-visual__layout > .pc-ekg__wave, .pc-learning-visual__layout > .pc-rq__waterfall { min-height: 92px; }
       @container learning (max-width: 1060px) { .pc-learning-visual__layout { grid-template-columns: minmax(150px, .66fr) minmax(290px, 2fr); } .pc-learning-visual__evidence { grid-column: 1 / -1; } }
       @container learning (max-width: 720px) { .pc-learning-visual__layout { grid-template-columns: 1fr; } .pc-learning-visual__evidence { grid-column: auto; } .pc-learning-visual__barrow { grid-template-columns: 1fr; gap: 6px; } }

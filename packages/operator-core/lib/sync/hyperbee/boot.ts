@@ -94,7 +94,6 @@ import {
   joinHarnessSwarm,
   getSharedSwarm,
   getDhtUniverseAssertion,
-  DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS,
   type AnnounceConnectionContext,
   type HyperswarmLike,
   type SwarmHandle,
@@ -1751,9 +1750,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // forced-rejoin escalation below (NOT per-log — several admitted logs on
   // the same topic can stall together, and a topic-level rejoin already
   // covers all of them at once, so only ONE rejoin should fire per cooldown
-  // window regardless of how many logs are exhausted). Reuses swarm.ts's
-  // severed-link cadence rather than inventing a new constant.
-  const REJOIN_ESCALATION_COOLDOWN_MS = DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS;
+  // window regardless of how many logs are involved). Deliberately SHORTER than
+  // swarm.ts's 300s severed-link cadence: replication_soak (WI-5481) kills/
+  // restarts a peer roughly every 90s and a connected_never_replicated
+  // (zombie-socket) stall must recover WITHIN that 90s SLA every cycle — a 300s
+  // cooldown gates every rejoin but the first, failing cycles 2..N. forceRejoin
+  // is edge-latched (fires off a stall episode, not a timer) and only evicts idle
+  // sockets + re-announces, so a 30s floor is safe from a rejoin storm.
+  const REJOIN_ESCALATION_COOLDOWN_MS = 30_000;
   let lastRejoinEscalationMs = 0;
   // Escalate to the heavier topic-level forced rejoin (swarm.ts's
   // SwarmHandle.forceRejoin — the same lever rung (a)'s severed-link
@@ -1909,6 +1913,29 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
     if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
+    // EI-13317 / WI-5481: connected_never_replicated is the zombie-socket class
+    // (swarm shows live connections but this log NEVER attached a replicator). A
+    // per-log Corestore session re-attach CANNOT heal a dead socket — only a
+    // forced rejoin (evict the zombie socket + fresh join, so corestore.replicate
+    // re-attaches every log on the new connection) does. The ordinary ladder only
+    // reaches that rejoin after REPAIR_MAX_ATTEMPTS_PER_LOG re-attaches, each
+    // judged after REPLICATION_STALL_GRACE_MS (180s) — ~540s, far past the 90s
+    // replication_soak SLA. So for THIS kind escalate PROMPTLY on the first
+    // episode (deduped harness-wide by escalateToForcedRejoin's own cooldown, so
+    // a later exhaustion/chronic escalation within the window won't double-fire).
+    // Still enqueue the session re-attach below: it is the retry/confirmation
+    // driver AND the heal for the broken-session-over-good-socket sub-case, and
+    // it is the PRIMARY path for `frozen`, which a re-attach DOES heal (WI-4241).
+    if (episode.kind === 'connected_never_replicated') {
+      escalateToForcedRejoin(
+        episode.logKeyHex,
+        episode.kind,
+        `${peerLabel(episode.logKeyHex)} connected_never_replicated (zombie-socket ` +
+          `class) — prompt forced rejoin on first episode, bypassing the session-` +
+          `re-attach ladder that cannot heal a dead socket within the ` +
+          `replication_soak SLA (EI-13317/WI-5481)`,
+      );
+    }
     enqueueRepairAttempt(episode.logKeyHex, episode.kind);
   });
 
