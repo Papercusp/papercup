@@ -882,7 +882,7 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
         async () => {
           const admitted = member.handle.admitted.has(ownerLogKey);
           const feat = await readFeature(orgDb.adminSql, HIVE_HOME, 'F-init');
-          _dbgLast = `admitted=${admitted} admittedSize=${member.handle.admitted.size} ownerLogLen=${owner.handle.ownLog.length} feat=${!!feat}`;
+          _dbgLast = `admitted=${admitted} admittedKeys=${[...member.handle.admitted.keys()].join(',')} ownerLogKey=${ownerLogKey} ownerLogLen=${owner.handle.ownLog.length} feat=${!!feat}`;
           return admitted && feat ? true : undefined;
         },
         { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
