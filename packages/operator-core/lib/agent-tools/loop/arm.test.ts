@@ -128,6 +128,20 @@ describe('loop:arm — WI-1471 ownerId override', () => {
   });
 });
 
+describe('loop:arm — WI-5345: mode reaches materializeLoop + the response (previously only threaded into the wake-prompt template, never persisted/observable)', () => {
+  it("defaults to mode:'work' when omitted", async () => {
+    const b = body(await call({}));
+    expect(b.loop.mode).toBe('work');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'work' }));
+  });
+
+  it("an explicit mode:'monitor' reaches materializeLoop AND is echoed in the response", async () => {
+    const b = body(await call({ mode: 'monitor' }));
+    expect(b.loop.mode).toBe('monitor');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'monitor' }));
+  });
+});
+
 describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm time', () => {
   const claimedRow = { id: 'X', assignee: 'su-caller-own-id' };
 

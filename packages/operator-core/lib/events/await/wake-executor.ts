@@ -1119,7 +1119,11 @@ async function injectPsuHostWake(
     // turn-provenance P-002: the cold injection is composed HERE (not by the
     // callers, who tag the warm text) — tag it as a loop fire so the reset/
     // recycle continuation prompt classifies as verified agent-origin.
-    const coldText = tagWakeText(d, renderColdWakeInjection(decision.carryNote, extras), deps.tagTurn ?? tagTurnForInjection);
+    // EI-15799: stamp the fire number into the cold-wake text so a receiving agent
+    // (or the agent's own reconciliation) can detect a delivery that lagged past a
+    // later fire — see renderColdWakeInjection's wakeCount doc.
+    const coldFireCount = readColdLoopMarker(d.payload)?.wakeCount;
+    const coldText = tagWakeText(d, renderColdWakeInjection(decision.carryNote, extras, coldFireCount), deps.tagTurn ?? tagTurnForInjection);
     const ok = await injectPsuHost(sock, {
       mode: decision.mode,
       data: coldText,

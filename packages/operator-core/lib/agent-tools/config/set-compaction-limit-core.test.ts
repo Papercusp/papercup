@@ -28,10 +28,6 @@ vi.mock('../coordination/presence', () => ({
 vi.mock('../coordination/presence-fleet', () => ({
   fetchPresenceFleet: (...a: unknown[]) => fetchPresenceFleet(...a),
 }));
-vi.mock('../coordination/messages', () => ({ sendMessage: vi.fn() }));
-vi.mock('../coordination/audience-host', () => ({
-  hostAudienceResolvers: { listFleetMembers: vi.fn(async () => []) },
-}));
 vi.mock('../../compaction-usage', () => ({
   resolveModelSpecForOwner: (...a: unknown[]) => resolveModelSpecForOwner(...a),
 }));

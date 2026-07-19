@@ -18,7 +18,7 @@ import { setCompactionLimit, getPresence } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveModelSpecForOwner } from '../../compaction-usage';
 import { clampCompactionLimit, defaultCompactionLimitForSpec } from '../../agent-config-constants';
-import { classifyFleetControlInvoker } from '../fleet_registry/control-core';
+import { classifyFleetControlInvoker } from '../fleet_registry/fleet-auth';
 import { resolveFleetCaller } from '../fleet_registry/_shared';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 

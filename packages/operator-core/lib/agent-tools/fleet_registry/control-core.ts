@@ -34,6 +34,7 @@ import { getPresence } from '../coordination/presence';
 import { CUE_AUTHORITY_FIELD, fleetScopedCueAuthority } from '../coordination/cue-authority';
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveFleetCaller } from './_shared';
+import { classifyFleetControlInvoker } from './fleet-auth';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 
 export type FleetControlAction = 'wind-down' | 'resume';
@@ -61,24 +62,10 @@ export interface FleetControlResult {
   message?: string;
 }
 
-/**
- * PURE: classify the invoker's authority over this fleet, or null when they
- * have none. Order: leader beats the pane-kind grants (most specific claim).
- *   - leader — the registry row's recorded leader_owner_id
- *   - queen  — a mug/kettle pane (hive-level control authority)
- *   - owner  — an su pane (the owner's own interactive session; su-as-owner is
- *              the established convention, cf. blender:grade-idea)
- */
-export function classifyFleetControlInvoker(input: {
-  callerOwnerId: string;
-  leaderOwnerId: string | null;
-  paneKind: string;
-}): 'leader' | 'queen' | 'owner' | null {
-  if (input.leaderOwnerId && input.leaderOwnerId === input.callerOwnerId) return 'leader';
-  if (input.paneKind === 'mug' || input.paneKind === 'kettle') return 'queen';
-  if (input.paneKind === 'su') return 'owner';
-  return null;
-}
+// classifyFleetControlInvoker (the pure authority predicate) now lives in the dependency-free
+// fleet-auth module (P-006), imported above for local use and re-exported here so every existing
+// importer keeps its import path.
+export { classifyFleetControlInvoker };
 
 /** The member-facing body for each action's typed cue. */
 export function fleetControlCueText(

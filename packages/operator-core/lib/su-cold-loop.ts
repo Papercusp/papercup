@@ -152,13 +152,36 @@ export function decideColdWake(input: {
  * (walls), armed awaits, fleet pointer — rendered by carry-brief.ts's
  * renderCarryBriefColdExtras and appended after the note. Optional and additive:
  * a failed brief read injects the note alone, exactly as before.
+ *
+ * `wakeCount` (EI-15799): the FIRE-time 1-based fire number this cold decision was
+ * computed for, stamped into the header when known. Fire → delivery can lag by an
+ * arbitrary amount (the target session may be mid-turn and only reads the queued
+ * wake once it settles, or a delivery can be delayed/re-queued past a newer fire —
+ * live-witnessed EI-15799: a stale queued cold-wake was flushed mid-turn, telling
+ * the agent its transcript was "just reset" when it demonstrably was not). This
+ * does not by itself DROP a superseded delivery (that requires the delivery
+ * pipeline itself to track "last fire number actually delivered" and is out of
+ * scope for this pure render function — same limitation renderLoopCheckpointBlock's
+ * EI-13592 fix documents) — but it gives the receiving agent (or a future
+ * delivery-side dedup check) the marker needed to DETECT staleness: "this reset
+ * claim is fire #N; if I have already seen a later fire, this delivery is stale —
+ * reconcile against my actual live transcript before trusting the reset framing."
+ * Absent/non-finite ⇒ omitted (byte-identical to before this fix).
  */
-export function renderColdWakeInjection(carryNote: string, extras?: string): string {
+export function renderColdWakeInjection(carryNote: string, extras?: string, wakeCount?: number): string {
   const note = (carryNote ?? '').trim();
   const extraBlock = (extras ?? '').trim();
+  const fireTag = typeof wakeCount === 'number' && Number.isFinite(wakeCount) && wakeCount > 0 ? ` (fire #${wakeCount})` : '';
   return [
-    '❄️ COLD LOOP WAKE — your context was just reset to your carry-note. Your prior transcript is GONE;',
+    `❄️ COLD LOOP WAKE${fireTag} — your context was just reset to your carry-note. Your prior transcript is GONE;`,
     'the note below IS your continuity — treat it as your working state and continue from its "Next action".',
+    ...(fireTag
+      ? [
+          'If you can see ANY tool calls or turns from AFTER this fire number in what looks like your own transcript, ' +
+            'this delivery is STALE (superseded by a later fire) — do NOT trust the "reset" claim: reconcile against your ' +
+            'actual live transcript instead of discarding it, and treat the note below as a lead, not the truth.',
+        ]
+      : []),
     '',
     note,
     ...(extraBlock ? ['', extraBlock] : []),

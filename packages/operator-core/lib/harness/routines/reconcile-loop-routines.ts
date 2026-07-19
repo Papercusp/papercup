@@ -91,6 +91,18 @@
  *     has no discrete "failed fire attempt" streak to gate on (it isn't failing to fire — it
  *     just hasn't been checked), so the dwell window itself is this leg's blip protection and
  *     `stuckFireCount` is passed pre-satisfied.
+ *  6. LIFECYCLE-DEATH RECLASSIFICATION ALSO COVERS presence-quiescence (EI-15722) — layer 5
+ *     above was scoped ONLY to the 'lifecycle' via ("every other via has no turn text to
+ *     check"), but that premise was false: `last_assistant_text_after_fire` is queried
+ *     unconditionally, independent of via. A kill that loses its OWN Stop-hook 'ended' report
+ *     (the layer-2 fallback's whole reason to exist — the report "CAN be lost") still bumps
+ *     `presence.last_active_at` once via the dispatch that preceded the kill, so it settles via
+ *     the presence-quiescence FALLBACK instead — which, unlike the lifecycle path, was recording
+ *     an unconditional 'ok' with zero text inspection. Because the kill wall commonly outlives
+ *     one bare-interval re-arm, this repeated every fire: 'ok' resets the failure-streak circuit
+ *     each time, so it never opens and nothing ever escalates — a loop can sit firing on
+ *     schedule for many hours (observed: 22h+) producing zero real agent turns while reporting
+ *     healthy. Fix: run the SAME reclassification for via 'presence-quiescence' too.
  *
  * ## Invariants
  *  - IDEMPOTENT + NEVER-BACKWARDS (pure loop) — `created_at > last_fired_at` excludes an
@@ -694,14 +706,34 @@ export async function reconcileLoopRoutines(
       let quickRetry = false;
       const signal = completionSignal(row, lastFiredMs, nowMs);
       // EI-13818: a 'lifecycle' signal means the Stop hook fired — the turn EXITED cleanly —
-      // not that it SUCCEEDED. Re-classify its own text before trusting that as an 'ok'; every
-      // other via (note-refresh / presence-quiescence / stuck-backstop) has no turn text to
-      // check and is left exactly as before.
+      // not that it SUCCEEDED. Re-classify its own text before trusting that as an 'ok'.
+      //
+      // EI-15722: the SAME false-'ok' failure mode hits the 'presence-quiescence' FALLBACK
+      // path too, and is actually WORSE there because it can repeat indefinitely: that path
+      // exists precisely because the lifecycle 'ended' report is a detached, fail-open POST
+      // that "CAN be lost" (module header, layer 2) — and a turn that dies on a provider kill
+      // (auth_wall / usage_limit / model_error / context_limit) commonly does lose that report
+      // (the process is torn down mid/just-after generation, before the Stop hook's POST lands),
+      // while still bumping `presence.last_active_at` once via the dispatch that preceded the
+      // kill. completionSignal() then reads "activity after the fire, gone quiet" as a genuine
+      // settle and hands back via:'presence-quiescence' — previously trusted as an unconditional
+      // 'ok' with NO text check at all, unlike the 'lifecycle' path. Since the kill wall
+      // (an expired credential, a still-open rate-limit window, …) typically persists across the
+      // next several bare-interval re-arms, this silently repeats every fire: 'ok' resets the
+      // failure-streak circuit each time, so it never opens, no rate-limit-aware backoff ever
+      // applies, and no escalation ever fires — a loop can sit "firing on schedule" for many
+      // hours (observed: 22h+) producing zero real agent turns while reporting perfectly healthy.
+      // `row.last_assistant_text_after_fire` is queried unconditionally regardless of `via` (see
+      // the SELECT above) — it is NOT lifecycle-report-gated — so this reclassification costs
+      // nothing extra and needs no new evidence source; it was simply never wired to this via.
+      // note-refresh / stuck-backstop are unchanged: a note-refresh is the cold protocol's own
+      // explicit checkpoint write (a much stronger real-work signal than bare presence), and
+      // stuck-backstop already always records 'error'.
       let turnDeath: LoopLifecycleDeathVerdict | null = null;
       if (signal) {
         completedAt = signal.completedAt;
         via = signal.via;
-        if (via === 'lifecycle') {
+        if (via === 'lifecycle' || via === 'presence-quiescence') {
           turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
         }
       } else {
