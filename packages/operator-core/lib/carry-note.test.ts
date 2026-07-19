@@ -13,15 +13,24 @@ import {
   parseCarryNote,
   renderWallLine,
   parseWallLine,
+  renderCheckLine,
+  parseCheckLine,
   splitCarryNoteWalls,
+  splitCarryNoteChecks,
   withCarryNoteWalls,
+  withCarryNoteChecks,
   normalizeWallEntries,
+  normalizeCheckEntries,
+  lintUncheckedExternalClaims,
   appendCarryJournal,
   CARRY_JOURNAL_MAX_ENTRIES,
   CARRY_JOURNAL_NOTE_MAX_CHARS,
   CARRY_JOURNAL_TOTAL_MAX_CHARS,
   CARRY_NOTE_MAX_WALLS,
+  CARRY_NOTE_MAX_CHECKS,
+  CARRY_NOTE_CHECKS_LEGEND,
   type WallEntry,
+  type CheckEntry,
 } from './carry-note';
 
 describe('scope constructors — the convergence axis', () => {
@@ -164,6 +173,118 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
       1,
     );
     expect(flood).toHaveLength(CARRY_NOTE_MAX_WALLS);
+  });
+});
+
+describe('checks — external-state claims with probes (cold-carry-system-hardening-2026-07-19 P-001/P-010)', () => {
+  const VERIFIED: CheckEntry = {
+    claim: 'post-restart ticks stamp hash b01b01128a38273c',
+    recheck: "dev:pg_query newest scout_ticks detail->>'scoutCodeHash'",
+    verified: 'tick 1944 @02:38:36Z, pg read',
+    sinceMs: Date.parse('2026-07-19T03:00:00.000Z'),
+  };
+  const PREDICTED: CheckEntry = {
+    claim: 'the hash will roll at the next bg-host restart',
+    recheck: 'compare tick_at of the newest hash-bearing tick vs ExecMainStartTimestamp',
+    sinceMs: Date.parse('2026-07-19T03:05:00.000Z'),
+  };
+
+  it('a verified check renders ✓ + evidence and round-trips; a predicted one renders ? and round-trips', () => {
+    const v = renderCheckLine(VERIFIED);
+    expect(v).toContain('- ✓ ');
+    expect(v).toContain(' — evidence: tick 1944');
+    expect(parseCheckLine(v)).toEqual(VERIFIED);
+    const p = renderCheckLine(PREDICTED);
+    expect(p).toContain('- ? ');
+    expect(p).not.toContain(' — evidence:');
+    expect(parseCheckLine(p)).toEqual(PREDICTED);
+    // Minimal check (claim only).
+    expect(parseCheckLine(renderCheckLine({ claim: 'just a claim' }))).toEqual({ claim: 'just a claim' });
+  });
+
+  it('parseCheckLine rejects non-row lines including the legend', () => {
+    expect(parseCheckLine('')).toBeNull();
+    expect(parseCheckLine(CARRY_NOTE_CHECKS_LEGEND)).toBeNull();
+    expect(parseCheckLine('- plain wall-style row without a marker')).toBeNull();
+    expect(parseCheckLine('prose')).toBeNull();
+  });
+
+  it('renderCarryNote places ## Checks after the narrative and BEFORE ## Walls; parseCarryNote structures both back', () => {
+    const fields = { did: 'a', next: 'b', checks: [VERIFIED, PREDICTED], walls: [{ claim: 'owner gate' } as WallEntry] };
+    const out = renderCarryNote(fields);
+    expect(out.indexOf('## Checks')).toBeGreaterThan(out.indexOf('## Next action'));
+    expect(out.indexOf('## Walls')).toBeGreaterThan(out.indexOf('## Checks'));
+    expect(out).toContain(CARRY_NOTE_CHECKS_LEGEND);
+    expect(parseCarryNote(out)).toEqual(fields);
+  });
+
+  it('splitCarryNoteChecks separates rows from the body and drops the legend with the section', () => {
+    const note = renderCarryNote({ did: 'x', checks: [VERIFIED], next: 'go' });
+    const { body, checks } = splitCarryNoteChecks(note);
+    expect(checks).toEqual([VERIFIED]);
+    expect(body).toContain('## Did');
+    expect(body).toContain('## Next action');
+    expect(body).not.toContain('## Checks');
+    expect(body).not.toContain(CARRY_NOTE_CHECKS_LEGEND);
+    expect(splitCarryNoteChecks(null)).toEqual({ body: '', checks: [] });
+  });
+
+  it('withCarryNoteChecks replaces an existing section and keeps a Walls section LAST', () => {
+    const prior = renderCarryNote({
+      next: 'go',
+      checks: [{ claim: 'old check' }],
+      walls: [{ claim: 'standing wall' }],
+    });
+    const swapped = withCarryNoteChecks(prior, [VERIFIED]);
+    expect(swapped).not.toContain('old check');
+    expect(splitCarryNoteChecks(swapped).checks).toEqual([VERIFIED]);
+    expect(splitCarryNoteWalls(swapped).walls).toEqual([{ claim: 'standing wall', sinceMs: undefined }].map((w) => ({ claim: w.claim })));
+    expect(swapped.indexOf('## Walls')).toBeGreaterThan(swapped.indexOf('## Checks'));
+    // Empty checks set yields body+walls only.
+    expect(withCarryNoteChecks(prior, [])).not.toContain('## Checks');
+  });
+
+  it('normalizeCheckEntries preserves sinceMs AND inherits verified/recheck for a standing claim, dedups + caps', () => {
+    const now = Date.parse('2026-07-19T04:00:00.000Z');
+    const prior = [VERIFIED];
+    // Re-write of the same claim WITHOUT verified/recheck inherits both (evidence never silently dropped).
+    const out = normalizeCheckEntries([{ claim: VERIFIED.claim }, { claim: 'new one' }], prior, now);
+    expect(out[0]).toEqual(VERIFIED);
+    expect(out[1]).toEqual({ claim: 'new one', sinceMs: now });
+    // Dedup by claim.
+    expect(normalizeCheckEntries([{ claim: 'x' }, { claim: 'x' }], [], now)).toHaveLength(1);
+    // Cap.
+    const many = Array.from({ length: CARRY_NOTE_MAX_CHECKS + 3 }, (_, i) => ({ claim: `c${i}` }));
+    expect(normalizeCheckEntries(many, [], now)).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+  });
+});
+
+describe('lintUncheckedExternalClaims — carried claims must carry their probe (P-009)', () => {
+  it('flags an assertion line whose distinctive token appears in no probe row', () => {
+    const prose = 'Next wake: hostStartedAt MUST equal 2026-07-19T02:19:19Z or alarm.';
+    const flags = lintUncheckedExternalClaims(prose, '');
+    expect(flags).toHaveLength(1);
+    expect(flags[0]).toContain('MUST');
+  });
+
+  it('does not flag when a check/wall row covers the token', () => {
+    const prose = 'expect the next tick to stamp b01b01128a38273c';
+    const probes = renderCheckLine({ claim: 'ticks stamp b01b01128a38273c', recheck: 'pg read' });
+    expect(lintUncheckedExternalClaims(prose, probes)).toHaveLength(0);
+  });
+
+  it('ignores prose without assertion verbs or without distinctive tokens, and caps at 3', () => {
+    expect(lintUncheckedExternalClaims('read the inbox, then build the patch', '')).toHaveLength(0);
+    expect(lintUncheckedExternalClaims('the hash MUST be correct', '')).toHaveLength(0); // verb, no token
+    const many = Array.from({ length: 5 }, (_, i) => `line ${i}: WI-${1000 + i} MUST stay open`).join('\n');
+    expect(lintUncheckedExternalClaims(many, '')).toHaveLength(3);
+  });
+
+  it('clips flagged lines to ~160 chars', () => {
+    const long = `alarm if ${'x'.repeat(200)} WI-5391 changes`;
+    const [flag] = lintUncheckedExternalClaims(long, '');
+    expect(flag.length).toBeLessThanOrEqual(160);
+    expect(flag.endsWith('…')).toBe(true);
   });
 });
 

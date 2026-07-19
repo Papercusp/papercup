@@ -327,7 +327,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     kind: GemmaEmbedKind,
     text: string,
   ): Promise<number[]> => {
-    const key = `${model}:${kind} ${text}`;
+    const key = `${model}:${kind}\0${text}`;
     const cached = cacheGet(key);
     if (cached) {
       cacheHits++;

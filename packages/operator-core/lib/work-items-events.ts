@@ -345,7 +345,7 @@ function resolveListInMany(deps: Pick<SettledEventsDeps, 'listIn' | 'listInMany'
 }
 
 /** (kind, ref) identity for grouping/dedup — refs are opaque, kinds disjoint. */
-const refKey = (r: ObjectRef): string => `${r.kind} ${r.ref}`;
+const refKey = (r: ObjectRef): string => `${r.kind}\0${r.ref}`;
 
 /**
  * WI-4034: for each dependent in `dstRefs` that is NOT itself settled and has
@@ -386,7 +386,7 @@ async function emitUnblockedForClearedEdges(
 
   // Every item the checks below consult — dependents + candidate blockers (the
   // cleared one never is) — fetched once per unique (id, harness), in parallel.
-  const wantKey = (w: { id: string; harness?: string }) => `${w.id} ${w.harness ?? ''}`;
+  const wantKey = (w: { id: string; harness?: string }) => `${w.id}\0${w.harness ?? ''}`;
   const wanted = new Map<string, { id: string; harness?: string }>();
   for (const d of dsts) {
     const w = workItemIdFromRef(d);

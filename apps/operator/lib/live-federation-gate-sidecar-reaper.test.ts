@@ -23,8 +23,8 @@
  * a real packaged binary, so its EXIT wiring can only be asserted at the wiring site).
  * The SAFETY-CRITICAL half — that the ownership predicate reaps a rig-owned serve.mjs
  * process while sparing a foreign one — is verified BEHAVIORALLY against real processes
- * (hermetic: it only ever touches its own two fixtures, never a box-wide pgrep, so it
- * can never disturb a live gate).
+ * (hermetic: a run-random nonce keeps it matching only its own two fixtures, never a
+ * box-wide pgrep, so it can never disturb a concurrently-running live gate).
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -90,12 +90,6 @@ describe('EI-14500 — live-federation-gate reaps its leaked packaged-server sid
 describe('EI-14500 — ownership predicate behavior (reaps rig-owned, spares foreign)', () => {
   const dirs: string[] = [];
   afterEach(() => {
-    // Belt-and-suspenders: kill any fixture that outlived the harness, remove temp dirs.
-    try {
-      execFileSync('pkill', ['-f', 'REAPTEST_OWNED|REAPTEST_FOREIGN'], { stdio: 'ignore' });
-    } catch {
-      /* pkill exits 1 when nothing matched — expected */
-    }
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
@@ -107,30 +101,34 @@ describe('EI-14500 — ownership predicate behavior (reaps rig-owned, spares for
     dirs.push(work, other);
 
     // The harness sources the REAL gate_owns_rig_pid from the script (not a copy), then
-    // exercises it against two real fixtures. It NEVER box-wide-pgreps for real sidecars —
-    // the reap loop only ever considers its own two pids — so a concurrently-running live
-    // gate is never disturbed.
+    // exercises it against two real fixtures. Two invariants keep it hermetic:
+    //   1. It NEVER box-wide-pgreps for real sidecars — the reap loop only ever considers
+    //      its own two fixture pids — so a concurrent live gate is never disturbed.
+    //   2. The fixture-identifying nonces are generated at RUNTIME (never in any argv), so
+    //      pgrep/pkill can never self-match the harness (the marker-in-argv trap).
     const harness = `
 set -uo pipefail
 log(){ :; }
 GATE_SIDECAR_REAP_GRACE_S=1
 WORK="$1"; OTHER="$2"; SCRIPT="$3"
 eval "$(sed -n '/^gate_owns_rig_pid() {/,/^}/p' "$SCRIPT")"
+NOWN="reapo$(od -An -N6 -tx1 /dev/urandom | tr -d ' \\n')"
+NFGN="reapf$(od -An -N6 -tx1 /dev/urandom | tr -d ' \\n')"
 mkdir -p "$WORK/side" "$OTHER/side"
-( cd "$WORK/side"  && exec -a "node --require sidecar-preload.js serve.mjs --ensure REAPTEST_OWNED"   sleep 30 ) >/dev/null 2>&1 &
-( cd "$OTHER/side" && exec -a "node --require sidecar-preload.js serve.mjs --ensure REAPTEST_FOREIGN" sleep 30 ) >/dev/null 2>&1 &
+( cd "$WORK/side"  && exec -a "node --require sidecar-preload.js serve.mjs --ensure $NOWN" sleep 20 ) >/dev/null 2>&1 &
+( cd "$OTHER/side" && exec -a "node --require sidecar-preload.js serve.mjs --ensure $NFGN" sleep 20 ) >/dev/null 2>&1 &
 sleep 0.5
-OWNED="$(pgrep -f REAPTEST_OWNED | head -1)"
-FOREIGN="$(pgrep -f REAPTEST_FOREIGN | head -1)"
-ov=foreign; gate_owns_rig_pid "$OWNED"   && ov=owned
-fv=foreign; gate_owns_rig_pid "$FOREIGN" && fv=owned
+OWNED="$(pgrep -f "$NOWN" | head -1)"
+FOREIGN="$(pgrep -f "$NFGN" | head -1)"
+ov=foreign; [ -n "$OWNED" ]   && gate_owns_rig_pid "$OWNED"   && ov=owned
+fv=foreign; [ -n "$FOREIGN" ] && gate_owns_rig_pid "$FOREIGN" && fv=owned
 # scoped reap over exactly our two pids, using the REAL predicate:
-for pid in "$OWNED" "$FOREIGN"; do gate_owns_rig_pid "$pid" && kill "$pid" 2>/dev/null || true; done
+for pid in "$OWNED" "$FOREIGN"; do [ -n "$pid" ] && gate_owns_rig_pid "$pid" && kill "$pid" 2>/dev/null || true; done
 sleep 0.6
-oa=dead; kill -0 "$OWNED"   2>/dev/null && oa=alive
-fa=dead; kill -0 "$FOREIGN" 2>/dev/null && fa=alive
-pkill -f REAPTEST_OWNED   2>/dev/null || true
-pkill -f REAPTEST_FOREIGN 2>/dev/null || true
+oa=dead; [ -n "$OWNED" ]   && kill -0 "$OWNED"   2>/dev/null && oa=alive
+fa=dead; [ -n "$FOREIGN" ] && kill -0 "$FOREIGN" 2>/dev/null && fa=alive
+pkill -f "$NOWN" 2>/dev/null || true
+pkill -f "$NFGN" 2>/dev/null || true
 echo "OWNED=$ov FOREIGN=$fv OWNED_ALIVE=$oa FOREIGN_ALIVE=$fa"
 `;
     const out = execFileSync('bash', ['-c', harness, 'harness', work, other, SCRIPT], {

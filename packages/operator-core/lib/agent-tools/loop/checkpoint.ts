@@ -25,11 +25,18 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import {
   getLoopCarryNote,
+  lintUncheckedExternalClaims,
+  normalizeCheckEntries,
   normalizeWallEntries,
   renderCarryNote,
+  renderCheckLine,
+  renderWallLine,
   setLoopCarryNote,
+  splitCarryNoteChecks,
   splitCarryNoteWalls,
+  withCarryNoteChecks,
   withCarryNoteWalls,
+  CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
@@ -96,10 +103,11 @@ export default defineTool({
   description:
     "Write (or clear) your su AUTO loop's carry-note — a compressed 'note to my next self' a COLD loop wake " +
     '(reset / recycle) reconstructs its working state from (your transcript does NOT carry across a cold wake). ' +
-    'Pass the structured fields { did, left, insight, next } (rendered to the canonical template) OR a raw { note }. ' +
-    "Keyed by the loop's ownerId — stable across reset/recycle, so a cold successor reads the SAME note. " +
-    'Replace-on-write; blank/null clears — except { walls } rows (owner-gated commitments): they render into ' +
-    'every wake until you pass walls:[]. Returns { ok, harness, ownerId, cleared, length, walls }.',
+    'Pass the structured fields { did, left, insight, next } OR a raw { note }. ' +
+    "Keyed by the loop's ownerId — stable across reset/recycle (a cold successor reads the SAME note). " +
+    'Replace-on-write; blank/null clears — except { walls } rows (owner-gated) and { checks } rows ' +
+    '(external-state claims + probes): both render into every wake until you pass []. ' +
+    'Returns { ok, harness, ownerId, cleared, length, walls, checks }.',
   guidance: {
     when:
       "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs to continue — " +
@@ -151,6 +159,26 @@ export default defineTool({
             'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); pass the full ' +
             'current set to change it; [] clears.',
         ),
+      checks: z
+        .array(
+          z.object({
+            claim: z.string().min(1).max(500).describe('The external-state claim, stated concretely.'),
+            recheck: z.string().max(300).optional().describe('Concrete probe to run before relying on the claim.'),
+            verified: z
+              .string()
+              .max(300)
+              .optional()
+              .describe('Evidence pointer (what was observed, where). Absent ⇒ renders as PREDICTED.'),
+          }),
+        )
+        .max(CARRY_NOTE_MAX_CHECKS)
+        .optional()
+        .describe(
+          'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?} rows (the non-owner analog ' +
+            'of walls; renders a ## Checks section every wake). A claim without `verified` renders PREDICTED — a ' +
+            'successor must run its recheck before relying on it. Put hash/id/timestamp expectations HERE, never in ' +
+            'Left prose. Same carry-forward semantics as walls: OMITTED ⇒ carried; [] clears.',
+        ),
       ownerId: z
         .string()
         .max(120)
@@ -169,8 +197,9 @@ export default defineTool({
         a.left !== undefined ||
         a.insight !== undefined ||
         a.next !== undefined ||
-        a.walls !== undefined,
-      { message: 'pass { did, left, insight, next } (any), { note }, or { walls } — nothing to write' },
+        a.walls !== undefined ||
+        a.checks !== undefined,
+      { message: 'pass { did, left, insight, next } (any), { note }, { walls }, or { checks } — nothing to write' },
     ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -226,15 +255,32 @@ export default defineTool({
     //   A walls-only write likewise carries the prior note body forward.
     const prior = await getLoopCarryNote({ harness, ownerId }).catch(() => null);
     const priorParts = splitCarryNoteWalls(prior);
+    const priorCheckParts = splitCarryNoteChecks(priorParts.body);
     const rawParts = splitCarryNoteWalls(baseNote ?? '');
+    const rawCheckParts = splitCarryNoteChecks(rawParts.body);
     const walls =
       args.walls !== undefined
         ? normalizeWallEntries(args.walls, priorParts.walls)
         : rawParts.walls.length > 0
           ? normalizeWallEntries(rawParts.walls, priorParts.walls)
           : priorParts.walls;
+    // P-001 (cold-carry-system-hardening-2026-07-19): checks merge — identical
+    // explicit-wins / raw-note-section-next / prior-carries-forward semantics as walls.
+    const checks =
+      args.checks !== undefined
+        ? normalizeCheckEntries(args.checks, priorCheckParts.checks)
+        : rawCheckParts.checks.length > 0
+          ? normalizeCheckEntries(rawCheckParts.checks, priorCheckParts.checks)
+          : priorCheckParts.checks;
     const hasNoteWrite = hasStructured || args.note !== undefined;
-    const note = withCarryNoteWalls(hasNoteWrite ? rawParts.body : priorParts.body, walls);
+    const narrativeBody = hasNoteWrite ? rawCheckParts.body : priorCheckParts.body;
+    const note = withCarryNoteWalls(withCarryNoteChecks(narrativeBody, checks), walls);
+
+    // P-009: advisory lint — an external-state ASSERTION in the narrative prose whose
+    // distinctive tokens (hash / WI-EI id / ISO instant) appear in NO check/wall row is
+    // a carried claim with no probe (the phantom-re-anchor shape). Never blocks.
+    const probeText = [...checks.map(renderCheckLine), ...walls.map(renderWallLine)].join('\n');
+    const uncheckedClaims = hasNoteWrite ? lintUncheckedExternalClaims(narrativeBody, probeText) : [];
 
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
     const stored = await setLoopCarryNote({ harness, ownerId, workspaceId: workspaceId ?? undefined }, note);
@@ -329,6 +375,20 @@ export default defineTool({
             cleared: stored === null,
             length: stored?.length ?? 0,
             walls: walls.length,
+            checks: checks.length,
+            ...(uncheckedClaims.length > 0
+              ? {
+                  checksLint: {
+                    flagged: true,
+                    note:
+                      'checks_lint: prose line(s) assert external state (hash / id / instant) with NO matching ' +
+                      'checks[]/walls[] probe — a carried claim without its check is the phantom-re-anchor shape. ' +
+                      'Move each into checks:[{ claim, recheck, verified? }] so the probe travels with the claim. ' +
+                      'Advisory only; the write was kept.',
+                    lines: uncheckedClaims,
+                  },
+                }
+              : {}),
             ...(continuation ? { continuation } : {}),
             ...provenanceFields,
           }),

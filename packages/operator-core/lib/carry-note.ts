@@ -224,18 +224,22 @@ export function renderCarryNote(fields: CarryNoteFields): string {
  *  recognized `## <Heading>` markers yields {} (the caller keeps the raw text). */
 export function parseCarryNote(text: string): CarryNoteFields {
   const fields: CarryNoteFields = {};
-  const byHeading = new Map<string, CarryNoteTextKey | 'walls'>(
+  const byHeading = new Map<string, CarryNoteTextKey | 'walls' | 'checks'>(
     CARRY_NOTE_SECTIONS.map((s) => [s.heading.toLowerCase(), s.key] as const),
   );
   byHeading.set(CARRY_NOTE_WALLS_HEADING.toLowerCase(), 'walls');
+  byHeading.set(CARRY_NOTE_CHECKS_HEADING.toLowerCase(), 'checks');
   // Split on lines that are exactly a known "## Heading".
   const lines = (text ?? '').split('\n');
-  let cur: CarryNoteTextKey | 'walls' | null = null;
+  let cur: CarryNoteTextKey | 'walls' | 'checks' | null = null;
   let buf: string[] = [];
   const flush = () => {
     if (cur === 'walls') {
       const walls = buf.map(parseWallLine).filter((w): w is WallEntry => w !== null);
       if (walls.length) fields.walls = walls;
+    } else if (cur === 'checks') {
+      const checks = buf.map(parseCheckLine).filter((c): c is CheckEntry => c !== null);
+      if (checks.length) fields.checks = checks;
     } else if (cur) {
       const body = buf.join('\n').trim();
       if (body) fields[cur] = body;
@@ -256,32 +260,51 @@ export function parseCarryNote(text: string): CarryNoteFields {
   return fields;
 }
 
+/** Shared row-section splitter: strip one `## <heading>` section of parseable rows
+ *  out of a note, returning the remaining body + the parsed rows. Non-row lines
+ *  inside the section (legend, prose) are dropped with it. */
+function splitCarryNoteSection<T>(
+  note: string | null | undefined,
+  heading: string,
+  parseLine: (line: string) => T | null,
+): { body: string; rows: T[] } {
+  const text = (note ?? '').trim();
+  if (!text) return { body: '', rows: [] };
+  const headingRe = new RegExp(`^##\\s+${heading}\\s*$`, 'i');
+  const lines = text.split('\n');
+  const bodyLines: string[] = [];
+  const rows: T[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (headingRe.test(line)) {
+      inSection = true;
+      continue;
+    }
+    if (inSection && /^##\s+/.test(line)) inSection = false; // a later section ends the block
+    if (inSection) {
+      const r = parseLine(line);
+      if (r !== null) rows.push(r);
+      continue; // non-row lines inside the section are dropped with it
+    }
+    bodyLines.push(line);
+  }
+  return { body: bodyLines.join('\n').trim(), rows };
+}
+
 /** Split a note into its walls rows and everything else (the `## Walls` section
  *  removed). The wake renderer needs walls SEPARATE from the truncatable note body
  *  (a wall clipped off the end of a capped note is a dissolved commitment), and the
  *  carry-forward merge needs the body without them. */
 export function splitCarryNoteWalls(note: string | null | undefined): { body: string; walls: WallEntry[] } {
-  const text = (note ?? '').trim();
-  if (!text) return { body: '', walls: [] };
-  const headingRe = new RegExp(`^##\\s+${CARRY_NOTE_WALLS_HEADING}\\s*$`, 'i');
-  const lines = text.split('\n');
-  const bodyLines: string[] = [];
-  const walls: WallEntry[] = [];
-  let inWalls = false;
-  for (const line of lines) {
-    if (headingRe.test(line)) {
-      inWalls = true;
-      continue;
-    }
-    if (inWalls && /^##\s+/.test(line)) inWalls = false; // a later section ends the walls block
-    if (inWalls) {
-      const w = parseWallLine(line);
-      if (w) walls.push(w);
-      continue; // non-row lines inside the section are dropped with it
-    }
-    bodyLines.push(line);
-  }
-  return { body: bodyLines.join('\n').trim(), walls };
+  const { body, rows } = splitCarryNoteSection(note, CARRY_NOTE_WALLS_HEADING, parseWallLine);
+  return { body, walls: rows };
+}
+
+/** Split a note into its checks rows and everything else (the `## Checks` section
+ *  removed) — the P-001 analog of {@link splitCarryNoteWalls}. */
+export function splitCarryNoteChecks(note: string | null | undefined): { body: string; checks: CheckEntry[] } {
+  const { body, rows } = splitCarryNoteSection(note, CARRY_NOTE_CHECKS_HEADING, parseCheckLine);
+  return { body, checks: rows };
 }
 
 /** Re-attach a walls set to a note body (any existing `## Walls` in `body` is
@@ -321,6 +344,91 @@ export function normalizeWallEntries(
     if (out.length >= CARRY_NOTE_MAX_WALLS) break;
   }
   return out;
+}
+
+/** Re-attach a checks set to a note body (any existing `## Checks` in `body` is
+ *  replaced; the legend is always re-rendered). An empty checks set yields the bare
+ *  body. Note: unlike walls, checks sit BEFORE any `## Walls` section so walls keep
+ *  their established last-position anchor. */
+export function withCarryNoteChecks(body: string, checks: CheckEntry[]): string {
+  const { body: strippedAll, walls } = splitCarryNoteWalls(splitCarryNoteChecks(body).body);
+  const kept = checks.filter((c) => (c.claim ?? '').trim().length > 0);
+  const parts: string[] = [];
+  if (strippedAll) parts.push(strippedAll);
+  if (kept.length > 0) {
+    parts.push(`## ${CARRY_NOTE_CHECKS_HEADING}\n${CARRY_NOTE_CHECKS_LEGEND}\n${kept.map(renderCheckLine).join('\n')}`);
+  }
+  if (walls.length > 0) {
+    parts.push(`## ${CARRY_NOTE_WALLS_HEADING}\n${walls.map(renderWallLine).join('\n')}`);
+  }
+  return parts.join('\n\n');
+}
+
+/** Normalize an incoming checks write against the prior set — same contract as
+ *  {@link normalizeWallEntries}: trim + drop blank claims, dedup by claim, preserve
+ *  the ORIGINAL sinceMs for a claim that already stood, inherit recheck/verified
+ *  from the prior row when omitted (a re-write must not silently drop evidence),
+ *  stamp `nowMs` on new ones, cap at {@link CARRY_NOTE_MAX_CHECKS}. */
+export function normalizeCheckEntries(
+  entries: ReadonlyArray<{ claim: string; recheck?: string; verified?: string; sinceMs?: number }>,
+  prior: ReadonlyArray<CheckEntry>,
+  nowMs: number = Date.now(),
+): CheckEntry[] {
+  const priorByClaim = new Map(prior.map((c) => [c.claim.trim(), c] as const));
+  const seen = new Set<string>();
+  const out: CheckEntry[] = [];
+  for (const e of entries) {
+    const claim = (e.claim ?? '').trim();
+    if (!claim || seen.has(claim)) continue;
+    seen.add(claim);
+    const existing = priorByClaim.get(claim);
+    const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
+    const verified = (e.verified ?? existing?.verified ?? '').trim();
+    out.push({
+      claim,
+      ...(recheck ? { recheck } : {}),
+      ...(verified ? { verified } : {}),
+      sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,
+    });
+    if (out.length >= CARRY_NOTE_MAX_CHECKS) break;
+  }
+  return out;
+}
+
+// ── External-state-claim lint (P-009) ────────────────────────────────────────
+
+const CLAIM_ASSERTION_RE = /\b(MUST|expects?|alarm if|will\s+(?:roll|change|move|land)|anchor(?:ed)?\s+on)\b/i;
+const CLAIM_TOKEN_RES: ReadonlyArray<RegExp> = [
+  /\b[0-9a-f]{12,40}\b/gi, // content-hash / sha-like
+  /\b(?:WI|EI|F)-\d+\b/g, // work-item / insight ids
+  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/g, // ISO timestamps
+];
+
+/** Advisory lint (cold-carry-system-hardening-2026-07-19 P-009): find prose lines that
+ *  ASSERT external state (assertion verb + a distinctive token — hash, WI/EI id, ISO
+ *  instant) where NONE of the line's tokens appear in any check/wall row. Such a line
+ *  is a carried claim with no probe — the exact shape of the phantom-re-anchor
+ *  incident ("expect the hash to ROLL" with no tick_at-vs-restart check). Returns the
+ *  flagged lines (clipped, max 3); never blocks a write. */
+export function lintUncheckedExternalClaims(prose: string, probeText: string): string[] {
+  const flagged: string[] = [];
+  const probes = probeText.toLowerCase();
+  for (const rawLine of (prose ?? '').split('\n')) {
+    const line = rawLine.trim();
+    if (!line || !CLAIM_ASSERTION_RE.test(line)) continue;
+    const tokens: string[] = [];
+    for (const re of CLAIM_TOKEN_RES) {
+      re.lastIndex = 0;
+      for (const m of line.matchAll(re)) tokens.push(m[0]);
+    }
+    if (tokens.length === 0) continue;
+    const covered = tokens.some((t) => probes.includes(t.toLowerCase()));
+    if (!covered) {
+      flagged.push(line.length > 160 ? `${line.slice(0, 157)}…` : line);
+      if (flagged.length >= 3) break;
+    }
+  }
+  return flagged;
 }
 
 // ── The journal ring (lifted verbatim from hive/wake.ts — the Queen's L1a

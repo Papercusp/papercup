@@ -315,7 +315,7 @@ export async function reconcileOrphanedPlanItemWorkItems(
   //    hint; the per-item reconciler re-resolves the plan.
   const cands = new Map<string, OrphanCandidate>();
   const npF = normalizedPayloadExpr(sql, 'payload');
-  const key = (planSlug: string, itemId: string) => `${planSlug} ${itemId}`;
+  const key = (planSlug: string, itemId: string) => `${planSlug}\0${itemId}`;
 
   const rows = await sql<{ plan_slug: string; item_id: string; harness_slug: string | null }[]>`
     SELECT DISTINCT ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
