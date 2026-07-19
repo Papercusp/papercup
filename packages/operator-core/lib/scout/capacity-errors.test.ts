@@ -27,10 +27,10 @@ import {
  * broader string match.
  */
 describe('isCapacityError — the pool genuinely had nothing to give', () => {
-  it('matches a governor-attested all-accounts-paused denial', () => {
+  it('matches a governor-attested rate-limit-blocked denial', () => {
     expect(
       isCapacityError({
-        admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
+        admissionDenial: { reason: 'rate-limit-blocked', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
       }),
     ).toBe(true);
   });
@@ -44,10 +44,10 @@ describe('isCapacityError — the pool genuinely had nothing to give', () => {
     // every time a denial round-trips (the scheduler re-extracts before persisting).
     expect(
       admissionDenialFrom({
-        turn: { admissionDenial: { reason: 'all-accounts-paused', via: 'governor', governorReason: 'paused', freeSlots: 0 } },
+        turn: { admissionDenial: { reason: 'rate-limit-blocked', via: 'governor', governorReason: 'paused', freeSlots: 0 } },
       }),
     ).toEqual({
-      reason: 'all-accounts-paused',
+      reason: 'rate-limit-blocked',
       via: 'governor',
       governorReason: 'paused',
       freeSlots: 0,
@@ -59,13 +59,49 @@ describe('isCapacityError — the pool genuinely had nothing to give', () => {
   });
 });
 
+/**
+ * WI-5435 ledger compatibility. `rate-limit-blocked` was spelled `all-accounts-paused` until
+ * the rename, and quality-metrics re-classifies HISTORICAL ticks — rows written under the old
+ * spelling are immutable and stay inside the release window for days after the rename ships.
+ *
+ * These tests exist because the failure mode is SILENT and points the wrong way: an
+ * unrecognized reason yields `undefined`, a versioned row that classifies as not-capacity is
+ * counted as a GENUINE error, and so dropping the normalization would flip every
+ * already-persisted capacity gate to an error and redden the cycle-error bar across the whole
+ * window — the measure-across-a-fix-boundary trap this module was built to prevent, re-entered
+ * through the back door. Delete these only once no legacy-spelling row is still in the window.
+ */
+describe('WI-5435 — a tick persisted under the legacy reason spelling still reads as capacity', () => {
+  it('normalizes the legacy spelling to the current literal at the extraction boundary', () => {
+    expect(admissionDenialFrom({ admissionDenial: { reason: 'all-accounts-paused', via: 'governor' } })).toEqual({
+      reason: 'rate-limit-blocked',
+      via: 'governor',
+    });
+  });
+
+  it('classifies a legacy-spelled governor denial as capacity, not as a genuine error', () => {
+    const legacyRow = {
+      admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 1, totalAccounts: 2 },
+      capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+    };
+    expect(isCapacityError(legacyRow)).toBe(true);
+    expect(isPersistedCapacityError(legacyRow)).toBe(true);
+  });
+
+  it('does not smuggle the legacy spelling past the evidence requirement', () => {
+    // Normalization is a spelling fix, not an exemption: an unattested legacy row still
+    // fails CLOSED exactly like an unattested current-spelling one.
+    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 1 } })).toBe(false);
+  });
+});
+
 describe('isCapacityError — evidence-required: an UNATTESTED denial fails CLOSED (WI-5391 Part B)', () => {
   // A denial with a capacity reason but no `via` stamp is exactly what an evidence-free
   // prose-inferring mint site would produce. It must count as a loud error — otherwise an
   // admission-path defect wearing a capacity costume vanishes from the metric built to catch it.
   it('rejects a capacity-reason denial with no via stamp', () => {
     expect(isCapacityError({ admissionDenial: { reason: 'provider-429' } })).toBe(false);
-    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3 } })).toBe(false);
+    expect(isCapacityError({ admissionDenial: { reason: 'rate-limit-blocked', pausedAccounts: 3 } })).toBe(false);
   });
 
   it('rejects a denial with an unrecognized via value', () => {
@@ -135,7 +171,7 @@ describe('persisted capacity classification across the typed-carrier transition'
       isPersistedCapacityError({
         error: 'opaque',
         capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
-        admissionDenial: { reason: 'all-accounts-paused', via: 'governor' },
+        admissionDenial: { reason: 'rate-limit-blocked', via: 'governor' },
       }),
     ).toBe(true);
   });
@@ -183,7 +219,7 @@ describe('pool-counter evidence round-trip (WI-5391 item 3 — governor-leg audi
     expect(
       admissionDenialFrom({
         admissionDenial: {
-          reason: 'all-accounts-paused',
+          reason: 'rate-limit-blocked',
           via: 'governor',
           governorReason: 'paused',
           pausedAccounts: 3,
@@ -191,7 +227,7 @@ describe('pool-counter evidence round-trip (WI-5391 item 3 — governor-leg audi
         },
       }),
     ).toEqual({
-      reason: 'all-accounts-paused',
+      reason: 'rate-limit-blocked',
       via: 'governor',
       governorReason: 'paused',
       pausedAccounts: 3,

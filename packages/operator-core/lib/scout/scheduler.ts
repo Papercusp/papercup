@@ -329,7 +329,8 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   // A caller-applied stamp is structurally ABSENT on every path that denies or throws
   // before reaching the caller, which is exactly the set of ticks the failover question
   // needs: the observed governor denial (2026-07-19T01:09:56Z, via:'governor',
-  // reason:'all-accounts-paused' with pausedAccounts:1 of totalAccounts:2) carried NO
+  // reason:'all-accounts-paused' — the pre-WI-5435 spelling of 'rate-limit-blocked', quoted
+  // as the row actually reads — with pausedAccounts:1 of totalAccounts:2) carried NO
   // pool key at all, so healthyAccounts — the one field that separates "failover didn't
   // use a healthy account" from "the pool really was empty" — was unobservable on the
   // ticks the 0.0.11-alpha error-rate bar is judging.

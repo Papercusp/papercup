@@ -295,7 +295,7 @@ describe('runScoutTick — tick observability (P-034)', () => {
 
   it('persists typed pool exhaustion as a versioned no-capacity gate', async () => {
     const denial = Object.assign(new Error('pool exhausted'), {
-      admissionDenial: { reason: 'all-accounts-paused' as const, via: 'governor' as const, pausedAccounts: 3, freeSlots: 0 },
+      admissionDenial: { reason: 'rate-limit-blocked' as const, via: 'governor' as const, pausedAccounts: 3, freeSlots: 0 },
     });
     const { deps, calls } = makeDeps({
       runCycle: async () => {
@@ -310,7 +310,7 @@ describe('runScoutTick — tick observability (P-034)', () => {
       detail: {
         error: 'pool exhausted',
         capacityClassifierVersion: 1,
-        admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
+        admissionDenial: { reason: 'rate-limit-blocked', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
       },
     });
   });
@@ -386,7 +386,7 @@ describe('runScoutTick — tick observability (P-034)', () => {
       // unchanged and asserted directly: a governor denial is never CONTRADICTED, and
       // the record-time `poolSnapshot` evidence key stays absent.
       const denial = Object.assign(new Error('pool exhausted'), {
-        admissionDenial: { reason: 'all-accounts-paused' as const, via: 'governor' as const },
+        admissionDenial: { reason: 'rate-limit-blocked' as const, via: 'governor' as const },
       });
       const { deps, calls } = makeDeps({ runCycle: async () => { throw denial; } });
       deps.readPoolSnapshot = async () => ({ probedAtMs: 1, healthyAccounts: 5, codexConfigured: false });
@@ -402,7 +402,7 @@ describe('runScoutTick — tick observability (P-034)', () => {
     const governorDenial = () =>
       Object.assign(new Error('rate-limit pause exceeds maxWait'), {
         admissionDenial: {
-          reason: 'all-accounts-paused' as const,
+          reason: 'rate-limit-blocked' as const,
           via: 'governor' as const,
           totalAccounts: 2,
           pausedAccounts: 1,
@@ -504,8 +504,8 @@ describe('runScoutTick — tick observability (P-034)', () => {
     it('persists capacityFallbacks riding a THROWN capacity denial on the gated tick detail', async () => {
       // A throwing cycle can't return its trail — the runner attaches it to the error.
       const denial = Object.assign(new Error('pool exhausted'), {
-        admissionDenial: { reason: 'all-accounts-paused' as const, via: 'governor' as const },
-        capacityFallbacks: [{ ...fallbackEvent, succeeded: false, via: 'governor', reason: 'all-accounts-paused' }],
+        admissionDenial: { reason: 'rate-limit-blocked' as const, via: 'governor' as const },
+        capacityFallbacks: [{ ...fallbackEvent, succeeded: false, via: 'governor', reason: 'rate-limit-blocked' }],
       });
       const { deps, calls } = makeDeps({ runCycle: async () => { throw denial; } });
       const r = await runScoutTick(deps);
@@ -514,7 +514,7 @@ describe('runScoutTick — tick observability (P-034)', () => {
         status: 'gated',
         gate: 'no-capacity',
         detail: {
-          capacityFallbacks: [{ ...fallbackEvent, succeeded: false, via: 'governor', reason: 'all-accounts-paused' }],
+          capacityFallbacks: [{ ...fallbackEvent, succeeded: false, via: 'governor', reason: 'rate-limit-blocked' }],
         },
       });
     });

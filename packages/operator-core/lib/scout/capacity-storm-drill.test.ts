@@ -60,7 +60,7 @@ describe('runCapacityStormDrill — the storm through the real scheduler', () =>
     expect(result.mode).toBe('capacity-storm');
 
     const byLeg = Object.fromEntries(result.legs.map((l) => [l.leg, l]));
-    // Leg 1: the typed all-accounts-paused denial is a GATE, not an error.
+    // Leg 1: the typed rate-limit-blocked denial is a GATE, not an error.
     expect(byLeg['capacity']).toMatchObject({
       tickReason: 'no-capacity',
       persistedStatus: 'gated',

@@ -148,7 +148,7 @@ describe('withCodexCapacityFallback — one Codex retry on an ATTESTED mid-cycle
   });
 
   it('rethrows the ORIGINAL attested denial when the fallback also fails — event stays succeeded:false', async () => {
-    const original = attestedDenial('governor', 'all-accounts-paused');
+    const original = attestedDenial('governor', 'rate-limit-blocked');
     const events: import('./capacity-errors').CapacityFallbackEvent[] = [];
     const wrapped = withCodexCapacityFallback(
       async (o: { model?: string }) => {
@@ -161,7 +161,7 @@ describe('withCodexCapacityFallback — one Codex retry on an ATTESTED mid-cycle
     // must not replace it with an evidence-free error.
     await expect(wrapped({ model: 'claude-opus-4-8' })).rejects.toBe(original);
     expect(events).toEqual([
-      { from: 'claude-opus-4-8', to: SCOUT_CODEX_FALLBACK_MODEL, succeeded: false, via: 'governor', reason: 'all-accounts-paused' },
+      { from: 'claude-opus-4-8', to: SCOUT_CODEX_FALLBACK_MODEL, succeeded: false, via: 'governor', reason: 'rate-limit-blocked' },
     ]);
   });
 

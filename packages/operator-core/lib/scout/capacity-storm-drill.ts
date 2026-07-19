@@ -13,7 +13,7 @@
  * through three synthetic failure legs against the LIVE tick ledger:
  *
  *   1. `capacity`         — the cycle throws with a typed AdmissionDenial
- *                           reason:'all-accounts-paused' stamped via:'governor'.
+ *                           reason:'rate-limit-blocked' stamped via:'governor'.
  *                           MUST be reclassified to the 'no-capacity' GATE (not an
  *                           error).
  *   2. `timeout`          — the cycle genuinely times out through the deployed
@@ -136,7 +136,7 @@ export function evaluateCapacityStormEvidence(
   evidence: CapacityStormEvidence,
 ): { ok: boolean; failures: string[] } {
   const checks: Array<[boolean, string]> = [
-    [evidence.capacityGated, "the all-accounts-paused leg was not reclassified to the 'no-capacity' gate"],
+    [evidence.capacityGated, "the rate-limit-blocked leg was not reclassified to the 'no-capacity' gate"],
     [evidence.capacityDetailTyped, "the capacity tick's persisted detail lost the typed admissionDenial / classifier version"],
     [evidence.capacityReadAgrees, 'the read path (isPersistedCapacityError) disagreed with the write path on the capacity row'],
     [evidence.timeoutStaysError, 'a genuine cycle timeout was swallowed into the capacity bucket (asymmetry-of-harm violation)'],
@@ -207,7 +207,7 @@ export async function runCapacityStormDrill(
       runCycle: async () => {
         throw Object.assign(
           new Error(`drill:${drillId} synthetic storm — every pool account paused/walled`),
-          { admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 12 } },
+          { admissionDenial: { reason: 'rate-limit-blocked', via: 'governor', pausedAccounts: 12 } },
         );
       },
     },
@@ -339,7 +339,7 @@ export async function runCapacityStormDrill(
       capacity.persistedGate === 'no-capacity',
     capacityDetailTyped:
       capacity.classifierVersion === CAPACITY_CLASSIFIER_SCHEMA_VERSION &&
-      admissionDenialFrom(capacityRow?.detail)?.reason === 'all-accounts-paused',
+      admissionDenialFrom(capacityRow?.detail)?.reason === 'rate-limit-blocked',
     capacityReadAgrees: capacity.readClassifiedCapacity === true,
     timeoutStaysError:
       timeout.tickReason === 'cycle-error' &&

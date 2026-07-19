@@ -260,7 +260,7 @@ describe('computeScoutQualityReport', () => {
             status: 'error',
             detail: {
               error: 'opaque admission failure',
-              admissionDenial: { reason: 'all-accounts-paused', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
+              admissionDenial: { reason: 'rate-limit-blocked', via: 'governor', pausedAccounts: 3, freeSlots: 0 },
             },
           }),
           tick({
@@ -274,7 +274,7 @@ describe('computeScoutQualityReport', () => {
             gate: 'no-capacity',
             detail: {
               error: 'opaque admission failure',
-              admissionDenial: { reason: 'all-accounts-paused', via: 'governor' },
+              admissionDenial: { reason: 'rate-limit-blocked', via: 'governor' },
             },
           }),
         ],
@@ -300,7 +300,7 @@ describe('computeScoutQualityReport', () => {
             detail: {
               error: 'opaque admission failure',
               capacityClassifierVersion: 1,
-              admissionDenial: { reason: 'all-accounts-paused' },
+              admissionDenial: { reason: 'rate-limit-blocked' },
             },
           }),
         ],

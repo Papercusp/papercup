@@ -21,7 +21,7 @@
  * into disagreeing about what "a capacity failure" is.
  */
 
-import type { AdmissionDenial } from '@papercusp/papercusp-shared/agent';
+import { LEGACY_RATE_LIMIT_BLOCKED_REASON, type AdmissionDenial } from '@papercusp/papercusp-shared/agent';
 
 /**
  * Persisted on every tick produced by the typed classifier. Its presence is the
@@ -33,7 +33,22 @@ export const CAPACITY_CLASSIFIER_SCHEMA_VERSION = 1;
 /** Extract the typed admission fact from a TurnError/LlmCallError or persisted tick detail.
  * Copies the `via` evidence stamp — dropping it here would strip the attestation the
  * classifier requires every time a denial round-trips through re-extraction (scheduler
- * re-extracts before persisting). */
+ * re-extracts before persisting).
+ *
+ * THE LEDGER-COMPATIBILITY BOUNDARY (WI-5435). `rate-limit-blocked` was called
+ * `all-accounts-paused` until the rename, and the ticks written under the old spelling are
+ * immutable history this module still reads (quality-metrics re-classifies HISTORICAL error
+ * ticks — see the READ path in the module header). So the legacy spelling is NORMALIZED to
+ * the current one here, at the single extraction point, and every downstream comparison tests
+ * exactly one literal.
+ *
+ * Dropping this normalization instead of writing it is the trap this comment exists to stop:
+ * an unrecognized reason yields `undefined`, and a versioned row that classifies as
+ * not-capacity is counted as a GENUINE error — so a bare rename would silently flip every
+ * already-persisted capacity gate to an error and redden the cycle-error bar across the whole
+ * release window. That is the measure-across-a-fix-boundary trap this module was built to
+ * prevent, re-entered through the back door. Do not "simplify" it away while old rows remain
+ * inside the rubric's window. */
 export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined {
   if (!input || typeof input !== 'object') return undefined;
   const value = input as Record<string, unknown>;
@@ -41,8 +56,8 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
   const candidate = value.admissionDenial ?? turn?.admissionDenial;
   if (!candidate || typeof candidate !== 'object') return undefined;
   const denial = candidate as Record<string, unknown>;
-  const reason = denial.reason;
-  if (reason !== 'all-accounts-paused' && reason !== 'no-free-slot' && reason !== 'provider-429') return undefined;
+  const reason = denial.reason === LEGACY_RATE_LIMIT_BLOCKED_REASON ? 'rate-limit-blocked' : denial.reason;
+  if (reason !== 'rate-limit-blocked' && reason !== 'no-free-slot' && reason !== 'provider-429') return undefined;
   return {
     reason,
     ...(denial.via === 'governor' || denial.via === 'http-429' ? { via: denial.via } : {}),
@@ -128,8 +143,15 @@ export function isLegacyCapacityError(input: unknown): boolean {
  * PURE: is this failure a CAPACITY ceiling (the pool had nothing to give) rather than a
  * genuine cycle failure? The governor/gateway's typed denial is the only authoritative input.
  *
- * The typed reasons are deliberately small: `all-accounts-paused` and `provider-429` are
+ * The typed reasons are deliberately small: `rate-limit-blocked` and `provider-429` are
  * capacity signals; `no-free-slot` is an admission-path defect signal and stays loud.
+ *
+ * NOTE `rate-limit-blocked` is a per-bucket CLASS label, not a pool-wide claim (WI-5435) — it
+ * says this bucket was withheld for a rate-limit-ish reason, NOT that the pool was exhausted.
+ * The pool-aware evidence is `pausedAccounts`/`totalAccounts` (a different read), and whether
+ * the caller then attempted failover to a healthy sibling is not observable from the denial at
+ * all — that needs the cycle-top poolSnapshot (WI-5397/WI-4475). Do not read this reason as
+ * proof the withhold was correct.
  *
  * Deliberately NARROW: a TIMEOUT is NOT capacity. The REASON changed on 2026-07-13 (WI-4475) —
  * read this before you "fix" the classifier, because the obvious change is the wrong one.
@@ -167,7 +189,7 @@ export function isLegacyCapacityError(input: unknown): boolean {
 export function isCapacityError(input: unknown): boolean {
   const denial = admissionDenialFrom(input);
   if (!denial || (denial.via !== 'governor' && denial.via !== 'http-429')) return false;
-  return denial.reason === 'all-accounts-paused' || denial.reason === 'provider-429';
+  return denial.reason === 'rate-limit-blocked' || denial.reason === 'provider-429';
 }
 
 /** Read the record-time pool-snapshot contradiction flag from a persisted tick detail.
