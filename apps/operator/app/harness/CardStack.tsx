@@ -297,9 +297,18 @@ export function CardStack<T>({
         position: absolute; left: 0; overflow: hidden;
         border-radius: 13px;
         border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 22%, var(--border, rgba(125, 211, 252, 0.2)));
-        background: linear-gradient(168deg,
-          color-mix(in srgb, var(--accent, #7dd3fc) 7%, var(--bg-2, rgba(255, 255, 255, 0.05))) 0%,
-          var(--bg-2, rgba(255, 255, 255, 0.04)) 60%);
+        /* OPAQUE base is load-bearing: --bg-2 is a translucent wash in the
+           theme, and the stacked layers behind this one carry real content —
+           without an opaque floor their text bleeds THROUGH the active card
+           (owner screenshot 2026-07-19 16:00). bg-1 floor + bg-2 wash + accent
+           tint reproduces the panel surface, fully opaque. */
+        background-color: var(--bg-1, #0d151d);
+        background-image:
+          linear-gradient(168deg,
+            color-mix(in srgb, var(--accent, #7dd3fc) 8%, transparent) 0%,
+            transparent 60%),
+          linear-gradient(var(--bg-2, rgba(255, 255, 255, 0.04)),
+            var(--bg-2, rgba(255, 255, 255, 0.04)));
         box-shadow: 0 12px 26px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         transition: transform 320ms cubic-bezier(0.2, 0.8, 0.25, 1), opacity 240ms ease;
       }
@@ -347,7 +356,7 @@ export function CardStack<T>({
         position: absolute; bottom: ${-PILL_OVERHANG}px; z-index: 6;
         display: inline-flex; align-items: center; gap: 3px;
         height: 26px; padding: 0 11px; border-radius: 999px; cursor: pointer;
-        font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.01em;
+        font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0; /* design lint: no nonzero tracking */
         border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 42%, var(--border, rgba(125, 211, 252, 0.2)));
         background: var(--bg-1, #0d151d); color: var(--fg-dim, #b9d4e8);
         box-shadow: 0 5px 14px rgba(0, 0, 0, 0.45);

@@ -914,12 +914,14 @@ function ImprovementsView({
           </button>
         }
       />
-      {showDashboard ? (
-        <LearningDisclosure label="Loop diagnostics">
-          {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
-          <LearningEfficacyPanel />
-        </LearningDisclosure>
-      ) : null}
+      {/* Loop diagnostics — always visible under a standard header (owner ask
+          2026-07-19): it never takes much space, so it no longer hides behind a
+          collapsible + the showDashboard (≥4 open) gate. */}
+      <div className="pc-learning__sectionhead">
+        <h2>Loop diagnostics</h2>
+      </div>
+      {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
+      <LearningEfficacyPanel />
 
       {digest && showDashboard ? (
         <div className="pc-learning-visual__layout pc-learning-visual__layout--improvements">

@@ -514,13 +514,27 @@ export interface LoopStatus {
    *  between items" without this. */
   mode: 'work' | 'monitor';
   /** Total delivered fires so far (metadata.fire_count) — for a cold loop this is the wakeCount
-   *  cadence counter (a RECYCLE lands every Nth). 0 when never fired / not tracked. */
+   *  cadence counter (a RECYCLE lands every Nth). 0 when never fired / not tracked.
+   *  ⚠ EI-16202: this is FIRE history, not ARM history — calling loop:arm to (re-)arm an
+   *  EXISTING loop does NOT touch it (only an actual delivered fire does). A re-arm that
+   *  legitimately took (see `armedAt`) can leave `fireCount`/`lastFiredAt` byte-identical
+   *  to before the arm — that is expected, not a sign the arm silently no-op'd. */
   fireCount: number;
   /** True while the loop's turn is in flight (parked at next_fire_at='infinity'). */
   parked: boolean;
   /** Next scheduled fire (ISO), or null when parked / unset. */
   nextFireAt: string | null;
+  /** ISO of the last DELIVERED fire, or null if the loop has never fired. Same EI-16202
+   *  caveat as `fireCount` — a re-arm does not advance this. */
   lastFiredAt: string | null;
+  /** ISO of the last time THIS routine row was (re-)armed via loop:arm / autoArmFleetMemberLoop
+   *  (metadata.armed_at, stamped by stampLoopArmedAt on every materializeLoop call — arm AND
+   *  re-arm alike). EI-16202: this is the field that actually moves on a re-arm — use it, not
+   *  `fireCount`/`lastFiredAt`/`lastDeliveryOutcome`/`consecutiveErrors` (all fire-history, see
+   *  their own docs), to verify a loop:arm call actually reached the underlying scheduler row
+   *  — e.g. across a re-arm separated by a compaction/respawn. Null only if the row predates
+   *  this stamp (EI-7613) and has never been re-armed since. */
+  armedAt: string | null;
   costCapCents: number | null;
   /** P2a dead-man bounds (if configured). */
   maxFires: number | null;
@@ -533,7 +547,12 @@ export interface LoopStatus {
    *  `consecutiveErrors` is the failure-streak the circuit watches. */
   stalled: boolean;
   stalledSinceMs: number | null;
+  /** EI-16202: fire-DELIVERY history from `autoloop_state` (keyed by routine name), not
+   *  arm history — a re-arm never touches this row, so it legitimately survives byte-identical
+   *  across a loop:arm call (including one separated by a compaction/respawn). See `armedAt`. */
   lastDeliveryOutcome: string | null;
+  /** Same caveat as `lastDeliveryOutcome` — the failure-streak counter only resets on the
+   *  fire path (a successful delivery), never on a re-arm. */
   consecutiveErrors: number;
 }
 
@@ -593,6 +612,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     parked,
     nextFireAt: r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
+    armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
     costCapCents: typeof costCap === 'number' ? costCap : null,
     maxFires: typeof pt?.maxFires === 'number' ? pt.maxFires : null,
     maxDurationSec: typeof pt?.maxDurationSec === 'number' ? pt.maxDurationSec : null,
@@ -627,6 +647,7 @@ export async function getLoopStatuses(
            r.payload_template,
            COALESCE((r.metadata->>'fire_count')::int, 0)                  AS fire_count,
            r.last_fired_at,
+           r.metadata->>'armed_at'                                       AS armed_at,
            (r.next_fire_at = 'infinity'::timestamptz)                    AS parked,
            CASE WHEN r.next_fire_at = 'infinity'::timestamptz THEN NULL
                 ELSE r.next_fire_at END                                  AS next_fire_at,

@@ -118,6 +118,9 @@ import {
   resetBootConfigAssertForTests,
   resetNoHostWarnedForTests,
   resetImplausibleReadingsForTests,
+  staleCutoversForProcessStart,
+  resetStaleCutoverEscalationsForTests,
+  startCompactionComplianceWatchdog,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,

@@ -1142,7 +1142,7 @@ async function escalateStaleCutoverProcess(
   staleCutoverEscalated.add(cutoverId);
   const bootIso = new Date(processStartedAtMs).toISOString();
   const cutoverIso = new Date(cutoverAtMs).toISOString();
-  console.error(
+  console.warn(
     `[compaction-watchdog] PRE-CUTOVER PROCESS (pid ${process.pid}): this host booted ${bootIso}, BEFORE the ` +
       `"${cutoverId}" cutover (${cutoverIso}) — ${note} This process may be enforcing stale behavior (EI-16190 ` +
       `class: a deploy restarted other hosts but not this long-lived one). RESTART this process to pick up the ` +
