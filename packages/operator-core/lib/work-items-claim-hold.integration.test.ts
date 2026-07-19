@@ -179,11 +179,11 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
   // The fix resolves the item's ACTUAL workspace by id (ambient-independent) and scopes the
   // write to it. This is the ONLY assertion the pre-fix code fails.
   describe('persists across a workspace-scope mismatch (EI-15345)', () => {
-    async function seedFeatureInWorkspace(id: string, workspace: string) {
+    async function seedFeatureInWorkspace(id: string, workspace: string, createdTs = 100) {
       await db.sql`
         INSERT INTO harness_shared.harness_features_consolidated
           (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
-        VALUES (${H}, ${id}, 'feature', 'todo', NULL, ${workspace}, 100, 100)`;
+        VALUES (${H}, ${id}, 'feature', 'todo', NULL, ${workspace}, ${createdTs}, ${createdTs})`;
     }
     async function payloadInWorkspace(id: string, workspace: string) {
       const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`
@@ -211,16 +211,18 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
       });
     });
 
-    it('prefers the active-workspace row when the same id exists in two workspaces', async () => {
-      await seedFeatureInWorkspace('WI-ws-dup', 'ws-active');
-      await seedFeatureInWorkspace('WI-ws-dup', 'ws-idle');
-      h.activeWs = 'ws-active';
+    it('a scheduler self-select then EXCLUDES the (now correctly) held item', async () => {
+      await seedFeatureInWorkspace('WI-ws-held', 'ws-real', 100); // oldest — would be served first
+      await seedFeatureInWorkspace('WI-ws-free', 'ws-real', 200);
+      // The hold is applied under a WRONG ambient workspace (the bug's condition)…
+      h.activeWs = 'ws-other';
+      await wi.setWorkItemClaimHold('WI-ws-held', true, { harness: H, parkedBy: 'su-z' });
 
-      await wi.setWorkItemClaimHold('WI-ws-dup', true, { harness: H, parkedBy: 'su-y' });
-
-      // Only the ACTIVE-workspace row is held; the idle-workspace namesake is untouched.
-      expect(await payloadInWorkspace('WI-ws-dup', 'ws-active')).toMatchObject({ _claimHold: true });
-      expect(await payloadInWorkspace('WI-ws-dup', 'ws-idle')).toBeNull();
+      // …yet the claim floor (claimFloorsWhereSql) must now skip it. claimNextWorkItem resolves
+      // the item's real workspace, so hold it steady for the claim leg.
+      h.activeWs = 'ws-real';
+      const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-ws' });
+      expect(got?.id).toBe('WI-ws-free'); // never the held one, despite being seeded first/oldest
     });
   });
 });
