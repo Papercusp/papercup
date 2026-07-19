@@ -338,7 +338,7 @@ describe('executeBatch — placement execution', () => {
       expect(r.placements[0].reason).toMatch(/boot grace/);
       expect(r.placements[0].reason).toMatch(/WI-5421/);
       expect(r.summary.reaped).toBeUndefined();
-      expect(r.summary.spawned).toBeUndefined();
+      expect(r.summary.spawned ?? 0).toBe(0);
     });
 
     it('an UNKNOWN-age bee (no bees[] passed at all) is treated as the safe default — deferred, never reaped', async () => {

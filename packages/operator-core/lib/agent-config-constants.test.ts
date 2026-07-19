@@ -81,10 +81,10 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(400_000);
     expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(400_000);
   });
-  it('[1m] fleet MEMBERS default to the leaner 300k; role never touches a real-window derivation', () => {
-    expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(300_000);
-    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(300_000);
-    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(300_000);
+  it('[1m] fleet MEMBERS default to the leaner 200k (owner 2026-07-19); role never touches a real-window derivation', () => {
+    expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(200_000);
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(200_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(200_000);
     // explicit non-member (leader/solo) keeps the full cap
     expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: false })).toBe(400_000);
     // a 200k-window member still derives from the REAL window, not the role
@@ -109,8 +109,8 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     expect(defaultCompactionLimitForSpec(undefined)).toBe(400_000);
     expect(defaultCompactionLimitForSpec('')).toBe(400_000);
     expect(defaultCompactionLimitForSpec('   ')).toBe(400_000);
-    expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(300_000);
-    expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(300_000);
+    expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(200_000);
+    expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(200_000);
   });
 });
 

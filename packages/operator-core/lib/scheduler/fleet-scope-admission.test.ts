@@ -373,9 +373,11 @@ describe('fleet scope assignment admission (P-016)', () => {
       admissionMocks.releaseCooldownSec.mockReturnValue(300);
     });
 
-    it('returns the cooldown-excluded count + earliest expiry when rows match sans the cooldown floor', async () => {
+    it('returns the cooldown-excluded count + earliest expiry + the argmin row id when rows match sans the cooldown floor', async () => {
       const releasedAt = new Date('2026-07-17T07:00:00.000Z');
-      admissionMocks.sql.mockResolvedValue([{ cnt: 3, earliest: releasedAt }]);
+      // EI-16519: the query now returns the argmin row (feature_id + last_released_at)
+      // plus a `count(*) OVER()` window total, not a bare aggregate — one row back.
+      admissionMocks.sql.mockResolvedValue([{ feature_id: 'WI-9001', last_released_at: releasedAt, cnt: 3 }]);
 
       const diag = await diagnoseFleetScopeCooldownMiss({
         scope: cooldownScope,
@@ -383,7 +385,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         workspaceId: 'papercusp-workspace',
       });
 
-      expect(diag).toEqual({ cooldownExcluded: 3, earliestExpiryMs: releasedAt.getTime() + 300_000 });
+      expect(diag).toEqual({ cooldownExcluded: 3, earliestExpiryMs: releasedAt.getTime() + 300_000, earliestRowId: 'WI-9001' });
       // The defining assertion: the WITHOUT-cooldown floors call must NOT thread this
       // bee's ownerId as cooldownAssignee — that is precisely the leg being dropped.
       const floorsOpts = admissionMocks.claimFloorsWhereSql.mock.calls[0]?.[1];
@@ -392,7 +394,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
 
     it('returns null (no diagnosis) when nothing matches even without the cooldown floor', async () => {
-      admissionMocks.sql.mockResolvedValue([{ cnt: 0, earliest: null }]);
+      admissionMocks.sql.mockResolvedValue([]);
       const diag = await diagnoseFleetScopeCooldownMiss({
         scope: cooldownScope,
         harness: 'papercusp',

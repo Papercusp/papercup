@@ -389,17 +389,26 @@ export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 400_000;
 
 /**
- * Leaner `[1m]` DEFAULT for named-fleet MEMBERS (owner directive 2026-07-03):
- * a member runs short pull-item→work→complete loops whose state is cheap to
- * reconstruct (it lives on the work-item / carry-note), so more-frequent
- * compactions cost little — while every wake re-reads the whole context, so
- * a smaller window directly cuts per-turn cache spend. LEADERS keep the full
- * COMPACTION_LIMIT_DEFAULT_1M_CAP: long-lived supervision state is expensive
- * to re-derive after compaction. This shapes the seeded DEFAULT only — an
- * explicit config:set-compaction-limit still clamps to the SPEC ceiling
- * (clampCompactionLimit → COMPACTION_LIMIT_DEFAULT_1M_CAP), never to this.
+ * Leaner `[1m]` DEFAULT for named-fleet MEMBERS: a member runs short
+ * pull-item→work→complete loops whose state is cheap to reconstruct (it lives on
+ * the work-item / carry-note), so more-frequent compactions cost little — while
+ * every wake re-reads the whole context, so a smaller window directly cuts
+ * per-turn cache spend. LEADERS keep the full COMPACTION_LIMIT_DEFAULT_1M_CAP:
+ * long-lived supervision state is expensive to re-derive after compaction.
+ *
+ * 200k (owner directive 2026-07-19): a fleet-throughput audit found members
+ * recycle their window ~every 22–33 min and complete ≈1 bug per 200k window with
+ * a tight per-member spread — 200k is empirically enough for the drain loop, and
+ * the smaller window keeps per-turn cache spend down. This SUPERSEDES the earlier
+ * 300k default (owner directive 2026-07-03); members had already been launched at
+ * 200k via `--compaction-limit`, and this makes 200k the seeded default so the
+ * launch flag is no longer load-bearing and the watchdog never seeds 300k.
+ *
+ * This shapes the seeded DEFAULT (and, as the fleet-member ceiling in
+ * clampCompactionLimit, caps a member's self-set) — a promotion to LEADER re-seeds
+ * to COMPACTION_LIMIT_DEFAULT_1M_CAP (reseedLeaderCompactionLimit / P-009).
  */
-export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 300_000;
+export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 200_000;
 
 /**
  * The model-derived default soft compaction limit for a spec — and the CEILING

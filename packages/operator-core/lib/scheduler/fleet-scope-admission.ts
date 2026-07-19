@@ -361,11 +361,12 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
     // EI-16519: fetch feature_id alongside last_released_at (not a bare MIN aggregate)
     // so the argmin row is identifiable — a caller/leader can then tell "the SAME row
     // keeps re-arming" (genuine livelock) apart from "a DIFFERENT row is earliest each
-    // poll" (ordinary churn across this bee's own multiple recent releases). The set is
-    // already restricted to this bee's own still-cooling-down matches (WI-5303), so it's
-    // small; ORDER BY + LIMIT 1 gives the argmin directly instead of a second query.
-    const rows = await sql<{ feature_id: string; last_released_at: Date }[]>`
-      SELECT feature_id, last_released_at
+    // poll" (ordinary churn across this bee's own multiple recent releases). `count(*)
+    // OVER()` is computed over the FULL matching set before ORDER BY/LIMIT clip which
+    // row is returned, so `cnt` stays the exact total (no under-count from the LIMIT 1)
+    // while a single row round-trip gives us the argmin directly.
+    const rows = await sql<{ feature_id: string; last_released_at: Date; cnt: number }[]>`
+      SELECT feature_id, last_released_at, count(*) OVER()::int AS cnt
         FROM harness_shared.harness_features_consolidated
        WHERE ${floorsNoCooldown}
          AND ${filter}
@@ -373,8 +374,8 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
          AND last_released_at IS NOT NULL
          AND last_released_at >= now() - make_interval(secs => ${cooldownSec})
        ORDER BY last_released_at ASC
-       LIMIT 500`;
-    const cnt = rows.length;
+       LIMIT 1`;
+    const cnt = rows[0]?.cnt ?? 0;
     if (cnt === 0) return null;
     const earliest = rows[0]!.last_released_at;
     const earliestExpiryMs = new Date(earliest).getTime() + cooldownSec * 1000;
@@ -462,11 +463,12 @@ export function fleetScopedMiss(
     // response) can see the standing wake that would have fired on a peer's next
     // compliant release was actually retired, not merely refused-if-it-fires.
     ...(paused ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
-    ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt } : {}),
+    ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt, cooldownEarliestRowId: cooldown.earliestRowId } : {}),
     advice: paused
       ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Do NOT re-park a work-item:claimable await while paused (any pre-pause await of yours was just cancelled server-side, EI-15777 — a peer\'s compliant release will no longer re-wake you for nothing). Resume normal pull cadence only after a fleet:resume cue.'
       : cooldown
-        ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. BUT if on re-poll cooldownExpiryAt has ADVANCED (the window keeps resetting — you see the same ~Ns every poll and it never counts down), the fleet is round-robin re-releasing these permanently-unfit rows faster than the cooldown lapses (a LIVELOCK, EI-14615): it will NOT clear on its own, so DO report it to your leader to exclude those rows from the claim spec (that is the fix), or wind down.'
+        ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
+          '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
         : claimablePayloadFilter
           ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end. To be woken ONLY on work your spec could admit (EI-15185), park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } and end your turn — it is derived from your own claim spec\'s view, so it fires only on in-scope items instead of every system-wide release; the ~30-min on_timeout backstops a missed emit. The wake is a HINT: scheduler:get_next stays the authoritative claim (a re-miss just re-registers the await).'
           : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',

@@ -207,7 +207,7 @@ function normalizePlanScopeArg(body: Record<string, unknown>): string | undefine
   return harness;
 }
 
-async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> {
+export async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> {
   const verb = ctx.params.verb;
   if (!READ_VERBS.has(verb)) {
     return Response.json(
@@ -233,6 +233,17 @@ async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> 
   // (CAS hashes the exact raw bytes), so the UI needs `raw` — which P-008 drops
   // from plans:get by default. Opt in for the single-plan `get` the editor loads.
   if (verb === 'get') body.includeRaw = true;
+  // The UI reads FULL, unshaped payloads. This loopback admin surface has no
+  // model-context budget, so — like the @papercusp/sync path in
+  // read-dispatch.ts (callPlansReadRaw) — it MUST take the explicit
+  // `payloadTier:'full'` escape hatch out of the payload-tier HARD CEILING
+  // (WI-5078 / WI-2859). Without it, a >30KB `mode:'full'` plan read was
+  // force-shaped down: the prose body dropped and every item past the first
+  // emptied to `{}` — so the PlanDetail popup rendered a blank Vditor body
+  // (no prose to render) AND crashed the whole view on plans whose items lost
+  // their `id` (previewNextItemId's `t.id.match(...)` threw). A caller may
+  // still pass an explicit lower tier via `?payloadTier=`.
+  if (body.payloadTier == null) body.payloadTier = 'full';
   const result = await handleHttpToolRequest(
     {
       method: 'POST',

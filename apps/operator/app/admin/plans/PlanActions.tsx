@@ -398,21 +398,27 @@ export default function PlanActions({
   );
 }
 
-/** Pure: the next free D-NNN id (max existing + 1, zero-padded). Exported for tests. */
+/** Pure: the next free D-NNN id (max existing + 1, zero-padded). Exported for tests.
+ *  Defensive: a decision with a null/missing `id` (e.g. a trimmed/partial payload)
+ *  is skipped rather than crashing the whole PlanDetail view via `id.match(...)`. */
 export function previewNextDecisionId(decisions: PlanDecision[] | undefined): string {
   let max = 0;
   for (const d of decisions ?? []) {
-    const n = Number((d.id.match(/D-(\d{3,})$/) ?? [])[1] ?? 0);
+    const id = typeof d?.id === 'string' ? d.id : '';
+    const n = Number((id.match(/D-(\d{3,})$/) ?? [])[1] ?? 0);
     if (n > max) max = n;
   }
   return `D-${String(max + 1).padStart(3, '0')}`;
 }
 
-/** Pure: the next free P-NNN id (max existing + 1, zero-padded). Exported for tests. */
+/** Pure: the next free P-NNN id (max existing + 1, zero-padded). Exported for tests.
+ *  Defensive: an item with a null/missing `id` (e.g. a trimmed/partial payload) is
+ *  skipped rather than crashing the whole PlanDetail view via `id.match(...)`. */
 export function previewNextItemId(items: PlanItem[] | undefined): string {
   let max = 0;
   for (const it of items ?? []) {
-    const n = Number((it.id.match(/P-(\d{3,})$/) ?? [])[1] ?? 0);
+    const id = typeof it?.id === 'string' ? it.id : '';
+    const n = Number((id.match(/P-(\d{3,})$/) ?? [])[1] ?? 0);
     if (n > max) max = n;
   }
   return `P-${String(max + 1).padStart(3, '0')}`;

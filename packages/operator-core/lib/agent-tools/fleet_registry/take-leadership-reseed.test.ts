@@ -2,11 +2,12 @@
  * Unit tests for `reseedLeaderCompactionLimit` — the P-009 become-a-leader compaction-cap
  * re-seed (owner directive 2026-07-19, per-member-declarative-launch-specs). The presence +
  * model-spec seams are mocked; `agent-config-constants` runs REAL (real clamp / default /
- * member-cap logic) so the [1m] 400k leader vs 300k member gap is exercised for real. Covers
+ * member-cap logic) so the [1m] 400k leader vs the member-cap gap is exercised for real. Covers
  * every `reason` branch of LeaderReseedOutcome plus the never-throw fail-safe (a re-seed miss
  * must never fail the already-committed leadership transfer).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } from '../../agent-config-constants';
 
 const getPresence = vi.fn();
 const setCompactionLimit = vi.fn();
@@ -30,7 +31,9 @@ vi.mock('../../compaction-usage', () => ({
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
 
 const OWNER = 'su-bob';
-const MEMBER_CAP = 300_000; // COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP
+// Track the REAL constant (agent-config-constants runs unmocked here) so this test never
+// drifts when the fleet-member default changes (e.g. owner 2026-07-19: 300k→200k).
+const MEMBER_CAP = COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP;
 const LEADER_CAP = 400_000; // COMPACTION_LIMIT_DEFAULT_1M_CAP
 
 function presenceWithLimit(limit: number | null) {
