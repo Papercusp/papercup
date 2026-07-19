@@ -194,14 +194,27 @@ export default defineTool({
     if (isResume && args.plan) {
       return err('`plan` is for a FRESH launch. A resumed session keeps its own context — put any new direction in `brief`, which becomes its next turn.');
     }
-    const count = args.count ?? 1;
+    // P-002: `members` is a FRESH per-member spec array — one session can't be
+    // resumed N different ways, so it never rides a resume/fork.
+    if (isResume && args.members?.length) {
+      return err('`members` configures a FRESH per-member multi-launch; a resume/fork is a single session — put any new direction in `brief`.');
+    }
+    // `count` defaults to the number of member specs when omitted, so `members: [a,b,c]`
+    // opens 3 without a redundant `count: 3`.
+    const count = args.count ?? (args.members?.length || 1);
+    if (args.members && args.members.length > count) {
+      return err(
+        `You passed ${args.members.length} member specs but count is ${count}. Raise count (or omit it — it defaults to the number of member specs) so every spec maps to an agent, or trim members.`,
+      );
+    }
     if (isResume && count > 1 && !args.fork) {
       return err(
         'A session cannot be resumed more than once (a second CLI on one transcript collides). Use `fork: true` with `count` to branch N agents off it, or launch fresh agents with a `brief`.',
       );
     }
-    if (!isResume && !args.brief && !args.plan) {
-      return err('Give the agent something to do: a `brief` (free-form first turn) or a `plan` slug — otherwise it launches and sits idle.');
+    const anyMemberBrief = (args.members ?? []).some((m) => m?.brief?.trim());
+    if (!isResume && !args.brief && !args.plan && !anyMemberBrief) {
+      return err('Give the agent something to do: a `brief` (free-form first turn), a per-member `members[i].brief`, or a `plan` slug — otherwise it launches and sits idle.');
     }
 
     const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
@@ -290,32 +303,6 @@ export default defineTool({
       }
     }
 
-    let command: string;
-    try {
-      command = buildAgentLaunchCommand({
-        mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
-        sessionId: resumeSessionId,
-        agent: args.agent ?? null,
-        plan: args.plan ?? null,
-        // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
-        // live-verify): `--harness` is what makes psu bootstrap a papercusp-su
-        // collaborator. Without it psu boots a PLAIN claude, skips the su bootstrap,
-        // and never SEEDS the per-session CLAUDE_CONFIG_DIR — so claude runs its
-        // first-run onboarding (theme picker), never reaches a prompt, and the brief
-        // can never be delivered. The agent is dead on arrival.
-        harness: slug,
-        account: args.account ?? null,
-        model: args.model ?? null,
-        headless: !!args.headless,
-        extraArgs: args.extraArgs ?? null,
-      });
-    } catch (e) {
-      return err(`Cannot build the launch command: ${(e as Error)?.message ?? e}`);
-    }
-    // The same injectors capability:terminal uses — fleet membership + who launched me.
-    command = injectFleetArg(command, fleetSlug).command;
-    command = injectLaunchedByArg(command, callerOwnerId).command;
-
     let base;
     try {
       base = await buildConsoleEnvelope({
@@ -335,40 +322,124 @@ export default defineTool({
         ? args.cwd
         : resolvePath(base.cwd, args.cwd)
       : base.cwd;
-    // The brief rides the ENV, never a --kickoff= value: a free-form text inside the
-    // console greeting one-liner gets double-single-quoted and breaks the shell (the
-    // gnome-terminal exit-2 the docs-agent hit). psu reads it for BOTH paths — the
-    // fresh CLI positional prompt, and the pty-injected first turn of a resume/fork.
-    const env = args.brief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: args.brief } : base.env;
+
+    // ── Per-member launch composition (P-002) ──────────────────────────────────
+    // A FRESH multi-launch folds `members[i]` over the flat top-level args, so agent i
+    // can differ in model/effort/account/limit/role/context/brief/…; a shorter (or
+    // absent) `members` falls each remaining agent back to the flat args — the common
+    // case is one identical command for all `count`. A resume/fork is a single session,
+    // so `members` never applies (rejected above): every clone shares one command.
+    const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
+    const flatBase: FleetMemberDefaults = {
+      agent: args.agent ?? 'claude',
+      account: args.account ?? undefined,
+      model: args.model ?? undefined,
+      headless: args.headless || undefined,
+      extraArgs: args.extraArgs ?? undefined,
+    };
+    const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) =>
+      isResume ? flatBase : foldMemberSpec(flatBase, memberSpecs[i]),
+    );
+    const memberCommands: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const folded = foldedConfigs[i];
+      let cmd: string;
+      try {
+        cmd = isResume
+          ? buildAgentLaunchCommand({
+              mode: fork ? 'fork' : 'resume',
+              sessionId: resumeSessionId,
+              account: args.account ?? null,
+              model: args.model ?? null,
+              headless: !!args.headless,
+              extraArgs: args.extraArgs ?? null,
+            })
+          : buildAgentLaunchCommand({
+              mode: 'fresh',
+              agent: folded.agent ?? null,
+              plan: args.plan ?? null,
+              // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
+              // live-verify): `--harness` is what makes psu bootstrap a papercusp-su
+              // collaborator. Without it psu boots a PLAIN claude, skips the su bootstrap,
+              // runs its first-run onboarding, never reaches a prompt, and the brief can
+              // never be delivered — the agent is dead on arrival.
+              harness: slug,
+              account: folded.account ?? null,
+              model: folded.model ?? null,
+              effort: folded.effort ?? null,
+              headless: !!folded.headless,
+              contextSize: folded.contextSize ?? null,
+              compactionLimit: folded.compactionLimit ?? null,
+              role: folded.role ?? null,
+              feature: folded.feature ?? null,
+              profile: folded.profile ?? null,
+              brain: folded.brain,
+              allowSubagents: folded.allowSubagents,
+              addDir: folded.addDir ?? null,
+              launchContext: folded.launchContext ?? null,
+              extraArgs: folded.extraArgs ?? null,
+            });
+      } catch (e) {
+        return err(
+          count > 1
+            ? `Cannot build agent ${i + 1}'s launch command: ${(e as Error)?.message ?? e}`
+            : `Cannot build the launch command: ${(e as Error)?.message ?? e}`,
+        );
+      }
+      // The same injectors capability:terminal uses — fleet membership + who launched me.
+      cmd = injectFleetArg(cmd, fleetSlug).command;
+      cmd = injectLaunchedByArg(cmd, callerOwnerId).command;
+      memberCommands.push(cmd);
+    }
+    // Back-compat: `command` (singular) is the representative reported/recorded command
+    // — identical across members in the common no-`members` case.
+    const command = memberCommands[0] ?? '';
+    // `carry`/`claimKinds` need the fleet baseline + claim-spec machinery this general
+    // door doesn't build — accept them for schema parity, but never honor them silently.
+    if ((args.members ?? []).some((m) => m?.carry || m?.claimKinds?.length)) {
+      notes.push(
+        '⚠ `carry` / `claimKinds` on a member are only honored by fleet:launch-on-plan (they seed the member baseline + per-member claim spec); this general launch door opens raw agents, so those fields were IGNORED. Use fleet:launch-on-plan for a self-pulling fleet.',
+      );
+    }
+
     const label =
       args.label ??
       (isResume
         ? `${fork ? 'fork' : 'resume'} · ${args.resume?.agentId ?? resumeSessionId ?? 'agent'}`
         : `agent · ${args.plan ?? (args.brief ?? '').slice(0, 40)}`);
-    const headlessLogDir = args.headless ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs') : null;
+    const anyHeadless = foldedConfigs.some((f) => !!f.headless);
+    const headlessLogDir = anyHeadless ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs') : null;
 
+    // The brief rides the ENV, never a --kickoff= value: free-form text inside the
+    // console greeting one-liner gets double-single-quoted and breaks the shell (the
+    // gnome-terminal exit-2 the docs-agent hit). psu reads it for BOTH paths — the fresh
+    // CLI positional prompt, and the pty-injected first turn of a resume/fork. A member's
+    // own `brief` overrides the shared one for that agent's first turn.
     const results = await Promise.all(
-      Array.from({ length: count }, (_v, i) =>
-        args.headless
+      memberCommands.map((cmd, i) => {
+        const memberBrief = (memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined;
+        const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
+        const memberLabel = count > 1 ? `${label} (${i + 1}/${count})` : label;
+        return foldedConfigs[i].headless
           ? spawnHeadless({
-              envelope: { ...base, env, greetingCmd: command, cwd },
-              label: count > 1 ? `${label} (${i + 1}/${count})` : label,
+              envelope: { ...base, env, greetingCmd: cmd, cwd },
+              label: memberLabel,
               logDir: headlessLogDir,
             })
           : spawnConsole({
-              envelope: { ...base, env, greetingCmd: command, cwd },
-              label: count > 1 ? `${label} (${i + 1}/${count})` : label,
+              envelope: { ...base, env, greetingCmd: cmd, cwd },
+              label: memberLabel,
               writeMcpJson: false,
               scheme,
               allowDesktopBridge: true,
-              displayOverride: args.display,
+              displayOverride: memberSpecs[i]?.display ?? args.display,
               // EI-11578: a RESUME/FORK re-attaches a transcript under psu's
               // managed-pty host, which gnome-terminal's VTE pty drops (the
               // resumed claude died within seconds → a silent no-op). Force a
               // process-per-window emulator (xterm/alacritty), which holds it.
               preferProcessPerWindow: isResume,
-            }),
-      ),
+            });
+      }),
     );
 
     const opened = results.filter((r) => r.status === 'ok');
@@ -400,17 +471,27 @@ export default defineTool({
 
     const lines: string[] = [];
     if (opened.length) {
-      const how = args.headless ? 'headless' : 'visible';
+      const allHeadless = foldedConfigs.every((f) => !!f.headless);
+      const how = allHeadless ? 'headless' : anyHeadless ? 'mixed (visible + headless)' : 'visible';
       const fleetNote = fleetSlug ? ` in fleet ${fleetSlug}${scheme ? ` (${scheme.name})` : ''}` : ' (no fleet)';
       lines.push(`Launched ${opened.length} ${how} agent${opened.length > 1 ? 's' : ''}${fleetNote}:`);
-      lines.push(`  ${command}`);
+      // Per-member disclosure (P-002): when `members` made the composed commands differ,
+      // show each one so the caller sees exactly what each agent got; otherwise the single
+      // shared command.
+      const distinctCommands = [...new Set(memberCommands)];
+      if (distinctCommands.length <= 1) {
+        lines.push(`  ${command}`);
+      } else {
+        lines.push('  per-member commands:');
+        memberCommands.forEach((c, i) => lines.push(`    ${i + 1}. ${c}`));
+      }
       for (const o of opened) {
         if (o.status !== 'ok') continue;
         lines.push(
           `  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${cwd}${o.display ? ` [DISPLAY=${o.display}]` : ''}`,
         );
       }
-      if (args.brief) {
+      if (args.brief || anyMemberBrief) {
         lines.push(
           isResume
             ? '  ↪ the brief is delivered as the resumed session\'s next turn (psu\'s managed pty injects it once the agent reaches its prompt).'
@@ -419,7 +500,7 @@ export default defineTool({
       } else {
         lines.push('  ⚠ no `brief` — the agent opens IDLE. It will not do anything until someone gives it a turn.');
       }
-      if (args.headless) {
+      if (anyHeadless) {
         lines.push(
           `  ⓘ headless logs: ${headlessLogDir}. EI-9748: a \`:3170\` restart reaps headless children — prefer a visible launch for long-lived work on the dev box.`,
         );

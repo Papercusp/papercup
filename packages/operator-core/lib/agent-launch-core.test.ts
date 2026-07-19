@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildAgentLaunchCommand,
   composeModelSpec,
+  foldMemberSpec,
   injectAccountArg,
   injectKickoffAfterResume,
   memberLaunchCommand,
   resolveResumeTarget,
   verifyResumeStarted,
+  type FleetMemberDefaults,
 } from './agent-launch-core';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
@@ -136,6 +138,96 @@ describe('buildAgentLaunchCommand', () => {
     expect(() => buildAgentLaunchCommand({ mode: 'fresh', extraArgs: ['a; b'] })).toThrow(
       /shell metacharacters/,
     );
+  });
+
+  // P-002: the per-member launch fields the general door now composes (so a
+  // capability:launch-agent `members[i]` can differ in model/effort/context/limit/…).
+  it('folds effort into the model spec (psu has no --effort flag)', () => {
+    const cmd = buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', model: 'opus', effort: 'high' });
+    expect(cmd).toContain('--model=opus:high');
+    expect(cmd).not.toContain('--effort');
+  });
+
+  it('quotes a model spec carrying characters outside the bare set (e.g. opus[1m])', () => {
+    const cmd = buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', model: 'opus[1m]', effort: 'high' });
+    expect(cmd).toContain("--model='opus[1m]:high'");
+  });
+
+  it('refuses effort with no model — psu would silently drop it', () => {
+    expect(() => buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', effort: 'high' })).toThrow(
+      /needs a model/,
+    );
+  });
+
+  it('emits the full per-member launch flags (context/limit/role/feature/profile/brain/subagents/add-dir/launch-context)', () => {
+    const cmd = buildAgentLaunchCommand({
+      mode: 'fresh',
+      agent: 'claude',
+      contextSize: 'trimmed',
+      compactionLimit: 200_000,
+      role: 'reviewer',
+      feature: 'F-12',
+      profile: 'lean',
+      brain: true,
+      allowSubagents: true,
+      addDir: ['/tmp/a'],
+      launchContext: '/tmp/brief one.md',
+    });
+    expect(cmd).toContain('--context-size=trimmed');
+    expect(cmd).toContain('--compaction-limit=200000');
+    expect(cmd).toContain('--role=reviewer');
+    expect(cmd).toContain('--feature=F-12');
+    expect(cmd).toContain('--profile=lean');
+    expect(cmd).toContain('--brain');
+    expect(cmd).toContain('--allow-subagents');
+    expect(cmd).toContain('--add-dir=/tmp/a');
+    // A path with a space is shell-quoted, not rejected.
+    expect(cmd).toContain("--launch-context='/tmp/brief one.md'");
+  });
+
+  it('omits the new optional flags entirely when unset (no flag, not a zero/false)', () => {
+    const cmd = buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude' });
+    expect(cmd).toBe('psu --no-picker --account=default --agent=claude');
+    for (const flag of ['--compaction-limit', '--context-size', '--role', '--feature', '--profile', '--brain', '--allow-subagents', '--add-dir', '--launch-context']) {
+      expect(cmd).not.toContain(flag);
+    }
+  });
+});
+
+describe('foldMemberSpec (P-002: member field wins; unset falls through, never zeroes)', () => {
+  const base: FleetMemberDefaults = {
+    agent: 'claude',
+    account: 'default',
+    model: 'sonnet',
+    headless: true,
+    contextSize: 'full',
+  };
+
+  it('returns a copy of the base when no member spec is given', () => {
+    expect(foldMemberSpec(base, undefined)).toEqual(base);
+    expect(foldMemberSpec(base, undefined)).not.toBe(base);
+  });
+
+  it('a set member field overrides the fleet default for that member only', () => {
+    const folded = foldMemberSpec(base, { model: 'opus', effort: 'high', account: 'pool-2' });
+    expect(folded.model).toBe('opus');
+    expect(folded.effort).toBe('high');
+    expect(folded.account).toBe('pool-2');
+  });
+
+  it('an UNSET member field falls through to the fleet default (never a zeroing override)', () => {
+    const folded = foldMemberSpec(base, { role: 'reviewer' });
+    // role came from the member; everything else inherits the base.
+    expect(folded.role).toBe('reviewer');
+    expect(folded.model).toBe('sonnet');
+    expect(folded.account).toBe('default');
+    expect(folded.headless).toBe(true);
+    expect(folded.contextSize).toBe('full');
+    expect(folded.agent).toBe('claude');
+  });
+
+  it('an unset member agent inherits the fleet agent, never clears it', () => {
+    expect(foldMemberSpec(base, { model: 'opus' }).agent).toBe('claude');
   });
 });
 

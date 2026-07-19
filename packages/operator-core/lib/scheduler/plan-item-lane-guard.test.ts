@@ -24,6 +24,27 @@ vi.mock('../agent-tools/plans/source', () => ({
 // pinned by plan-parser's own tests; we only need it wired correctly here).
 vi.mock('@papercusp/plan-parser', async (orig) => orig<typeof import('@papercusp/plan-parser')>());
 
+// EI-13738: the DB-column linkage half (source_plan_slug/source_plan_item_ids on
+// harness_features_consolidated) — the columns the LIVE promote.ts path actually
+// writes. A plain tagged-template-shaped fake: it ignores the query strings/values
+// entirely (mirrors the existing work-items-urgent.test.ts fakeSql pattern), so a
+// nested `sql\`...\`` fragment interpolated into the outer query just resolves to
+// whatever the fake currently returns — harmless, since we never parse the SQL.
+let fakeSourcePlanRow: { source_plan_slug: string | null; source_plan_item_ids: string[] | null } | null = null;
+let fakeSqlError: Error | null = null;
+const fakeSql = Object.assign(
+  vi.fn(async () => {
+    if (fakeSqlError) throw fakeSqlError;
+    return fakeSourcePlanRow ? [fakeSourcePlanRow] : [];
+  }),
+  { unsafe: vi.fn(async () => []) },
+);
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: fakeSql }),
+}));
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+
 import { planItemLaneBlockReason } from './plan-item-lane-guard';
 
 function planItem(overrides: Partial<{ id: string; storedStatus: string; blockedBy: string[] }> = {}) {

@@ -458,4 +458,37 @@ describe("<ObservationsPanel />", () => {
     // The distribution div won't render if there are no signal counts, so check nothing breaks
     expect(screen.queryByText(/no observations yet/i)).toBeTruthy();
   });
+
+  it("filters the loaded rows through the quick-search box (#4)", async () => {
+    sync.data = [
+      mkRow({ id: "a", title: "Cache warmup idea" }),
+      mkRow({ id: "b", title: "Prompt tuning idea" }),
+    ];
+    renderPanel();
+    fireEvent.change(screen.getByLabelText("Search observations"), {
+      target: { value: "cache" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Prompt tuning idea")).toBeNull(),
+    );
+    expect(screen.getByText("Cache warmup idea")).toBeTruthy();
+  });
+
+  it("renders the stacks view as one overlapping deck per kind, navigable card-by-card (#7)", () => {
+    sync.data = [
+      mkRow({ id: "a", title: "Friction one", kind: "friction" }),
+      mkRow({ id: "b", title: "Friction two", kind: "friction" }),
+      mkRow({ id: "c", title: "Gap one", kind: "gap" }),
+    ];
+    render(<ObservationsPanel />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: "?obsview=stacks" }),
+    });
+    // Same-kind cards overlap → only the top card of each kind shows its title.
+    expect(screen.getByText("Friction one")).toBeTruthy();
+    expect(screen.queryByText("Friction two")).toBeNull();
+    expect(screen.getByText("Gap one")).toBeTruthy();
+    // The friction deck (2 cards, rendered first) steps to the next card.
+    fireEvent.click(screen.getAllByRole("button", { name: "Next card" })[0]);
+    expect(screen.getByText("Friction two")).toBeTruthy();
+  });
 });

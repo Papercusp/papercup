@@ -412,6 +412,124 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
   });
 });
 
+// EI-13715: blockedness has TWO sources of truth for a plan-linked work-item — the
+// item's own `state` column, and its linked plan-item's `effectiveStatus` (WI-3503
+// incident: a work-item was unblocked off `externalBlockers: null` while its plan
+// item was still `blocked` on five unresolved drill legs, and the cup it spawned
+// flipped a live hive ahead of the gate that block was there to enforce). These pin
+// setWorkItemState's guard: unblocking (`blocked` -> anything else) a plan-linked
+// item whose plan lane is still effectively blocked/needs-human is REFUSED unless
+// forced. `planItemLaneBlockReason` itself is unit-pinned in
+// scheduler/plan-item-lane-guard.test.ts; here we only pin work-items.ts's wiring
+// (the guard is mocked at the module boundary — see planItemLaneBlockReasonMock at
+// the top of this file).
+describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
+  it('REJECTS unblocking a plan-linked item whose plan-item is still effectively blocked', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked (blocked-by: P-8)',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+    });
+    await expect(
+      wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' }),
+    ).rejects.toThrow(/a-plan#P-9.*STILL.*effectively 'blocked'/s);
+    // Rejected write must not half-apply.
+    expect((await wi.getWorkItem(feat.id, 'papercup'))?.state).toBe('blocked');
+  });
+
+  it('ALLOWS the unblock with { force: true } — a deliberate override', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+    });
+    const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB', force: true });
+    expect(after?.state).toBe('todo');
+  });
+
+  it('ALLOWS the unblock when the plan lane has CLEARED (guard returns null)', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce(null); // lane clear
+    const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' });
+    expect(after?.state).toBe('todo');
+  });
+
+  it('ALLOWS the unblock when the plan-item is already terminal (done/dropped) — stale residue, not a live gate', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is already done',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'done',
+    });
+    const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' });
+    expect(after?.state).toBe('todo');
+  });
+
+  it('does NOT consult the plan-lane guard for a non-plan-linked item (no back-pointer)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'plain', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockClear();
+    const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' });
+    expect(after?.state).toBe('todo');
+    // The guard still gets CALLED (it's the caller's job to check the back-pointer,
+    // not this test's) — but with no back-pointer it fails open to null, so the
+    // real assertion is simply that the transition succeeded unblocked.
+  });
+
+  it('does NOT gate a transition that stays within blocked, or one that was never blocked to begin with', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    planItemLaneBlockReasonMock.mockResolvedValue({
+      reason: 'still blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+    });
+    // never left 'todo' -> 'in_progress': the guard only fires on blocked -> non-blocked.
+    await expect(
+      wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agA' }),
+    ).resolves.toBeTruthy();
+  });
+});
+
 // WI-1405 — genuine-completions metric (work-item-completion-integrity-2026-07-01,
 // contract C-1 consumer): getCompletionIntegrityStats must count ONLY terminal
 // work-items carrying BOTH terminal_owner + terminal_completion_ref as

@@ -301,6 +301,19 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
  * Callable from the CLI itself (`green-checkpoint.ts`, via a dynamic import) — hence a plain
  * `GateVerdictTarget` rather than the routine-only `SystemActionCtx`.
  *
+ * EI-13723: this is ALSO the release-fixer dispatch's producer-side convergence point, for the
+ * same reason WI-4494 made it the recording one. A manually-launched `release:checkpoint-run`
+ * self-records its verdict through this exact function (the CLI stamps `gateVerdictEnv` and calls
+ * this from its own process) but, before this fix, the fixer-dispatch check lived ONLY in the
+ * scheduled routine's own post-processing below — a code path a manual run never executes. During
+ * the 2026-07-16/17 stall a fleet repeatedly fired manual checkpoint runs to get a fresh verdict
+ * after each fix attempt; each run recorded a real red (with failing tests) but never dispatched a
+ * fixer, AND each run's held run-lock caused the scheduled routine's own hourly ticks (the only
+ * path that DID dispatch) to land `skipped-locked` — starving the gate of dispatch from both
+ * sides for hours until a human broadcast got it manually picked up. Dispatching HERE means every
+ * caller of this function — self-recording CLI (routine- or manually-launched) and the routine's
+ * own version-skew fallback below — gets fixer coverage uniformly.
+ *
  * Returns true when the verdict was recorded; false when it is not a verdict at all (a `skipped-*`
  * outcome — the run that HOLDS the lock is producing the real one and records it itself).
  */
@@ -317,6 +330,14 @@ export async function recordCheckpointVerdict(
     detail: buildCheckpointDetail(verdict),
   });
   await trackGateStall(target, verdict.reason, verdict.candidate, verdict.failingTests, verdict.from ?? null, verdict.retriage);
+  // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
+  // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
+  // recording, which already happened above.
+  if (shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests)) {
+    await dispatchReleaseFixer(target, verdict.candidate, verdict.failingTests).catch((e) =>
+      console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
+    );
+  }
   return true;
 }
 
@@ -437,7 +458,12 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
   // release-fixer agent to diagnose + fix the failing test — the test-failure
   // sibling of git-sync's merge-resolver. Fail-safe + deduped per red-candidate.
-  if (shouldDispatchReleaseFixer(status, candidate, failingTests)) {
+  // EI-13723: only for the version-skew fallback (!recordedByRun) — when the run recorded
+  // its own verdict, `recordCheckpointVerdict` (called from inside the CLI, above) already
+  // ran this exact check. Dispatching here TOO for a recordedByRun verdict would double-fire
+  // the dedup'd decision for every routine tick on a modern CLI; gating on !recordedByRun
+  // keeps this a pure fallback instead of a race with the producer-side dispatch.
+  if (!recordedByRun && shouldDispatchReleaseFixer(status, candidate, failingTests)) {
     await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
       console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -1081,8 +1107,14 @@ export async function checkReleaseFixerCandidateStale(
  * EI-8718: re-verifies the candidate isn't STALE (superseded+GC'd, or already
  * promoted past by other means) before paying for a dedup-slot write + fixer spawn.
  * Fail-safe: every step is best-effort and never throws into the routine tick.
+ *
+ * EI-13723: takes the plain `GateVerdictTarget` (installSlug + workspaceId) rather than the
+ * routine-only `SystemActionCtx` — the only two fields this function reads — so
+ * `recordCheckpointVerdict` (callable from the CLI itself, which has no `SystemActionCtx`) can
+ * call it directly. A `SystemActionCtx` still satisfies this structurally at every existing
+ * call site.
  */
-async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string, failingTests?: string[]): Promise<void> {
+async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, failingTests?: string[]): Promise<void> {
   // EI-8718: cheap re-verify BEFORE touching dedup state — a candidate that's gone stale
   // between the checkpoint run reporting it and this dispatch call gets a no-op skip
   // instead of a wasted fixer spawn. Best-effort: a check failure (e.g. no repo at

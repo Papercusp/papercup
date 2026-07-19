@@ -1036,6 +1036,30 @@ const OP_CHAT_SIDEBAR_CSS = `
   }
 }
 
+/* EI-13551 cont'd: even with the controls cluster + face labels compacted
+   above, the row still doesn't fit at the sidebar's 360px DEFAULT width
+   (measured: potLabel:wordmark still 0:0 at 360, only 11.8:9.5 at 460) — the
+   Plans + Inbox toggles' own labels (flex:0 1 auto, same shrink class as the
+   two owner-mandated labels) are still competing for the same budget, and
+   the 11px header-main gap across 8 flex items (7 gaps) alone costs 77px.
+   Neither Plans nor Inbox is a WI-4789/WI-4793 ask, so below a narrower
+   threshold they get the SAME icon-only treatment already given to the
+   Fleet/Peers faces above — freeing their label's flex-basis entirely back
+   to the row — and the row's own gap tightens to match .op-chat-controls'.
+   480px (not 860) because Plans/Inbox reads fine with labels down to ~560. */
+@container op-chat (max-width: 480px) {
+  .op-chat-header-main {
+    gap: 6px;
+  }
+  .op-chat-header-main .op-chat-inbox-toggle-label {
+    display: none;
+  }
+  .op-chat-header-main .op-chat-inbox-toggle {
+    padding: 0 6px;
+    gap: 0;
+  }
+}
+
 .op-chat-header-main .op-chat-papercup-toggle.is-on,
 .op-chat-header-main .op-chat-pot-toggle.is-on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 30%);

@@ -13,6 +13,22 @@
  * causes damage when run early (WI-3667: a Phase-5 close-out claimed mid-outage-
  * diagnosis, before the diagnosis had settled).
  *
+ * ─ THE TWO LINKAGE MECHANISMS (EI-13738) ──────────────────────────────────────
+ * `payload.plan_item` is stamped ONLY by the separate, dark-flagged
+ * `plan-workitem-promotion-run.ts` path. The path that ACTUALLY promotes plan
+ * items in production — `promote.ts` / `POST /features/import`, the tool behind
+ * every real `plans:start` / feature-import call — writes a DIFFERENT, DB-column
+ * linkage instead: `source_plan_slug` + `source_plan_item_ids` on
+ * `harness_features_consolidated`, with NO `payload.plan_item` stamp. Relying on
+ * the payload back-pointer alone therefore left every REAL plan-promoted feature
+ * invisible to this guard — confirmed by the live incidents this guard's own
+ * regression tests reproduce (EI-9107/EI-9108, P-401/P-308 — WI-3503/WI-3502),
+ * which in production carried the DB-column linkage, not a payload stamp; two
+ * independent agents (EI-13738) each rediscovered the same gap from opposite
+ * directions within an hour of each other. `resolvePlanItemStamp` below now
+ * resolves via EITHER mechanism, so a claim from either promotion path is
+ * covered without a human having to remember which one stamped this row.
+ *
  * ─ TERMINAL-lane residue (EI-13337 / EI-13352 / EI-13267 / EI-14693) ──────────
  * The costlier, recurring variant: the linked plan item is already TERMINAL
  * (`done`/`dropped`) yet the work-item is sitting at `state:'todo'` — a stale
@@ -50,7 +66,59 @@ export interface PlanItemLaneBlock {
   effectiveStatus: string;
 }
 
-function extractPlanItemStamp(payload: unknown): { plan_slug: string; item_id: string } | null {
+/**
+ * EI-13780: a plan's own PROSE can mark a `todo`-status item as owner-gated /
+ * hard-deferred without the structural `effectiveStatus`/`needsHuman` fields
+ * ever reflecting it — a plan author writes "owner-gated" / "HARD-DEFERRED …
+ * never auto-flip" in the item's own text, the plan's `## Now` block, or a
+ * Decision, and the scheduler has no notion of that language. Two real
+ * near-misses motivated this (both caught + hand-held by a fleet leader,
+ * never executed): WI-357 (physical-rename-phase5 P-008 — "Owner-gated: needs
+ * a coordinated quiescent window … Not auto-executable", inline on the item)
+ * and WI-1774 (backend-reliability-100pct P-003 — the plan's own `## Now`
+ * `Next` line: "P-003 … HARD-DEFERRED to an owner-attended session …never
+ * auto-flip"). A fixed, deliberately small phrase set — expanding it is a
+ * product decision, not a scheduler one.
+ */
+const OWNER_GATE_MARKERS = [
+  'owner-gated',
+  'hard-deferred',
+  'never auto-flip',
+  'needs a coordinated window',
+  'owner-attended session',
+] as const;
+
+function findOwnerGateMarker(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  for (const marker of OWNER_GATE_MARKERS) {
+    if (lower.includes(marker)) return marker;
+  }
+  return null;
+}
+
+/** Escape a plan-item id for use inside a RegExp literal. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+/** Whether `itemId` (e.g. "P-003") is mentioned, as a whole token, in `text` —
+ *  used to scope a plan-wide Now/Decision marker hit to the item it actually
+ *  names, so a marker about ONE gated item in a plan never blanket-excludes
+ *  every other unrelated `todo` item in the same plan. */
+function itemMentioned(text: string | null | undefined, itemId: string): boolean {
+  if (!text) return false;
+  return new RegExp(`\\b${escapeRegExp(itemId)}\\b`).test(text);
+}
+
+interface PlanItemStamp {
+  plan_slug: string;
+  /** One or more plan-item ids this work-item implements (source_plan_item_ids
+   *  can carry several; the payload.plan_item back-pointer always carries one). */
+  item_ids: string[];
+}
+
+function extractPlanItemStampFromPayload(payload: unknown): PlanItemStamp | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const raw = (payload as Record<string, unknown>).plan_item;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -58,19 +126,65 @@ function extractPlanItemStamp(payload: unknown): { plan_slug: string; item_id: s
   const planSlug = typeof stamp.plan_slug === 'string' ? stamp.plan_slug : null;
   const itemId = typeof stamp.item_id === 'string' ? stamp.item_id : null;
   if (!planSlug || !itemId) return null;
-  return { plan_slug: planSlug, item_id: itemId };
+  return { plan_slug: planSlug, item_ids: [itemId] };
+}
+
+/**
+ * EI-13738: resolve via the `source_plan_slug` / `source_plan_item_ids` columns
+ * on `harness_features_consolidated` — the linkage the LIVE promotion path
+ * (promote.ts / POST /features/import) actually writes. Feature-family only;
+ * issue-family rows (engineer_issues) carry no such columns. A missing/partial
+ * column pair (no source_plan_slug, or an empty source_plan_item_ids) resolves
+ * to null — unplanned/standalone work, not an error.
+ */
+async function resolvePlanItemStampFromColumns(
+  workItem: Pick<WorkItem, 'id' | 'harness' | 'family'>,
+): Promise<PlanItemStamp | null> {
+  if (workItem.family !== 'feature') return null;
+  const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('../workspace-registry'),
+  ]);
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ source_plan_slug: string | null; source_plan_item_ids: string[] | null }>>`
+    SELECT source_plan_slug, source_plan_item_ids
+      FROM harness_shared.harness_features_consolidated
+     WHERE feature_id = ${workItem.id}
+       AND workspace_id = ${activeWorkspaceId()}
+       AND ${workItem.harness ? sql`harness_slug = ${workItem.harness}` : sql`TRUE`}
+     LIMIT 1`;
+  const row = rows[0];
+  if (!row?.source_plan_slug || !row.source_plan_item_ids || row.source_plan_item_ids.length === 0) return null;
+  return { plan_slug: row.source_plan_slug, item_ids: row.source_plan_item_ids };
+}
+
+/** Resolve a work-item's plan-item linkage via EITHER mechanism (see the module
+ *  doc's "THE TWO LINKAGE MECHANISMS" section) — payload back-pointer first
+ *  (cheap, no I/O), falling back to the DB-column linkage. Fails OPEN (null) on
+ *  any lookup error, same contract as the caller `planItemLaneBlockReason`. */
+async function resolvePlanItemStamp(
+  workItem: Pick<WorkItem, 'payload' | 'id' | 'harness' | 'family'>,
+): Promise<PlanItemStamp | null> {
+  const fromPayload = extractPlanItemStampFromPayload(workItem.payload);
+  if (fromPayload) return fromPayload;
+  try {
+    return await resolvePlanItemStampFromColumns(workItem);
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Whether a just-claimed work-item's linked plan-item lane is currently
  * blocked / needs-human / already-terminal — the cases self-select must not
  * silently hand out. Returns null when the item carries no plan-item
- * back-pointer, the linked plan/item can't be found, or the lane is clear.
+ * linkage (neither mechanism), the linked plan/item(s) can't be found, or the
+ * lane is clear.
  */
 export async function planItemLaneBlockReason(
-  workItem: Pick<WorkItem, 'payload' | 'harness'>,
+  workItem: Pick<WorkItem, 'payload' | 'harness' | 'id' | 'family'>,
 ): Promise<PlanItemLaneBlock | null> {
-  const stamp = extractPlanItemStamp(workItem.payload);
+  const stamp = await resolvePlanItemStamp(workItem);
   if (!stamp) return null;
   try {
     const [{ getPlanRow, planItemsForRow }, { resolveEffectiveStatusForItems }] = await Promise.all([
@@ -80,35 +194,72 @@ export async function planItemLaneBlockReason(
     const row = await getPlanRow(stamp.plan_slug, { harnessSlug: workItem.harness ?? undefined });
     if (!row) return null;
     const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
-    const item = items.find((i) => i.id === stamp.item_id);
-    if (!item) return null;
-    // Already-terminal lane (EI-13337/13352/13267/14693): the plan item is done or
-    // dropped, so this work-item is stale residue — completed/abandoned work, not
-    // open work. Never hand it to a self-selector to re-verify + re-close by hand.
-    if (item.effectiveStatus === 'done' || item.effectiveStatus === 'dropped') {
+    const linked = stamp.item_ids
+      .map((itemId) => items.find((i) => i.id === itemId))
+      .filter((i): i is (typeof items)[number] => Boolean(i));
+    if (linked.length === 0) return null;
+    // A work-item can implement several plan items (source_plan_item_ids) — ANY
+    // one of them being effectively blocked, or needing a human decision, gates
+    // the whole work-item (a claimer executing it would be doing that item's
+    // work too). Checked before the terminal/stale-residue case below so a
+    // mixed set (one done + one blocked) still reports the actionable blocker.
+    const blocked = linked.find((i) => i.effectiveStatus === 'blocked');
+    if (blocked) {
+      const blockers =
+        blocked.unresolvedBlockers.length > 0 ? ` (blocked-by: ${blocked.unresolvedBlockers.join(', ')})` : '';
       return {
-        reason: `plan-item ${stamp.plan_slug}#${stamp.item_id} is already ${item.effectiveStatus} — its work-item is stale residue of completed/abandoned work, not open work`,
+        reason: `plan-item ${stamp.plan_slug}#${blocked.id} is effectively blocked${blockers}`,
         planSlug: stamp.plan_slug,
-        itemId: stamp.item_id,
-        effectiveStatus: item.effectiveStatus,
+        itemId: blocked.id,
+        effectiveStatus: blocked.effectiveStatus,
       };
     }
-    if (item.effectiveStatus === 'blocked') {
-      const blockers = item.unresolvedBlockers.length > 0 ? ` (blocked-by: ${item.unresolvedBlockers.join(', ')})` : '';
+    const needsHuman = linked.find((i) => i.needsHuman);
+    if (needsHuman) {
       return {
-        reason: `plan-item ${stamp.plan_slug}#${stamp.item_id} is effectively blocked${blockers}`,
+        reason: `plan-item ${stamp.plan_slug}#${needsHuman.id} needs a human decision`,
         planSlug: stamp.plan_slug,
-        itemId: stamp.item_id,
-        effectiveStatus: item.effectiveStatus,
+        itemId: needsHuman.id,
+        effectiveStatus: needsHuman.effectiveStatus,
       };
     }
-    if (item.needsHuman) {
+    // Already-terminal lane (EI-13337/13352/13267/14693): the plan item(s) are
+    // done/dropped, so this work-item is stale residue — completed/abandoned
+    // work, not open work. Never hand it to a self-selector to re-verify +
+    // re-close by hand. Only when EVERY linked item is terminal — a work-item
+    // covering one done + one still-open item is still real open work.
+    if (linked.every((i) => i.effectiveStatus === 'done' || i.effectiveStatus === 'dropped')) {
+      const terminal = linked[0];
       return {
-        reason: `plan-item ${stamp.plan_slug}#${stamp.item_id} needs a human decision`,
+        reason: `plan-item ${stamp.plan_slug}#${terminal.id} is already ${terminal.effectiveStatus} — its work-item is stale residue of completed/abandoned work, not open work`,
         planSlug: stamp.plan_slug,
-        itemId: stamp.item_id,
-        effectiveStatus: item.effectiveStatus,
+        itemId: terminal.id,
+        effectiveStatus: terminal.effectiveStatus,
       };
+    }
+    // EI-13780: a plan can mark a still-`todo` item owner-gated/hard-deferred
+    // purely in PROSE — the item's own line, the plan's `## Now` block, or a
+    // Decision scoped to it (via the Decision's own itemRefs) — with no
+    // structural effectiveStatus/needsHuman signal at all (see the module-level
+    // OWNER_GATE_MARKERS doc comment). Checked last, over the SAME `linked` set,
+    // same any-one-gates-the-whole-work-item semantics as blocked/needsHuman above.
+    const nowText = [row.nowState, row.nowNext].filter(Boolean).join('\n');
+    for (const li of linked) {
+      const ownMarker = findOwnerGateMarker(li.text);
+      const nowMarker = itemMentioned(nowText, li.id) ? findOwnerGateMarker(nowText) : null;
+      const decisionMarker = (row.decisions ?? [])
+        .filter((d) => d.itemRefs.includes(li.id))
+        .map((d) => findOwnerGateMarker(d.title) ?? findOwnerGateMarker(d.body))
+        .find((m): m is string => Boolean(m));
+      const hit = ownMarker ?? nowMarker ?? decisionMarker ?? null;
+      if (hit) {
+        return {
+          reason: `plan-item ${stamp.plan_slug}#${li.id}'s plan text marks it owner-gated ("${hit}") — not eligible for self-select`,
+          planSlug: stamp.plan_slug,
+          itemId: li.id,
+          effectiveStatus: li.effectiveStatus,
+        };
+      }
     }
     return null;
   } catch {
