@@ -30,6 +30,9 @@ export interface NeedsHumanWorkItemRow {
   harness_slug: string | null;
   item_kind: string | null;
   taken_by: string | null;
+  /** Last-updated timestamp of the row — drives the Inbox card date
+   *  (inbox-pane-active-scope-dates-filters-2026-07-19). */
+  updated_ts: string | null;
 }
 
 export const NEEDS_HUMAN_LIMIT = 300;
@@ -45,7 +48,7 @@ export async function readNeedsHumanWorkItems(opts?: {
   const hf = opts?.harness ?? null;
   const limit = opts?.limit ?? NEEDS_HUMAN_LIMIT;
   return await sql<NeedsHumanWorkItemRow[]>`
-    SELECT feature_id, title, summary, harness_slug, item_kind, taken_by
+    SELECT feature_id, title, summary, harness_slug, item_kind, taken_by, updated_ts
       FROM harness_shared.work_items
      WHERE (workspace_id = ${wid} OR workspace_id = 'default')
        AND (${hf}::text IS NULL OR harness_slug = ${hf})

@@ -20,12 +20,13 @@
  * a UI-side re-derivation).
  */
 import type { CSSProperties } from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
-import { Rss, RefreshCw } from "lucide-react";
+import { Rss, RefreshCw, HelpCircle } from "lucide-react";
 import type { ScoutSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import { Tooltip } from "@/app/harness/Tooltip";
+import { Popover } from "@/app/harness/Popover";
 import { CATEGORICAL } from "@/app/harness/theme";
 import {
   LearningDisclosure,
@@ -190,6 +191,9 @@ export function SignalsPanel({
   // WI-5417: the browseable digest-history selection — which fired cycle's
   // full digest entries to show. null = newest (the server's default).
   const [sdig, setSdig] = useQueryState("sdig", parseAsString);
+  // The full lane taxonomy is reference material — tucked behind a header "?"
+  // popover (owner ask 2026-07-19) rather than an always-present section.
+  const [lanesOpen, setLanesOpen] = useState(false);
 
   const sync = useSyncQuery<ScoutSnapshot>({
     queryName: "learning.scout",
@@ -267,15 +271,49 @@ export function SignalsPanel({
         title="Signals"
         question="What is the learning pipeline being fed — and what will make it fire next?"
         action={
-          <button
-            type="button"
-            className="pc-learning__refresh"
-            aria-label="Reload signals"
-            disabled={sync.fetching}
-            onClick={() => sync.invalidate()}
-          >
-            <RefreshCw size={13} aria-hidden />
-          </button>
+          <span className="pc-signals__headeractions">
+            <Popover
+              open={lanesOpen}
+              onOpenChange={setLanesOpen}
+              side="bottom"
+              align="end"
+              ariaLabel="All input lanes explained"
+              tooltipLabel="What every input lane means"
+              contentClassName="pc-signals__lanespopover"
+              trigger={
+                <button
+                  type="button"
+                  className="pc-learning__refresh"
+                  aria-label="Explain all input lanes"
+                  aria-expanded={lanesOpen}
+                >
+                  <HelpCircle size={13} aria-hidden />
+                </button>
+              }
+            >
+              <div className="pc-signals__taxonomygroup">
+                <h4>Trigger lanes — what fires a cycle</h4>
+                {laneCards(
+                  TRIGGER_LANE_DOCS,
+                  TRIGGER_LANE_COLOR,
+                  "Trigger lanes explained",
+                )}
+              </div>
+              <div className="pc-signals__taxonomygroup">
+                <h4>Fed lanes — what the digest reads</h4>
+                {laneCards(FED_LANE_DOCS, FED_LANE_COLOR, "Fed lanes explained")}
+              </div>
+            </Popover>
+            <button
+              type="button"
+              className="pc-learning__refresh"
+              aria-label="Reload signals"
+              disabled={sync.fetching}
+              onClick={() => sync.invalidate()}
+            >
+              <RefreshCw size={13} aria-hidden />
+            </button>
+          </span>
         }
       />
       {sync.error ? (
@@ -477,26 +515,6 @@ export function SignalsPanel({
               ) : null}
             </>
           ) : null}
-
-          {/* The full lane taxonomy — reference material, behind a disclosure,
-              grouped trigger-vs-fed as a two-column definition grid (WI-5417). */}
-          <LearningDisclosure
-            label="All input lanes"
-            count={Object.keys(TRIGGER_LANE_DOCS).length + Object.keys(FED_LANE_DOCS).length}
-          >
-            <div className="pc-signals__taxonomygroup">
-              <h4>Trigger lanes — what fires a cycle</h4>
-              {laneCards(
-                TRIGGER_LANE_DOCS,
-                TRIGGER_LANE_COLOR,
-                "Trigger lanes explained",
-              )}
-            </div>
-            <div className="pc-signals__taxonomygroup">
-              <h4>Fed lanes — what the digest reads</h4>
-              {laneCards(FED_LANE_DOCS, FED_LANE_COLOR, "Fed lanes explained")}
-            </div>
-          </LearningDisclosure>
         </>
       )}
       <style>{`
@@ -568,6 +586,18 @@ export function SignalsPanel({
         margin: 4px 2px 4px; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
         color: var(--fg-mute, #7f9bb4);
       }
+      .pc-signals__headeractions { display: inline-flex; align-items: center; gap: 4px; }
+      /* The lane-taxonomy popover: reference material anchored under the "?"
+         header button (owner ask 2026-07-19). Bounded + scrollable so the full
+         23-lane set never pushes the panel around. */
+      .pc-signals__lanespopover {
+        width: min(420px, 90vw); max-height: min(60vh, 520px); overflow-y: auto;
+        padding: 12px 13px; border-radius: 10px;
+        background: var(--bg-1, #0f1720);
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+      }
+      .pc-signals__lanespopover .pc-signals__cards { grid-template-columns: 1fr; }
       /* Card grid (owner ask 2026-07-19): the digest entries and the lane
          taxonomy read as CARDS rather than dense rows — each card carries its
          lane accent on the left edge so type is legible at a glance, and the

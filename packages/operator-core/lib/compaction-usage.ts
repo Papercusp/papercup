@@ -467,7 +467,21 @@ const PATH_REVERIFY_MS = 30_000;
  *  (OMP/Codex/unresolvable). Shared by the initial seed and the periodic
  *  re-verify so both paths make the SAME "what is live right now" call. */
 async function resolveLiveTranscriptPath(ownerId: string): Promise<string | null> {
-  const ref = await resolveSessionRef(ownerId);
+  // EI-13477: use the RECONCILED ref (WI-5075 rung 3), not the raw DB row. A
+  // same-pid claude self-relaunch (TUI re-exec / update relaunch) writes a
+  // brand-new native session id that `adv_sessions.session_id` is never
+  // updated to (see session-recover-hook.mjs's respawned-event report), and the
+  // OLD id still names a real (frozen, non-empty) transcript file — so the raw
+  // ref resolves successfully to the DEAD transcript instead of falling through
+  // to the P-016 newest-file fallback below. The anchor then "advances" against
+  // a file that has stopped growing and never re-diverges on its own: the
+  // periodic re-verify (EI-13120) re-resolves through the SAME raw (unreconciled)
+  // path and confirms the same wrong file every time. Reconciling against the
+  // host's own respawn log is exactly the fix already used by
+  // estimateContextTokensForOwner for the carry-respawn case; this wires the
+  // anchored "live" hot path (what the PostToolUse gauge + loop:checkpoint's
+  // continuation gate actually read) into the same reconciliation.
+  const ref = await resolveSessionRefReconciled(ownerId);
   if (!ref || ref.agent === 'omp' || ref.agent === 'codex') return null;
   let p: string | null = null;
   if (ref.sessionId) {
@@ -702,7 +716,10 @@ const DEATH_TAIL_BYTES = 8_192;
  */
 export async function detectContextDeathForOwner(ownerId: string): Promise<boolean> {
   try {
-    const ref = await resolveSessionRef(ownerId);
+    // EI-13477: reconciled, same reasoning as resolveLiveTranscriptPath — a raw
+    // ref keeps reading a dead pre-relaunch transcript's tail, which can never
+    // show a death record the LIVE successor might actually have written.
+    const ref = await resolveSessionRefReconciled(ownerId);
     if (!ref?.sessionId || ref.agent === 'omp' || ref.agent === 'codex') return false;
     const { findSessionTranscript } = await import('./claude-sessions');
     const p = await findSessionTranscript(ref.sessionId, { owner: ownerId });

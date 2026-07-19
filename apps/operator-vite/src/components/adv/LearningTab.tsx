@@ -1512,7 +1512,13 @@ function GymView({
         </div>
       )}
 
-      {sync.loading && !snap ? (
+      {/* The empty state must require a RESOLVED-empty snapshot — never a
+          not-yet-fetched one. Until the gym query has actually returned (`snap`
+          defined), we are loading, NOT empty. Before this, a false `hiveReady`
+          gate (or any pre-first-result gap) rendered undefined `snap` as "No gym
+          experiments" even though the workspace had proposals (owner report
+          2026-07-19; the server returns them correctly — verified end-to-end). */}
+      {!snap && !sync.error ? (
         <p className="pc-learning__empty">Loading gym experiments…</p>
       ) : sync.error ? (
         <LearningVisualError
@@ -1520,7 +1526,10 @@ function GymView({
           onRetry={() => sync.invalidate()}
         />
       ) : proposals.length === 0 && archiveSeeds.length === 0 ? (
-        <LearningVisualEmpty icon={Dumbbell} title="No gym experiments" />
+        <LearningVisualEmpty
+          icon={Dumbbell}
+          title="No gym experiments in this workspace yet"
+        />
       ) : (
         <>
           {proposals.length > 0 ? (

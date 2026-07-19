@@ -119,6 +119,48 @@ describe('cache-proxy — body policy', () => {
     expect(Number(up.seen[0].headers['content-length'])).toBe(Buffer.byteLength(up.seen[0].body));
   });
 
+  it('splits the system block at the boundary sentinel and never forwards the sentinel (P-004)', async () => {
+    const up = upstreamEcho();
+    await listen(up.server);
+    const proxy = track(createCacheProxy({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: port(up.server), upstreamInsecure: true, log: () => {} }));
+    await listen(proxy);
+
+    const SENT = '<!--PSU_CACHE_BOUNDARY-->';
+    await request(port(proxy), {
+      body: JSON.stringify({
+        model: 'claude-opus-4-8',
+        system: [{ type: 'text', text: `${'stable playbook '.repeat(30)}${SENT}per-session launch context` }],
+        messages: [],
+      }),
+    });
+
+    const fwd = JSON.parse(up.seen[0].body);
+    expect(up.seen[0].body).not.toContain(SENT); // sentinel dropped — never reaches Anthropic
+    expect(fwd.system).toHaveLength(2);
+    expect(fwd.system[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' }); // stable half cached
+    expect(fwd.system[1].text).toBe('per-session launch context');
+    // content preserved: halves concat to the original minus the sentinel
+    expect(fwd.system.map((b: any) => b.text).join('')).toBe(`${'stable playbook '.repeat(30)}per-session launch context`);
+  });
+
+  it('kill-switch (PAPERCUSP_CACHE_SPLIT_BOUNDARY=0) forwards an unsplit body (sentinel stays as inert comment)', async () => {
+    const prev = process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY;
+    process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY = '0';
+    try {
+      const up = upstreamEcho();
+      await listen(up.server);
+      const proxy = track(createCacheProxy({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: port(up.server), upstreamInsecure: true, log: () => {} }));
+      await listen(proxy);
+      await request(port(proxy), {
+        body: JSON.stringify({ model: 'claude-opus-4-8', system: [{ type: 'text', text: `body<!--PSU_CACHE_BOUNDARY-->tail` }], messages: [] }),
+      });
+      expect(JSON.parse(up.seen[0].body).system).toHaveLength(1); // not split
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY;
+      else process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY = prev;
+    }
+  });
+
   it('injects the tools breakpoint when explicitly opted in', async () => {
     const prev = process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT;
     process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT = '1';

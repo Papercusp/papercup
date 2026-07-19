@@ -955,6 +955,34 @@ const OP_CHAT_SIDEBAR_CSS = `
   }
 }
 
+/* EI-13551: the voice-control cluster (.op-chat-controls) is flex: 0 0 auto
+   — it never shrinks, so ANY width shortfall lands entirely on the two
+   owner-asked-for identity labels ([🥤 Papercup] wordmark WI-4793, [🫖 Pot
+   Health] WI-4789), which squeeze to literal 0px well before the sidebar's
+   860px default. Below that same threshold, drop the controls cluster's own
+   TEXT labels (OperatorActiveToggle's state word, VoiceButton's mode word —
+   both already convey their state via icon/color/tooltip/aria-label, same as
+   TtsMuteButton and AudienceModeSelector already do icon-only) and tighten
+   their padding, so the cluster's footprint shrinks instead of staying rigid
+   — handing the freed width back to the identity labels, the same "cut
+   cleanly rather than let it squeeze to an unreadable sliver" strategy used
+   for the face labels above. This does NOT reopen the one-header-line
+   decision (WI-4738) — still one row, just a smaller rigid block. */
+@container op-chat (max-width: 860px) {
+  .op-chat-controls .op-active-toggle-label,
+  .op-chat-controls .pc-voice-btn-label {
+    display: none;
+  }
+  .op-chat-controls .op-active-toggle {
+    gap: 0;
+    padding: 3px 6px;
+  }
+  .op-chat-controls .pc-voice-btn {
+    gap: 0;
+    padding: 3px 6px;
+  }
+}
+
 .op-chat-header-main .op-chat-papercup-toggle.is-on,
 .op-chat-header-main .op-chat-pot-toggle.is-on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 30%);

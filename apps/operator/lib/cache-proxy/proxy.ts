@@ -73,6 +73,8 @@ export interface CacheProxyStats {
   /** Tool-search sessions: every tool deferred ⇒ no legal cache anchor (defer_loading +
    *  cache_control on one tool is a hard 400). Expected to be the COMMON case fleet-wide. */
   toolsBreakpointSkippedAllDeferred: number;
+  /** P-004: requests where the stable/volatile system split fired (the shared-playbook win). */
+  boundarySplit: number;
   upstreamErrors: number;
 }
 
@@ -88,6 +90,7 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
     toolsBreakpointInjected: 0,
     toolsBreakpointSkippedNoBudget: 0,
     toolsBreakpointSkippedAllDeferred: 0,
+    boundarySplit: 0,
     upstreamErrors: 0,
   };
 
@@ -120,6 +123,9 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
           const out = rewriteAnthropicCacheBody(body, {
             // OPT-IN (measured no-op 2026-07-19; caused EI-16980) — see cache-policy.ts header.
             injectToolsBreakpoint: process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT === '1',
+            // P-004 stable/volatile split — measured +66k shared tokens per subsequent cohort
+            // session. ON by default; kill with PAPERCUSP_CACHE_SPLIT_BOUNDARY=0.
+            splitBoundary: process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0',
           });
           if (out.stats) {
             if (out.body !== body) stats.rewritten++;
@@ -127,6 +133,7 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             if (out.stats.toolsBreakpointInjected) stats.toolsBreakpointInjected++;
             if (out.stats.toolsBreakpointSkippedNoBudget) stats.toolsBreakpointSkippedNoBudget++;
             if (out.stats.toolsBreakpointSkippedAllDeferred) stats.toolsBreakpointSkippedAllDeferred++;
+            if (out.stats.boundarySplit) stats.boundarySplit++;
           }
           body = out.body;
         } catch (e) {

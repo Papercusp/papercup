@@ -64,6 +64,11 @@ vi.mock('../compaction-usage', () => ({
   resolveModelSpecForOwner: specMock,
   detectContextDeathForOwner: deathMock,
   resolveSessionRef: resolveSessionRefMock,
+  // EI-13477: the watchdog now resolves through the RECONCILED ref (same
+  // reasoning as resolveLiveTranscriptPath in compaction-usage.ts) — route it
+  // to the SAME configurable mock so every existing resolveSessionRefMock
+  // stub in this file keeps driving both import names identically.
+  resolveSessionRefReconciled: resolveSessionRefMock,
   resolveLaunchCompactionLimitForOwner: resolveLaunchLimitMock,
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({

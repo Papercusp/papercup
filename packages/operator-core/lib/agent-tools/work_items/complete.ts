@@ -60,10 +60,27 @@ import { fireReactionInProcess } from '../../events';
 // summary) to the CompletionRecord contract BEFORE validation — a finished
 // completion is normalised, never hard-rejected+lost. Well-formed input is
 // unchanged. Mirrors the `stringTolerantBool` z.preprocess pattern (plans/new.ts).
-const completionSpec = z.preprocess(
-  coerceCompletionShape,
-  CompletionRecordSchema.extend({ workItem: z.string().min(1).optional() }),
-);
+const completionSpec = z
+  .preprocess(
+    coerceCompletionShape,
+    CompletionRecordSchema.extend({
+      workItem: z.string().min(1).optional(),
+      // EI-13687: internal marker set by coerceCompletionShape when the caller passed
+      // `completion` as a bare (non-JSON) string — declared here so it survives the
+      // schema's default field-stripping instead of vanishing before completeOne can
+      // see it and warn loudly. Stripped from the record before it is used/returned.
+      __shapeCoercedFrom: z.literal('bare-string').optional(),
+    }),
+  )
+  .describe(
+    // EI-13687: this is the shape a caller only discovers today by tripping the wrong-type
+    // error once — state it up front. A bare string is ACCEPTED (never hard-rejected, EI-24)
+    // but coerces to { summary: <string> } ONLY: testsRun/testResult/verifiedHow/addedTests/
+    // filesChanged/whatLanded/deferred/migrations all come back EMPTY, silently. Pass an
+    // object when you have any of those to report.
+    "Structured completion record: { summary, testsRun?, testResult?, verifiedHow?: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests?: boolean, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes? }. " +
+      'A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.',
+  );
 
 /**
  * EI-5269: the canonical terminal states across BOTH families (feature: passed/deprecated;
@@ -292,6 +309,13 @@ async function completeOne(
   ident: { ownerId: string; ownerLabel?: string },
   ctx: UnifiedToolContext,
 ): Promise<BulkItemResult> {
+  // EI-13687: a bare-string `completion` was silently coerced to `{ summary }` —
+  // every other field is necessarily empty (not merely "unset"). Pull the marker
+  // off BEFORE anything downstream sees it (rendering, evidence extraction, the
+  // broadcast record) — it is purely an internal signal for the warning below.
+  const shapeCoercedFromBareString = (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom === 'bare-string';
+  if (shapeCoercedFromBareString) delete (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
+
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
   if (it.state && existing.family === 'issue' && existing.origin === 'remote') {
@@ -432,9 +456,16 @@ async function completeOne(
   // between the two call sites.
   const hasTests = completionEvidenceFromRecord(it.completion) !== undefined;
   const hasDeferred = Array.isArray(it.completion.deferred) && it.completion.deferred.length > 0;
+  // EI-13687: when `completion` arrived as a bare string, hasTests/hasDeferred are
+  // UNCONDITIONALLY false (the coercion can only ever populate `summary`) — so give
+  // the caller the concrete dropped-fields list + the exact object shape to resend,
+  // instead of the generic "fill `tests`" nudge that reads like a nag about one
+  // missing field rather than "your structured evidence was silently discarded".
   const verificationWarning =
     !hasTests && !hasDeferred
-      ? `recorded a completion for ${it.id} with neither \`tests\` nor \`deferred\` populated — a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a — docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).`
+      ? shapeCoercedFromBareString
+        ? `completion for ${it.id} was passed as a bare STRING and silently coerced to { summary: ${JSON.stringify(it.completion.summary)} } — every other field (testsRun, testResult, verifiedHow, addedTests, filesChanged, whatLanded, deferred, migrations) is EMPTY, not just unfilled, because a string can only ever populate \`summary\`. If you have structured evidence, RESEND as an object: work_items:complete({ id, state, completion: { summary, testsRun: '<what you ran>', testResult: '<pass/fail summary>', verifiedHow: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests: <boolean>, filesChanged: [...] } }) — or, if genuinely unverified, resend with \`deferred: ['<what you left undone + why>']\`.`
+        : `recorded a completion for ${it.id} with neither \`tests\` nor \`deferred\` populated — a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a — docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).`
       : undefined;
 
   // Fill provenance defaults so the rendered notification is complete (D-006).

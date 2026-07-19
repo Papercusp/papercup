@@ -22,7 +22,7 @@ import {
   estimateContextTokensForOwner,
   resolveLaunchCompactionLimitForOwner,
   resolveModelSpecForOwner,
-  resolveSessionRef,
+  resolveSessionRefReconciled,
 } from '../compaction-usage';
 import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
 import {
@@ -411,7 +411,9 @@ async function maybeCarryRespawn(
     const host = findLiveHost(ownerId);
     if (!host || !hostSupports(host, 'carry-respawn')) return false;
 
-    const ref = await resolveSessionRef(ownerId);
+    // EI-13477: reconciled — a same-pid self-relaunch's dead native id must not
+    // be read as this owner's live transcript when deciding whether to respawn.
+    const ref = await resolveSessionRefReconciled(ownerId);
     if (!ref || (ref.agent != null && ref.agent !== 'claude')) return false;
     const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
     const transcriptPath =
@@ -539,7 +541,8 @@ async function maybeForceRespawn(
       );
       return false;
     }
-    const ref = await resolveSessionRef(ownerId);
+    // EI-13477: reconciled, same reasoning as maybeCarryRespawn above.
+    const ref = await resolveSessionRefReconciled(ownerId);
     if (ref && ref.agent != null && ref.agent !== 'claude') return false;
     const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
     const transcriptPath =
@@ -892,7 +895,9 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
           // A REAL Claude session whose transcript merely won't resolve DOES have an adv_sessions
           // row (ref non-null, agent 'claude'/unknown), so it still escalates below — the
           // 836k-overflow signal this detector exists for is preserved.
-          const ref = await resolveSessionRef(r.owner_id);
+          // EI-13477: reconciled — see resolveLiveTranscriptPath for why the raw
+          // ref can under/over-classify an owner across a same-pid relaunch.
+          const ref = await resolveSessionRefReconciled(r.owner_id);
           if (!ref || ref.agent === 'omp' || ref.agent === 'codex') {
             nullEstimateStreak.delete(r.owner_id); // by-design / synthetic null — don't accumulate a streak
             continue;

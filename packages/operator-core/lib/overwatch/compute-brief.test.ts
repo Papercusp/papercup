@@ -462,6 +462,49 @@ test('detectAnomalies — aging escalations → escalation-aging ESCALATE owner'
   assert.equal(a.suggestedAction.target, 'owner');
   assert.match(a.suggestedAction.message ?? '', /Planning Needs you queue/);
   assert.match(a.suggestedAction.message ?? '', /Mug cannot clear owner-decision backlog/);
+  // EI-13557: the conditionKey must be present, stable, and carry NO live count —
+  // it's what lets coord:escalate coalesce repeated firings onto one row.
+  assert.equal(a.suggestedAction.conditionKey, 'overwatch:escalation-aging');
+});
+
+test('detectAnomalies — EI-13557 regression: escalation-aging conditionKey is IDENTICAL across different aging counts (the self-inflation guard)', () => {
+  // This is the exact failure mode: the advisory's own message/summary embeds a
+  // live count ("279 aging...", "283 aging..."), so a dedup keyed on that prose
+  // never repeats and every re-check leaks a fresh, un-coalesced escalation. The
+  // conditionKey must stay fixed regardless of how the count moves.
+  const b1 = base();
+  b1.plans = { active: 5, stalledItems: 0, agingEscalations: 279 };
+  const b2 = base();
+  b2.plans = { active: 5, stalledItems: 0, agingEscalations: 283 };
+  const a1 = only(detectAnomalies(b1), 'escalation-aging');
+  const a2 = only(detectAnomalies(b2), 'escalation-aging');
+  assert.ok(a1.suggestedAction.conditionKey, 'conditionKey must be present');
+  assert.equal(a1.suggestedAction.conditionKey, a2.suggestedAction.conditionKey);
+  // The count-carrying text lives in `message` (→ escalation body), never in the key.
+  assert.doesNotMatch(a1.suggestedAction.conditionKey ?? '', /\d/);
+  assert.notEqual(a1.suggestedAction.message, a2.suggestedAction.message);
+});
+
+test('detectAnomalies — every escalate-type anomaly carries a count-free conditionKey', () => {
+  // Whole-class guard (EI-13557): every `type: 'escalate'` anomaly this file can
+  // produce must carry a conditionKey with no embedded digits — the same class
+  // of self-inflation bug affects any escalate anomaly whose message/detail
+  // embeds a live count or duration, not just escalation-aging.
+  const b = base();
+  b.queen.consecutiveZeroTokenWakes = 3;
+  b.workFeed = { frontier: 5, deadRoutines: 0, autoEligibleStuck: 0, frontierStuck: 0, blockedStranded: 0 };
+  b.bees.running = 1;
+  b.tokens.pausedBuckets = ['opus'];
+  b.tokens.accountsAvailable = 0;
+  b.tokens.gatewayWedged = true;
+  b.bees.invalidModelFailures = 2;
+  b.plans = { active: 5, stalledItems: 0, agingEscalations: 4 };
+  const escalations = detectAnomalies(b).filter((a) => a.suggestedAction.type === 'escalate');
+  assert.ok(escalations.length > 0);
+  for (const a of escalations) {
+    assert.ok(a.suggestedAction.conditionKey, `${a.kind} is missing a conditionKey`);
+    assert.doesNotMatch(a.suggestedAction.conditionKey ?? '', /\d/, `${a.kind}'s conditionKey embeds a live count`);
+  }
 });
 
 test('detectAnomalies — observation lane flat while bees run → observation-dark OBSERVE; quiet when no bees run', () => {

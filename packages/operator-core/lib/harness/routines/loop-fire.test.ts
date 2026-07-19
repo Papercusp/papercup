@@ -610,6 +610,18 @@ describe('renderLoopCheckpointBlock — the write-age staleness stamp (P-002)', 
     expect(out).toContain('you wrote it earlier');
     expect(out).not.toContain('STALE');
   });
+
+  it('EI-13592: stamps an ABSOLUTE write-time (independent of relative "X ago") so a reader can detect a fire→delivery gap the relative age cannot reveal on its own', () => {
+    const writtenAtMs = Date.parse('2026-07-17T04:52:00Z');
+    const fresh = renderLoopCheckpointBlock(note, { updatedAtMs: writtenAtMs, nowMs: writtenAtMs + 5_000, intervalSec: 120 });
+    expect(fresh).toContain('[07-17T04:52:00Z]');
+    const stale = renderLoopCheckpointBlock(note, {
+      updatedAtMs: writtenAtMs,
+      nowMs: writtenAtMs + 45 * 60_000,
+      intervalSec: 120,
+    });
+    expect(stale).toContain('[07-17T04:52:00Z]');
+  });
 });
 
 describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901)', () => {

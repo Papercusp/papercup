@@ -741,7 +741,26 @@ describe("LearningTab — Gym view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.getByText("No gym experiments")).toBeTruthy();
+    expect(
+      screen.getByText("No gym experiments in this workspace yet"),
+    ).toBeTruthy();
+  });
+
+  it("shows loading — NOT the empty state — before the gym query has resolved (undefined snapshot)", () => {
+    // Regression (owner report 2026-07-19): a not-yet-fetched gym query (snap
+    // undefined, e.g. while the hive lens is still resolving so `enabled` is
+    // false) must read as loading. It previously fell through to "No gym
+    // experiments" even though the workspace had proposals server-side.
+    gymResult = {
+      data: undefined,
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.getByText("Loading gym experiments…")).toBeTruthy();
+    expect(screen.queryByText(/No gym experiments/)).toBeNull();
   });
 
   // WI-5420: the server flags scopeFallback:true when the requested Hive's own

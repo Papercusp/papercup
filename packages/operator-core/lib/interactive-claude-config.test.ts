@@ -23,7 +23,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
@@ -424,6 +424,76 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-rec7', home });
     expect(existsSync(join(configDir, RECOVER_PLAYBOOK))).toBe(false);
     expect(runHook(configDir, DROPPED_CHAIN)).toBe('');
+  });
+
+  // EI-13477: a same-pid self-relaunch (TUI re-exec / update relaunch) writes a
+  // brand-new native session id that adv_sessions.session_id is never updated
+  // to, so the server-side context-gauge kept anchoring to the dead pre-relaunch
+  // transcript forever. The hook's own stdin carries the freshly re-exec'd
+  // process's REAL session_id — report it into the same psu-pty respawn log a
+  // wrapper-driven carry-respawn already writes, so resolveSessionRefReconciled
+  // (compaction-usage.ts) picks it up on the very next context-gauge read.
+  describe('EI-13477: self-relaunch reports its new native id into the psu-pty respawn log', () => {
+    function respawnLogPath(sid: string): string {
+      return join(homedir(), '.papercusp', 'psu-pty', `${sid.replace(/[^a-zA-Z0-9._-]/g, '_')}.events.jsonl`);
+    }
+    // These write into the REAL PSU_PTY_DIR under a unique throwaway sid — the
+    // same trust boundary psu-pty-discovery.test.ts's recolorViaPty/interruptViaPty
+    // tests already accept (the generated hook has no dir-override seam, matching
+    // production: it must find the SAME file latestRespawnNativeId reads for real).
+    function uniqueSid(label: string): string {
+      return `su-rec-${label}-${process.pid}-${Math.floor(performance.now() * 1000)}`;
+    }
+
+    it('a dropped-argv relaunch appends a respawned/self-relaunch event carrying the LIVE session_id', () => {
+      const sid = uniqueSid('drop');
+      const configDir = seedWithPlaybook(sid);
+      const logPath = respawnLogPath(sid);
+      try {
+        expect(existsSync(logPath)).toBe(false);
+        runHook(configDir, DROPPED_CHAIN); // runHook's stdin session_id is "random-new-id"
+        expect(existsSync(logPath)).toBe(true);
+        const lines = readFileSync(logPath, 'utf8').trim().split('\n');
+        const last = JSON.parse(lines[lines.length - 1]);
+        expect(last.kind).toBe('respawned');
+        expect(last.mode).toBe('self-relaunch');
+        expect(last.nativeId).toBe('random-new-id');
+        expect(typeof last.ts).toBe('string');
+      } finally {
+        rmSync(logPath, { force: true });
+      }
+    });
+
+    it('the --resume relaunch branch reports too (argv rebuilt without the prompt flag)', () => {
+      const sid = uniqueSid('resume');
+      const configDir = seedWithPlaybook(sid);
+      const logPath = respawnLogPath(sid);
+      try {
+        runHook(configDir, RESUME_RELAUNCH_CHAIN);
+        const last = JSON.parse(readFileSync(logPath, 'utf8').trim().split('\n').pop()!);
+        expect(last.kind).toBe('respawned');
+        expect(last.nativeId).toBe('random-new-id');
+      } finally {
+        rmSync(logPath, { force: true });
+      }
+    });
+
+    it('an INTACT argv (no relaunch) never writes the respawn log', () => {
+      const sid = uniqueSid('intact');
+      const configDir = seedWithPlaybook(sid);
+      const logPath = respawnLogPath(sid);
+      runHook(configDir, INTACT_CHAIN);
+      expect(existsSync(logPath)).toBe(false);
+    });
+
+    it('a relaunch with no parked playbook (raw/role dir) never writes the respawn log', () => {
+      seedHome(home);
+      const sid = uniqueSid('noplaybook');
+      const { configDir } = writeInteractiveClaudeConfig({ sid, home });
+      const logPath = respawnLogPath(sid);
+      runHook(configDir, DROPPED_CHAIN);
+      expect(existsSync(logPath)).toBe(false);
+    });
   });
 });
 

@@ -43,7 +43,7 @@ beforeEach(() => {
   vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW] as never);
   vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW] as never);
   vi.mocked(wakeMeter).mockResolvedValue({ total: 7 } as never);
-  vi.mocked(inspectEventKey).mockResolvedValue({ announcements: [], waiters: [], deliveries: [] } as never);
+  vi.mocked(inspectEventKey).mockResolvedValue({ announcements: [], waiters: [], deliveries: [], fireLatch: null } as never);
 });
 
 describe('events:status projection', () => {
@@ -166,6 +166,81 @@ describe('events:status projection', () => {
       consumer_generation: 1,
       authoritative_generation: 2,
     });
+  });
+
+  it('EI-13705: a bare-emitted key with no announcement but a fire latch reports fired_undeclared, not undeclared — with fire_latch + advice surfaced', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [],
+      waiters: [],
+      deliveries: [],
+      fireLatch: {
+        workspaceId: 'ws-x',
+        eventKey: 'p2p-git:phase3-open',
+        firstFiredAt: '2026-07-10T23:17:46.000Z',
+        lastFiredAt: '2026-07-10T23:17:46.000Z',
+        lastFiredBy: 'su-63834d42',
+        lastPayload: null,
+        fireCount: 1,
+      },
+    } as never);
+
+    const out = await call({ event: 'p2p-git:phase3-open' });
+    expect(out.event_inspection.current_state).toBe('fired_undeclared');
+    expect(out.event_inspection.fire_latch).toEqual({
+      first_fired_at: '2026-07-10T23:17:46.000Z',
+      last_fired_at: '2026-07-10T23:17:46.000Z',
+      last_fired_by: 'su-63834d42',
+      fire_count: 1,
+    });
+    expect(out.event_inspection.advice).toMatch(/genuinely fired/);
+    expect(out.event_inspection.advice).toMatch(/never happened/);
+  });
+
+  it('a key with no announcement and no fire latch (truly never fired) still reports undeclared', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [],
+      waiters: [],
+      deliveries: [],
+      fireLatch: null,
+    } as never);
+
+    const out = await call({ event: 'never:fired' });
+    expect(out.event_inspection.current_state).toBe('undeclared');
+    expect('fire_latch' in out.event_inspection).toBe(false);
+    expect('advice' in out.event_inspection).toBe(false);
+  });
+
+  it('an active announcement wins over a stale fire latch (declared/fired states unaffected)', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [{
+        id: 2,
+        causalGeneration: 2,
+        subscriberId: 'su-emitter',
+        createdAt: '2026-07-13T12:00:00.000Z',
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        supersededAt: null,
+        expectedCondition: null,
+        firedPayload: null,
+      }],
+      waiters: [],
+      deliveries: [],
+      fireLatch: {
+        workspaceId: 'ws-x',
+        eventKey: 'deploy:abcdef1',
+        firstFiredAt: '2026-07-01T00:00:00.000Z',
+        lastFiredAt: '2026-07-01T00:00:00.000Z',
+        lastFiredBy: 'old-source',
+        lastPayload: null,
+        fireCount: 3,
+      },
+    } as never);
+    const out = await call({ event: 'deploy:abcdef1' });
+    expect(out.event_inspection.current_state).toBe('declared');
+    // fire_latch is still surfaced (informational) even when an announcement governs current_state.
+    expect(out.event_inspection.fire_latch).toBeTruthy();
+    expect('advice' in out.event_inspection).toBe(false);
   });
 
   it('an exact current generation is in sync', async () => {

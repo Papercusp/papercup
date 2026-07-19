@@ -24,10 +24,13 @@ interface Props {
  * per-harness orchestrator-status model (`harnessStatus.snapshot` /
  * `harnessLanes.snapshot`), which the Queen/bee placement model replaced —
  * so they sat frozen/zero. The underlying `harness_status` / `harness_lanes`
- * tables, their sync resolvers, and the `/orchestrator/status` endpoint are
- * KEPT: `harness_lanes` is the live agent-lane occupancy tracker (PID-swept
- * every ~30s) and both `harness_status` / `harness_lanes` are read by the
- * device-harnesses / device-feeds surfaces — so the tables stay.
+ * tables and the `/orchestrator/status` endpoint are KEPT: `harness_lanes` is
+ * the live agent-lane occupancy tracker (PID-swept every ~30s) and both
+ * `harness_status` / `harness_lanes` are read by the device-harnesses /
+ * device-feeds surfaces — so the tables stay. NOTE: the `harnessStatus.snapshot`
+ * SYNC resolver was retired as a dead query (whole-app-sync-payload-audit-2026-07-19
+ * P-001) — it had no consumer and shipped ~16MB per invalidation; `harnessStatus.byHarness`
+ * (the live per-row status resolver) remains.
  *
  * The harness selector + Start/Stop + running-agents-thinking pills now
  * live in the AdvShell header (one global instance shared across every

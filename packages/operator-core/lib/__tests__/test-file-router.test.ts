@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
 // The production entrypoint deliberately stays executable by plain Node.
 // @ts-expect-error — the .mjs CLI has no declaration file.
-import { discoverVitestRoute, evaluateMatch, groupRoutes, listedFiles, REPO_ROOT } from '../../../../scripts/test-files.mjs';
+import {
+  aggregateGroupResults,
+  discoverVitestRoute,
+  evaluateMatch,
+  groupRoutes,
+  listedFiles,
+  REPO_ROOT,
+} from '../../../../scripts/test-files.mjs';
 
 describe('test-files router', () => {
   it('discovers the package cwd/config and rewrites the file relative to that cwd', () => {
@@ -91,5 +98,68 @@ describe('evaluateMatch — the false-green refusal (P-009)', () => {
   it('accepts a single-file request that resolved', () => {
     const one = [{ absolute: A, requested: 'a.test.ts' }];
     expect(evaluateMatch({ routes: one, matched: [A], listStatus: 0 }).ok).toBe(true);
+  });
+});
+
+// EI-13535: a multi-workspace request (files owned by >1 cwd/config) used to `return` the moment
+// the FIRST group either mismatched or failed, silently never even attempting the remaining
+// groups — so `executed` could read far below `requested` with no indication the other files were
+// never run at all (or, worse, a fixed-and-re-run first group could report a clean `status=passed`
+// while the other groups' files were never executed). aggregateGroupResults is the pure decision
+// `main` now uses to combine every group's outcome (all groups always run) into one honest verdict.
+describe('aggregateGroupResults — no group may be silently abandoned (EI-13535)', () => {
+  const okGroup = (requested, matched, executed) => ({
+    requested,
+    matched,
+    executed,
+    unmatchedCount: 0,
+    failed: false,
+    launchError: false,
+  });
+
+  it('combines multiple clean groups into one passing verdict summing across all of them', () => {
+    const summary = aggregateGroupResults([okGroup(1, 1, 1), okGroup(2, 2, 2)]);
+    expect(summary).toMatchObject({
+      ok: true,
+      requested: 3,
+      matched: 3,
+      executed: 3,
+      anyUnmatched: false,
+      anyFailed: false,
+      launchError: false,
+    });
+  });
+
+  it('THE BUG: a failure in group 1 must not hide group 2 — executed reflects BOTH groups ran', () => {
+    // group 1 (1 file) failed its vitest run; group 2 (2 files) still ran to completion.
+    const failedGroup1 = { ...okGroup(1, 1, 1), failed: true };
+    const summary = aggregateGroupResults([failedGroup1, okGroup(2, 2, 2)]);
+    // Before the fix, main() returned right after group 1 — group 2 never even attempted, so
+    // `executed` would have frozen at 1 instead of reflecting all 3 requested files running.
+    expect(summary.executed).toBe(3);
+    expect(summary.requested).toBe(3);
+    expect(summary.anyFailed).toBe(true);
+    expect(summary.ok).toBe(true); // both groups matched fully — only their TEST results differed
+  });
+
+  it('a mismatch in one group is still refused (ok:false) even when every other group matched', () => {
+    const mismatchedGroup = { requested: 2, matched: 1, executed: 0, unmatchedCount: 1, failed: false, launchError: false };
+    const summary = aggregateGroupResults([mismatchedGroup, okGroup(1, 1, 1)]);
+    expect(summary.ok).toBe(false);
+    expect(summary.anyUnmatched).toBe(true);
+    // The matched/requested counts still aggregate so the refusal message is honest about the
+    // WHOLE request, not just the mismatched group.
+    expect(summary).toMatchObject({ requested: 3, matched: 2 });
+  });
+
+  it('a launch error in any group refuses the whole run regardless of other groups', () => {
+    const launchErrorGroup = { requested: 1, matched: 0, executed: 0, unmatchedCount: 1, failed: false, launchError: true };
+    const summary = aggregateGroupResults([launchErrorGroup, okGroup(1, 1, 1)]);
+    expect(summary.launchError).toBe(true);
+  });
+
+  it('a single clean group (the common case) still reports ok/passed correctly', () => {
+    const summary = aggregateGroupResults([okGroup(2, 2, 2)]);
+    expect(summary).toMatchObject({ ok: true, requested: 2, matched: 2, executed: 2, anyFailed: false });
   });
 });

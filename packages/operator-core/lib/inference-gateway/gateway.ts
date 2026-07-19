@@ -583,6 +583,9 @@ const cachePolicyOn = () => process.env.PAPERCUSP_CACHE_POLICY !== '0';
 // OPT-IN: measured a no-op 2026-07-19 (identical read/write with and without) and it caused
 // EI-16980. Enable only with P-004 + a measured read-delta.
 const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT === '1';
+/** P-004 stable/volatile system split — ON by default (measured +66k shared tokens/session);
+ *  PAPERCUSP_CACHE_SPLIT_BOUNDARY=0 kills it. */
+const cacheSplitBoundaryOn = () => process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
 /** How many `prompt_cache_key` buckets the codex traffic is spread across. OpenAI degrades a
  *  single key past ~15 req/min; fewer buckets = more cross-session sharing. */
 const codexCacheShards = () => {
@@ -882,11 +885,13 @@ export interface GatewayStats {
   cachePolicy?: {
     enabled: boolean;
     toolsBreakpoint: boolean;
+    splitBoundary: boolean;
     anthropicRequests: number;
     ttlUpgraded: number;
     toolsBreakpointInjected: number;
     toolsBreakpointSkippedNoBudget: number;
     toolsBreakpointSkippedAllDeferred: number;
+    boundarySplit: number;
     breakpointHistogram: number[];
     codexRequests: number;
     codexLegacyRetention: number;
@@ -1887,6 +1892,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     toolsBreakpointSkippedNoBudget: 0,
     /** Tool-search sessions: every tool deferred ⇒ no legal cache anchor (see cache-policy). */
     toolsBreakpointSkippedAllDeferred: 0,
+    boundarySplit: 0,
     breakpointHistogram: [0, 0, 0, 0, 0] as number[],
     codexRequests: 0,
     codexLegacyRetention: 0,
@@ -1895,6 +1901,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   };
   const cachePolicyEnabled = cachePolicyOn();
   const cacheToolsBreakpointEnabled = cacheToolsBreakpointOn();
+  const cacheSplitBoundaryEnabled = cacheSplitBoundaryOn();
   function recordCachePolicy(provider: 'anthropic' | 'codex', stats: AnthropicCacheStats | OpenAiCacheStats): void {
     if (provider === 'anthropic') {
       const s = stats as AnthropicCacheStats;
@@ -1903,6 +1910,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (s.toolsBreakpointInjected) cachePolicyStats.toolsBreakpointInjected++;
       if (s.toolsBreakpointSkippedNoBudget) cachePolicyStats.toolsBreakpointSkippedNoBudget++;
       if (s.toolsBreakpointSkippedAllDeferred) cachePolicyStats.toolsBreakpointSkippedAllDeferred++;
+      if (s.boundarySplit) cachePolicyStats.boundarySplit++;
       const idx = Math.min(s.breakpointsBefore, cachePolicyStats.breakpointHistogram.length - 1);
       cachePolicyStats.breakpointHistogram[idx]++;
     } else {
@@ -2241,7 +2249,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       processUptimeMs: Math.max(0, now - processStartedAt),
       totalRequests,
       // P-002: the live breakpoint-layout measurement (see recordCachePolicy).
-      cachePolicy: { enabled: cachePolicyEnabled, toolsBreakpoint: cacheToolsBreakpointEnabled, ...cachePolicyStats },
+      cachePolicy: { enabled: cachePolicyEnabled, toolsBreakpoint: cacheToolsBreakpointEnabled, splitBoundary: cacheSplitBoundaryEnabled, ...cachePolicyStats },
       inFlight: admission.running,
       queueDepth: admission.queued,
       healthyAccounts,
@@ -2599,7 +2607,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // extended ttl on every ephemeral marker + the org-shared tools-span breakpoint. Pure
       // request-body rewrite, idempotent, budget-safe; kill-switch PAPERCUSP_CACHE_POLICY=0.
       if (cachePolicyEnabled) {
-        const cached = rewriteAnthropicCacheBody(bodyBuf, { injectToolsBreakpoint: cacheToolsBreakpointEnabled });
+        const cached = rewriteAnthropicCacheBody(bodyBuf, {
+          injectToolsBreakpoint: cacheToolsBreakpointEnabled,
+          splitBoundary: cacheSplitBoundaryEnabled,
+        });
         bodyBuf = cached.body;
         if (cached.stats) recordCachePolicy('anthropic', cached.stats);
       }

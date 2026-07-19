@@ -105,7 +105,15 @@ export function coerceCompletionShape(raw: unknown): unknown {
     const parsedObject = tryParseJsonObject(raw);
     if (parsedObject) return coerceCompletionShape(parsedObject);
     const s = raw.trim();
-    return s ? { summary: s } : raw; // empty string: let validation reject it
+    // EI-13687: a bare (non-JSON) string can ONLY ever populate `summary` — every
+    // other CompletionRecord field (testsRun/testResult/verifiedHow/addedTests/
+    // filesChanged/whatLanded/deferred/migrations) is necessarily empty, not just
+    // "not filled in". Mark the coercion so the caller-facing warning downstream
+    // (complete.ts) can say so LOUDLY instead of the generic "fill `tests`" nudge
+    // that reads like a nag about one missing field. The marker rides through the
+    // schema (declared explicitly on completionSpec, complete.ts) and is stripped
+    // before the completion record is used/rendered/broadcast.
+    return s ? { summary: s, __shapeCoercedFrom: 'bare-string' as const } : raw; // empty string: let validation reject it
   }
   if (!isPlainObject(raw)) return raw;
 

@@ -72,6 +72,54 @@ describe('renderSentinelContext heading scoping', () => {
     expect(block).toContain('WI-301 [papercusp] todo, claimed');
     expect(block).toContain('compare the migration strategies');
   });
+
+  // EI-13557: the Sentinel's own anomaly-line renderer must surface the escalate
+  // conditionKey too — it is a SEPARATE renderer from the overwatch/Kettle one
+  // (mirrors it), so the fix has to land in both or the Sentinel keeps inventing
+  // ad hoc dedup keys the same way Overwatch/Kettle did.
+  it('surfaces the escalate conditionKey inline so the reader passes it to coord:escalate verbatim', () => {
+    const block = renderSentinelContext({
+      potSlug: 'papercusp',
+      anomalies: [
+        {
+          kind: 'escalation-aging',
+          severity: 'warning',
+          subject: 'escalations',
+          detail: '283 escalation(s) aging past the attention threshold.',
+          suggestedAction: {
+            type: 'escalate',
+            target: 'owner',
+            conditionKey: 'overwatch:escalation-aging',
+            message: '283 human-attention escalation(s) have aged past the attention threshold.',
+          },
+        },
+      ],
+    });
+    expect(block).toContain('[conditionKey: overwatch:escalation-aging]');
+    expect(block).toContain(
+      "pass that exact string as coord:escalate's `conditionKey` argument — it coalesces repeated firings",
+    );
+  });
+
+  it('does NOT annotate a nudge/observe anomaly with a conditionKey (escalate-only)', () => {
+    const block = renderSentinelContext({
+      potSlug: 'papercusp',
+      anomalies: [
+        {
+          kind: 'bees-churning',
+          severity: 'info',
+          subject: 'bees',
+          detail: '1 churning',
+          suggestedAction: { type: 'nudge', target: 'mug', message: 're-place it' },
+        },
+      ],
+    });
+    // The intro's own explainer legitimately mentions `[conditionKey: …]` in the
+    // abstract — scope this check to the rendered anomaly LINE, not the whole block.
+    const line = block.split('\n').find((l) => l.includes('bees-churning'));
+    expect(line).toBeTruthy();
+    expect(line).not.toContain('[conditionKey');
+  });
 });
 
 describe('gatherSentinelContext', () => {

@@ -25,6 +25,7 @@ import { existsSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { canonicalCoordRole } from '../agent-tools/coordination/roles';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry, isEphemeralForeignProject } from '../harness-registry';
 import { spawnInvokeOnceWithFallback, invokeTimeoutMs } from '../dbos/orchestrator-runner';
@@ -1381,6 +1382,18 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // row, so a bee's coord messages, its file-lock owner, and fleet:cancel's release
   // target all line up. parentSpawnId carries lineage onto the child's MCP URL too.
   extraEnv.PAPERCUSP_SPAWN_ID = spawnId;
+  // EI-13668 root cause fix (mirrors the /invoke chokepoint in
+  // endpoint-route/routes/harness/spawn.ts): `deriveAgentRole` (identity.ts) only
+  // ever derives a role from `PAPERCUSP_AGENT_ROLE` env or a coarse identity.source
+  // fallback ('fleet-spawn'/'signed-spawn' → the generic 'cup', never a specific
+  // pipeline/singleton role like 'kettle'/'mug'). Without this env stamp, EVERY
+  // role spawned through this chokepoint (this is the "central role-admission
+  // chokepoint that cup:spawn + every agent-driven launch funnel through" per the
+  // header doc above) reports the wrong `agentRole` on its own presence writes the
+  // moment it makes its first coord:orient/declare-intent/heartbeat call — so
+  // `@role:<x>` addressing (role-slot-live-resolve.ts) never finds a truly-live
+  // holder for any role this chokepoint spawns other than plain 'cup'.
+  extraEnv.PAPERCUSP_AGENT_ROLE = canonicalCoordRole(role);
   if (input.parentSpawnId) extraEnv.PAPERCUSP_PARENT_SPAWN_ID = input.parentSpawnId;
   // Per-plan token attribution (B-TOK-2): stamp the plan this run serves so the
   // subprocess usage sample (invoke.ts → recordUsageSamplePg) records plan_id and

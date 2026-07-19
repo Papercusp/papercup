@@ -18,6 +18,7 @@ import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta } from "../../work-item-checkpoint";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
 import { getPresence } from "../coordination/presence";
+import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).

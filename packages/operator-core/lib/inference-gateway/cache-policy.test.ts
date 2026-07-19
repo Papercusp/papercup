@@ -7,12 +7,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   ANTHROPIC_MAX_BREAKPOINTS,
+  PSU_CACHE_BOUNDARY,
   applyAnthropicCachePolicy,
   applyOpenAiCachePolicy,
   openAiCacheGeneration,
   rewriteAnthropicCacheBody,
   rewriteOpenAiCacheBody,
   shardedCacheKey,
+  splitSystemAtBoundary,
 } from './cache-policy';
 
 const cc = () => ({ type: 'ephemeral' as const });
@@ -207,6 +209,90 @@ describe('rewriteAnthropicCacheBody — buffer contract', () => {
     const buf = Buffer.from(JSON.stringify({ tools: [{ name: 'a' }] }), 'utf8');
     const r = rewriteAnthropicCacheBody(buf, { injectToolsBreakpoint: true });
     expect(JSON.parse(r.body.toString('utf8')).tools[0].cache_control.ttl).toBe('1h');
+  });
+});
+
+describe('splitSystemAtBoundary — stable/volatile split (P-004, MEASURED +66k shared/session)', () => {
+  const boundary = PSU_CACHE_BOUNDARY;
+  /** Content is never lost or reordered: the halves must concatenate to the original minus sentinel. */
+  const concatEquals = (out: any[], original: string) => {
+    const joined = out.map((b) => b.text).join('');
+    expect(joined).toBe(original.replace(boundary, ''));
+  };
+
+  it('splits the block at the sentinel, moves cache_control to the STABLE half, drops the sentinel', () => {
+    const original = `CLAUDE BASE + stable playbook${boundary}per-session launch context`;
+    const system = [{ type: 'text', text: original, cache_control: { type: 'ephemeral', ttl: '1h' } }];
+    const r = splitSystemAtBoundary(system);
+    expect(r.split).toBe(true);
+    expect(r.system).toHaveLength(2);
+    expect((r.system as any)[0].text).toBe('CLAUDE BASE + stable playbook');
+    expect((r.system as any)[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect((r.system as any)[1].text).toBe('per-session launch context');
+    expect((r.system as any)[1].cache_control).toBeUndefined();
+    concatEquals(r.system as any[], original);
+  });
+
+  it('is budget-NEUTRAL when the block already had a marker (move, not add)', () => {
+    const system = [
+      { type: 'text', text: 'a', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: `stable${boundary}tail`, cache_control: { type: 'ephemeral' } },
+    ];
+    const before = system.filter((b) => b.cache_control).length;
+    const r = splitSystemAtBoundary(system);
+    const after = (r.system as any[]).filter((b) => b.cache_control).length;
+    expect(before).toBe(after); // 2 → 2, no new breakpoint
+  });
+
+  it('adds a marker only when the block had none AND the 4-budget has room', () => {
+    const system = [{ type: 'text', text: `stable${boundary}tail` }];
+    const r = splitSystemAtBoundary(system);
+    expect((r.system as any)[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+  });
+
+  it('REFUSES to add a marker that would exceed the 4-cap (no budget → no-op)', () => {
+    const system = [
+      { type: 'text', text: 'a', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'b', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'c', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'd', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: `stable${boundary}tail` }, // no marker; adding one would be the 5th
+    ];
+    const r = splitSystemAtBoundary(system);
+    expect(r.split).toBe(false);
+    expect(r.system).toBeNull();
+  });
+
+  it('no-ops safely when there is no sentinel, no array, or the stable half is empty', () => {
+    expect(splitSystemAtBoundary([{ type: 'text', text: 'no sentinel here' }]).split).toBe(false);
+    expect(splitSystemAtBoundary('a string system').split).toBe(false);
+    expect(splitSystemAtBoundary(undefined).split).toBe(false);
+    // sentinel at the very start → nothing stable before it
+    expect(splitSystemAtBoundary([{ type: 'text', text: `${boundary}only tail` }]).split).toBe(false);
+  });
+
+  it('handles a sentinel at the very END (no volatile tail block emitted)', () => {
+    const r = splitSystemAtBoundary([{ type: 'text', text: `stable body${boundary}` }]);
+    expect(r.split).toBe(true);
+    expect(r.system).toHaveLength(1);
+    expect((r.system as any)[0].text).toBe('stable body');
+  });
+
+  it('through the buffer path: split + ttl upgrade compose, and the sentinel never reaches the wire', () => {
+    const original = `${'stable '.repeat(20)}${boundary}launch ctx`;
+    const buf = Buffer.from(JSON.stringify({ model: 'claude-opus-4-8', system: [{ type: 'text', text: original }] }), 'utf8');
+    const out = rewriteAnthropicCacheBody(buf, { splitBoundary: true });
+    const parsed = JSON.parse(out.body.toString('utf8'));
+    expect(parsed.system).toHaveLength(2);
+    expect(parsed.system[0].cache_control.ttl).toBe('1h'); // stable half cached at 1h
+    expect(JSON.stringify(parsed)).not.toContain(boundary); // sentinel dropped
+    expect(out.stats?.boundarySplit).toBe(true);
+  });
+
+  it('buffer path is a clean no-op (original buffer) when splitBoundary is off', () => {
+    const buf = Buffer.from(JSON.stringify({ model: 'x', system: [{ type: 'text', text: `a${boundary}b` }] }), 'utf8');
+    const out = rewriteAnthropicCacheBody(buf, { splitBoundary: false, injectToolsBreakpoint: false });
+    expect(out.body).toBe(buf);
   });
 });
 

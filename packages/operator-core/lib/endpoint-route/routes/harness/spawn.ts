@@ -474,6 +474,23 @@ const invoke = defineTool({
     // registry pin (2026-07-17 outage; evidence on WI-5102).
     env.HARNESS_SLUG = project.slug;
     env.PAPERCUSP_WORKSPACE_ID = activeWorkspaceId();
+    // EI-13668 root cause: `deriveAgentRole` (identity.ts) only ever derives a role
+    // from `PAPERCUSP_AGENT_ROLE` env or a coarse identity.source→role fallback (never
+    // 'mug'/'kettle'/'papercup'/'papercup-deep' — those map to the generic 'cup' via
+    // the 'fleet-spawn'/'signed-spawn' source branch). The one-time presence seed
+    // below (`writePresence(..., { agentRole: canonicalRole }, ...)`) sets the role
+    // correctly at spawn time, but that row is IMMEDIATELY clobbered the moment the
+    // spawned agent's OWN session makes its first presence write (coord:orient /
+    // declare-intent / heartbeat) — those calls don't pass `agentRole` explicitly, so
+    // presence.ts recomputes it via `deriveAgentRole(identity)` using THIS call's own
+    // identity/source, landing back on the generic fallback. `@role:mug` (and every
+    // other role-slot selector) then never matches a truly-live role holder — it only
+    // ever sees the one-shot seed row, which stops being "live" the instant the agent
+    // heartbeats for real. Stamping PAPERCUSP_AGENT_ROLE on the CHILD PROCESS'S env
+    // here makes `deriveAgentRole` return the correct role on every subsequent
+    // presence write for the lifetime of this process — the durable fix, not another
+    // one-shot seed.
+    env.PAPERCUSP_AGENT_ROLE = canonicalRole;
     // EI-7871 (WI-3082 follow-up): this /invoke route is the ONE chokepoint every
     // launch-blueprint spawn traverses (queen via bpkind=hive, overwatch via
     // bpkind=overwatch, doc-steward/sentinel/scan/deploy/audit/merge-resolution/

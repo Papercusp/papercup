@@ -195,6 +195,21 @@ export interface DeliveryRow {
   source: string | null;
 }
 
+/** EI-13705: the unconditional per-key "did this ever genuinely fire" latch
+ *  (harness_shared.event_key_fires) — upserted on every real emit regardless
+ *  of announce/waiters, so `events:status` can tell a key that fired but was
+ *  never announced (`fired_undeclared`) apart from one that truly never has
+ *  (`undeclared`), independent of how much time has passed since. */
+export interface KeyFireRow {
+  workspaceId: string;
+  eventKey: string;
+  firstFiredAt: string;
+  lastFiredAt: string;
+  lastFiredBy: string | null;
+  lastPayload: unknown;
+  fireCount: number;
+}
+
 /** A delivery row joined with its await's wake handle + note (the pump's unit). */
 export interface DeliveryWork extends DeliveryRow {
   wakeHandle: WakeHandle | null;

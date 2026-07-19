@@ -113,7 +113,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_escalations': ['harnessEscalations.byHarness'],
   'harness_shared.harness_checkpoints': ['harnessCheckpoints.byHarness'],
   'harness_shared.harness_feature_prs': ['featurePrs.byHarness', 'featureTimeline.byFeature'],
-  'harness_shared.harness_status': ['harnessStatus.byHarness', 'harnessStatus.snapshot'],
+  'harness_shared.harness_status': ['harnessStatus.byHarness'],
   'harness_shared.harness_tests': ['harnessTests.byHarness'],
   'harness_shared.harness_archives': ['harnessArchives.byHarness'],
   'harness_shared.harness_hook_logs': ['harnessHookLogs.byHarness'],
@@ -247,7 +247,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.work_items': [
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
-    'harnessStatus.snapshot',
     // designFeatures.byHarness (data-sync-push-completion P-003) — the Design dashboard's
     // "features needing design" list reads work_items (needs_design / design_status /
     // design_spec_id columns) via harness_features_consolidated. A design-state flip on a
@@ -281,7 +280,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
     'featuresConsolidated.byHive',
-    'harnessStatus.snapshot',
     'workItems.byHarness',
     'contributors.byHarness',
     'featureTimeline.byFeature',

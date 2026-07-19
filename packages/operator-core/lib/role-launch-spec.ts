@@ -54,6 +54,7 @@ import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { promptsDir } from './prompt-assembly';
+import { PSU_CACHE_BOUNDARY } from './inference-gateway/cache-policy';
 import { sessionClaudeConfigDir, sessionMcpDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { signSpawnParams } from './spawn-signing';
 import { resolveProjectDir } from './spawn-config';
@@ -641,7 +642,26 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     planNow: input.planNow ?? null,
     profile: launchProfile,
   });
-  const promptText = launchCtx ? suPersonaText.replace(/\n+$/, '') + '\n\n' + launchCtx : suPersonaText;
+  // gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-004: mark the seam between the STABLE
+  // playbook (byte-identical across a cohort — renderSuPlaybook is deterministic) and the
+  // per-session launch context. The cache-proxy / inference-gateway split the system block here
+  // and move the cache_control to the stable side, so the ~66k-token playbook prefix becomes an
+  // org-shared cache entry instead of being written fresh every launch (MEASURED: a subsequent
+  // cohort session's write dropped 89k → 8k). The sentinel is an HTML comment, so if a request
+  // ever reaches Anthropic without being split (proxy off / a non-splitting path) it is inert.
+  // No sentinel when there is no launch context — the whole prompt is then stable and Claude
+  // Code's own end-of-block breakpoint already shares it.
+  // Gated on the same flag the proxy/gateway split on, so PAPERCUSP_CACHE_SPLIT_BOUNDARY=0 yields
+  // a prompt byte-identical to today (clean reversible cutover). A flag mismatch across the
+  // launcher vs the forward point is harmless either way: an unsplit sentinel is an inert comment,
+  // and a missing sentinel just means the split no-ops.
+  const emitBoundary = process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
+  const promptText = launchCtx
+    ? suPersonaText.replace(/\n+$/, '') +
+      '\n\n' +
+      (emitBoundary ? PSU_CACHE_BOUNDARY + '\n\n' : '') +
+      launchCtx
+    : suPersonaText;
   const instructionLint = lintInstructionText(promptText);
 
   // 3. Superuser MCP — the existing loopback door (NOT a signed,

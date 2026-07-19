@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async () => {}),
+    recordKeyFire: vi.fn(async () => {}),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
     listActiveAwaitsForKey: vi.fn(async (_key: string): Promise<AwaitRow[]> => []),
     cancelAwaitsByIds: vi.fn(async () => 0),
@@ -154,6 +155,33 @@ describe('emitAwaitedEvent', () => {
     const r = await emitAwaitedEvent({ key: 'k', to: ['su-x'] });
     expect(r.ok).toBe(true);
     expect(r.msgId).toBeNull();
+  });
+});
+
+describe('emitAwaitedEvent — EI-13705: unconditional per-key fire latch', () => {
+  it('records the fire latch even when NOTHING was fired and no to[] (waiters:0, the case that previously left zero trace)', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+    const r = await emitAwaitedEvent({ key: 'p2p-git:phase3-open', source: 'su-63834d42', payload: { sha: 'abc' } });
+    expect(r.waiters).toBe(0);
+    expect(h.store.recordKeyFire).toHaveBeenCalledTimes(1);
+    expect(h.store.recordKeyFire).toHaveBeenCalledWith({
+      eventKey: 'p2p-git:phase3-open',
+      firedBy: 'su-63834d42',
+      payload: { sha: 'abc' },
+    });
+  });
+
+  it('records the fire latch on an ordinary emit that DOES wake waiters (not just the zero-waiter case)', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
+    await emitAwaitedEvent({ key: 'k' });
+    expect(h.store.recordKeyFire).toHaveBeenCalledTimes(1);
+  });
+
+  it('a fire-latch write failure never breaks the emit (fail-soft, like the announce latch)', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+    h.store.recordKeyFire.mockRejectedValueOnce(new Error('db down'));
+    const r = await emitAwaitedEvent({ key: 'k' });
+    expect(r.ok).toBe(true);
   });
 });
 

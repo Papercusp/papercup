@@ -201,6 +201,26 @@ export interface SuggestedAction {
   target?: string;
   /** The nudge / escalation / observation text overwatch would send. */
   message?: string;
+  /**
+   * EI-13557: for `type: 'escalate'` ONLY — the STABLE `coord:escalate`
+   * `conditionKey` to pass verbatim for this recurring condition. Derived
+   * from the anomaly `kind` alone (never from a live count/duration in
+   * `message`/`detail`), so re-detections of the SAME condition always
+   * produce the SAME key regardless of how the count has moved.
+   *
+   * Why this exists: overwatch/Kettle escalates via an LLM turn reading the
+   * rendered anomaly line, not a code-side `coord:escalate` call — so the
+   * dedup key can't be enforced by code alone. Before this field, the agent
+   * had to invent its own `conditionKey` (or forget to pass one), and a
+   * `message` that embeds a live count (e.g. "283 human-attention escalations
+   * are aging") produced a fresh, un-coalesced `coord:escalate` row on every
+   * wake once the agent's phrasing or the count changed — the exact
+   * detector-eats-its-own-tail bug this field fixes for every escalate-type
+   * anomaly (`escalation-aging` was the observed case, but every other
+   * escalate anomaly embeds a live count/duration too). The renderers below
+   * surface it explicitly so the agent copies it rather than inventing one.
+   */
+  conditionKey?: string;
 }
 
 /** One detected drift from the system's short-term goals + its suggested action. */
@@ -437,7 +457,12 @@ function renderAnomalyLine(a: Anomaly, i: number): string {
   const verb = ACTION_VERB[act.type];
   const target = act.target ? ` ${act.target}` : '';
   const message = act.message ? `: ${act.message}` : '';
-  return `${i + 1}. [${a.severity}] ${a.kind} — ${a.subject}: ${a.detail} → ${verb}${target}${message}`;
+  // EI-13557: for escalate actions, surface the stable conditionKey inline so the
+  // agent copies it into coord:escalate's `conditionKey` arg instead of inventing
+  // one (or omitting it) — that inconsistency is what let the aging-escalation
+  // advisory self-inflate (a fresh un-coalesced row every time its live count changed).
+  const conditionKey = act.type === 'escalate' && act.conditionKey ? ` [conditionKey: ${act.conditionKey}]` : '';
+  return `${i + 1}. [${a.severity}] ${a.kind} — ${a.subject}: ${a.detail} → ${verb}${target}${conditionKey}${message}`;
 }
 
 /** Render `recentByRole` deterministically (role-sorted), or `none` when empty. */
@@ -468,7 +493,12 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
       'anomalies detected and the action suggested for each. Act on the anomalies: NUDGE the ' +
       'relevant agent (`coord:send`), record an OBSERVATION (`improvements:capture` ' +
       'lane:observation), or ESCALATE a structural issue you must NOT auto-fix (`coord:escalate`). ' +
-      'You NUDGE agents; you never re-place work — that is the Mug.',
+      'You NUDGE agents; you never re-place work — that is the Mug. ' +
+      'When you ESCALATE, an anomaly line carrying `[conditionKey: …]` means you MUST pass that ' +
+      'exact string as `coord:escalate`\'s `conditionKey` argument — it coalesces repeated firings ' +
+      'of the SAME recurring condition onto one row instead of leaking a new open escalation every ' +
+      'wake (EI-13557: a re-filed advisory whose summary embeds a live count is the classic way this ' +
+      'goes wrong — put any count/duration in `body`, never in `summary`, when a conditionKey is shown).',
   );
 
   if (brief.wokeBy && brief.wokeBy.trim()) {

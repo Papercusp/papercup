@@ -44,7 +44,7 @@ function unhealthyBrief(): OverwatchBrief {
         severity: 'warning',
         subject: 'opus bucket',
         detail: 'paused on RPM saturation',
-        suggestedAction: { type: 'escalate', target: 'owner', message: 'opus bucket paused; structural rate-limit fix needed' },
+        suggestedAction: { type: 'escalate', target: 'owner', conditionKey: 'overwatch:token-paused', message: 'opus bucket paused; structural rate-limit fix needed' },
       },
     ],
   };
@@ -56,12 +56,19 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   // Header carries the hive + the nudge-not-replace mandate (D-001).
   assert.match(out, /## Kettle wake brief — system-health snapshot for papercup-hive/);
   assert.match(out, /you never re-place work — that is the Mug/);
+  // EI-13557: the intro now teaches the conditionKey contract explicitly.
+  assert.match(out, /you MUST pass that\s+exact string as `coord:escalate`'s `conditionKey` argument/);
   assert.match(out, /\*\*Woke by:\*\* timer/);
 
   // Anomalies section + all three lines, with the action verb + target + message.
   assert.match(out, /### Anomalies — detected this wake \(act on these\)/);
   assert.match(out, /\[critical\] queen-stalled — mug: last woke 47m ago \(cadence 10m\) → NUDGE mug: you have stalled/);
-  assert.match(out, /\[warning\] token-paused — opus bucket: paused on RPM saturation → ESCALATE owner: opus bucket paused/);
+  // EI-13557: the escalate line surfaces the conditionKey explicitly (before the
+  // message) so the agent copies it verbatim into coord:escalate's conditionKey arg.
+  assert.match(out, /\[warning\] token-paused — opus bucket: paused on RPM saturation → ESCALATE owner \[conditionKey: overwatch:token-paused\]: opus bucket paused/);
+  // A nudge/observe line never carries a conditionKey annotation (escalate-only).
+  assert.doesNotMatch(out, /NUDGE mug \[conditionKey/);
+  assert.doesNotMatch(out, /OBSERVE \[conditionKey/);
   assert.match(out, /\[info\] observation-dark — observation lane: lane flat 40m while 4 bees run → OBSERVE: observation lane flat/);
 
   // Health panels — one line each, every field surfaced.

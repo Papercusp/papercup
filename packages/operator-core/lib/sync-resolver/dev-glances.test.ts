@@ -34,24 +34,36 @@ describe('dev.* glance resolvers', () => {
       vi.resetModules();
     });
 
-    it('dev.serviceHealth wraps probeAll() as [{ services }]', async () => {
+    // WI-5476/precompute-derived-sync-reads-2026-07-19 P-002 (WI-5460): these two
+    // resolvers no longer call probeAll()/devDeployState() on the read path — they
+    // read the last precomputed snapshot via derived-reads/registry's
+    // readDerivedSnapshotRows (a `system:precompute-derived-reads` routine fills it
+    // off-read-path; see registry.ts's D-003 "a read never computes"). Mocking the
+    // old direct-call modules no longer intercepts anything, so the resolver ran the
+    // REAL probe/git spawn against this dev box and the assertions failed on live
+    // data (WI-5488). Mock at the boundary the resolver actually calls now.
+    it('dev.serviceHealth wraps the derived-read dev.serviceHealth snapshot (precomputed, WI-5476)', async () => {
       const services = [{ name: 'operator', up: true, status: 200, latencyMs: 4 }];
-      vi.doMock('../service-health', () => ({ probeAll: vi.fn(async () => services) }));
+      const readDerivedSnapshotRows = vi.fn(async () => [{ services }]);
+      vi.doMock('../derived-reads/registry', () => ({ readDerivedSnapshotRows, registerDerivedRead: vi.fn() }));
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.serviceHealth', {})) as Array<{ services: unknown[] }>;
       expect(rows).toHaveLength(1);
       expect(rows[0].services).toEqual(services);
-      vi.doUnmock('../service-health');
+      expect(readDerivedSnapshotRows).toHaveBeenCalledWith('dev.serviceHealth');
+      vi.doUnmock('../derived-reads/registry');
     });
 
-    it('dev.deployState wraps devDeployState() as a 1-element snapshot', async () => {
+    it('dev.deployState wraps the derived-read dev.deployState snapshot as a 1-element array (precomputed, WI-5476)', async () => {
       const snap = { stagingHead: { sha: 'abc' }, deployedBehindStaging: 7, errors: [] };
-      vi.doMock('../dev-deploy-state', () => ({ devDeployState: vi.fn(async () => snap) }));
+      const readDerivedSnapshotRows = vi.fn(async () => [snap]);
+      vi.doMock('../derived-reads/registry', () => ({ readDerivedSnapshotRows, registerDerivedRead: vi.fn() }));
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.deployState', {})) as unknown[];
       expect(rows).toHaveLength(1);
       expect(rows[0]).toBe(snap);
-      vi.doUnmock('../dev-deploy-state');
+      expect(readDerivedSnapshotRows).toHaveBeenCalledWith('dev.deployState');
+      vi.doUnmock('../derived-reads/registry');
     });
 
     it('dev.gitPipeline wraps gitPipelineSnapshot() as a 1-element snapshot', async () => {

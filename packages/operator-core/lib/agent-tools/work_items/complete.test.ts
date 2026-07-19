@@ -796,6 +796,68 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped, trust me' } });
       expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
     });
+
+    // EI-13505: reporter's exact reproduction — testsRun + testResult + verifiedHow AND a
+    // non-empty `deferred` array populated SIMULTANEOUSLY (both a stated verification AND a
+    // conscious deferral in the same completion) still misfired the warning under a stale
+    // build; lock the combined shape as a regression test on top of the individual-field cases
+    // above.
+    it('does NOT warn when testsRun + testResult + verifiedHow AND a non-empty `deferred` are all populated together', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'shipped the fix',
+          testsRun: 'npx vitest run foo.test.ts',
+          testResult: '9/9 green',
+          verifiedHow: 'unit',
+          deferred: ['perf pass later'],
+        },
+      });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+  });
+
+  // ── EI-13687: a bare-string `completion` warns LOUDLY (names the dropped fields + the
+  // correct object shape) instead of the generic "fill `tests`" nudge that reads like a nag
+  // about one missing field when actually every structured field was silently discarded.
+  describe('verificationWarning — bare-string completion coercion (EI-13687)', () => {
+    beforeEach(() => {
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    });
+
+    it('names the dropped fields + the correct object shape when `completion` was passed as a bare string', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: 'shipped it, all green' });
+      expect(r.ok).toBe(true); // still recorded, never hard-rejected (EI-24)
+      expect(r.completion.summary).toBe('shipped it, all green');
+      expect(r.verificationWarning).toMatch(/bare STRING/);
+      expect(r.verificationWarning).toMatch(/silently coerced/);
+      expect(r.verificationWarning).toContain('testsRun');
+      expect(r.verificationWarning).toContain('verifiedHow');
+      expect(r.verificationWarning).toContain('addedTests');
+      expect(r.verificationWarning).toMatch(/work_items:complete\(\{ id, state, completion: \{/);
+    });
+
+    it('the internal __shapeCoercedFrom marker never leaks onto the returned/broadcast completion record', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: 'shipped it' });
+      expect(r.completion).not.toHaveProperty('__shapeCoercedFrom');
+    });
+
+    it('does NOT use the bare-string wording once structured evidence is present (e.g. rescued via a flat sibling, EI-13016)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: 'shipped it', tests: '18 vitest green' });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+
+    it('an OBJECT completion (never coerced from a string) keeps the original generic wording', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped it' } });
+      expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
+      expect(r.verificationWarning).not.toMatch(/bare STRING/);
+    });
   });
 
   // ── aliased/requestedState/appliedState on every result (EI-7712) ────────────────────────
@@ -868,7 +930,20 @@ describe('work_items:complete (keyed-array)', () => {
 describe('work_items:complete input coercion (EI-7031)', () => {
   describe('coerceCompletionShape (unit)', () => {
     it('a bare string completion → { summary } (the 18× "expected object, received string")', () => {
-      expect(coerceCompletionShape('shipped the fix')).toEqual({ summary: 'shipped the fix' });
+      expect(coerceCompletionShape('shipped the fix')).toEqual({
+        summary: 'shipped the fix',
+        __shapeCoercedFrom: 'bare-string',
+      });
+    });
+
+    // EI-13687: the marker that lets complete.ts warn LOUDLY (naming every dropped field +
+    // the correct object shape) instead of the generic "fill `tests`" nudge — see
+    // complete.test.ts's "bare-string coercion warns loudly" describe block below.
+    it('marks the coercion so downstream can tell "genuinely a bare string" apart from "a well-formed object"', () => {
+      const fromString = coerceCompletionShape('shipped it') as { __shapeCoercedFrom?: unknown };
+      expect(fromString.__shapeCoercedFrom).toBe('bare-string');
+      const fromObject = coerceCompletionShape({ summary: 'shipped it' }) as { __shapeCoercedFrom?: unknown };
+      expect(fromObject.__shapeCoercedFrom).toBeUndefined();
     });
 
     it('an empty/whitespace-only string is left for validation to reject (not silently accepted)', () => {
@@ -953,12 +1028,18 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     it('genuine prose that merely starts/ends with braces but is not valid JSON still falls back to the bare-string summary path', () => {
       const prose = '{fixed the thing, verified it works}';
-      expect(coerceCompletionShape(prose)).toEqual({ summary: prose });
+      expect(coerceCompletionShape(prose)).toEqual({ summary: prose, __shapeCoercedFrom: 'bare-string' });
     });
 
     it('a JSON ARRAY string (not an object) is not mistaken for the object shape — falls back to bare-string summary', () => {
       const jsonArrayString = JSON.stringify(['a', 'b']);
-      expect(coerceCompletionShape(jsonArrayString)).toEqual({ summary: jsonArrayString });
+      expect(coerceCompletionShape(jsonArrayString)).toEqual({ summary: jsonArrayString, __shapeCoercedFrom: 'bare-string' });
+    });
+
+    it('a JSON-OBJECT-shaped string is recursed into the object path — NOT marked as a bare-string coercion (fields survive, EI-7311)', () => {
+      const jsonString = JSON.stringify({ summary: 's', tests: '5 green' });
+      const out = coerceCompletionShape(jsonString) as { __shapeCoercedFrom?: unknown };
+      expect(out.__shapeCoercedFrom).toBeUndefined();
     });
   });
 
@@ -1055,7 +1136,10 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         ).toEqual({
           id: 'WI-5069',
           state: 'done',
-          completion: { summary: 'Completion audit prose', tests: '18 green' },
+          // __shapeCoercedFrom rides along (EI-13687) — complete.ts strips it before use/return;
+          // it still lets the downstream warning distinguish "was a bare string" even when a flat
+          // sibling rescued some evidence.
+          completion: { summary: 'Completion audit prose', tests: '18 green', __shapeCoercedFrom: 'bare-string' },
         });
       });
 

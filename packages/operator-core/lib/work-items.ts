@@ -1505,6 +1505,33 @@ export async function setWorkItemState(
         `Otherwise coordinate with the holder (coord:send).`,
     );
   }
+  // EI-13715: blockedness has TWO sources of truth for a plan-linked work-item —
+  // this item's own `state` column, and its linked plan-item's `effectiveStatus`
+  // (payload.plan_item back-pointer; see scheduler/plan-item-lane-guard.ts, the
+  // SAME check work_items:claim_next / scheduler:get_next already enforce at
+  // claim time). Unblocking (`blocked` -> anything else) without checking the
+  // plan layer first is exactly how a plan-supervised gate gets skipped: a real
+  // work-item was unblocked off `externalBlockers: null` while its plan item
+  // was still `blocked` on five unresolved drill legs, and the cup it spawned
+  // flipped a live hive ahead of the gate whose entire purpose was to precede
+  // that flip (reverted within 5 minutes, but only because the completion made
+  // the contradiction visible after the fact). Refuse unless forced; fails OPEN
+  // (planItemLaneBlockReason itself fails open on any lookup error, and a
+  // non-'blocked' prior state or a non-feature family skips this read entirely
+  // — the common case pays nothing extra).
+  if (!opts.force && wi.state === 'blocked' && state !== 'blocked') {
+    const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
+    const block = await planItemLaneBlockReason(wi).catch(() => null);
+    if (block && block.effectiveStatus !== 'done' && block.effectiveStatus !== 'dropped') {
+      throw new Error(
+        `work_item '${id}' is blocked, and its linked plan-item ${block.planSlug}#${block.itemId} is STILL ` +
+          `effectively '${block.effectiveStatus}' (${block.reason}) — unblocking it into '${state}' now would race ` +
+          `ahead of that plan gate. Verify the plan item's blockers are actually resolved first ` +
+          `(plans:get-item { slug: '${block.planSlug}', item: '${block.itemId}' }); if they are (or the plan is ` +
+          `wrong), override with work_items:set_state { id: '${id}', state: '${state}', force: true }.`,
+      );
+    }
+  }
   let result: WorkItem | null;
   if (wi.family === 'issue') {
     if (wi.origin === 'remote') {

@@ -268,10 +268,16 @@ export const LOOP_WAKE_FULL_TEMPLATE_EVERY = 10;
  *  loop (measured pre-diet: ~200k tokens/session of repeated boilerplate), so raise a
  *  budget only for a deliberate trade-off, never to green a red test.
  *  Measured 2026-07-07: shortForm 549 (stale-header case; fresh 341), fullForm 125,
- *  wallsHeader 174, wallsPerRow 39. */
+ *  wallsHeader 174, wallsPerRow 39.
+ *  Raised 2026-07-19 (EI-13592, deliberate trade-off): renderLoopCheckpointBlock now
+ *  stamps an absolute compact write-time (~16 bytes, e.g. "[07-17T04:52:00Z]") on
+ *  every checkpoint header so a reader can detect a fire→delivery delivery-gap the
+ *  relative "X ago" age (computed at fire time, silently wrong once delivery is
+ *  delayed) cannot reveal on its own — see the function's doc for the mechanism.
+ *  Re-measured: shortForm 672 (stale-header case), fullForm 199. */
 export const LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS = {
-  shortForm: 640,
-  fullForm: 160,
+  shortForm: 700,
+  fullForm: 210,
   wallsHeader: 220,
   wallsPerRow: 56,
 } as const;
@@ -290,10 +296,34 @@ function humanAge(ms: number): string {
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
+/** Compact absolute stamp (no year/millis — a loop's checkpoint is never meaningfully
+ *  ambiguous across a year boundary, and sub-second precision adds nothing here) so a
+ *  reader can compute the TRUE elapsed time against their OWN current wall-clock,
+ *  independent of how long this rendered text sat in the wake queue before delivery
+ *  (EI-13592 below). ~16 bytes: "07-17T04:52:00Z". */
+function isoStamp(ms: number): string {
+  return `${new Date(ms).toISOString().slice(5, 19)}Z`;
+}
+
 /** Render the fire-time checkpoint block with an explicit WRITE-AGE stamp. A fresh
  *  note is the single authority for the turn; a stale one is demoted to a lead the
  *  agent must reconcile — never re-execute — because turns it cannot see may have
- *  happened since (P-002; the exact post-compaction trap this session hit). */
+ *  happened since (P-002; the exact post-compaction trap this session hit).
+ *
+ *  EI-13592: the age/staleness verdict here is computed ONCE, at FIRE (staging) time —
+ *  the moment this text is baked into the wake payload. Delivery can lag fire by an
+ *  arbitrary amount (the target session was mid-turn and only reads the queued wake
+ *  once it settles), and any loop:checkpoint REWRITE landing in that fire→delivery
+ *  gap is invisible to this render — a note that was genuinely fresh at fire time can
+ *  be stale well before the agent actually reads it, with nothing here to say so. A
+ *  fully lazy re-render at delivery time would close this completely, but that
+ *  requires the wake-delivery pipeline itself to defer rendering (out of scope for a
+ *  pure render function and too broad a change to land opportunistically here). The
+ *  tractable partial fix: stamp the ABSOLUTE write time (not just a relative "X ago"
+ *  computed at fire time, which silently understates the true gap the longer delivery
+ *  is delayed) so a reader who suspects a large fire→delivery gap can compare it
+ *  against their own current wall-clock instead of trusting a relative age that may be
+ *  stale itself. */
 export function renderLoopCheckpointBlock(
   checkpoint: string | null | undefined,
   opts: { updatedAtMs?: number | null; nowMs?: number; intervalSec?: number | null } = {},
@@ -307,11 +337,13 @@ export function renderLoopCheckpointBlock(
   const now = opts.nowMs ?? Date.now();
   const ageMs = opts.updatedAtMs != null && Number.isFinite(opts.updatedAtMs) ? Math.max(0, now - opts.updatedAtMs) : null;
   const stale = ageMs != null && ageMs > loopCheckpointStaleMs(opts.intervalSec);
+  const stamp = ageMs != null ? ` [${isoStamp(opts.updatedAtMs!)}]` : '';
   const header = stale
-    ? `⚠ Your loop:checkpoint is STALE (written ${humanAge(ageMs!)} ago — turns you cannot see may have happened since). ` +
+    ? `⚠ Your loop:checkpoint is STALE (written${stamp} ${humanAge(ageMs!)} ago as of fire time — if delivery was ` +
+      'delayed past fire time, the true gap is larger than this — turns you cannot see may have happened since). ' +
       'Treat it as a LEAD, not the truth: RECONCILE against live state first, and do NOT re-execute its "next action" ' +
       'verbatim (it may already be done). Refresh it with loop:checkpoint { did, left, insight, next } before this turn ends:'
-    : `Current loop:checkpoint (you wrote it ${ageMs != null ? humanAge(ageMs) + ' ago' : 'earlier'}; read fresh at fire time) — this is the authority for what to do this wake:`;
+    : `Current loop:checkpoint (you wrote it${stamp} ${ageMs != null ? humanAge(ageMs) + ' ago as of fire time' : 'earlier'}; if this wake's delivery was delayed, that gap may be larger now) — this is the authority for what to do this wake:`;
   return `${header}\n${clipped}`;
 }
 

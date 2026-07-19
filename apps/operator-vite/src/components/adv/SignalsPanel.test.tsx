@@ -171,9 +171,9 @@ describe("SignalsPanel", () => {
   it("groups the lane taxonomy into Trigger lanes / Fed lanes, each lane carrying a categorical color", () => {
     syncResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<SignalsPanel />);
-    // The taxonomy is reference material behind its own disclosure — closed
-    // by default (LearningDisclosure defaultOpen=false), so open it first.
-    fireEvent.click(screen.getByRole("button", { name: /All input lanes/ }));
+    // The taxonomy is reference material behind the header "?" popover (owner
+    // ask 2026-07-19) — closed by default, so open it first.
+    fireEvent.click(screen.getByRole("button", { name: /Explain all input lanes/ }));
     expect(screen.getByText("Trigger lanes — what fires a cycle")).toBeTruthy();
     expect(screen.getByText("Fed lanes — what the digest reads")).toBeTruthy();
     // "captures" appears both as a trigger card label and a taxonomy lane. The

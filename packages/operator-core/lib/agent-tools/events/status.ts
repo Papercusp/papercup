@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
+import type { KeyFireRow } from '../../events/await/types';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import { payloadMatchesFilter } from '../../events/await/pattern';
 import type { AwaitRow } from '../../events/await/types';
@@ -25,6 +26,26 @@ function announcementState(row: AwaitRow): 'declared' | 'fired' | 'cancelled' | 
   if (row.firedReason === 'expired') return 'expired';
   if (row.firedAt) return 'fired';
   return 'declared';
+}
+
+/**
+ * EI-13705: the top-level `current_state` an agent actually reads. Previously this
+ * came ONLY from the announce-policy declaration history, so a key that was fired via
+ * a bare `events:emit` (no `announce:true`) read as `undeclared` FOREVER — identical to
+ * a key that has never fired at all — once its waiter/delivery rows aged out of view.
+ * That false-negative cost a real 7-day stall (see the bug writeup). The unconditional
+ * fire latch (harness_shared.event_key_fires, migration 632) now backstops this: when
+ * there is no active (non-superseded) announcement but the key HAS genuinely fired,
+ * report `fired_undeclared` instead of `undeclared` so a reader can never again mistake
+ * "nobody bothered to check the discovery box" for "this never happened".
+ */
+function currentState(
+  currentAnnouncement: AwaitRow | null,
+  fireLatch: KeyFireRow | null,
+): 'declared' | 'fired' | 'cancelled' | 'expired' | 'superseded' | 'fired_undeclared' | 'undeclared' {
+  if (currentAnnouncement) return announcementState(currentAnnouncement);
+  if (fireLatch) return 'fired_undeclared';
+  return 'undeclared';
 }
 
 function payloadSha(payload: unknown): string | null {
@@ -102,6 +123,7 @@ export default defineTool({
       })),
     );
     const currentAnnouncement = eventHistory?.announcements.find((a) => !a.supersededAt) ?? null;
+    const fireLatch = eventHistory?.fireLatch ?? null;
     const authoritativeGeneration = currentAnnouncement?.causalGeneration ?? null;
     const resyncRequired = args.after_generation != null && args.after_generation !== authoritativeGeneration;
     const resyncReason = args.after_generation == null
@@ -117,7 +139,22 @@ export default defineTool({
       ? {
           event: args.event,
           current_generation: authoritativeGeneration,
-          current_state: currentAnnouncement ? announcementState(currentAnnouncement) : 'undeclared',
+          current_state: currentState(currentAnnouncement, fireLatch),
+          ...(fireLatch
+            ? {
+                fire_latch: {
+                  first_fired_at: fireLatch.firstFiredAt,
+                  last_fired_at: fireLatch.lastFiredAt,
+                  last_fired_by: fireLatch.lastFiredBy,
+                  fire_count: fireLatch.fireCount,
+                },
+              }
+            : {}),
+          ...(!currentAnnouncement && fireLatch
+            ? {
+                advice: `This key has genuinely fired ${fireLatch.fireCount}× (most recently ${fireLatch.lastFiredAt}${fireLatch.lastFiredBy ? ` by ${fireLatch.lastFiredBy}` : ''}) but was never declared via events:emit { announce:true } — do NOT read current_state:'fired_undeclared' as "never happened". If you were about to conclude this gate never opened, it did; check waiters[]/wake_outcomes[] below or last_fired_at for when.`,
+              }
+            : {}),
           declarations: eventHistory.announcements.map((a) => ({
             generation: a.causalGeneration ?? null,
             state: announcementState(a),

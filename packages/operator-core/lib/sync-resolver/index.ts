@@ -1384,23 +1384,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // harnessStatus.snapshot — dashboard-shaped status snapshot for /adv panels.
-  // This keeps the existing route's aggregate semantics (cost rollup, counts,
-  // checkpoints, smoke failure, project path) while delivering it through sync.
-  'harnessStatus.snapshot': {
-    argsSchema: z.object({
-      harnessSlug: z.string(),
-      workspaceId: z.string().optional(),
-      phase: z.string().default('staging'),
-    }),
-    resolve: async (args) => {
-      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
-      const { getHarnessStatusFull } = await import('../harness-core');
-      const { phasePhaseLabel } = await import('../harness-phases');
-      const payload = await getHarnessStatusFull(harnessSlug, phasePhaseLabel(phase));
-      return payload ? [payload] : [];
-    },
-  },
+  // harnessStatus.snapshot RETIRED (whole-app-sync-payload-audit-2026-07-19 P-001):
+  // a dead sync query — no useSyncQuery consumer anywhere in apps/ (HarnessTopBar's
+  // doc comment was the only remaining reference). Its resolver called
+  // getHarnessStatusFull, whose payload is a ~16MB features array; delivering that
+  // through sync on every harness_status / work_items write was pure waste. The
+  // underlying getHarnessStatusFull is retained for the HTTP status + device routes
+  // (see P-008). Removed from TABLE_TO_QUERY_NAMES's three bridge entries in the same
+  // change so the every-bridged-name-has-a-resolver invariant stays green.
 
   // harnessTests.byHarness — tests filtered by harness+phase, by name.
   //   zql.harnessTests.where(harnessSlug).where(phase).orderBy('name', 'asc')

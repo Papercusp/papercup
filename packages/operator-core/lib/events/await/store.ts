@@ -27,6 +27,7 @@ import type {
   DeliveryStatus,
   DeliveryRow,
   DeliveryWork,
+  KeyFireRow,
   TimeoutBehavior,
   WakeChannel,
   WakeHandle,
@@ -1137,13 +1138,71 @@ export async function listActiveAnnouncements(input: {
   return rows.map(mapAwait);
 }
 
+function mapKeyFire(row: any): KeyFireRow {
+  return {
+    workspaceId: row.workspace_id,
+    eventKey: row.event_key,
+    firstFiredAt: row.first_fired_at,
+    lastFiredAt: row.last_fired_at,
+    lastFiredBy: row.last_fired_by ?? null,
+    lastPayload: row.last_payload ?? null,
+    fireCount: Number(row.fire_count) || 0,
+  };
+}
+
+// ── unconditional per-key fire latch (EI-13705) ─────────────────────────────
+// harness_shared.event_key_fires (migration 632): ONE row per (workspace, key),
+// upserted on every real emitAwaitedEvent call — independent of announce and
+// independent of whether any waiter/delivery row exists to remember it by. The
+// announce/waiter machinery above is fire-once (rows get consumed/superseded/
+// swept), so days later "did this key ever fire" can no longer be answered from
+// it; this latch is the durable, always-cheap answer.
+
+/** Record a real fire on `eventKey` — called unconditionally from
+ *  `emitAwaitedEvent`'s non-announce path, regardless of waiters/`fired.length`.
+ *  Best-effort at the call site (fail-soft): never blocks or breaks an emit. */
+export async function recordKeyFire(input: {
+  eventKey: string;
+  firedBy?: string | null;
+  payload?: unknown;
+}): Promise<void> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  await sql`
+    INSERT INTO harness_shared.event_key_fires
+      (workspace_id, event_key, first_fired_at, last_fired_at, last_fired_by, last_payload, fire_count)
+    VALUES
+      (${ws}, ${eventKey}, now(), now(), ${input.firedBy ?? null},
+       ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb, 1)
+    ON CONFLICT (workspace_id, event_key) DO UPDATE
+       SET last_fired_at = now(),
+           last_fired_by = ${input.firedBy ?? null},
+           last_payload = ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb,
+           fire_count = harness_shared.event_key_fires.fire_count + 1
+  `;
+}
+
+/** The latch row for one key, or null if it has never genuinely fired. */
+export async function getKeyFireLatch(eventKey: string): Promise<KeyFireRow | null> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT * FROM harness_shared.event_key_fires
+     WHERE workspace_id = ${ws} AND event_key = ${eventKey}
+     LIMIT 1
+  `;
+  return rows.length > 0 ? mapKeyFire(rows[0]) : null;
+}
+
 /** Exact-key event history for events:status.  One call returns declarations,
- * waiter registrations, and wake outcomes so an agent does not have to stitch
- * three partially ordered surfaces together by hand. */
+ * waiter registrations, wake outcomes, and the unconditional fire latch so an
+ * agent does not have to stitch four partially ordered surfaces together by
+ * hand. */
 export async function inspectEventKey(eventKey: string): Promise<{
   announcements: AwaitRow[];
   waiters: AwaitRow[];
   deliveries: DeliveryRow[];
+  fireLatch: KeyFireRow | null;
 }> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -1166,10 +1225,16 @@ export async function inspectEventKey(eventKey: string): Promise<{
        ORDER BY created_at DESC
        LIMIT 200
     `;
+    const fireLatchRows = await tx`
+      SELECT * FROM harness_shared.event_key_fires
+       WHERE workspace_id = ${ws} AND event_key = ${eventKey}
+       LIMIT 1
+    `;
     return {
       announcements: announcementRows.map(mapAwait),
       waiters: waiterRows.map(mapAwait),
       deliveries: deliveryRows.map(mapDelivery),
+      fireLatch: fireLatchRows.length > 0 ? mapKeyFire(fireLatchRows[0]) : null,
     };
-  }) as Promise<{ announcements: AwaitRow[]; waiters: AwaitRow[]; deliveries: DeliveryRow[] }>;
+  }) as Promise<{ announcements: AwaitRow[]; waiters: AwaitRow[]; deliveries: DeliveryRow[]; fireLatch: KeyFireRow | null }>;
 }

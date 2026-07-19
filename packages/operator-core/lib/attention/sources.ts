@@ -14,6 +14,20 @@ import type { OperatorReportTurnRow } from './operator-report-source';
 import type { AttentionItem } from './types';
 
 /**
+ * Coerce a source row's timestamp (an ISO string, an epoch-ms number, a Date,
+ * or null/undefined) to an ISO-8601 string, or null when it is absent/invalid.
+ * The single tolerant converter the reader uses to stamp `AttentionItem.occurredAt`
+ * from each source's native timestamp column (inbox-pane-active-scope-dates-filters-2026-07-19).
+ * PURE — never throws.
+ */
+export function toIsoOrNull(v: string | number | Date | null | undefined): string | null {
+  if (v == null) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  const t = d.getTime();
+  return Number.isFinite(t) ? d.toISOString() : null;
+}
+
+/**
  * Map the non-terminal items of already-parsed plans to AttentionItems —
  * the plan-item source of plans:attention. Skips legacy plans and any
  * item that is `done`/`dropped` by stored OR effective status (a

@@ -144,31 +144,35 @@ export function AnalyzePanel({
       }
       .pc-analyze__slots li.is-failed { color: var(--fg-mute, #7f9bb4); border-style: dashed; }
       .pc-analyze__slots li em { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
-      .pc-analyze__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+      .pc-analyze__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+      /* Cards sit on an ELEVATED surface (owner ask 2026-07-19: card text was
+         unreadable) — content rides real contrast, not muted-on-transparent. */
       .pc-analyze__list li {
-        padding: 5px 9px; border-radius: 6px; font-size: 11.5px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
-        color: var(--fg-dim, #b9d4e8);
+        padding: 8px 11px; border-radius: 8px; font-size: 12px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        background: var(--bg-2, rgba(255, 255, 255, 0.035));
+        color: var(--fg, #e7eef5);
       }
       .pc-analyze__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
-      .pc-analyze__row strong { font-weight: 650; }
+      .pc-analyze__row strong { font-weight: 660; color: var(--fg, #e7eef5); }
       .pc-analyze__chip {
-        display: inline-flex; gap: 4px; padding: 1px 7px; border-radius: 999px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); font-size: 10px;
-        color: var(--fg-mute, #7f9bb4); white-space: nowrap;
+        display: inline-flex; gap: 4px; padding: 1px 8px; border-radius: 999px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.24)); font-size: 10px; font-weight: 600;
+        color: var(--fg-dim, #b9d4e8); white-space: nowrap;
       }
-      .pc-analyze__chip.is-keep { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
-      .pc-analyze__chip.is-moonshot { color: var(--accent, #7dd3fc); border-color: color-mix(in srgb, var(--accent, #7dd3fc) 45%, transparent); }
-      .pc-analyze__chip.is-reject { opacity: 0.75; }
-      .pc-analyze__scores { font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .pc-analyze__body { margin: 3px 0 0; font-size: 10.8px; color: var(--fg-mute, #7f9bb4); }
-      .pc-analyze__mech { margin: 2px 0 0; font-size: 10.8px; color: var(--fg-mute, #7f9bb4); font-style: italic; }
+      .pc-analyze__chip.is-keep { color: var(--good, #34d399); border-color: color-mix(in srgb, var(--good, #34d399) 55%, transparent); background: color-mix(in srgb, var(--good, #34d399) 12%, transparent); }
+      .pc-analyze__chip.is-moonshot { color: var(--accent, #7dd3fc); border-color: color-mix(in srgb, var(--accent, #7dd3fc) 55%, transparent); background: color-mix(in srgb, var(--accent, #7dd3fc) 12%, transparent); }
+      .pc-analyze__chip.is-reject { color: var(--fg-mute, #7f9bb4); opacity: 0.9; }
+      .pc-analyze__scores { font-size: 10.5px; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .pc-analyze__body { margin: 5px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--fg-dim, #b9d4e8); }
+      .pc-analyze__mech { margin: 4px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--fg-dim, #b9d4e8); font-style: italic; }
       .pc-analyze__exp {
-        margin: 4px 0 0; padding: 4px 8px; border-radius: 5px; font-size: 10.5px;
-        border: 1px dashed var(--border, rgba(125, 211, 252, 0.18));
-        color: var(--fg-mute, #7f9bb4);
+        margin: 6px 0 0; padding: 7px 10px; border-radius: 6px; font-size: 11px; line-height: 1.55;
+        border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 22%, var(--border));
+        background: color-mix(in srgb, var(--accent, #7dd3fc) 6%, transparent);
+        color: var(--fg-dim, #b9d4e8);
       }
-      .pc-analyze__exp b { font-weight: 650; }
+      .pc-analyze__exp b { font-weight: 660; color: var(--fg, #e7eef5); }
       .pc-analyze__sources { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
       .pc-analyze__routedref { color: var(--good); }
       .pc-analyze__complete {

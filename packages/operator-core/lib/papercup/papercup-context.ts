@@ -160,7 +160,11 @@ function renderAnomalyLine(a: Anomaly): string {
   const act = a.suggestedAction;
   const verb = ACTION_VERB[act.type];
   const target = act.target ? ` ${act.target}` : '';
-  return `- [${a.severity}] ${a.kind} — ${a.subject}: ${a.detail} → ${verb}${target}`;
+  // EI-13557: surface the stable conditionKey for escalate actions so the reader
+  // passes it verbatim to coord:escalate instead of inventing/omitting one — the
+  // root cause of the self-inflating "N aging owner-attention escalations" advisory.
+  const conditionKey = act.type === 'escalate' && act.conditionKey ? ` [conditionKey: ${act.conditionKey}]` : '';
+  return `- [${a.severity}] ${a.kind} — ${a.subject}: ${a.detail} → ${verb}${target}${conditionKey}`;
 }
 
 function renderDelegationLine(d: SentinelDelegation): string {
@@ -194,7 +198,10 @@ export function renderSentinelContext(input: SentinelContextInput): string {
       'it by SURFACING what matters to the user, FILING an observation/escalation, or NUDGING a ' +
       'running agent — never by re-placing work (that is the Mug). Drill into anything this ' +
       'digest omits with a tool (curation:feed, curation:state-of-pot, fleet:assignments) only ' +
-      'when you need it.',
+      'when you need it. When an anomaly line carries `[conditionKey: …]`, pass that exact string ' +
+      "as coord:escalate's `conditionKey` argument — it coalesces repeated firings of the SAME " +
+      'condition onto one row instead of leaking a fresh escalation every time its live count changes ' +
+      '(EI-13557); keep any count/duration in `body`, never in `summary`.',
   );
 
   if (input.headline && input.headline.trim()) {

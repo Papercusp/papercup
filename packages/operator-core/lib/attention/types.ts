@@ -363,6 +363,16 @@ export interface AttentionItem {
    * decoupled wire-type need not carry them. */
   authorizer?: Authorizer;
   whyGated?: WhyGated;
+  /**
+   * ISO timestamp of when the underlying event occurred — a coord message /
+   * escalation was sent, a work-item was last updated, a gate opened, a report
+   * turn happened, etc. Drives the Inbox card's date display + recency
+   * ordering/bounding (inbox-pane-active-scope-dates-filters-2026-07-19).
+   * Optional/nullable: a source with no natural per-item timestamp (a plan-item
+   * with no per-item mtime, the scout-grade rollup, a dark-flag entry) leaves it
+   * undefined; the UI reads `occurredAt ?? null`. Every adapter that HAS a
+   * timestamp sets it. */
+  occurredAt?: string | null;
 }
 
 /** The untriaged-default triage fields every adapter spreads into its item

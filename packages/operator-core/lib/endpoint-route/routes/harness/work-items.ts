@@ -103,6 +103,26 @@ async function fetchDimensionMaps(
  * joins. Exported so the `workItems.byHarness` sync-resolver entry serves the
  * IDENTICAL rows the route does (one assembly, two transports).
  */
+/**
+ * List-view payload diet (whole-app-sync-payload-audit-2026-07-19 P-003): the
+ * unified list (WorkItemsPanel + its shared DetailPanel row, and the HTTP list
+ * route) renders NONE of these heavy per-row blobs — verified across every adv /
+ * device / mobile consumer — yet they dominated the 6MB `workItems.byHarness`
+ * payload (payload ~920KB + terminalCompletionRef ~941KB + terminalCompletionEvidence
+ * ~492KB at limit 2000). Null them out of the LIST rows so both transports shrink
+ * identically. `summary` is intentionally KEPT here because DetailPanel renders it
+ * off this same shared query; slimming summary belongs to the list/detail split.
+ */
+function slimListRow(row: EnrichedWorkItem): EnrichedWorkItem {
+  return {
+    ...row,
+    payload: null,
+    terminalCompletionRef: null,
+    terminalCompletionEvidence: null,
+    externalBlockers: undefined,
+  };
+}
+
 export async function listEnrichedWorkItems(opts: {
   harness: string;
   kind?: WorkItemKind;
@@ -113,7 +133,7 @@ export async function listEnrichedWorkItems(opts: {
   const workItems = await listWorkItems({ harness: opts.harness, kind: opts.kind, state: opts.state, limit });
   const featureIds = workItems.filter((w) => w.family === 'feature').map((w) => w.id);
   const { planMap, spineMap } = await fetchDimensionMaps(opts.harness, featureIds);
-  return mergeWorkItemDimensions(workItems, planMap, spineMap);
+  return mergeWorkItemDimensions(workItems, planMap, spineMap).map(slimListRow);
 }
 
 const getWorkItems = defineTool({

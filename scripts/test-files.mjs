@@ -124,6 +124,39 @@ export function evaluateMatch({ routes, matched, listStatus }) {
   return { ok, unmatched, requested: routes.length, matched: matched.length };
 }
 
+/**
+ * Combine every GROUP's outcome (one per owning cwd/config — a multi-workspace request produces
+ * >1) into a single honest final verdict, isolated from I/O so it is unit-testable (EI-13535).
+ *
+ * BUG THIS FIXES: the router used to `return` the moment ANY one group either mismatched
+ * (`evaluateMatch` refused it) or its `vitest run` failed — silently abandoning every group that
+ * hadn't been reached yet. A 3-file request spanning 2 workspaces (1 file in workspace A, 2 in
+ * workspace B) whose workspace-A group ran first and failed reported `executed=1` and returned
+ * WITHOUT EVER RUNNING (or even checking the match of) workspace B's 2 files — so an agent fixing
+ * the one reported failure and re-running could get a clean `status=passed` while the other 2
+ * files were NEVER EXECUTED AT ALL, exactly the false-green class this router exists to prevent
+ * (CLAUDE.md's "hard-fails a zero or partial match before executing" promise did not cover this
+ * cross-group case). The fix: `main` now runs EVERY group unconditionally (no early return inside
+ * the loop) and this function aggregates their results afterward, so `executed` always reflects
+ * every group that could run, a mismatch in one group never hides another group's files, and the
+ * final status is decided from the true combined outcome.
+ *
+ * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean }[]} groupResults
+ * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean }}
+ */
+export function aggregateGroupResults(groupResults) {
+  const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
+  const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
+  const executed = groupResults.reduce((sum, g) => sum + g.executed, 0);
+  const launchError = groupResults.some((g) => g.launchError);
+  const anyUnmatched = groupResults.some((g) => g.unmatchedCount > 0);
+  const anyFailed = groupResults.some((g) => g.failed);
+  // Only a clean, fully-matched, fully-launchable run is `ok` — a launch error or ANY group's
+  // partial/zero match still refuses the false-green, exactly as the single-group path always did.
+  const ok = !launchError && !anyUnmatched;
+  return { ok, requested, matched, executed, anyUnmatched, anyFailed, launchError };
+}
+
 function parseCli(argv) {
   const separator = argv.indexOf('--');
   const own = separator >= 0 ? argv.slice(0, separator) : argv;
@@ -154,7 +187,11 @@ export function main(argv = process.argv.slice(2)) {
 
   const groups = groupRoutes(routes);
   console.log(`TEST_FILE_ROUTE requested=${routes.length} groups=${groups.length}`);
-  let executedCount = 0;
+  // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
+  // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
+  // doc for the full incident). Each iteration always records its outcome and moves on; the final
+  // verdict is decided only after every group has had its chance to run.
+  const groupResults = [];
   for (const group of groups) {
     const cwdLabel = relative(REPO_ROOT, group.cwd) || '.';
     const requested = group.routes.map((route) => route.requested);
@@ -170,8 +207,16 @@ export function main(argv = process.argv.slice(2)) {
       env: process.env,
     });
     if (listed.error) {
-      console.error(`TEST_FILE_ROUTE_ERROR could not launch Vitest: ${listed.error.message}`);
-      return 2;
+      console.error(`TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) could not launch Vitest: ${listed.error.message}`);
+      groupResults.push({
+        requested: group.routes.length,
+        matched: 0,
+        executed: 0,
+        unmatchedCount: group.routes.length,
+        failed: false,
+        launchError: true,
+      });
+      continue;
     }
     const matched = listedFiles(`${listed.stdout ?? ''}\n${listed.stderr ?? ''}`, group.cwd);
     const verdict = evaluateMatch({ routes: group.routes, matched, listStatus: listed.status });
@@ -180,12 +225,30 @@ export function main(argv = process.argv.slice(2)) {
       if (listed.stderr) process.stderr.write(listed.stderr);
       for (const route of verdict.unmatched) console.error(`  unmatched ${route.requested}`);
       console.error(
-        `TEST_FILE_ROUTE_ERROR requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run`,
+        `TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run for this group`,
       );
-      return 1;
+      groupResults.push({
+        requested: verdict.requested,
+        matched: verdict.matched,
+        executed: 0,
+        unmatchedCount: verdict.unmatched.length,
+        failed: false,
+        launchError: false,
+      });
+      continue;
     }
     for (const file of matched) console.log(`  matched ${relative(group.cwd, file)}`);
-    if (dry) continue;
+    if (dry) {
+      groupResults.push({
+        requested: verdict.requested,
+        matched: verdict.matched,
+        executed: 0,
+        unmatchedCount: 0,
+        failed: false,
+        launchError: false,
+      });
+      continue;
+    }
 
     const exact = matched.map((file) => relative(group.cwd, file));
     const result = spawnSync(
@@ -194,18 +257,45 @@ export function main(argv = process.argv.slice(2)) {
       { cwd: group.cwd, env: process.env, stdio: 'inherit' },
     );
     if (result.error) {
-      console.error(`TEST_FILE_ROUTE_ERROR could not launch Vitest: ${result.error.message}`);
-      return 2;
+      console.error(`TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`);
+      groupResults.push({
+        requested: verdict.requested,
+        matched: verdict.matched,
+        executed: 0,
+        unmatchedCount: 0,
+        failed: false,
+        launchError: true,
+      });
+      continue;
     }
-    executedCount += exact.length;
-    if (result.status !== 0) {
-      console.error(`TEST_FILE_RESULT requested=${routes.length} executed=${executedCount} status=failed`);
-      return result.status ?? 1;
+    const groupFailed = result.status !== 0;
+    if (groupFailed) {
+      console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
     }
+    groupResults.push({
+      requested: verdict.requested,
+      matched: verdict.matched,
+      executed: exact.length,
+      unmatchedCount: 0,
+      failed: groupFailed,
+      launchError: false,
+    });
   }
 
-  console.log(`TEST_FILE_RESULT requested=${routes.length} executed=${dry ? 0 : executedCount} matched=${routes.length} status=${dry ? 'dry-run' : 'passed'}`);
-  return 0;
+  const summary = aggregateGroupResults(groupResults);
+  if (summary.launchError) return 2;
+  if (summary.anyUnmatched) {
+    console.error(
+      `TEST_FILE_ROUTE_ERROR requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
+    );
+    return 1;
+  }
+
+  const status = dry ? 'dry-run' : summary.anyFailed ? 'failed' : 'passed';
+  console.log(
+    `TEST_FILE_RESULT requested=${summary.requested} executed=${dry ? 0 : summary.executed} matched=${summary.matched} status=${status}`,
+  );
+  return dry ? 0 : summary.anyFailed ? 1 : 0;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

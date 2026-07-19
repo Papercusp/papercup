@@ -38,6 +38,9 @@ export interface BlockedWorkItemRow {
   harness_slug: string | null;
   item_kind: string | null;
   taken_by: string | null;
+  /** Last-updated timestamp of the row — drives the Inbox card date
+   *  (inbox-pane-active-scope-dates-filters-2026-07-19). */
+  updated_ts: string | null;
 }
 
 export const BLOCKED_WORK_ITEMS_LIMIT = 300;
@@ -61,9 +64,10 @@ export async function readBlockedWorkItems(opts?: {
       item_kind: string | null;
       taken_by: string | null;
       payload: unknown;
+      updated_ts: string | null;
     }[]
   >`
-    SELECT feature_id, title, summary, harness_slug, item_kind, taken_by, payload
+    SELECT feature_id, title, summary, harness_slug, item_kind, taken_by, payload, updated_ts
       FROM harness_shared.work_items
      WHERE (workspace_id = ${wid} OR workspace_id = 'default')
        AND (${hf}::text IS NULL OR harness_slug = ${hf})
@@ -84,6 +88,7 @@ export async function readBlockedWorkItems(opts?: {
       harness_slug: r.harness_slug,
       item_kind: r.item_kind,
       taken_by: r.taken_by,
+      updated_ts: r.updated_ts,
     };
   });
 }

@@ -31,6 +31,29 @@ export const ANTHROPIC_MAX_BREAKPOINTS = 4;
  *  median session takes 63 requests. */
 export const ANTHROPIC_EXTENDED_TTL = '1h';
 
+/**
+ * Stable/volatile boundary sentinel (gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-004).
+ *
+ * The psu launcher appends the assembled playbook via `--append-system-prompt-file`, and Claude
+ * Code MERGES it into its own big system text block with a single cache_control at the block's
+ * END. So the block is one cache unit: because it ends with per-session content (the launch
+ * context — plan slug/title/now), the ENTIRE ~66k-token block (Claude base + the stable playbook)
+ * is a per-session cache entry and is WRITTEN FRESH every launch, even though the playbook body is
+ * byte-identical across a cohort (same agent/profile/tier/hive — renderSuPlaybook is deterministic).
+ *
+ * role-launch-spec.ts emits this sentinel at the seam between the stable playbook and the
+ * per-session launch context. `splitSystemAtBoundary` then splits the block there and moves the
+ * cache_control to the STABLE side — so the ~66k playbook prefix becomes an org-shared cache entry
+ * while only the small launch-context tail writes per session.
+ *
+ * MEASURED 2026-07-19 (real 150k-char playbook, two sessions, differing launch context): a
+ * subsequent cohort session's write dropped 89,261 → 8,299 tokens and its cache READ rose
+ * 9,724 → 75,984. This is the opposite of the P-003 tools-span breakpoint, which measured a no-op.
+ *
+ * An HTML comment so a leak (proxy off / a path that doesn't split) is inert — models ignore it.
+ */
+export const PSU_CACHE_BOUNDARY = '<!--PSU_CACHE_BOUNDARY-->';
+
 export interface AnthropicCacheStats {
   /** The body object was mutated (caller must re-serialize). */
   changed: boolean;
@@ -45,6 +68,9 @@ export interface AnthropicCacheStats {
   /** We wanted the tools breakpoint but EVERY tool is defer_loading (tool-search sessions):
    *  a tool may not carry both `defer_loading` and `cache_control` — the API 400s. */
   toolsBreakpointSkippedAllDeferred: boolean;
+  /** P-004: the stable/volatile system-block split happened this request (set by the buffer
+   *  wrapper, not applyAnthropicCachePolicy — the split runs one layer up). */
+  boundarySplit?: boolean;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -182,19 +208,88 @@ export function applyAnthropicCachePolicy(
   return stats;
 }
 
+export interface SplitBoundaryResult {
+  /** The new system array when a split happened; null when nothing changed. */
+  system: unknown[] | null;
+  /** True when a block was split at the sentinel. */
+  split: boolean;
+}
+
+/**
+ * Split the FIRST system text block containing {@link PSU_CACHE_BOUNDARY} into a stable prefix
+ * and a volatile tail (P-004), moving the cache_control to the stable side so it becomes an
+ * org-shared cache entry. Pure; returns `{system:null}` (no-op) for anything it can't safely do.
+ *
+ * SAFETY — this restructures the system array in front of every psu request, so it fails toward
+ * no-op, NEVER toward a broken request:
+ *  - only a real array of blocks with a real sentinel-carrying text block is touched;
+ *  - the sentinel is DROPPED (the model never sees it) and the two halves concatenate to exactly
+ *    the original text minus the sentinel — no byte of prompt content is lost or reordered;
+ *  - the cache_control is MOVED from the original block onto the stable half (budget-neutral); if
+ *    the original had none, one is added only when the 4-marker budget has room, else no marker
+ *    (still correct, just unshared);
+ *  - an empty stable half (sentinel at block start) is refused — there is nothing to share.
+ */
+export function splitSystemAtBoundary(system: unknown, ttl: string = ANTHROPIC_EXTENDED_TTL): SplitBoundaryResult {
+  if (!Array.isArray(system)) return { system: null, split: false };
+  const idx = system.findIndex(
+    (b) => isRecord(b) && b.type === 'text' && typeof b.text === 'string' && b.text.includes(PSU_CACHE_BOUNDARY),
+  );
+  if (idx === -1) return { system: null, split: false };
+  const block = system[idx] as Record<string, unknown>;
+  const text = block.text as string;
+  const at = text.indexOf(PSU_CACHE_BOUNDARY);
+  const before = text.slice(0, at);
+  const after = text.slice(at + PSU_CACHE_BOUNDARY.length);
+  if (before.trim().length === 0) return { system: null, split: false }; // nothing stable to share
+
+  // Count existing cache_control markers to respect the 4-cap when the block had none of its own.
+  const existingMarkers = system.reduce((n, b) => (isRecord(b) && isRecord(b.cache_control) ? n + 1 : n), 0);
+  const movedCc = isRecord(block.cache_control) ? block.cache_control : null;
+
+  const stableBlock: Record<string, unknown> = { ...block, text: before };
+  if (movedCc) {
+    stableBlock.cache_control = movedCc; // budget-neutral move from the (now-removed) full block
+  } else if (existingMarkers < ANTHROPIC_MAX_BREAKPOINTS) {
+    stableBlock.cache_control = { type: 'ephemeral', ttl };
+  } else {
+    return { system: null, split: false }; // no budget to add one; splitting would gain nothing
+  }
+  const out = [...system];
+  if (after.length > 0) {
+    const tailBlock: Record<string, unknown> = { ...block, text: after };
+    delete tailBlock.cache_control; // the tail is small per-session content — not worth caching
+    out.splice(idx, 1, stableBlock, tailBlock);
+  } else {
+    out.splice(idx, 1, stableBlock);
+  }
+  return { system: out, split: true };
+}
+
 /** Buffer-level wrapper: parse → policy → re-serialize. Returns the ORIGINAL buffer untouched
  *  when the body is not JSON, is not an object, or the policy changed nothing (so a no-op
  *  request forwards byte-identically). Never throws. */
 export function rewriteAnthropicCacheBody(
   bodyBuf: Buffer,
-  opts: { ttl?: string; injectToolsBreakpoint?: boolean } = {},
+  opts: { ttl?: string; injectToolsBreakpoint?: boolean; splitBoundary?: boolean } = {},
 ): { body: Buffer; stats: AnthropicCacheStats | null } {
   if (!bodyBuf.length) return { body: bodyBuf, stats: null };
   try {
     const parsed = JSON.parse(bodyBuf.toString('utf8')) as unknown;
     if (!isRecord(parsed)) return { body: bodyBuf, stats: null };
+    // P-004 split runs BEFORE the ttl/breakpoint policy so the stable half it creates gets the
+    // ttl upgrade too. A no-op split leaves the body for the policy alone.
+    let splitDone = false;
+    if (opts.splitBoundary) {
+      const r = splitSystemAtBoundary(parsed.system, opts.ttl ?? ANTHROPIC_EXTENDED_TTL);
+      if (r.system) {
+        parsed.system = r.system;
+        splitDone = r.split;
+      }
+    }
     const stats = applyAnthropicCachePolicy(parsed, opts);
-    if (!stats.changed) return { body: bodyBuf, stats };
+    if (stats) stats.boundarySplit = splitDone;
+    if (!stats.changed && !splitDone) return { body: bodyBuf, stats };
     return { body: Buffer.from(JSON.stringify(parsed), 'utf8'), stats };
   } catch {
     return { body: bodyBuf, stats: null };

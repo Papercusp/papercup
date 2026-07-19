@@ -26,9 +26,25 @@
  * doesn't trip its detector — it never throws the whole detection.
  */
 import { emptyOverwatchBrief } from './brief-types';
-import type { Anomaly, OverwatchBrief } from './brief-types';
+import type { Anomaly, AnomalyKind, OverwatchBrief } from './brief-types';
 import { computeSystemHealth, deriveQueenAlive, queenPlacementStalled, ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN } from '../system-health';
 import type { SystemHealth } from '../system-health/types';
+
+/**
+ * EI-13557: the STABLE `coord:escalate` conditionKey for an escalate-type
+ * anomaly — derived from the anomaly `kind` alone (a closed, count-free
+ * enum), never from the live count/duration embedded in that anomaly's
+ * `detail`/`message`. Every escalate-type anomaly below carries this on its
+ * `suggestedAction.conditionKey` so re-detections of the SAME condition
+ * always coalesce onto one open escalation row instead of leaking a fresh
+ * one each time the count changes (the "N aging owner-attention escalations"
+ * self-inflating advisory was this bug for the `escalation-aging` kind;
+ * every other escalate anomaly here embeds a live count/duration too, so the
+ * fix is applied uniformly rather than one kind at a time).
+ */
+function escalationConditionKey(kind: AnomalyKind): string {
+  return `overwatch:${kind}`;
+}
 
 function newWorkPausedByOwnerSteering(brief: OverwatchBrief): boolean {
   return brief.ownerSteering.pauseNewWork && brief.ownerSteering.eligiblePlans.length === 0;
@@ -121,6 +137,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
+        conditionKey: escalationConditionKey('queen-placement-stalled'),
         message:
           `Mug alive but ${queen.consecutiveZeroTokenWakes} consecutive wakes ran 0 LLM tokens while ${workFeed.frontier} items are placeable — ` +
           `she launches but never reaches an LLM turn. Likely the account pool is rate-limit-exhausted (or the launcher host is down); ` +
@@ -144,6 +161,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         suggestedAction: {
           type: 'escalate',
           target: 'owner',
+          conditionKey: escalationConditionKey('token-paused'),
           message: `All paused (${buckets}) with zero fallback accounts — a structural rate/account fix is needed ` + '(scale-out or rate config). Kettle cannot rebind the gateway or flip rate config.',
         },
       });
@@ -175,6 +193,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
+        conditionKey: escalationConditionKey('gateway-wedge'),
         message:
           'Gateway wedged (watchdog auto-restarting :8788). If this recurs, it is a structural capacity fix — scale out the account pool or provision per-account egress IPs (B-GW-3). Kettle cannot rebind the gateway or add capacity.',
       },
@@ -204,6 +223,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
+        conditionKey: escalationConditionKey('gateway-admission-starved'),
         message:
           `Admission starvation: ${tokens.accountsAvailable} idle account(s) available but the live admission ceiling is starving the queue. Raise the provider floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } } (mirrors the 2026-07-09 manual mitigation). Kettle cannot flip live rate-limit config itself (D-001).`,
       },
@@ -221,6 +241,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
+        conditionKey: escalationConditionKey('work-feed-stuck'),
         message: `${workFeed.deadRoutines} work-feed routine(s) dead; auto-eligible items are stranded. A routine restart is structural — overwatch cannot restart it.`,
       },
     });
@@ -296,6 +317,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
+        conditionKey: escalationConditionKey('invalid-model-config'),
         message:
           `${bees.invalidModelFailures} recent autonomous-role spawn(s) failed with "selected model" unavailable/access errors. ` +
           `Inspect /settings/agent role model overrides and tier menu; clear or replace unavailable model specs before placing more work.`,
@@ -313,6 +335,10 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
+        // EI-13557: the count-free stable key — NOT `agingConditionKey` (that one is
+        // per-watchdogKey and belongs to the unrelated known-open-aging code path,
+        // EI-14854). This is the count-carrying advisory that was self-inflating.
+        conditionKey: escalationConditionKey('escalation-aging'),
         message: `${plans.agingEscalations} human-attention escalation(s) have aged past the attention threshold. Review the Planning Needs you queue and resolve, answer, or dismiss stale items; the Mug cannot clear owner-decision backlog by being nudged.`,
       },
     });
