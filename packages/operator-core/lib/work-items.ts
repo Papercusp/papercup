@@ -2326,6 +2326,16 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- read the tag. Same COALESCE-for-NULL-safety shape, unaliased (this fragment
     -- runs in harness_features_consolidated context).
     AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+    -- WI-5343: the reserved-plan-lane floor, extended to the FEATURE family. The issue-family
+    -- claim has honored a plan-active / live-plan_item_claims-lease reservation since WI-2118 —
+    -- but this path (getNextWorkItem tiers 1/2 + claimNextWorkItem) never read the payload.plan_item
+    -- back-pointer, so a feature-family item promoted onto a live plan lane (e.g. WI-5137, bound to
+    -- an active plan) was self-selectable out from under the lane's own driving agent. Same
+    -- predicate as the issue family (reservedPlanLaneExclusionSql), unaliased (runs in
+    -- harness_features_consolidated context). `opts.cooldownAssignee` already carries the claiming
+    -- agent's ownerId (see its own doc comment) so it doubles for free as the owner-exemption arg —
+    -- a lease THIS agent itself holds must not block its own re-claim.
+    AND ${reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload')}
     -- EI-14806: the cross-machine-rig floor, extended to the FEATURE family. The issue-family
     -- claim has honored payload.needs_2_machine_rig since WI-2796, but a FEATURE-family item can
     -- ALSO carry the tag (WI-3487, a p2p rig-readiness feature) and this path — getNextWorkItem
@@ -2486,21 +2496,31 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * {@link diagnoseClaimNextMiss} (the READY count), so the "why did I miss" diagnosis can never
  * disagree with what the claim actually serves.
  */
-export function reservedPlanLaneExclusionSql(sql: OrgSql, assignee: string) {
+export function reservedPlanLaneExclusionSql(
+  sql: OrgSql,
+  assignee: string,
+  // WI-5343: which payload column this predicate reads. The issue-family callers run in a
+  // `FROM … work_items wi` context (aliased `wi.payload`, the default); a FEATURE-family
+  // caller (harness_features_consolidated, unaliased) passes 'payload' — same dual-form
+  // shape as {@link crossMachineRigExclusionSql}. A closed literal union, never interpolated
+  // user input, so composing it via sql.unsafe is injection-safe.
+  payloadCol: 'wi.payload' | 'payload' = 'wi.payload',
+) {
   // COALESCE the payload so a NULL-payload row (no plan_item back-pointer) reads as
   // `'{}'::jsonb ? 'plan_item'` = FALSE ⇒ NOT(FALSE AND …) = TRUE ⇒ the row is INCLUDED
   // (never excluded). A bare `NULL ? 'plan_item'` would yield NULL and wrongly drop the row.
+  const col = sql.unsafe(payloadCol);
   return sql`NOT (
-    COALESCE(wi.payload, '{}'::jsonb) ? 'plan_item' AND (
+    COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       EXISTS (
         SELECT 1 FROM harness_shared.harness_plans p
-         WHERE p.plan_slug = wi.payload->'plan_item'->>'plan_slug'
+         WHERE p.plan_slug = ${col}->'plan_item'->>'plan_slug'
            AND p.status = 'active'
       )
       OR EXISTS (
         SELECT 1 FROM harness_shared.plan_item_claims c
-         WHERE c.plan_slug = wi.payload->'plan_item'->>'plan_slug'
-           AND c.item_id  = wi.payload->'plan_item'->>'item_id'
+         WHERE c.plan_slug = ${col}->'plan_item'->>'plan_slug'
+           AND c.item_id  = ${col}->'plan_item'->>'item_id'
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
       )
@@ -2568,10 +2588,18 @@ export function crossMachineRigExclusionSql(
  * claim) and {@link diagnoseClaimNextMiss} (the READY count) so the miss diagnosis can never
  * disagree with what the claim actually serves.
  */
-export function claimHoldExclusionSql(sql: OrgSql) {
+export function claimHoldExclusionSql(
+  sql: OrgSql,
+  // WI-5343: which payload column this predicate reads. The issue-family callers run in a
+  // `FROM … work_items wi` context (aliased `wi.payload`, the default); a FEATURE-family
+  // caller (harness_features_consolidated, unaliased) passes 'payload' — same dual-form
+  // shape as {@link crossMachineRigExclusionSql}. A closed literal union, never interpolated
+  // user input, so composing it via sql.unsafe is injection-safe.
+  payloadCol: 'wi.payload' | 'payload' = 'wi.payload',
+) {
   // COALESCE the payload so a NULL-payload row (no hold tag) reads as '{}'::jsonb->>'...' =
   // NULL, and `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
-  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`;
+  return sql`COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`;
 }
 
 /**

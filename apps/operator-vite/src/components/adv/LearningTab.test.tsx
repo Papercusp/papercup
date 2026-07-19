@@ -417,12 +417,17 @@ let hiveResult: Record<string, unknown> = {
 };
 // Per-query args the tab passed — asserted by the P-042 hive-lens tests.
 const seenArgs: Record<string, unknown> = {};
+// When set, a hive-less (`{}`) learning.gym read returns THIS instead of
+// gymResult — lets a test model the client's scoped→workspace-wide fallback.
+let gymWideResult: Record<string, unknown> | null = null;
 vi.mock("@papercusp/sync", () => ({
   useSyncQuery: (opts: { queryName: string; args?: unknown }) => {
     seenArgs[opts.queryName] = opts.args;
-    return opts.queryName === "learning.gym"
-      ? gymResult
-      : opts.queryName === "learning.apiary"
+    if (opts.queryName === "learning.gym") {
+      const hasHive = Boolean((opts.args as { hive?: string } | undefined)?.hive);
+      return !hasHive && gymWideResult ? gymWideResult : gymResult;
+    }
+    return opts.queryName === "learning.apiary"
         ? apiaryResult
         : opts.queryName === "learning.hiveEvalTrend"
           ? hiveEvalResult
@@ -498,6 +503,7 @@ beforeEach(() => {
     error: null,
     invalidate: vi.fn(),
   };
+  gymWideResult = null;
   apiaryResult = {
     data: [apiarySnapshot],
     loading: false,
@@ -744,6 +750,46 @@ describe("LearningTab — Gym view", () => {
     expect(
       screen.getByText("No gym experiments in this workspace yet"),
     ).toBeTruthy();
+  });
+
+  it("falls back to the workspace-wide gym rollup when the hive-scoped read has an autoloop but NO experiments (owner report 2026-07-19)", () => {
+    nuqsState.lview = "gym";
+    nuqsState.lhive = "papercusp";
+    // The `papercusp` Hive: 1 autoloop config, 0 proposals, 0 archiveSeeds, and
+    // NO scopeFallback (the config kept the server's own fallback from firing).
+    // Previously this rendered "No gym experiments" while the workspace held 3.
+    gymResult = {
+      data: [
+        {
+          proposals: [],
+          autoloops: [
+            { harnessSlug: "papercusp", enabled: false, status: "idle", spentUsd: 0 },
+          ],
+          archiveSeeds: [],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    // The workspace-wide read (hive-less args) DOES have experiments.
+    gymWideResult = {
+      data: [
+        {
+          proposals: [{ id: "wp1", status: "pending" }],
+          autoloops: [],
+          archiveSeeds: [],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.queryByText(/No gym experiments/)).toBeNull();
+    expect(screen.getByText("Recent challengers")).toBeTruthy();
   });
 
   it("shows loading — NOT the empty state — before the gym query has resolved (undefined snapshot)", () => {
@@ -1417,6 +1463,16 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
   it("threads the chosen hive into the Gym query args", () => {
     nuqsState.lview = "gym";
     nuqsState.lhive = "beta-hive";
+    // A hive WITH experiments doesn't trip the workspace-wide client fallback
+    // (which would otherwise fire a second `{}` gym read) — so the recorded args
+    // stay the scoped ones under test.
+    gymResult = {
+      data: [{ proposals: [{ id: "p1", status: "pending" }], autoloops: [] }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
     render(<LearningTab />);
     expect(seenArgs["learning.gym"]).toEqual({ hive: "beta-hive" });
   });

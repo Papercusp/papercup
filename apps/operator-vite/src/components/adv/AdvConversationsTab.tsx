@@ -78,7 +78,7 @@ const COMMS_LIST_LIMIT = 100;
 // projection must retain all four windows; applying the per-source cap again
 // after the merge lets a busy source starve every other conversation type.
 const UNIFIED_LIST_LIMIT = COMMS_LIST_LIMIT * 4;
-const UNIFIED_ROW_HEIGHT = 104;
+const UNIFIED_ROW_HEIGHT = 108;
 const READ_TIMEOUT_MS = 15_000;
 const INITIAL_LOAD_STALL_MS = 8_000;
 
@@ -725,7 +725,7 @@ function UnifiedInboxView() {
                     aria-current={selectedUnifiedId === row.id ? 'true' : undefined}
                     onClick={() => void open(row)}
                   >
-                    <span className="pc-advconv__unified-source" aria-hidden><Icon size={14} /></span>
+                    <span className={`pc-advconv__unified-source pc-advconv__unified-source--${row.source}`} aria-hidden><Icon size={14} /></span>
                     <span className="pc-advconv__unified-content">
                       <span className="pc-advconv__unified-topline">
                         <span className={`pc-advconv__unified-kind pc-advconv__unified-kind--${row.source}`}>{row.typeLabel}</span>
@@ -2834,15 +2834,18 @@ function AdvConvStyles() {
         min-height: 40px;
         overflow: hidden;
         padding: 5px;
-        border: 1px solid color-mix(in srgb, var(--advconv-border), transparent 28%);
+        /* Inactive tabs sit quiet (no box chrome) so the accent-tinted icon
+           chip, the active tab, and the Ask action carry the rail's hierarchy.
+           Only colors transition — geometry stays static for the webview. */
+        border: 1px solid transparent;
         border-radius: 10px;
-        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 36%);
+        background: transparent;
         color: var(--fg-dim, #b9d4e8);
         font-size: 12px;
         font-weight: 700;
         letter-spacing: 0;
         cursor: pointer;
-        transition: none;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
       .pc-advconv__navicon {
         display: inline-flex;
@@ -3306,13 +3309,15 @@ function AdvConvStyles() {
         align-items: start;
         padding: 9px;
         border: 1px solid transparent;
-        border-bottom-color: var(--advconv-border);
-        border-radius: 8px;
+        border-bottom-color: color-mix(in srgb, var(--advconv-border), transparent 45%);
+        border-radius: 10px;
         background: transparent;
         color: var(--fg);
         text-align: left;
         cursor: pointer;
-        transition: none;
+        /* Color-only transitions: `top` stays untransitioned so virtual-list
+           reorders snap instead of animating (the WebKit flash guard above). */
+        transition: background-color 120ms ease, border-color 120ms ease;
       }
       .pc-advconv__unified-row:hover,
       .pc-advconv__unified-row:focus-visible,
@@ -3336,17 +3341,24 @@ function AdvConvStyles() {
         outline: 1px solid var(--advconv-accent);
         outline-offset: -1px;
       }
+      /* The icon chip carries the SAME per-source accent as the type pill, so
+         the rail is scannable by color before any text is read. */
       .pc-advconv__unified-source {
+        --type-accent: var(--advconv-accent);
         display: inline-flex;
         align-items: center;
         justify-content: center;
         width: 32px;
         height: 32px;
-        border: 1px solid color-mix(in oklab, var(--advconv-accent), transparent 70%);
+        border: 1px solid color-mix(in oklab, var(--type-accent), transparent 72%);
         border-radius: 9px;
-        background: var(--advconv-accent-soft);
-        color: var(--advconv-accent-strong);
+        background: color-mix(in oklab, var(--type-accent), transparent 87%);
+        color: color-mix(in oklab, var(--type-accent), white 28%);
       }
+      .pc-advconv__unified-source--threads { --type-accent: var(--accent-strong); }
+      .pc-advconv__unified-source--deliberations { --type-accent: #a78bfa; }
+      .pc-advconv__unified-source--agentchats { --type-accent: #f472b6; }
+      .pc-advconv__unified-source--messages { --type-accent: #fb923c; }
       .pc-advconv__unified-content {
         min-width: 0;
         display: flex;
