@@ -13,6 +13,7 @@
 import nodeCluster from 'node:cluster';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { requestOnlyHost } from '../../../background-workers';
 import { listBootedHandles } from '../../../sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '../../../sync/hyperbee/bootstrap-progress';
 import { loadSubstrateDrainStats } from '../../../sync/hyperbee/load-drain-stats';
@@ -49,8 +50,14 @@ const get = defineTool({
     // EI-8816: on a request-only cluster worker, listBootedHandles() is always empty
     // (the substrate boots only on the primary) — fall back to the primary's cached
     // broadcast rather than silently reporting an empty `harnesses: []`.
+    // WI-5307: `nodeCluster.isPrimary` alone is NOT "did this process boot the substrate"
+    // — under the dedicated-bg-host topology, :3070/:3270 are each their own unforked
+    // primary (isPrimary:true) that DECLARED itself request-only and never boots the
+    // substrate at all (bg-host does). Blindly trusting `local` there rendered a
+    // false-confident `reachedSubstrateOwner:true, bootedCount:0` even while the substrate
+    // was genuinely live on bg-host. `requestOnlyHost()` excludes that case.
     const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
-      isSubstrateOwnerProcess: nodeCluster.isPrimary,
+      isSubstrateOwnerProcess: nodeCluster.isPrimary && !requestOnlyHost(),
       resolveRemote: getCachedRemoteBootedHandles,
     });
     const progress = listBootstrapProgress();

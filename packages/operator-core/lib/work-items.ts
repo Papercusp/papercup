@@ -2147,7 +2147,11 @@ export type ClaimFailure =
 
 export function classifyClaimFailure(current: { assignee?: string | null } | null, claimer: string): ClaimFailure {
   if (!current) return { reason: 'not_found', holder: null };
-  const holder = current.assignee?.trim();
+  // EI-15027: normalize the "unassigned" sentinel here too (defense-in-depth: the
+  // row-mapping layer — issueToWorkItem/featureRowToWorkItem — already does this via
+  // normalizeTakenBy, but this function's `current` param is a bare structural type
+  // any caller can pass directly, not necessarily one that went through the mapping).
+  const holder = normalizeTakenBy(current.assignee ?? null)?.trim();
   if (holder && holder !== claimer) return { reason: 'conflict', holder };
   return { reason: 'gated', holder: null };
 }
@@ -3025,7 +3029,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        WHERE wi.item_kind IN ('bug', 'change', 'task')
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
-         AND (wi.taken_by IS NULL OR wi.taken_by = '')
+         AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
          AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])
          -- D-005: observation-lane rows never enter the work queue, so they are NOT part of the
          -- "work here a bee shouldn't idle on" POOL — excluding them here (not just from READY,
@@ -3060,7 +3064,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        WHERE wi.item_kind IN ('bug', 'change', 'task')
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
-         AND (wi.taken_by IS NULL OR wi.taken_by = '')
+         AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
          AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])
          AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
@@ -3346,7 +3350,7 @@ export async function claimNextIssueWorkItem(
           -- WI-5258: exclude ids the spec negatively excludes (a not-wrapped id leaf).
           AND ${excludeIdFilter ? sql`NOT (wi.feature_id = ANY(${excludeIdFilter}::text[]))` : sql`TRUE`}
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
-          AND (wi.taken_by IS NULL OR wi.taken_by = '')
+          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
           AND wi.status = ANY(${[...states]}::text[])
           -- WI-3649 (EI-7841's issue-family half): this base-table UPDATE bypasses the
           -- engineer_issues VIEW/trigger entirely, so unlike the single-id work_items:claim
@@ -3526,7 +3530,9 @@ export async function observeWorkItem(
 ): Promise<WorkItemObservation | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  const unclaimed = !wi.assignee;
+  // EI-15027: treat the literal 'unassigned' sentinel the same as NULL/empty — see
+  // isUnclaimedAssignee's doc comment.
+  const unclaimed = isUnclaimedAssignee(wi.assignee);
   if (unclaimed && wi.family === 'feature') {
     // Cheap path first — local/admitted items (the vast majority) resolve without
     // touching the DB at all; only a remote+un-admitted item needs the trust-list
@@ -3955,7 +3961,10 @@ export async function reorderWorkItem(
   const writer: RankWriter = opts.writer ?? 'cup';
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
-  if (!wi.assignee) return { error: `work_item '${id}' is unassigned — claim it before ranking` };
+  // EI-15027: a literal 'unassigned' sentinel assignee is unclaimed too, not a real holder.
+  if (isUnclaimedAssignee(wi.assignee)) {
+    return { error: `work_item '${id}' is unassigned — claim it before ranking` };
+  }
 
   const { sql } = getOrgPg();
   // The work_items view carries workspace_id; resolve it for this item so the reorder is

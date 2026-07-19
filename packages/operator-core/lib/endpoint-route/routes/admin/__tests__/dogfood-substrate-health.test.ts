@@ -20,6 +20,9 @@ const H = vi.hoisted(() => {
     // EI-8816: cluster-role + cached-remote-snapshot seams for the blind-spot tests.
     isPrimary: boolean;
     cachedRemote: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number } | null;
+    // WI-5307: is THIS process a declared request-only secondary (dedicated-bg-host
+    // topology) — independent of node:cluster.isPrimary.
+    requestOnly: boolean;
   } = {
     booted: [],
     progress: [],
@@ -28,6 +31,7 @@ const H = vi.hoisted(() => {
     summary: { worstVerdict: 'healthy' },
     isPrimary: true,
     cachedRemote: null,
+    requestOnly: false,
   };
   return {
     state,
@@ -38,6 +42,7 @@ const H = vi.hoisted(() => {
     assessHarnessSubstrateHealth: vi.fn(() => state.verdict),
     summariseWorkspaceSubstrate: vi.fn(() => state.summary),
     getCachedRemoteBootedHandles: () => state.cachedRemote,
+    requestOnlyHost: () => state.requestOnly,
   };
 });
 
@@ -50,6 +55,7 @@ vi.mock('../../../../sync/hyperbee/summary', () => ({ summariseWorkspaceSubstrat
 vi.mock('../../../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: H.getCachedRemoteBootedHandles,
 }));
+vi.mock('../../../../background-workers', () => ({ requestOnlyHost: H.requestOnlyHost }));
 // EI-8816: node:cluster.isPrimary drives resolveEffectiveBootedHandles' "am I the
 // substrate owner" check — mock it so the worker-blind-spot branch is reachable in-test
 // (a real vitest process is always isPrimary:true otherwise).
@@ -80,6 +86,7 @@ beforeEach(() => {
   H.state.verdict = { verdict: 'healthy', reasons: [] };
   H.state.isPrimary = true;
   H.state.cachedRemote = null;
+  H.state.requestOnly = false;
   H.loadSubstrateDrainStats.mockClear();
   H.loadClaimAttemptStats.mockClear();
   H.assessHarnessSubstrateHealth.mockClear();
@@ -175,6 +182,48 @@ describe('GET /admin/dogfood-substrate-health handler', () => {
       const body = await (await route[0].handler(req(), ctx())).json();
       expect(body.reachedSubstrateOwner).toBe(false);
       expect(body.harnesses).toEqual([]);
+    });
+  });
+
+  // WI-5307: the dedicated-bg-host blind spot — a node:cluster PRIMARY that has
+  // declared itself request-only (PAPERCUSP_BACKGROUND_WORKERS=0 / :3170 staging) never
+  // boots the substrate at all (host-bootstrap.ts skips it), so `nodeCluster.isPrimary`
+  // alone must NOT be trusted as "I am the substrate owner" — unlike a genuine forked
+  // worker, this process reads `isPrimary:true` yet still never booted anything.
+  describe('request-only secondary blind spot (WI-5307, dedicated-bg-host topology)', () => {
+    it('isPrimary:true but request-only, no cached broadcast → reachedSubstrateOwner:false, NOT a false-confident empty', async () => {
+      H.state.isPrimary = true;
+      H.state.requestOnly = true;
+      H.state.cachedRemote = null;
+      // Even if this process's own local map somehow had an entry, a request-only
+      // host is never trusted as the owner — it must fall through to the remote path.
+      H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'papercup' }];
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(false);
+      expect(body.harnesses).toEqual([]);
+      expect(H.loadClaimAttemptStats).not.toHaveBeenCalled();
+    });
+
+    it('isPrimary:true but request-only, WITH a fresh cached broadcast → uses the remote handles, reachedSubstrateOwner:true', async () => {
+      H.state.isPrimary = true;
+      H.state.requestOnly = true;
+      H.state.cachedRemote = {
+        handles: [{ workspaceId: 'ws1', harnessSlug: 'papercup' }],
+        receivedAt: Date.now(),
+      };
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(true);
+      expect(body.harnesses).toHaveLength(1);
+      expect(body.harnesses[0]).toMatchObject({ workspaceId: 'ws1', harnessSlug: 'papercup' });
+    });
+
+    it('isPrimary:true and NOT request-only (ordinary single-process/primary host) → local map still trusted directly', async () => {
+      H.state.isPrimary = true;
+      H.state.requestOnly = false;
+      H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'papercup' }];
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(true);
+      expect(body.harnesses).toHaveLength(1);
     });
   });
 });

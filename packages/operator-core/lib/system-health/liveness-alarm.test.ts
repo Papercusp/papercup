@@ -798,6 +798,60 @@ describe('runLivenessAlarmTick — EI-9939 flap-episode suppression', () => {
     await runLivenessAlarmTick('ws', deps); // resolves again (still flapping → deferred)
     expect(pageResolvedCalls).toEqual([]); // no premature all-clear fired
   });
+
+  it('EI-15126: flap suppression engages across independent "workers" sharing one durable store (the production shape)', async () => {
+    // Reproduces the actual production topology: multiple :3070 cluster
+    // REQUEST WORKERS each run their own runLivenessAlarmTick loop, so the
+    // worker that happens to observe fire #1 is rarely the same one that
+    // observes fire #2 or #3. Simulated here as two alternating "workers" —
+    // each with its OWN store/page arrays — that read+write the SAME
+    // injected readFlapState/writeFlapState backing (a plain object standing
+    // in for the migration-635 PG row). Before the EI-15126 fix this shared
+    // backing didn't exist — each worker's flap counter was a private
+    // module-level Map — so alternating workers would NEVER accumulate past
+    // flapThreshold and every fire would page.
+    const store = makeStore();
+    let healthy = false;
+    const sick = mkHealth({ evaluatedAt: 100 * 60_000, panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const pageCalls: string[] = [];
+    let now = 100 * 60_000;
+    let sharedFlapBacking: Record<string, unknown> = {};
+    const baseDeps = {
+      readLast: () => (healthy ? well : sick),
+      computeHealth: async () => (healthy ? well : sick),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async (s: { key: string }) => { pageCalls.push(s.key); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 1_000,
+      flapWindowMs: 30 * 60_000,
+      flapThreshold: 2,
+      // The shared backing store every "worker" reads and writes — standing
+      // in for the durable PG row (migration 635) production actually uses.
+      readFlapState: async () => sharedFlapBacking as never,
+      writeFlapState: async (_ws: string, state: unknown) => {
+        sharedFlapBacking = state as Record<string, unknown>;
+      },
+    };
+
+    // Worker A observes fire #1; worker B observes the resolve; worker A
+    // observes fire #2; worker B observes the resolve; worker A observes
+    // fire #3 (the flap) — each call is a FRESH runLivenessAlarmTick
+    // invocation with baseDeps re-passed (no shared JS closure state besides
+    // the injected read/write), simulating genuinely independent workers.
+    healthy = false; now += 2_000; await runLivenessAlarmTick('ws', baseDeps); // fire #1 — pages
+    healthy = true; now += 2_000; await runLivenessAlarmTick('ws', baseDeps); // resolves
+    healthy = false; now += 2_000; await runLivenessAlarmTick('ws', baseDeps); // fire #2 — pages
+    healthy = true; now += 2_000; await runLivenessAlarmTick('ws', baseDeps); // resolves
+    healthy = false; now += 2_000; await runLivenessAlarmTick('ws', baseDeps); // fire #3 — SUPPRESSED
+
+    expect(pageCalls).toEqual(['dead-routines', 'dead-routines']);
+    // The durable state accumulated the fireCount across the independent calls.
+    expect((sharedFlapBacking['dead-routines'] as { fireCount: number }).fireCount).toBe(3);
+  });
 });
 
 describe('runLivenessAlarmTick — EI-10060 needsHumanRoute meta stamp', () => {

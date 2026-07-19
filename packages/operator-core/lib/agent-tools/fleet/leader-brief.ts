@@ -318,8 +318,7 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it. ' +
-      '`strandedFleetAlert` → wake parked members now instead of waiting out the timeout.',
+      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,

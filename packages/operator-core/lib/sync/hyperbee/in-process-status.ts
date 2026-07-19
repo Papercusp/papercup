@@ -21,6 +21,7 @@
  */
 
 import nodeCluster from 'node:cluster';
+import { requestOnlyHost } from '../../background-workers';
 import { listBootedHandles, type BootedHandleSummary } from './boot-all';
 import type { RemoteBootedHandlesSnapshot } from './cluster-booted-handles-sync';
 import { listBootstrapProgress } from './bootstrap-progress';
@@ -151,10 +152,11 @@ export interface GetInProcessStatusOpts {
    */
   resolveRemoteBootedHandles?: () => RemoteBootedHandlesSnapshot | null;
   /**
-   * TEST SEAM ONLY — overrides the real `node:cluster`-derived "is this process the
-   * substrate owner" check (`nodeCluster.isPrimary`: true for the primary AND for
-   * single-process/non-clustered hosts; false only inside a genuine forked worker).
-   * Production never sets this.
+   * TEST SEAM ONLY — overrides the real "is this process the substrate owner" check
+   * (`nodeCluster.isPrimary && !requestOnlyHost()`: true for the primary AND for
+   * single-process/non-clustered hosts, EXCLUDING a request-only secondary that never
+   * boots the substrate at all; false inside a genuine forked cluster worker OR a
+   * request-only host — see WI-5307). Production never sets this.
    */
   isSubstrateOwnerProcessForTest?: boolean;
 }
@@ -167,19 +169,34 @@ const ZERO_DRAIN = { undrainedCount: 0, oldestUndrainedAgeMs: null } as const;
 const DEFAULT_REMOTE_BOOTED_HANDLES_MAX_AGE_MS = 15_000;
 
 /**
- * EI-8816: decide which booted-handles list this read should trust, and whether the
- * read actually reached the substrate-owning process's real state.
+ * EI-8816 (+ WI-5307): decide which booted-handles list this read should trust, and
+ * whether the read actually reached the substrate-owning process's real state.
  *
- *   - This process IS the owner (primary, or single-process mode — `nodeCluster.isPrimary`)
+ *   - This process IS the owner (primary, or single-process mode — `nodeCluster.isPrimary`
+ *     AND NOT a declared request-only secondary, see `isSubstrateOwnerProcess` below)
  *     ⇒ trust `local` directly; it's a direct read of the same process-local map the
  *     substrate boot itself populated. Always `reachedSubstrateOwner: true`, INCLUDING a
  *     legitimate zero-booted idle state (nothing has booted yet) — that is real data, not
  *     a blind spot.
  *   - This process is a genuine forked WORKER (never boots anything itself, so `local` is
- *     always `[]`) ⇒ fall back to the cached broadcast from the primary, if one exists and
- *     is fresh (`now - receivedAt <= maxAgeMs`). Stale/missing ⇒ `reachedSubstrateOwner: false`
- *     with an empty list — an explicit blind-spot marker, never silently identical to
- *     "nothing booted".
+ *     always `[]`), OR a REQUEST-ONLY secondary host under the dedicated-bg-host topology
+ *     (`PAPERCUSP_BACKGROUND_WORKERS=0` / the :3170 staging port — host-bootstrap.ts skips
+ *     the hyperbee substrate boot entirely there, so `local` is ALWAYS `[]` too) ⇒ fall
+ *     back to the cached broadcast from the primary, if one exists and is fresh
+ *     (`now - receivedAt <= maxAgeMs`). Stale/missing ⇒ `reachedSubstrateOwner: false` with
+ *     an empty list — an explicit blind-spot marker, never silently identical to "nothing
+ *     booted".
+ *
+ * WI-5307: `nodeCluster.isPrimary` alone answers "am I a node:cluster-forked worker", not
+ * "did I boot the substrate" — the two used to coincide (EI-8816's true-cluster topology:
+ * only the primary boots, workers are non-primary) but no longer do under the dedicated
+ * `papercup-bg-host` topology: :3070/:3270 are each their OWN unforked `node:cluster`
+ * primary (never a worker) yet are declared request-only and never boot the substrate —
+ * bg-host does. Blindly trusting `local` there rendered a false-confident
+ * `reachedSubstrateOwner:true, bootedCount:0` (looks like a verified-empty substrate) on
+ * a process that never had the chance to boot anything, even while the real bg-host owner
+ * had the harness live (corestore fd open, outbox draining). See `isSubstrateOwnerProcess`
+ * below + `requestOnlyHost()` (background-workers.ts) for the fix.
  *
  * Pure + exported for direct unit testing without mocking `node:cluster`.
  */
@@ -211,7 +228,11 @@ export function getInProcessSubstrateStatus(
   // at runtime. `forceDisabledForTest` is a TEST-ONLY seam for exercising the
   // disabled-rendering path — production never passes it.
   const substrateActive = !opts.forceDisabledForTest;
-  const isSubstrateOwnerProcess = opts.isSubstrateOwnerProcessForTest ?? nodeCluster.isPrimary;
+  // WI-5307: a node:cluster primary that has DECLARED itself request-only (the
+  // dedicated-bg-host topology's :3070/:3270 hosts) never boots the substrate — see the
+  // resolveEffectiveBootedHandles doc comment above.
+  const isSubstrateOwnerProcess =
+    opts.isSubstrateOwnerProcessForTest ?? (nodeCluster.isPrimary && !requestOnlyHost());
   const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
     isSubstrateOwnerProcess,
     resolveRemote: opts.resolveRemoteBootedHandles,

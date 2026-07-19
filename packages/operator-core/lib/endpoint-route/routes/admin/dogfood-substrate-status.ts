@@ -12,14 +12,22 @@
  *     enabled: boolean,        // always true — the substrate always boots (Stage 4d)
  *     booted: Array<{ workspaceId, harnessSlug }>,
  *     bootedCount: number,
+ *     reachedSubstrateOwner: boolean, // WI-5307 — false is an explicit blind-spot
+ *       // marker (a forked cluster worker, or a request-only host under the
+ *       // dedicated-bg-host topology): `booted`/`bootedCount` here are NOT
+ *       // ground truth in that case — see in-process-status.ts.
  *   }
  *
  * Public read — no token. The list of harness slugs is already
  * discoverable from the workspace tree.
  */
 
+import nodeCluster from 'node:cluster';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requestOnlyHost } from '../../../background-workers';
 import { listBootedHandles } from '../../../sync/hyperbee/boot-all';
+import { resolveEffectiveBootedHandles } from '../../../sync/hyperbee/in-process-status';
+import { getCachedRemoteBootedHandles } from '../../../sync/hyperbee/cluster-booted-handles-sync';
 
 const get = defineTool({
   method: 'GET',
@@ -28,12 +36,23 @@ const get = defineTool({
   // gated per D3 auth posture (was 'public').
   auth: { trust: ['verified', 'trusted'] },
   async handler() {
-    const booted = listBootedHandles();
+    // WI-5307 (mirrors dogfood-substrate-health): this process's own
+    // listBootedHandles() is only ground truth when it actually IS the substrate
+    // owner — a node:cluster primary that has NOT declared itself request-only.
+    // A request-only secondary (the dedicated-bg-host topology's :3070/:3270)
+    // never boots the substrate at all, so trusting `local` there silently
+    // rendered a false-confident empty `booted:[]`. Fall back to the primary's
+    // cached broadcast (a genuine forked worker) when this isn't the owner.
+    const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
+      isSubstrateOwnerProcess: nodeCluster.isPrimary && !requestOnlyHost(),
+      resolveRemote: getCachedRemoteBootedHandles,
+    });
     return Response.json({
       // Stage 4d: the substrate always boots (the opt-in gate was removed).
       enabled: true,
       booted,
       bootedCount: booted.length,
+      reachedSubstrateOwner,
     });
   },
 });
