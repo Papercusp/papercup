@@ -254,9 +254,15 @@ function fmtAgo(ms) {
   return `${Math.round(h / 24)}d`;
 }
 
+/** Floor for `--compaction-limit`, mirroring MIN_COMPACTION_LIMIT_TOKENS in
+ *  packages/operator-core/lib/agent-config-constants.ts. Duplicated (this launcher
+ *  is plain .mjs and imports no TS) and pinned by a parity assertion in
+ *  apps/operator/lib/psu-launcher.test.ts — the same pattern validateModelSpec uses. */
+export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
+
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, ownerId: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null, headless: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, ownerId: null, profile: null, contextSize: null, personaTier: null, compactionLimit: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null, headless: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -411,6 +417,26 @@ export function parseArgs(argv) {
     // context-trimming-tiers P-017: persona tier — full | fleet. Omitted ⇒ the
     // server auto-selects from the model window (≤200k known model → fleet).
     else if (a.startsWith('--persona-tier=')) out.personaTier = a.slice('--persona-tier='.length);
+    // per-member-declarative-launch-specs P-005: this session's explicit soft
+    // compaction limit in TOKENS (MemberSpec.compactionLimit). Recorded onto
+    // adv_sessions.launch_argv by psuLaunchArgvRecord; the compaction watchdog's
+    // seeding pass reads it back and applies it AHEAD of the tier/model default,
+    // clamped to the fleet-role ceiling. Before this, a per-member limit could only
+    // be REQUESTED in a brief ("set your own limit to N") — an instruction a member
+    // could ignore, mis-apply, or reach only after its first compaction.
+    // Malformed input THROWS (like --model/--mode): a limit silently dropped back to
+    // the default is exactly the failure this flag exists to remove.
+    else if (a.startsWith('--compaction-limit=')) {
+      const rawLimit = a.slice('--compaction-limit='.length);
+      const n = Number(rawLimit);
+      if (!Number.isInteger(n) || n < MIN_COMPACTION_LIMIT_TOKENS) {
+        throw new Error(
+          `--compaction-limit=${rawLimit} is not valid — pass a whole number of TOKENS >= ${MIN_COMPACTION_LIMIT_TOKENS} ` +
+            `(e.g. --compaction-limit=200000). The seed clamps it DOWN to your fleet-role ceiling; it never raises it.`,
+        );
+      }
+      out.compactionLimit = n;
+    }
     // context-trimming-tiers P-018: override the preflight window-guard refusal.
     else if (a === '--force') out.force = true;
     // P-023: su playbook profile (engineer|power) — assembled per-launch now,
@@ -5462,6 +5488,10 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   argv.push(selections.plan ? `--plan=${selections.plan}` : '--no-plan');
   if (args.profile) argv.push(`--profile=${args.profile}`);
   if (args.contextSize) argv.push(`--context-size=${args.contextSize}`);
+  // P-005: MUST be re-emitted here — this record is what lands on
+  // adv_sessions.launch_argv, and the compaction watchdog reads the limit back OFF
+  // that argv. A parse without this re-emit would drop the flag silently.
+  if (args.compactionLimit) argv.push(`--compaction-limit=${args.compactionLimit}`);
   if (args.model) argv.push(`--model=${args.model}`);
   if (args.account) argv.push(`--account=${args.account}`);
   // A joined fleet (--fleet=<slug>) or a new fleet's derived slug (picker → fleetName).

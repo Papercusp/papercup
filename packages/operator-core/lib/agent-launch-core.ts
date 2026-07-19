@@ -440,12 +440,11 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   // form every backend honors.
   const modelSpec = composeModelSpec(opts.model, opts.effort);
   if (modelSpec) parts.push(`--model=${quoteLaunchValue(modelSpec)}`);
-  // NOTE: `--compaction-limit` (opts.compactionLimit) is NOT a psu flag yet
-  // (per-member-declarative-launch-specs P-005). psu would warn-and-drop it, so it is
-  // withheld here rather than emitted as a silent no-op. The landing design is NOT a
-  // launcher→presence write (that would violate D-006's single seeding point): it is an
-  // explicit per-spawn limit on `spawned_agents`, which the compaction watchdog's existing
-  // seeding step already resolves ahead of the tier/model default. Do not emit before then.
+  // P-005 (landed): psu parses `--compaction-limit` and re-emits it onto
+  // adv_sessions.launch_argv; the compaction watchdog's seeding pass reads it back
+  // and applies it ahead of the tier/model default, clamped to the fleet-role
+  // ceiling. Emitting it here is what makes MemberSpec.compactionLimit real.
+  if (opts.compactionLimit) parts.push(`--compaction-limit=${Math.floor(opts.compactionLimit)}`);
   if (opts.feature) parts.push(`--feature=${quoteLaunchValue(opts.feature)}`);
   if (opts.launchContext) parts.push(`--launch-context=${quoteLaunchValue(opts.launchContext)}`);
   if (opts.profile) parts.push(`--profile=${quoteLaunchValue(opts.profile)}`);

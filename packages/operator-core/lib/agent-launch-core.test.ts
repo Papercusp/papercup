@@ -177,6 +177,24 @@ describe('memberLaunchCommand', () => {
     expect(cmd).toContain("--model='opus[1m]:high'");
     expect(cmd).not.toContain('--effort');
   });
+
+  // P-005: the flag psu now parses + records onto launch_argv, which the compaction
+  // watchdog reads back. Emitting it is what makes MemberSpec.compactionLimit real.
+  it('emits --compaction-limit so the per-member limit reaches the seeding pass', () => {
+    const cmd = memberLaunchCommand({
+      fleetSlug: 'ops',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      compactionLimit: 200_000,
+    });
+    expect(cmd).toContain('--compaction-limit=200000');
+  });
+
+  it('omits --compaction-limit entirely when unset (no flag, not a zero)', () => {
+    const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'h', plan: 'p' });
+    expect(cmd).not.toContain('--compaction-limit');
+  });
 });
 
 describe('composeModelSpec (D-001: effort rides the model spec)', () => {

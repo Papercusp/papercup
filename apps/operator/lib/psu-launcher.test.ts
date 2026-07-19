@@ -1110,6 +1110,7 @@ describe('psu-launcher arg parsing', () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
+      compactionLimit: null,
       // subagent-launch governance (owner mandate 2026-07-02): tri-state, default
       // null (unset) — the picker prompts (falling back to DENY); a flag preselects.
       allowSubagents: null,
@@ -1184,6 +1185,7 @@ describe('psu-launcher arg parsing', () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
+      compactionLimit: null,
       allowSubagents: null,
       kickoffPromptText: null,
       label: null,
