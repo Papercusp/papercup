@@ -41,15 +41,28 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Derive the plan slug an item belongs to from its payload, single-sourced so
+ * every consumer (the spec subject below, the `work-item:claimable` event
+ * payload — EI-15185) agrees on the exact same derivation. Returns null when the
+ * item is plan-less.
+ */
+export function planSlugOfWorkItem(item: WorkItem): string | null {
+  const payload = record(item.payload);
+  const planItem = record(payload.plan_item ?? payload.planItem);
+  return (
+    (typeof planItem.plan_slug === 'string' && planItem.plan_slug) ||
+    (typeof planItem.slug === 'string' && planItem.slug) ||
+    (typeof payload.source_plan_slug === 'string' && payload.source_plan_slug) ||
+    null
+  );
+}
+
 /** Project the fields available on an issue-family WorkItem into spec vocabulary. */
 export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[] = []): ClaimSpecSubject {
   const payload = record(item.payload);
   const planItem = record(payload.plan_item ?? payload.planItem);
-  const plan =
-    (typeof planItem.plan_slug === 'string' && planItem.plan_slug) ||
-    (typeof planItem.slug === 'string' && planItem.slug) ||
-    (typeof payload.source_plan_slug === 'string' && payload.source_plan_slug) ||
-    null;
+  const plan = planSlugOfWorkItem(item);
   const itemId =
     (typeof planItem.item_id === 'string' && planItem.item_id) ||
     (typeof planItem.itemId === 'string' && planItem.itemId) ||

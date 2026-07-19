@@ -30,6 +30,9 @@ import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
 import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } from './work-item-blocking';
 import { CLAIM_STATES_ALLOWLIST, getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
+// EI-15185: single-source the plan-slug derivation shared with the claim-spec
+// `plan` field, so the claimable payload's `plan` and a spec's `plan` filter agree.
+import { planSlugOfWorkItem } from './scheduler/claim-spec-match';
 // Type-only (erased at runtime) — the subscriber inject shape. The concrete
 // fanoutForObject is lazy-imported inside the default seam below so this module
 // keeps no static edge to the fan-out projection (cycle-safe).
@@ -166,6 +169,11 @@ export function emitWorkItemClaimableEvent(
     title: wi.title,
     state: wi.state,
     reason,
+    // EI-15185: carry the item's plan slug so a fleet member's derived
+    // `payload_filter` (scheduler:get_next windDown → claim-spec-payload-filter)
+    // can narrow a plan-DRAIN spec at the event layer, not just kind/title.
+    // Single-sourced with the claim-spec `plan` field so the two agree.
+    plan: planSlugOfWorkItem(wi),
   };
   void Promise.resolve()
     .then(() =>
