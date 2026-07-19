@@ -5,7 +5,7 @@
  * classifier is that a wedged session must not be reported as a settled one.
  */
 import { describe, expect, it } from 'vitest';
-import { classifySessionEnd, isWedged } from './session-end-reason';
+import { classifySessionEnd, classifyWedgeText, isWedged } from './session-end-reason';
 
 const NOW = Date.UTC(2026, 6, 13, 12, 0, 0);
 const minsAgo = (m: number) => NOW - m * 60_000;
@@ -111,5 +111,36 @@ describe('classifySessionEnd', () => {
     expect(isWedged('settled')).toBe(false);
     expect(isWedged('active')).toBe(false);
     expect(isWedged('awaiting_owner')).toBe(false);
+  });
+});
+
+/** EI-13818: the narrow, blind-scan-safe subset used to classify a just-exited
+ *  subprocess's clean-exit (code 0) tail — see resume-turn-outcome.ts. */
+describe('classifyWedgeText', () => {
+  it('detects the exact session-limit signature from the EI-13818 incident', () => {
+    const r = classifyWedgeText("You've hit your session limit · resets 5:40am (America/New_York)");
+    expect(r?.reason).toBe('usage_limit');
+    expect(r?.evidence).toContain('session limit');
+  });
+
+  it('detects an org auth wall', () => {
+    const r = classifyWedgeText('Your organization has disabled Claude subscription access for Claude Code');
+    expect(r?.reason).toBe('auth_wall');
+  });
+
+  it('does NOT trip on ordinary text that merely mentions rate limits (the model_error clause is excluded)', () => {
+    expect(classifyWedgeText('discussed the rate limit fix')).toBeNull();
+    expect(classifyWedgeText('API Error: 400 This model does not support effort level xhigh')).toBeNull();
+  });
+
+  it('does NOT trip on ordinary text mentioning a context window (context_limit excluded)', () => {
+    expect(classifyWedgeText('fixed the bug where the context window exceeded expectations')).toBeNull();
+  });
+
+  it('returns null for empty/null/whitespace-only text', () => {
+    expect(classifyWedgeText(null)).toBeNull();
+    expect(classifyWedgeText(undefined)).toBeNull();
+    expect(classifyWedgeText('   ')).toBeNull();
+    expect(classifyWedgeText('all green; ending the turn.')).toBeNull();
   });
 });

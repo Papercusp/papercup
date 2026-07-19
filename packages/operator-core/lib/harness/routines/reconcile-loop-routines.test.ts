@@ -11,7 +11,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { reconcileLoopRoutines } from './reconcile-loop-routines';
+import { parseUsageResetMs } from '@papercusp/papercusp-shared/agent';
+import { reconcileLoopRoutines, classifyLoopLifecycleTurn } from './reconcile-loop-routines';
 
 /** Never-breach terminal-guard stub for tests that only care about the pre-existing
  *  stuck-backstop re-arm behavior (WI-1399 added a guard check ahead of every stuck-backstop
@@ -295,6 +296,138 @@ describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustnes
     const res = await reconcile({ sql, nowMs: T0 + 5_000, recordFire });
     expect(res.rearmed).toBe(0);
     expect(recordFire).not.toHaveBeenCalled();
+  });
+});
+
+describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
+  const NOW = 1_782_000_000_000;
+
+  it('returns null for a genuine settle (no provider-kill signature)', () => {
+    expect(classifyLoopLifecycleTurn('Fixed the bug, tests green, work item complete.', 60_000, NOW)).toBeNull();
+  });
+
+  it('returns null for absent/blank text (a read miss must never manufacture a death)', () => {
+    expect(classifyLoopLifecycleTurn(null, 60_000, NOW)).toBeNull();
+    expect(classifyLoopLifecycleTurn(undefined, 60_000, NOW)).toBeNull();
+    expect(classifyLoopLifecycleTurn('   ', 60_000, NOW)).toBeNull();
+  });
+
+  it("classifies a usage_limit death and computes a reset-aware rearm delay (not the bare interval)", () => {
+    const text = "You've hit your session limit · resets 5:40am (America/New_York)";
+    const verdict = classifyLoopLifecycleTurn(text, 60_000, NOW);
+    expect(verdict?.reason).toBe('usage_limit');
+    expect(verdict?.evidence).toContain('session limit');
+    // Cross-check against the SAME reset parser the verdict reuses — no independent TZ math.
+    const expectedReset = parseUsageResetMs(text, NOW);
+    expect(expectedReset).toBeDefined();
+    expect(verdict?.rearmDelayMs).toBe(Math.min(Math.max(expectedReset! - NOW, 60_000), 3_600_000));
+    expect(verdict?.rearmDelayMs).toBeGreaterThan(60_000); // strictly more than the bare interval
+  });
+
+  it('classifies an auth_wall death with the plain-interval rearm (no reset time to parse)', () => {
+    const text = 'Your organization has disabled Claude subscription access for Claude Code.';
+    const verdict = classifyLoopLifecycleTurn(text, 60_000, NOW);
+    expect(verdict?.reason).toBe('auth_wall');
+    expect(verdict?.rearmDelayMs).toBe(60_000);
+  });
+
+  it('never shortens the rearm below the loop interval', () => {
+    // A reset time in the very near future (or already past — "already passed today" pushes to
+    // tomorrow per parseUsageResetMs, but even a same-second edge case must never UNDERCUT the
+    // caller's own interval floor).
+    const verdict = classifyLoopLifecycleTurn("hit your usage limit · resets now", 5 * 60_000, NOW);
+    expect(verdict?.rearmDelayMs).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+});
+
+describe('reconcileLoopRoutines — lifecycle-death reclassification (EI-13818)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  it("a CLEANLY-completed turn whose text is a session-limit death feeds 'error' (not a false 'ok') and re-arms past the bare interval", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-1',
+          target_owner_id: 'su-leader',
+          interval_sec: 180, // the reported incident's ~3min cadence
+          parked: true,
+          install_slug: 'papercusp',
+          name: 'loop-su-leader',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: pgString(T0 + 5_000), // the Stop hook DID fire — a "clean" exit
+          presence_last_active_at: null,
+          last_assistant_text_after_fire: "You've hit your session limit · resets 5:40am (America/New_York)",
+        },
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('lifecycle'); // the signal itself is unchanged — only the outcome is
+    // The whole point: this must NOT be the bare completedAt+interval a false 'ok' would use.
+    expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 5_000 + 180_000);
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-leader',
+      expect.stringContaining('lifecycle-death:usage_limit'),
+      'error', // NOT 'ok' — this is the exact false-positive the bug report describes
+    );
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-1',
+        targetOwnerId: 'su-leader',
+        verdict: expect.objectContaining({ reason: 'usage_limit' }),
+      }),
+    );
+  });
+
+  it('a lifecycle completion with ORDINARY text is unaffected — still feeds `ok` at the bare interval', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-1',
+          target_owner_id: 'su-healthy',
+          interval_sec: 60,
+          parked: true,
+          install_slug: 'papercusp',
+          name: 'loop-su-healthy',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: pgString(T0 + 5_000),
+          presence_last_active_at: null,
+          last_assistant_text_after_fire: 'Checkpointed and ending the turn — work continues next wake.',
+        },
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].nextFireAt).toBe(T0 + 5_000 + 60_000); // byte-identical to the pre-EI-13818 math
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-healthy', expect.stringContaining('lifecycle'), 'ok');
+    expect(escalateLifecycleDeath).not.toHaveBeenCalled();
   });
 });
 

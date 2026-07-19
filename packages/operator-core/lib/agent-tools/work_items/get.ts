@@ -19,6 +19,7 @@ import { getWorkItemCheckpointWithMeta } from "../../work-item-checkpoint";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
 import { getPresence } from "../coordination/presence";
 import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
+import { looksLikeCitedProseEvidence } from "../../completion-audit";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -48,8 +49,7 @@ const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
 export default defineTool({
   name: "work_items:get",
   profile: "engineer",
-  description:
-    "Fetch one OR many work-items by id (WI-/F-/EI-…) in ONE call — `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id repeated across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, error? }], counts } — correlate by id, not position; a missing id returns { ok:false } without failing the rest. `planItemBlocked` (EI-13715, set only when firing): the item's linked plan lane is still blocked/needs-human/stale-terminal — { reason, planSlug, itemId, effectiveStatus }; a bare `workItem.state`/`externalBlockers:null` doesn't prove there's no reason, so check it (or plans:get-item) before unblocking. `checkpoint` is in-flight state from work_items:checkpoint (null if none) — check before assuming a cold resume lost it. `checkpointAgeMs`/`checkpointUpdatedAtMs` (EI-8885) = its write recency: a checkpoint is a HYPOTHESIS, trust it less the older it is — re-verify a stale one against ground truth (real file/test), not prose. `checkpointStale` (set only when firing): the assignee stayed active AFTER it — don't infer safety.",
+    "Fetch one OR many work-items by id (WI-/F-/EI-…) in ONE call — `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id repeated across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, auditProseEvidenceLikely?, error? }], counts } — correlate by id, not position; a missing id returns { ok:false } without failing the rest. `planItemBlocked` (EI-13715, set only when firing): the item's linked plan lane is still blocked/needs-human/stale-terminal — { reason, planSlug, itemId, effectiveStatus }; a bare `workItem.state`/`externalBlockers:null` doesn't prove there's no reason, so check it (or plans:get-item) before unblocking. `checkpoint` is in-flight state from work_items:checkpoint (null if none) — check before assuming a cold resume lost it. `checkpointAgeMs`/`checkpointUpdatedAtMs` (EI-8885) = its write recency: a checkpoint is a HYPOTHESIS, trust it less the older it is — re-verify a stale one against ground truth (real file/test), not prose. `checkpointStale` (set only when firing): the assignee stayed active AFTER it — don't infer safety. `auditProseEvidenceLikely` (EI-13845, set only when `workItem.terminalCompletionEvidence` is empty AND a `terminalCompletionRef` exists): completion evidence lives on TWO surfaces — the structured `terminalCompletionEvidence` and the free-text `terminalCompletionRef` (`completion.summary`), and a closer who wrote real verification detail as PROSE instead of the structured fields leaves the former empty. An empty `terminalCompletionEvidence` alone is NOT proof of an unverified close — read `terminalCompletionRef` (or check this flag) before treating it as bare and reopening.",
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     notWhen:
@@ -175,6 +175,23 @@ export default defineTool({
         // fails open (null on no back-pointer, lookup error, or a clear lane), cheap
         // (one plan-row read, only when the item actually carries the back-pointer).
         const planItemBlocked = await planItemLaneBlockReason(workItem).catch(() => null);
+        // EI-13845: completion evidence lives on TWO surfaces — the STRUCTURED
+        // `terminalCompletionEvidence` (testsRun/testResult/verifiedHow/…, populated only
+        // when the closer filled those specific fields) and the PROSE `terminalCompletionRef`
+        // (`completion.summary`, which many closers use to write the real verification detail
+        // instead — "535 tests green; unblocked P-005" cites nothing the structured fields
+        // capture). A reader of a SINGLE item via work_items:get had no way to tell "never
+        // said how" apart from "said how, in prose" — work_items:list's `audit:'no-evidence'`
+        // path already stamps this signal (looksLikeCitedProseEvidence, EI-13424) but only on
+        // that bulk sweep, not here, so an auditor who pulled the one item straight (as in the
+        // WI-5153 near-wrongful-reopen this closes) saw only the empty structured field and
+        // read it as "no evidence at all". Stamp the same best-effort signal here whenever the
+        // structured surface is empty but a completion ref exists, so both surfaces are visible
+        // together wherever completion evidence is read — never just the possibly-empty one.
+        const auditProseEvidenceLikely =
+          !workItem.terminalCompletionEvidence && workItem.terminalCompletionRef
+            ? looksLikeCitedProseEvidence(workItem.terminalCompletionRef)
+            : undefined;
         return {
           ok: true as const,
           id,
@@ -184,6 +201,7 @@ export default defineTool({
           checkpointUpdatedAtMs,
           ...(checkpointStale ? { checkpointStale } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),
+          ...(auditProseEvidenceLikely !== undefined ? { auditProseEvidenceLikely } : {}),
         };
       },
       { keyOf: (id) => ({ id }) },

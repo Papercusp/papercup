@@ -16,9 +16,20 @@
  *      so a storm of dead loop turns backs off + opens the circuit (P0b), and
  *   2. re-arms the loop's `next_fire_at` by the 429 `retry-after` (P1a) instead of blindly
  *      retrying into the same wall — only while the loop is still parked at 'infinity' (the
- *      very turn we observed die), so a healthy/already-re-armed loop is never disturbed.
+ *      very turn we observed die), so a healthy/already-re-armed loop is never disturbed, and
+ *   3. (EI-13818) raises a loud, debounced alert the FIRST time a `surfaceToUser` wedge class
+ *      (usage_limit/auth/permanent) is observed — loop:arm loops are deliberately excluded
+ *      from the chronic-failure sweep's own escalation (it expects the dead-owner terminal
+ *      guard to cover them), but that guard only fires on a CONFIRMED-unreachable owner, never
+ *      a rate-limited-but-alive one — the exact "nothing alerted while a leader burned" gap.
  *
- * Success (a clean exit) is a NO-OP here: the reconcile-loop completion-rebase owns the
+ * A clean exit is USUALLY success, but resume-turn-outcome.ts's `classifyResumeTurnExit` (also
+ * EI-13818) now first scans it for the same provider-wedge signature (a clean-exit "You've hit
+ * your session limit" is otherwise indistinguishable from a normal turn) before trusting it —
+ * closing the actual root cause: FOUR such deaths in 10 minutes were previously all recorded
+ * `ok:true`, so neither the circuit nor this handler ever saw them.
+ *
+ * A genuine success (a clean exit with no wedge signature) is a NO-OP here: the reconcile-loop completion-rebase owns the
  * `recordFire('ok')` circuit reset when it sees the turn's lifecycle 'ended' marker — the
  * channel-agnostic success signal (a live-INJECT wake has no subprocess to observe). The
  * reconcile stuck-park backstop is the channel-agnostic FAILURE fallback for the rare cases
@@ -210,6 +221,69 @@ export async function handleLoopResumeTurnExit(
     log(
       `loop '${routineId}' turn DIED (${klass}) → recorded error + ${rearmed ? `re-armed +${Math.round(delayMs / 1000)}s` : 'not re-armed (already advanced)'}`,
     );
+
+    // 3. EI-13818 (c): raise a LOUD, debounced signal the first time this loop is observed
+    // wedged. `outcome.error.surfaceToUser` is the shared taxonomy's own "the human must know
+    // about this" flag (true for usage_limit/auth/permanent — the exact classes a clean-exit
+    // wedge classifies into via resume-turn-outcome.ts). This loop is a `loop:arm`-owned routine
+    // (target_owner_id non-null), which `autoloop-chronic-failure.ts`'s sweep DELIBERATELY
+    // EXCLUDES from its own escalation — by design it expects the reconcile dead-owner guard's
+    // `escalateDeadLoop` to cover loop:arm loops instead. But that guard only fires once the
+    // owner is CONFIRMED unreachable; a rate-limited-but-alive owner (this bug's exact reported
+    // scenario — a fleet ran leaderless ~16min, would've been ~4h) never trips it, so nothing
+    // alerted. Fire on the FIRST wedge (not a chronic streak — post-fix, the 429-aware re-arm
+    // above can space failures hours apart, so waiting for a streak could itself take hours),
+    // debounced 6h per loop via the SAME watchdog-fires ledger + captureImprovement +
+    // immediate overwatch-wake primitives `autoloop-chronic-failure.ts` already uses — no
+    // parallel alerting system, just a second, narrower trigger into the same pipeline.
+    if (outcome.error.surfaceToUser) {
+      try {
+        const { claimWatchdogFire } = await import('../../pot/watchdog');
+        const claimed = await claimWatchdogFire({
+          workspaceId: ref.workspaceId,
+          installSlug: `${ref.installSlug}::${routineId}`,
+          source: 'loop-wedge-death',
+          reason: `loop '${routineId}' (owner ${ref.targetOwnerId ?? 'unknown'}) turn died wedged: ${klass} — ${outcome.error.message}`,
+          wakeAt: null,
+          windowHours: 6,
+        });
+        if (claimed) {
+          const { captureImprovement } = await import('../improvements/capture-core');
+          await captureImprovement({
+            title: `LOOP WEDGED: '${routineId}'@${ref.installSlug} turn died — ${klass} (owner ${ref.targetOwnerId ?? 'unknown'})`,
+            kind: 'bug',
+            severity: 'major',
+            body:
+              `A loop:arm-owned loop's resume turn died on a ${klass} the operator must know about: ` +
+              `${outcome.error.message}\n\nThis loop wakes its owner session on a fixed cadence — while ` +
+              `wedged (rate-limited/capped/auth-locked), every wake risks re-firing into the same wall. The ` +
+              `fire-gate + 429-aware re-arm (loop-turn-outcome.ts) are backing off automatically, but if this ` +
+              `owner is a FLEET LEADER the fleet may be running leaderless until it clears. Check ` +
+              `sessions:read / coord:presence for owner ${ref.targetOwnerId ?? 'unknown'}; if it is a fleet ` +
+              `leader, consider relaunching leadership on another account/session rather than waiting out the cap.`,
+            scope: `harness:${ref.installSlug}`,
+            foundDuring: 'loop-turn-outcome resume-turn wedge classification (EI-13818)',
+          });
+          try {
+            const { requestOverwatchWake } = await import('../../overwatch/wake-bridge');
+            const { resolvePotHomeSlug } = await import('../../pot/wake');
+            const wakeHarness = resolvePotHomeSlug(ref.installSlug, undefined);
+            if (wakeHarness) {
+              await requestOverwatchWake({
+                reason: `LOOP WEDGED: '${routineId}'@${ref.installSlug} (owner ${ref.targetOwnerId ?? 'unknown'}) — ${klass}, observation filed`,
+                harness: wakeHarness,
+                workspaceId: ref.workspaceId,
+              });
+            }
+          } catch (e) {
+            log(`overwatch wake failed for wedged loop ${routineId} (observation still filed): ${e instanceof Error ? e.message : e}`);
+          }
+        }
+      } catch (e) {
+        log(`wedge-alert failed for loop ${routineId} (fail-soft): ${e instanceof Error ? e.message : e}`);
+      }
+    }
+
     return { handled: true, routineId, class: klass, rearmedMs: rearmed ? delayMs : undefined };
   } catch (e) {
     log(`handler failed (fail-soft): ${e instanceof Error ? e.message : e}`);

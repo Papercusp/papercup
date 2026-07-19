@@ -83,4 +83,51 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
   it('isRateLimitDeath is false for a survived turn', () => {
     expect(isRateLimitDeath(classifyResumeTurnExit(raw({ exitCode: 0 })))).toBe(false);
   });
+
+  describe('EI-13818 — a CLEAN exit is not always success (the leaderless-fleet bug)', () => {
+    it('a clean exit whose tail is the verbatim session-limit message is a DEATH, not ok:true', () => {
+      // The exact incident: 4 consecutive resume turns each printed this and exited 0 —
+      // previously always classified ok:true, so the loop never backed off.
+      const now = Date.UTC(2026, 6, 17, 5, 31, 0);
+      const out = classifyResumeTurnExit(
+        raw({ exitCode: 0, signal: null, stdoutTail: "You've hit your session limit · resets 5:40am (America/New_York)" }),
+        now,
+      );
+      expect(out.ok).toBe(false);
+      if (!out.ok) {
+        expect(out.error.class).toBe('usage_limit');
+        expect(out.error.surfaceToUser).toBe(true);
+        expect(out.error.retryable).toBe(false);
+        expect(isRateLimitDeath(out)).toBe(true);
+        // The reset time is parsed from the evidence for the 429-aware re-arm (P1a).
+        expect(out.error.resetAt).toBeGreaterThan(now);
+      }
+    });
+
+    it('a clean exit whose tail is an org auth-wall message is a DEATH classified `auth`', () => {
+      const out = classifyResumeTurnExit(
+        raw({ exitCode: 0, signal: null, stdoutTail: 'Your organization has disabled Claude subscription access for Claude Code' }),
+      );
+      expect(out.ok).toBe(false);
+      if (!out.ok) {
+        expect(out.error.class).toBe('auth');
+        expect(out.error.surfaceToUser).toBe(true);
+      }
+    });
+
+    it('a clean exit that merely DISCUSSES rate limits/context windows stays ok:true (no false positive)', () => {
+      expect(classifyResumeTurnExit(raw({ exitCode: 0, stdoutTail: 'discussed the rate limit fix' })).ok).toBe(true);
+      expect(
+        classifyResumeTurnExit(raw({ exitCode: 0, stdoutTail: 'fixed the context window exceeded bug' })).ok,
+      ).toBe(true);
+    });
+
+    it('a SIGNALLED or non-zero exit still goes through the normal subprocess classifier (unaffected)', () => {
+      const out = classifyResumeTurnExit(
+        raw({ exitCode: 1, stdoutTail: "You've hit your session limit · resets 5:40am" }),
+      );
+      expect(out.ok).toBe(false);
+      if (!out.ok) expect(out.error.class).toBe('usage_limit');
+    });
+  });
 });

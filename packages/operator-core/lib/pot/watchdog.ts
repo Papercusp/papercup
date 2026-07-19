@@ -230,7 +230,14 @@ export type WatchdogSource =
   // one journal since the condition first appeared). The decision doesn't need
   // debouncing (it's re-derived correctly every tick, cheaply); the LOG LINE
   // does — log once per (outcome, harness, role) per hour, not 2880x/day.
-  | 'autoloop-chronic-skip-log';
+  | 'autoloop-chronic-skip-log'
+  // EI-13818: a loop:arm loop's resume turn died on a `surfaceToUser` wedge class
+  // (usage_limit/auth/permanent) — a class the chronic-autoloop-failure sweep
+  // deliberately EXCLUDES (it expects the dead-owner terminal guard to cover
+  // loop:arm loops), but a rate-limited-but-ALIVE owner never trips that guard.
+  // Fires the FIRST time a wedge is observed for a given loop, debounced 6h —
+  // see loop-turn-outcome.ts's `handleLoopResumeTurnExit`.
+  | 'loop-wedge-death';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
