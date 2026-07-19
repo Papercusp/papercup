@@ -10,6 +10,7 @@ import net from 'node:net';
 import {
   findLiveHost,
   hostSupports,
+  latestRespawnNativeId,
   mcpReconnectViaPty,
   injectIntoHost,
   interruptViaPty,
@@ -530,5 +531,74 @@ describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /m
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(1);
     expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'mcp-reconnect', data: 'papercusp-su' });
+  });
+});
+
+describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions ref)', () => {
+  const owner = 'su-71c6993d-5825-4697-994d-2f9922b889b6';
+  const write = (dir: string, lines: unknown[]): void =>
+    writeFileSync(
+      join(dir, `${sanitizeKey(owner)}.events.jsonl`),
+      lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+  it('returns the NEWEST respawn nativeId, not the first', () => {
+    const dir = tmpDir();
+    write(dir, [
+      { ts: 't1', kind: 'respawned', mode: 'carry-respawn', nativeId: 'old-1' },
+      { ts: 't2', kind: 'respawn-carry-delivered', nativeId: 'old-1' },
+      { ts: 't3', kind: 'respawned', mode: 'carry-respawn', nativeId: 'newest-2' },
+    ]);
+    expect(latestRespawnNativeId(owner, dir)).toBe('newest-2');
+  });
+
+  it('ignores non-respawn lifecycle events between respawns', () => {
+    const dir = tmpDir();
+    write(dir, [
+      { ts: 't1', kind: 'respawned', nativeId: 'live-1' },
+      { ts: 't2', kind: 'compact-submitted', carry: true },
+      { ts: 't3', kind: 'respawn-failed', reason: 'argv-build-failed' },
+    ]);
+    // A FAILED respawn minted no successor — the last LANDED one still stands.
+    expect(latestRespawnNativeId(owner, dir)).toBe('live-1');
+  });
+
+  it('counts a carry-drill respawn (it rotates the native id identically)', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: 't1', kind: 'carry-drill-respawned', nativeId: 'drill-1' }]);
+    expect(latestRespawnNativeId(owner, dir)).toBe('drill-1');
+  });
+
+  it('returns null when the owner has never respawned — the DB ref stands', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: 't1', kind: 'compact-submitted', carry: true }]);
+    expect(latestRespawnNativeId(owner, dir)).toBeNull();
+  });
+
+  it('returns null (never throws) with no log at all — non-psu cohorts untouched', () => {
+    expect(latestRespawnNativeId('su-never-hosted', tmpDir())).toBeNull();
+  });
+
+  it('survives a corrupt/partial line — the tail window can start mid-line', () => {
+    const dir = tmpDir();
+    const p = join(dir, `${sanitizeKey(owner)}.events.jsonl`);
+    writeFileSync(
+      p,
+      'ativeId":"truncated-garbage"}\n' +
+        JSON.stringify({ ts: 't2', kind: 'respawned', nativeId: 'good-2' }) +
+        '\n',
+    );
+    expect(latestRespawnNativeId(owner, dir)).toBe('good-2');
+  });
+
+  it('a respawn recorded WITHOUT a nativeId (recycle) reports null, not a stale id', () => {
+    const dir = tmpDir();
+    write(dir, [
+      { ts: 't1', kind: 'respawned', nativeId: 'old-1' },
+      { ts: 't2', kind: 'respawned', mode: 'recycle', nativeId: null },
+    ]);
+    // The newest respawn rotated to an id the host did not record; claiming the
+    // superseded 'old-1' would re-pin the estimate to a dead predecessor.
+    expect(latestRespawnNativeId(owner, dir)).toBeNull();
   });
 });

@@ -20,7 +20,16 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
+import {
+  readFileSync,
+  existsSync,
+  readdirSync,
+  unlinkSync,
+  statSync,
+  openSync,
+  readSync,
+  closeSync,
+} from 'node:fs';
 import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 
@@ -106,6 +115,69 @@ export function sanitizeKey(ownerId: string): string {
   return String(ownerId || 'unknown')
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .slice(0, 200);
+}
+
+/** Bytes of `<owner>.events.jsonl` tail scanned for the newest `respawned`.
+ *  The host appends one small JSON line per lifecycle event, so a few KB covers
+ *  many respawns; bounded so a long-lived owner's log is never fully read. */
+const RESPAWN_SCAN_TAIL_BYTES = 64 * 1024;
+
+/**
+ * WI-5075 rung 3: the native session id of this owner's MOST RECENT
+ * carry-respawn/recycle, straight from the host's own event log — or null when
+ * the owner has never respawned (or the log is unreadable).
+ *
+ * Why this exists as a SERVER-side read. `adv_sessions.session_id` is the
+ * authoritative owner→native mapping the compaction estimate resolves through,
+ * and it is re-anchored by a REPORT the psu host POSTs after each respawn. A
+ * host running launcher code older than that report (every psu session launched
+ * before 2026-07-18 16:46 EDT) never sends it, so the row keeps naming the DEAD
+ * predecessor — whose frozen, over-limit transcript the watchdog then reads as
+ * the near-empty successor's usage and cuts it again, forever (the su-71c69
+ * loop: 7 cuts in 105 min while the session was actively working).
+ *
+ * A host-side fix cannot heal an ALREADY-RUNNING old host — only a server-side
+ * reconcile can, and the `respawned` host event carrying `nativeId` is written
+ * by old and new hosts alike. Same-box, same-dir, bounded-tail read: the same
+ * trust boundary and cost class as {@link findLiveHost}.
+ */
+export function latestRespawnNativeId(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+): string | null {
+  try {
+    const path = join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
+    const { size } = statSync(path);
+    const start = Math.max(0, size - RESPAWN_SCAN_TAIL_BYTES);
+    const fd = openSync(path, 'r');
+    let text: string;
+    try {
+      const buf = Buffer.alloc(size - start);
+      readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+    // Scan backwards: the newest respawn wins. A partial first line (the tail
+    // window can start mid-line) simply fails JSON.parse and is skipped.
+    const lines = text.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let ev: { kind?: unknown; nativeId?: unknown };
+      try {
+        ev = JSON.parse(line) as typeof ev;
+      } catch {
+        continue;
+      }
+      // Drill respawns rotate the native id exactly like a real one.
+      if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
+      return typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function pidAlive(pid: number): boolean {

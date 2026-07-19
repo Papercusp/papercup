@@ -242,7 +242,7 @@ export function fallbackTranscriptFresh(p: string, nowMs = Date.now()): boolean 
  * `autoCompactWindow` cap (P-014), not this estimate.
  */
 export async function estimateContextTokensForOwner(ownerId: string): Promise<number | null> {
-  const ref = await resolveSessionRef(ownerId);
+  const ref = await resolveSessionRefReconciled(ownerId);
   if (!ref) return null;
   const primary = await estimateContextTokens(ref, ownerId);
   if (primary != null) return primary;
@@ -250,6 +250,44 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
   const alt = newestTranscriptUnderOwner(ownerId);
   if (!alt || !fallbackTranscriptFresh(alt)) return null;
   return tokensFromFileSize(alt);
+}
+
+/**
+ * {@link resolveSessionRef}, but with the DB's native-session ref RECONCILED
+ * against the host's own respawn log before it is trusted (WI-5075 rung 3).
+ *
+ * `adv_sessions.session_id` is re-anchored by a report the psu host POSTs after
+ * each carry-respawn. A host running pre-2026-07-18-16:46 launcher code never
+ * sends it, so the row keeps naming the DEAD predecessor. Estimating through
+ * that ref reads the predecessor's frozen, over-limit transcript as the
+ * near-empty successor's usage — and the watchdog cuts the live successor at
+ * every grace expiry, forever. Rungs 1–2 (the launcher report; the P-016
+ * fallback freshness gate) cannot reach this case: rung 1 needs a NEW host
+ * process, and rung 2 only guards the fallback, which a resolvable-but-stale
+ * primary never reaches.
+ *
+ * So: when the host log names a DIFFERENT (newer) native id than the DB, the DB
+ * ref is provably a predecessor — prefer the host's. A successor that has not
+ * yet written its first turn then estimates null, which the watchdog's
+ * dark-telemetry grace absorbs WITHOUT a cut — the correct reading for a
+ * near-empty session, and the loop cannot start.
+ *
+ * Host-log-silent owners (no psu host, never respawned, unreadable dir) keep the
+ * DB ref unchanged, so non-psu and never-respawned cohorts are untouched.
+ */
+export async function resolveSessionRefReconciled(ownerId: string): Promise<SessionRef | null> {
+  const ref = await resolveSessionRef(ownerId);
+  if (!ref) return null;
+  // The rotation is a claude-only concept (--session-id); never touch omp/codex.
+  if (ref.agent === 'omp' || ref.agent === 'codex') return ref;
+  try {
+    const { latestRespawnNativeId } = await import('./events/await/psu-pty-discovery');
+    const hostNativeId = latestRespawnNativeId(ownerId);
+    if (!hostNativeId || hostNativeId === ref.sessionId) return ref;
+    return { ...ref, sessionId: hostNativeId };
+  } catch {
+    return ref;
+  }
 }
 
 /* ── WI-4154: anchored incremental reads — right the first time ─────────────
