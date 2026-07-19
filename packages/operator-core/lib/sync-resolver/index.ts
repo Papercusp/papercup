@@ -4236,17 +4236,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── knowledgePacks.candidates — the fleet→pack review queue (consume-edges
-  // P-032, B-11). Pending candidates staged by recurrence-escalation, with
-  // provenance; the Learnings view renders adopt/dismiss. Stage/decide fire
-  // this name explicitly (an adopt also fires knowledgePacks.list +
-  // learning.hive — the version bump lights updateAvailable). Read failure
-  // degrades to [] — the strip just disappears, never a 500.
+  // ── knowledgePacks.candidates — the fleet→pack candidate pool (consume-edges
+  // P-032, B-11; auto-adopt reversal WI-5414). Most candidates are decided by
+  // the automated review sweep (autoAdoptPendingCandidates) before an owner
+  // ever sees them — the Learnings view reads this for the (usually near-empty)
+  // still-pending queue AND, with `{ status: 'adopted', decidedBy:
+  // AUTO_ADOPT_REVIEWER }`, the recent-auto-adoptions strip. Defaults to
+  // status:'pending' when no args are passed (back-compat with the original
+  // shape). Stage/decide fire this name explicitly (an adopt also fires
+  // knowledgePacks.list + learning.hive — the version bump lights
+  // updateAvailable). Read failure degrades to [] — the strip just
+  // disappears, never a 500.
   'knowledgePacks.candidates': {
-    resolve: async () => {
+    resolve: async (args) => {
       try {
         const { listKnowledgePackCandidates } = await import('../knowledge-packs/candidates');
-        return await listKnowledgePackCandidates({ status: 'pending' });
+        const a = (args ?? {}) as { status?: 'pending' | 'adopted' | 'dismissed'; decidedBy?: string; limit?: number };
+        return await listKnowledgePackCandidates({
+          status: a.status ?? 'pending',
+          ...(a.decidedBy ? { decidedBy: a.decidedBy } : {}),
+          ...(a.limit ? { limit: a.limit } : {}),
+        });
       } catch (err) {
         console.warn('[knowledgePacks.candidates] read failed:', err instanceof Error ? err.message : err);
         return [];

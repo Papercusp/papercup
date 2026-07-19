@@ -220,13 +220,20 @@ export async function stageKnowledgePackCandidate(
  * ──────────────────────────────────────────────────────────────────────── */
 
 export async function listKnowledgePackCandidates(
-  opts: { status?: CandidateStatus; limit?: number } = {},
+  opts: { status?: CandidateStatus; decidedBy?: string; limit?: number } = {},
 ): Promise<KnowledgePackCandidate[]> {
   const { sql } = getOrgPg();
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const clauses = [
+    ...(opts.status ? [sql`status = ${opts.status}`] : []),
+    // `decidedBy` narrows to one decider's calls (e.g. the auto-adopt sweep's
+    // machine identity) — the recent-auto-adoptions strip's read (WI-5414).
+    ...(opts.decidedBy ? [sql`decided_by = ${opts.decidedBy}`] : []),
+  ];
+  const where = clauses.length > 0 ? sql`WHERE ${clauses.reduce((a, b) => sql`${a} AND ${b}`)}` : sql``;
   const rows = await sql<CandidateRow[]>`
     SELECT * FROM harness_shared.knowledge_pack_candidates
-    ${opts.status ? sql`WHERE status = ${opts.status}` : sql``}
+    ${where}
     ORDER BY created_at DESC
     LIMIT ${limit}`;
   return rows.map(rowToCandidate);

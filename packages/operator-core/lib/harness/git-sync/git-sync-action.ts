@@ -2068,6 +2068,14 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
             key: STAGING_ADVANCE_EVENT_KEY,
             payload: outcome.announcement,
             source: identity.ownerId,
+            // Repo scoping (WI-5395 family): staging-advance events are
+            // hive-scoped, but a hive binds SEVERAL repos and the sha belongs
+            // to exactly one — without this, every OTHER repo's worktree-bridge
+            // consumes the event, fails `rev-parse` in its own store, and
+            // holds its cursor retryable (live-caught: the papercusp install
+            // wedged behind a hive-canary announcement minutes after the
+            // bridged flip). Envelope metadata, NOT inside the signed payload.
+            repo_key: slug,
           },
         },
       });
