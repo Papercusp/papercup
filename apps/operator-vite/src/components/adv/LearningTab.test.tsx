@@ -1125,9 +1125,17 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     expect(screen.queryByText("Tighter scoper prompt")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
     expect(screen.getByText("Tighter scoper prompt")).toBeTruthy();
-    expect(screen.getByText("reframing")).toBeTruthy(); // lens chip
+    // "reframing" appears on the stack's lens badge AND in the card's
+    // always-visible trace lens stage.
+    expect(screen.getAllByText("reframing").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("won")).toBeTruthy(); // classified outcome shown
-    expect(screen.queryByText("pending")).toBeNull(); // pending outcome suppressed
+    // The card-head outcome chip still SUPPRESSES pending (the trace's outcome
+    // stage is where "pending" legitimately shows).
+    expect(
+      [...document.querySelectorAll(".pc-learning__score")].some(
+        (el) => el.textContent === "pending",
+      ),
+    ).toBe(false);
     expect(
       screen.getAllByRole("button", { name: /Cache-warmup|Tighter scoper/ })
         .length,
@@ -1156,18 +1164,7 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     ).toContain("none yet");
   });
 
-  it("row click drives the pipeline trace's ?itrace URL param — closed by default (P-004)", () => {
-    render(<ScoutView />);
-    // Closed by default: no trace panel rendered.
-    expect(screen.queryByLabelText(/Pipeline trace for/)).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", { name: /Cache-warmup plan draft/ }),
-    );
-    expect(nuqsSetters.itrace).toHaveBeenCalledWith("idea-1");
-  });
-
-  it("expands an idea into its pipeline trace — grounding → lens → route → grade → outcome (P-004)", () => {
-    nuqsState.itrace = "idea-1"; // ?itrace=<ideaId> — agent-drivable URL state
+  it("shows an ungraded card's FULL pipeline trace inline — no click-to-reveal (owner ask 2026-07-19)", () => {
     render(<ScoutView />);
     const trace = screen.getByLabelText(
       "Pipeline trace for Cache-warmup plan draft",
@@ -1184,11 +1181,13 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     expect(trace.textContent).toContain("plan:scout-cache-warmup");
     expect(trace.textContent).toContain("ungraded"); // the gap IS the signal
     expect(trace.textContent).toContain("pending");
-    // Clicking the open row asks nuqs to close the trace.
+    // The card TITLE deep-links to the routed artifact (a plan → Create tab).
     fireEvent.click(
-      screen.getByRole("button", { name: /Cache-warmup plan draft/ }),
+      screen.getByRole("button", { name: "Cache-warmup plan draft" }),
     );
-    expect(nuqsSetters.itrace).toHaveBeenCalledWith(null);
+    expect(nuqsSetters.plan).toHaveBeenCalledWith("scout-cache-warmup");
+    expect(nuqsSetters.view).toHaveBeenCalledWith("plans");
+    expect(nuqsSetters.tab).toHaveBeenCalledWith("plans");
   });
 
   it("renders the trace's grounding gap dimmed when no refs were recorded (P-004)", () => {
@@ -1228,16 +1227,23 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       invalidate: vi.fn(),
     };
     const { rerender } = render(<ScoutView />);
-    // Decision queue: one lens stack, only the top card's title is rendered.
-    expect(screen.getByText("Decision queue")).toBeTruthy();
-    expect(screen.getByText("Queue idea 1")).toBeTruthy();
-    expect(screen.queryByText("Queue idea 2")).toBeNull();
+    // Decision queue: one lens stack. The active card is live; the stacked
+    // cards behind it are mounted (their content is what makes the deck
+    // animation seamless) but aria-hidden + inert.
+    expect(
+      screen.getByText("Queue idea 1").closest('[aria-hidden="true"]'),
+    ).toBeNull();
+    expect(
+      screen.getByText("Queue idea 2").closest('[aria-hidden="true"]'),
+    ).toBeTruthy();
     // The stack holds 8 (of 10; the other 2 are "earlier") → 8 position dots,
     // the last labelled "8 of 8".
     expect(screen.getByLabelText("Go to card 8 of 8")).toBeTruthy();
-    // Step the deck: the top card advances to the next idea.
+    // Step the deck: the next idea becomes the live top card.
     fireEvent.click(screen.getAllByRole("button", { name: "Next card" })[0]);
-    expect(screen.getByText("Queue idea 2")).toBeTruthy();
+    expect(
+      screen.getByText("Queue idea 2").closest('[aria-hidden="true"]'),
+    ).toBeNull();
     // The remaining 2 live behind the "Earlier ungraded ideas" disclosure.
     fireEvent.click(
       screen.getByRole("button", { name: /Earlier ungraded ideas/ }),
@@ -1390,9 +1396,13 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       invalidate: vi.fn(),
     };
     render(<ScoutView />);
-    fireEvent.click(screen.getByRole("button", { name: /Lens weights/ }));
+    // Always visible under a standard header — no disclosure to open
+    // (owner ask 2026-07-19).
+    expect(screen.getByText("Lens weights")).toBeTruthy();
+    expect(
+      screen.getByText(/the ideator's learned creative-lens steering/),
+    ).toBeTruthy();
     const strip = screen.getByLabelText("Lens sampling weights");
-    expect(strip.textContent).toContain("lens weights");
     expect(strip.textContent).toContain("75%");
     expect(strip.textContent).toContain("25%");
     // Sorted descending: reframing (75%) before analogical (25%).

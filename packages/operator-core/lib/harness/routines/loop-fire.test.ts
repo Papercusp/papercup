@@ -304,7 +304,7 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     });
   });
 
-  it('a missed wake (woke 0, staged 0) auto-ends the orphaned loop instead of leaving it parked', async () => {
+  it('EI-16166: a missed wake (woke 0, staged 0) records an error and stays PARKED — it does NOT auto-end the loop on the first miss', async () => {
     const deps = mkDeps({
       wake: vi.fn(async () => ({
         targets: ['su-pinned'],
@@ -316,12 +316,12 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     const res = await fireLoopWake(baseInput, deps);
 
     expect(res).toMatchObject({ fired: false, reason: 'no-session-now', woken: 0 });
-    expect(deps.deactivateLoop).toHaveBeenCalledWith({
-      sql: undefined,
-      installSlug: 'papercusp',
-      routineName: 'loop-su-pinned',
-    });
-    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now:auto-ended', 'error');
+    // No immediate deactivation — a single miss must not silently kill the loop with no
+    // owner alert (EI-16166). The error is recorded to feed the SAME failure-streak
+    // circuit / stuck-park+quick-retry ladder every other death signal goes through;
+    // only that ladder's reachability-vetoed terminal guard may eventually auto-pause it,
+    // and it does so LOUDLY (escalateDeadLoop), unlike this fast path.
+    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
   });
 
   it('a staged wake (manual wake-mode / hive pause) counts as reached → queued (attempt, streak preserved)', async () => {

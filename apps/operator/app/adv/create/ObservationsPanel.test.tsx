@@ -483,12 +483,21 @@ describe("<ObservationsPanel />", () => {
     render(<ObservationsPanel />, {
       wrapper: withNuqsTestingAdapter({ searchParams: "?obsview=stacks" }),
     });
-    // Same-kind cards overlap → only the top card of each kind shows its title.
-    expect(screen.getByText("Friction one")).toBeTruthy();
-    expect(screen.queryByText("Friction two")).toBeNull();
-    expect(screen.getByText("Gap one")).toBeTruthy();
+    // Same-kind cards overlap: the top card is live; the stacked card behind
+    // it is mounted (content dimmed under the pile) but aria-hidden + inert.
+    expect(
+      screen.getByText("Friction one").closest('[aria-hidden="true"]'),
+    ).toBeNull();
+    expect(
+      screen.getByText("Friction two").closest('[aria-hidden="true"]'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Gap one").closest('[aria-hidden="true"]'),
+    ).toBeNull();
     // The friction deck (2 cards, rendered first) steps to the next card.
     fireEvent.click(screen.getAllByRole("button", { name: "Next card" })[0]);
-    expect(screen.getByText("Friction two")).toBeTruthy();
+    expect(
+      screen.getByText("Friction two").closest('[aria-hidden="true"]'),
+    ).toBeNull();
   });
 });

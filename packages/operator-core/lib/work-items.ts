@@ -4073,7 +4073,8 @@ export async function reorderWorkItem(
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   // EI-15027: a literal 'unassigned' sentinel assignee is unclaimed too, not a real holder.
-  if (!normalizeTakenBy(wi.assignee)) {
+  const assignee = normalizeTakenBy(wi.assignee);
+  if (!assignee) {
     return { error: `work_item '${id}' is unassigned — claim it before ranking` };
   }
 
@@ -4086,18 +4087,18 @@ export async function reorderWorkItem(
 
   const rankRows = await sql<{ rank: number }[]>`
     SELECT harness_shared.reorder_work_item(
-      ${workspace}, ${wi.assignee}, ${id}, ${Math.trunc(target)}, ${writer}
+      ${workspace}, ${assignee}, ${id}, ${Math.trunc(target)}, ${writer}
     ) AS rank`;
   const rank = Number(rankRows[0]?.rank ?? 0);
 
   const queueRows = await sql<{ feature_id: string; assignee_rank: number; title: string | null }[]>`
     SELECT feature_id, assignee_rank, title
       FROM harness_shared.work_items
-     WHERE workspace_id = ${workspace} AND taken_by = ${wi.assignee}
+     WHERE workspace_id = ${workspace} AND taken_by = ${assignee}
      ORDER BY assignee_rank ASC NULLS LAST, updated_ts DESC`;
   return {
     id,
-    assignee: wi.assignee,
+    assignee,
     rank,
     writer,
     queue: queueRows.map((r) => ({ id: r.feature_id, rank: r.assignee_rank, title: r.title ?? '' })),

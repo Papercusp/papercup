@@ -4,7 +4,12 @@ import { ArrowRight, ListChecks, Users, Bell, Activity as ActivityIcon } from 'l
 import { useSyncQuery } from '@papercusp/sync';
 import FleetRateControl from './FleetRateControl';
 import { isRunningAgent, type RosterAgent } from './AgentsRunningPill';
-import { isSystemConversationActor } from './AdvConversationsTab';
+
+/** System-origin coord actor (system-watchdog, system-routine, …). MUST match
+ *  AdvConversationsTab's exported isSystemConversationActor — inlined here so
+ *  the Overview leaf doesn't pull the whole Conversations module in. */
+const isSystemActor = (v: string | null | undefined): boolean =>
+  /^system(?:$|[-_:/.])/i.test((v ?? '').trim());
 import {
   usePlanList,
   usePlanAttention,
@@ -259,7 +264,7 @@ export default function AdvOverviewTab() {
   const recentActivity = useMemo<OverviewActivityRow[]>(
     () =>
       (activityQ.data ?? [])
-        .filter((r) => !isSystemConversationActor(r.from))
+        .filter((r) => !isSystemActor(r.from))
         .slice(0, 10)
         .map((r) => ({
           id: r.msg_id,

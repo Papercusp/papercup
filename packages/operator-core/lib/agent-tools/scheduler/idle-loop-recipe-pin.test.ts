@@ -38,6 +38,12 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 }));
 vi.mock('../../work-items', () => ({ CLAIM_STATES_ALLOWLIST: ['todo', 'open', 'failing'] }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
+// EI-16057: the harness-existence gate (checked on every miss) resolves `harness` against
+// the registry — stub it so the miss this test drives falls through to the idle-recipe
+// advice path it's actually pinning, not the (also-real) harness_not_found branch.
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'h' }] })),
+}));
 
 import getNext, { IDLE_PULL_MISS_ADVICE } from './get_next';
 import { DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE } from '../../harness/routines/loop';

@@ -25,7 +25,6 @@
  * in routinesTickImpl (Task-#8, 2026-07-03); this module only delivers the fire.
  */
 import type { Sql } from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
 import {
   checkFireGate as defaultCheckFireGate,
   recordFire as defaultRecordFire,
@@ -117,7 +116,6 @@ export interface LoopFireDeps {
     workspaceId: string | null | undefined,
     opts?: { sql?: Sql },
   ) => Promise<string | null>;
-  deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
   /** EI-10901: read the owner's currently-active BLOCKING awaits (defaults to
    *  listParkedAwaitsForSubscribers, scoped to one owner). */
   listBlockingAwaits?: (targetOwnerId: string) => Promise<BlockingAwaitLike[]>;
@@ -211,18 +209,6 @@ export function decideLoopAwaitSuppression(input: {
 async function defaultListBlockingAwaits(targetOwnerId: string): Promise<BlockingAwaitLike[]> {
   const rows = await listParkedAwaitsForSubscribers([targetOwnerId]);
   return rows.map((r) => ({ eventKey: r.eventKey, expiresTs: r.expiresTs, createdAt: r.createdAt }));
-}
-
-async function defaultDeactivateLoop(input: { sql?: Sql; installSlug: string; routineName: string }): Promise<boolean> {
-  const sql = input.sql ?? getOrgPg().sql;
-  const result = await sql`
-    UPDATE harness_shared.routines
-       SET active = FALSE, updated_at = now()
-     WHERE install_slug = ${input.installSlug}
-       AND name = ${input.routineName}
-       AND active = TRUE
-  `;
-  return Number((result as { count: number }).count ?? 0) > 0;
 }
 
 /** Read the loop kickoff (wake-turn text) from the routine's payload_template, if any. */
@@ -524,7 +510,6 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
           updatedAtMs: null,
         })
       : defaultGetLoopCarryNoteWithMeta);
-  const deactivateLoop = deps.deactivateLoop ?? defaultDeactivateLoop;
   const recordWithheld = deps.recordWithheld ?? defaultRecordWithheld;
 
   if (!input.targetOwnerId) {

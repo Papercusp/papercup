@@ -28,6 +28,15 @@ vi.mock('nuqs', () => ({
     nuqsSetters[key] ??= vi.fn(async () => {});
     return [nuqsState[key], nuqsSetters[key]];
   },
+  // The activity deep-link writes {conv, fmsg, fsys} in ONE useQueryStates
+  // batch; expose it as a single spy keyed '__states'.
+  useQueryStates: (parsers: Record<string, unknown>) => {
+    nuqsSetters.__states ??= vi.fn(async () => {});
+    return [
+      Object.fromEntries(Object.keys(parsers).map((k) => [k, nuqsState[k] ?? null])),
+      nuqsSetters.__states,
+    ];
+  },
 }));
 
 // Brief 20's control has its own test file — stub it out so this one only
@@ -47,11 +56,10 @@ vi.mock('@/app/admin/plans/plans-api', () => ({
   usePlanAttention: () => attentionResult,
 }));
 
-// Per-query sync mock — the tab subscribes to two distinct LIVE queries:
-//   dev.coordPresence (roster) · userActions.byHarness (activity).
-// A disabled query never resolves data (mirrors the no-fetch behaviour); the
-// activity query is disabled until a harness is selected (?slug=).
-let presenceResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
+// Per-query sync mock — the tab subscribes to two distinct LIVE queries
+// (WI-5517 rewire): advRoster.list (the pill's roster, SERVER-derived
+// liveness) · dev.coordFeed (the coordination stream).
+let rosterResult: { data?: unknown[]; loading?: boolean } = { data: [{ active: [] }], loading: false };
 let activityResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
@@ -69,33 +77,14 @@ vi.mock('@papercusp/sync', () => ({
     syncArgs[queryName] = args;
     if (enabled === false) return { data: undefined, loading: false, error: null };
     switch (queryName) {
-      case 'dev.coordPresence':
-        return { ...presenceResult, error: null };
-      // byHarness (a harness selected) + recent (All-Pots fleet-wide) share the
-      // same row shape + fixture (D-008: the All-Pots Activity fallback).
-      case 'userActions.byHarness':
-      case 'userActions.recent':
+      case 'advRoster.list':
+        return { ...rosterResult, error: null };
+      case 'dev.coordFeed':
         return { ...activityResult, error: null };
       default:
         return { data: undefined, loading: false, error: null };
     }
   },
-}));
-
-// liveness: deterministic — derive 'live'/'idle'/'stale' from the row's
-// heartbeatAt offset (the real dep is a dependency-free leaf; stub it so the
-// roster mapping is assertable without wall-clock coupling).
-vi.mock('@papercusp/operator-core/lib/liveness', () => ({
-  deriveLiveness: (iso: string) => {
-    const age = Date.now() - new Date(iso).getTime();
-    if (age < 60_000) return 'live';
-    if (age < 600_000) return 'idle';
-    return 'stale';
-  },
-}));
-
-vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
-  getBrowserWorkspaceId: () => 'ws-test',
 }));
 
 import AdvOverviewTab from './AdvOverviewTab';
@@ -125,56 +114,52 @@ const attn = (over: Partial<AttentionItem> & { tier?: string }): AttentionItem =
     ...over,
   }) as AttentionItem;
 
-// A raw dev.coordPresence row (PresenceRecord — the fields the tab maps). The
-// liveness mock derives live/idle/stale from `heartbeatAt`, so the fixtures set
-// an explicit age via `agoMs`.
-const presenceRow = (
+// An advRoster.list ACTIVE entry (RosterAgent — the fields the tab maps).
+// Liveness is server-derived on the entry; membership = isRunningAgent
+// (liveness !== 'stale' OR loopArmed) — the pill's shared predicate.
+const rosterEntry = (
   over: Partial<{
     ownerId: string;
-    ownerLabel: string;
+    label: string;
+    agent: string | null;
+    role: string | null;
     intent: string;
-    currentFiles: string[];
+    feature: string | null;
     currentPlanSlug: string | null;
-    agentRole: string | null;
-    source: string;
-    agoMs: number;
-    stale: boolean;
-  }>,
-) => {
-  const { agoMs = 0, ...rest } = over;
-  return {
-    ownerId: `o-${Math.random()}`,
-    ownerLabel: 'agent',
-    intent: '',
-    currentFiles: [],
-    currentPlanSlug: null,
-    agentRole: null,
-    source: 'claude',
-    heartbeatAt: new Date(Date.now() - agoMs).toISOString(),
-    stale: false,
-    ...rest,
-  };
-};
-
-// A raw userActions.byHarness row (the harness_shared.user_actions shape).
-const actionRow = (
-  over: Partial<{
-    id: string | number;
-    harnessSlug: string;
-    kind: string;
-    status: string;
-    summary: string | null;
-    actor: string | null;
-    startedAt: number;
+    liveness: string;
+    loopArmed: boolean;
   }>,
 ) => ({
-  id: `act-${Math.random()}`,
-  harnessSlug: 'papercup',
-  kind: 'tool',
-  status: 'ok',
+  ownerId: `o-${Math.random()}`,
+  label: 'agent',
+  agent: 'claude',
+  role: null,
+  intent: '',
+  feature: null,
+  currentPlanSlug: null,
+  liveness: 'live',
+  heartbeatAt: new Date().toISOString(),
+  loopArmed: false,
+  ...over,
+});
+
+// A dev.coordFeed row (the coordination-stream fields the tab reads).
+const feedRow = (
+  over: Partial<{
+    msg_id: string;
+    from: string;
+    kind: string;
+    summary: string | null;
+    body: string | null;
+    ts: string;
+  }>,
+) => ({
+  ts: new Date().toISOString(),
+  msg_id: `m-${Math.random()}`,
+  from: 'su-worker',
+  kind: 'message',
   summary: null,
-  actor: null,
-  startedAt: Date.now(),
+  body: null,
   ...over,
 });
 
@@ -188,7 +173,7 @@ describe('AdvOverviewTab component', () => {
     for (const k of Object.keys(syncArgs)) delete syncArgs[k];
     planListResult = { data: { plans: [] }, loading: false, error: null, refresh: vi.fn() };
     attentionResult = { data: { groups: [] }, loading: false, error: null, refresh: vi.fn() };
-    presenceResult = { data: [], loading: false };
+    rosterResult = { data: [{ active: [] }], loading: false };
     activityResult = { data: [], loading: false };
   });
 
@@ -207,32 +192,28 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('No active plans')).toBeTruthy();
     expect(screen.getByText('Nothing needs you right now')).toBeTruthy();
     expect(screen.getByText('No live agents')).toBeTruthy();
-    // No harness selected (?slug= null) → the Activity tile reads the fleet-wide
-    // userActions.recent feed (D-008); the empty fixture → its empty state. It is
-    // NOT scoped to a harness (no userActions.byHarness call).
-    expect(screen.getByText('No recent activity')).toBeTruthy();
-    expect(syncArgs['userActions.recent']).toMatchObject({ workspaceId: expect.any(String) });
-    expect(syncArgs['userActions.byHarness']).toBeUndefined();
-    // EI-1541 regression: the roster query MUST pass its workspace explicitly —
-    // omitting it makes the server resolver pass `workspaceId: null` straight
-    // through to PgPresenceStore.list, which reads every workspace unfiltered
-    // (`WHERE TRUE`) instead of scoping to this one, leaking every OTHER
-    // workspace's live agents into the AGENTS tile.
-    expect(syncArgs['dev.coordPresence']).toMatchObject({ workspace: 'ws-test' });
+    expect(screen.getByText('No recent agent activity')).toBeTruthy();
+    // WI-5517: the roster MUST be the pill's own query with IDENTICAL args (one
+    // shared cache entry + one shared membership rule) — never a client-side
+    // heartbeat re-derivation (PG-text timestamps are NaN under WebKit, which
+    // read every agent as 'stale' and blanked this tile).
+    expect(syncArgs['advRoster.list']).toMatchObject({ workspaceId: null, endedLimit: 20 });
+    // The activity feed asks for the WHOLE stream explicitly (system_only:false)
+    // and filters actors client-side — the server default must not decide.
+    expect(syncArgs['dev.coordFeed']).toMatchObject({ system_only: false });
   });
 
-  it('fills the All-Pots Activity tile from the fleet-wide userActions.recent feed (D-008)', () => {
-    // No harness selected (?slug= null), but the fleet-wide recent feed has rows —
-    // the tile must render them instead of an empty/"select a harness" state.
-    nuqsState.slug = null;
+  it('fills the Activity tile from the coord stream, filtering system-origin telemetry out', () => {
     activityResult = {
-      data: [actionRow({ id: 'fleet1', actor: 'mug', kind: 'place', summary: 'placed WI-900' })],
+      data: [
+        feedRow({ msg_id: 'f1', from: 'mug', kind: 'message', summary: 'placed WI-900' }),
+        feedRow({ msg_id: 'f2', from: 'system-watchdog', summary: 'infra-liveness sweep' }),
+      ],
       loading: false,
     };
     render(<AdvOverviewTab />);
     expect(screen.getByText('placed WI-900')).toBeTruthy();
-    expect(syncArgs['userActions.recent']).toMatchObject({ workspaceId: expect.any(String) });
-    expect(syncArgs['userActions.byHarness']).toBeUndefined();
+    expect(screen.queryByText('infra-liveness sweep')).toBeNull();
   });
 
   it('renders plan rows with the done/total fraction and the active-count badge', () => {
