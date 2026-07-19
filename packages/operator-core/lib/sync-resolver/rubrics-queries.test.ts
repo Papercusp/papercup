@@ -39,7 +39,7 @@ describe('rubrics.* / scorecards.* resolvers', () => {
     expect(names).toContain('rubrics.trend');
   });
 
-  it('rubrics.list groups scorecards per rubric: count + newest createdAt; 0/null when ungraded', async () => {
+  it('rubrics.list rolls up PER RUBRIC: count + newest createdAt; 0/null when ungraded', async () => {
     const listRubrics = vi.fn(async () => [
       {
         rubricId: 'su-agent-behavior',
@@ -66,23 +66,33 @@ describe('rubrics.* / scorecards.* resolvers', () => {
         updatedAt: '2026-07-08T00:00:00Z',
       },
     ]);
-    const listScorecards = vi.fn(async () => [
-      // newest-first, as the real store returns — grouping must keep the MAX
-      // createdAt regardless of order. score10s: 4 / 10 / null → avg (4+10)/2 = 7,
-      // the null (all-unknown) scorecard EXCLUDED; latestScore10 rides EI-3 (max at).
-      scorecard('su-agent-behavior', '2026-07-09T12:00:00Z', 'EI-2', 4),
-      scorecard('su-agent-behavior', '2026-07-09T15:00:00Z', 'EI-3', 10),
-      scorecard('su-agent-behavior', '2026-07-08T09:00:00Z', 'EI-1', null),
-      scorecard('some-other-rubric-not-listed', '2026-07-09T18:00:00Z', 'EI-4'),
-    ]);
+    // WI-5415: scorecards are read PER RUBRIC now (not one globally-capped combined
+    // read) — a query for 'never-graded' must NOT see 'su-agent-behavior's rows, and
+    // vice versa, regardless of which rubric has more recent/more numerous grading.
+    const byRubric: Record<string, unknown[]> = {
+      'su-agent-behavior': [
+        // newest-first, as the real store returns — grouping must keep the MAX
+        // createdAt regardless of order. score10s: 4 / 10 / null → avg (4+10)/2 = 7,
+        // the null (all-unknown) scorecard EXCLUDED; latestScore10 rides EI-3 (max at).
+        scorecard('su-agent-behavior', '2026-07-09T12:00:00Z', 'EI-2', 4),
+        scorecard('su-agent-behavior', '2026-07-09T15:00:00Z', 'EI-3', 10),
+        scorecard('su-agent-behavior', '2026-07-08T09:00:00Z', 'EI-1', null),
+      ],
+      'never-graded': [],
+    };
+    const listScorecards = vi.fn(async ({ rubricRef }: { rubricRef: string }) => byRubric[rubricRef] ?? []);
+    const scorecardTotalCountsByRubric = vi.fn(async () => ({ 'su-agent-behavior': 3 }));
     vi.doMock('../rubrics', () => ({ listRubrics }));
-    vi.doMock('../scorecards', () => ({ listScorecards }));
+    vi.doMock('../scorecards', () => ({ listScorecards, scorecardTotalCountsByRubric }));
     const { resolveNamedQueryV2: r } = await import('./index');
 
     const out = (await r('rubrics.list', {})) as Array<Record<string, unknown>>;
     expect(out).toHaveLength(2);
+    // scoped per-rubric, never a shared/global read.
+    expect(listScorecards).toHaveBeenCalledWith({ rubricRef: 'su-agent-behavior', limit: 500 });
+    expect(listScorecards).toHaveBeenCalledWith({ rubricRef: 'never-graded', limit: 500 });
     const graded = out.find((row) => row.rubricId === 'su-agent-behavior')!;
-    expect(graded.scorecardCount).toBe(3);
+    expect(graded.scorecardCount).toBe(3); // from the TRUE-count map, not cards.length
     expect(graded.latestScorecardAt).toBe('2026-07-09T15:00:00Z'); // max, not first
     expect(graded.criteriaCount).toBe(2);
     expect(graded.avgScore10).toBe(7); // (4+10)/2 — the null-scored card excluded
@@ -99,6 +109,38 @@ describe('rubrics.* / scorecards.* resolvers', () => {
     expect(ungraded.latestScorecardAt).toBeNull();
     expect(ungraded.avgScore10).toBeNull();
     expect(ungraded.latestScore10).toBeNull();
+  });
+
+  it('rubrics.list scorecardCount rides the TRUE unbounded count, not the capped per-rubric read length (WI-5415 regression)', async () => {
+    // The bug this pins: a rubric with FAR more real scorecards than the per-rubric
+    // read's cap (e.g. 968 real rows, only ~500 fetched for the latest/avg window)
+    // must still report its TRUE total — never the length of the capped fetch, and
+    // never crowded to 0 by how much some OTHER rubric was graded.
+    const listRubrics = vi.fn(async () => [
+      {
+        rubricId: 'noisy-rubric',
+        characteristic: 'x',
+        title: 'Noisy',
+        status: 'active',
+        proposedBy: 'a',
+        ratifiedBy: 'a',
+        criteria: [{ key: 'a' }],
+        ratingScale: ['pass', 'fail'],
+        methodRef: null,
+        updatedAt: '2026-07-09T00:00:00Z',
+      },
+    ]);
+    const cappedRead = Array.from({ length: 500 }, (_, i) =>
+      scorecard('noisy-rubric', `2026-07-0${(i % 9) + 1}T00:00:00Z`, `EI-${i}`, 10),
+    );
+    const listScorecards = vi.fn(async () => cappedRead);
+    const scorecardTotalCountsByRubric = vi.fn(async () => ({ 'noisy-rubric': 968 }));
+    vi.doMock('../rubrics', () => ({ listRubrics }));
+    vi.doMock('../scorecards', () => ({ listScorecards, scorecardTotalCountsByRubric }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+
+    const out = (await r('rubrics.list', {})) as Array<Record<string, unknown>>;
+    expect(out[0]?.scorecardCount).toBe(968); // the true total, not 500 (cappedRead.length)
   });
 
   it('scorecards.list threads rubricRef + a clamped limit to the store read', async () => {

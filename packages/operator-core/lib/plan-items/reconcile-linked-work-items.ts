@@ -253,6 +253,207 @@ export async function reconcileLinkedWorkItemsForCompletedPlanItems(
   return out;
 }
 
+// ── Non-terminal plan-item lane sync (EI-14699) ──────────────────────────────
+// The reconciler above heals a plan item that reached done/dropped. Its GATED
+// sibling problem: a plan item flipped to `blocked`/needs-human leaves its linked
+// work-item at `state:'todo'`, so scheduler:get_next / the `work-item:claimable`
+// pool keep serving it — each self-selector claims it, the plan-item-lane-guard
+// (scheduler/plan-item-lane-guard.ts) discovers the blocked lane and RELEASES it,
+// and the cycle repeats: a perpetual claim/release ping-pong that burns fleet
+// cycles (WI-3475/WI-3467 each cycled 8+ times before a human hand-set `blocked`).
+// reflect-rules.ts mirrors work_item → plan_item, and the reconciler above mirrors
+// a TERMINAL plan_item → work_item — but the gated lane statuses had NO reverse
+// leg, so the two surfaces drift.
+//
+// The durable fix mirrors the terminal reconciler's own "heal the data, not the
+// view" pattern: the periodic sweep below ALSO syncs a blocked/needs-human plan
+// lane ONTO its linked work-items — PARKING them out of the self-select pool (so
+// the ping-pong stops at the source, not just at the post-claim guard) — and
+// UN-parks them the moment the lane is actionable again. Parking reuses the
+// external-blocker machinery (external-blockers.ts / work_items:set_blocker): a
+// provenance-carrying `plan-lane:<plan>#<item>` blocker record IS the marker that
+// THIS sync parked the item, so the un-park only ever lifts a park this sync
+// created and restores to claimable ONLY when no OTHER active blocker remains —
+// the exact rule work_items:set_blocker uses, so an independently-blocked item is
+// never clobbered.
+
+/** The blocker `kind` this lane sync stamps on a linked work-item while its plan
+ *  lane is blocked/needs-human. A single stable kind + `plan-lane:` ref across
+ *  BOTH gated statuses keeps the clear path a single (kind, ref) match. */
+const PLAN_LANE_BLOCKER_KIND = 'gate' as const;
+const PLAN_LANE_SYNC_ACTOR = 'system:plan-item-lane-sync';
+
+/** The synthetic external-blocker ref that marks a lane-parked work-item. */
+export function planLaneBlockerRef(planSlug: string, itemId: string): string {
+  return `plan-lane:${planItemRef(planSlug, itemId)}`;
+}
+
+/** The lane status a linked work-item is synced to. `blocked`/`needs-human` PARK
+ *  it out of self-select; `actionable` UN-parks a lane-parked item. */
+export type PlanLaneSyncStatus = 'blocked' | 'needs-human' | 'actionable';
+
+export type LaneGateOp =
+  | { op: 'gate'; capability: ExternalBlockerCapability }
+  | { op: 'ungate' }
+  | { op: 'noop'; reason: 'terminal' | 'in-flight' | 'already-gated' | 'no-lane-blocker' };
+
+/**
+ * PURE decision (no I/O): what the lane sync should do to ONE linked work-item,
+ * given its current state and the plan lane's status. Kept apart from the PG
+ * effect below so the invariant is unit-testable without the lock/PG path
+ * (mirrors set-status.ts's releaseTerminalGrips / releaseTodoClaim shape):
+ *  - a settled work-item is never touched (its work is done/abandoned);
+ *  - GATE never clobbers genuinely-active work (`lastProgressAt` set) and is
+ *    idempotent (a re-gate of an already lane-parked item is a no-op);
+ *  - UN-GATE only lifts a park THIS sync created (the `plan-lane:` blocker is
+ *    present), so an item blocked for any other reason is left alone.
+ */
+export function decideLaneGate(
+  wi: Pick<WorkItem, 'state' | 'lastProgressAt' | 'payload'>,
+  laneStatus: PlanLaneSyncStatus,
+  laneRef: string,
+): LaneGateOp {
+  if (isSettledWorkItemState(wi.state)) return { op: 'noop', reason: 'terminal' };
+  const hasLaneBlocker = activeExternalBlockers(wi.payload).some(
+    (b) => b.kind === PLAN_LANE_BLOCKER_KIND && b.ref === laneRef,
+  );
+  if (laneStatus === 'actionable') {
+    return hasLaneBlocker ? { op: 'ungate' } : { op: 'noop', reason: 'no-lane-blocker' };
+  }
+  // Gate intent (blocked / needs-human).
+  if (wi.lastProgressAt) return { op: 'noop', reason: 'in-flight' };
+  if (hasLaneBlocker) return { op: 'noop', reason: 'already-gated' };
+  return {
+    op: 'gate',
+    capability: laneStatus === 'needs-human' ? 'product-decision' : 'live-dependency',
+  };
+}
+
+type LaneGateAction = 'gated' | 'ungated' | 'skipped-in-flight' | 'skipped-terminal' | 'noop';
+
+/** Apply the pure decision to ONE work-item via the work-item lifecycle surface,
+ *  reusing the exact park/restore mechanics of work_items:set_blocker. Never
+ *  throws — a per-item lifecycle hiccup is caught and reported as a plain 'noop'. */
+async function applyLaneGateToWorkItem(
+  wi: WorkItem,
+  laneStatus: PlanLaneSyncStatus,
+  laneRef: string,
+  laneItem: { planSlug: string; itemId: string },
+): Promise<LaneGateAction> {
+  const decision = decideLaneGate(wi, laneStatus, laneRef);
+  if (decision.op === 'noop') {
+    return decision.reason === 'terminal'
+      ? 'skipped-terminal'
+      : decision.reason === 'in-flight'
+        ? 'skipped-in-flight'
+        : 'noop';
+  }
+  const harness = wi.harness ?? undefined;
+  try {
+    if (decision.op === 'gate') {
+      const summary = `plan lane ${laneItem.planSlug}#${laneItem.itemId} is ${
+        laneStatus === 'needs-human' ? 'awaiting a human decision' : 'blocked'
+      } — linked work-item parked until the lane clears (${PLAN_LANE_SYNC_ACTOR})`;
+      const { blockers } = updateExternalBlockerHistory(
+        wi.payload,
+        { kind: PLAN_LANE_BLOCKER_KIND, capability: decision.capability, ref: laneRef, summary },
+        PLAN_LANE_SYNC_ACTOR,
+      );
+      await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+      // Park out of self-select — feature → native `blocked`; issue → open + claim hold
+      // (setWorkItemStateWithAliasInfo applies the family-correct exclusion floor).
+      await setWorkItemStateWithAliasInfo(wi.id, 'blocked', { harness, by: PLAN_LANE_SYNC_ACTOR });
+      return 'gated';
+    }
+    // Un-gate: clear OUR lane blocker; restore to claimable ONLY when no OTHER
+    // active blocker remains (the exact rule work_items:set_blocker uses, so an
+    // independently-blocked item stays parked).
+    const { blockers } = updateExternalBlockerHistory(
+      wi.payload,
+      { kind: PLAN_LANE_BLOCKER_KIND, ref: laneRef, clear: true },
+      PLAN_LANE_SYNC_ACTOR,
+    );
+    await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+    const stillActive = blockers.filter((b) => b.status === 'active');
+    if (stillActive.length === 0) {
+      if (wi.family === 'feature') {
+        await setWorkItemStateWithAliasInfo(wi.id, 'todo', { harness, by: PLAN_LANE_SYNC_ACTOR });
+      } else {
+        await setWorkItemClaimHold(wi.id, false, {
+          harness,
+          by: PLAN_LANE_SYNC_ACTOR,
+          reason: `plan lane ${laneItem.planSlug}#${laneItem.itemId} cleared`,
+        });
+      }
+    }
+    return 'ungated';
+  } catch {
+    // Best-effort — a per-item lifecycle hiccup must never break the sweep.
+    return 'noop';
+  }
+}
+
+export interface PlanLaneSyncResult {
+  /** Work-item ids PARKED out of self-select (a blocked/needs-human lane). */
+  gated: string[];
+  /** Work-item ids RESTORED to claimable (the lane became actionable). */
+  ungated: string[];
+  /** Linked but carrying independent in-flight progress — left alone (gate only). */
+  skippedInFlight: string[];
+  /** Linked but already terminal — nothing to do. */
+  skippedAlreadyTerminal: string[];
+}
+
+/**
+ * Sync every work-item linked to ONE plan item to the plan lane's current gated
+ * status (blocked / needs-human → park; actionable → un-park). Reuses BOTH truth
+ * sources findAllLinkedWorkItems reads (the `implements` edge + the payload stamp)
+ * and is fully fail-safe per item — never throws.
+ */
+export async function syncLinkedWorkItemsToPlanLane(
+  item: CompletedPlanItem,
+  laneStatus: PlanLaneSyncStatus,
+): Promise<PlanLaneSyncResult> {
+  const out: PlanLaneSyncResult = { gated: [], ungated: [], skippedInFlight: [], skippedAlreadyTerminal: [] };
+  try {
+    const laneRef = planLaneBlockerRef(item.planSlug, item.itemId);
+    const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
+    for (const wi of linked) {
+      const action = await applyLaneGateToWorkItem(wi, laneStatus, laneRef, {
+        planSlug: item.planSlug,
+        itemId: item.itemId,
+      });
+      if (action === 'gated') out.gated.push(wi.id);
+      else if (action === 'ungated') out.ungated.push(wi.id);
+      else if (action === 'skipped-in-flight') out.skippedInFlight.push(wi.id);
+      else if (action === 'skipped-terminal') out.skippedAlreadyTerminal.push(wi.id);
+    }
+  } catch {
+    // A DB hiccup — this is a best-effort sweep, never a hard dependency.
+  }
+  return out;
+}
+
+/**
+ * Classify a plan item's CURRENT effective lane (blocked-by graph aware) the same
+ * way scheduler/plan-item-lane-guard.ts does — so a plan item that is effectively
+ * blocked by an unresolved dependency (its OWN stored status still `todo`) is
+ * caught too, not just an explicit `blocked` flip. Returns null when the plan
+ * row / item can't be resolved (fail-closed → the caller skips the lane sync).
+ */
+function classifyPlanLane(
+  row: Awaited<ReturnType<typeof getPlanRow>>,
+  itemId: string,
+): PlanLaneSyncStatus | null {
+  if (!row) return null;
+  const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
+  const it = items.find((i) => i.id === itemId);
+  if (!it) return null;
+  if (it.effectiveStatus === 'blocked') return 'blocked';
+  if (it.needsHuman) return 'needs-human';
+  return 'actionable';
+}
+
 interface OrphanCandidate {
   planSlug: string;
   itemId: string;
@@ -268,6 +469,12 @@ export interface OrphanReconcileSweepResult {
   terminalPlanItems: number;
   /** Work-item ids terminalized by this sweep. */
   reconciled: string[];
+  /** EI-14699: work-item ids PARKED out of self-select because their plan lane is
+   *  blocked/needs-human (the reverse-mirror gate). */
+  gated: string[];
+  /** EI-14699: work-item ids RESTORED to claimable because their plan lane became
+   *  actionable again (the reverse-mirror un-gate). */
+  ungated: string[];
   /** Linked but carrying independent in-flight progress — left alone. */
   skippedInFlight: string[];
   /** Linked but already terminal — nothing to do. */
@@ -290,14 +497,21 @@ export const DEFAULT_ORPHAN_SWEEP_CAP = 500;
  *
  * This sweep closes the transition-gap "fix the data, not the view" style: it
  * finds every NON-terminal work-item still carrying a `payload.plan_item` stamp,
- * re-reads each referenced plan item's CURRENT status, and for the ones that are
- * genuinely terminal (done OR dropped), reuses the exact same per-item reconciler
- * — inheriting all its safety rails (skip already-terminal, skip independent
- * in-flight `lastProgressAt` progress, never throw).
+ * re-reads each referenced plan item's CURRENT status, and:
+ *   - for the ones that are genuinely terminal (done OR dropped), reuses the exact
+ *     same per-item reconciler — inheriting all its safety rails (skip
+ *     already-terminal, skip independent in-flight `lastProgressAt` progress,
+ *     never throw);
+ *   - for the ones whose lane is blocked/needs-human, PARKS the linked work-items
+ *     out of self-select (EI-14699 — ends the claim/release ping-pong at the
+ *     source), and RESTORES them when the lane is actionable again. This half is
+ *     blocked-by-graph aware, so an item effectively blocked by an unresolved
+ *     dependency is caught even without an explicit `blocked` stored status.
  *
- * FAIL-CLOSED by construction: a candidate whose plan can't be resolved, or whose
- * item is not (or no longer) terminal, is SKIPPED — never terminalized on a guess.
- * Idempotent: a second pass over already-healed data is a clean no-op.
+ * FAIL-CLOSED by construction: a candidate whose plan can't be resolved is SKIPPED
+ * — never terminalized on a guess, and a lane-classify hiccup skips only the lane
+ * sync. Idempotent: a re-park of an already lane-parked item, or a re-heal of
+ * already-terminal data, is a clean no-op.
  *
  * Homed on the `system:plan-item-orphan-reconcile` routine (a bounded periodic
  * sweep — NOT a bare setInterval), mirroring `system:gc-plan-runs`.
@@ -310,6 +524,8 @@ export async function reconcileOrphanedPlanItemWorkItems(
     candidatePlanItems: 0,
     terminalPlanItems: 0,
     reconciled: [],
+    gated: [],
+    ungated: [],
     skippedInFlight: [],
     skippedAlreadyTerminal: [],
   };
@@ -359,24 +575,47 @@ export async function reconcileOrphanedPlanItemWorkItems(
     g.items.push(c);
   }
 
-  // 3. Per plan: read once, CONFIRM which candidate items are terminal (fail-closed
-  //    — an unresolvable plan or a non-terminal item is skipped), then heal each via
-  //    the shared per-item reconciler with the confirmed status.
+  // 3. Per plan: read once, then route each candidate by its plan-item status
+  //    (fail-closed — an unresolvable plan is skipped):
+  //     - TERMINAL (done/dropped) → the terminal reconciler (EI-14693, unchanged).
+  //     - GATED/actionable → the EI-14699 lane sync (park a blocked/needs-human
+  //       lane's linked work-items out of self-select; un-park an actionable one).
+  //       Classification is blocked-by-graph aware, so an item effectively blocked
+  //       by an unresolved dependency is caught even without an explicit `blocked`
+  //       stored status. Fail-closed: a classify hiccup skips the lane sync only.
   for (const [planSlug, g] of byPlan) {
     const row = await getPlanRow(planSlug, { harnessSlug: g.harnessSlug ?? undefined }).catch(() => null);
-    if (!row) continue; // fail-closed: cannot confirm terminality → touch nothing.
+    if (!row) continue; // fail-closed: cannot confirm status → touch nothing.
     const statusById = new Map(row.items.map((i) => [i.id, i.status]));
     for (const c of g.items) {
       const st = statusById.get(c.itemId);
-      if (!isTerminalPlanItemStatus(st)) continue; // still open / unknown → leave alone.
-      out.terminalPlanItems += 1;
-      const r = await reconcileLinkedWorkItemsForPlanItem(
-        { planSlug: c.planSlug, itemId: c.itemId, harnessSlug: c.harnessSlug },
-        { knownTerminalStatus: st },
-      );
-      out.reconciled.push(...r.reconciled);
-      out.skippedInFlight.push(...r.skippedInFlight);
-      out.skippedAlreadyTerminal.push(...r.skippedAlreadyTerminal);
+      if (isTerminalPlanItemStatus(st)) {
+        out.terminalPlanItems += 1;
+        const r = await reconcileLinkedWorkItemsForPlanItem(
+          { planSlug: c.planSlug, itemId: c.itemId, harnessSlug: c.harnessSlug },
+          { knownTerminalStatus: st },
+        );
+        out.reconciled.push(...r.reconciled);
+        out.skippedInFlight.push(...r.skippedInFlight);
+        out.skippedAlreadyTerminal.push(...r.skippedAlreadyTerminal);
+        continue;
+      }
+      // NON-terminal (EI-14699): sync the effective lane onto linked work-items.
+      try {
+        const laneStatus = classifyPlanLane(row, c.itemId);
+        if (laneStatus) {
+          const r = await syncLinkedWorkItemsToPlanLane(
+            { planSlug: c.planSlug, itemId: c.itemId, harnessSlug: c.harnessSlug },
+            laneStatus,
+          );
+          out.gated.push(...r.gated);
+          out.ungated.push(...r.ungated);
+          out.skippedInFlight.push(...r.skippedInFlight);
+          out.skippedAlreadyTerminal.push(...r.skippedAlreadyTerminal);
+        }
+      } catch {
+        // fail-closed — a lane-classify/sync hiccup must never wedge the sweep.
+      }
     }
   }
   return out;

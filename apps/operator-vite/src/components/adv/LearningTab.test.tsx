@@ -759,7 +759,7 @@ describe("LearningTab — Gym view", () => {
     render(<LearningTab />);
     expect(
       screen.getByText(
-        "Showing gym experiments from all pots — none are scoped to this Hive yet.",
+        "Showing gym experiments from all pots — none are scoped to this Pot yet.",
       ),
     ).toBeTruthy();
   });
@@ -768,7 +768,7 @@ describe("LearningTab — Gym view", () => {
     render(<LearningTab />);
     expect(
       screen.queryByText(
-        "Showing gym experiments from all pots — none are scoped to this Hive yet.",
+        "Showing gym experiments from all pots — none are scoped to this Pot yet.",
       ),
     ).toBeNull();
   });

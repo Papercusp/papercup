@@ -138,37 +138,41 @@ function statusDescription(status: LearningViewStatus): string {
  *  that repeats the tab's name is not a tooltip). Rendered as the tab's
  *  title/tooltip; the label stays the aria name. Record<LView,…> so a new
  *  view cannot ship without one. */
-const VIEW_DESCRIPTIONS: Record<LView, string> = {
-  signals:
-    "What the learning pipeline is being fed, and what will make it fire next.",
-  observations:
-    "Pre-idea sensor readings agents file at turn end — browse-only; only recurring ones get promoted to work.",
-  rubrics:
-    "The quality rubrics live behavior is judged against, with their grade history.",
-  pipeline:
-    "Inside each idea-generation cycle: ideator roster, raw ideas, critique verdicts, fusions, and where they routed.",
-  ideas:
-    "The generator's ledger — every routed idea with its trace; your grades here teach the generator which lenses win.",
-  gym: "Prompt-optimization experiments — challengers vs champions — plus Scout-seeded archive niches.",
-  improvements:
-    "The work backlog: every captured bug/improvement, split auto-fixable vs needs-your-review.",
-  benchmark:
-    "Whole-system benchmark runs (the IQ battery) — is a new instance measurably better?",
-  orchestration:
-    "Hive-eval scoring trends — is orchestration quality improving over time?",
-  bakeoff:
-    "Comparative scoring across competing framework setups on the same tasks.",
-  "wake-efficiency":
-    "Are agent wakes doing useful work — wake cost versus yield.",
-  ekg: "The learning loop's vital signs over time, at a glance.",
-  "red-queen":
-    "Adversarial-pressure tracking — is quality keeping pace as the environment hardens?",
-  experiments: "A/B experiments the loop has run, and how they came out.",
-  frontier: "Mined improvement territory the loop has not explored yet.",
-  throughput: "Per-hive learning throughput — how much each hive banks.",
-  learnings:
-    "The hive's shared memory — what the colony keeps and recalls while it works.",
-};
+/** Built per-render from the active lexicon (restore-pot-lexicon P-006 — same
+ *  pattern as railMeta): the tenancy noun in these one-liners must track the
+ *  FLAGS.THE_HIVE pack instead of hardcoding one pack's label. */
+function viewDescriptions(t: ReturnType<typeof useLexicon>): Record<LView, string> {
+  const pot = t("pot", { lower: true });
+  return {
+    signals:
+      "What the learning pipeline is being fed, and what will make it fire next.",
+    observations:
+      "Pre-idea sensor readings agents file at turn end — browse-only; only recurring ones get promoted to work.",
+    rubrics:
+      "The quality rubrics live behavior is judged against, with their grade history.",
+    pipeline:
+      "Inside each idea-generation cycle: ideator roster, raw ideas, critique verdicts, fusions, and where they routed.",
+    ideas:
+      "The generator's ledger — every routed idea with its trace; your grades here teach the generator which lenses win.",
+    gym: `Prompt-optimization experiments — challengers vs champions — plus ${t("scout")}-seeded archive niches.`,
+    improvements:
+      "The work backlog: every captured bug/improvement, split auto-fixable vs needs-your-review.",
+    benchmark:
+      "Whole-system benchmark runs (the IQ battery) — is a new instance measurably better?",
+    orchestration: `${t("pot")}-eval scoring trends — is orchestration quality improving over time?`,
+    bakeoff:
+      "Comparative scoring across competing framework setups on the same tasks.",
+    "wake-efficiency":
+      "Are agent wakes doing useful work — wake cost versus yield.",
+    ekg: "The learning loop's vital signs over time, at a glance.",
+    "red-queen":
+      "Adversarial-pressure tracking — is quality keeping pace as the environment hardens?",
+    experiments: "A/B experiments the loop has run, and how they came out.",
+    frontier: "Mined improvement territory the loop has not explored yet.",
+    throughput: `Per-${pot} learning throughput — how much each ${pot} banks.`,
+    learnings: `The ${pot}'s shared memory — what it keeps and recalls while it works.`,
+  };
+}
 
 /** One line per stage of the loop, same rule. */
 const STAGE_DESCRIPTIONS: Record<LearningStage, string> = {
@@ -176,7 +180,7 @@ const STAGE_DESCRIPTIONS: Record<LearningStage, string> = {
   analyze: "What idea generation does with it, cycle by cycle.",
   improve: "What the loop produced: ideas, experiments, and the work backlog.",
   verify: "Did it actually get better — benchmarks, scoring trends, the release gate.",
-  retain: "What the colony keeps: shared memory and adopted lessons.",
+  retain: "What the system keeps: shared memory and adopted lessons.",
 };
 
 const STAGES: ReadonlyArray<{
@@ -274,6 +278,7 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
 
 export default function LearningTab() {
   const t = useLexicon();
+  const viewDesc = viewDescriptions(t);
   const [lview, setLview] = useQueryState(
     "lview",
     parseAsStringEnum<LView>([...LVIEWS]).withDefault("improvements"),
@@ -496,7 +501,7 @@ export default function LearningTab() {
                     value={candidate.id}
                     className={`pc-learning__view-tab${semantic ? ` has-${semantic}` : ""}`}
                     aria-label={candidate.label}
-                    title={VIEW_DESCRIPTIONS[candidate.id]}
+                    title={viewDesc[candidate.id]}
                     aria-describedby={
                       status
                         ? `learning-view-status-${candidate.id}`
@@ -863,6 +868,7 @@ function ImprovementsView({
       <LearningPageHeader
         icon={Sparkles}
         title="Improvements"
+        question="The work backlog itself — every capture, not just the ones an idea produced."
         signal={digest ? `${digest.open} open` : undefined}
         tone={digest && digest.open === 0 ? "good" : "accent"}
         action={
@@ -1381,6 +1387,7 @@ function GymView({
   const champions = proposals.filter((p) => p.status === "accepted").length;
   const pending = proposals.filter((p) => p.status === "pending").length;
   const rejected = proposals.filter((p) => p.status === "rejected").length;
+  const t = useLexicon();
   const running = activeAutoloops.length;
   useEffect(() => {
     onStatus?.(
@@ -1419,9 +1426,9 @@ function GymView({
       {scopeFallback ? (
         <p
           className="pc-learning__muted pc-learning__scopenote"
-          title="This Hive's own gym harness has no recorded experiments; showing the workspace-wide rollup instead so real data is never hidden."
+          title={`This ${t("pot")}'s own gym harness has no recorded experiments; showing the workspace-wide rollup instead so real data is never hidden.`}
         >
-          Showing gym experiments from all pots — none are scoped to this Hive yet.
+          Showing gym experiments from all {t("pot", { plural: true, lower: true })} — none are scoped to this {t("pot")} yet.
         </p>
       ) : null}
 
@@ -2581,7 +2588,7 @@ function formatDurationMs(ms: number | null | undefined): string {
 /**
  * Throughput view (queen-autonomous-execution B-11 / P-050): the Queen-loop's
  * operating-well yardstick — per-hive frontier depth, placements/wake,
- * bees-busy-vs-cap, stuck count, mean-time-to-complete, and the question-rung
+ * cups-busy-vs-cap, stuck count, mean-time-to-complete, and the question-rung
  * split, read from hive_throughput_ticks (mig 261) via learning.hiveThroughput.
  */
 function ThroughputView({
@@ -3328,6 +3335,7 @@ export function ScoutView({
       <LearningPageHeader
         icon={Lightbulb}
         title="Ideas"
+        question="The generator's ledger: idea → artifact trace + grading — routed rows are links into the real backlog, not a second one."
         signal={snap ? `${snap.totalRouted} routed` : undefined}
         tone={health.status}
         action={
@@ -3451,38 +3459,6 @@ export function ScoutView({
         )}
       </div>
 
-      {snap ? (
-        <div className="pc-learning__idea-filters" aria-label="Idea routing">
-          <button
-            type="button"
-            aria-pressed={!railFilter}
-            onClick={() => void setRailFilter(null)}
-          >
-            <Radar size={11} aria-hidden />
-            All <strong>{snap.totalRouted}</strong>
-          </button>
-          {rails.map((rail) => {
-            const meta = RAIL_META[rail.rail];
-            return (
-              <Tooltip key={rail.rail} label={meta?.desc}>
-                <button
-                  type="button"
-                  aria-pressed={railFilter === rail.rail}
-                  onClick={() =>
-                    void setRailFilter(
-                      railFilter === rail.rail ? null : rail.rail,
-                    )
-                  }
-                >
-                  <i style={{ background: meta?.color }} aria-hidden />
-                  {meta?.label ?? rail.rail} <strong>{rail.count}</strong>
-                </button>
-              </Tooltip>
-            );
-          })}
-        </div>
-      ) : null}
-
       {/* Improve-stage funnel (WI-5412 item 3): ideas → filed → claimed → done
           — what the routed work actually did, distinct from grading (which
           teaches the generator). Server-derived (improveFunnel leg). */}
@@ -3514,7 +3490,11 @@ export function ScoutView({
       ) : null}
 
       {lensEntries.length > 0 ? (
-        <LearningDisclosure label="Lens weights" count={lensEntries.length}>
+        <LearningDisclosure
+          label="Lens weights"
+          subtitle="the ideator's learned creative-lens steering — raised by wins and good grades"
+          count={lensEntries.length}
+        >
           <div className="pc-learning__flow" aria-label="Lens sampling weights">
             <span
               className="pc-learning__flowchip"
@@ -3544,7 +3524,11 @@ export function ScoutView({
           that became draft plans, with their revision state — the Queen↔Scout
           typed-revision loop, watchable instead of invisible. */}
       {drafts.length > 0 ? (
-        <LearningDisclosure label="Drafts in iteration" count={drafts.length}>
+        <LearningDisclosure
+          label="Drafts in iteration"
+          subtitle="broad ideas that became draft plans, with revision state"
+          count={drafts.length}
+        >
           <ul className="pc-learning__draftlist" aria-label={`${t("scout")} draft plans in iteration`}>
             {drafts.map((d) => {
               const upMs = d.planUpdatedAt ? Date.parse(d.planUpdatedAt) : NaN;
@@ -3578,8 +3562,50 @@ export function ScoutView({
         </LearningDisclosure>
       ) : null}
 
+      {/* Rail-filter row (owner ask 2026-07-19): moved to sit DIRECTLY above the
+          "Routed ideas" list it filters, instead of stranded above the
+          lens-weights/drafts disclosures it has nothing to do with. */}
+      {snap ? (
+        <div className="pc-learning__idea-filters" aria-label="Idea routing">
+          <button
+            type="button"
+            aria-pressed={!railFilter}
+            onClick={() => void setRailFilter(null)}
+          >
+            <Radar size={11} aria-hidden />
+            All <strong>{snap.totalRouted}</strong>
+          </button>
+          {rails.map((rail) => {
+            const meta = RAIL_META[rail.rail];
+            return (
+              <Tooltip key={rail.rail} label={meta?.desc}>
+                <button
+                  type="button"
+                  aria-pressed={railFilter === rail.rail}
+                  onClick={() =>
+                    void setRailFilter(
+                      railFilter === rail.rail ? null : rail.rail,
+                    )
+                  }
+                >
+                  <i style={{ background: meta?.color }} aria-hidden />
+                  {meta?.label ?? rail.rail} <strong>{rail.count}</strong>
+                </button>
+              </Tooltip>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div className="pc-learning__sectionhead">
         <h2>Routed ideas</h2>
+        <span
+          className="pc-learning__muted"
+          title="Every idea a cycle turned into an artifact (work item, gym seed, plan, benchmark) — grade them here; the artifact itself lives in its rail's home (Improvements, Gym, Plans, Benchmark)."
+        >
+          Every idea a cycle turned into an artifact — grade them here; the
+          work itself lives in its rail's home.
+        </span>
       </div>
 
       {sync.loading && !snap ? (

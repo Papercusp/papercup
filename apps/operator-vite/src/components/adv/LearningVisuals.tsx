@@ -205,11 +205,18 @@ export function LearningVisualError({
 
 export function LearningDisclosure({
   label,
+  subtitle,
   count,
   children,
   defaultOpen = false,
 }: {
   label: string;
+  /**
+   * One-line "what is this FOR" explainer, always visible next to the label
+   * (not gated behind opening the disclosure) — owner ask 2026-07-19: a
+   * header alone doesn't say what its contents mean.
+   */
+  subtitle?: string;
   count?: number;
   children: ReactNode;
   defaultOpen?: boolean;
@@ -221,7 +228,12 @@ export function LearningDisclosure({
     >
       <Collapsible.Trigger className="pc-learning-visual__disclosure-trigger">
         <ChevronDown size={13} aria-hidden />
-        <span>{label}</span>
+        <span className="pc-learning-visual__disclosure-label">{label}</span>
+        {subtitle ? (
+          <span className="pc-learning-visual__disclosure-subtitle">
+            {subtitle}
+          </span>
+        ) : null}
         {count != null ? <em>{count}</em> : null}
       </Collapsible.Trigger>
       <Collapsible.Content className="pc-learning-visual__disclosure-content">
@@ -290,6 +302,8 @@ export function LearningVisualStyles() {
       .pc-learning-visual__disclosure-trigger:hover { color: var(--fg); }
       .pc-learning-visual__disclosure-trigger svg { transition: transform var(--dur-fast); }
       .pc-learning-visual__disclosure-trigger[data-state='open'] svg { transform: rotate(180deg); }
+      .pc-learning-visual__disclosure-label { flex: none; }
+      .pc-learning-visual__disclosure-subtitle { min-width: 0; overflow: hidden; color: var(--fg-mute); font-size: 9.5px; font-weight: 500; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
       .pc-learning-visual__disclosure-trigger em { margin-left: auto; min-width: 20px; border-radius: 999px; padding: 1px 6px; background: color-mix(in srgb, var(--fg) 7%, transparent); color: var(--fg-mute); font-size: 9.5px; font-style: normal; font-variant-numeric: tabular-nums; text-align: center; }
       .pc-learning-visual__disclosure-content { padding-top: 2px; }
       .pc-learning-visual__layout > .pc-ekg__wave, .pc-learning-visual__layout > .pc-rq__waterfall { min-height: 92px; }

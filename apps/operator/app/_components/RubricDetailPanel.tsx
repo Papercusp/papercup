@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import * as Collapsible from "@radix-ui/react-collapsible";
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown, Minus, TrendingDown, TrendingUp, X } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
 import ScorecardDetail, {
   RatingChip,
@@ -69,6 +69,35 @@ function directionGlyph(direction: string): string {
   )
     return "↓";
   return "→";
+}
+
+/** Per-glyph icon + tone-color + human word for the Trend column (owner ask
+ *  2026-07-19, WI-5415): the prose ("improving"/"stable"/…) was easy to skim
+ *  past — a very visible colored icon reads at a glance. The word survives in
+ *  the aria-label + title tooltip, never dropped, just no longer the primary
+ *  visible content. */
+const TREND_GLYPH_ICON: Record<
+  string,
+  { Icon: typeof TrendingUp; color: string }
+> = {
+  "↑": { Icon: TrendingUp, color: "#34d399" },
+  "↓": { Icon: TrendingDown, color: "#fb7185" },
+  "→": { Icon: Minus, color: "#64748b" },
+};
+
+function TrendIndicator({ direction }: { direction: string }) {
+  const glyph = directionGlyph(direction);
+  const { Icon, color } = TREND_GLYPH_ICON[glyph] ?? TREND_GLYPH_ICON["→"];
+  return (
+    <span
+      className="pc-rubric-trend__dir"
+      role="img"
+      aria-label={direction}
+      title={direction}
+    >
+      <Icon size={14} color={color} strokeWidth={2.5} aria-hidden />
+    </span>
+  );
 }
 
 function formatDistribution(distribution: Record<string, number>): string {
@@ -212,7 +241,7 @@ export default function RubricDetailPanel({
         {
           key: "trend",
           header: "Trend",
-          render: (c) => `${directionGlyph(c.direction)} ${c.direction}`,
+          render: (c) => <TrendIndicator direction={c.direction} />,
           cellTitle: (c) => c.direction,
         },
         {
@@ -434,6 +463,8 @@ export default function RubricDetailPanel({
         .pc-rubric-detail__gov-chain em { color: color-mix(in srgb, var(--fg-mute) 75%, transparent); font-style: normal; }
         .pc-rubric-detail__gov-split { display: inline-flex; align-items: center; margin-left: 3px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, #34d399 16%, transparent); color: #34d399; font-size: 8.5px; font-weight: 700; }
         .pc-rubric-trend__crit { display: inline-flex; align-items: baseline; gap: 6px; }
+        .pc-rubric-trend__dir { display: inline-flex; align-items: center; justify-content: center; }
+        .pc-rubric-trend__dir svg { display: block; }
         .pc-rubric-trend__instr { padding: 0 5px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); font-family: var(--font-mono, ui-monospace, monospace); font-size: 8.5px; font-style: normal; white-space: nowrap; }
         .pc-rubric-trend__instr[data-none] { border-color: var(--border); background: transparent; color: var(--fg-mute); }
         .pc-rubric-detail__overview { display: grid; grid-template-columns: 1.2fr repeat(3, minmax(64px, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }

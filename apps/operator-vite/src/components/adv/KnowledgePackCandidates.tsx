@@ -25,7 +25,7 @@ import { Inbox, Sparkles } from "lucide-react";
 import {
   AUTO_ADOPT_REVIEWER,
   type KnowledgePackCandidate,
-} from "@papercusp/operator-core/lib/knowledge-packs/candidates";
+} from "@papercusp/operator-core/lib/knowledge-packs/candidates-shared";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { useLexicon } from "@/lib/useLexicon";
 import { LearningDisclosure } from "./LearningVisuals";

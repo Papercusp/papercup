@@ -128,4 +128,22 @@ describe("RubricDetailPanel focused evidence", () => {
     expect(instr).not.toBeNull();
     expect(instr?.textContent).toBe("gate-red-count");
   });
+
+  it("renders the Trend column as a colored icon, keeping the word in the aria-label + tooltip (WI-5415)", () => {
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    const changingTable = screen.getByRole("table", {
+      name: "2 changing criteria, regressions first",
+    });
+    // The "regressing" row gets a down-trend icon whose accessible name still
+    // carries the word — prose is gone from the visible cell, not from a11y.
+    const regressing = within(changingTable).getByRole("img", {
+      name: "regressing",
+    });
+    expect(regressing.querySelector("svg")).not.toBeNull();
+    expect(regressing.getAttribute("title")).toBe("regressing");
+    expect(regressing.textContent).toBe(""); // no prose left in the visible cell
+
+    fireEvent.click(screen.getByRole("button", { name: /Stable criteria/ }));
+    expect(screen.getByRole("img", { name: "stable" })).toBeTruthy();
+  });
 });

@@ -395,8 +395,60 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.paused).toBeUndefined();
       expect(miss.error).toMatch(/YOUR OWN release-cooldown floor/);
       expect(miss.error).not.toMatch(/NOT allowed to fall through to the generic backlog/);
-      expect(miss.advice).toMatch(/Do NOT report this as a scope problem/);
+      // EI-13520's intent survives (a NORMAL one-time cooldown is not a scope/spec
+      // problem — do not re-author the spec for it); EI-14615 only ADDS the livelock
+      // exception below, it does not revert this.
+      expect(miss.advice).toMatch(/not a scope\/spec mismatch/);
+      expect(miss.advice).toMatch(/do NOT re-author the claim spec/);
       expect(miss.advice).not.toMatch(/report the scoped miss to the fleet leader/);
+    });
+
+    // EI-14615: a cooldown-only miss whose window is being externally re-stamped by a
+    // fleet round-robin reports a perpetually-fresh ~300s and never clears. The relative
+    // `cooldownExpirySec` alone can't reveal this (it reads the same ~Ns every poll), so
+    // the miss now also surfaces the ABSOLUTE `cooldownExpiryAt` the member can compare
+    // across polls, and the advice tells them to escalate to the leader when it advances.
+    describe('EI-14615: absolute cooldown expiry + livelock-aware advice', () => {
+      it('surfaces cooldownExpiryAt as the ISO of earliestExpiryMs (so a re-stamped window is observable across polls)', () => {
+        const earliestExpiryMs = Date.parse('2026-07-17T15:09:00.000Z');
+        const miss = fleetScopedMiss(cooldownScope, [], {
+          cooldownDiag: { cooldownExcluded: 2, earliestExpiryMs },
+        });
+        expect(miss.cooldownExpiryAt).toBe(new Date(earliestExpiryMs).toISOString());
+        // cooldownExpiryAt is the absolute complement of the (still-present) relative sec.
+        expect(typeof (miss as { cooldownExpirySec: number | null }).cooldownExpirySec).toBe('number');
+      });
+
+      it('advice keeps the NORMAL re-poll path AND adds the livelock escalation keyed on the expiry advancing (EI-14615)', () => {
+        const miss = fleetScopedMiss(cooldownScope, [], {
+          cooldownDiag: { cooldownExcluded: 2, earliestExpiryMs: Date.now() + 300_000 },
+        });
+        // Normal case preserved: re-poll after cooldownExpiryAt, do not re-author the spec.
+        expect(miss.advice).toMatch(/re-poll/i);
+        expect(miss.advice).toMatch(/cooldownExpiryAt/);
+        // Livelock case added: an ADVANCING expiry is a livelock → DO escalate to the leader.
+        expect(miss.advice).toMatch(/ADVANCED/);
+        expect(miss.advice).toMatch(/EI-14615/);
+        expect(miss.advice).toMatch(/report it to your leader/i);
+      });
+
+      it('cooldownExpiryAt is null-safe when earliestExpiryMs is null (defensive; WI-5303 makes it non-null in practice)', () => {
+        const miss = fleetScopedMiss(cooldownScope, [], {
+          cooldownDiag: { cooldownExcluded: 1, earliestExpiryMs: null },
+        });
+        expect(miss.cooldownOnly).toBe(true);
+        expect(miss.cooldownExpiryAt).toBeNull();
+        expect((miss as { cooldownExpirySec: number | null }).cooldownExpirySec).toBeNull();
+      });
+
+      it('a paused miss carries NO cooldownExpiryAt even if a cooldownDiag is passed (pause fully explains the miss)', () => {
+        const miss = fleetScopedMiss(cooldownScope, [], {
+          pausedReason: 'owner pause',
+          cooldownDiag: { cooldownExcluded: 5, earliestExpiryMs: Date.now() + 1_000 },
+        });
+        expect(miss.paused).toBe(true);
+        expect(miss.cooldownExpiryAt).toBeUndefined();
+      });
     });
 
     it('fleetScopedMiss keeps the ORIGINAL scope-mismatch message when cooldownDiag is null/absent (no false reattribution)', () => {

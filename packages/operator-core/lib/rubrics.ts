@@ -1164,6 +1164,44 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
   return getRubric(rubricId);
 }
 
+/**
+ * Auto-ratify-on-first-scorecard (WI-5415, owner ask 2026-07-19): "why are agents
+ * grading unratified rubrics — if an agent starts USING a rubric it should
+ * automatically get ratified." Grading a still-`proposed` rubric IS adoption, so the
+ * scorecard write path (capture-core.ts's captureImprovement, the ONE choke point for
+ * both `scorecards:emit` and a raw `improvements:capture { lane:'observation' }`) calls
+ * this the moment a scorecard lands against a rubric whose status is `proposed`.
+ *
+ * D-012 (author ≠ ratifier) still applies: when the grader IS the rubric's own
+ * proposer, this is a no-op — that rubric stays `proposed` until a DIFFERENT agent
+ * grades it or a human explicitly ratifies (`rubrics:ratify`). ratifyRubric() itself
+ * enforces the same rule against the persisted proposer (defense in depth for a race
+ * between this pre-check and the write), so a self-grade can never silently ratify
+ * even if this function's own check were bypassed.
+ *
+ * Never throws — a transient write failure (a concurrent propose racing this ratify,
+ * a busy plan lock) is logged and simply leaves the rubric `proposed`; the NEXT
+ * scorecard against it retries the auto-ratify. A scorecard write must never fail
+ * because its side-effect ratification hit a lock.
+ */
+export async function autoRatifyRubricOnFirstScorecard(
+  rubricId: string,
+  graderId: string,
+): Promise<Rubric | null> {
+  try {
+    const rubric = await getRubric(rubricId);
+    if (!rubric || rubric.status !== 'proposed') return null; // only a still-proposed rubric is "adopted" by grading
+    if (rubric.proposedBy && rubric.proposedBy === graderId) return null; // D-012: grader === proposer, leave proposed
+    return await ratifyRubric(rubricId, graderId);
+  } catch (err) {
+    console.warn(
+      `[rubrics] auto-ratify-on-first-scorecard failed for '${rubricId}' (non-fatal — rubric stays proposed, next scorecard retries):`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 /** Pure: flip the frontmatter `status:` line within the leading `---`…`---` block only.
  *  Returns null when there is no frontmatter status line (legacy/malformed). Mirrors
  *  flipPlanFrontmatterStatus (set-plan-status.ts) — inlined to keep this lib off the

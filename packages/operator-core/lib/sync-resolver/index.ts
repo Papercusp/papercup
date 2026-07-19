@@ -567,35 +567,38 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'rubrics.list': {
     resolve: async () => {
       const { listRubrics } = await import('../rubrics');
-      const { listScorecards } = await import('../scorecards');
-      const [rubrics, scorecards] = await Promise.all([listRubrics({}), listScorecards({ limit: 500 })]);
-      const byRubric = new Map<
-        string,
-        { count: number; latestAt: string | null; latestScore10: number | null; scoreSum: number; scoreN: number }
-      >();
-      for (const s of scorecards) {
-        const e = byRubric.get(s.rubricRef) ?? {
-          count: 0,
-          latestAt: null,
-          latestScore10: null as number | null,
-          scoreSum: 0,
-          scoreN: 0,
-        };
-        e.count += 1;
-        if (!e.latestAt || s.createdAt > e.latestAt) {
-          e.latestAt = s.createdAt;
-          e.latestScore10 = s.score10;
+      const { listScorecards, scorecardTotalCountsByRubric } = await import('../scorecards');
+      const rubrics = await listRubrics({});
+      // WI-5415: this used to bucket ONE globally-capped listScorecards({ limit: 500 })
+      // read shared across EVERY rubric combined — a high-volume rubric graded every
+      // turn (e.g. 968 real scorecards) fills that shared window on its own and crowds
+      // a low-volume rubric completely OUT of it, so BOTH showed scorecardCount: 0
+      // (misread in the UI as "never scored" despite real grading history). Fetch
+      // PER RUBRIC instead (mirrors rubrics:trend's own per-rubric window) for the
+      // latest/avg projection, and pair it with a real UNBOUNDED count so the true
+      // total never depends on how recently OTHER rubrics were graded.
+      const [totalCounts, perRubricScorecards] = await Promise.all([
+        scorecardTotalCountsByRubric(),
+        Promise.all(rubrics.map((r) => listScorecards({ rubricRef: r.rubricId, limit: 500 }))),
+      ]);
+      return rubrics.map((r, i) => {
+        const cards = perRubricScorecards[i] ?? [];
+        let latestAt: string | null = null;
+        let latestScore10: number | null = null;
+        let scoreSum = 0;
+        let scoreN = 0;
+        for (const s of cards) {
+          if (!latestAt || s.createdAt > latestAt) {
+            latestAt = s.createdAt;
+            latestScore10 = s.score10;
+          }
+          // avgScore10 = mean of the P-004 read-time 0–10 projections; null-scored
+          // (all-unknown) scorecards are excluded, matching the per-scorecard rule.
+          if (s.score10 !== null) {
+            scoreSum += s.score10;
+            scoreN += 1;
+          }
         }
-        // avgScore10 = mean of the P-004 read-time 0–10 projections; null-scored
-        // (all-unknown) scorecards are excluded, matching the per-scorecard rule.
-        if (s.score10 !== null) {
-          e.scoreSum += s.score10;
-          e.scoreN += 1;
-        }
-        byRubric.set(s.rubricRef, e);
-      }
-      return rubrics.map((r) => {
-        const g = byRubric.get(r.rubricId);
         return {
           rubricId: r.rubricId,
           characteristic: r.characteristic,
@@ -611,10 +614,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           ratingScale: r.ratingScale,
           methodRef: r.methodRef,
           updatedAt: r.updatedAt,
-          scorecardCount: g?.count ?? 0,
-          latestScorecardAt: g?.latestAt ?? null,
-          latestScore10: g?.latestScore10 ?? null,
-          avgScore10: g && g.scoreN > 0 ? Math.round((g.scoreSum / g.scoreN) * 10) / 10 : null,
+          // The TRUE unbounded total (WI-5415) — never the length of the capped
+          // per-rubric read above, so a >500-scorecard rubric never under-reports.
+          scorecardCount: totalCounts[r.rubricId] ?? cards.length,
+          latestScorecardAt: latestAt,
+          latestScore10,
+          avgScore10: scoreN > 0 ? Math.round((scoreSum / scoreN) * 10) / 10 : null,
         };
       }) as unknown[];
     },

@@ -660,16 +660,15 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // fail-safe: a lookup/write hiccup NEVER fails the plan-status flip.
   let workItemSynced: { id: string; state: 'blocked' | 'todo' } | undefined;
   {
-    const syncTarget = planSyncWorkItemState(result.value.oldStatus, it.status, '');
-    // Cheap pre-gate: only a block/unblock edge can ever sync; skip the PG lookup for
-    // every other flip (done/wip/re-set) — the vast majority. `planSyncWorkItemState`
-    // is re-run below with the work_item's REAL state, which is the authoritative gate.
+    // Cheap pre-gate: only a block/unblock EDGE can ever sync, so skip the PG lookup
+    // for every other flip (done/wip/re-set) — the vast majority. The authoritative
+    // decision is planSyncWorkItemState re-run below with the work_item's REAL state.
     const isBlockEdge = PLAN_BLOCKED_STATUSES.has(it.status) && result.value.oldStatus !== it.status;
     const isUnblockEdge =
       it.status === 'todo' &&
       result.value.oldStatus !== null &&
       PLAN_BLOCKED_STATUSES.has(result.value.oldStatus);
-    if (syncTarget !== null || isBlockEdge || isUnblockEdge) {
+    if (isBlockEdge || isUnblockEdge) {
       try {
         const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
         const linked = await findConvertedWorkItemByStamp(it.slug, it.itemId, scope.harnessSlug);

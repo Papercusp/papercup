@@ -132,6 +132,79 @@ describe('captureImprovement — observation lane (turn-end-reflection-observati
   });
 });
 
+describe('captureImprovement — auto-ratify-on-first-scorecard hook (WI-5415)', () => {
+  it('calls autoRatifyRubric with the rubricRef + grader when a scorecard lands against it', async () => {
+    const calls: Array<[string, string]> = [];
+    const d: CaptureDeps = {
+      ...deps(),
+      autoRatifyRubric: async (rubricId, graderId) => {
+        calls.push([rubricId, graderId]);
+        return null;
+      },
+    };
+    await captureImprovement(
+      {
+        title: 'scorecard for my-rubric',
+        kind: 'change',
+        lane: 'observation',
+        createdBy: 'cup-42',
+        payloadExtra: { observation: { rubricRef: 'my-rubric', ratings: {} } },
+      },
+      d,
+    );
+    expect(calls).toEqual([['my-rubric', 'cup-42']]);
+  });
+
+  it('does NOT call it when the observation carries no rubricRef', async () => {
+    const calls: unknown[] = [];
+    const d: CaptureDeps = {
+      ...deps(),
+      autoRatifyRubric: async (...args: [string, string]) => {
+        calls.push(args);
+        return null;
+      },
+    };
+    await captureImprovement(
+      { title: 'x', kind: 'change', lane: 'observation', createdBy: 'cup-1' },
+      d,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does NOT call it for a non-observation (improvement lane) capture', async () => {
+    const calls: unknown[] = [];
+    const d: CaptureDeps = {
+      ...deps(),
+      autoRatifyRubric: async (...args: [string, string]) => {
+        calls.push(args);
+        return null;
+      },
+    };
+    await captureImprovement({ title: 'x', kind: 'bug', createdBy: 'cup-1' }, d);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('never fails the capture when auto-ratify rejects (best-effort side effect)', async () => {
+    const d: CaptureDeps = {
+      ...deps(),
+      autoRatifyRubric: async () => {
+        throw new Error('boom — plan lock busy');
+      },
+    };
+    const res = await captureImprovement(
+      {
+        title: 'scorecard for my-rubric',
+        kind: 'change',
+        lane: 'observation',
+        createdBy: 'cup-42',
+        payloadExtra: { observation: { rubricRef: 'my-rubric', ratings: {} } },
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+});
+
 describe('captureImprovement — native kind + paths (close-loop D-002)', () => {
   it('writes the REAL kind column and a CLEAN title (no [kind] prefix)', async () => {
     const d = deps();

@@ -58,6 +58,16 @@ import {
   type KnowledgePackManifest,
 } from './pack-format';
 import type { LlmJudge } from '../memory/conflict-check';
+// CandidateStatus, KnowledgePackCandidate, and AUTO_ADOPT_REVIEWER live in the
+// CLIENT-SAFE ./candidates-shared so the /adv Learnings view can use them
+// without dragging this server module (node:fs/path, PG, sync-sse →
+// embedded-pg-discovery) into the browser bundle. Imported for local use here
+// and re-exported below so existing importers of this module are unchanged.
+import {
+  AUTO_ADOPT_REVIEWER,
+  type CandidateStatus,
+  type KnowledgePackCandidate,
+} from './candidates-shared';
 
 /** The owner-curated pack adoption writes into (created on first adoption). */
 export const FLEET_LESSONS_PACK_ID = 'fleet-lessons';
@@ -71,29 +81,11 @@ export function pendingCandidateCap(): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : MAX_PENDING_CANDIDATES;
 }
 
-export type CandidateStatus = 'pending' | 'adopted' | 'dismissed';
-
-export interface KnowledgePackCandidate {
-  id: string;
-  signature: string;
-  title: string;
-  draftText: string;
-  kind: LearningKind;
-  appliesTo: AppliesTo[];
-  /** Distinct scopes ('operator' | 'harness:<slug>') the signature recurred across. */
-  scopes: string[];
-  recurrenceCount: number;
-  /** Improvement-item ids (EI/WI) the recurrence was observed on. */
-  sourceItemIds: string[];
-  status: CandidateStatus;
-  createdBy: string;
-  createdAt: string;
-  decidedAt?: string;
-  decidedBy?: string;
-  decisionNote?: string;
-  packId?: string;
-  packItemId?: string;
-}
+// Re-exported from the client-safe ./candidates-shared (imported above) so every
+// existing importer of this module keeps resolving CandidateStatus /
+// KnowledgePackCandidate / AUTO_ADOPT_REVIEWER unchanged.
+export { AUTO_ADOPT_REVIEWER };
+export type { CandidateStatus, KnowledgePackCandidate };
 
 interface CandidateRow {
   id: string;
@@ -501,9 +493,6 @@ export async function decideKnowledgePackCandidate(
  * still want a 'review' step, that should be an AUTOMATED review step, we
  * already have many mechanisms for this we use for other types of learnings")
  * ──────────────────────────────────────────────────────────────────────── */
-
-/** The machine `by` identity stamped on every auto-decided candidate. */
-export const AUTO_ADOPT_REVIEWER = 'fleet-candidate-auto-review';
 
 /** Default cap on candidates auto-reviewed per sweep tick. */
 export const AUTO_ADOPT_MAX_PER_RUN = 10;

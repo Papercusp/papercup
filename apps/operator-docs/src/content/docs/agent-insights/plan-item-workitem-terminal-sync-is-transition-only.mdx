@@ -69,6 +69,20 @@ terminal status re-surfaces the orphan:
   retried a claimed WI whose plan item is `blocked`/needs-human; as of 2026-07-17
   it **also** blocks a `done`/`dropped` linked plan item — so the drain fleet stops
   re-working already-done items. (Fixed here.)
+  - ⚠ **The gated (`blocked`/needs-human) case has the SAME transition-gap the
+    terminal case does — and it is a worse symptom** (EI-14699). The post-claim
+    guard *releases* a blocked-lane WI but leaves its `state:'todo'`, so
+    `scheduler:get_next` re-serves it every cycle: a perpetual claim/release
+    **ping-pong** (WI-3475/WI-3467 each cycled 8+ times). The durable fix is the
+    same as the terminal one — **heal the data at the source, in the periodic
+    orphan-reconcile sweep** (`reconcileOrphanedPlanItemWorkItems`), not another
+    consumer guard: the sweep now PARKS a blocked/needs-human lane's linked WIs out
+    of self-select and UN-parks them when the lane is actionable again
+    (`syncLinkedWorkItemsToPlanLane` / `decideLaneGate`). Parking reuses the
+    external-blocker machinery (`work_items:set_blocker`) — a provenance-carrying
+    `plan-lane:<plan>#<item>` blocker is the marker that the sync (not something
+    else) parked the item, so un-park never clobbers an independently-blocked WI.
+    Don't add a duplicate propagation leg to `setStatusOne`; extend the sweep.
 - **`pot:survey` placement frontier** (`pot/survey.ts`) still ranks a done-plan-item
   `todo` WI as "unplaced/aging" → spurious Mug placement wakes. (Residual, tracked
   on EI-14693.)

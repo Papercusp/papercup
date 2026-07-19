@@ -32,13 +32,22 @@ registerSystemAction('plan-item-orphan-reconcile', async (ctx: SystemActionCtx) 
     Number.isFinite(candidateCap) && candidateCap > 0 ? { candidateCap } : {},
   );
   // Quiet on a clean no-op tick (the common steady state); log only when the sweep
-  // actually found terminal plan-items or healed something.
-  if (result.terminalPlanItems > 0 || result.reconciled.length > 0) {
+  // actually found terminal plan-items or healed something (terminalized, or the
+  // EI-14699 lane park/un-park).
+  if (
+    result.terminalPlanItems > 0 ||
+    result.reconciled.length > 0 ||
+    result.gated.length > 0 ||
+    result.ungated.length > 0
+  ) {
     console.log(
       `[plan-item-orphan-reconcile] ${ctx.installSlug}: ${result.candidatePlanItems} candidate plan-item(s), ` +
-        `${result.terminalPlanItems} terminal — reconciled ${result.reconciled.length} work-item(s) ` +
+        `${result.terminalPlanItems} terminal — reconciled ${result.reconciled.length} work-item(s), ` +
+        `lane-parked ${result.gated.length}, lane-restored ${result.ungated.length} ` +
         `(${result.skippedInFlight.length} in-flight, ${result.skippedAlreadyTerminal.length} already-terminal skipped)` +
-        (result.reconciled.length ? `: ${result.reconciled.join(', ')}` : ''),
+        (result.reconciled.length ? `: ${result.reconciled.join(', ')}` : '') +
+        (result.gated.length ? ` [parked: ${result.gated.join(', ')}]` : '') +
+        (result.ungated.length ? ` [restored: ${result.ungated.join(', ')}]` : ''),
     );
   }
 });

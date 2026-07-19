@@ -378,6 +378,40 @@ export function scorecardScore10(
   return Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 10) / 10;
 }
 
+/**
+ * TRUE, unbounded per-rubric scorecard counts (WI-5415 owner surprise-check: "do we
+ * really have 17 rubrics ratified but never scored?"). A raw grouped `COUNT(*)` over
+ * every organic, non-synthesized scorecard row — independent of ANY read-side row cap.
+ *
+ * WHY this exists as its own query rather than reusing `listScorecards`: the
+ * `rubrics.list` sync-resolver used to roll up ONE globally-capped
+ * `listScorecards({ limit: 500 })` read shared across EVERY rubric combined. A
+ * high-volume rubric graded every turn (hive-coordination-health: 968 real scorecards)
+ * fills that shared 500-row window entirely on its own, crowding a low/no-volume rubric
+ * (fleet-execution-health: 11 real scorecards) completely OUT of it — so the panel
+ * showed `scorecardCount: 0` for BOTH the high-volume rubric (once its most recent grade
+ * aged past the window) and the crowded-out one, misreading real grading history as
+ * "never scored". Live audit (papercusp-workspace, 2026-07-19): of the 23 active
+ * rubrics, this bug alone zeroed out at least 2 (hive-coordination-health,
+ * fleet-execution-health) that carry hundreds of real scorecards between them.
+ *
+ * The fix: the resolver reads PER RUBRIC for the latest/avg projection (mirrors
+ * rubrics:trend's own per-rubric window) + this unbounded count for the true total —
+ * so no rubric's count depends on how many OTHER rubrics were graded recently.
+ */
+export async function scorecardTotalCountsByRubric(): Promise<Record<string, number>> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ rubric_ref: string; n: string }[]>`
+    SELECT payload -> 'observation' ->> 'rubricRef' AS rubric_ref, count(*) AS n
+      FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${issuesScopeWorkspace()}
+       AND COALESCE(signal_origin, 'organic') = 'organic'
+       AND payload -> 'observation' ->> 'rubricRef' IS NOT NULL
+       AND payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'
+     GROUP BY 1`;
+  return Object.fromEntries(rows.map((r) => [r.rubric_ref, Number(r.n)]));
+}
+
 export interface ListScorecardsFilter {
   /** Restrict to one rubric (e.g. 'pot-coordination-health'). */
   rubricRef?: string;

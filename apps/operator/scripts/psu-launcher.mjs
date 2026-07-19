@@ -1635,8 +1635,9 @@ export function parkRoleScopedMcpJson(cwd) {
 // is a plain node script with no TS imports, so the list is inlined, not imported).
 export const OMP_CORE_MCP_TOOL_NAMES = [
   // (coord:ack cut in the 2026-07-05 demand-evidence rebalance, in lockstep with the
-  // canonical list — 47 calls/7d; a coord:send reply covers it.)
-  'coord:orient', 'coord:inbox', 'coord:send', 'coord:glance', 'coord:ask',
+  // canonical list — 47 calls/7d; a coord:send reply covers it. coord:ask cut
+  // 2026-07-19 by the same bar — 16 calls/14d seeded, zero fallback reaches.)
+  'coord:orient', 'coord:inbox', 'coord:send', 'coord:glance',
   // plans:new (P-002, cross-platform-hardening-and-agent-ergonomics-2026-07-05) authors a
   // whole plan in ONE call (P-001 `body` arg) so an agent never hunts for a create verb —
   // the Mac-app plan-authoring fumble (owner: "plans should be a core trimmed tool").
@@ -1676,6 +1677,10 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // (recipes:run cut 2026-07-05 — 78 calls/7d, one role; recipes:search returns the
   // run pointer and the run routes via tools:invoke.)
   'code:run', 'recipes:search',
+  // dev:pg_query added 2026-07-19: the loudest unmet need in the fallback-reach ledger
+  // (1,132 tools:invoke reaches/14d, 2.4× the next entry) + the storage-policy-mandated
+  // read path for PG-canonical state. Mirror of the canonical CORE addition.
+  'dev:pg_query',
   // EI-10946/EI-10947: facts:retract is the ONLY exit from a standing fact (folded VERBATIM
   // into every future orient as binding context) — seeding assert+list without retract armed
   // the stale-fact trap with no disarm. Mirror the canonical CORE order (retract after list).
@@ -1688,7 +1693,9 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   'work_items:checkpoint', 'loop:arm', 'loop:checkpoint', 'loop:status', 'loop:end',
   // Event-wait lifecycle (fleet-member-dx-improvements-2026-07-10 P-008): keep the
   // seeded OMP spine aligned with the canonical event sleep/emit/catalog verbs.
-  'events:await', 'events:emit', 'events:catalog',
+  // (events:emit cut 2026-07-19 in lockstep — 29 calls/14d seeded, no reach demand;
+  // members await, leaders/the system emit; reachable via tools:find/invoke.)
+  'events:await', 'events:catalog',
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   'session:request-compaction',

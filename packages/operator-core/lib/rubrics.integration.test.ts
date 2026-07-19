@@ -408,6 +408,38 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
   });
 });
 
+describe('autoRatifyRubricOnFirstScorecard — grading a proposed rubric IS adoption (WI-5415)', () => {
+  it('ratifies a PROPOSED rubric the first time a DIFFERENT agent grades it', async () => {
+    await rubrics.proposeRubric({ rubricId: 'gr', characteristic: 'c', title: 'Gr', criteria: sampleCriteria, by: 'author-a' });
+    const result = await rubrics.autoRatifyRubricOnFirstScorecard('gr', 'grader-b');
+    expect(result?.status).toBe('active');
+    expect(result?.ratifiedBy).toBe('grader-b');
+    expect(result?.proposedBy).toBe('author-a');
+    const stored = await rubrics.getRubric('gr');
+    expect(stored?.status).toBe('active'); // durably persisted, not just returned
+  });
+
+  it('D-012: is a no-op when the grader IS the rubric proposer — stays proposed', async () => {
+    await rubrics.proposeRubric({ rubricId: 'self', characteristic: 'c', title: 'Self', criteria: sampleCriteria, by: 'author-a' });
+    const result = await rubrics.autoRatifyRubricOnFirstScorecard('self', 'author-a');
+    expect(result).toBeNull();
+    const stored = await rubrics.getRubric('self');
+    expect(stored?.status).toBe('proposed'); // left untouched, awaiting a different ratifier
+  });
+
+  it('is a no-op on an already-ACTIVE rubric (nothing to adopt)', async () => {
+    await rubrics.proposeRubric({ rubricId: 'already', characteristic: 'c', title: 'Already', criteria: sampleCriteria, status: 'active', by: 'author-a' });
+    const result = await rubrics.autoRatifyRubricOnFirstScorecard('already', 'grader-b');
+    expect(result).toBeNull();
+    const stored = await rubrics.getRubric('already');
+    expect(stored?.ratifiedBy).toBe('author-a'); // the original ratification is untouched
+  });
+
+  it('returns null (never throws) for an unknown rubricId', async () => {
+    await expect(rubrics.autoRatifyRubricOnFirstScorecard('nope', 'grader-b')).resolves.toBeNull();
+  });
+});
+
 describe('list / get / search over written rubrics', () => {
   beforeEach(async () => {
     await rubrics.proposeRubric({ rubricId: 'active-a', characteristic: 'hive-coordination', title: 'Active A', criteria: sampleCriteria, status: 'active', by: 's' });

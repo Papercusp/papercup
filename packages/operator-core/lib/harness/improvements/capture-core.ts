@@ -42,7 +42,7 @@ import {
   normalizeScorecardRatings,
   type StructuredObservation,
 } from './observation-types';
-import { getRubric } from '../../rubrics';
+import { getRubric, autoRatifyRubricOnFirstScorecard, type Rubric } from '../../rubrics';
 import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
@@ -204,11 +204,20 @@ export interface CaptureDeps {
    *  so tests drive the widening without PG or an embedder. */
   findSemanticDupes?: (input: { title: string; summary?: string }) => Promise<SemanticDupeResult | null>;
   getIssue?: (id: string) => Promise<EngineerIssue | null>;
+  /** Auto-ratify-on-first-scorecard (WI-5415): OPTIONAL — defaults to the real
+   *  rubrics.ts autoRatifyRubricOnFirstScorecard; injectable so tests can assert the
+   *  hook fired (and with which args) without touching PG. */
+  autoRatifyRubric?: (rubricId: string, graderId: string) => Promise<Rubric | null>;
 }
 
 // WI-4308: use the dedup-widened search (also checks the legacy DEFAULT_COORD_WORKSPACE
 // for pre-ISSUES_PER_WORKSPACE-flip rows) — see searchIssuesForDedup's doc in issues-engineer.ts.
-const defaultDeps: CaptureDeps = { searchIssues: searchIssuesForDedup, createIssue, loadRubric: getRubric };
+const defaultDeps: CaptureDeps = {
+  searchIssues: searchIssuesForDedup,
+  createIssue,
+  loadRubric: getRubric,
+  autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
+};
 
 /** The native column kind for a capture: feature is a payload refinement of change. */
 export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
@@ -482,6 +491,18 @@ export async function captureImprovement(
       )
       .catch(() => {});
   }
+  // Auto-ratify-on-first-scorecard (WI-5415): a scorecard just landed against
+  // `observationForGate.rubricRef` — if that rubric is still `proposed`, grading it IS
+  // adoption (owner ask 2026-07-19). Awaited (not fire-and-forget) so the ratification
+  // is visible the moment this capture returns, but never lets a ratify failure fail
+  // the scorecard write itself — the underlying function already never throws.
+  if (isObservation && observationForGate?.rubricRef && input.createdBy) {
+    await (deps.autoRatifyRubric ?? autoRatifyRubricOnFirstScorecard)(
+      observationForGate.rubricRef,
+      input.createdBy,
+    ).catch(() => null);
+  }
+
   return {
     ok: true,
     created: true,

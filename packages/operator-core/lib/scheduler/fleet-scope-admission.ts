@@ -372,11 +372,28 @@ export function fleetScopedMiss(
   // EI-13520: `cooldownDiag` (ignored while paused — the pause message already fully
   // explains the miss) reattributes a cooldown-only miss so the caller — and the fleet
   // leader they'd otherwise report a false spec problem to — is told the true cause.
+  //
+  // EI-14615: a cooldown-only miss also carries `cooldownExpiryAt` (the ABSOLUTE expiry
+  // instant), and the advice distinguishes a NORMAL one-time cooldown (expiry holds
+  // steady, re-poll and it clears) from a LIVELOCKED one (expiry keeps ADVANCING because
+  // the fleet round-robin re-releases permanently-unfit rows faster than the window
+  // lapses — the relative `~Ns` reads a perpetually-fresh ~300s and never clears). The
+  // old advice told the member NOT to escalate; for the livelock case that was exactly
+  // wrong — a leader spec-revision to exclude those rows is the only fix.
   opts?: { pausedReason?: string | null; cooldownDiag?: CooldownMissDiagnosis | null },
 ) {
   const paused = opts?.pausedReason !== undefined;
   const cooldown = !paused ? (opts?.cooldownDiag ?? null) : null;
   const cooldownExpirySec = cooldown?.earliestExpiryMs != null ? Math.max(0, Math.round((cooldown.earliestExpiryMs - Date.now()) / 1000)) : null;
+  // EI-14615: surface the ABSOLUTE cooldown expiry instant, not just the relative
+  // `~Ns` (which is recomputed against Date.now() every poll and so reads the same
+  // "~300s" whether the window is decaying normally OR being externally re-stamped).
+  // A member can compare this absolute timestamp across successive polls: if it holds
+  // steady the cooldown is decaying normally and will clear; if it keeps ADVANCING the
+  // window is being re-stamped by the fleet round-robin re-releasing these rows faster
+  // than the cooldown lapses (the livelock this ticket documents) — it will NEVER clear
+  // on its own, and the do-not-escalate advice below is corrected to say so.
+  const cooldownExpiryAt = cooldown?.earliestExpiryMs != null ? new Date(cooldown.earliestExpiryMs).toISOString() : null;
   return {
     ok: false as const,
     error: paused
@@ -398,11 +415,11 @@ export function fleetScopedMiss(
     quarantinedIds,
     windDown: true as const,
     ...(paused ? { paused: true as const } : {}),
-    ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec } : {}),
+    ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt } : {}),
     advice: paused
       ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Resume only after a fleet:resume cue.'
       : cooldown
-        ? 'Cooldown-only miss (EI-13520): the row(s) excluding you will become claimable again once the release-cooldown window lapses (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s) — or immediately for any OTHER fleet member. Re-poll after the expiry (or park on a work-item:claimable await). Do NOT report this as a scope problem or ask your leader for a spec revision — it cannot fix a cooldown miss.'
+        ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. BUT if on re-poll cooldownExpiryAt has ADVANCED (the window keeps resetting — you see the same ~Ns every poll and it never counts down), the fleet is round-robin re-releasing these permanently-unfit rows faster than the cooldown lapses (a LIVELOCK, EI-14615): it will NOT clear on its own, so DO report it to your leader to exclude those rows from the claim spec (that is the fix), or wind down.'
         : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Resume only after a claim-spec revision or a new claimable event.',
   };
 }
