@@ -3217,8 +3217,17 @@ function AdvConvStyles() {
         border-radius: 12px;
         background: var(--advconv-panel);
         backdrop-filter: none;
-        padding: 12px;
+        padding: 14px;
         box-shadow: none;
+      }
+      /* Thin, theme-tinted scrollbars on the tab's scroll surfaces — the default
+         wide gutter reads heavy against the compact rail cards. */
+      .pc-advconv__listscroll,
+      .pc-advconv__main .pc-coord__detail,
+      .pc-advfeed__stream,
+      .pc-advfeed__detailpane {
+        scrollbar-width: thin;
+        scrollbar-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 55%) transparent;
       }
       .pc-advconv__railhead {
         display: flex;
@@ -3266,6 +3275,7 @@ function AdvConvStyles() {
         border-radius: 8px;
         background: color-mix(in srgb, var(--bg, #07101d), transparent 16%);
         color: var(--fg-mute);
+        transition: border-color 120ms ease;
       }
       .pc-advconv__unified-search:focus-within {
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 40%);
@@ -3315,8 +3325,9 @@ function AdvConvStyles() {
         color: var(--fg);
         text-align: left;
         cursor: pointer;
-        /* Color-only transitions: `top` stays untransitioned so virtual-list
-           reorders snap instead of animating (the WebKit flash guard above). */
+        /* Color-only transitions: top stays untransitioned so virtual-list
+           reorders snap instead of animating (the WebKit flash guard above).
+           (No backticks here: the stylesheet is a JS template literal.) */
         transition: background-color 120ms ease, border-color 120ms ease;
       }
       .pc-advconv__unified-row:hover,
@@ -3406,7 +3417,7 @@ function AdvConvStyles() {
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         color: var(--fg);
-        font-size: 12.5px;
+        font-size: 13px;
         line-height: 1.35;
       }
       .pc-advconv__unified-preview {
@@ -3421,6 +3432,7 @@ function AdvConvStyles() {
       .pc-advconv__unified-meta {
         overflow: hidden;
         white-space: nowrap;
+        font-size: 10.5px;
       }
       .pc-advconv__unified-meta span {
         min-width: 0;
@@ -3480,7 +3492,7 @@ function AdvConvStyles() {
         background: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 90%);
         color: var(--fg-dim, #b9d4e8);
         font-size: 10px;
-        font-weight: 800;
+        font-weight: 700;
         letter-spacing: 0;
         text-transform: uppercase;
       }
@@ -3586,7 +3598,7 @@ function AdvConvStyles() {
         align-items: flex-start;
         justify-content: space-between;
         gap: 10px;
-        padding: 0 0 8px;
+        padding: 0 0 10px;
         border-bottom: 1px solid var(--advconv-border);
       }
       .pc-advconv__detailkicker {
@@ -3596,8 +3608,10 @@ function AdvConvStyles() {
         margin: 0 0 5px;
       }
       .pc-advconv .pc-coord__card header h2 {
-        font-size: 22px;
-        line-height: 1;
+        font-size: 20px;
+        /* line-height 1 clipped descenders and set wrapped long titles solid;
+           1.25 keeps multi-line titles readable without loosening the header. */
+        line-height: 1.25;
         letter-spacing: 0;
       }
       .pc-advconv__detailstats {

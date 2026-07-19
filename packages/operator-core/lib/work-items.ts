@@ -626,7 +626,21 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
                ? sql`TRUE`
                : sql`(parent_id IS NULL OR parent_id = '')`
          }
-         AND ${filter.admissibleOnly ? autoPickableWhereSql(sql, ws) : sql`TRUE`}
+         AND ${
+           filter.admissibleOnly
+             ? sql`(
+                 ${autoPickableWhereSql(sql, ws)}
+                 -- WI-5343: mirror claimFloorsWhereSql's FEATURE-family floors here too — a
+                 -- claim-held (_claimHold) or plan-lane-reserved feature item is not actually
+                 -- claimable, so "admissible" must exclude it the same way the issue-family
+                 -- branch (issueAdmissibleWhereSql, WI-4405) already does. No owner-exemption
+                 -- for the plan-lane floor here (generic list read, no specific claiming
+                 -- assignee) — mirrors issueAdmissibleWhereSql's own list-context shape.
+                 AND ${claimHoldExclusionSql(sql, 'payload')}
+                 AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
+               )`
+             : sql`TRUE`
+         }
          AND ${
            filter.audit
              ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
@@ -2332,7 +2346,7 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- back-pointer, so a feature-family item promoted onto a live plan lane (e.g. WI-5137, bound to
     -- an active plan) was self-selectable out from under the lane's own driving agent. Same
     -- predicate as the issue family (reservedPlanLaneExclusionSql), unaliased (runs in
-    -- harness_features_consolidated context). `opts.cooldownAssignee` already carries the claiming
+    -- harness_features_consolidated context). opts.cooldownAssignee already carries the claiming
     -- agent's ownerId (see its own doc comment) so it doubles for free as the owner-exemption arg —
     -- a lease THIS agent itself holds must not block its own re-claim.
     AND ${reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload')}
@@ -2490,11 +2504,18 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * plan that is draft/ready/shipped/superseded, or a lane whose lease has lapsed with no active plan,
  * is NOT excluded — those items drain normally (no starvation of genuinely-free backlog). A member
  * can still claim a reserved item DIRECTLY by id (the named-claim floor bypass) when it legitimately
- * owns the lane. Assumes the table is aliased `wi` (both call sites do).
+ * owns the lane.
  *
- * ONE source of truth, shared by {@link claimNextIssueWorkItem} (the claim) and
- * {@link diagnoseClaimNextMiss} (the READY count), so the "why did I miss" diagnosis can never
- * disagree with what the claim actually serves.
+ * WI-5343: `payloadCol` selects aliased (`wi.payload`, issue-family, the default — every
+ * pre-existing call site runs in a `FROM … work_items wi` context) vs unaliased (`payload`,
+ * FEATURE-family, `harness_features_consolidated`) — same dual-form shape as
+ * {@link crossMachineRigExclusionSql}. Now ALSO shared by {@link claimFloorsWhereSql} (the
+ * feature-family claim), which previously never read `payload.plan_item` at all — a feature
+ * promoted onto a live plan lane was self-selectable out from under it (see WI-5137).
+ *
+ * ONE source of truth, shared by {@link claimNextIssueWorkItem} + {@link claimFloorsWhereSql}
+ * (the claims) and {@link diagnoseClaimNextMiss} (the READY count), so the "why did I miss"
+ * diagnosis can never disagree with what the claim actually serves.
  */
 export function reservedPlanLaneExclusionSql(
   sql: OrgSql,

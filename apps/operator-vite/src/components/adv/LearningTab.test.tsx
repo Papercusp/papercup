@@ -421,8 +421,15 @@ const seenArgs: Record<string, unknown> = {};
 // gymResult — lets a test model the client's scoped→workspace-wide fallback.
 let gymWideResult: Record<string, unknown> | null = null;
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: (opts: { queryName: string; args?: unknown }) => {
-    seenArgs[opts.queryName] = opts.args;
+  useSyncQuery: (opts: {
+    queryName: string;
+    args?: unknown;
+    enabled?: boolean;
+  }) => {
+    // Only record ACTUALLY-firing queries — a hook gated `enabled: false` (e.g.
+    // the gym view's workspace-wide fallback when the scoped read has data) does
+    // not fetch, so it must not clobber the recorded args of the real read.
+    if (opts.enabled !== false) seenArgs[opts.queryName] = opts.args;
     if (opts.queryName === "learning.gym") {
       const hasHive = Boolean((opts.args as { hive?: string } | undefined)?.hive);
       return !hasHive && gymWideResult ? gymWideResult : gymResult;
@@ -1221,8 +1228,9 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     expect(screen.getByText("Decision queue")).toBeTruthy();
     expect(screen.getByText("Queue idea 1")).toBeTruthy();
     expect(screen.queryByText("Queue idea 2")).toBeNull();
-    // The stack's count control reports 8 (of 10; the other 2 are "earlier").
-    expect(screen.getByText("of").closest("span")?.textContent).toContain("8");
+    // The stack holds 8 (of 10; the other 2 are "earlier") → 8 position dots,
+    // the last labelled "8 of 8".
+    expect(screen.getByLabelText("Go to card 8 of 8")).toBeTruthy();
     // Step the deck: the top card advances to the next idea.
     fireEvent.click(screen.getAllByRole("button", { name: "Next card" })[0]);
     expect(screen.getByText("Queue idea 2")).toBeTruthy();

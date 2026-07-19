@@ -14,7 +14,7 @@
 //   --dry           print what would run, don't run
 
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
@@ -26,7 +26,45 @@ import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 // AFTER the blocking spawnSync child has already written, so a workspace's output
 // prints under another workspace's header. Emit our own lines synchronously so
 // they stay glued to the child output they label. See scripts/lib/sync-write.mjs.
-import { writeAllSync, outSync, errSync } from './lib/sync-write.mjs';
+import { writeAllSync, outSync as rawOutSync, errSync as rawErrSync } from './lib/sync-write.mjs';
+
+// EI-15802: an agent running this as a BACKGROUND task only sees the harness's
+// own truncated tail (~150 lines) plus an exit-code notification — on a long
+// combined JS+cargo run that window can cover only the FINAL suite's summary,
+// so an agent trusting either the exit code alone or the truncated tail alone
+// gets a false read in opposite directions (a real earlier failure hidden by a
+// later 'exit 0' cargo pass, or vice versa). Always write the FULL run's output
+// — this script's own header/status lines AND every child suite's stdout/stderr
+// — to one discoverable, fixed-per-run log file, and print its path prominently
+// at the very start (survives a truncated tail) and again at the end (both the
+// success and failure summaries). `outSync`/`errSync` below shadow the raw
+// sync-write helpers so every EXISTING call site in this file gets logged for
+// free, with zero behavior change to what's written to the real fd.
+const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${process.pid}.log`;
+function logLine(text) {
+  if (text == null || text === '') return;
+  try {
+    appendFileSync(RUN_LOG_PATH, String(text));
+  } catch {
+    // Logging must never fail the actual test run.
+  }
+}
+function outSync(msg = '') {
+  rawOutSync(msg);
+  logLine(`${msg}\n`);
+}
+function errSync(msg = '') {
+  rawErrSync(msg);
+  logLine(`${msg}\n`);
+}
+// Whether to run child suites via CAPTURED spawnSync (vs `stdio: 'inherit'`).
+// `retryFailed` already needs capture to learn which files failed. We ALSO
+// capture whenever stdout is not a real TTY — i.e. exactly a background-task /
+// CI / gate invocation, the scenario this bug report is about — so the FULL
+// child output is available to route into RUN_LOG_PATH instead of only
+// whatever slice of 'inherit'-written bytes the caller's own buffer retains.
+// AFFECTED_LOG_FULL=1 forces it even on an interactive TTY (opt-in).
+const captureOutput = () => retryFailed || !process.stdout.isTTY || process.env.AFFECTED_LOG_FULL === '1';
 
 // ── Shared-host worker cap (WI-3792 follow-up, 2026-07-10) ──────────────────
 // Vitest defaults each suite's fork pool to EVERY core. On the shared 128-core
@@ -379,6 +417,11 @@ if (!tasks.length) {
 outSync(`Affected workspaces (${affected.length}): ${affected.map((w) => w.name).join(', ')}`);
 outSync(`Running ${tasks.length} task(s):`);
 for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
+// EI-15802: printed EARLY (before any suite runs) and again in the final
+// summary — a truncated background-task tail is more likely to still show
+// this line than a full multi-suite run's early output, so it survives even
+// when the rest of the header has already scrolled out of the retained tail.
+outSync(`Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`);
 
 if (dry) process.exit(0);
 
@@ -513,17 +556,22 @@ for (const t of tasks) {
   if (guardArgs.length) {
     outSync(`    (EI-11132 empty-suite guard: on-disk test files found — this run's --passWithNoTests is disabled)`);
   }
-  // Under retryFailed we must capture output to learn WHICH files failed; the
-  // interactive path keeps stdio:'inherit' for live streaming.
+  // Under retryFailed we must capture output to learn WHICH files failed; a
+  // non-TTY caller (background task / CI / gate — EI-15802) is ALSO captured
+  // so the full child output can be logged to RUN_LOG_PATH. Only a real
+  // interactive TTY keeps stdio:'inherit' for live streaming with nothing lost
+  // (a human is watching the terminal directly).
   const run = (extraArgs = []) => {
     const { cmd, argv, cwd, env } = spawnSpecFor(t, [...guardArgs, ...extraArgs]);
-    if (!retryFailed) return spawnSync(cmd, argv, { cwd, env, stdio: 'inherit' });
+    if (!captureOutput()) return spawnSync(cmd, argv, { cwd, env, stdio: 'inherit' });
     // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
     // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
     const r = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
     if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
     writeAllSync(1, r.stdout ?? '');
     writeAllSync(2, r.stderr ?? '');
+    logLine(r.stdout ?? '');
+    logLine(r.stderr ?? '');
     return r;
   };
   let r = run();
@@ -562,10 +610,26 @@ outSync(`\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suit
 try {
   const cargoReporter = resolve(ROOT, 'scripts', 'report-cargo-tests.mjs');
   const cargoManifest = resolve(ROOT, 'papercusp-desktop', 'src-tauri', 'Cargo.toml');
-  const cargoRun = spawnSync(process.execPath, [cargoReporter, '--manifest-path', relative(ROOT, cargoManifest)], {
-    cwd: ROOT,
-    stdio: 'inherit',
-  });
+  // EI-15802: this suite runs LAST, so on a non-TTY (background-task) caller its
+  // own summary is exactly what a fixed-size tail buffer retains — capture +
+  // log it the same way as the vitest tasks above, instead of 'inherit'-only,
+  // so an earlier JS/TS failure isn't hidden behind a trailing cargo pass/fail.
+  const cargoRun = captureOutput()
+    ? spawnSync(process.execPath, [cargoReporter, '--manifest-path', relative(ROOT, cargoManifest)], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        maxBuffer: 256 * 1024 * 1024,
+      })
+    : spawnSync(process.execPath, [cargoReporter, '--manifest-path', relative(ROOT, cargoManifest)], {
+        cwd: ROOT,
+        stdio: 'inherit',
+      });
+  if (captureOutput()) {
+    writeAllSync(1, cargoRun.stdout ?? '');
+    writeAllSync(2, cargoRun.stderr ?? '');
+    logLine(cargoRun.stdout ?? '');
+    logLine(cargoRun.stderr ?? '');
+  }
   if (cargoRun.status !== 0) {
     errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
     if (!quarantined.has('papercusp-desktop')) {
@@ -585,6 +649,8 @@ if (quarantinedFailed) {
 if (failed) {
   errSync(`\n${failed} non-quarantined task(s) failed:`);
   for (const name of failedTaskNames) errSync(`  - ${name}`);
+  errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(1);
 }
 outSync('\nAll affected tests passed.');
+outSync(`Full run log: ${RUN_LOG_PATH}`);

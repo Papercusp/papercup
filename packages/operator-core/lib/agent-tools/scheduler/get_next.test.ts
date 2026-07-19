@@ -14,9 +14,16 @@ import type { ZodTypeAny } from 'zod';
 
 const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 const getNextM = vi.hoisted(() => vi.fn());
+// EI-15777: the paused-miss branch cancels the caller's own standing
+// `work-item:claimable` await(s) — mock the store call so these unit tests never
+// touch real PG, and so tests below can assert it was invoked (self-scoped, by ownerId).
+const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
+}));
+vi.mock('../../events/await/store', () => ({
+  cancelClaimableAwaits: cancelClaimableAwaitsM,
 }));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
