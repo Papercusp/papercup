@@ -1,0 +1,234 @@
+/**
+ * EI-15185 regression: a fleet member's `events:await { event:
+ * 'work-item:claimable' }` fired on system-wide releases outside its claim-spec
+ * scope because there was no way to derive a `payload_filter` from the spec.
+ *
+ * `claimSpecFilterToClaimablePayloadFilter` closes that gap. This suite pins:
+ *   1. the translated DataCondition shapes for the payload-mapped fields;
+ *   2. the reproduction — the exact wasted wakes (a p2p bug title, an unrelated
+ *      tracking issue) no longer match, while genuine in-scope work still does;
+ *   3. SOUNDNESS — for a spec that filters only on payload-visible fields, the
+ *      derived filter matches a claimable payload IFF the claim spec would admit
+ *      the item (no over-suppression: it must never miss a real wake);
+ *   4. the permissive drops (non-payload fields, relational ops, OR arms, NOT of
+ *      an inexact subtree) collapse to `undefined` — an unscoped await, which the
+ *      miss advice then declines to recommend.
+ */
+import { describe, expect, it } from 'vitest';
+import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
+import { matchesClaimSpecFilter, type ClaimSpecSubject } from './claim-spec-match';
+import { payloadMatchesFilter } from '../events/await/pattern';
+import type { FilterNode } from './claim-spec';
+
+/** A `work-item:claimable` event payload (see emitWorkItemClaimableEvent). */
+function payloadOf(p: {
+  id?: string;
+  kind?: string;
+  title?: string;
+  plan?: string | null;
+}): Record<string, unknown> {
+  return {
+    id: p.id ?? 'X-1',
+    kind: p.kind ?? 'task',
+    severity: null,
+    harness: null,
+    title: p.title ?? '',
+    state: 'todo',
+    reason: 'created',
+    plan: p.plan ?? null,
+  };
+}
+
+/** A ClaimSpecSubject agreeing with `payloadOf` on the payload-visible fields. */
+function subjectOf(p: { id?: string; kind?: string; title?: string; plan?: string | null }): ClaimSpecSubject {
+  return {
+    id: p.id ?? 'X-1',
+    title: p.title ?? '',
+    kind: p.kind ?? 'task',
+    priority: null,
+    tags: [],
+    paths: [],
+    plan: p.plan ?? null,
+    planItem: [],
+    age: null,
+    riskTier: null,
+    redundancy: null,
+    estCost: null,
+    assignee: null,
+  };
+}
+
+describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => {
+  it('empty / undefined filter → undefined (no narrowing)', () => {
+    expect(claimSpecFilterToClaimablePayloadFilter(undefined)).toBeUndefined();
+  });
+
+  it('kind `in` → { kind: { in: [...] } }', () => {
+    const f: FilterNode = { field: 'kind', op: 'in', value: ['feature', 'chunk'] };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ kind: { in: ['feature', 'chunk'] } });
+  });
+
+  it('plan `=` → { plan: { equals } }', () => {
+    const f: FilterNode = { field: 'plan', op: '=', value: 'drain-plan' };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ plan: { equals: 'drain-plan' } });
+  });
+
+  it('NOT title glob → { not: { title: { matches } } } mirroring the spec globRegex', () => {
+    const f: FilterNode = { not: { field: 'title', op: 'glob', value: '*p2p*' } };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({
+      not: { title: { matches: { source: '^.*p2p.*$', flags: 'i' } } },
+    });
+  });
+
+  it('contains → case-insensitive literal-substring matches', () => {
+    const f: FilterNode = { field: 'title', op: 'contains', value: 'p2p' };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ title: { matches: { source: 'p2p', flags: 'i' } } });
+  });
+
+  it('relational op on a payload field is dropped permissively → undefined', () => {
+    // (< <= > >= only target numeric non-payload fields; dropping is sound.)
+    const f: FilterNode = { field: 'id', op: '>', value: 5 };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toBeUndefined();
+  });
+
+  it('a leaf on a non-payload field (plan_item / tags / priority) is dropped → undefined', () => {
+    expect(claimSpecFilterToClaimablePayloadFilter({ field: 'plan_item', op: 'in', value: ['P-001'] })).toBeUndefined();
+    expect(claimSpecFilterToClaimablePayloadFilter({ field: 'tags', op: 'contains', value: 'x' })).toBeUndefined();
+    expect(claimSpecFilterToClaimablePayloadFilter({ field: 'priority', op: '<', value: 10 })).toBeUndefined();
+  });
+
+  it('ALL keeps the payload-visible child, drops the non-payload one', () => {
+    const f: FilterNode = {
+      all: [
+        { field: 'kind', op: '=', value: 'feature' },
+        { field: 'plan_item', op: 'in', value: ['P-001'] },
+      ],
+    };
+    // Only the kind leaf survives (a sound superset — get_next still enforces plan_item).
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ kind: { equals: 'feature' } });
+  });
+
+  it('ANY with a non-narrowable arm collapses to undefined (cannot narrow an OR)', () => {
+    const f: FilterNode = {
+      any: [
+        { field: 'plan', op: '=', value: 'A' },
+        { field: 'tags', op: 'contains', value: 'x' },
+      ],
+    };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toBeUndefined();
+  });
+
+  it('NOT of an inexact subtree drops to undefined (would under-cover the admit-set)', () => {
+    const f: FilterNode = { not: { field: 'plan_item', op: 'in', value: ['P-001'] } };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toBeUndefined();
+  });
+});
+
+describe('EI-15185 reproduction — the wasted wakes stop, real work still wakes', () => {
+  // The plan-drain fleet's spec: coding work only, excluding the *p2p* title class
+  // that fired EI-128 (a p2p-perf bug) every few minutes.
+  const spec: FilterNode = {
+    all: [
+      { field: 'kind', op: 'in', value: ['feature', 'chunk'] },
+      { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+    ],
+  };
+  const derived = claimSpecFilterToClaimablePayloadFilter(spec);
+
+  it('derives a non-empty, scoped payload_filter (not the unscoped await)', () => {
+    expect(derived).toBeDefined();
+  });
+
+  it('an in-scope claimable item WOULD still wake the member', () => {
+    const p = payloadOf({ id: 'F-9', kind: 'feature', title: 'sheets clone toolbar' });
+    expect(payloadMatchesFilter(derived, p)).toBe(true);
+  });
+
+  it('EI-128 (a p2p-perf bug) NO LONGER wakes the member', () => {
+    const p = payloadOf({ id: 'EI-128', kind: 'bug', title: 'p2p-perf regression on sync fanout' });
+    expect(payloadMatchesFilter(derived, p)).toBe(false);
+  });
+
+  it('WI-5013 (an unrelated tracking issue) NO LONGER wakes the member', () => {
+    const p = payloadOf({ id: 'WI-5013', kind: 'change', title: 'track the desktop update rollout' });
+    expect(payloadMatchesFilter(derived, p)).toBe(false);
+  });
+
+  it('a plan-drain spec narrows on the plan slug carried by the widened payload', () => {
+    const planSpec: FilterNode = { field: 'plan', op: '=', value: 'drain-plan' };
+    const d = claimSpecFilterToClaimablePayloadFilter(planSpec);
+    expect(payloadMatchesFilter(d, payloadOf({ plan: 'drain-plan' }))).toBe(true);
+    expect(payloadMatchesFilter(d, payloadOf({ plan: 'other-plan' }))).toBe(false);
+    expect(payloadMatchesFilter(d, payloadOf({ plan: null }))).toBe(false);
+  });
+});
+
+describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', () => {
+  // A filter that references ONLY payload-visible fields, so the claim-spec verdict
+  // is fully determined by the payload projection — the derived filter must agree
+  // exactly (never suppress an item the spec would admit; the whole EI-15185 risk).
+  const payloadOnlyFilters: FilterNode[] = [
+    { field: 'kind', op: 'in', value: ['feature', 'chunk'] },
+    { field: 'kind', op: '!=', value: 'bug' },
+    { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+    { field: 'title', op: 'contains', value: 'p2p' },
+    { field: 'plan', op: '=', value: 'A' },
+    {
+      all: [
+        { field: 'kind', op: 'in', value: ['feature', 'chunk'] },
+        { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+      ],
+    },
+    {
+      any: [
+        { field: 'kind', op: '=', value: 'feature' },
+        { field: 'plan', op: '=', value: 'A' },
+      ],
+    },
+  ];
+
+  const items: Array<{ id?: string; kind?: string; title?: string; plan?: string | null }> = [
+    { id: 'F-1', kind: 'feature', title: 'sheets clone', plan: 'A' },
+    { id: 'F-2', kind: 'feature', title: 'p2p sync fix', plan: 'B' },
+    { id: 'C-1', kind: 'chunk', title: 'grid render', plan: 'A' },
+    { id: 'EI-128', kind: 'bug', title: 'p2p-perf regression', plan: null },
+    { id: 'WI-5013', kind: 'change', title: 'rollout tracking', plan: 'B' },
+    { id: 'T-1', kind: 'task', title: 'no plan here', plan: null },
+  ];
+
+  for (const filter of payloadOnlyFilters) {
+    it(`derived agrees with the spec for every item — ${JSON.stringify(filter)}`, () => {
+      const derived = claimSpecFilterToClaimablePayloadFilter(filter);
+      for (const item of items) {
+        const specAdmits = matchesClaimSpecFilter(subjectOf(item), filter);
+        const eventMatches = payloadMatchesFilter(derived, payloadOf(item));
+        expect(eventMatches, `item ${item.id}: spec=${specAdmits} event=${eventMatches}`).toBe(specAdmits);
+      }
+    });
+  }
+});
+
+describe('SOUNDNESS — mixed spec never suppresses a spec-admissible item', () => {
+  // A spec mixing a payload field (kind) with a non-payload one (plan_item): the
+  // derived filter drops plan_item, so it OVER-approximates — it may fire on an item
+  // get_next later rejects (a cheap re-miss), but it must NEVER drop an item the spec
+  // would admit.
+  const filter: FilterNode = {
+    all: [
+      { field: 'kind', op: '=', value: 'feature' },
+      { field: 'plan_item', op: 'in', value: ['P-001'] },
+    ],
+  };
+  const derived = claimSpecFilterToClaimablePayloadFilter(filter);
+
+  it('fires on a kind=feature item regardless of plan_item (over-approximation is intentional)', () => {
+    // Both of these are kind=feature; the spec admits only the P-001 one, but the
+    // event filter (kind only) admits BOTH — get_next stays authoritative on the wake.
+    expect(payloadMatchesFilter(derived, payloadOf({ kind: 'feature', id: 'F-a' }))).toBe(true);
+    expect(payloadMatchesFilter(derived, payloadOf({ kind: 'feature', id: 'F-b' }))).toBe(true);
+  });
+
+  it('still suppresses a non-feature item (the payload leaf that DID translate)', () => {
+    expect(payloadMatchesFilter(derived, payloadOf({ kind: 'bug' }))).toBe(false);
+  });
+});
