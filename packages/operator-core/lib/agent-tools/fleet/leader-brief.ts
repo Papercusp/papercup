@@ -112,18 +112,31 @@ export interface LeaderBriefMember {
 }
 
 /** PURE: exported for direct unit-testing (no PG/DI ceremony needed).
- *  EI-9943: flag a member that is (a) actually alive right now — `speaking` or
- *  `first-turn-done`, i.e. burning real turns, not booted/joined/dead — (b)
- *  holding a claim that `stalled` already marks as not-advancing, and (c) NOT
- *  already benched (`parkedOn` empty) — benching an already-benched member is
- *  a no-op the leader doesn't need surfaced again. Reuses `stalled`/`verdict`/
- *  `parkedOn` verbatim (the SAME signals `fleet:assignments`' stalled_claims /
- *  fleet:bench's parkedOn already compute) — no new tracking, no wake-count
- *  state: `stalled`'s existing progress-window check is the "blocked for a
- *  while" signal this reuses instead of inventing a separate wake counter. */
+ *  Two independent branches, both gated on NOT already benched (`parkedOn` empty —
+ *  benching an already-benched member is a no-op the leader doesn't need surfaced again):
+ *
+ *  EI-9943 — a member `speaking`/`first-turn-done` (burning real turns) holding a claim
+ *  `stalled` already marks as not-advancing. Reuses `stalled`/`verdict`/`parkedOn` verbatim
+ *  (the SAME signals fleet:assignments' stalled_claims / fleet:bench's parkedOn already
+ *  compute) — no new tracking, no wake-count state.
+ *
+ *  EI-13846 — LANELESS-IDLE: a member alive and cycling (any verdict but dead/booted/joined —
+ *  NOT restricted to speaking/first-turn-done, since `deriveMemberVerdict` returns a healthy
+ *  loop's `monitorState` in preference to those, so a loop-armed member essentially never
+ *  reports them) holding ZERO claims and nothing queued. `stalled` can't see this case at all
+ *  (it requires load>0). This is the branch closing the incident that motivated EI-9943 in the
+ *  first place but that the original, narrower check could never catch: a drained-lane member
+ *  cycling get_next-miss -> re-park -> wake with no claim, benchSuggestion staying 0 all
+ *  night. */
 export function computeBenchSuggestion(
-  a: Pick<DecoratedAgent, 'stalled' | 'parkedOn' | 'doing' | 'load' | 'queued'> & {
+  a: Pick<DecoratedAgent, 'stalled' | 'parkedOn' | 'doing'> & {
     verdict?: MemberVerdict | null;
+    // EI-13846: optional (not Pick'd from DecoratedAgent, whose `load`/`queued` are
+    // required) so existing call sites that predate the laneless-idle branch keep
+    // compiling unchanged — `undefined` reads as "not laneless" (see below), never
+    // a false trigger.
+    load?: number;
+    queued?: readonly unknown[];
   },
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
@@ -258,7 +271,9 @@ export default defineTool({
     'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (EI-9943: alive+speaking ' +
-    'but not advancing, not yet benched), and unownedCriticals (WI-5213: aged unassigned ' +
+    'but not advancing, not yet benched; EI-13846: also flags LANELESS-IDLE — alive, zero ' +
+    'claims/queued, not parked — a drained-lane member cycling get_next-miss every wake), ' +
+    'and unownedCriticals (WI-5213: aged unassigned ' +
     'critical work-items this fleet\'s spec would admit). Scoped to ONE fleet ' +
     '(yours by default) instead of the whole workspace roster fleet:assignments returns. ' +
     'Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats ' +

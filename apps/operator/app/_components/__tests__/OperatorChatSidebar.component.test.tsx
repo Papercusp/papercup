@@ -425,8 +425,14 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
 
     // Ordering: the unconditional gap:9px rule must appear BEFORE the
     // container-scoped gap:6px override in source, or the cascade drops it.
+    // (Two separate @container(max-width:480px) blocks exist in this file —
+    // one for the Inbox/face-pill hiding, a second, LATER one solely for this
+    // gap re-assertion — so pinpoint the block that actually carries the
+    // header-main gap override rather than the first @container occurrence.)
     const unconditionalGapIdx = css.search(/\.op-chat-header-main\s*\{[^}]*gap:\s*9px\s*!important/);
-    const narrowGapIdx = css.search(/@container op-chat \(max-width: 480px\) \{[^]*?\.op-chat-header-main\s*\{[^}]*gap:\s*6px\s*!important/);
+    const gapOverrideBlock = narrowBlock.find((b) => /\.op-chat-header-main\s*\{[^}]*gap:\s*6px\s*!important/.test(b));
+    expect(gapOverrideBlock).toBeTruthy();
+    const narrowGapIdx = gapOverrideBlock ? css.indexOf(gapOverrideBlock) : -1;
     expect(unconditionalGapIdx).toBeGreaterThanOrEqual(0);
     expect(narrowGapIdx).toBeGreaterThanOrEqual(0);
     expect(narrowGapIdx).toBeGreaterThan(unconditionalGapIdx);
