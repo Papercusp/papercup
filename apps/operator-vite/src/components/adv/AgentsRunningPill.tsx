@@ -550,6 +550,27 @@ export function AgentsRoster({
   // strip mounted before the first hover and across push-driven roster refreshes.
   const [previewed, setPreviewed] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState<RosterAgent | null>(null);
+  // Deep-link focus (?agentsFocus=): pin + preview + scroll — handled ONCE per
+  // focus value (push-driven roster refreshes re-run the effect; re-pinning is
+  // harmless but re-scrolling would fight the user).
+  const focusHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusOwner) {
+      focusHandledRef.current = null;
+      return;
+    }
+    if (focusHandledRef.current === focusOwner) return;
+    if (!agents.some((a) => a.ownerId === focusOwner)) return;
+    focusHandledRef.current = focusOwner;
+    setPinned(focusOwner);
+    setPreviewed(focusOwner);
+    const t = window.setTimeout(() => {
+      document
+        .querySelector(`[data-testid="agent-row-${focusOwner}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [focusOwner, agents]);
   // Shared-hive per-machine tabs: THIS machine ("Local") first, then each connected
   // machine. Only shown when >1 machine is present; otherwise the whole roster renders
   // as before. The selected tab rides nuqs (?agentsMachine=); clearing it = Local.

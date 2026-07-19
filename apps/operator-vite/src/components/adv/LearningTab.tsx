@@ -53,6 +53,7 @@ import type {
   ScoutRoutedItem,
   ScoutTickEconomics,
   ScoutCadenceState,
+  ScoutDraftIteration,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-read";
 import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-retain-read";
@@ -827,6 +828,17 @@ function ImprovementsView({
     enabled: hiveReady,
   });
   const digest = sync.data?.[0];
+  const t = useLexicon();
+  // Drafts-in-iteration (moved here from the Ideas view — owner ask
+  // 2026-07-19): a draft plan awaiting revision is WORK IN PROGRESS, so it
+  // belongs on the backlog surface. Thin dedicated read, never the heavy
+  // learning.scout snapshot.
+  const draftsSync = useSyncQuery<ScoutDraftIteration>({
+    queryName: "learning.scoutDrafts",
+    args: {},
+    staleTime: 60_000,
+  });
+  const drafts = draftsSync.data ?? [];
   const [lane, setLane] = useQueryState(
     "lane",
     parseAsStringEnum<Lane>([...LANES]).withDefault("all"),
@@ -1042,6 +1054,56 @@ function ImprovementsView({
           onDismissSelect={() => void setLsel(null)}
         />
       )}
+
+      {/* Drafts in iteration (learning-tab-visibility P-005; moved here from
+          the Ideas view, owner ask 2026-07-19): broad-scope ideas that became
+          draft plans, with their revision state — the Queen↔Scout
+          typed-revision loop, watchable instead of invisible. */}
+      {drafts.length > 0 ? (
+        <LearningDisclosure
+          label="Drafts in iteration"
+          subtitle="broad ideas that became draft plans, with revision state"
+          count={drafts.length}
+        >
+          <ul
+            className="pc-learning__draftlist"
+            aria-label={`${t("scout")} draft plans in iteration`}
+          >
+            {drafts.map((d) => {
+              const upMs = d.planUpdatedAt ? Date.parse(d.planUpdatedAt) : NaN;
+              return (
+                <li key={d.ideaId} className="pc-learning__draftrow">
+                  <GitBranch size={11} aria-hidden />
+                  <strong title={d.title ?? d.planSlug}>{d.planSlug}</strong>
+                  {d.planStatus == null ? (
+                    <em title="The draft plan row no longer exists (superseded or deleted).">gone</em>
+                  ) : (
+                    <em title={`Draft plan lifecycle status.`}>{d.planStatus}</em>
+                  )}
+                  {d.planVersion != null ? (
+                    <span
+                      className={`pc-learning__flowchip${d.revised ? " pc-learning__flowchip--wd-good" : ""}`}
+                      title={
+                        d.revised
+                          ? `v${d.planVersion} — revised since ${t("scout", { lower: true })} drafted it: the grade/feedback → typed-revision loop has turned on this draft.`
+                          : "v1 — no revision yet; awaiting review/feedback."
+                      }
+                    >
+                      v{d.planVersion}
+                      {d.revised ? " · revised" : ""}
+                    </span>
+                  ) : null}
+                  {!Number.isNaN(upMs) ? (
+                    <span className="pc-learning__draftwhen">
+                      {whenLabel(upMs)}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </LearningDisclosure>
+      ) : null}
     </section>
   );
 }

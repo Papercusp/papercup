@@ -706,27 +706,35 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // The TURN OUTCOME now owns ok/error: reconcile-loop-routines records `ok` when it sees
   // the turn's completion marker, and the resume-turn-outcome handler / stuck-park backstop
   // record `error` on a death. The enqueue just refreshes last_status (counter PRESERVED).
+  //
+  // EI-16166: a `!reached` miss (woken:0, staged:0) does NOT immediately deactivate the loop
+  // here anymore. It PREVIOUSLY did — unconditionally, on the very FIRST such miss, with no
+  // retry and no owner escalation — which is exactly the WI-2339 "proposal A" anti-pattern
+  // that reachability-probe-based termination was deliberately rejected for elsewhere in this
+  // same file's design ("kill a healthy loop on a transient blip"): `!reached` is reachable
+  // not only for a genuinely-gone owner but also for a session whose standing inbox-wake await
+  // was cancelled by a SessionEnd hook that fires on an ABNORMAL exit (e.g. a fatal
+  // rate-limit/auth_wall kill mid-turn), which is transient account-pool pressure, not a dead
+  // loop (observed 2026-07-18: a 2/5-account-available pool preceded exactly this single-miss
+  // deactivation with fireCount:66 and consecutiveErrors:1 — a loop healthy for 66 prior fires
+  // silently killed on its 67th). The loop is left PARKED (its normal post-fire state either
+  // way) and this miss is recorded as an `error`, feeding the SAME failure-streak circuit /
+  // stuck-park+quick-retry ladder every other death signal in this system already goes
+  // through (reconcile-loop-routines.ts) — which retries multiple times across a bounded dwell
+  // window before ever concluding the owner is truly gone, and which — unlike this fast path —
+  // LOUDLY escalates to the owner (`escalateDeadLoop`) at the moment it actually terminates.
   const reached = (fan.woken ?? 0) > 0 || (fan.staged ?? 0) > 0;
   if (!reached) {
-    const deactivated = await deactivateLoop({
-      sql: input.sql,
-      installSlug: input.installSlug,
-      routineName: input.routineName,
-    }).catch(() => false);
-    await recordFire(
-      input.installSlug,
-      input.routineName,
-      deactivated ? 'no-session-now:auto-ended' : 'no-session-now',
-      'error',
-    ).catch(() => {});
+    await recordFire(input.installSlug, input.routineName, 'no-session-now', 'error').catch(() => {});
     return {
       fired: false,
       reason: 'no-session-now',
       woken: fan.woken,
       staged: fan.staged,
-      detail: deactivated
-        ? 'loop auto-ended: pinned warm session is no longer wakeable/resumable'
-        : 'pinned warm session is no longer wakeable/resumable',
+      detail:
+        'pinned warm session did not pick up this wake (woken:0, staged:0) — left parked for the ' +
+        'stuck-park/quick-retry ladder to retry; only the reachability-vetoed terminal guard ' +
+        '(with owner escalation) may auto-pause it after a sustained, dwell-gated streak',
     };
   }
   await recordFire(input.installSlug, input.routineName, 'queued', 'attempt').catch(() => {});

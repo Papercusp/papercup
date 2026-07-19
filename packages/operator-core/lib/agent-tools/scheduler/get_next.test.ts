@@ -211,8 +211,10 @@ describe('scheduler:get_next harness-existence gate (EI-16057)', () => {
       knownHarnesses: ['papercusp'],
     });
     expect(b.windDown).toBeUndefined();
-    // Must fail before any fleet-scope reconciliation / claim query runs.
-    expect(getNextM).not.toHaveBeenCalled();
+    // The real claim query still runs (harness validity is checked only on the miss it
+    // produces, so a correct pull never pays the extra read) — it's the WINDOWN-BEARING
+    // fleetScopedMiss branch below it that must never fire for this cause.
+    expect(getNextM).toHaveBeenCalledOnce();
   });
 
   it('a registered harness slug is unaffected — passes through to the normal claim path', async () => {

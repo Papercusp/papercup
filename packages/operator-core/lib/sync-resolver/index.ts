@@ -4075,6 +4075,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // `cycleId` (WI-5417): selects which of the newest ~10 scout_digest_snapshots
   // rows ships full digest entries — the Signals view's browseable per-cycle
   // history (nuqs `?sdig=`). Omitted/not-found falls back to the newest cycle.
+  // learning.scoutDrafts — the Improvements view's Drafts-in-iteration read
+  // (owner ask 2026-07-19 moved the section out of Ideas): rail='plan' routed
+  // ideas joined to their draft plans. A THIN dedicated read — never make the
+  // Improvements view pay for the full learning.scout snapshot.
+  'learning.scoutDrafts': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readScoutDraftIterations } = await import('./learning-scout-read');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) =>
+          readScoutDraftIterations({ workspaceId: ws, sql: tx }),
+        );
+      } catch (err) {
+        console.warn('[learning.scoutDrafts] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   'learning.scout': {
     argsSchema: z.object({ cycleId: z.string().optional() }).optional(),
     resolve: async (args) => {

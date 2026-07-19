@@ -434,6 +434,10 @@ vi.mock("@papercusp/sync", () => ({
       const hasHive = Boolean((opts.args as { hive?: string } | undefined)?.hive);
       return !hasHive && gymWideResult ? gymWideResult : gymResult;
     }
+    if (opts.queryName === "learning.scoutDrafts") {
+      // The Improvements view's thin drafts read — empty by default.
+      return { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    }
     return opts.queryName === "learning.apiary"
         ? apiaryResult
         : opts.queryName === "learning.hiveEvalTrend"

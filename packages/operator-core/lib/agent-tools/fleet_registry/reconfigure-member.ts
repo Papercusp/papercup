@@ -113,7 +113,7 @@ export default defineTool({
             updatedBy: callerId,
             potSlug,
           });
-          applied.claimSpec = { ok: true, ...(res as Record<string, unknown>) };
+          applied.claimSpec = { ok: true, ...res };
         } catch (e) {
           applied.claimSpec = { ok: false, errors: [e instanceof Error ? e.message : String(e)] };
         }

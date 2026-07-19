@@ -713,12 +713,18 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
 export function InactiveSessionsSection({
   activeOwnerIds,
   nowMs,
+  focusOwnerId = null,
 }: {
   /** Owner ids currently shown as RUNNING — their ended rows are older
    *  terminals of a live agent and are elided (mirrors the roster's
    *  dedupeEndedAgainstActive). */
   activeOwnerIds: ReadonlySet<string>;
   nowMs: number;
+  /** Deep-link focus (?agentsFocus=, WI-5517): when set, auto-expand and show
+   *  ONLY this owner's ended sessions — their session history — INCLUDING rows
+   *  the active-elision would normally hide (a running agent's older
+   *  terminals ARE its history). */
+  focusOwnerId?: string | null;
 }) {
   const lex = useLexicon();
   // User-meaningful expand/collapse state goes in the URL (nuqs), never
@@ -729,6 +735,10 @@ export function InactiveSessionsSection({
   // value lives in the URL independent of the component's mount lifecycle,
   // so it survives that unmount/remount cycle.
   const [expanded, setExpanded] = useQueryState('agentsInactiveOpen', parseAsBoolean.withDefault(false));
+  // A focus deep-link means "show me this agent's history" — expand for it.
+  useEffect(() => {
+    if (focusOwnerId) void setExpanded(true);
+  }, [focusOwnerId, setExpanded]);
   const [rows, setRows] = useState<EndedSessionRow[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -783,7 +793,9 @@ export function InactiveSessionsSection({
     return () => obs.disconnect();
   }, [expanded, hasMore, loadMore]);
 
-  const visible = rows.filter((r) => !r.coordOwnerId || !activeOwnerIds.has(r.coordOwnerId));
+  const visible = focusOwnerId
+    ? rows.filter((r) => r.coordOwnerId === focusOwnerId)
+    : rows.filter((r) => !r.coordOwnerId || !activeOwnerIds.has(r.coordOwnerId));
 
   return (
     <div className="pc-agents-sessions__inactive" data-testid="inactive-sessions-section">
