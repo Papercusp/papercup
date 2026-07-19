@@ -382,8 +382,9 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
     expect(res).toMatchObject({ fired: true, woken: 1 });
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
     // harness = the loop's install_slug (the carry-note scope key); wakeCount = 8 → the
-    // consumer's HYBRID cadence recycles this wake (8 % 8 === 0).
-    expect(opts.payload).toEqual({ carry: 'cold', wakeCount: 8, harness: 'papercusp' });
+    // consumer's HYBRID cadence recycles this wake (8 % 8 === 0). WI-5510: `routineId`
+    // additionally rides the marker for the delivery-side stale-fire guard.
+    expect(opts.payload).toEqual({ carry: 'cold', wakeCount: 8, harness: 'papercusp', routineId: baseInput.routineId });
     // Counter advances so the NEXT cold wake's wakeCount is monotonic.
     expect(incrementFireCount).toHaveBeenCalledTimes(1);
   });
@@ -424,7 +425,7 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
     // No carry field: decideColdWake treats it as warm unless the P-021 verdict
     // (classDefaultCold) is resolved by the executor — so with the flag off this
     // marker is inert downstream.
-    expect(opts.payload).toEqual({ wakeCount: 4, harness: 'papercusp' });
+    expect(opts.payload).toEqual({ wakeCount: 4, harness: 'papercusp', routineId: baseInput.routineId });
     expect(readFireCount).toHaveBeenCalledTimes(1);
     expect(incrementFireCount).toHaveBeenCalledTimes(1);
   });
@@ -438,6 +439,7 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
     expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toEqual({
       wakeCount: 6,
       harness: 'papercusp',
+      routineId: baseInput.routineId,
     });
   });
 

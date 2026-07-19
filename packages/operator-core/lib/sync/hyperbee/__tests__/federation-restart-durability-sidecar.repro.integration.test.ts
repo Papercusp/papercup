@@ -676,3 +676,256 @@ describe('SIDECAR restart-durability federation (D-053/D-054) — member sidecar
     180_000,
   );
 });
+
+/**
+ * WI-5481 rig-independent repro: OWNER+MEMBER ALTERNATING RESTART SOAK.
+ *
+ * The live-fed-gate `replication_soak` scenario (bin/lib/scenarios/b8-replication-soak.sh,
+ * order 87) does N cold-restart cycles ALTERNATING which side restarts (odd cycle →
+ * MEMBER, even cycle → OWNER — see `scenario_replication_liveness_soak` in
+ * bin/deb-hetzner-restart.sh) and asserts a fresh owner→member write lands within an
+ * SLA after EVERY cycle. It fails on essentially every live gate run (WI-5481), while
+ * the sibling `restart_durability` (order 80, ONE restart) and `reconnect_catchup`
+ * (order 85, transport-loss-only) scenarios are merely flaky/load-correlated — the
+ * soak's failure is a DISTINCT, isolated, near-deterministic bug (cross-run evidence
+ * on WI-5481: 4/4 gate runs).
+ *
+ * Two concrete gaps meant NO existing rig-independent test could ever have caught
+ * this (WI-5481 16:17 checkpoint):
+ *   1. The sibling `federation-restart-durability-sidecar.repro` test above only ever
+ *      restarts the MEMBER — the OWNER is never killed+rebooted anywhere in-process.
+ *   2. Every test in this file boots with `mergePollMs: 0` and drives merges by hand
+ *      via `owner.mergeNow()` / `member.mergeNow()` — so the REAL production
+ *      reconnect+merge path (a fresh swarm join → `onAnnounce` → `admitPeer` →
+ *      `mergeNow()`, PLUS the `mergePollMs` poll-timer fallback for content authored
+ *      after the initial admit — boot.ts:2663-2677) is never actually exercised. A
+ *      regression in re-establishing that path after a RAPID, REPEATED, ALTERNATING
+ *      restart cycle would be invisible to every test that manually drives merges.
+ *
+ * This test closes BOTH gaps at once: it restarts BOTH sides, alternating exactly
+ * like the live soak, with a small NONZERO `mergePollMs` and NO manual mergeNow()
+ * call anywhere past the initial setup — if replication stalls here, it is the same
+ * production path the live soak exercises, in-process and rig-independent.
+ *
+ * SCOPE NOTE: only the owner→member direction is asserted (the leg the live evidence
+ * shows fails 100% of the time, independent of which side restarted — su-6ffd5ea8's
+ * WI-5481 finding). The reverse (member-authored content landing on the OWNER, which
+ * the b8 script also polls for) depends on the WI-259 cross-member membership-guard
+ * wiring (harness-features.ts `hiveHomeSlug`/membership guard) that this test's
+ * `buildOwnerApply` does not configure — left for a follow-up rather than risking an
+ * incorrectly-modeled assertion on unfamiliar wiring.
+ */
+describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) — real onAnnounce/poll-driven reconnect (mergePollMs>0), NO manual mergeNow anywhere past initial setup, N cycles alternating restart target exactly like b8-replication-soak.sh', () => {
+  it(
+    'N alternating member/owner restarts: a fresh owner-authored feature must land on the member within the leg timeout EVERY cycle, using only the real production reconnect+merge path',
+    async () => {
+      const HIVE_HOME = 'soak-owner-hive';
+      const MEMBER_SLUG = 'soak-joined-hive';
+      // Small, production-realistic poll cadence (boot.ts MERGE_POLL_MS default is much
+      // larger in prod) — the point is NONZERO, so the poll-timer + onAnnounce path
+      // actually drive every merge, never a manual mergeNow() call from this test.
+      const MERGE_POLL_MS = 250;
+      // b8's default is 5 cycles (odd=MEMBER, even=OWNER); 4 covers both restart
+      // parities twice within a CI-safe budget for an in-process testnet.
+      const CYCLES = 4;
+      const LEG_TIMEOUT_MS = 25_000;
+
+      // ── env-route getOrgPg (identical pattern to the sibling repro above) ──
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      const prev = {
+        adminUrl: process.env.HARNESS_ADMIN_DATABASE_URL,
+        appUrl: process.env.HARNESS_DATABASE_URL,
+        ws: process.env.PAPERCUSP_WORKSPACE_ID,
+        skip: process.env.PAPERCUSP_SKIP_PG_DISCOVERY,
+        pgb: process.env.PAPERCUSP_PGBOUNCER,
+      };
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        if (prev.adminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL; else process.env.HARNESS_ADMIN_DATABASE_URL = prev.adminUrl;
+        if (prev.appUrl === undefined) delete process.env.HARNESS_DATABASE_URL; else process.env.HARNESS_DATABASE_URL = prev.appUrl;
+        if (prev.ws === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID; else process.env.PAPERCUSP_WORKSPACE_ID = prev.ws;
+        if (prev.skip === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY; else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prev.skip;
+        if (prev.pgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER; else process.env.PAPERCUSP_PGBOUNCER = prev.pgb;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
+      const idMember = makeIdentityOverride('member', 7, 'kc-member');
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/soak-owner-hive', harness_kind: 'hive', remote_hive: true },
+            { slug: MEMBER_SLUG, path: '/tmp/soak-member', hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+
+      const dbOwner: FreshPgDb = await createFreshPgDb('ownerRestartSoak');
+      cleanups.push(() => dbOwner.cleanup());
+      await setupOwnerSchema(dbOwner.sql, HIVE_HOME, hivePubkeyB64);
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const rootOwner = makeWorkspaceRoot('soak-owner-');
+      const rootMember = makeWorkspaceRoot('soak-member-');
+
+      const hiveBinding: SwarmBinding = { kind: 'hive', hive_pubkey: hivePubkeyB64 };
+      const memberBinding: SwarmBinding = {
+        kind: 'topic',
+        topic_hex: deriveSwarmTopic(hiveBinding).toString('hex'),
+      };
+
+      let ownerApply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      let owner: PeerControl;
+      const bootOwner = (swarm: HyperswarmLike) =>
+        bootViaSidecarHost({
+          root: rootOwner,
+          swarm,
+          harnessSlug: HIVE_HOME,
+          binding: hiveBinding,
+          bootExtra: {
+            announceIdentityOverride: idOwner.override,
+            verifyBindingOverride: async (_pk, _login, userId) =>
+              userId === idMember.userId ? 'verified' : 'fail',
+            applyOverride: (op) => {
+              ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, owner.handle.ownLog.keyHex);
+              return ownerApply(op);
+            },
+            mergePollMs: MERGE_POLL_MS,
+          },
+        });
+      const bootMember = (swarm: HyperswarmLike) =>
+        bootViaSidecarHost({
+          root: rootMember,
+          swarm,
+          harnessSlug: MEMBER_SLUG,
+          binding: memberBinding,
+          bootExtra: { announceIdentityOverride: idMember.override, mergePollMs: MERGE_POLL_MS },
+        });
+
+      let swarmOwnerCur = makeSwarm(testnet.bootstrap);
+      let swarmMemberCur = makeSwarm(testnet.bootstrap);
+      owner = await bootOwner(swarmOwnerCur);
+      let member = await bootMember(swarmMemberCur);
+      cleanups.push(async () => {
+        await owner.host.closeAll();
+        await closeHarnessStore({ workspaceRoot: rootOwner, harnessSlug: HIVE_HOME });
+      });
+      cleanups.push(async () => {
+        await member.host.closeAll();
+        await closeHarnessStore({ workspaceRoot: rootMember, harnessSlug: MEMBER_SLUG });
+      });
+
+      expect(owner.handle.swarm, 'owner did not join a swarm').not.toBeNull();
+      expect(member.handle.swarm, 'member did not join a swarm').not.toBeNull();
+      expect(owner.handle.swarm!.topicHex).toBe(member.handle.swarm!.topicHex);
+
+      const ownerLogKey = owner.handle.ownLog.keyHex;
+
+      // ── Roster + initial content, via the REAL poll-driven merge only — no
+      // manual mergeNow() anywhere in this test. MERGE_POLL_MS + the onAnnounce
+      // admit-triggered merge drive everything, same as production. ──
+      const memberAtt = (login: string, pk: string) =>
+        JSON.stringify([
+          { device_pubkey: pk, gist_id: `gist-${login}`, gist_url: `https://gist.github.com/${login}`, device_label: `${login}-dev`, created_at: 1, signature_by_device: 'sig' },
+        ]);
+      await dbOwner.sql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner', ${memberAtt('owner', idOwner.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
+      `;
+      await dbOwner.sql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idMember.userId}, 'member', ${memberAtt('member', idMember.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
+      `;
+      await dbOwner.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${HIVE_HOME}, 'F-init', 'Initial owner feature', 'soak init', 'todo', 0, 'local', 6001, 6001, 6001)
+      `;
+
+      const initOk = await pollUntil(
+        async () => {
+          const admitted = member.handle.admitted.has(ownerLogKey);
+          const feat = await readFeature(orgDb.adminSql, HIVE_HOME, 'F-init');
+          return admitted && feat ? true : undefined;
+        },
+        { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
+      );
+      expect(initOk, 'initial roster+feature federation never completed via the real poll-driven path').toBe(true);
+
+      // ── The soak: N cycles, alternating restart target exactly like
+      // b8-replication-soak.sh (odd cycle → MEMBER, even cycle → OWNER). Each
+      // cycle the owner authors a FRESH feature and it must land on the member
+      // within LEG_TIMEOUT_MS — using ONLY the real reconnect (fresh swarm join +
+      // onAnnounce admit) + poll-driven merge (MERGE_POLL_MS). If this stalls, it
+      // is the SAME production path WI-5481's live soak exercises. ──
+      const results: Array<{ cycle: number; restarted: 'member' | 'owner'; landedMs: number | null }> = [];
+      for (let cycle = 1; cycle <= CYCLES; cycle++) {
+        const restartOwner = cycle % 2 === 0;
+        if (restartOwner) {
+          await owner.host.closeAll();
+          await closeHarnessStore({ workspaceRoot: rootOwner, harnessSlug: HIVE_HOME });
+          await swarmOwnerCur.destroy();
+          swarmOwnerCur = makeSwarm(testnet.bootstrap);
+          owner = await bootOwner(swarmOwnerCur);
+        } else {
+          await member.host.closeAll();
+          await closeHarnessStore({ workspaceRoot: rootMember, harnessSlug: MEMBER_SLUG });
+          await swarmMemberCur.destroy();
+          swarmMemberCur = makeSwarm(testnet.bootstrap);
+          member = await bootMember(swarmMemberCur);
+        }
+
+        const fidOM = `F-SOAK-${cycle}-OM`;
+        const t0 = Date.now();
+        await dbOwner.sql`
+          INSERT INTO harness_shared.harness_features_consolidated
+            (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+          VALUES (${HIVE_HOME}, ${fidOM}, ${'soak cycle ' + cycle + ' owner->member'}, 'soak', 'todo', 0, 'local', ${7000 + cycle}, ${7000 + cycle}, ${7000 + cycle})
+        `;
+
+        const landedOM = await pollUntil(
+          async () => (await readFeature(orgDb.adminSql, HIVE_HOME, fidOM)) ?? undefined,
+          { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
+        );
+        results.push({
+          cycle,
+          restarted: restartOwner ? 'owner' : 'member',
+          landedMs: landedOM ? Date.now() - t0 : null,
+        });
+        expect(
+          landedOM,
+          `cycle ${cycle} (restarted ${restartOwner ? 'OWNER' : 'MEMBER'}): owner->member ${fidOM} did not land within ${LEG_TIMEOUT_MS}ms via the real reconnect+poll-merge path — cycle history: ${JSON.stringify(results)}`,
+        ).toBeTruthy();
+      }
+    },
+    240_000,
+  );
+});

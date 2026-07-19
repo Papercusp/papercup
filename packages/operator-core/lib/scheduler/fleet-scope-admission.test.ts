@@ -150,6 +150,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       ownerId: 'su-member',
       fleetSlug: 'bugs',
       fleetRole: 'member',
+      workspaceId: 'papercusp-workspace',
       record: {
         source: 'fleet',
         spec: { specVersion: '1.0', specId: 'bugs-rev4', revision: 4, view: {}, rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] } },
@@ -288,7 +289,7 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     it('fleetScopedMiss surfaces a paused stand-down verdict for the self-select path', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
         [],
         { pausedReason: 'owner pause' },
       );
@@ -305,7 +306,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     // wake was retired, not merely gated at the ensuing claim.
     it('EI-15777: a paused miss surfaces claimableAwaitsCancelled + the do-not-re-park advice', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
         [],
         { pausedReason: 'owner pause', claimableAwaitsCancelled: 2 },
       );
@@ -316,7 +317,7 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     it('EI-15777: a paused miss with no cancelled awaits still surfaces claimableAwaitsCancelled:0 (default)', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
         [],
         { pausedReason: 'owner pause' },
       );
@@ -325,7 +326,7 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     it('EI-15777: a non-paused (cooldown-only) miss never carries claimableAwaitsCancelled', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
         [],
         { cooldownDiag: null },
       );
@@ -335,7 +336,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('readFleetPauseState fails OPEN when the control-state read errors (never wedges claiming)', async () => {
       admissionMocks.getFleet.mockRejectedValue(new Error('pg unavailable'));
       const state = await readFleetPauseState(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
         'papercusp-workspace',
       );
       expect(state).toEqual({ windingDown: false, reason: null });
@@ -352,6 +353,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       ownerId: 'su-member',
       fleetSlug: 'bugs',
       fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
       record: {
         source: 'fleet' as const,
         spec: {

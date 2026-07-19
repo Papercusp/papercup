@@ -238,6 +238,66 @@ describe('publishSeatOfferForDelegation — revoke (remove:true)', () => {
     });
     expect(putRecord).not.toHaveBeenCalled();
   });
+
+  // WI-5447: resource:delegate { remove:true } revoked the local allotment but
+  // left the published seat-offer 'open' — because the homeSlug resolution
+  // above required an explicit disambiguator on a multi-hive workspace, and
+  // (unlike a SET) the caller has no `hive_required` gate forcing them to name
+  // one on a revoke. Cancel must not fail closed on hive ambiguity.
+  it('WI-5447: revoke with NO disambiguator on a multi-hive workspace tries every shared-hive candidate and cancels wherever the offer actually lives', async () => {
+    const stored = storedOf({ ...freshRecord(), recordVersion: 2 });
+    const getRecord = vi.fn(async (_ws: string, homeSlug: string) => (homeSlug === 'hive-b' ? stored : null));
+    const { d, putRecord } = deps({
+      resolveScope: vi.fn(async () => ({ kind: 'many' as const, candidates: ['hive-a', 'hive-b', 'hive-c'] })),
+      getRecord,
+    });
+    const r = await publishSeatOfferForDelegation({ ...OPTS, removed: true }, d);
+    expect(r).toMatchObject({ ok: true, changed: true });
+    // tried every candidate — never fails closed just because more than one exists
+    expect(getRecord).toHaveBeenCalledTimes(3);
+    expect(getRecord.mock.calls.map((c) => c[1])).toEqual(['hive-a', 'hive-b', 'hive-c']);
+    expect(putRecord).toHaveBeenCalledTimes(1);
+    expect(putRecord.mock.calls[0]![0].potHomeSlug).toBe('hive-b');
+    expect(putRecord.mock.calls[0]![0].record).toMatchObject({ status: 'cancelled', cancelReason: 'delegation-removed' });
+  });
+
+  it('WI-5447: revoke with NO disambiguator, offer not found in ANY multi-hive candidate → no_offer_to_cancel, no put', async () => {
+    const getRecord = vi.fn(async () => null);
+    const { d, putRecord } = deps({
+      resolveScope: vi.fn(async () => ({ kind: 'many' as const, candidates: ['hive-a', 'hive-b'] })),
+      getRecord,
+    });
+    const r = await publishSeatOfferForDelegation({ ...OPTS, removed: true }, d);
+    expect(r).toEqual({ ok: false, skipped: 'no_offer_to_cancel' });
+    expect(getRecord).toHaveBeenCalledTimes(2);
+    expect(putRecord).not.toHaveBeenCalled();
+  });
+
+  it('WI-5447: revoke with NO shared hive at all (scope kind none) → skipped no_shared_hive_to_cancel_in, no lookups', async () => {
+    const getRecord = vi.fn(async () => null);
+    const { d, putRecord } = deps({
+      resolveScope: vi.fn(async () => ({ kind: 'none' as const })),
+      getRecord,
+    });
+    const r = await publishSeatOfferForDelegation({ ...OPTS, removed: true }, d);
+    expect(r).toEqual({ ok: false, skipped: 'no_shared_hive_to_cancel_in' });
+    expect(getRecord).not.toHaveBeenCalled();
+    expect(putRecord).not.toHaveBeenCalled();
+  });
+
+  it('WI-5447: revoke with an explicit hiveOverride on a multi-hive workspace still restricts to that ONE hive', async () => {
+    const stored = storedOf({ ...freshRecord(), recordVersion: 2 });
+    const getRecord = vi.fn(async () => stored);
+    const { d, putRecord } = deps({
+      resolveScope: vi.fn(async () => ({ kind: 'many' as const, candidates: ['hive-a', 'hive-b'] })),
+      getRecord,
+    });
+    const r = await publishSeatOfferForDelegation({ ...OPTS, removed: true, hiveOverride: 'hive-a' }, d);
+    expect(r).toMatchObject({ ok: true, changed: true });
+    expect(getRecord).toHaveBeenCalledTimes(1);
+    expect(getRecord.mock.calls[0]![1]).toBe('hive-a');
+    expect(putRecord.mock.calls[0]![0].potHomeSlug).toBe('hive-a');
+  });
 });
 
 describe('publishSeatOfferForDelegation — failure passthrough', () => {

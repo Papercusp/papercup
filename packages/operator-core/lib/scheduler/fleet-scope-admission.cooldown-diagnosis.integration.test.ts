@@ -73,6 +73,7 @@ function scopeFor(ownerId: string): FleetScopeContext {
     ownerId,
     fleetSlug: 'bugs',
     fleetRole: 'member',
+    workspaceId: WS,
     record: { source: 'fleet', spec, revision: 1, updatedBy: 'su-leader', updatedAt: 'now' },
   };
 }

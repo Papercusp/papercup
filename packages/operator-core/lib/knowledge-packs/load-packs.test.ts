@@ -98,3 +98,43 @@ describe('migrateInstalledRoot (P-001 installed-root move)', () => {
     await expect(fs.stat(join(installedKnowledgePacksRoot(), 'stale'))).rejects.toThrow();
   });
 });
+
+describe('migrateFleetLessonsToSharedRoot (knowledge-pack-loop-integrity P-005)', () => {
+  it('moves a per-workspace fleet-lessons dir into the shared root', async () => {
+    const { migrateFleetLessonsToSharedRoot } = await loadModule();
+    const fromRoot = join(root, 'ws-installed');
+    const toRoot = join(root, 'shared-kp');
+    await seedPack(fromRoot, 'fleet-lessons');
+
+    const r = await migrateFleetLessonsToSharedRoot({ fromRoot, toRoot });
+    expect(r).toEqual({
+      moved: true,
+      from: join(fromRoot, 'fleet-lessons'),
+      to: join(toRoot, 'fleet-lessons'),
+    });
+    expect(await fs.stat(join(toRoot, 'fleet-lessons', 'manifest.yaml'))).toBeTruthy();
+    await expect(fs.stat(join(fromRoot, 'fleet-lessons'))).rejects.toThrow();
+  });
+
+  it('is a clean no-op when there is nothing to migrate', async () => {
+    const { migrateFleetLessonsToSharedRoot } = await loadModule();
+    const r = await migrateFleetLessonsToSharedRoot({
+      fromRoot: join(root, 'empty-installed'),
+      toRoot: join(root, 'shared-kp-2'),
+    });
+    expect(r).toEqual({ moved: false, reason: 'no-legacy' });
+  });
+
+  it('never clobbers an existing shared copy — the per-workspace dir is left for inspection', async () => {
+    const { migrateFleetLessonsToSharedRoot } = await loadModule();
+    const fromRoot = join(root, 'ws-installed-3');
+    const toRoot = join(root, 'shared-kp-3');
+    await seedPack(fromRoot, 'fleet-lessons');
+    await seedPack(toRoot, 'fleet-lessons');
+
+    const r = await migrateFleetLessonsToSharedRoot({ fromRoot, toRoot });
+    expect(r).toEqual({ moved: false, reason: 'already-migrated' });
+    expect(await fs.stat(join(fromRoot, 'fleet-lessons'))).toBeTruthy();
+    expect(await fs.stat(join(toRoot, 'fleet-lessons'))).toBeTruthy();
+  });
+});

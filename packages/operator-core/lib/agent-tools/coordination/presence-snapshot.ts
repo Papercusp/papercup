@@ -231,7 +231,7 @@ export async function assemblePresenceSnapshot(
   // EI-9454: a `{ owner }` read is a TARGETED point-lookup — it must not pay the
   // whole-roster assembly (see the early filter + sweep skip below).
   const targeted = typeof opts.owner === 'string' && opts.owner.length > 0;
-  const [records, federated, recordedLive, nurseryAliasRows] = await Promise.all([
+  const [records, federated, recordedLive, , nurseryAliasRows] = await Promise.all([
     listPresence({ workspaceId: wsId, potSlug: potId }),
     listFederatedPresence({ workspaceId: wsId, potSlug: potId }),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
