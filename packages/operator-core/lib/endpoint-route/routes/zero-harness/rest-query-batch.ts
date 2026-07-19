@@ -32,10 +32,10 @@ interface BatchQuery { name: string; args?: unknown; delta?: string }
  * 8s is well above every healthy resolver measured in the audit (the slowest
  * non-offender was 1.87s) and well below the point a user calls the app hung.
  */
-const SLOT_TIMEOUT_MS = 8_000;
+export const SLOT_TIMEOUT_MS = 8_000;
 
-/** Resolve `p`, or reject with a timeout marker after SLOT_TIMEOUT_MS. */
-async function withSlotTimeout<T>(name: string, p: Promise<T>): Promise<T> {
+/** Resolve `p`, or reject with a timeout marker after `timeoutMs`. Exported for test. */
+export async function withSlotTimeout<T>(name: string, p: Promise<T>, timeoutMs: number = SLOT_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -45,10 +45,10 @@ async function withSlotTimeout<T>(name: string, p: Promise<T>): Promise<T> {
           () =>
             reject(
               new Error(
-                `query "${name}" exceeded ${SLOT_TIMEOUT_MS}ms — slot timed out so the rest of the batch could return`,
+                `query "${name}" exceeded ${timeoutMs}ms — slot timed out so the rest of the batch could return`,
               ),
             ),
-          SLOT_TIMEOUT_MS,
+          timeoutMs,
         );
       }),
     ]);

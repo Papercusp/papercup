@@ -1,0 +1,25 @@
+diff --git a/node_modules/verdict-cli/bin/browse.mjs b/node_modules/verdict-cli/bin/browse.mjs
+index a3392d2..119bf81 100755
+--- a/node_modules/verdict-cli/bin/browse.mjs
++++ b/node_modules/verdict-cli/bin/browse.mjs
+@@ -193,9 +193,18 @@ if (!state || !isAlive(state.pid)) {
+ try {
+   output(await send(state, command, args));
+ } catch (e) {
+-  if (e.cause?.code === 'ECONNREFUSED' || e.cause?.code === 'UND_ERR_SOCKET' || e.message?.includes('fetch failed')) {
++  const isConnErr = e.cause?.code === 'ECONNREFUSED' || e.cause?.code === 'UND_ERR_SOCKET' || e.message?.includes('fetch failed');
++  if (command === "stop") {
++    // EI-13216: a `stop` request that fails — for ANY reason, including a
++    // connection error — means the server is already going/gone. A server
++    // closing its own socket mid-response as it shuts down IS the expected
++    // signal for a successful stop, not a crash to restart-and-retry: doing
++    // that raced the same shutdown-close on the fresh server and crashed with
++    // an uncaught fetch error (UND_ERR_SOCKET). Never restart just to stop.
++    output("Server stopped.");
++  } else if (isConnErr) {
+     process.stderr.write('Server down, restarting...\n');
+     state = await startServer();
+     output(await send(state, command, args));
+-  } else if (command === "stop") { output("Server stopped."); } else { outputError(e.message); }
++  } else { outputError(e.message); }
+ }

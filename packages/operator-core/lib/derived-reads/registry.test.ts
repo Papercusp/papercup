@@ -27,6 +27,7 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }))
 
 import {
   __clearDerivedReadRegistryForTest,
+  __clearWarmingKeysForTest,
   readDerivedSnapshot,
   refreshDerivedReads,
   registerDerivedRead,
@@ -37,6 +38,7 @@ let sqlResults: unknown[][] = [];
 
 beforeEach(() => {
   __clearDerivedReadRegistryForTest();
+  __clearWarmingKeysForTest();
   sqlResults = [];
   sqlMock.mockReset();
   sqlMock.mockImplementation(() => Promise.resolve(sqlResults.shift() ?? []));
@@ -136,6 +138,65 @@ describe('readDerivedSnapshot', () => {
     expect(payload).toEqual(['inline']);
     expect(meta.precomputed).toBe(false);
     expect(compute).toHaveBeenCalledOnce();
+  });
+
+  it('kicks a BACKGROUND warm-up on a miss without awaiting it', async () => {
+    // A cold DB must heal itself rather than showing an empty panel until the
+    // next cron tick — but the read still returns immediately (D-003).
+    let resolveCompute: (v: unknown) => void = () => {};
+    const compute = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCompute = resolve;
+        }),
+    );
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 60_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      compute,
+    });
+    sqlResults = [[], []];
+
+    const started = Date.now();
+    const { payload, meta } = await readDerivedSnapshot('test.slow');
+
+    // Returned NOW, while the warm-up is still pending.
+    expect(payload).toBeNull();
+    expect(meta.missing).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(compute).toHaveBeenCalledOnce();
+    resolveCompute([]);
+  });
+
+  it('collapses a warm-up stampede — N concurrent cold readers trigger ONE compute', async () => {
+    // The sync transport polls ~every 3s across many viewers; without the guard
+    // each cold read would launch its own 70s disk walk.
+    let resolveCompute: (v: unknown) => void = () => {};
+    const compute = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCompute = resolve;
+        }),
+    );
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 60_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      compute,
+    });
+    sqlResults = [[], [], [], [], [], []];
+
+    await Promise.all([
+      readDerivedSnapshot('test.slow'),
+      readDerivedSnapshot('test.slow'),
+      readDerivedSnapshot('test.slow'),
+    ]);
+
+    expect(compute).toHaveBeenCalledOnce();
+    resolveCompute([]);
   });
 
   it('prefers the precomputed path when the flag read itself fails', async () => {

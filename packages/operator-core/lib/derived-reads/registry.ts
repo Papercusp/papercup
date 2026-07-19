@@ -103,6 +103,33 @@ export interface DerivedSnapshotResult<T> {
   meta: DerivedSnapshotMeta;
 }
 
+/**
+ * Keys with a background warm-up in flight. Without this, every viewer of a cold
+ * panel — and every 3s sync poll — would each kick off its own 70s disk walk, so
+ * the miss path would DDoS the operator precisely when it is least able to cope.
+ * Module-scoped because the stampede to prevent is within one process.
+ */
+const warmingKeys = new Set<string>();
+
+/** Fire-and-forget fill for a missed snapshot. Never awaited by a read. */
+function warmMissedSnapshot(key: string, workspaceId: string, harnessSlug: string): void {
+  const guard = `${workspaceId}::${harnessSlug}::${key}`;
+  if (warmingKeys.has(guard)) return;
+  warmingKeys.add(guard);
+  void refreshDerivedReads({ workspaceId, harnessSlug, only: [key], force: true })
+    .catch((err) => {
+      console.warn(`[derived-reads] background warm-up for "${key}" failed:`, err instanceof Error ? err.message : err);
+    })
+    .finally(() => {
+      warmingKeys.delete(guard);
+    });
+}
+
+/** Test seam — drop in-flight warm-up guards between cases. */
+export function __clearWarmingKeysForTest(): void {
+  warmingKeys.clear();
+}
+
 const MISSING_META: DerivedSnapshotMeta = {
   computedAt: null,
   computeMs: null,
@@ -175,6 +202,15 @@ export async function readDerivedSnapshot<T>(
   // A snapshot from an older producer version is treated as absent: serving a
   // superseded SHAPE to a client is worse than serving nothing.
   if (!row || Number(row.producer_version ?? 1) !== producer.producerVersion) {
+    // Kick a BACKGROUND fill so a cold database heals itself instead of showing
+    // an empty panel until the next cron tick (up to 5 minutes on a fresh
+    // install, or right after a producerVersion bump).
+    //
+    // This does NOT violate D-003: the read still returns immediately and never
+    // awaits the compute. The invariant is "a read never WAITS on the expensive
+    // work", not "a miss is never noticed" — a read that blocked here would be
+    // exactly the cold-load stall precompute exists to remove.
+    void warmMissedSnapshot(producer.key, workspaceId, harnessSlug);
     return { payload: null, meta: MISSING_META };
   }
 

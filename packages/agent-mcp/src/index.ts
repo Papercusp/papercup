@@ -17,6 +17,12 @@
 // registration. Must stay above `import './bootstrap'` (and is reached first
 // by operator tools, which import `defineTool` from this index).
 import './capability-tiers-papercusp';
+// Entity resolvers (tool-arg-referential-integrity-2026-07-19 P-004): registers the
+// existence checks the `entity-check` dispatch step consults for `entityRef` args.
+// Same load-time-side-effect contract as the tier resolver above. Inert until an arg
+// is actually declared `entityRef(kind)` — registering a resolver is what ACTIVATES
+// enforcement for that kind, which is what makes the rollout stageable.
+import './entity-resolvers-papercusp';
 
 export { defineTool } from '@papercusp/tooldef';
 // Payload tiers (context-trimming-tiers-2026-07-01 D-004): the trimmed/standard/full

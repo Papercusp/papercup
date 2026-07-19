@@ -57,12 +57,20 @@ registerDerivedRead({
 // that does not apply here: this payload goes into a jsonb column, not an agent's
 // context, and it is no longer on a read path at all.
 //
-// 30-minute ttl, not 10: at ~159s per compute this is by far the most expensive
-// producer, and a lint of the plan corpus does not meaningfully change in 10
-// minutes. See WI-5460 for the follow-up on making the lint itself cheaper.
+// SIX-HOUR ttl — deliberately the longest here, on a cost/benefit the other two
+// do not face. At ~159s per compute this is by far the most expensive producer:
+// on a 30-minute cadence it would spend ~9% of wall-clock doing heavy fs+PG work
+// inside the operator process, which is real event-loop pressure (the EI-6045
+// lesson) for a query that currently has NO UI consumer — nothing in
+// apps/operator-vite or apps/operator reads `plans.lint`. A corpus-wide lint also
+// changes slowly by nature.
+//
+// If a live consumer appears and needs it fresher, the fix is to make the lint
+// itself incremental (lint only plans whose updated_at moved), not to shorten
+// this ttl — see WI-5460.
 registerDerivedRead({
   key: 'plans.lint',
-  ttlMs: 30 * 60_000,
+  ttlMs: 6 * 60 * 60_000,
   producerVersion: 2,
   scope: 'workspace',
   compute: async () => {

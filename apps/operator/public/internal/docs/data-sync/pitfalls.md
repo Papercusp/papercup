@@ -283,10 +283,40 @@ holds every other panel in that batch hostage — which is why an unrelated
 rubrics panel felt \~10s.
 
 **Fix — precompute into Postgres; do not just cache.** A background routine
-writes the derived rows; the resolver becomes a plain `SELECT`.
+writes the derived rows; the resolver becomes a plain `SELECT`. This is
+implemented: `harness_shared.derived_read_snapshots` + the producer registry in
+`packages/operator-core/lib/derived-reads/`, refreshed by the
+`system:precompute-derived-reads` routine. Measured on `:3170` after the change:
+
+| query                 | before | after      |
+| --------------------- | ------ | ---------- |
+| `learning.soakReport` | 27.3s  | **0.010s** |
+| `storage.usage`       | 20.0s  | **0.056s** |
+| `plans.lint`          | 13.8s  | **0.003s** |
+
+To add one: register a producer in `derived-reads/producers.ts` and make the
+resolver `return readDerivedSnapshotRows('<key>')`. A read NEVER computes on a
+miss — it returns the last snapshot (or empty, with a staleness marker) and lets
+the routine fill it, because a compute-on-miss path reintroduces exactly the
+cold-load stall this exists to remove.
+
+**Two things the backfill exposed, both worth knowing:**
+
+* The real compute costs are far higher than the read-path timings suggested —
+  `storage.usage` takes **70s** and `plans.lint` **159s** when allowed to run to
+  completion. The read path was silently truncating them (a wall-clock budget
+  returning partial sizes). A cache would have been *worse* than useless here:
+  the first user of every TTL window would have waited over a minute.
+
+* `plans.lint` had been returning `[]` **forever**. The lint tool's all-plans
+  branch returns a bounded summary with no `reports` field, while the resolver
+  read `r?.reports ?? []` — so it linted 484 plans and threw the result away. A
+  159-second computation producing a 5-byte payload is the kind of thing only a
+  timing sweep finds.
 
 * A cache still pays the **full cost on cold load**, so the first user of every
   TTL window eats the 27s. It is a stopgap, not the fix.
+
 * More decisively: the **shipped desktop app runs embedded Postgres on hosts
   where `journalctl` does not exist at all** (no systemd on macOS; none in a
   bare container). A resolver that shells out to a host-only binary does not

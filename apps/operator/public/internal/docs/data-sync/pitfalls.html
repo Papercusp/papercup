@@ -285,14 +285,67 @@ the batch response waits for the <strong>slowest</strong> query in it. One slow 
 holds every other panel in that batch hostage — which is why an unrelated
 rubrics panel felt ~10s.</p>
 <p><strong>Fix — precompute into Postgres; do not just cache.</strong> A background routine
-writes the derived rows; the resolver becomes a plain <code dir="auto">SELECT</code>.</p>
+writes the derived rows; the resolver becomes a plain <code dir="auto">SELECT</code>. This is
+implemented: <code dir="auto">harness_shared.derived_read_snapshots</code> + the producer registry in
+<code dir="auto">packages/operator-core/lib/derived-reads/</code>, refreshed by the
+<code dir="auto">system:precompute-derived-reads</code> routine. Measured on <code dir="auto">:3170</code> after the change:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>query</th><th>before</th><th>after</th></tr></thead><tbody><tr><td><code dir="auto">learning.soakReport</code></td><td>27.3s</td><td><strong>0.010s</strong></td></tr><tr><td><code dir="auto">storage.usage</code></td><td>20.0s</td><td><strong>0.056s</strong></td></tr><tr><td><code dir="auto">plans.lint</code></td><td>13.8s</td><td><strong>0.003s</strong></td></tr></tbody></table>
+<p>To add one: register a producer in <code dir="auto">derived-reads/producers.ts</code> and make the
+resolver <code dir="auto">return readDerivedSnapshotRows('&#x3C;key>')</code>. A read NEVER computes on a
+miss — it returns the last snapshot (or empty, with a staleness marker) and lets
+the routine fill it, because a compute-on-miss path reintroduces exactly the
+cold-load stall this exists to remove.</p>
+<p><strong>Two things the backfill exposed, both worth knowing:</strong></p>
 <ul>
-<li>A cache still pays the <strong>full cost on cold load</strong>, so the first user of every
-TTL window eats the 27s. It is a stopgap, not the fix.</li>
-<li>More decisively: the <strong>shipped desktop app runs embedded Postgres on hosts
+<li>
+<p>The real compute costs are far higher than the read-path timings suggested —
+<code dir="auto">storage.usage</code> takes <strong>70s</strong> and <code dir="auto">plans.lint</code> <strong>159s</strong> when allowed to run to
+completion. The read path was silently truncating them (a wall-clock budget
+returning partial sizes). A cache would have been <em>worse</em> than useless here:
+the first user of every TTL window would have waited over a minute.</p>
+</li>
+<li>
+<p><code dir="auto">plans.lint</code> had been returning <code dir="auto">[]</code> <strong>forever</strong>. The lint tool’s all-plans
+branch returns a bounded summary with no <code dir="auto">reports</code> field, while the resolver
+read <code dir="auto">r?.reports ?? []</code> — so it linted 484 plans and threw the result away. A
+159-second computation producing a 5-byte payload is the kind of thing only a
+timing sweep finds.</p>
+</li>
+<li>
+<p>A cache still pays the <strong>full cost on cold load</strong>, so the first user of every
+TTL window eats the 27s. It is a stopgap, not the fix.</p>
+</li>
+<li>
+<p>More decisively: the <strong>shipped desktop app runs embedded Postgres on hosts
 where <code dir="auto">journalctl</code> does not exist at all</strong> (no systemd on macOS; none in a
 bare container). A resolver that shells out to a host-only binary does not
-degrade — it <em>fails</em>, permanently, for every real user.</li>
+degrade — it <em>fails</em>, permanently, for every real user.</p>
+</li>
 </ul>
 <p><strong>Rules for any new sync query</strong> (see
 <a href="/internal/docs/data-sync/named-queries">named queries</a>):</p>
@@ -309,4 +362,4 @@ interactive queries, or it becomes everyone’s latency.</li>
 <p>Reference: <code dir="auto">packages/operator-core/lib/pot/soak-report.ts</code> (the fan-out +
 missing <code dir="auto">-u</code>), <code dir="auto">lib/storage/usage.ts</code> (the disk walk, which mitigated with a
 wall-clock budget rather than precompute), and WI-5460 for the full timing
-sweep of all 200 registered query names.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-06-23T06:40:57.000Z">Jun 23, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/data-sync/schema.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Schema conventions</span> </span> </a> <a href="/internal/docs/data-sync/cookbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Cookbook</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+sweep of all 200 registered query names.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-19T07:15:53.000Z">Jul 19, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/data-sync/schema.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Schema conventions</span> </span> </a> <a href="/internal/docs/data-sync/cookbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Cookbook</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
