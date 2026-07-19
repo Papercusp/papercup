@@ -45,6 +45,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import {
   ALLOTMENT_AUDIENCES,
   removeResourceAllotment,

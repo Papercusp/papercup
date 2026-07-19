@@ -303,6 +303,10 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     stalledSinceMs: null,
     lastDeliveryOutcome: 'loop-lifecycle',
     consecutiveErrors: 0,
+    lastWakeChannel: null,
+    lastWakeStatus: null,
+    lastWakeAt: null,
+    lastWakeError: null,
     ...overrides,
   });
 

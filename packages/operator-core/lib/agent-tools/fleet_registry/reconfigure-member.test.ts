@@ -74,7 +74,9 @@ beforeEach(() => {
   classifyAgentPane.mockReturnValue({ kind: 'su' });
   fetchPresenceFleet.mockResolvedValue(new Map([[MEMBER, { fleetSlug: SLUG, fleetRole: 'member' }]]));
   setCompactionLimitForOwner.mockResolvedValue({ ok: true, compactionLimit: 200_000, invokedAs: 'leader' });
-  setClaimSpec.mockResolvedValue({ revision: 3 });
+  // Mirror the REAL setClaimSpec success return ({ ok:true, errors:[], revision }): the handler
+  // spreads it verbatim (never forces ok:true, so a store-reported ok:false is not masked).
+  setClaimSpec.mockResolvedValue({ ok: true, errors: [], revision: 3 });
   sendMessage.mockResolvedValue({ msg_id: 'm1' });
   listFleetMembers.mockResolvedValue([MEMBER]);
 });

@@ -139,21 +139,6 @@ export function planPagePath(slug: string): string {
   return `plans/${slug.replace(/[^a-zA-Z0-9._-]/g, '-')}.html`;
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
-  'linux-x86_64': 'Linux (x86_64)',
-  'darwin-universal': 'macOS (Apple Silicon + Intel)',
-  'darwin-aarch64': 'macOS (Apple Silicon)',
-  'darwin-x86_64': 'macOS (Intel)',
-  'windows-x86_64': 'Windows (x86_64)',
-  'android-universal': 'Android (APK)',
-  'android-arm64': 'Android (arm64)',
-  'ios-arm64': 'iOS (iPhone / iPad)',
-};
-
-function platformLabel(p: string): string {
-  return PLATFORM_LABELS[p] ?? p;
-}
-
 /**
  * The beacon. A single fetch to PostHog's anonymous capture endpoint — no
  * posthog-js, no CDN, no cookie. The `phc_*` key is a public anonymous-capture
@@ -308,6 +293,13 @@ table.dl td { padding: .6rem .75rem .6rem 0; border-bottom: 1px solid var(--bord
 table.dl tr:last-child td { border-bottom: 0; }
 table.dl td a { font-weight: 550; }
 table.dl td.sha { color: var(--muted); font-family: var(--mono); font-size: .7rem; word-break: break-all; }
+/* Per-platform download sections (owner ask 2026-07-19): each platform is its own
+   section; within it the app and Server are labelled sub-tables of the same shape. */
+.platform-section { margin: 1.5rem 0 0; }
+h3.platform-h { font-size: 1.02rem; margin: 0 0 .35rem; color: var(--fg); font-weight: 680; letter-spacing: -.01em; border-bottom: 1px solid var(--border-strong); padding-bottom: .3rem; }
+h4.component-h { font-size: .74rem; margin: .85rem 0 .25rem; color: var(--fg-dim); font-weight: 640; text-transform: uppercase; letter-spacing: .04em; }
+p.n { color: var(--muted); font-size: .8rem; margin: .5rem 0 0; line-height: 1.45; }
+p.warn { color: #e6a23c; font-size: .82rem; margin: .55rem 0 0; font-weight: 520; line-height: 1.45; }
 details {
   margin-top: 1.35rem; border-top: 1px solid var(--border); padding-top: 1rem;
 }
@@ -471,50 +463,32 @@ function renderPlatformSection(label: string, desktop: boolean, list: ReleaseArt
   return `<section class="platform-section">\n${parts.filter(Boolean).join('\n')}\n</section>`;
 }
 
+/**
+ * A release's downloads, as a separate high-level SECTION per platform (owner ask
+ * 2026-07-19), each grouping that platform's app + Server into their own tables of
+ * the same shape. This structure carries the GUI↔Server requirement inline:
+ *   • Linux  — the GUI self-hosts its own backend (Server optional).
+ *   • macOS + Windows — the GUI has NO built-in backend; it needs the separate
+ *              Papercusp Server or it fatals — so install BOTH.
+ * Mobile is its own section. An unrecognized platform is never dropped — it falls
+ * into an "Other" section so the page's account of the release stays complete.
+ */
 function renderArtifacts(artifacts: ReleaseArtifact[]): string {
   const real = artifacts.filter((a) => !a.name.endsWith('.sig'));
-  const desktop = real.filter((a) => a.product === 'gui');
-  const mobile = real.filter((a) => a.product === 'mobile');
-  const server = real.filter((a) => a.product === 'server');
   if (real.length === 0) {
     return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
   }
 
-  // Papercusp Server is the backend (operator + embedded database). Its
-  // relationship to the GUI is PLATFORM-DEPENDENT, and getting this wrong strands
-  // a mac/Windows tester with an app that won't start:
-  //   • Linux  — the GUI self-hosts its own backend, so the GUI installer alone
-  //              works; the Server is OPTIONAL (headless / agents without the GUI).
-  //   • macOS + Windows — the GUI has NO built-in backend; it launches the separate
-  //              Papercusp Server and FATALS without it. So a mac/Win user needs BOTH.
-  // The old note ("the headless server build — you want the GUI") was true only on
-  // Linux and misleading everywhere else. State the requirement plainly.
-  const serverNote =
-    server.length > 0
-      ? `\n<p class="n"><strong>Papercusp Server</strong> — ${server
-          .map(
-            (a) =>
-              `<a href="${escapeHtml(a.url)}">${escapeHtml(a.name)}</a> (${escapeHtml(formatBytes(a.size))})`,
-          )
-          .join(
-            ', ',
-          )} — is the backend (operator + embedded database). <strong>On Linux</strong> the GUI installer above already includes its own backend, so it runs on its own and the Server is optional (only needed to keep agents running with the GUI closed). <strong>On macOS &amp; Windows</strong> the GUI needs the Server installed alongside it — install <strong>both</strong>, or the app can't start its backend.</p>`
-      : '';
-
-  if (desktop.length === 0 && mobile.length === 0) {
-    return `<p class="empty">No installer was recorded for this release.</p>${serverNote}`;
+  const known = new Set(PLATFORM_SECTIONS.flatMap((s) => s.platforms));
+  const sections: string[] = [];
+  for (const sec of PLATFORM_SECTIONS) {
+    const list = real.filter((a) => sec.platforms.includes(a.platform));
+    if (list.length > 0) sections.push(renderPlatformSection(sec.label, sec.desktop, list));
   }
+  const other = real.filter((a) => !known.has(a.platform));
+  if (other.length > 0) sections.push(renderPlatformSection('Other', true, other));
 
-  // Mobile apps get their OWN labelled section so a phone build never reads as a
-  // desktop installer (or vice-versa). Android is a sideloadable APK; iOS shows
-  // up here only once a signed .ipa exists (Apple Developer enrollment) — until
-  // then there is simply no iOS row, which is honest rather than a dead link.
-  const mobileSection =
-    mobile.length > 0
-      ? `\n<h3 class="dl-group">Mobile apps</h3>\n${renderDownloadTable(mobile)}`
-      : '';
-
-  return `${renderDownloadTable(desktop)}${mobileSection}${serverNote}`;
+  return sections.join('\n');
 }
 
 function renderItemList(items: ShippedItem[]): string {

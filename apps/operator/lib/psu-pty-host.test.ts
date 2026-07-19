@@ -31,6 +31,7 @@ import {
   renderCoalescedTurn,
   makeTurnCoalescer,
   makeInjectMutex,
+  makeStaleFireGuard,
   ACTIVITY_PERSIST_MS,
   MAX_CONTROL_PAYLOAD_BYTES,
   controlPayloadWithinLimit,
@@ -180,6 +181,107 @@ describe('control wire protocol (v1)', () => {
     const d = decodeControl('{"v":2,"mode":"weird"}');
     expect(d.mode).toBe('turn');
     expect(d.gated).toBe(true);
+  });
+
+  // WI-5510: the fire-identity fields ({fireNumber, routineId}) a loop-fire wake
+  // stamps onto the envelope so the delivery-side STALE-FIRE GUARD can tell a
+  // superseded delivery from a fresh one. Round-trip through encode/decode for
+  // every gated verb that carries them (turn/reset/recycle/carry-respawn).
+  it('turn envelope round-trips fireNumber + routineId (WI-5510)', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello', fireNumber: 3, routineId: 'r-1' }));
+    expect(d).toEqual({ mode: 'turn', data: 'hello', gated: true, fireNumber: 3, routineId: 'r-1' });
+  });
+  it('reset/recycle envelopes round-trip fireNumber + routineId (WI-5510)', () => {
+    expect(decodeControl(encodeControl({ mode: 'reset', data: 'note', fireNumber: 2, routineId: 'r-2' }))).toEqual({
+      mode: 'reset', data: 'note', gated: true, fireNumber: 2, routineId: 'r-2',
+    });
+    expect(decodeControl(encodeControl({ mode: 'recycle', data: 'note', fireNumber: 5, routineId: 'r-3' }))).toEqual({
+      mode: 'recycle', data: 'note', gated: true, fireNumber: 5, routineId: 'r-3',
+    });
+  });
+  it('carry-respawn envelope round-trips fireNumber + routineId alongside its own fields (WI-5510)', () => {
+    const d = decodeControl(
+      JSON.stringify({
+        v: 1,
+        mode: 'carry-respawn',
+        data: 'successor prompt',
+        systemPromptAddendum: 'carry',
+        fireNumber: 7,
+        routineId: 'r-4',
+      }),
+    );
+    expect(d).toEqual({
+      mode: 'carry-respawn',
+      data: 'successor prompt',
+      systemPromptAddendum: 'carry',
+      drillId: '',
+      sessionClass: '',
+      gated: true,
+      fireNumber: 7,
+      routineId: 'r-4',
+    });
+  });
+  it('a pre-WI-5510 sender (no fireNumber/routineId) decodes with neither field set — no regression', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
+    expect(d).toEqual({ mode: 'turn', data: 'hello', gated: true });
+    expect('fireNumber' in d).toBe(false);
+    expect('routineId' in d).toBe(false);
+  });
+  it('malformed fire-identity fields (wrong type, zero/negative fireNumber, empty routineId) are dropped, not passed through', () => {
+    const d = decodeControl(
+      JSON.stringify({ v: 1, mode: 'turn', data: 'x', fireNumber: 0, routineId: '' }),
+    );
+    expect('fireNumber' in d).toBe(false);
+    expect('routineId' in d).toBe(false);
+    const d2 = decodeControl(
+      JSON.stringify({ v: 1, mode: 'turn', data: 'x', fireNumber: 'not-a-number', routineId: 42 }),
+    );
+    expect('fireNumber' in d2).toBe(false);
+    expect('routineId' in d2).toBe(false);
+  });
+  it('osc/raw/mcp-reconnect (ungated or identity-agnostic verbs) never carry fire identity', () => {
+    expect(decodeControl(encodeControl({ mode: 'raw', data: '\x03', fireNumber: 1, routineId: 'r' }))).toEqual({
+      mode: 'raw', data: '\x03', gated: false,
+    });
+  });
+});
+
+describe('makeStaleFireGuard (WI-5510 — delivery-side dead-man switch against a superseded fire)', () => {
+  it('admits + commits a fresh (routineId, fireNumber) pair, then drops an equal or older one for the same routine', () => {
+    const g = makeStaleFireGuard();
+    expect(g.admit('r-1', 2)).toEqual({ admit: true, lastDelivered: 0 });
+    // A later, HIGHER fire admits and advances the high-water mark.
+    expect(g.admit('r-1', 3)).toEqual({ admit: true, lastDelivered: 2 });
+    // A stale/duplicate (<=) delivery for the SAME routine is dropped without mutating state.
+    expect(g.admit('r-1', 3)).toEqual({ admit: false, lastDelivered: 3 });
+    expect(g.admit('r-1', 1)).toEqual({ admit: false, lastDelivered: 3 });
+  });
+
+  it('is scoped by routineId — a fresh loop instance (new routineId) always admits at fire #1, unaffected by an OLD loop higher count', () => {
+    const g = makeStaleFireGuard();
+    expect(g.admit('r-old', 9)).toEqual({ admit: true, lastDelivered: 0 });
+    // loop:end + re-arm gets a NEW routineId; its fire #1 is never mistaken as
+    // stale relative to r-old's fire #9.
+    expect(g.admit('r-new', 1)).toEqual({ admit: true, lastDelivered: 0 });
+    expect(g.size()).toBe(2);
+  });
+
+  it('a message with no routineId or no fireNumber always admits and never touches state (pre-WI-5510 / non-loop senders)', () => {
+    const g = makeStaleFireGuard();
+    expect(g.admit(undefined, 5)).toEqual({ admit: true, lastDelivered: null });
+    expect(g.admit('r-1', undefined)).toEqual({ admit: true, lastDelivered: null });
+    expect(g.admit(null, null)).toEqual({ admit: true, lastDelivered: null });
+    expect(g.size()).toBe(0);
+  });
+
+  it('the exact WI-5510 repro: an earlier fire that finally clears its gate wait AFTER a later fire already delivered is dropped', () => {
+    const g = makeStaleFireGuard();
+    // Fire #2 wins its gate race first and delivers.
+    expect(g.admit('r-1', 2).admit).toBe(true);
+    // Fire #1 (decided BEFORE #2, but stuck at the busy/idle gate) finally clears
+    // and would otherwise flush a stale, already-superseded wake mid-turn.
+    const verdict = g.admit('r-1', 1);
+    expect(verdict).toEqual({ admit: false, lastDelivered: 2 });
   });
 });
 

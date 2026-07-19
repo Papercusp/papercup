@@ -385,20 +385,50 @@ describe('the Server artifact is disclosed, not silently dropped', () => {
     }),
   });
 
-  it('keeps the installer in the table and the server build as a footnote', () => {
+  it('puts the Server in its OWN labelled table under the Linux section, not a prose link', () => {
     const html = renderIndexHtml([withServer], { generatedAt: GENERATED_AT, analytics: null });
-    // The GUI installer is what a tester came for — it stays in the download table.
-    expect(html).toContain('<table class="dl">');
+    // The release's downloads are grouped under a per-platform section header.
+    expect(html).toContain('<h3 class="platform-h">Linux</h3>');
+    // Both the app and the Server appear, each under its own component sub-header,
+    // each a first-class <table class="dl"> (the Server is NOT a prose footnote).
+    expect(html).toContain('<h4 class="component-h">App</h4>');
+    expect(html).toContain('<h4 class="component-h">Papercusp Server</h4>');
     expect(html).toContain('gui_0.0.9_amd64.deb');
-    // The Server build shipped too. Omitting it entirely would make this page's
-    // account of the release quietly incomplete.
     expect(html).toContain('server_0.0.9_amd64.deb');
-    // The note states the GUI/Server relationship ACCURATELY, per platform: Linux
-    // GUI self-hosts (Server optional), mac/Windows GUI NEEDS the Server (install
-    // both) — WI-5028: GUI-only on mac/Win is non-functional.
-    expect(html).toContain('On Linux');
-    expect(html).toContain('install <strong>both</strong>');
+    // Linux guidance: the app self-hosts, so the Server is optional here (NOT the
+    // mac/Windows "install both").
+    expect(html).toContain('optional');
     expect(html).not.toContain('headless server build');
+  });
+
+  it('tells mac/Windows to install BOTH, and puts the Server in its own table there too', () => {
+    const macBoth = hydrated({
+      row: row({
+        artifacts: [
+          { product: 'gui', platform: 'darwin-universal', name: 'GUI_0.0.9_universal.dmg', url: 'desktop-v0.0.9-alpha/GUI_0.0.9_universal.dmg', size: 1_300_000_000, sha256: 'g' },
+          { product: 'server', platform: 'darwin-universal', name: 'Server_0.0.9_universal.dmg', url: 'desktop-v0.0.9-alpha/Server_0.0.9_universal.dmg', size: 1_300_000_000, sha256: 's' },
+        ],
+      }),
+    });
+    const html = renderIndexHtml([macBoth], { generatedAt: GENERATED_AT, analytics: null });
+    expect(html).toContain('<h3 class="platform-h">macOS</h3>');
+    expect(html).toContain('<h4 class="component-h">Papercusp Server</h4>');
+    expect(html).toContain('Server_0.0.9_universal.dmg');
+    expect(html).toContain('Install both.');
+  });
+
+  it('WARNS when a mac/Windows section has an app but NO Server (the non-functional case)', () => {
+    const macGuiOnly = hydrated({
+      row: row({
+        artifacts: [
+          { product: 'gui', platform: 'windows-x86_64', name: 'GUI_0.0.9_x64-setup.exe', url: 'desktop-v0.0.9-alpha/GUI_0.0.9_x64-setup.exe', size: 1_800_000_000, sha256: 'w' },
+        ],
+      }),
+    });
+    const html = renderIndexHtml([macGuiOnly], { generatedAt: GENERATED_AT, analytics: null });
+    expect(html).toContain('<h3 class="platform-h">Windows</h3>');
+    expect(html).toContain('class="warn"');
+    expect(html).toContain('needs <strong>Papercusp Server</strong>');
   });
 });
 
@@ -426,21 +456,21 @@ describe('the mobile apps render in their own labelled section [owner: "make sur
     }),
   });
 
-  it('gives the phone build its OWN "Mobile apps" heading, platform-labelled, without dropping it into the desktop table', () => {
+  it('gives the phone build its OWN "Mobile" platform section, without mixing it into a desktop table', () => {
     const html = renderIndexHtml([withAndroid], { generatedAt: GENERATED_AT, analytics: null });
-    // The desktop installer a tester came for stays in the primary download table.
+    // The desktop installer stays under its own Linux section.
+    expect(html).toContain('<h3 class="platform-h">Linux</h3>');
     expect(html).toContain('papercusp_0.0.9_amd64.deb');
-    // The Android build is NOT dropped and NOT mixed into the desktop table — it
-    // gets its own labelled section so an APK never reads as a desktop download.
-    expect(html).toContain('<h3 class="dl-group">Mobile apps</h3>');
-    expect(html).toContain('Android (APK)');
+    // The Android build gets its own Mobile section so an APK never reads as a
+    // desktop download.
+    expect(html).toContain('<h3 class="platform-h">Mobile</h3>');
     expect(html).toContain('Papercusp_0.0.9_android.apk');
-    // and its download link, size and checksum are baked into the markup (JS-off).
+    // download link, size and checksum baked into the markup (JS-off).
     expect(html).toContain('desktop-v0.0.9-alpha/Papercusp_0.0.9_android.apk');
     expect(html).toContain('droid');
   });
 
-  it('surfaces an iOS build under the same Mobile apps section once a signed .ipa exists', () => {
+  it('surfaces an iOS build under the same Mobile section once a signed .ipa exists', () => {
     // iOS is enrollment-gated today (no signed .ipa yet), but the render path must
     // already be correct so the build appears the moment record-release finds one.
     const withIos = hydrated({
@@ -458,13 +488,12 @@ describe('the mobile apps render in their own labelled section [owner: "make sur
       }),
     });
     const html = renderIndexHtml([withIos], { generatedAt: GENERATED_AT, analytics: null });
-    expect(html).toContain('<h3 class="dl-group">Mobile apps</h3>');
-    expect(html).toContain('iOS (iPhone / iPad)');
+    expect(html).toContain('<h3 class="platform-h">Mobile</h3>');
     expect(html).toContain('Papercusp_0.0.9_ios.ipa');
   });
 
-  it('omits the Mobile apps section entirely for a desktop-only release', () => {
+  it('omits the Mobile section entirely for a desktop-only release', () => {
     const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
-    expect(html).not.toContain('Mobile apps');
+    expect(html).not.toContain('<h3 class="platform-h">Mobile</h3>');
   });
 });

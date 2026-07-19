@@ -47,6 +47,13 @@ const VALID_DARK_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>([
  * fails loudly if the derivation ever silently flips a flag.
  */
 const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
+  // papercusp-capability-exec-sandbox: EI-16635 BUG-FIX correction (EI-7230-class —
+  // own comment always said "OFF by default until validated end-to-end on a
+  // bwrap-capable host", never actually added to DARK_FLAGS, so P-011 derived it
+  // live default-ON — live-evidenced harm: a backgrounded capability:bash job died
+  // ~3-6s after the launching call returned via the bwrap `--die-with-parent` path).
+  // Count 27 → 28.
+  'papercusp-capability-exec-sandbox',
   'papercusp-cloudflare-publish',
   'papercusp-harness-phases',
   'papercusp-design',
@@ -476,7 +483,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // Leg B two-machine merge proof (tower↔Avis-iMac concurrent different-part
     // edits, flag ON both stores, byte-identical convergence, no clobber) met its
     // cutover dark-entry gate (p2p-part-merge-proof-2026-07-18 D-001). Count 28 → 27.
-    expect(offCount).toBe(27);
+    // 2026-07-19 (EI-16635) — papercusp-capability-exec-sandbox: BUG-FIX correction,
+    // EI-7230-class (see PRE_INVERSION_DEFAULT_OFF above). Count 27 → 28.
+    expect(offCount).toBe(28);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

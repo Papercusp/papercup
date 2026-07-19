@@ -120,6 +120,14 @@ export interface BuildSandboxInput {
 export interface BuildSandboxOpts {
   /** The resolved `papercusp-capability-exec-sandbox` flag. */
   enabled: boolean;
+  /** EI-16635: true when this spawn is a `run_in_background:true` job — one that
+   *  is CONTRACTUALLY meant to outlive the launching `capability:bash` call (the
+   *  caller returns immediately and polls `capability:bash_output` later). The
+   *  bwrap-fallback's `--die-with-parent` (below) is fundamentally incompatible
+   *  with that contract, so it is omitted when `background` is true. Defaults to
+   *  false (foreground: keep `--die-with-parent` as a safety net against leaking
+   *  a sandboxed tree if the operator itself is killed mid-command). */
+  background?: boolean;
   /** Whether bwrap works (defaults to `capabilityBwrapWorks()`); injected by tests. */
   bwrapWorks?: boolean;
   /** srt binary path or null. `undefined` ⇒ resolve via `srtBinOnPath()`; tests inject. */
@@ -393,9 +401,29 @@ export function buildCapabilitySandboxCommand(
     '--unshare-ipc',
     '--unshare-uts',
     '--unshare-cgroup-try',
-    '--die-with-parent',
     '--chdir', input.cwd,
   ];
+  // EI-16635 (RECONCILED): `--die-with-parent` kills the sandboxed tree the moment
+  // bwrap's OS parent goes away — fundamentally in tension with `capability:bash`'s
+  // `run_in_background:true` contract, which promises the job outlives the
+  // launching call. Live-reproduced: with CAPABILITY_EXEC_SANDBOX flag
+  // accidentally live-ON (fixed separately — added to DARK_FLAGS, its own
+  // documented default), a backgrounded job through this bwrap path died ~3-6s
+  // after the launching call returned. Fix: omit the flag entirely for a
+  // `background` spawn (opts.background) — this makes the sandboxed path match
+  // TODAY'S raw/unsandboxed background-job behavior (the child outlives the
+  // call; an operator restart still strands it, exactly like an unsandboxed job
+  // does — see EI-8855 / capability:bash_output's stranded-job detection), not a
+  // new leak class. Foreground spawns are unaffected (still die with the
+  // operator, the existing safety net) — a foreground command is already bounded
+  // by its own wall-clock timeout/abort (bash-jobs.ts killProcessTree), so
+  // `--die-with-parent` there is pure defense-in-depth, never load-bearing.
+  // Still gated: CAPABILITY_EXEC_SANDBOX stays default-OFF pending a live
+  // bwrap-capable-host validation (this dev box's userns is restricted, so the
+  // fix above is argv-level/unit-tested only here — see
+  // exec-sandbox.integration.test.ts for the real-bwrap validation surface) —
+  // owner/leader still flips it ON only after that.
+  if (!opts.background) argv.push('--die-with-parent');
   // EI-12725: carve the out-of-tree build caches writable too (see
   // capabilityBuildCacheWritePaths). AFTER the cwd bind: these resolve outside the
   // cwd and outside /tmp, so they neither shadow nor are shadowed by those mounts.

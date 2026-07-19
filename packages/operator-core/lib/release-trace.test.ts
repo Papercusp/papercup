@@ -29,6 +29,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     },
     gitSyncLastStatus: 'ok',
     runtime: null,
+    runtimes: null,
     summary: 'ok',
     notes: [],
     ...over,

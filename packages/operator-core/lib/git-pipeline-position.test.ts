@@ -273,6 +273,7 @@ describe('gitPipelinePosition (P-002)', () => {
       },
       gitSyncLastStatus: 'synced',
       runtime: classifyRuntimeOwner('a.ts'),
+      runtimes: classifyRuntimeOwners('a.ts'),
       notes: [],
     };
     expect(summarizePosition(base)).toContain('deployed ✗');
