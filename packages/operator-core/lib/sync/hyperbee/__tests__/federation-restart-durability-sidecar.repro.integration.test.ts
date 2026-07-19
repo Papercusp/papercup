@@ -113,7 +113,7 @@ const FRAMEWORK_ROLES_DDL = `
 `;
 
 /** Strip psql meta + bare BEGIN/COMMIT so a migration file applies via sql.unsafe(). */
-function stripMig(s: string): string {
+export function stripMig(s: string): string {
   return s
     .split('\n')
     .filter((l) => {
@@ -129,7 +129,7 @@ function stripMig(s: string): string {
  * federation-cols) so the owner can author its ROSTER + features and have them
  * drain to its log (the member federates from there).
  */
-async function setupOwnerSchema(sql: postgres.Sql, hiveHome: string, hivePubkeyB64: string): Promise<void> {
+export async function setupOwnerSchema(sql: postgres.Sql, hiveHome: string, hivePubkeyB64: string): Promise<void> {
   await sql.unsafe(FRAMEWORK_ROLES_DDL);
   await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await sql.unsafe(`

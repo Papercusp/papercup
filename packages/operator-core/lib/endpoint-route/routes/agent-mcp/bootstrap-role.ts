@@ -498,6 +498,10 @@ const post = defineTool({
           // WI-3280: park the role prompt so the SessionStart recovery hook can
           // re-deliver it if claude's self-re-exec drops the launch argv.
           recovery: { playbookPath: promptFile || null, nativeSessionId },
+          // EI-16574: pre-trust this launch's cwd so a brand-new project
+          // directory can't wedge a headless role spawn forever on an
+          // external-CLAUDE.md-imports / trust-dialog TTY prompt.
+          cwd: spec.cwd,
         }).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-role] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);

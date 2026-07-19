@@ -4869,7 +4869,7 @@ export function LearningStyles() {
 
       .pc-learning__section { display: flex; flex-direction: column; gap: 7px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-      .pc-learning__sectionhead--tools { justify-content: flex-end; min-height: 28px; }
+      .pc-learning__sectionhead--tools { justify-content: flex-start; min-height: 28px; }
       .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0; color: var(--fg-dim, #b9d4e8); }
       .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       /* Work-Queue-parity search + filter affordances (owner ask 2026-07-19). */

@@ -393,7 +393,12 @@ describe('the Server artifact is disclosed, not silently dropped', () => {
     // The Server build shipped too. Omitting it entirely would make this page's
     // account of the release quietly incomplete.
     expect(html).toContain('server_0.0.9_amd64.deb');
-    expect(html).toContain('headless server build');
+    // The note states the GUI/Server relationship ACCURATELY, per platform: Linux
+    // GUI self-hosts (Server optional), mac/Windows GUI NEEDS the Server (install
+    // both) — WI-5028: GUI-only on mac/Win is non-functional.
+    expect(html).toContain('On Linux');
+    expect(html).toContain('install <strong>both</strong>');
+    expect(html).not.toContain('headless server build');
   });
 });
 

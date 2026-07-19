@@ -33,6 +33,7 @@ import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-d
 import {
   ensureInteractiveClaudeConfig,
   ensureOnboardingComplete,
+  ensureProjectTrust,
   isInteractiveClaudeConfigReady,
   RECOVER_HOOK,
   RECOVER_INTENT,
@@ -146,6 +147,88 @@ describe('ensureOnboardingComplete (the first-run wizard blocks every interactiv
   it('fails open on an unparseable config — a launch never dies here', () => {
     writeFileSync(join(home, '.claude.json'), '{ not json');
     expect(ensureOnboardingComplete(home)).toBe(false);
+  });
+});
+
+/**
+ * EI-16574: a brand-new project cwd (no prior `projects[cwd]` entry at all —
+ * e.g. a fresh `pot:create_from_repo` clone) trips the "Allow external
+ * CLAUDE.md file imports?" / "Do you trust the files in this folder?" TTY
+ * prompts, which a HEADLESS launch has nobody to answer — it hangs forever.
+ * `ensureProjectTrust` pre-accepts those per-project flags, mirroring how
+ * `ensureOnboardingComplete` above pre-accepts the GLOBAL onboarding flag.
+ */
+describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch on a TTY prompt)', () => {
+  const read = () => JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+  const cwd = '/home/marsh-office/.papercusp-workspaces/clones/fresh-clone';
+
+  it('adds a full trust entry for a cwd with NO prior projects[] entry at all', () => {
+    seedHome(home); // seeds a .claude.json with mcpServers but no `projects` key
+    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(read().projects[cwd]).toEqual({
+      hasTrustDialogAccepted: true,
+      hasClaudeMdExternalIncludesApproved: true,
+      hasClaudeMdExternalIncludesWarningShown: true,
+      hasCompletedProjectOnboarding: true,
+    });
+    // Never touches a foreign top-level key.
+    expect(read().mcpServers).toEqual({ 'papercusp-su': {}, playwright: {} });
+  });
+
+  it('repairs a cwd entry that exists but is missing one of the trust flags — never clobbers its other fields', () => {
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({
+        projects: {
+          [cwd]: {
+            mcpServers: { playwright: {} },
+            hasTrustDialogAccepted: true,
+            hasClaudeMdExternalIncludesApproved: false, // the live EI-16574 wedge shape
+            lastSessionId: 'keep-me',
+          },
+          '/some/other/project': { hasCompletedProjectOnboarding: true },
+        },
+      }),
+    );
+    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    const p = read().projects[cwd];
+    expect(p.hasClaudeMdExternalIncludesApproved).toBe(true);
+    expect(p.hasClaudeMdExternalIncludesWarningShown).toBe(true);
+    expect(p.hasCompletedProjectOnboarding).toBe(true);
+    // Preserves this project's own unrelated fields...
+    expect(p.mcpServers).toEqual({ playwright: {} });
+    expect(p.lastSessionId).toBe('keep-me');
+    // ...and never touches a SIBLING project's entry.
+    expect(read().projects['/some/other/project']).toEqual({ hasCompletedProjectOnboarding: true });
+  });
+
+  it('is idempotent — a cwd already fully trusted is left untouched (no rewrite)', () => {
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({
+        projects: {
+          [cwd]: {
+            hasTrustDialogAccepted: true,
+            hasClaudeMdExternalIncludesApproved: true,
+            hasClaudeMdExternalIncludesWarningShown: true,
+            hasCompletedProjectOnboarding: true,
+          },
+        },
+      }),
+    );
+    expect(ensureProjectTrust(home, cwd)).toBe(false);
+  });
+
+  it('WI-4431-style: materializes a minimal trusted config when NO .claude.json exists at all', () => {
+    expect(existsSync(join(home, '.claude.json'))).toBe(false);
+    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(read().hasCompletedOnboarding).toBe(true);
+    expect(read().projects[cwd].hasClaudeMdExternalIncludesApproved).toBe(true);
+  });
+
+  it('fails open on an unparseable config — a launch never dies here', () => {
+    writeFileSync(join(home, '.claude.json'), '{ not json');
+    expect(ensureProjectTrust(home, cwd)).toBe(false);
   });
 });
 

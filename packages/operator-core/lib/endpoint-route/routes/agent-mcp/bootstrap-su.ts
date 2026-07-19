@@ -1816,6 +1816,11 @@ const post = defineTool({
           // WI-3280: park the playbook so the SessionStart recovery hook can
           // re-deliver it if claude's self-re-exec drops the launch argv.
           recovery: { playbookPath: promptFile || null, nativeSessionId },
+          // EI-16574: pre-trust this launch's cwd so a brand-new project
+          // directory (e.g. a fresh pot:create_from_repo clone, headless
+          // fleet member) can't wedge forever on an external-CLAUDE.md-
+          // imports / trust-dialog TTY prompt nobody is there to answer.
+          cwd,
         }).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-su] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);

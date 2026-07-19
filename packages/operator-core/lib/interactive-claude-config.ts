@@ -849,6 +849,12 @@ export function writeInteractiveClaudeConfig(opts: {
     // above: repair the onboarding flag the mirror is about to symlink in, or
     // this session boots into the first-run wizard and never reaches a prompt.
     ensureOnboardingComplete(home);
+    // EI-16574: also pre-trust THIS launch's cwd (see ensureProjectTrust) so a
+    // brand-new project directory (no prior `projects[cwd]` entry) can't wedge
+    // a headless member forever on the external-CLAUDE.md-imports / trust-dialog
+    // prompts — a genuinely separate, per-cwd gate from the global onboarding
+    // flag repaired just above.
+    if (opts.cwd) ensureProjectTrust(home, opts.cwd);
   }
 
   // Mirror every top-level `~/.claude` entry EXCEPT the transcript store.

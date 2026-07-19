@@ -3,6 +3,7 @@ import {
   gitPipelinePosition,
   summarizePosition,
   classifyRuntimeOwner,
+  classifyRuntimeOwners,
   type GitRunner,
   type PipelinePosition,
 } from './git-pipeline-position';
@@ -445,5 +446,53 @@ describe('runtime-owner map (EI-10895)', () => {
       { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
     );
     expect(res.notes.some((n) => /dev:restart/.test(n))).toBe(false);
+  });
+
+  /* ------------------------------------------------------------------------- *
+   * WI-5440 — a path with TWO real consumers on DIFFERENT activation routes.
+   * `success-metrics.ts` is read by both the scout ideation cycle (bg-host,
+   * routinesTick) AND buildProgramSuccessReport (the `blender:success-metrics`
+   * MCP tool, served by the release-checkout operator). Collapsing to one
+   * routed a live activation decision the wrong way during the 0.0.11-alpha
+   * release watch — this must never again answer with a single owner.
+   * ------------------------------------------------------------------------- */
+  describe('multi-consumer paths (WI-5440)', () => {
+    const successMetricsPath = 'packages/operator-core/lib/scout/success-metrics.ts';
+
+    it('classifyRuntimeOwners returns BOTH consumers, in order', () => {
+      const owners = classifyRuntimeOwners(successMetricsPath)!;
+      expect(owners).toHaveLength(2);
+      expect(owners[0].host).toBe('bg-host');
+      expect(owners[0].releasePipelineApplies).toBe(false);
+      expect(owners[1].host).toBe('operator-release');
+      expect(owners[1].releasePipelineApplies).toBe(true);
+    });
+
+    it('the legacy singular classifyRuntimeOwner still returns ONE answer (back-compat), never throws', () => {
+      const own = classifyRuntimeOwner(successMetricsPath)!;
+      expect(own.host).toBe('bg-host');
+    });
+
+    it('a sibling scout/ file with only one real consumer still classifies single-owner (no over-correction)', () => {
+      const owners = classifyRuntimeOwners('packages/operator-core/lib/scout/cycle.ts')!;
+      expect(owners).toHaveLength(1);
+      expect(owners[0].host).toBe('bg-host');
+    });
+
+    it('gitPipelinePosition surfaces `runtimes` (plural) and flags the split in notes + summary', async () => {
+      const git = fakeGit({ pathCommit: 'sm0000001', contains: { HEAD: ['sm0000001'] } });
+      const res = await gitPipelinePosition(
+        { path: successMetricsPath },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.runtimes).toHaveLength(2);
+      expect(res.runtimes?.map((r) => r.host)).toEqual(['bg-host', 'operator-release']);
+      // back-compat single `runtime` is still the first owner, never dropped
+      expect(res.runtime?.host).toBe('bg-host');
+      expect(res.notes.some((n) => /distinct consumers/.test(n))).toBe(true);
+      expect(res.summary).toContain('MULTIPLE CONSUMERS');
+      expect(res.summary).toContain('bg-host');
+      expect(res.summary).toContain('operator-release');
+    });
   });
 });

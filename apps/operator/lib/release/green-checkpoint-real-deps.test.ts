@@ -263,8 +263,12 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   });
 
   it('real break: red suite where ONE file still fails in isolation → stays NOT green', async () => {
-    // call 0: red suite. call 1: file #1 re-run PASSES. call 2: file #2 re-run FAILS.
-    const { exec } = makeExec([{ code: 1, stdout: RED_OUTPUT }, { code: 0 }, { code: 1 }]);
+    // call 0: red suite. call 1: file #1 re-run PASSES. call 2: file #2 re-run FAILS —
+    // and because a DETERMINISTIC break re-fails on EVERY attempt, call 3 is file #2's
+    // ISOLATION_RETRY_MAX(=1) retry, which must ALSO fail (isolation-retry-resilience /
+    // EI-15849). Without scripting the retry result the exhausted-queue default ({code:0})
+    // would let file #2's retry "pass", masking the real break as an absorbed load-flake.
+    const { exec } = makeExec([{ code: 1, stdout: RED_OUTPUT }, { code: 0 }, { code: 1 }, { code: 1 }]);
     const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
 
     expect(r.green).toBe(false); // a real deterministic break is NEVER hidden
