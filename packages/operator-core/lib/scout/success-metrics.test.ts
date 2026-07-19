@@ -188,6 +188,74 @@ describe('evaluateProgramSuccess — cycle error rate', () => {
   });
 });
 
+// WI-5397: the soak-method fix — the cycle-error-rate bar's denominator/numerator swap
+// to the CODE-HASH-scoped tick union (unbounded by time) when the caller supplies one,
+// instead of the time-windowed `cadence.ticks` — because a rolling window resets its
+// tick history to near-zero on every bg-host restart (fact
+// alpha-011-soak-unreachable-as-planned). This is the exact branch that manufactured
+// bg-host-restart-zeroing false UNKNOWNs/FAILs before this fix.
+describe('evaluateProgramSuccess — cadenceByCodeHash soak-method fix (WI-5397)', () => {
+  it('judges the error-rate bar over the code-hash union, NOT the (much thinner) time-windowed cadence.ticks', () => {
+    // Time-windowed cadence.ticks: a lone genuine error among too few cycles to discriminate.
+    const windowedTicks: ScoutTickRecord[] = [
+      ranTick({ detail: { cycleId: 'w1' } }),
+      { status: 'error', detail: { cycleId: 'w-err' } },
+    ];
+    // The code-hash union: a much larger, restart-spanning history of the SAME code that is
+    // healthy overall (1 error / 21 cycles = 4.8% < 5%).
+    const codeHashTicks: ScoutTickRecord[] = [
+      ...[...Array(20)].map((_, i) => ranTick({ detail: { cycleId: `u${i}` } })),
+      { status: 'error', detail: { cycleId: 'u-err' } },
+    ];
+    const r = evaluateProgramSuccess({
+      ...inputs(windowedTicks, []),
+      cadenceByCodeHash: { ticks: codeHashTicks, codeHash: 'hash-abc123' },
+    });
+    // The windowed-only math would read 1/2 = 50% and FAIL; the code-hash union reads
+    // 1/21 = 4.8% and PASSES — proof the bar actually switched denominators.
+    expect(bar(r, 'cycle-error-rate').status).toBe('pass');
+    expect(bar(r, 'cycle-error-rate').observed).toContain('1 error ticks / 21 cycle ticks');
+    expect(bar(r, 'cycle-error-rate').observed).toContain('soak: code-identical union across restarts, hash hash-abc123');
+  });
+
+  it('stamps window.codeHash + window.codeHashTicks for audit provenance when a union was used', () => {
+    const codeHashTicks = [ranTick({ detail: { cycleId: 'u1' } }), ranTick({ detail: { cycleId: 'u2' } })];
+    const r = evaluateProgramSuccess({
+      ...inputs([], []),
+      cadenceByCodeHash: { ticks: codeHashTicks, codeHash: 'hash-xyz' },
+    });
+    expect(r.window.codeHash).toBe('hash-xyz');
+    expect(r.window.codeHashTicks).toBe(2);
+  });
+
+  it('FALLS BACK to the time-windowed cadence.ticks when cadenceByCodeHash.codeHash is null (unresolved)', () => {
+    const windowedTicks: ScoutTickRecord[] = [
+      ...[...Array(19)].map((_, i) => ranTick({ detail: { cycleId: `w${i}` } })),
+      { status: 'error', detail: { cycleId: 'w-err' } },
+    ];
+    const r = evaluateProgramSuccess({
+      ...inputs(windowedTicks, []),
+      // codeHash: null — e.g. the process's scout source files were unreadable at hash
+      // time. Must judge the SAME window as if cadenceByCodeHash were absent entirely,
+      // never silently substitute a different (in this case empty) union.
+      cadenceByCodeHash: { ticks: [], codeHash: null },
+    });
+    expect(bar(r, 'cycle-error-rate').observed).toContain('1 error ticks / 20 cycle ticks');
+    // cadenceByCodeHash was SUPPLIED (just unresolved) — window.codeHash still reports the
+    // null provenance rather than omitting the key entirely (that omission is reserved for
+    // "cadenceByCodeHash wasn't passed at all", the next test below).
+    expect(r.window.codeHash).toBeNull();
+  });
+
+  it('FALLS BACK to the time-windowed read when cadenceByCodeHash is entirely absent (pre-WI-5397 fixture, byte-compatible)', () => {
+    const windowedTicks = [...Array(20)].map((_, i) => ranTick({ detail: { cycleId: `c${i}`, signalScore: 5 } }));
+    const r = evaluateProgramSuccess(inputs(windowedTicks, []));
+    expect(bar(r, 'cycle-error-rate').status).toBe('pass');
+    expect(r.window.codeHash).toBeUndefined();
+    expect(r.window.codeHashTicks).toBeUndefined();
+  });
+});
+
 describe('programSuccessReadScopes — release window and singleton host', () => {
   it('reads Scout ticks and routed ideas from @singleton while keeping su-ideate harness-scoped', () => {
     const nowMs = Date.parse('2026-07-13T16:30:00Z');

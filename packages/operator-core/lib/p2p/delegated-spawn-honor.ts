@@ -19,10 +19,21 @@
  *      SILENT skip (no disposition, no receipt: the host owner simply hasn't
  *      opted in; nothing here is refused *yet*).
  *   2. Target match — the request names a seat-offer THIS machine published:
- *      re-derive seatOfferId over the host's own agent_slot allotments with its
- *      own device pubkey (the M19-local account string never crossed the wire;
- *      only its hash contribution did). Someone else's request → silent skip.
+ *      re-derive seatOfferId over the host's own agent_slot allotments (both
+ *      fleet-scoped, for record.fleetSlug, AND pot-scoped, any pot this host
+ *      donated to — P-003) with its own device pubkey (the M19-local account
+ *      string never crossed the wire; only its hash contribution did). Someone
+ *      else's request → silent skip.
  *   3. Freshness — requestedAtMs within the honor window (default 60 min).
+ *   2.5/3.5 (P-003) Audience — ONLY when Gate 2 matched a POT-scoped offer: the
+ *      requesting fleet's OWNER (the spawn_request's publisher) must pass this
+ *      host's audience check for that pot — 'trusted-members' → the host's
+ *      local trust list (D-002: never a silent widening of trust:add's "auto-run
+ *      remote work" semantics — a separate, explicit grant); 'whole-pot' → pot
+ *      membership. A fleet-scoped match carries no audience concept and skips
+ *      straight through. Fail-closed; refusal is LOUD (`audience_refused`,
+ *      federated receipt threaded by offer id) so a trust revocation takes
+ *      effect on the very next claim with no offer republish (D-002/D-003).
  *   4. Seat availability — resolveSeatLaunch's cap math; consumeSeatAtBoot
  *      re-enforces atomically at each member's bootstrap regardless.
  *   5. Atomic claim — local_disposition 'honoring' (per-offer variant, WHERE
@@ -47,7 +58,7 @@ import { hostAcceptsDelegatedSeats } from './accept-delegated-seats';
 import { resolveUsageActor } from '../harness/usage-actor';
 import { resolveDeviceKeychainId } from '../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
-import { listResourceAllotments } from './resource-allotments';
+import { listResourceAllotments, type AllotmentAudience } from './resource-allotments';
 import {
   resolveSeatLaunch,
   seatAvailabilityForFleet,
@@ -78,8 +89,24 @@ export const SPAWN_REQUEST_CLOCK_SKEW_MS = 10 * 60_000;
 /** D-003 sentinel mirrored from offer-store-publish (the offer-id hash side). */
 const AUTO_ACCOUNT = 'AUTO';
 
+/** P-003: one of THIS host's pot-scoped agent_slot allotments, offered as a
+ *  Gate-2 match candidate — the request names only a targetOfferId, never
+ *  which pot in advance, so every active pot-scoped slot is tried. */
+export interface PotSeatCandidate {
+  slot: SeatSlot;
+  potSlug: string;
+  audience: AllotmentAudience;
+}
+
 export type SpawnRequestEvaluation =
-  | { ok: true; slot: SeatSlot; payload: SpawnRequestPayload }
+  | {
+      ok: true;
+      slot: SeatSlot;
+      payload: SpawnRequestPayload;
+      /** P-003: set iff Gate 2 matched a POT-scoped candidate — the audience
+       *  gate consults this; null for a fleet-scoped match (no audience concept). */
+      potMatch: { potSlug: string; audience: AllotmentAudience } | null;
+    }
   | {
       ok: false;
       code: 'not_spawn_request' | 'not_open' | 'not_target' | 'expired' | 'seat_ref_unknown';
@@ -90,15 +117,18 @@ export type SpawnRequestEvaluation =
 
 /**
  * PURE: is this request addressed to THIS host, fresh, and matched to one of
- * its delegated slot templates? No I/O — the caller supplies the host's own
- * identity + its active agent_slot slots for the record's fleet.
+ * its delegated slot templates (fleet-scoped OR pot-scoped, P-003)? No I/O —
+ * the caller supplies the host's own identity + its active agent_slot slots.
  */
 export function evaluateSpawnRequestTarget(opts: {
   record: WorkOfferStoreRecord;
   selfGithubUserId: number;
   selfDevicePubkey: string;
-  /** THIS host's active agent_slot slots for record.fleetSlug. */
+  /** THIS host's active agent_slot slots for record.fleetSlug (fleet-scoped offers). */
   slots: readonly SeatSlot[];
+  /** P-003: THIS host's active pot-scoped agent_slot allotments (any pot) —
+   *  each tried as a candidate scope since the request doesn't name the pot. */
+  potSlots?: readonly PotSeatCandidate[];
   nowMs: number;
   honorWindowMs?: number;
   clockSkewMs?: number;
@@ -135,7 +165,10 @@ export function evaluateSpawnRequestTarget(opts: {
   }
   // The M19 re-derivation: the wire named a seat-offer id; only THIS machine
   // can recompute it (the hash needs the local account string + device pubkey).
-  const slot = opts.slots.find(
+  // Try the fleet-scoped slots first (the common case), then every pot-scoped
+  // candidate (P-003) — the request names only a targetOfferId, never which
+  // pot, so each active pot-scoped allotment is tried as its own scope.
+  const fleetSlot = opts.slots.find(
     (s) =>
       seatOfferId({
         fleetSlug: record.fleetSlug,
@@ -145,15 +178,33 @@ export function evaluateSpawnRequestTarget(opts: {
         devicePubkey: opts.selfDevicePubkey,
       }) === payload.targetOfferId,
   );
-  if (!slot) {
+  let matchedSlot: SeatSlot | null = fleetSlot ?? null;
+  let potMatch: { potSlug: string; audience: AllotmentAudience } | null = null;
+  if (!matchedSlot) {
+    for (const cand of opts.potSlots ?? []) {
+      const id = seatOfferId({
+        potSlug: cand.potSlug,
+        model: cand.slot.model,
+        effort: cand.slot.effort,
+        account: cand.slot.account || AUTO_ACCOUNT,
+        devicePubkey: opts.selfDevicePubkey,
+      });
+      if (id === payload.targetOfferId) {
+        matchedSlot = cand.slot;
+        potMatch = { potSlug: cand.potSlug, audience: cand.audience };
+        break;
+      }
+    }
+  }
+  if (!matchedSlot) {
     return {
       ok: false,
       code: 'seat_ref_unknown',
-      detail: `no active agent_slot delegation on this machine matches seat-offer ${payload.targetOfferId} for fleet ${record.fleetSlug} (revoked since, or a different device)`,
+      detail: `no active agent_slot delegation on this machine (fleet-scoped for ${record.fleetSlug}, or any pot-scoped donation) matches seat-offer ${payload.targetOfferId} (revoked since, or a different device)`,
       disposition: 'refused:seat_ref_unknown',
     };
   }
-  return { ok: true, slot, payload };
+  return { ok: true, slot: matchedSlot, payload, potMatch };
 }
 
 export interface SpawnMembersRequest {
@@ -215,6 +266,18 @@ export interface DelegatedSpawnHonorDeps {
    * federated receipt) when genuinely unfulfillable.
    */
   resolveHonorAccount?: (requestedAccount: string, workspaceId: string) => Promise<HonorAccountResolution>;
+  /**
+   * P-003 audience gate, 'trusted-members' case: is this GitHub user on THIS
+   * host's local trust list? Default {@link defaultIsTrustedUser} reads
+   * user-trust-list.ts (the same store `trust:add`/`trust:remove` back).
+   */
+  isTrustedUser?: (workspaceId: string, githubUserId: number) => Promise<boolean>;
+  /**
+   * P-003 audience gate, 'whole-pot' case: is this GitHub user a member of the
+   * named pot? Default {@link defaultIsPotMember} reads hive-membership-store.ts
+   * (harness_shared.pot_members).
+   */
+  isPotMember?: (workspaceId: string, potSlug: string, githubUserId: number) => Promise<boolean>;
   nowMs?: () => number;
   honorWindowMs?: number;
 }
@@ -222,6 +285,24 @@ export interface DelegatedSpawnHonorDeps {
 async function defaultResolveDevicePubkey(githubUserId: number): Promise<string> {
   const keypair = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(githubUserId));
   return keypair.pubkeyBase64;
+}
+
+/**
+ * P-003 default audience check, 'trusted-members' case — dynamic import keeps
+ * the trust-list module off this file's (sync-projection) import path until an
+ * honor actually needs it, mirroring the module's other lazy-load deps.
+ */
+async function defaultIsTrustedUser(workspaceId: string, githubUserId: number): Promise<boolean> {
+  const { listTrustedUsers } = await import('../trust/user-trust-list');
+  const trusted = await listTrustedUsers(workspaceId);
+  return trusted.some((t) => t.githubUserId === githubUserId);
+}
+
+/** P-003 default audience check, 'whole-pot' case. */
+async function defaultIsPotMember(workspaceId: string, potSlug: string, githubUserId: number): Promise<boolean> {
+  const { getHiveMember } = await import('../hive-membership-store');
+  const member = await getHiveMember(workspaceId, potSlug, githubUserId);
+  return member != null;
 }
 
 // ─── WI-5306: agent-runtime preflight ────────────────────────────────
