@@ -264,56 +264,83 @@ describe('AdvOverviewTab component', () => {
     expect(alerts.getAttribute('data-has-alerts')).toBe('true');
   });
 
-  it('renders live roster agents (dev.coordPresence) and recent activity (userActions.byHarness)', async () => {
-    nuqsState.slug = 'pot-a';
-    presenceResult = {
-      data: [
-        presenceRow({ ownerId: 'o1', intent: 'wiring the sync query', agentRole: 'worker', agoMs: 0 }),
-        presenceRow({ ownerId: 'o2', ownerLabel: 'architect-1', intent: '', agoMs: 120_000 }), // idle
-        presenceRow({ ownerId: 'o3', intent: 'gone', agoMs: 900_000 }), // stale-by-heartbeat
-        presenceRow({ ownerId: 'o4', ownerLabel: 'overwatch', agentRole: 'queen', intent: '', agoMs: 0 }),
-      ],
+  it('renders running roster agents (advRoster.list, server liveness) and coord-stream activity', async () => {
+    rosterResult = {
+      data: [{
+        active: [
+          rosterEntry({ ownerId: 'o1', intent: 'wiring the sync query', role: 'worker', liveness: 'live' }),
+          rosterEntry({ ownerId: 'o2', label: 'architect-1', intent: '', liveness: 'idle' }),
+          rosterEntry({ ownerId: 'o3', intent: 'gone', liveness: 'stale' }), // not running → excluded
+          rosterEntry({ ownerId: 'o4', intent: 'looping', liveness: 'stale', loopArmed: true }), // loop-armed → included
+        ],
+      }],
       loading: false,
     };
     activityResult = {
-      data: [actionRow({ id: 'act1', actor: 'worker', kind: 'tool', summary: 'listed the plans' })],
+      data: [feedRow({ msg_id: 'act1', from: 'worker', kind: 'message', summary: 'listed the plans' })],
       loading: false,
     };
     render(<AdvOverviewTab />);
     expect(await screen.findByText('wiring the sync query')).toBeTruthy();
-    expect(screen.getByText('architect-1')).toBeTruthy(); // ownerLabel fallback when no intent
-    expect(screen.getByText('Kettle')).toBeTruthy();
-    expect(screen.getByText('Mug')).toBeTruthy();
-    expect(screen.queryByText('overwatch')).toBeNull();
-    expect(screen.queryByText('queen')).toBeNull();
-    expect(screen.queryByText('gone')).toBeNull(); // stale (old heartbeat) filtered out
-    // 'worker' appears as both the roster role tag (agentRole) and the activity actor.
+    expect(screen.getByText('architect-1')).toBeTruthy(); // label fallback when no intent
+    expect(screen.getByText('looping')).toBeTruthy(); // isRunningAgent: stale-but-loop-armed stays
+    expect(screen.queryByText('gone')).toBeNull(); // stale + no loop → excluded
+    // 'worker' appears as both the roster role tag and the activity actor.
     expect(screen.getAllByText('worker').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('listed the plans')).toBeTruthy();
-    // A harness selected → the byHarness query runs, scoped to that harness + workspace
-    // (and the fleet-wide recent feed is NOT used).
-    expect(syncArgs['userActions.byHarness']).toMatchObject({
-      harnessSlug: 'pot-a',
-      workspaceId: 'ws-test',
-    });
-    expect(syncArgs['userActions.recent']).toBeUndefined();
   });
 
-  it('falls back to `kind` for an activity row with no summary', async () => {
-    nuqsState.slug = 'pot-a';
+  it('falls back to `kind` for an activity row with no summary/body', async () => {
     activityResult = {
-      data: [actionRow({ id: 'act2', actor: 'mug', kind: 'lifecycle', summary: null })],
+      data: [feedRow({ msg_id: 'act2', from: 'mug', kind: 'handoff', summary: null, body: null })],
       loading: false,
     };
     render(<AdvOverviewTab />);
-    expect(await screen.findByText('lifecycle')).toBeTruthy();
+    expect(await screen.findByText('handoff')).toBeTruthy();
     expect(screen.getByText('mug')).toBeTruthy();
   });
 
-  it('shows the Agents loading state while dev.coordPresence is in flight', () => {
-    presenceResult = { data: undefined, loading: true };
+  it('shows the Agents loading state while advRoster.list is in flight', () => {
+    rosterResult = { data: undefined, loading: true };
     render(<AdvOverviewTab />);
     expect(screen.getByText('Loading…')).toBeTruthy();
+  });
+
+  it('a plan row click deep-links the Plans tab to that plan (WI-5517)', async () => {
+    planListResult = {
+      data: { plans: [plan({ slug: 'auth', title: 'Auth refactor', status: 'active' })] },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    };
+    render(<AdvOverviewTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open plan Auth refactor' }));
+    await waitFor(() => expect(nuqsSetters.plan).toHaveBeenCalledWith('auth'));
+    expect(nuqsSetters.tab).toHaveBeenCalledWith('plans');
+  });
+
+  it('an agent row click opens the Agents-running dropdown focused on that agent (WI-5517)', async () => {
+    rosterResult = {
+      data: [{ active: [rosterEntry({ ownerId: 'su-abc', intent: 'building the thing', liveness: 'live' })] }],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    fireEvent.click(screen.getByRole('button', { name: /session history/ }));
+    await waitFor(() => expect(nuqsSetters.agentsFocus).toHaveBeenCalledWith('su-abc'));
+    expect(nuqsSetters.agentsRoster).toHaveBeenCalledWith(true);
+  });
+
+  it('an activity row click deep-links the event into Conversations → Raw events (WI-5517)', async () => {
+    activityResult = {
+      data: [feedRow({ msg_id: 'msg-9', from: 'worker', summary: 'finished WI-1' })],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open this event in Conversations' }));
+    await waitFor(() =>
+      expect(nuqsSetters.__states).toHaveBeenCalledWith({ conv: 'feed', fmsg: 'msg-9', fsys: 'all' }),
+    );
+    expect(nuqsSetters.tab).toHaveBeenCalledWith('conversations');
   });
 
   it('clicking a tile open button writes the target tab to the URL', () => {

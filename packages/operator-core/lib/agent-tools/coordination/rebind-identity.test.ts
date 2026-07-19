@@ -90,7 +90,13 @@ function fakeSql(opts: FakeOpts = {}) {
       return Promise.resolve(opts.fleetToLatest ? [opts.fleetToLatest] : []);
     }
     if (text.includes('UPDATE harness_shared.agent_fleets')) {
-      return Promise.resolve((opts.leaderSlugs ?? []).map((slug) => ({ slug })));
+      // Real column is `fleet_slug` (mig 417) — NOT a bare `slug`; the mock
+      // shape matches the real `RETURNING fleet_slug` so this fake can't mask
+      // a query that regresses to the wrong column name (WI-5386's real-DB
+      // regression test — rebind-identity-fleet-leadership.integration.test.ts
+      // — is what actually catches that class of bug; this mock's job is only
+      // to stay honest about the shape).
+      return Promise.resolve((opts.leaderSlugs ?? []).map((fleet_slug) => ({ fleet_slug })));
     }
     if (text.includes('DELETE FROM harness_shared.cup_claim_specs')) {
       return Promise.resolve(rows(opts.claimSpecDrop, { bee_id: FROM }));

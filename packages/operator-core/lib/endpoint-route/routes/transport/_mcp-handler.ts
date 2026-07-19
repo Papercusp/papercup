@@ -295,12 +295,19 @@ async function maybeRunWithDeltaProxy(input: {
         return adaptDeltaResponse(last);
       },
     );
-    if (!last || last.isError || out.mode === 'full') return last ?? input.runRaw(undefined, true);
-    const meta = resultDelta(last);
+    // Captured into a fresh const: `last` is a `let` reassigned inside the nested
+    // `dispatchWithConveyedDelta` callback above, and TS's control-flow narrowing
+    // does not carry that reassignment's type back out to this point — it was
+    // (mis)narrowing `last` to `never` here. A const doesn't have that ambiguity.
+    const finalResult: McpCallResult | null = last;
+    if (!finalResult || finalResult.isError || out.mode === 'full') {
+      return finalResult ?? input.runRaw(undefined, true);
+    }
+    const meta = resultDelta(finalResult);
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(out.rows) }],
       _meta: {
-        ...(last._meta ?? {}),
+        ...(finalResult._meta ?? {}),
         delta: {
           ...(meta ?? {}),
           mode: 'full',

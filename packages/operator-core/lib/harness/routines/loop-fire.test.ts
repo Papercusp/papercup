@@ -27,7 +27,6 @@ function mkDeps(
     | 'wake'
     | 'costCap'
     | 'getLoopCarryNoteWithMeta'
-    | 'deactivateLoop'
     | 'readFireCount'
     | 'incrementFireCount'
     | 'findWakeRecipe'
@@ -48,7 +47,6 @@ function mkDeps(
     })) as never,
     costCap: vi.fn(async () => ({ breach: false, spendCents: 0, capCents: null })) as never,
     getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: null, updatedAtMs: null })) as never,
-    deactivateLoop: vi.fn(async () => true) as never,
     readFireCount: vi.fn(async () => 0) as never,
     incrementFireCount: vi.fn(async () => {}) as never,
     findWakeRecipe: vi.fn(async () => null) as never,
@@ -449,7 +447,6 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
       wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })) as never,
       readFireCount: vi.fn(async () => 2) as never,
       incrementFireCount: incrementFireCount as never,
-      deactivateLoop: vi.fn(async () => true) as never,
     });
     const res = await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'cold' } }, deps);
     expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
