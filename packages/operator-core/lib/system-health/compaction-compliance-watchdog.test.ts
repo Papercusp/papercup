@@ -64,6 +64,7 @@ vi.mock('../compaction-usage', () => ({
   resolveModelSpecForOwner: specMock,
   detectContextDeathForOwner: deathMock,
   resolveSessionRef: resolveSessionRefMock,
+  resolveLaunchCompactionLimitForOwner: resolveLaunchLimitMock,
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
@@ -160,6 +161,7 @@ beforeEach(() => {
   setEstimateMock.mockResolvedValue(undefined);
   setLimitMock.mockResolvedValue(undefined);
   deathMock.mockResolvedValue(false);
+  resolveLaunchLimitMock.mockResolvedValue(null);
   openEscalationMock.mockResolvedValue({ msg_id: 'esc-1' });
   // Keep the existing gauge + force rung ON, but the shared P-017/P-018 cutover
   // OFF by default. Individual carry tests opt in explicitly.

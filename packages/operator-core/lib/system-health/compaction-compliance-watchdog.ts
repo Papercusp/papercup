@@ -785,7 +785,13 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         // brief the member had to obey by hand.
         const fromLaunch = await resolveLaunchCompactionLimitForOwner(r.owner_id);
         const fromSpawn = await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu, fleetMember);
-        const spec = await resolveModelSpecForOwner(r.owner_id);
+        // The fs/argv resolver does real I/O — only pay for it when its result is
+        // actually needed: the explicit-launch-limit clamp always needs the spec's
+        // window, but a resolved spawn-record default needs no further lookup at
+        // all (D-006 honor leg — "the fs/argv resolver only ran for the
+        // record-less owner").
+        const needsSpec = fromLaunch != null || fromSpawn == null;
+        const spec = needsSpec ? await resolveModelSpecForOwner(r.owner_id) : null;
         const limit =
           fromLaunch != null
             ? clampCompactionLimit(fromLaunch, spec, { fleetMember })

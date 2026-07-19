@@ -34,8 +34,25 @@ const BUCKET_TIMEOUT_MS = 4000;
  * abort. Cap the aggregate disk walk here; over-budget categories return partial
  * sizes with a note. Comfortably under the 300s idle limit even with the PG
  * phase (≤ ~6 × 4s).
+ *
+ * This is the READ-PATH default, and it stays 20s: it is what the flag-OFF
+ * inline fallback uses, where a user is waiting.
  */
 const DISK_BUDGET_MS = 20_000;
+
+/**
+ * The budget used when this runs OFF the read path — from the
+ * `system:precompute-derived-reads` routine, where nobody is waiting on the
+ * result (precompute-derived-sync-reads-2026-07-19 P-003).
+ *
+ * Deliberately NOT unbounded. The plan item said to delete the budget outright
+ * now that the walk is off the read path, but EI-6045's budget guards the EVENT
+ * LOOP, not just read latency — a recursive walk that blocks for minutes is just
+ * as harmful inside a routine as inside a resolver, it merely stalls the operator
+ * instead of one panel. Raising it (rather than removing it) buys complete,
+ * accurate sizes on a large store while keeping the stall bounded.
+ */
+const DISK_BUDGET_PRECOMPUTE_MS = 120_000;
 
 /** A cumulative slice: rows/entries strictly older than `olderThanDays`. A null
  *  threshold is the TOTAL (everything — the "trim all" target). */
@@ -216,21 +233,26 @@ function computeDiskUsage(
     description: cat.description,
     // Sizes are partial when the shared disk-walk budget was exhausted (EI-6045).
     note: budget?.truncated
-      ? `disk sizes are partial (sizing budget of ${DISK_BUDGET_MS}ms exceeded on a large store)`
+      ? `disk sizes are partial (sizing budget exceeded on a large store)`
       : undefined,
   };
 }
 
 /** Compute usage for every category. Sequential (gentle on the DB); a failing
  *  category degrades to size-only with a note rather than failing the page. */
-export async function computeStorageUsage(opts: { sizesOnly?: boolean } = {}): Promise<StorageUsageRow[]> {
+export async function computeStorageUsage(
+  opts: { sizesOnly?: boolean; offReadPath?: boolean } = {},
+): Promise<StorageUsageRow[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql as unknown as Sql;
   const out: StorageUsageRow[] = [];
   // One shared wall-clock budget for the whole synchronous disk-sizing pass so
-  // the aggregate `du` walk can never block the event loop past DISK_BUDGET_MS
-  // (EI-6045). Over-budget categories degrade to partial sizes with a note.
-  const diskBudget: DiskWalkBudget = { deadlineMs: Date.now() + DISK_BUDGET_MS };
+  // the aggregate `du` walk can never block the event loop (EI-6045).
+  // Over-budget categories degrade to partial sizes with a note. `offReadPath`
+  // (the precompute routine) gets the larger budget — no user is waiting there,
+  // so the walk can finish and report complete sizes.
+  const budgetMs = opts.offReadPath ? DISK_BUDGET_PRECOMPUTE_MS : DISK_BUDGET_MS;
+  const diskBudget: DiskWalkBudget = { deadlineMs: Date.now() + budgetMs };
   for (const cat of STORAGE_CATEGORIES) {
     if (cat.kind === 'pg') {
       out.push(await computePgUsage(sql, cat, opts));

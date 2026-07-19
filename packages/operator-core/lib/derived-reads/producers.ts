@@ -32,9 +32,10 @@ registerDerivedRead({
   scope: 'workspace',
   compute: async () => {
     const { computeStorageUsage } = await import('../storage/usage');
-    // No `sizesOnly` and no budget: this is off the read path now, so it takes
-    // the time it takes and returns complete numbers.
-    return computeStorageUsage();
+    // `offReadPath` raises the disk-walk budget: nobody is waiting on this, so
+    // the walk can finish and report complete sizes instead of the partial ones
+    // the 20s read-path budget produced on a large store.
+    return computeStorageUsage({ offReadPath: true });
   },
 });
 

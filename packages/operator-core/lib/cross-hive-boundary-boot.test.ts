@@ -195,6 +195,22 @@ describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
     expect(KEYHEALTH.cleared).toContainEqual({ workspaceId: WS, potSlug: 'ok' });
   });
 
+  it('a phantom entry with a missing potId is skipped WITHOUT touching the identity path (EI-13207)', async () => {
+    // A legacy/out-of-band row could still slip past saveOwnedHiveMeta's guard
+    // and reach the reconcile with potId undefined/empty — it must be filtered
+    // BEFORE loadPubkey/signalOwnedHiveKeyMissing, never stringified into a
+    // phantom "workspace/undefined" owner-key alarm.
+    const phantom = { ...meta('ok', 'public'), potId: undefined as unknown as string };
+    const f = fixture([phantom, meta('ok', 'public')]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await ensureCrossHiveBoundariesWired(WS, f.opts);
+    expect(res.wired).toEqual(['ok']);
+    expect(res.skipped).toEqual([]);
+    expect(KEYHEALTH.missing).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('missing/invalid potId'));
+    warn.mockRestore();
+  });
+
   it('a hive-listing failure leaves existing boundaries untouched', async () => {
     const f = fixture([meta('a', 'public')]);
     await ensureCrossHiveBoundariesWired(WS, f.opts);

@@ -251,6 +251,15 @@ import './telemetry-retention-action';
 // housekeeping over the routine's OWN already-terminal runs, no owner-authority
 // surface.
 import './gc-plan-runs-action';
+// `system:precompute-derived-reads` — the cadence behind the derived-read substrate
+// (precompute-derived-sync-reads-2026-07-19, WI-5460). Computes the three expensive
+// derived sync reads (storage.usage 20.0s, plans.lint 13.8s, learning.soakReport
+// 27.3s when measured inline) into harness_shared.derived_read_snapshots so their
+// resolvers become plain SELECTs instead of blocking a user-facing page load.
+// Pure derived-data maintenance — no agent, no LLM, no owner-authority surface —
+// so seeded ACTIVE by default (seed-precompute-derived-reads-routine.ts), same
+// class as gc-plan-runs.
+import './precompute-derived-reads-action';
 // `system:doc-anchor-reconcile` — periodic FULL doc-anchor reconcile (#5 PART B): the safety net for
 // the git-sync re-anchor-on-change path. Re-derives anchors from CURRENT frontmatter for all
 // anchor-derived docs so a stale anchor cache that slipped past re-anchor-on-change is caught. Pure

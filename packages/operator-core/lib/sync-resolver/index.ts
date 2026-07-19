@@ -4157,12 +4157,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       hive: z.string().max(120).optional(),
       windowHours: z.number().int().min(12).max(24).optional(),
     }),
+    // PRECOMPUTED (P-005) — the audit's worst offender at 27.3s. The journal read
+    // is host-global but sat inside this per-pot fan-out, so ~12 hives meant ~24
+    // concurrent journalctl scans of a 1.2GB journal per Learnings-tab load.
+    //
+    // The Learnings tab calls this with `args: {}`, which the precompute covers.
+    // A hive/windowHours DRILL-DOWN is off the panel path: a hive filter is served
+    // from the snapshot (same data, just narrowed), while an explicit non-default
+    // windowHours must be computed live because the snapshot holds the default
+    // window and serving it under a different label would be silently wrong.
     resolve: async (args) => {
       const hive = typeof (args as { hive?: unknown })?.hive === 'string' ? (args as { hive: string }).hive : undefined;
       const windowHours =
         typeof (args as { windowHours?: unknown })?.windowHours === 'number'
           ? (args as { windowHours: number }).windowHours
           : undefined;
+      if (windowHours === undefined) {
+        try {
+          const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+          await import('../derived-reads/producers');
+          const rows = await readDerivedSnapshotRows<{ hives?: unknown[] }>('learning.soakReport');
+          const all = (rows[0]?.hives ?? []) as Array<{ potSlug?: string }>;
+          return [{ ...rows[0], hives: hive ? all.filter((r) => r?.potSlug === hive) : all }];
+        } catch (err) {
+          console.warn('[learning.soakReport] snapshot read failed:', err instanceof Error ? err.message : err);
+          return [{ hives: [] }];
+        }
+      }
       try {
         const { listPots } = await import('../agent-tools/pot/_resolve');
         const { activeWorkspaceId } = await import('../workspace-registry');

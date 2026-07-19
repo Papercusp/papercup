@@ -15,6 +15,50 @@ import { serializeJsonResponse } from '../../../cpu-task-worker';
 // today's {rows, version} slot (byte-identical). Inert until the client opts in.
 interface BatchQuery { name: string; args?: unknown; delta?: string }
 
+/**
+ * Per-slot wall-clock budget (precompute-derived-sync-reads-2026-07-19 P-006).
+ *
+ * THE AMPLIFIER THIS REMOVES: the batch resolves with `Promise.all`, so the
+ * response waits for its SLOWEST member. Per-slot error handling already existed,
+ * but a slot that is merely SLOW still held every other panel's data hostage —
+ * a 27s `learning.soakReport` made an unrelated rubrics panel in the same batch
+ * feel like a 27s panel (measured, WI-5460).
+ *
+ * With a per-slot timeout, one pathological query degrades to its OWN error slot
+ * and every other panel renders on time. This is the systemic half of the fix:
+ * precompute removed today's three offenders, but without this bound the NEXT
+ * slow resolver anyone adds recreates the identical symptom.
+ *
+ * 8s is well above every healthy resolver measured in the audit (the slowest
+ * non-offender was 1.87s) and well below the point a user calls the app hung.
+ */
+const SLOT_TIMEOUT_MS = 8_000;
+
+/** Resolve `p`, or reject with a timeout marker after SLOT_TIMEOUT_MS. */
+async function withSlotTimeout<T>(name: string, p: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `query "${name}" exceeded ${SLOT_TIMEOUT_MS}ms — slot timed out so the rest of the batch could return`,
+              ),
+            ),
+          SLOT_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    // Always clear: an un-cleared timer keeps the event loop alive and, on a fast
+    // path, leaks one handle per batched query per poll (~every 3s).
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export default defineTool({
   method: 'POST',
   path: '/zero-harness/rest-query-batch',
@@ -51,7 +95,9 @@ export default defineTool({
           // P-022 cutover (2026-05-25): legacy fall-through removed.
           // NAME_NOT_FOUND in batch context returns an error per-slot
           // rather than the legacy resolver path.
-          const v2 = await resolveNamedQueryV2(q.name, q.args ?? {});
+          // Bounded per slot: a slow resolver returns its own error rather than
+          // delaying every other panel in this batch (see SLOT_TIMEOUT_MS).
+          const v2 = await withSlotTimeout(q.name, resolveNamedQueryV2(q.name, q.args ?? {}));
           if (v2 === NAME_NOT_FOUND) {
             return { error: `unknown queryName: ${q.name}` };
           }

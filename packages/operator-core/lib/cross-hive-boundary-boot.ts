@@ -153,7 +153,25 @@ async function reconcileWorkspace(
     return out;
   }
 
-  const published = metas.filter((m) => m.visibility !== 'private');
+  // Defense-in-depth (EI-13207): saveOwnedHiveMeta now refuses to persist an
+  // entry with a missing potId, but a legacy/out-of-band row could still slip
+  // one through — never let an undefined slug reach the identity path below
+  // (it used to stringify to the literal "papercusp-workspace/undefined" and
+  // fire the owner-key-missing alarm forever for a phantom hive).
+  const validMetas: HiveDirectoryMeta[] = [];
+  for (const m of metas) {
+    if (!m.potId || typeof m.potId !== 'string') {
+
+      console.warn(
+        `[cross-hive-boot] skipping owned-hive entry with a missing/invalid potId for workspace ${workspaceId}: ` +
+          `${JSON.stringify(m.potId)} — this is a phantom registry row, not a real hive.`,
+      );
+      continue;
+    }
+    validMetas.push(m);
+  }
+
+  const published = validMetas.filter((m) => m.visibility !== 'private');
   const publishedSlugs = new Set(published.map((m) => m.potId));
 
   // 1. Tear down boundaries whose Hive is no longer published — private Hives
