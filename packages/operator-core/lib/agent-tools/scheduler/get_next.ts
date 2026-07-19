@@ -24,6 +24,7 @@ import {
   getActiveClaimsForBee,
 } from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
+import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
@@ -293,6 +294,42 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // EI-16057: an unresolvable `harness` (a workspace id passed by mistake, a typo,
+    // a slug from the wrong workspace) must fail LOUD, before anything else runs.
+    // Left unchecked, it silently matches zero rows in the claim query — a fleet
+    // member sees that as `windDown:true`, the SAME authoritative "your lane is
+    // genuinely drained" signal a real empty queue produces (fleetScopedMiss below),
+    // so the member ends its loop and reports a false all-clear to its leader. Resolve
+    // the harness against the registry FIRST: an unregistered slug returns a plain
+    // invalid_input naming both the bad value and the known slugs, and — critically —
+    // never sets windDown. Cached read (loadHarnessRegistry); a read hiccup fails
+    // OPEN (treated as "can't verify, don't block") rather than ever wedging a
+    // legitimate claim on a registry blip.
+    const registry = await loadHarnessRegistry(
+      ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined,
+    ).catch(() => null);
+    if (registry && !registry.projects.some((p) => p.slug === args.harness)) {
+      const knownSlugs = registry.projects.map((p) => p.slug).slice(0, 30);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'invalid_input',
+              reason: 'harness_not_found',
+              message:
+                `harness '${args.harness}' does not resolve to a registered harness in this workspace — ` +
+                'pass the harness SLUG (e.g. \'papercusp\'), not a workspace id or typo; see harness:list for ' +
+                'valid slugs. This is a scope/argument problem, not a drained queue, so it is reported as ' +
+                'invalid_input and windDown is never set for it.',
+              passedHarness: args.harness,
+              knownHarnesses: knownSlugs,
+            }),
+          },
+        ],
+      };
+    }
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;

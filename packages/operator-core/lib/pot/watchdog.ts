@@ -317,8 +317,15 @@ export interface WatchdogBackoffDecision {
   effectiveWindowHours: number;
 }
 
-/** PURE (no DB, no clock — `now` is an arg): decide whether an unchanged premise should
- *  still be suppressed under geometric backoff. `last` is the most recent fire recorded
+/** PURE (no DB, no clock — `now` is an arg): decide whether this fire should be
+ *  suppressed. The BASE window always applies from the last fire regardless of its
+ *  reason (byte-identical to every existing caller's debounce today — many callers'
+ *  `reason` embeds a live counter/timestamp that legitimately drifts every tick, e.g.
+ *  autoloop-chronic-failure's `consecutive_errors`, and must stay debounced to its base
+ *  window regardless of that drift). Geometric backoff is a strictly ADDITIVE widening
+ *  on top of the base window, engaged ONLY when the reason is byte-identical to the
+ *  last fire — a changed reason resets the streak and falls back to the base window,
+ *  never below it and never skipped outright. `last` is the most recent fire recorded
  *  for this exact (workspaceId, installSlug, source) key, or null if none exists yet. */
 export function computeWatchdogBackoff(args: {
   now: number;
@@ -328,20 +335,23 @@ export function computeWatchdogBackoff(args: {
   reason: string;
 }): WatchdogBackoffDecision {
   const baseWindowHours = Number.isFinite(args.baseWindowHours) && args.baseWindowHours > 0 ? args.baseWindowHours : 1;
-  if (!args.last || args.last.reason !== args.reason) {
-    // No prior fire, or the premise genuinely changed — never suppress a fresh signal;
-    // the streak resets to 1 (this fire, if it proceeds, is the new streak's first).
+  if (!args.last) {
     return { skip: false, repeatCount: 1, effectiveWindowHours: baseWindowHours };
   }
-  const repeatCount = args.last.repeatCount + 1;
+  const unchanged = args.last.reason === args.reason;
+  const repeatCount = unchanged ? args.last.repeatCount + 1 : 1;
   // Double the window per consecutive identical repeat, capped so a chronic stuck alarm
   // still surfaces at least once per capHours rather than eventually falling silent.
-  // `- 1` on the exponent so the FIRST repeat (repeatCount=2) still uses baseWindowHours
+  // `- 2` on the exponent so the FIRST repeat (repeatCount=2) still uses baseWindowHours
   // (a single re-confirmation isn't yet "chronic"); clamp the exponent itself so a
-  // years-long streak can't overflow `2 ** n` before the outer cap even applies.
+  // years-long streak can't overflow `2 ** n` before the outer cap even applies. A
+  // CHANGED reason (unchanged=false) never escalates — it's exactly the base window,
+  // matching every existing caller's pre-EI-16038 debounce behavior.
   const exponent = Math.min(Math.max(0, repeatCount - 2), 30);
   const capHours = Number.isFinite(args.capHours) && args.capHours > 0 ? args.capHours : 24;
-  const effectiveWindowHours = Math.min(baseWindowHours * 2 ** exponent, Math.max(capHours, baseWindowHours));
+  const effectiveWindowHours = unchanged
+    ? Math.min(baseWindowHours * 2 ** exponent, Math.max(capHours, baseWindowHours))
+    : baseWindowHours;
   const elapsedHours = (args.now - args.last.firedAtMs) / 3_600_000;
   return { skip: elapsedHours < effectiveWindowHours, repeatCount, effectiveWindowHours };
 }
@@ -442,19 +452,38 @@ export async function claimWatchdogFire(opts: {
       // conditions sharing (workspaceId, installSlug, source) never serialize
       // on the same advisory lock.
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${workspaceId}::${installSlug}::${source}::${scopeKey ?? ''}`}, 0))`;
-      const rows = await tx<Array<{ n: number }>>`
-        SELECT count(*)::int AS n FROM harness_shared.pot_watchdog_fires
+      // EI-16038: fetch the single most recent matching fire (not just a count) so
+      // computeWatchdogBackoff can tell whether it is byte-identical to this one and
+      // widen the required quiet window geometrically when it is (a stuck alarm on an
+      // unchanged premise) — see the module doc above claimWatchdogFire. Equivalent to
+      // the prior count(*)-within-window check when the reason differs or repeats
+      // haven't accrued: fired_at is monotonically increasing (append-only ledger), so
+      // "the latest matching row is within windowHours" ⇔ "any matching row is".
+      const rows = await tx<Array<{ reason: string; fired_at: Date; repeat_count: number }>>`
+        SELECT reason, fired_at, repeat_count FROM harness_shared.pot_watchdog_fires
         WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
-          AND fired_at > now() - make_interval(hours => ${windowHours})
           AND source = ${source}
-          AND ${scopeKey ? sql`reason LIKE ${`%${scopeKey}%`}` : sql`TRUE`}`;
-      if (Number(rows[0]?.n ?? 0) > 0) return false;
+          AND ${scopeKey ? sql`reason LIKE ${`%${scopeKey}%`}` : sql`TRUE`}
+        ORDER BY fired_at DESC
+        LIMIT 1`;
+      const lastRow = rows[0];
+      const decision = computeWatchdogBackoff({
+        now: Date.now(),
+        baseWindowHours: windowHours,
+        capHours: watchdogBackoffCapHours(),
+        last: lastRow
+          ? { reason: lastRow.reason, firedAtMs: new Date(lastRow.fired_at).getTime(), repeatCount: lastRow.repeat_count ?? 1 }
+          : null,
+        reason: opts.reason,
+      });
+      if (decision.skip) return false;
       await tx`
         INSERT INTO harness_shared.pot_watchdog_fires
-          (workspace_id, install_slug, source, reason, wake_at, demand)
+          (workspace_id, install_slug, source, reason, wake_at, demand, repeat_count)
         VALUES (
           ${workspaceId}, ${installSlug}, ${source}, ${opts.reason},
-          ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::text::jsonb
+          ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::text::jsonb,
+          ${decision.repeatCount}
         )`;
       return true;
     });

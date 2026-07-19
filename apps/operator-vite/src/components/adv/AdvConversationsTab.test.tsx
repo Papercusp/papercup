@@ -699,10 +699,13 @@ describe('AdvConversationsTab — unified communication views', () => {
       archived_at: null, total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 2,
     }]);
 
-    render(<AdvConversationsTab />);
+    const { container } = render(<AdvConversationsTab />);
 
     expect(screen.getByText('older agent chat remains discoverable')).toBeTruthy();
-    expect(screen.getByText('103')).toBeTruthy();
+    // The rail header count reflects every merged row. (A facet chip's live
+    // count may coincide with this number, so scope to the rail-head total.)
+    const railHead = container.querySelector('.pc-advconv__railhead--unified');
+    expect(railHead?.querySelector('strong')?.textContent).toBe('103');
   });
 
   it('Deliberations view lists threads and opens its posts', async () => {
@@ -784,10 +787,15 @@ describe('AdvConversationsTab — unified communication views', () => {
         ],
       },
     });
-    render(<AdvConversationsTab />);
+    const { container } = render(<AdvConversationsTab />);
     expect(await screen.findByText('implement the auth refactor')).toBeTruthy();
     expect(screen.getAllByText('worker').length).toBeGreaterThan(0);
-    expect(screen.getByText('Agent chat')).toBeTruthy();
+    // "Agent chat" appears as a list kind-pill (the facet chips carry the same
+    // label now, so scope to the list pills).
+    const kindPills = Array.from(
+      container.querySelectorAll('.pc-advconv__unified-kind'),
+    ).map((el) => el.textContent);
+    expect(kindPills).toContain('Agent chat');
     expect(screen.queryByText('Agent Chat Sessions')).toBeNull();
   });
 
@@ -991,7 +999,8 @@ describe('AdvConversationsTab — unified communication views', () => {
     });
     render(<AdvConversationsTab />);
     expect(await screen.findByText('pick up the UI work')).toBeTruthy();
-    expect(screen.getByText('architect')).toBeTruthy();
+    // 'architect' shows as the row sender (and now also as a Sender facet chip).
+    expect(screen.getAllByText('architect').length).toBeGreaterThan(0);
     expect(screen.getByText('→ worker')).toBeTruthy();
   });
 
@@ -1204,12 +1213,16 @@ describe('AdvConversationsTab — picker-kit adoption', () => {
 
   it('searches the unified projection and exposes the shared advanced filter bar', () => {
     nuqsState.cq = 'watchdog';
-    render(<AdvConversationsTab />);
+    const { container } = render(<AdvConversationsTab />);
     expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveProperty('value', 'watchdog');
     expect(screen.getByText('why does the watchdog recycle the host?')).toBeTruthy();
     expect(screen.queryByText('pick up the UI work')).toBeNull();
     expect(screen.getByText('1 of 2')).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: /column filter/i })).toBeTruthy();
+    // The shared filter bar renders as always-visible facet chip-groups
+    // (layout="facets"), not the collapsed "Add filter…" combobox.
+    const facetBar = container.querySelector('.pc-advpanel__filterbar--facets');
+    expect(facetBar).toBeTruthy();
+    expect(facetBar!.querySelectorAll('.pc-advpanel__chip').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy();
   });
 });

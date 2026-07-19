@@ -148,6 +148,112 @@ describe('<ColumnFilterBar />', () => {
   });
 });
 
+// layout="facets": every filterable column is ALWAYS visible — a bounded enum as
+// inline value chips with live counts, a high-cardinality/non-enum column as one
+// picker-chip that opens the shared popover editor. Opt-in; the default
+// (compact) behaviour above is unchanged.
+describe('<ColumnFilterBar /> — facets layout', () => {
+  type FRow = { kind: string; owner: string };
+  const kindCol: FilterableColumn<FRow> = { key: 'kind', header: 'Kind', filter: { type: 'enum', accessor: (r) => r.kind } };
+  const ownerCol: FilterableColumn<FRow> = { key: 'owner', header: 'Owner', filter: { type: 'enum', accessor: (r) => r.owner } };
+  const nameCol: FilterableColumn<FRow> = { key: 'name', header: 'Name', filter: { type: 'text', accessor: () => '' } };
+
+  function facetController(o: {
+    cols: FilterableColumn<FRow>[];
+    optionsByKey?: Record<string, EnumOption[]>;
+    valueByKey?: Record<string, ColumnFilterValue>;
+    setValue?: (k: string, v: ColumnFilterValue) => void;
+  }) {
+    return {
+      filterableColumns: o.cols,
+      valueFor: (k: string) => o.valueByKey?.[k],
+      setValue: o.setValue ?? (() => {}),
+      remove: () => {},
+      optionsFor: (k: string) => o.optionsByKey?.[k] ?? [],
+    };
+  }
+  const opt = (value: string, count = 1): EnumOption => ({ value, count });
+
+  it('renders a bounded enum column as inline value chips with counts + a group label', () => {
+    render(
+      <ColumnFilterBar
+        layout="facets"
+        controller={facetController({ cols: [kindCol], optionsByKey: { kind: [opt('Bug', 3), opt('Change', 5)] } })}
+        activeChips={[]} hasActive={false} clearAll={() => {}}
+      />,
+    );
+    expect(screen.getByText('Kind')).toBeTruthy(); // group label
+    expect(screen.getByRole('button', { name: /Bug/ })).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy(); // live count
+    expect(screen.getByText('5')).toBeTruthy();
+    // No Add-filter combobox in facets layout.
+    expect(screen.queryByTestId('add-filter-select')).toBeNull();
+  });
+
+  it('toggles a value chip on via setValue (multi-select add)', () => {
+    const setValue = vi.fn();
+    render(
+      <ColumnFilterBar
+        layout="facets"
+        controller={facetController({ cols: [kindCol], optionsByKey: { kind: [opt('Bug'), opt('Change')] }, valueByKey: { kind: [] }, setValue })}
+        activeChips={[]} hasActive={false} clearAll={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Bug/ }));
+    expect(setValue).toHaveBeenCalledWith('kind', ['Bug']);
+  });
+
+  it('marks a selected value chip aria-pressed and toggles it back off', () => {
+    const setValue = vi.fn();
+    render(
+      <ColumnFilterBar
+        layout="facets"
+        controller={facetController({ cols: [kindCol], optionsByKey: { kind: [opt('Bug'), opt('Change')] }, valueByKey: { kind: ['Bug'] }, setValue })}
+        activeChips={[{ colKey: 'kind', label: 'Kind: Bug', clear: () => {} }]} hasActive clearAll={() => {}}
+      />,
+    );
+    const bug = screen.getByRole('button', { name: /Bug/ });
+    expect(bug.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(bug);
+    expect(setValue).toHaveBeenCalledWith('kind', []); // removed
+  });
+
+  it('collapses a high-cardinality enum (> inlineMax) to one picker-chip, not inline values', () => {
+    const many = Array.from({ length: 12 }, (_, i) => opt(`owner-${i}`));
+    render(
+      <ColumnFilterBar
+        layout="facets"
+        controller={facetController({ cols: [ownerCol], optionsByKey: { owner: many } })}
+        activeChips={[]} hasActive={false} clearAll={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /Owner/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /owner-0/ })).toBeNull();
+  });
+
+  it('renders a non-enum (text) column as a picker-chip', () => {
+    render(
+      <ColumnFilterBar
+        layout="facets"
+        controller={facetController({ cols: [nameCol] })}
+        activeChips={[]} hasActive={false} clearAll={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /Name/ })).toBeTruthy();
+  });
+
+  it('still surfaces Clear all when a filter is active', () => {
+    render(
+      <ColumnFilterBar
+        layout="facets"
+        controller={facetController({ cols: [kindCol], optionsByKey: { kind: [opt('Bug')] }, valueByKey: { kind: ['Bug'] } })}
+        activeChips={[{ colKey: 'kind', label: 'Kind: Bug', clear: () => {} }]} hasActive clearAll={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /clear all/i })).toBeTruthy();
+  });
+});
+
 // The enum-editor enhancement: a fixed-set column (e.g. plans) renders a
 // SELECTABLE checklist, and once the option set is long it also grows an
 // in-list search so the list stays usable.

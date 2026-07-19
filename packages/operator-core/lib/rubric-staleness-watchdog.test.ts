@@ -118,6 +118,59 @@ describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => 
     expect(d.openEscalation).not.toHaveBeenCalled();
   });
 
+  it('passes the rubricId as scopeKey to recentWatchdogFires — the per-rubric debounce dimension (EI-16071)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const d = deps();
+    await rubricStalenessSweep({}, d);
+    warn.mockRestore();
+    expect(d.recentWatchdogFires).toHaveBeenCalledWith(
+      'papercusp-workspace',
+      'papercusp',
+      expect.any(Number),
+      'rubric-staleness',
+      'blender-release-readiness',
+    );
+  });
+
+  it('EI-16071: TWO simultaneously-stale gating rubrics BOTH alert — the source-only debounce key no longer lets the first rubric silently suppress the second', async () => {
+    const rubricA = { rubricId: 'blender-release-readiness', releaseGating: true, status: 'active' } as unknown as Rubric;
+    const rubricB = { rubricId: 'autoloop-release-readiness', releaseGating: true, status: 'active' } as unknown as Rubric;
+    // A tiny in-memory ledger that mirrors the REAL SQL semantics being fixed:
+    // recentWatchdogFires counts fires matching `source` AND (scopeKey ⇒ reason
+    // includes it) — same contract as the `reason LIKE '%scopeKey%'` filter added
+    // to watchdog.ts. This is what makes the test actually exercise the fix: with
+    // the OLD (pre-fix) sweep, which never passed a scopeKey, rubricB's check
+    // would see rubricA's just-recorded fire (same source, no scope) and debounce.
+    const ledger: Array<{ source: string; reason: string }> = [];
+    const recentWatchdogFires = vi.fn(
+      async (
+        _ws: string,
+        _slug: string,
+        _windowHours: number,
+        source?: string,
+        scopeKey?: string,
+      ) =>
+        ledger.filter((f) => (!source || f.source === source) && (!scopeKey || f.reason.includes(scopeKey))).length,
+    );
+    const recordFire = vi.fn(async (opts: { source: string; reason: string }) => {
+      ledger.push({ source: opts.source, reason: opts.reason });
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const d = deps({
+      listRubrics: vi.fn(async () => [rubricA, rubricB]),
+      recentWatchdogFires,
+      recordFire,
+    });
+    const results = await rubricStalenessSweep({}, d);
+    warn.mockRestore();
+    expect(results).toEqual([
+      { rubricRef: 'blender-release-readiness', outcome: 'alerted', reason: expect.any(String) },
+      { rubricRef: 'autoloop-release-readiness', outcome: 'alerted', reason: expect.any(String) },
+    ]);
+    expect(d.recordFire).toHaveBeenCalledTimes(2);
+    expect(d.openEscalation).toHaveBeenCalledTimes(2);
+  });
+
   it('is fail-soft per rubric — a freshness read error is recorded, never thrown', async () => {
     const d = deps({
       checkScorecardFreshness: vi.fn(async () => {

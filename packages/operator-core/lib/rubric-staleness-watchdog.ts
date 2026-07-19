@@ -144,11 +144,13 @@ export async function rubricStalenessSweep(
           results.push({ rubricRef: rubric.rubricId, outcome: 'healthy', reason: verdict.reason });
           continue;
         }
-        // Debounce: one alert per rubric per threshold window. The fires ledger is
-        // keyed by source, so the per-rubric scope rides the reason prefix match —
-        // conservative (any rubric-staleness fire in-window suppresses re-fires for
-        // rubrics sharing the install), which is the right failure direction for an
-        // alert channel: never a page storm.
+        // Debounce: one alert per RUBRIC per threshold window (EI-16071). scopeKey
+        // narrows the fires-ledger check to fires whose reason names THIS rubric
+        // (evaluateRubricStaleness always quotes rubric.rubricId in its reason) —
+        // without it, the debounce key was source-only, so the first stale rubric
+        // in iteration order suppressed every OTHER stale rubric for the rest of
+        // the window, degrading coverage to exactly one rubric per window no
+        // matter how many gating rubrics exist.
         const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
         const firedRecently =
           (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
@@ -156,6 +158,7 @@ export async function rubricStalenessSweep(
             installSlug,
             windowHours,
             'rubric-staleness',
+            rubric.rubricId,
           )) > 0;
         if (firedRecently) {
           results.push({ rubricRef: rubric.rubricId, outcome: 'debounced', reason: 'fires-ledger debounce' });

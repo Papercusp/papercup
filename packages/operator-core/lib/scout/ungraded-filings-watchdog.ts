@@ -41,7 +41,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
 import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
-import { recentWatchdogFires, recordFire } from '../pot/watchdog';
+import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
 
 // ── tunables (env-overridable, like scoutDraftReviewStaleSec) ─────────────────
 
@@ -256,19 +256,27 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
         const candidates = await readUngradedSuFilings(sql, workspaceId, installSlug);
         const stale = selectUngradedFilings(candidates, { now, thresholdMs });
         if (stale.length === 0) continue;
+        // EI-16038: cheap non-atomic pre-check first (avoid the transaction round-trip
+        // on the common no-stale-filings tick); the atomic claim below is authoritative.
         const alreadyFiredRecently =
           (await recentWatchdogFires(workspaceId, installSlug, windowHours, 'su-ideate-ungraded')) > 0;
         if (!shouldNudgeMug({ staleCount: stale.length, alreadyFiredRecently })) {
           results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced' });
           continue;
         }
-        const mugOwner = await resolveMugOwner(sql, workspaceId, installSlug);
         const reason =
           `${stale.length} su-ideate filing(s) ungraded > ${days}d: ` +
           stale.slice(0, 5).map((s) => s.ideaId).join(', ');
+        // EI-6777/EI-16038: claim the atomic debounce slot (closes the race the old
+        // recentWatchdogFires+recordFire pattern had, and backs off geometrically once
+        // this exact reason has repeated) BEFORE nudging — only the winner nudges.
+        const claimed = await claimWatchdogFire({ workspaceId, installSlug, source: 'su-ideate-ungraded', windowHours, reason, wakeAt: null });
+        if (!claimed) {
+          results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced (raced or backed off)' });
+          continue;
+        }
+        const mugOwner = await resolveMugOwner(sql, workspaceId, installSlug);
         await fireGradingNudge(workspaceId, mugOwner, stale, staleSec, installSlug);
-        // Record the fire so the debounce engages next tick (source='su-ideate-ungraded').
-        await recordFire({ workspaceId, installSlug, source: 'su-ideate-ungraded', reason, wakeAt: null });
         results.push({ workspaceId, installSlug, outcome: 'nudged', staleCount: stale.length, reason });
       } catch (e) {
         results.push({

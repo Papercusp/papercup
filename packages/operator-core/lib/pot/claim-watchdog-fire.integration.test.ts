@@ -123,6 +123,44 @@ describe('claimWatchdogFire (EI-6777)', () => {
     },
   );
 
+  it('EI-16071: a `scopeKey` narrows the debounce below `source` — two scoped conditions sharing (workspace, installSlug, source) are independent debounce keys', async () => {
+    const installSlug = `scoped::${randomBytes(4).toString('hex')}`;
+    const rubricA = await claimWatchdogFire({
+      workspaceId: WS,
+      installSlug,
+      source: 'rubric-staleness',
+      reason: `release-gating rubric 'rubric-a' has NO scorecard in the last 6h`,
+      wakeAt: null,
+      scopeKey: 'rubric-a',
+    });
+    const rubricB = await claimWatchdogFire({
+      workspaceId: WS,
+      installSlug,
+      source: 'rubric-staleness',
+      reason: `release-gating rubric 'rubric-b' has NO scorecard in the last 6h`,
+      wakeAt: null,
+      scopeKey: 'rubric-b',
+    });
+    // Both win — the bug this closes is rubric-b silently losing to rubric-a's fire
+    // because the old debounce key was source-only (no scopeKey dimension).
+    expect(rubricA).toBe(true);
+    expect(rubricB).toBe(true);
+    expect(await recentWatchdogFires(WS, installSlug, 24, 'rubric-staleness')).toBe(2);
+    expect(await recentWatchdogFires(WS, installSlug, 24, 'rubric-staleness', 'rubric-a')).toBe(1);
+    expect(await recentWatchdogFires(WS, installSlug, 24, 'rubric-staleness', 'rubric-b')).toBe(1);
+    // A second claim for the SAME scopeKey within the window still loses — scoping
+    // narrows the key, it does not disable the debounce for repeats of the same scope.
+    const rubricARepeat = await claimWatchdogFire({
+      workspaceId: WS,
+      installSlug,
+      source: 'rubric-staleness',
+      reason: `release-gating rubric 'rubric-a' has NO scorecard in the last 6h`,
+      wakeAt: null,
+      scopeKey: 'rubric-a',
+    });
+    expect(rubricARepeat).toBe(false);
+  });
+
   it('a claim outside the window fires again (the debounce is time-bounded, not permanent)', async () => {
     const installSlug = `windowed::${randomBytes(4).toString('hex')}`;
     // Backdate a fire to 25h ago — outside the default 24h window.

@@ -14,6 +14,12 @@ import type { ZodTypeAny } from 'zod';
 
 const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 const getNextM = vi.hoisted(() => vi.fn());
+// EI-16057: registry contents the harness-existence gate checks against — 'papercusp'
+// is the only registered slug by default so every pre-existing test (which all pass
+// `harness: 'papercusp'`) keeps resolving; the dedicated describe block below swaps
+// this to exercise the harness_not_found path.
+const registryState = vi.hoisted(() => ({ projects: [{ slug: 'papercusp' }] as Array<{ slug: string }> }));
+const loadHarnessRegistryM = vi.hoisted(() => vi.fn(async () => ({ projects: registryState.projects })));
 // EI-15777: the paused-miss branch cancels the caller's own standing
 // `work-item:claimable` await(s) — mock the store call so these unit tests never
 // touch real PG, and so tests below can assert it was invoked (self-scoped, by ownerId).
@@ -21,6 +27,9 @@ const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
+}));
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: loadHarnessRegistryM,
 }));
 vi.mock('../../events/await/store', () => ({
   cancelClaimableAwaits: cancelClaimableAwaitsM,
@@ -116,6 +125,8 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     scopeState.quarantinedIds = [];
     scopeState.windingDown = false;
     scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
     getNextM.mockResolvedValue(null);
   });
 
@@ -165,5 +176,68 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     // work-item:claimable await(s) (self-scoped by ownerId) so a compliant peer
     // stand-down doesn't keep re-waking this member on a pull it's forbidden to make.
     expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-member');
+  });
+});
+
+// EI-16057: an unresolvable `harness` (e.g. a workspace id passed where a slug
+// belongs) used to match zero rows in the claim query and render as `windDown:true`
+// — indistinguishable from a genuinely drained fleet-scoped lane, so a member would
+// stand its loop down and report a false all-clear. It must instead fail loud as a
+// plain invalid_input, before any fleet-scope reconciliation runs, and NEVER set
+// windDown.
+describe('scheduler:get_next harness-existence gate (EI-16057)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getNextM.mockResolvedValue(null);
+  });
+
+  it('an unregistered harness (e.g. a workspace id) returns invalid_input, never windDown', async () => {
+    const out = (await getNextTool.handler({ harness: 'papercusp-workspace' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'invalid_input',
+      reason: 'harness_not_found',
+      passedHarness: 'papercusp-workspace',
+      knownHarnesses: ['papercusp'],
+    });
+    expect(b.windDown).toBeUndefined();
+    // Must fail before any fleet-scope reconciliation / claim query runs.
+    expect(getNextM).not.toHaveBeenCalled();
+  });
+
+  it('a registered harness slug is unaffected — passes through to the normal claim path', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b).toMatchObject({ ok: false, windDown: true });
+    expect(getNextM).toHaveBeenCalledOnce();
+  });
+
+  it('a registry-read failure fails OPEN — never blocks a legitimate claim on a read hiccup', async () => {
+    loadHarnessRegistryM.mockImplementation(async () => {
+      throw new Error('transient PG hiccup');
+    });
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b.error).not.toBe('invalid_input');
+    expect(getNextM).toHaveBeenCalledOnce();
   });
 });

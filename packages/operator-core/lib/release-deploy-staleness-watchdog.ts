@@ -28,7 +28,7 @@
  */
 import { gitPipelineSnapshot } from './git-pipeline-stats';
 import { computeDeployStatus, type DeployStateKind } from './release-deploy-launch';
-import { recentWatchdogFires, recordFire } from './pot/watchdog';
+import { claimWatchdogFire, recentWatchdogFires } from './pot/watchdog';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 
 // ── tunable (env-overridable, like the other watchdog floors) ─────────────────
@@ -144,6 +144,9 @@ export async function releaseDeployStalenessSweep(opts: {
     if (!verdict.stale) return { outcome: 'healthy', verdict, reason: verdict.reason };
 
     const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
+    // EI-16038: cheap non-atomic pre-check (avoid the transaction round-trip on the
+    // common healthy-pipeline tick) — the atomic claim below is authoritative and also
+    // applies geometric backoff when the staleness reason keeps re-firing unchanged.
     const alreadyFiredRecently =
       (await recentWatchdogFires(workspaceId, installSlug, windowHours, 'release-deploy-staleness')) > 0;
     if (alreadyFiredRecently) {
@@ -151,8 +154,14 @@ export async function releaseDeployStalenessSweep(opts: {
     }
 
     const reason = `deploy staleness: ${verdict.reason}`;
+    // EI-6777/EI-16038: claim the atomic debounce slot (closes the check-then-act race
+    // the old recentWatchdogFires+recordFire pattern had, and backs off geometrically
+    // once this exact reason has repeated) BEFORE alerting — only the winner alerts.
+    const claimed = await claimWatchdogFire({ workspaceId, installSlug, source: 'release-deploy-staleness', windowHours, reason, wakeAt: null });
+    if (!claimed) {
+      return { outcome: 'skipped', verdict, reason: 'debounced (raced or backed off)' };
+    }
     console.warn(`[release-deploy-staleness] ALERT: ${reason}`);
-    await recordFire({ workspaceId, installSlug, source: 'release-deploy-staleness', reason, wakeAt: null });
     return { outcome: 'alerted', verdict, reason };
   } catch (e) {
     return { outcome: 'error', reason: e instanceof Error ? e.message : String(e) };
