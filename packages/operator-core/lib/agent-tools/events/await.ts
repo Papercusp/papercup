@@ -45,18 +45,19 @@ import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC
 export default defineTool({
   name: 'events:await',
   description:
-    'Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for "any lane item finished" instead of N. Or pass `spec` instead of `event` for a composed all/any/some THRESHOLD TREE — one wake when the combination is satisfied.',
+    'Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key. Or pass `spec` instead of `event` for a composed all/any/some THRESHOLD TREE — one wake when the combination is satisfied.',
   guidance: {
-    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you). work-item:unblocked:<id> latches at registration: an already-unblocked target returns already_unblocked instead of a dead wait.',
+    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from chat (drift strands you). work-item:unblocked:<id> latches at registration: already-unblocked returns already_unblocked instead of a dead wait.',
     notWhen:
-      'Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer the sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
-    chaining: 'events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register if you need the NEXT occurrence (one-shot: a fired await is gone). EI-14225: re-awaiting the SAME exact key auto-retires your own prior pending registration on it (see `superseded` in the response) — a repeated idle-park loop never has to `events:cancel` first. events:cancel retracts (still useful to drop a wait early without re-registering); events:status inspects.',
+      'Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
+    chaining: 'events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register for the NEXT occurrence (one-shot: a fired await is gone). Re-awaiting the SAME key auto-retires your own prior pending registration on it (see seeAlso). events:cancel retracts early; events:status inspects.',
     seeAlso: [
       'events:catalog (what CAN I wait on? — the awaitable-key registry; check before polling)',
       'deploy:await / work-item:await / … (named sugar for the common waits — build the key for you)',
       'events:emit (the counterpart — fire the event a peer awaits)',
       'events:cancel (retract a pending await)',
       'watch:create (a standing watch instead of a one-shot await)',
+      'EI-14225: re-awaiting the SAME exact key auto-retires your own prior pending registration on it (see `superseded` in the response) — a repeated idle-park loop never has to call events:cancel first.',
     ],
   },
   capability: 'coord:write',

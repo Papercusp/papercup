@@ -56,4 +56,22 @@ describe('classifyClaimFailure (EI-2197)', () => {
     // Padded but equal to the claimer → not a conflict.
     expect(classifyClaimFailure({ assignee: '  me  ' }, 'me')).toEqual({ reason: 'gated', holder: null });
   });
+
+  it('EI-15027: a literal "unassigned" sentinel assignee reads as unclaimed (gated), never as a live holder', () => {
+    // Repro: WI-5303 had assignee:"unassigned" (some federated/legacy writer's "not
+    // taken" placeholder instead of NULL/'') and work_items:claim reported
+    // claim_conflict against holder:"unassigned" — permanently unclaimable.
+    expect(classifyClaimFailure({ assignee: 'unassigned' }, 'me')).toEqual({ reason: 'gated', holder: null });
+    // Case/whitespace-insensitive, mirroring EI-7939's normalizeTakenBy for the
+    // feature-family taken_by column.
+    expect(classifyClaimFailure({ assignee: 'Unassigned' }, 'me')).toEqual({ reason: 'gated', holder: null });
+    expect(classifyClaimFailure({ assignee: '  UNASSIGNED  ' }, 'me')).toEqual({ reason: 'gated', holder: null });
+    // A real holder whose id merely CONTAINS "unassigned" as a substring is still a
+    // real, different holder — only an exact (trimmed, case-insensitive) match to the
+    // sentinel is treated as unclaimed.
+    expect(classifyClaimFailure({ assignee: 'su-unassigned-1' }, 'me')).toEqual({
+      reason: 'conflict',
+      holder: 'su-unassigned-1',
+    });
+  });
 });

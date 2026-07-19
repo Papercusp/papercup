@@ -630,15 +630,17 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded / migrations / tests / deferred) — the system renders + broadcasts it, so you never narrate in prose. A terminal `state` converges the whole finish: work-item state + linked plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning`. The `finish` receipt is idempotent; ok:false means a leg did not converge — re-call the SAME completion to resume it. Single-item call ({id,completion}): the top-level `ok` IS this item's own outcome (EI-14676) — ok:false means it did NOT converge, do not treat it as done. Explicit `items:[…]` batch: top-level `ok:true` only means the batch ran — check each result's own `ok` + `counts.failed`.",
+    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded/migrations/tests/deferred) — the system renders + broadcasts it, never narrate in prose. A terminal `state` converges the whole finish: item state + plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning` (see seeAlso for idempotency + batch-result semantics).",
   guidance: {
-    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue-family `status:\'resolved\'|\'closed\'` alone DOES infer + close, EI-12027). `completion.verifiedHow` is a CLOSED ENUM — \'unit\'|\'integration\'|\'live-drove-ui\'|\'manual\'|\'already-passing\' — not free text; prose → testsRun/testResult. Duplicate? Set `completion.duplicateOf` to the surviving id (auto-links + notifies the prior assignee).',
+    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. Duplicate? set `completion.duplicateOf` to the surviving id.',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
-    chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On terminal success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox (no release/checkpoint-clear/coord:send calls needed).',
+    chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox.',
     seeAlso: [
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
       'improvements:capture (file the friction the reflect step surfaced)',
+      "The `finish` receipt is idempotent — ok:false means a leg did not converge; re-call the SAME completion to resume it.",
+      "Single-item call ({id,completion}): top-level `ok` IS this item's own outcome (EI-14676) — ok:false means it did NOT converge. Explicit `items:[…]` batch: top-level `ok:true` only means the batch ran — check each result's own `ok` + `counts.failed`.",
       'EI-7746: items run sequentially — if the CALL itself times out mid-batch, already-processed items are already committed but you never see their results. Re-check via work_items:get before assuming failure; a blind retry of the SAME items+state is safe (re-applying an already-terminal state is a no-op, never trips the reopen/force guard).',
     ],
   },

@@ -26,7 +26,11 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { checkFireGate as defaultCheckFireGate, recordFire as defaultRecordFire } from '../../autoloop';
+import {
+  checkFireGate as defaultCheckFireGate,
+  recordFire as defaultRecordFire,
+  recordWithheld as defaultRecordWithheld,
+} from '../../autoloop';
 import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import {
@@ -89,6 +93,10 @@ export interface LoopFireInput {
 export interface LoopFireDeps {
   checkFireGate?: typeof defaultCheckFireGate;
   recordFire?: typeof defaultRecordFire;
+  /** EI-14483: record a fire-gate withhold to a durable, queryable trail (separate from
+   *  recordFire's backoff-clock columns) so "attempted-and-denied" is distinguishable from
+   *  "never attempted" after the fact. */
+  recordWithheld?: typeof defaultRecordWithheld;
   wake?: typeof defaultWakeRecipients;
   costCap?: typeof defaultCheckLoopCostCap;
   deadMan?: typeof defaultCheckLoopDeadMan;
@@ -517,6 +525,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         })
       : defaultGetLoopCarryNoteWithMeta);
   const deactivateLoop = deps.deactivateLoop ?? defaultDeactivateLoop;
+  const recordWithheld = deps.recordWithheld ?? defaultRecordWithheld;
 
   if (!input.targetOwnerId) {
     return { fired: false, reason: 'no-target', detail: 'loop routine has no target_owner_id to wake' };
@@ -525,11 +534,14 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // Guard 1 — failure-streak fire-gate (the existing autoloop backoff/circuit, per-loop).
   const gate = await checkFireGate(input.installSlug, input.routineName);
   if (!gate.allow) {
-    return {
-      fired: false,
-      reason: 'fire-gate',
-      detail: `${gate.reason} (consecutive_errors=${gate.consecutiveErrors}, retry in ~${gate.retryAfterSec}s)`,
-    };
+    const detail = `${gate.reason} (consecutive_errors=${gate.consecutiveErrors}, retry in ~${gate.retryAfterSec}s)`;
+    // EI-14483: a fire-gate deny previously left NO durable trace (recordFire is
+    // deliberately skipped here — see recordWithheld's doc — so last_fired_at doesn't
+    // reset the backoff clock). That made "silently denied every tick for hours" and
+    // "never scheduled" indistinguishable from autoloop_state after the fact. Record to
+    // the SEPARATE last_withheld_* columns instead — never last_fired_at/consecutive_errors.
+    await recordWithheld(input.installSlug, input.routineName, 'fire-gate', detail).catch(() => {});
+    return { fired: false, reason: 'fire-gate', detail };
   }
 
   // Guard 2 — cost-cap (D-006's one net-new loop guardrail): auto-pause on cumulative breach.

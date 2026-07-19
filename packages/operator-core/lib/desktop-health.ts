@@ -55,8 +55,14 @@ export interface LiveBridge {
 
 /** Injectable signal-gatherers — real impls below; tests pass stubs. */
 export interface DesktopSignals {
-  /** A live tauri dev-bridge if the desktop is running, else null. */
-  liveBridge(): Promise<LiveBridge | null>;
+  /**
+   * ALL live tauri dev-bridges currently running, else []. EI-15095: on this
+   * shared fleet dev box several concurrently-running desktop instances (the
+   * owner's + any number of agents' own headless verification shells per
+   * /internal/docs/testing/agent-e2e) each hold their own bridge under the
+   * SAME $HOME at once — plural, not "the" one bridge.
+   */
+  liveBridges(): Promise<LiveBridge[]>;
   /** A `/eval` round-trip through the webview succeeds (webview up + JS works). */
   bridgeEval(bridge: LiveBridge): Promise<boolean>;
   /** The operator IPC unix socket is connectable. */
@@ -76,14 +82,27 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Scan /tmp for a dev-bridge token whose owning pid is alive (stale = ignored). */
-async function realLiveBridge(): Promise<LiveBridge | null> {
+/**
+ * Scan /tmp for EVERY dev-bridge token whose owning pid is alive (stale =
+ * skipped). EI-15095: this used to `return` on the FIRST live match — fine
+ * when at most one desktop ever runs, but on this shared fleet dev box
+ * `readdir` order is filesystem-dependent and routinely turns up several
+ * concurrently-alive bridges (one per desktop instance under the same
+ * $HOME — the owner's own + any agent's headless verification shell).
+ * Picking exactly one arbitrary bridge meant an unrelated instance's
+ * transient webview hiccup could flip the SHARED desktop-health alarm to
+ * DOWN even though the instance the health probe actually cares about (the
+ * one `ipcConnectable()` resolves via `desktop-build-target.json`) was
+ * perfectly fine — see `probeDesktop`'s any-bridge-eval-ok treatment below.
+ */
+async function realLiveBridges(): Promise<LiveBridge[]> {
   let files: string[];
   try {
     files = await readdir(BRIDGE_TOKEN_DIR);
   } catch {
-    return null;
+    return [];
   }
+  const bridges: LiveBridge[] = [];
   for (const f of files) {
     if (!f.startsWith(BRIDGE_TOKEN_PREFIX) || !f.endsWith(BRIDGE_TOKEN_SUFFIX)) continue;
     try {
@@ -92,12 +111,12 @@ async function realLiveBridge(): Promise<LiveBridge | null> {
       const token = typeof j?.token === 'string' ? j.token : '';
       const pid = Number(j?.pid);
       if (!port || !token || !pidAlive(pid)) continue;
-      return { port, token, pid };
+      bridges.push({ port, token, pid });
     } catch {
-      // unreadable / corrupt token → try the next
+      // unreadable / corrupt token → skip, keep scanning the rest
     }
   }
-  return null;
+  return bridges;
 }
 
 /** POST /eval { js:'1' } to the bridge; a 200 means the webview executed JS. */
@@ -207,7 +226,7 @@ async function realRecentErrorCount(windowMs: number): Promise<number> {
 }
 
 export const realDesktopSignals: DesktopSignals = {
-  liveBridge: realLiveBridge,
+  liveBridges: realLiveBridges,
   bridgeEval: realBridgeEval,
   ipcConnectable: realIpcConnectable,
   recentErrorCount: realRecentErrorCount,
@@ -216,14 +235,28 @@ export const realDesktopSignals: DesktopSignals = {
 /**
  * Probe the desktop. Returns a `ProbeResult` with `present` set:
  *   - present:false → no desktop running (skipped by diffHealth → no DOWN spam).
- *   - present:true, up:true → webview eval + IPC both alive.
+ *   - present:true, up:true → at least one live bridge's webview eval'd AND the
+ *     (globally-resolved) IPC socket is connectable.
  *   - present:true, up:false → desktop is up but a liveness signal failed.
  * `recentErrors` + `note` carry the toastLog signal as informational detail.
+ *
+ * EI-15095 (multi-desktop false DOWN): `ipcConnectable()` resolves ONE
+ * globally-shared target (`desktop-build-target.json`, last-writer-wins
+ * across every desktop instance sharing this $HOME — see
+ * `resolveDesktopIpcDiscovery`'s EI-7760 doc comment). There is no way from
+ * here to know which of several concurrently-live bridges that target
+ * "belongs to", so webview-eval health is checked across ALL live bridges and
+ * treated as OK if ANY of them round-trips JS — this can't be fooled by one
+ * unrelated ephemeral verification instance's transient bridge hiccup the way
+ * checking a single arbitrarily (readdir-order) chosen bridge could. A true
+ * "the desktop is actually down" still reports unhealthy: it means EVERY live
+ * bridge failed its webview eval, or the resolved IPC socket itself is
+ * unreachable.
  */
 export async function probeDesktop(signals: DesktopSignals = realDesktopSignals): Promise<ProbeResult> {
   const start = Date.now();
-  const bridge = await signals.liveBridge().catch(() => null);
-  if (!bridge) {
+  const bridges = await signals.liveBridges().catch(() => []);
+  if (bridges.length === 0) {
     return {
       name: 'desktop',
       up: false,
@@ -234,11 +267,12 @@ export async function probeDesktop(signals: DesktopSignals = realDesktopSignals)
     };
   }
 
-  const [evalOk, ipcOk, recentErrors] = await Promise.all([
-    signals.bridgeEval(bridge).catch(() => false),
+  const [evalResults, ipcOk, recentErrors] = await Promise.all([
+    Promise.all(bridges.map((b) => signals.bridgeEval(b).catch(() => false))),
     signals.ipcConnectable().catch(() => false),
     signals.recentErrorCount(DESKTOP_ERROR_WINDOW_MS).catch(() => 0),
   ]);
+  const evalOk = evalResults.some(Boolean);
 
   const up = evalOk && ipcOk;
   const errNote = recentErrors > 0 ? `${recentErrors} recent error toast${recentErrors === 1 ? '' : 's'}` : '';
@@ -247,7 +281,8 @@ export async function probeDesktop(signals: DesktopSignals = realDesktopSignals)
     note = errNote ? `up (${errNote})` : 'up';
   } else {
     const fails = [!evalOk && 'webview eval', !ipcOk && 'ipc socket'].filter(Boolean).join(' + ');
-    note = `unhealthy: ${fails} unreachable${errNote ? `; ${errNote}` : ''}`;
+    const bridgeNote = bridges.length > 1 ? ` (${bridges.length} bridges checked)` : '';
+    note = `unhealthy: ${fails} unreachable${bridgeNote}${errNote ? `; ${errNote}` : ''}`;
   }
 
   return {

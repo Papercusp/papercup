@@ -23,6 +23,7 @@ function mkDeps(
     LoopFireDeps,
     | 'checkFireGate'
     | 'recordFire'
+    | 'recordWithheld'
     | 'wake'
     | 'costCap'
     | 'getLoopCarryNoteWithMeta'
@@ -38,6 +39,7 @@ function mkDeps(
   return {
     checkFireGate: vi.fn(async () => ({ allow: true, consecutiveErrors: 0 })) as never,
     recordFire: vi.fn(async () => {}) as never,
+    recordWithheld: vi.fn(async () => {}) as never,
     wake: vi.fn(async () => ({
       targets: ['su-pinned'],
       keys: ['coord:inbox-wake:su-pinned'],
@@ -85,6 +87,9 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'queued', 'attempt');
     // Crucially, the enqueue NEVER records an 'ok' outcome (that would prematurely reset the streak).
     expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.anything(), 'ok');
+    // EI-14483: a PASSING gate never calls recordWithheld — that write is exclusive to
+    // the fire-gate-deny path (asserted in the "FAILURE-STREAK gate trips" test below).
+    expect(deps.recordWithheld).not.toHaveBeenCalled();
   });
 
   it('delivers the routine kickoff as the wake-turn text, falling back to the default', async () => {
@@ -196,6 +201,15 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(deps.wake).not.toHaveBeenCalled();
     // No wake recorded — the gate withheld before any fire attempt.
     expect(deps.recordFire).not.toHaveBeenCalled();
+    // EI-14483: the withhold IS durably recorded — to the separate last_withheld_*
+    // columns, never last_fired_at/consecutive_errors (recordFire, asserted above).
+    expect(deps.recordWithheld).toHaveBeenCalledTimes(1);
+    expect(deps.recordWithheld).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-pinned',
+      'fire-gate',
+      expect.stringContaining('backoff'),
+    );
   });
 
   it('COST-CAP breach → fire WITHHELD, no wake, recorded as an error', async () => {

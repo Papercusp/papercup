@@ -37,6 +37,7 @@ vi.mock('./workspace-registry', async () => {
 
 const {
   recordFire,
+  recordWithheld,
   readFireState,
   checkFireGate,
   resetFireErrors,
@@ -61,7 +62,8 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // The baseline autoloop_state shape (000-baseline.sql:573 + the PK at :3160).
+  // The baseline autoloop_state shape (000-baseline.sql:573 + the PK at :3160)
+  // plus the EI-14483 withhold-tracking columns (migration 634).
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.autoloop_state (
       harness_slug text NOT NULL,
@@ -70,6 +72,9 @@ beforeAll(async () => {
       last_status text,
       consecutive_errors integer DEFAULT 0 NOT NULL,
       workspace_id text DEFAULT '' NOT NULL,
+      last_withheld_at timestamptz,
+      last_withheld_reason text,
+      last_withheld_detail text,
       CONSTRAINT autoloop_state_pkey PRIMARY KEY (workspace_id, harness_slug, role)
     )
   `);
@@ -139,6 +144,80 @@ describe('recordFire outcome semantics (P-009)', () => {
   it('an unknown (slug, role) has no row ⇒ the gate allows', async () => {
     expect(await readFireState('nope', 'nobody')).toBeNull();
     expect((await checkFireGate('nope', 'nobody')).allow).toBe(true);
+  });
+});
+
+describe('recordWithheld (EI-14483) — durable trace for an attempted-and-denied fire', () => {
+  const WSLUG = 'withhold-harness';
+  const WROLE = 'director';
+
+  it('upserts last_withheld_* WITHOUT touching last_fired_at / consecutive_errors of an existing row', async () => {
+    // Seed a baseline row via the ordinary fire path — 2 accumulated errors.
+    await recordFire(WSLUG, WROLE, 'firing', 'attempt');
+    await recordFire(WSLUG, WROLE, 'error: boom', 'error');
+    await recordFire(WSLUG, WROLE, 'firing', 'attempt');
+    await recordFire(WSLUG, WROLE, 'error: boom 2', 'error');
+    const before = await rootSql<{ last_fired_at: Date; consecutive_errors: number }[]>`
+      SELECT last_fired_at, consecutive_errors FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${WS} AND harness_slug = ${WSLUG} AND role = ${WROLE}`;
+    expect(before[0].consecutive_errors).toBe(2);
+
+    await recordWithheld(WSLUG, WROLE, 'fire-gate', 'backoff window 240s not yet elapsed');
+
+    const after = await rootSql<
+      {
+        last_fired_at: Date;
+        consecutive_errors: number;
+        last_withheld_at: Date | null;
+        last_withheld_reason: string | null;
+        last_withheld_detail: string | null;
+      }[]
+    >`SELECT last_fired_at, consecutive_errors, last_withheld_at, last_withheld_reason, last_withheld_detail
+        FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${WS} AND harness_slug = ${WSLUG} AND role = ${WROLE}`;
+    // The backoff clock (last_fired_at) and error counter must be COMPLETELY untouched —
+    // that is the entire point of recordWithheld writing to separate columns.
+    expect(new Date(after[0].last_fired_at).getTime()).toBe(new Date(before[0].last_fired_at).getTime());
+    expect(after[0].consecutive_errors).toBe(2);
+    // The new withhold-tracking columns are now populated.
+    expect(after[0].last_withheld_at).not.toBeNull();
+    expect(after[0].last_withheld_reason).toBe('fire-gate');
+    expect(after[0].last_withheld_detail).toBe('backoff window 240s not yet elapsed');
+  });
+
+  it('inserts a fresh row when none exists yet (no prior recordFire)', async () => {
+    const FRESH = 'withhold-fresh';
+    expect(await readFireState(FRESH, WROLE)).toBeNull();
+    await recordWithheld(FRESH, WROLE, 'fire-gate', 'circuit open');
+    const rows = await rootSql<{ last_withheld_reason: string | null; last_withheld_detail: string | null }[]>`
+      SELECT last_withheld_reason, last_withheld_detail FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${WS} AND harness_slug = ${FRESH} AND role = ${WROLE}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].last_withheld_reason).toBe('fire-gate');
+    expect(rows[0].last_withheld_detail).toBe('circuit open');
+    // readFireState (last_fired_at/consecutive_errors only) still sees this row: the
+    // insert's last_fired_at default (now()) makes it visible to the backoff gate too,
+    // but with 0 accumulated errors ⇒ the gate still allows.
+    expect((await checkFireGate(FRESH, WROLE)).allow).toBe(true);
+  });
+
+  it('is fail-soft on write failure — never throws (best-effort, does not affect the gate decision)', async () => {
+    // An empty/blank slug is accepted by the DB (text column, no NOT NULL-empty check),
+    // so exercise fail-soft via a role value that cannot violate the schema either;
+    // instead assert the documented contract directly: recordWithheld never rejects.
+    await expect(recordWithheld('', '', 'fire-gate')).resolves.toBeUndefined();
+  });
+
+  it('surfaces via getAutoLoopState (autoloop:status)', async () => {
+    const rows = await getAutoLoopState(WSLUG);
+    expect(rows).not.toBeNull();
+    const row = rows!.find((r) => r.role === WROLE);
+    expect(row).toMatchObject({
+      harness_slug: WSLUG,
+      role: WROLE,
+      last_withheld_reason: 'fire-gate',
+    });
+    expect(row.last_withheld_at).not.toBeNull();
   });
 });
 

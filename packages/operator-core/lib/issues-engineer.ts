@@ -1047,7 +1047,13 @@ export async function claimIssue(
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
-       AND (assignee IS NULL OR assignee = '' OR assignee = ${assignee})
+       -- EI-15027: a literal 'unassigned' sentinel (case/whitespace-insensitive) — some
+       -- federated/legacy writers use it as a "not taken" placeholder instead of NULL/''
+       -- (mirrors EI-7939's normalizeTakenBy for the feature-family taken_by column) —
+       -- must be claimable, same as NULL/''; without this the row is PERMANENTLY stuck
+       -- (this UPDATE never matches it, and classifyClaimFailure then misreports the
+       -- resulting no-op as a live claim_conflict against holder:"unassigned").
+       AND (assignee IS NULL OR btrim(assignee) = '' OR lower(btrim(assignee)) = 'unassigned' OR assignee = ${assignee})
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);

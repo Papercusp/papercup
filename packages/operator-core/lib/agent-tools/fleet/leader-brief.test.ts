@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeBenchSuggestion,
+  computeStrandedFleetAlert,
   projectMember,
   reconcilePsuHostLiveness,
   selectLeaderBriefMembers,
@@ -235,5 +236,27 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
     const m = projectMember(baseAgent({ verdict: 'waiting', monitorState: 'waiting' }), NOW);
     expect(m.benchSuggestion).toBeDefined();
     expect(m.benchSuggestion?.reason).toMatch(/idle-cycling/);
+  });
+});
+
+describe('computeStrandedFleetAlert (EI-15055 — the whole-fleet-asleep-on-available-supply shape)', () => {
+  it('fires on the exact incident shape: zero fleet-wide load, ≥1 parked member, ≥1 unowned critical', () => {
+    const alert = computeStrandedFleetAlert({ totalLoad: 0, parkedCount: 7, unownedCriticalCount: 8 });
+    expect(alert).toBeDefined();
+    expect(alert?.reason).toMatch(/fleet-wide wip is 0/);
+    expect(alert?.reason).toMatch(/7 member/);
+    expect(alert?.reason).toMatch(/8 unowned critical/);
+  });
+
+  it('does NOT fire when the fleet still holds live work (totalLoad > 0)', () => {
+    expect(computeStrandedFleetAlert({ totalLoad: 1, parkedCount: 7, unownedCriticalCount: 8 })).toBeUndefined();
+  });
+
+  it('does NOT fire when nobody is parked (parkedCount 0) even if criticals sit unowned', () => {
+    expect(computeStrandedFleetAlert({ totalLoad: 0, parkedCount: 0, unownedCriticalCount: 8 })).toBeUndefined();
+  });
+
+  it('does NOT fire when there is no known unowned-critical supply (a genuinely drained fleet resting is fine)', () => {
+    expect(computeStrandedFleetAlert({ totalLoad: 0, parkedCount: 7, unownedCriticalCount: 0 })).toBeUndefined();
   });
 });

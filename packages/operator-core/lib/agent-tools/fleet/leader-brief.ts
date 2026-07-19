@@ -180,6 +180,37 @@ export function computeBenchSuggestion(
   return undefined;
 }
 
+/**
+ * EI-15055 (fleet-members-parked-stall-2026-07-17): the ZERO-WIP-WITH-SUPPLY alert.
+ * `parked` was a plain count with no severity — a leader reading `parked:7` next to
+ * `unowned_criticals:8` had to notice the juxtaposition itself, and the live incident
+ * (2026-07-17 ~14:58: the WHOLE fleet held 0 wip while 8 unowned critical bugs sat
+ * unclaimed under a healthy claim-spec) went unnoticed for a while as a result. True
+ * exactly when the WHOLE fleet holds no live work (fleet-wide load is 0), at least one
+ * member is parked (sleeping on an event — e.g. `work-item:claimable`, which only
+ * fires on a NEW create/release/unblock transition and so never wakes a member for
+ * supply that already existed before it registered the await), AND known unowned
+ * critical supply exists that this fleet's claim spec would admit. A parked member's
+ * ~30-min await timeout eventually self-heals, but this lets a leader act NOW instead
+ * of waiting out the timeout fleet-wide. PURE: exported for direct unit-testing.
+ */
+export function computeStrandedFleetAlert(input: {
+  totalLoad: number;
+  parkedCount: number;
+  unownedCriticalCount: number;
+}): { reason: string } | undefined {
+  if (input.totalLoad > 0 || input.parkedCount === 0 || input.unownedCriticalCount === 0) return undefined;
+  return {
+    reason:
+      `fleet-wide wip is 0, ${input.parkedCount} member(s) are parked (sleeping on an event), and ` +
+      `${input.unownedCriticalCount} unowned critical(s) this fleet's spec would admit are sitting ` +
+      'unclaimed (EI-15055) — the parked event only fires on a NEW create/release/unblock, so it will ' +
+      'never wake them for supply that already existed. Do not wait out the park timeout: wake the ' +
+      'parked members (coord:send wake:required) so they re-run scheduler:get_next now, or re-verify the ' +
+      'claim spec is actually admitting this supply.',
+  };
+}
+
 export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
   confirmLiveness?: boolean | null;
@@ -273,7 +304,9 @@ export default defineTool({
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (alive but not advancing, ' +
     'or alive+idle with zero claims/queued and unparked — a fleet:bench candidate), ' +
     'and unownedCriticals (aged unassigned ' +
-    'criticals this fleet\'s spec would admit). Scoped to ONE fleet ' +
+    'criticals this fleet\'s spec would admit); summary.strandedFleetAlert (+ top-level ' +
+    'strandedFleetAlertReason) fires when fleet-wide wip is 0, members are parked, AND unowned ' +
+    'criticals exist — the whole-fleet-asleep-on-available-supply shape (EI-15055). Scoped to ONE fleet ' +
     '(yours by default), not the whole workspace roster fleet:assignments returns. ' +
     'Replaces a leader\'s hand-assembled presence+assignments+inbox scan each monitor wake.',
   guidance: {
@@ -287,7 +320,9 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it.',
+      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it. ' +
+      '`strandedFleetAlert` true → wake the parked members now (coord:send wake:required) instead of ' +
+      'waiting out their park timeout.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -412,13 +447,20 @@ export default defineTool({
       // on (reclaim/reassign/nudge), not weather to wait out.
       unowned_criticals: unownedCriticals.length,
     };
+    // EI-15055: loud fleet-wide zero-wip-with-supply alert — see computeStrandedFleetAlert.
+    const strandedFleetAlert = computeStrandedFleetAlert({
+      totalLoad: members.reduce((sum, m) => sum + m.load, 0),
+      parkedCount: summary.parked,
+      unownedCriticalCount: unownedCriticals.length,
+    });
     return {
       data: {
         ok: true,
         ...(self ? { self } : {}),
-        summary,
+        summary: { ...summary, strandedFleetAlert: strandedFleetAlert != null },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
+        ...(strandedFleetAlert ? { strandedFleetAlertReason: strandedFleetAlert.reason } : {}),
       },
     };
   },

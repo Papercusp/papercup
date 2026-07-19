@@ -26,7 +26,7 @@ const BRIDGE: LiveBridge = { port: 43379, token: 'tok', pid: 4242 };
 
 function signals(over: Partial<DesktopSignals> = {}): DesktopSignals {
   return {
-    liveBridge: async () => BRIDGE,
+    liveBridges: async () => [BRIDGE],
     bridgeEval: async () => true,
     ipcConnectable: async () => true,
     recentErrorCount: async () => 0,
@@ -36,7 +36,7 @@ function signals(over: Partial<DesktopSignals> = {}): DesktopSignals {
 
 describe('probeDesktop', () => {
   it('reports present:false (not up, no alert) when no desktop is running', async () => {
-    const r = await probeDesktop(signals({ liveBridge: async () => null }));
+    const r = await probeDesktop(signals({ liveBridges: async () => [] }));
     expect(r.present).toBe(false);
     expect(r.up).toBe(false);
     expect(r.name).toBe('desktop');

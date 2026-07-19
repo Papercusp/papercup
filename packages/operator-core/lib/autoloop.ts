@@ -169,6 +169,51 @@ export async function checkFireGate(slug: string, role: string, now: Date = new 
 }
 
 /**
+ * Record a WITHHELD fire (EI-14483) — a fire-path guard denied the fire before it ever
+ * reached `recordFire`'s 'attempt'/'ok'/'error' outcomes. `checkFireGate`'s backoff/
+ * circuit-open deny is the motivating case: it returns early WITHOUT calling `recordFire`
+ * (by design — touching `last_fired_at` there would reset the very backoff clock the gate
+ * is enforcing), which left ZERO durable trace of "this loop has been attempted-and-denied
+ * every tick for hours" — indistinguishable, from `autoloop_state` alone, from "hasn't been
+ * attempted at all". That gap is exactly what stalled a live incident investigation
+ * (EI-14483): a fleet-leader loop went quiet for ~4h and the only question that mattered —
+ * was the loop firing-and-swallowed or genuinely un-scheduled — was unanswerable after the
+ * fact because the withhold was logged only via an ephemeral `console.warn`.
+ *
+ * Deliberately writes to SEPARATE columns (`last_withheld_at/reason/detail`) rather than
+ * reusing `last_fired_at`/`last_status`/`consecutive_errors` — those three remain the
+ * backoff clock's exclusive input, untouched by a mere gate check, so recording a withhold
+ * can never perturb the very backoff it is reporting on. Best-effort/fail-soft: a write
+ * failure here must never affect the caller's gate decision.
+ */
+export async function recordWithheld(slug: string, role: string, reason: string, detail?: string): Promise<void> {
+  const { db } = getOrgPg();
+  const ws = activeWorkspaceId();
+  try {
+    await db
+      .insert(at)
+      .values({
+        harnessSlug: slug,
+        role,
+        workspaceId: ws,
+        lastWithheldAt: dsql`now()` as any,
+        lastWithheldReason: reason,
+        lastWithheldDetail: detail ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [at.workspaceId, at.harnessSlug, at.role],
+        set: {
+          lastWithheldAt: dsql`now()`,
+          lastWithheldReason: dsql`EXCLUDED.last_withheld_reason`,
+          lastWithheldDetail: dsql`EXCLUDED.last_withheld_detail`,
+        },
+      });
+  } catch (e) {
+    console.warn(`[autoloop] recordWithheld failed (${slug}/${role}/${reason}):`, e instanceof Error ? e.message : e);
+  }
+}
+
+/**
  * Record a fire-path event for (active workspace, slug, role).
  *
  * `outcome` semantics (P-009 — fixes the old write path where the pre-fire
@@ -404,6 +449,11 @@ export async function getAutoLoopState(slug: string): Promise<any[] | null> {
       last_fired_at: at.lastFiredAt,
       last_status: at.lastStatus,
       consecutive_errors: at.consecutiveErrors,
+      // EI-14483: surfaced alongside last_fired_at so "attempted-and-withheld" is
+      // distinguishable from "never attempted" without log archaeology.
+      last_withheld_at: at.lastWithheldAt,
+      last_withheld_reason: at.lastWithheldReason,
+      last_withheld_detail: at.lastWithheldDetail,
     })
     .from(at)
     .where(eq(at.harnessSlug, slug))

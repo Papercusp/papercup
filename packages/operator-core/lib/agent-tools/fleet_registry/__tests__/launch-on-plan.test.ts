@@ -47,7 +47,10 @@ vi.mock('../../../fleet/fleet-roster', () => ({
   liveFleetMemberIds: vi.fn(async () => [] as string[]),
 }));
 
-vi.mock('../../coordination/presence', () => ({
+vi.mock('../../coordination/presence', async (importOriginal) => ({
+  // Spread the real module so PRESENCE_STALE_MS (consumed transitively via
+  // presence-wakeability.ts) survives; override only the fns we stub.
+  ...(await importOriginal<typeof import('../../coordination/presence')>()),
   heartbeatPresence: vi.fn(async () => undefined),
   setPresenceFleet: vi.fn(async () => undefined),
 }));
