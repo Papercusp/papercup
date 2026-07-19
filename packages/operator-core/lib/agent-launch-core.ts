@@ -257,15 +257,108 @@ export interface MemberLaunchOpts {
   workspace?: string;
   role?: string;
   model?: string;
+  /** psu --effort: reasoning effort (low|medium|high|xhigh|max) when not baked into the model spec. */
+  effort?: string;
   feature?: string;
   launchContext?: string;
   profile?: string;
   contextSize?: 'full' | 'trimmed';
+  /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch
+   *  (per-member-declarative-launch-specs P-005) — removes the brief-instruction workaround. */
+  compactionLimit?: number;
   brain?: boolean;
   addDir?: string[];
   allowSubagents?: boolean;
   seat?: string;
   extraArgs?: string[];
+}
+
+/**
+ * A DECLARATIVE per-member launch spec (per-member-declarative-launch-specs
+ * P-001, owner directive 2026-07-19: "make the arg a declarative spec where the
+ * caller can specify the per member settings in the spec").
+ *
+ * Each field, when set, OVERRIDES the fleet-wide launch default for THAT member;
+ * an unset field falls through to the fleet default, then the system/model-tier
+ * default (D-001 precedence: member > fleet > system). The launch tools compose
+ * one {@link MemberLaunchOpts} per member by folding its MemberSpec over the
+ * shared fleet base (see {@link foldMemberSpec}), so N members can each run a
+ * distinct model / effort / account / carry / context size / compaction limit /
+ * role / brief / claim lane — generalizing today's brief-only
+ * `perMemberLaunchContext` to ALL settings.
+ *
+ * `carry` and `claimKinds` are NOT psu command flags (carry shapes the member
+ * baseline + loop:arm; claimKinds seeds the per-member claim spec), so they are
+ * threaded by the launch tool, not by {@link memberLaunchCommand}.
+ */
+export interface MemberSpec {
+  model?: string;
+  effort?: string;
+  account?: string;
+  carry?: 'warm' | 'cold';
+  contextSize?: 'full' | 'trimmed';
+  compactionLimit?: number;
+  role?: string;
+  agent?: string;
+  /** Path to a brief file injected as this member's launch context (distinct per member). */
+  launchContext?: string;
+  /** Inline brief TEXT for this member — composed to a launch-context file by the tool when set. */
+  brief?: string;
+  /** Per-member claim-lane restriction — seeds this member's claim spec (bee-level, overrides the fleet spec). */
+  claimKinds?: Array<'feature' | 'chunk' | 'bug' | 'change' | 'task'>;
+  headless?: boolean;
+  addDir?: string[];
+  allowSubagents?: boolean;
+  brain?: boolean;
+  feature?: string;
+  profile?: string;
+  display?: string;
+  extraArgs?: string[];
+}
+
+/**
+ * The fleet-wide launch defaults a per-member {@link MemberSpec} folds over
+ * (P-002). Only the command-shaping fields live here; identity fields
+ * (fleetSlug / harness / plan) are supplied by the launch tool per member.
+ */
+export type FleetMemberDefaults = Omit<MemberLaunchOpts, 'fleetSlug' | 'harness' | 'plan'> & {
+  carry?: 'warm' | 'cold';
+  claimKinds?: Array<'feature' | 'chunk' | 'bug' | 'change' | 'task'>;
+};
+
+/**
+ * Fold a per-member {@link MemberSpec} over the fleet-wide defaults (P-002,
+ * D-001 precedence: member field wins; an UNSET member field is a fallthrough,
+ * never a zeroing override). Returns the per-member launch config plus the
+ * non-command fields (`carry`, `claimKinds`) the tool threads separately.
+ */
+export function foldMemberSpec(
+  base: FleetMemberDefaults,
+  spec: MemberSpec | undefined,
+): FleetMemberDefaults {
+  if (!spec) return { ...base };
+  const pick = <T>(memberVal: T | undefined, baseVal: T | undefined): T | undefined =>
+    memberVal !== undefined ? memberVal : baseVal;
+  return {
+    ...base,
+    agent: pick(spec.agent, base.agent),
+    model: pick(spec.model, base.model),
+    effort: pick(spec.effort, base.effort),
+    account: pick(spec.account, base.account),
+    carry: pick(spec.carry, base.carry),
+    contextSize: pick(spec.contextSize, base.contextSize),
+    compactionLimit: pick(spec.compactionLimit, base.compactionLimit),
+    role: pick(spec.role, base.role),
+    launchContext: pick(spec.launchContext, base.launchContext),
+    claimKinds: pick(spec.claimKinds, base.claimKinds),
+    headless: pick(spec.headless, base.headless),
+    addDir: pick(spec.addDir, base.addDir),
+    allowSubagents: pick(spec.allowSubagents, base.allowSubagents),
+    brain: pick(spec.brain, base.brain),
+    feature: pick(spec.feature, base.feature),
+    profile: pick(spec.profile, base.profile),
+    extraArgs: pick(spec.extraArgs, base.extraArgs),
+  };
 }
 
 /** Shell-quote free-form values that are embedded in the scripted psu command. */
@@ -300,6 +393,11 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.workspace) parts.push(`--workspace=${quoteLaunchValue(opts.workspace)}`);
   if (opts.role) parts.push(`--role=${quoteLaunchValue(opts.role)}`);
   if (opts.model) parts.push(`--model=${quoteLaunchValue(opts.model)}`);
+  if (opts.effort) parts.push(`--effort=${quoteLaunchValue(opts.effort)}`);
+  // NOTE: `--compaction-limit` (opts.compactionLimit) is emitted only once psu-launcher.mjs
+  // parses + seeds it (per-member-declarative-launch-specs P-005 second half). Emitting a
+  // flag psu does not yet accept would hard-fail every member launch, so it is withheld here
+  // until that lands — tracked in the plan; do not emit before then.
   if (opts.feature) parts.push(`--feature=${quoteLaunchValue(opts.feature)}`);
   if (opts.launchContext) parts.push(`--launch-context=${quoteLaunchValue(opts.launchContext)}`);
   if (opts.profile) parts.push(`--profile=${quoteLaunchValue(opts.profile)}`);

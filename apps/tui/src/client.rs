@@ -1835,8 +1835,27 @@ impl OperatorClient {
 /// Build the run-tool request body (POST /api/agent-mcp/run-tool). Pure —
 /// unit-tested. `confirmed:false` so the server's §3 re-check still gates a
 /// destructive/high-risk tool (it replies 409 confirmation_required if so).
+/// EI-1751: every pui process's run-tool calls loop back through the SAME
+/// server-side `spawnId='palette'` (capabilities/invoke.ts), so per-caller
+/// telemetry (which is the #1/#2 volume tool pair, coord:wake-queue /
+/// coord:wake-mode, driven by HOW MANY pui instances) is otherwise
+/// impossible to attribute — `tool_invocations` collapses every pui on the
+/// box to one indistinguishable row shape. `callerSid` is a process-stable
+/// id (same convention as the `pui-{kind}-{pid}` pane ids in layout.rs) the
+/// server folds into `ctx.uiClientId` for attribution ONLY — it does not
+/// touch the `spawnId='palette'` label any existing consumer keys on
+/// (fleet-ekg/features.ts, decision-ledger/emit.ts's isReadShapedCoordPoll).
+fn run_tool_caller_sid() -> String {
+    format!("pui-{}", std::process::id())
+}
+
 fn run_tool_body(name: &str, args: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({ "name": name, "args": args, "confirmed": false })
+    serde_json::json!({
+        "name": name,
+        "args": args,
+        "confirmed": false,
+        "callerSid": run_tool_caller_sid(),
+    })
 }
 
 /// Unwrap a run-tool envelope (`{ ok, result: { content: [{ text }] } }`) to the
@@ -1995,6 +2014,20 @@ mod tests {
         assert_eq!(b["args"]["agent"], "s-1");
         assert_eq!(b["args"]["mode"], "manual");
         assert_eq!(b["confirmed"], false);
+    }
+
+    #[test]
+    fn run_tool_body_carries_a_process_stable_caller_sid() {
+        // EI-1751: every call from this process must carry the SAME callerSid
+        // (so the server can attribute per-instance telemetry), in the
+        // established `pui-<pid>` shape (layout.rs's pane-id convention).
+        let a = super::run_tool_body("coord:wake-mode", serde_json::json!({}));
+        let b = super::run_tool_body("coord:wake-queue", serde_json::json!({}));
+        let sid_a = a["callerSid"].as_str().expect("callerSid must be a string");
+        let sid_b = b["callerSid"].as_str().expect("callerSid must be a string");
+        assert!(sid_a.starts_with("pui-"), "got {sid_a:?}");
+        assert_eq!(sid_a, sid_b, "callerSid must be stable across calls from one process");
+        assert_eq!(sid_a, format!("pui-{}", std::process::id()));
     }
 
     #[test]

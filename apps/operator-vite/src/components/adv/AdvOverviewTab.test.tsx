@@ -213,6 +213,12 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('No recent activity')).toBeTruthy();
     expect(syncArgs['userActions.recent']).toMatchObject({ workspaceId: expect.any(String) });
     expect(syncArgs['userActions.byHarness']).toBeUndefined();
+    // EI-1541 regression: the roster query MUST pass its workspace explicitly —
+    // omitting it makes the server resolver pass `workspaceId: null` straight
+    // through to PgPresenceStore.list, which reads every workspace unfiltered
+    // (`WHERE TRUE`) instead of scoping to this one, leaking every OTHER
+    // workspace's live agents into the AGENTS tile.
+    expect(syncArgs['dev.coordPresence']).toMatchObject({ workspace: 'ws-test' });
   });
 
   it('fills the All-Pots Activity tile from the fleet-wide userActions.recent feed (D-008)', () => {

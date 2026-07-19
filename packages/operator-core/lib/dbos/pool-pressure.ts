@@ -153,3 +153,83 @@ export function __resetPoolPressureForTest(): void {
   _lastProbeAt = 0;
   _poolShedCount = 0;
 }
+
+/**
+ * EI-13108 ask (2): durably record a critical pool-shed event (migration 627,
+ * harness_shared.routine_pool_shed_events) so an instrument-staleness consumer
+ * can tell "paused by this guardrail" from "dead" during a shed window — the
+ * in-memory poolShedCount() above is same-process-only and invisible outside
+ * the journal.
+ *
+ * FIRE-AND-FORGET BY DESIGN: called from routinesTickImpl right after a
+ * critical shed, on an already-starved pool — awaiting this insert would pile
+ * MORE work onto the exact pool that's starving, worsening the incident this
+ * exists to attribute. Never throws; a failed insert is swallowed (best-effort
+ * telemetry, never a tick-blocking dependency — mirrors the fail-soft rule the
+ * probe itself follows).
+ */
+async function defaultInsertShedEvent(workspaceId: string, shedCount: number, probeMs: number, host: string): Promise<void> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.routine_pool_shed_events
+      (workspace_id, shed_count, probe_ms, host)
+    VALUES (${workspaceId}, ${shedCount}, ${Math.round(probeMs)}, ${host})`;
+}
+
+async function defaultHostname(): Promise<string> {
+  const os = await import('node:os');
+  return os.hostname();
+}
+
+export function recordPoolShedEvent(
+  workspaceId: string,
+  shedCount: number,
+  probeMs: number = lastPoolProbeMs(),
+  // Injectable for tests (mirrors probePoolLatencyMs's `runProbe` pattern); defaults
+  // to the real INSERT against the org pool + the real hostname.
+  insert: (workspaceId: string, shedCount: number, probeMs: number, host: string) => Promise<void> = defaultInsertShedEvent,
+  hostname: () => Promise<string> = defaultHostname,
+): void {
+  void (async () => {
+    try {
+      await insert(workspaceId, shedCount, probeMs, await hostname());
+    } catch (e) {
+      console.warn(`[pool-pressure] recordPoolShedEvent insert failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    }
+  })();
+}
+
+/**
+ * Query helper for instrument-staleness consumers: was there a durable
+ * critical pool-shed event for `workspaceId` within the last `windowMs`? A
+ * true result means "paused by the P-006/W4 guardrail", not "dead" — the
+ * caller should treat a stale-looking instrument as shed, not broken, for
+ * this window. Fail-soft: any query error returns false (never claims a shed
+ * happened on a broken signal; the caller falls back to its normal staleness
+ * verdict).
+ */
+async function defaultQueryShedInWindow(workspaceId: string, windowMs: number): Promise<boolean> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = await sql<{ id: number }[]>`
+    SELECT id FROM harness_shared.routine_pool_shed_events
+     WHERE workspace_id = ${workspaceId}
+       AND at >= now() - (${windowMs}::text || ' milliseconds')::interval
+     LIMIT 1`;
+  return rows.length > 0;
+}
+
+export async function hasPoolShedInWindow(
+  workspaceId: string,
+  windowMs: number,
+  // Injectable for tests; defaults to the real SELECT against the org pool.
+  query: (workspaceId: string, windowMs: number) => Promise<boolean> = defaultQueryShedInWindow,
+): Promise<boolean> {
+  try {
+    return await query(workspaceId, windowMs);
+  } catch (e) {
+    console.warn(`[pool-pressure] hasPoolShedInWindow query failed (non-fatal, treated as no-shed-signal): ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}

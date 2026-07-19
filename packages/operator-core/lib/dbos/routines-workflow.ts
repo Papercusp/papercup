@@ -46,7 +46,8 @@ import {
   type SystemActionResult,
 } from '../harness/routines/system-actions';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
-import { poolPressure, recordPoolShed, lastPoolProbeMs } from './pool-pressure';
+import { poolPressure, recordPoolShed, lastPoolProbeMs, recordPoolShedEvent } from './pool-pressure';
+import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
 import { anotherRoutinesTickInFlight } from './routine-tick-overlap-guard';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
@@ -347,6 +348,10 @@ async function routinesTickImpl(): Promise<void> {
     console.warn(
       `[routines-tick] PG pool starvation (acquire+SELECT1 probe ${lastPoolProbeMs()}ms ≥ critical) — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
     );
+    // EI-13108 ask (2): durably record the shed (fire-and-forget — never await on an
+    // already-starved pool) so instrument-staleness consumers can distinguish
+    // "shed by this guardrail" from "dead" (migration 627).
+    recordPoolShedEvent(activeWorkspaceId(), shedCount);
   }
   const { sql } = getOrgPg();
 

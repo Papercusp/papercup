@@ -168,6 +168,21 @@ export const MAX_POST_CONNECT_RETRIES = 1;
 export const MAX_BACKPRESSURE_RETRIES = 20;
 /** Clamp for a Retry-After wait so a missing/hostile header value can't wedge the proxy loop. */
 const MAX_BACKPRESSURE_WAIT_MS = 3000;
+/**
+ * EI-16883 — boot-window status absorption. During a :3070 restart there is a window where
+ * the socket ACCEPTS but the route table is not yet mounted: /api/mcp answers 404/405 (and
+ * a booting worker can shed 503 before admission control is up). Like a 429, these statuses
+ * mean the tool handler NEVER dispatched — the request was not fulfilled — so replaying is
+ * write-safe for ANY ForwardClass. Measured 2026-07-19: 1,395 boot-window 405s passed
+ * through to clients in 48h; each marks the MCP server "failed" in its Claude Code session,
+ * drops + re-adds the tool catalog, and full-invalidates that session's prompt cache (the
+ * dominant slice of the fleet's cache-write bill). Absorbed exactly like 429s — bounded by
+ * the same retry window + max count, then surfaced honestly. Kill-switch:
+ * PAPERCUSP_MCP_PROXY_ABSORB_BOOT=0. Cost: a GENUINE malformed-path 404/405 now surfaces
+ * after the window instead of instantly — acceptable; well-formed clients never see these
+ * statuses in steady state.
+ */
+export const BOOT_WINDOW_STATUSES: ReadonlySet<number> = new Set([404, 405, 503]);
 /** Above this serialized size we do NOT rewrite the body to inject a key: re-stringifying a
  *  pathologically large tools/call would block the proxy loop, and that call is exactly the
  *  one we must not block on. Forgoing its key only drops it to 'opaque' (refused-only). */
@@ -414,6 +429,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const keyingEnabled = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== '0';
         // P-010: absorb an admission-control 429 by retrying (kill-switch to opt out).
         const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
+        const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
         const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, genKey: randomUUID });
         const started = Date.now();
         let attempts = 0;
@@ -436,15 +452,22 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // Drain the shed response to free the socket, wait Retry-After, and retry within
             // the window so the saturation is invisible to the agent. When the operator stays
             // critical past the window/max, fall through and surface the 429 (honest, not a hang).
+            // POST-only: every real MCP call is a POST. A GET/HEAD (health probes, the
+            // watchdog's liveness check) that yields 404/405 must surface INSTANTLY —
+            // absorbing it would stall probes for the whole retry window and read as a
+            // wedge (worst case: the watchdog restart-loops the proxy, flapping the fleet).
+            const bootAbsorbable = req.method === 'POST' && BOOT_WINDOW_STATUSES.has(status) && absorbBoot;
             if (
-              isBackpressureStatus(status) &&
-              absorb429 &&
+              ((isBackpressureStatus(status) && absorb429) || bootAbsorbable) &&
               backpressureRetryable(backpressureRetries, MAX_BACKPRESSURE_RETRIES, elapsed, opts.retryWindowMs)
             ) {
               backpressureRetries++;
               const waitMs = retryAfterMs(ures.headers['retry-after'], backoff, MAX_BACKPRESSURE_WAIT_MS);
-              ures.resume(); // discard the 429 body so the (keepAlive:false) socket is released
-              record({ kind: 'absorb_429', method: req.method, path: req.url, attempts, backpressureRetries, waitMs, elapsedMs: elapsed });
+              ures.resume(); // discard the shed/boot-window body so the (keepAlive:false) socket is released
+              record({
+                kind: isBackpressureStatus(status) ? 'absorb_429' : 'absorb_boot_status',
+                method: req.method, path: req.url, status, attempts, backpressureRetries, waitMs, elapsedMs: elapsed,
+              });
               await new Promise((r) => setTimeout(r, waitMs));
               continue;
             }

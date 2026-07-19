@@ -14,6 +14,7 @@ import {
   sugaredFamilies,
   familyKeyPrefix,
   keyMatchesCatalog,
+  findRequiredParamPrefixMatch,
   type EventCatalogEntry,
 } from './catalog';
 
@@ -235,5 +236,38 @@ describe('EI-10870 — keyMatchesCatalog (the orphan-await guard)', () => {
       for (const p of e.params) params[p.name] = 'x';
       expect(keyMatchesCatalog(buildKey(e.family, params)), `${e.family} must match itself`).toBe(true);
     }
+  });
+});
+
+describe('EI-13089 — findRequiredParamPrefixMatch (the family-prefix-missing-required-param guard)', () => {
+  it('flags a bare family prefix whose first param is REQUIRED — no emitter ever fires the literal key', () => {
+    expect(findRequiredParamPrefixMatch('work-item:done')).toMatchObject({
+      entry: { family: 'work-item-done' },
+      param: { name: 'id', required: true },
+    });
+    expect(findRequiredParamPrefixMatch('lock:grant')).toMatchObject({
+      entry: { family: 'lock' },
+      param: { name: 'ticket', required: true },
+    });
+    expect(findRequiredParamPrefixMatch('plan-run:finished')).toMatchObject({
+      entry: { family: 'plan-run' },
+      param: { name: 'runId', required: true },
+    });
+  });
+
+  it('does NOT flag an OPTIONAL-param family — the bare prefix is a real global key (buildKey collapse rule)', () => {
+    expect(findRequiredParamPrefixMatch('release:deployed')).toBeUndefined(); // deploy: <sha> optional
+    expect(findRequiredParamPrefixMatch('release:green')).toBeUndefined(); // checkpoint: <pipeline> optional
+  });
+
+  it('does NOT flag a fully-interpolated concrete key', () => {
+    expect(findRequiredParamPrefixMatch('work-item:done:WI-4528')).toBeUndefined();
+    expect(findRequiredParamPrefixMatch('lock:grant:ticket-1')).toBeUndefined();
+  });
+
+  it('does NOT flag a no-param (literal) family or a genuine orphan key', () => {
+    expect(findRequiredParamPrefixMatch('work-item:claimable')).toBeUndefined();
+    expect(findRequiredParamPrefixMatch('overwatch:surface-landed')).toBeUndefined();
+    expect(findRequiredParamPrefixMatch('')).toBeUndefined();
   });
 });

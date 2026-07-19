@@ -744,6 +744,26 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(stalledClaimSignalsFromRows([])).toEqual([]);
   });
 
+  it('EI-14763: a live, actively-working holder (holder_active) is NOT counted stalled', () => {
+    // WI-5215<-su-2ab13fe2 (heartbeating, mid-task) + WI-5137<-su-4d3eb54c (running
+    // bash this minute) both had recent tool/coord activity → not a stall. Only a
+    // heartbeating-but-idle holder (holder_active !== true) remains a genuine signal.
+    const active = { work_item_id: 'WI-5215', agent_id: 'su-2ab13fe2', harness_slug: null, detail: 'fed watch', stalled_minutes: 40, holder_active: true };
+    const alsoActive = { work_item_id: 'WI-5137', agent_id: 'su-4d3eb54c', harness_slug: 'papercusp', detail: 'diagnostic', stalled_minutes: 55, holder_active: true };
+    const genuine = { work_item_id: 'WI-9', agent_id: 'bee-idle', harness_slug: 'alpha', detail: 'wedged', stalled_minutes: 42, holder_active: false };
+
+    // All holders active → no signal at all (the 73h standing false-positive is gone).
+    expect(stalledClaimSignalsFromRows([active, alsoActive], { minMinutes: 30 })).toEqual([]);
+
+    // Mixed → only the genuinely-idle holder counts, and is the sole sample.
+    const signals = stalledClaimSignalsFromRows([active, alsoActive, genuine], { minMinutes: 30 });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].body).toContain('1 work-item claim(s)');
+    expect(signals[0].body).toContain('WI-9<-bee-idle');
+    expect(signals[0].body).not.toContain('su-2ab13fe2');
+    expect(signals[0].body).not.toContain('su-4d3eb54c');
+  });
+
   describe('spawn-ceiling-jam (EI-2186): admission consumed by non-streaming rows', () => {
     const now = Date.UTC(2026, 5, 21, 4, 0, 0);
     const minsAgo = (m: number) => new Date(now - m * 60_000);

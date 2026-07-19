@@ -53,6 +53,14 @@ export interface IqBatteryGenDeps {
   /** Does a baseline instance already exist at (workspace, sha)? (default: live PG query.) */
   generationExists?: (codeSha: string) => Promise<boolean>;
   log?: (msg: string) => void;
+  /**
+   * Page the owner when the cadence tick can't produce a generation this cycle
+   * (default: `notifyAttention`). EI-13049: a monthly cadence has ~30-day detection
+   * latency by design if a `failed`/`refused` outcome pages no one — the next tick
+   * is a month away, so this fires at the source instead of relying on a watchdog
+   * to notice the trend went stale.
+   */
+  notifyOutcome?: (outcome: BenchmarkCadenceOutcome, ctx: { installSlug: string }) => Promise<void>;
 }
 
 export async function runIqBatteryGen(
@@ -70,11 +78,47 @@ export async function runIqBatteryGen(
     deps.generationExists ??
     (async (codeSha: string) => {
       const { sql } = getOrgPg();
+      // EI-13049 dedupe trap: an instance row alone is NOT proof a generation was
+      // measured — a runner that dies before its first `startRun` (crash, OOM, a
+      // killed process) leaves a baseline instance row with ZERO cup_keeper_runs,
+      // which then PERMANENTLY blocks retry at that SHA under the old
+      // instance-existence-only check (the next code change is the only way out).
+      // Require at least one linked run so an aborted/empty instance never
+      // satisfies the gate.
       const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM harness_shared.cup_keeper_instances
-         WHERE workspace_id = ${input.workspaceId} AND code_sha = ${codeSha} AND genome_id IS NULL
+        SELECT 1 AS one FROM harness_shared.cup_keeper_instances i
+         WHERE i.workspace_id = ${input.workspaceId} AND i.code_sha = ${codeSha} AND i.genome_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM harness_shared.cup_keeper_runs r WHERE r.instance_id = i.instance_id
+           )
          LIMIT 1`;
       return rows.length > 0;
+    });
+
+  const notifyOutcome =
+    deps.notifyOutcome ??
+    (async (outcome: BenchmarkCadenceOutcome, ctx: { installSlug: string }) => {
+      // Best-effort — `notifyAttention` already swallows its own delivery errors;
+      // this try/catch only guards the dynamic import itself.
+      try {
+        const { notifyAttention } = await import('../attention-notify');
+        const body =
+          outcome.action === 'failed'
+            ? `IQ-battery generation ${outcome.codeSha} FAILED: ${outcome.error}. This is a monthly cadence — the next tick is ~30 days away, so this won't self-heal.`
+            : outcome.action === 'refused'
+              ? `IQ-battery cadence REFUSED to run: ${outcome.reason}. This is a monthly cadence — the next tick is ~30 days away, so this won't self-heal.`
+              : '';
+        await notifyAttention({
+          kind: 'needs-human',
+          title: `IQ-battery cadence ${outcome.action} — ${ctx.installSlug}`,
+          body,
+          harnessSlug: ctx.installSlug,
+          importance: 'high',
+          data: { source: 'iq-battery-gen', action: outcome.action },
+        });
+      } catch (e) {
+        (deps.log ?? console.log)(`[iq-battery-gen] notifyOutcome failed: ${(e as Error)?.message ?? e}`);
+      }
     });
 
   const cadenceDeps: BenchmarkCadenceDeps = {
@@ -83,5 +127,15 @@ export async function runIqBatteryGen(
     runBattery: deps.runBattery ?? defaultRunBattery,
     log: deps.log ?? ((m) => console.log(m)),
   };
-  return runBenchmarkCadenceTick(cadenceDeps, { installSlug: input.installSlug, payload: input.payload ?? null });
+  const outcome = await runBenchmarkCadenceTick(cadenceDeps, {
+    installSlug: input.installSlug,
+    payload: input.payload ?? null,
+  });
+  // EI-13049 silent-failure fix: a monthly cadence can't rely on "wait for the next
+  // tick" to self-heal from a failure/refusal — that's ~30 days away — so page here,
+  // at the source, the moment the cycle produces neither a generation nor a clean skip.
+  if (outcome.action === 'failed' || outcome.action === 'refused') {
+    await notifyOutcome(outcome, { installSlug: input.installSlug });
+  }
+  return outcome;
 }

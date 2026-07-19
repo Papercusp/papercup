@@ -2089,6 +2089,17 @@ interface StalledClaimRow {
   harness_slug: string | null;
   detail: string | null;
   stalled_minutes: number | string | null;
+  /**
+   * EI-14763: the holder emitted native tool / lifecycle (agent_activity) or
+   * coord/MCP (tool_invocations) activity within the stall window. A claim with
+   * no item-scoped STATE transition in 30 min is NOT a stall when its holder is
+   * demonstrably working (long-horizon su lanes hold a claim for hours while
+   * running bash / sending coord). Such rows are dropped from the signal — a
+   * heartbeat alone (holder_alive) is too weak; genuine abandonment is the
+   * separate orphaned-claim case (dead/absent holder). Absent ⇒ not-active
+   * (older callers behave exactly as before).
+   */
+  holder_active?: boolean | null;
 }
 /**
  * Pure (agent-activity-liveness-truth P-007, D-001): live-holder-but-no-progress
@@ -2101,6 +2112,12 @@ export function stalledClaimSignalsFromRows(
   rows: StalledClaimRow[],
   opts: { minMinutes?: number } = {},
 ): WatchdogSignal[] {
+  // EI-14763: a holder that is alive AND actively emitting tool/coord activity in
+  // the window is not stalled (a claim is not progress, but neither is "no state
+  // event in 30 min" a stall when the holder is demonstrably working). Genuine
+  // abandonment (dead/absent holder) is the orphaned-claim case, covered
+  // elsewhere. Drop active holders before the signal is built.
+  rows = rows.filter((r) => r.holder_active !== true);
   if (rows.length === 0) return [];
   const minMinutes = opts.minMinutes ?? 30;
   const sample = rows
@@ -2151,7 +2168,21 @@ export async function collectStalledClaimSignals(
   const minMinutes = opts.stalledClaimMinutes ?? 30;
   const rows = await sql<StalledClaimRow[]>`
     SELECT fa.work_item_id, fa.agent_id, fa.harness_slug, fa.detail,
-           EXTRACT(epoch FROM (now() - COALESCE(fa.last_progress_at, fa.claim_acquired_ts))) / 60 AS stalled_minutes
+           EXTRACT(epoch FROM (now() - COALESCE(fa.last_progress_at, fa.claim_acquired_ts))) / 60 AS stalled_minutes,
+           -- EI-14763: the holder is demonstrably WORKING within the window — a
+           -- native tool call / lifecycle turn (agent_activity) or a coord/MCP
+           -- dispatch (tool_invocations). A live, active holder is not stalled
+           -- even with no item-scoped STATE transition; only a heartbeating-but-
+           -- idle holder (or the dead-holder orphaned case) should raise this.
+           (EXISTS (
+              SELECT 1 FROM harness_shared.agent_activity aa
+               WHERE aa.owner_id = fa.agent_id
+                 AND aa.created_at > now() - make_interval(mins => ${minMinutes})
+            ) OR EXISTS (
+              SELECT 1 FROM harness_shared.tool_invocations ti
+               WHERE ti.coord_owner_id = fa.agent_id
+                 AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
+            ))                                              AS holder_active
       FROM harness_shared.fleet_assignment fa
      WHERE fa.source = 'work_item_claim'
        AND fa.stalled IS TRUE
@@ -2162,6 +2193,19 @@ export async function collectStalledClaimSignals(
           WHERE cn.scope = 'workitem:' || fa.harness_slug || ':' || fa.work_item_id
             AND cn.note IS NOT NULL
             AND cn.updated_ts > (extract(epoch from now()) * 1000)::bigint - (${minMinutes}::int * 60000)
+       )
+       -- Suppress live, actively-working holders directly in the fetch so genuine
+       -- stalls are never crowded out of the LIMIT (the pure signal also drops
+       -- holder_active rows defensively — one rule, two enforcement points).
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.agent_activity aa
+          WHERE aa.owner_id = fa.agent_id
+            AND aa.created_at > now() - make_interval(mins => ${minMinutes})
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.tool_invocations ti
+          WHERE ti.coord_owner_id = fa.agent_id
+            AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
        )
      ORDER BY COALESCE(fa.last_progress_at, fa.claim_acquired_ts) ASC
      LIMIT 50`;

@@ -418,6 +418,43 @@ export function keyMatchesCatalog(
   });
 }
 
+/**
+ * EI-13089 — the FAMILY-PREFIX-MISSING-REQUIRED-PARAM guard.
+ *
+ * `familyKeyPrefix` (and therefore `keyMatchesCatalog`) strips a template down to
+ * the text before its FIRST placeholder regardless of whether that placeholder is
+ * required or optional — correct for an optional param (the bare prefix IS the
+ * real global key `buildKey` collapses to, e.g. `release:deployed`), but WRONG for
+ * a required one: no emitter ever fires the bare literal (only the concretely-
+ * interpolated form does, e.g. `work-item:done:<id>`), so `keyMatchesCatalog`
+ * reports the bare prefix as a known/matching key and the EI-10870 orphan guard
+ * stays silent — an await on it can then only ever TIME OUT, silently, in the
+ * safe-looking direction. Live case: `events:await { event: 'release:deployed' }`
+ * was armed intending the per-sha deploy wake but the caller had actually meant a
+ * family whose FIRST param is required in other families (`work-item:done`,
+ * `lock:grant`, `plan-run:finished`, …) — this guard is the general fix.
+ *
+ * Returns the matched family + its first (required) param when `key` is EXACTLY a
+ * family's prefix and that family's first placeholder is required; `undefined`
+ * when `key` doesn't look like a bare required-param prefix (including when the
+ * first placeholder is optional — that bare key is legitimate and already handled
+ * by `keyMatchesCatalog`).
+ */
+export function findRequiredParamPrefixMatch(
+  key: string,
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): { entry: EventCatalogEntry; param: EventKeyParam } | undefined {
+  const k = String(key ?? '').trim();
+  if (!k) return undefined;
+  for (const e of entries) {
+    const prefix = familyKeyPrefix(e);
+    if (prefix.length === 0 || k !== prefix) continue;
+    const firstParam = e.params[0];
+    if (firstParam?.required) return { entry: e, param: firstParam };
+  }
+  return undefined;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * INSTALLED TIER (cupboard-public-release-2026-07-12 P-006, D-003).
  *

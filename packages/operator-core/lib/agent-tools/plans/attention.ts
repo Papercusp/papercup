@@ -69,6 +69,7 @@ import { shapePlansAttention } from "./attention-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { conversationsScopeWorkspace } from "../coordination/conversations";
 import { runWithWorkspace } from "../../workspace-als";
+import { activeWorkspaceId } from "../../workspace-registry";
 
 /**
  * SWR backstop for plans:attention (cache-expensive-tool-reads-2026-06-22 P-003 / D-001).
@@ -201,6 +202,18 @@ export default defineTool({
     const ctxWs = (ctx as { workspaceId?: string | null }).workspaceId?.trim();
     const conversationsWorkspace =
       ctxWs && ctxWs !== "*" ? ctxWs : conversationsScopeWorkspace();
+    // EI-1541: the general workspace-registry partition (harness_smoke_test's
+    // own `workspace_id` scheme) resolved the SAME way — the request's
+    // ctx.workspaceId when present, else the ambient activeWorkspaceId()
+    // fallback. Captured HERE (a plain value, not a re-derived ambient lookup)
+    // so the smoke-fail source below reads the right partition even if its
+    // async IIFE ends up running detached from the request ALS (an SWR
+    // background refresh inside cachedRead — see WI-3348 above). Without this,
+    // the source called activeWorkspaceId() again from inside the closure and
+    // fell through to the process-global registry workspace whenever the
+    // request's workspace wasn't ambiently threaded, leaking every OTHER
+    // workspace's failing smoke tests into an isolated workspace's feed.
+    const smokeWorkspaceId = ctxWs && ctxWs !== "*" ? ctxWs : activeWorkspaceId();
 
     // Cache the expensive ~10-source attention aggregation (cache-expensive-tool-reads
     // P-003). The feed is NON-principal-scoped: it always builds the HUMAN's attention
@@ -294,7 +307,19 @@ export default defineTool({
             try {
               const { listEscalations } =
                 await import("../coordination/escalations");
-              const escs = await listEscalations({ status: "open" });
+              // EI-1541: listEscalations has no workspace param of its own — it
+              // reads through coordLog, whose PG backend resolves its partition
+              // from coordScopeWorkspace() -> activeWorkspaceId(), an AMBIENT
+              // (request-ALS) lookup. Pin that ALS to the workspace resolved up
+              // front (ctx.workspaceId, else the coord-plane fallback) for the
+              // duration of this call, mirroring source #9's WI-3348 fix below —
+              // otherwise a detached SWR background refresh (or any call that
+              // loses the request ALS) falls through to the global registry
+              // workspace and every isolated workspace's Overview/Working "NEEDS
+              // YOU" panel shows every OTHER workspace's open escalations.
+              const escs = await runWithWorkspace(conversationsWorkspace, () =>
+                listEscalations({ status: "open" }),
+              );
               for (const e of escs) {
                 items.push(
                   coordEscalationToAttention({
@@ -330,10 +355,18 @@ export default defineTool({
                 await import("../coordination/messages");
               const { ADMIN_COORD_UI_OWNER } =
                 await import("../coordination/identity");
-              const [msgs, acked] = await Promise.all([
-                readInbox("human", { kinds: ["message"] }),
-                readAckedMsgIds(ADMIN_COORD_UI_OWNER),
-              ]);
+              // EI-1541: same coordLog ambient-workspace pitfall as source #2 —
+              // pin the ALS so a detached SWR refresh can't fall through to the
+              // global registry workspace and leak another workspace's
+              // messages-to-human into this one's feed.
+              const [msgs, acked] = await runWithWorkspace(
+                conversationsWorkspace,
+                () =>
+                  Promise.all([
+                    readInbox("human", { kinds: ["message"] }),
+                    readAckedMsgIds(ADMIN_COORD_UI_OWNER),
+                  ]),
+              );
               for (const m of msgs.slice(-50)) {
                 if (acked.has(m.msg_id)) continue;
                 const mm = m as typeof m & {
@@ -383,10 +416,16 @@ export default defineTool({
           (async () => {
             try {
               const { getOrgPg } = await dbOrgImportP;
-              const { activeWorkspaceId } =
-                await import("../../workspace-registry");
               const { sql } = getOrgPg();
-              const wid = activeWorkspaceId();
+              // EI-1541: use the workspace resolved up front (ctx.workspaceId,
+              // else activeWorkspaceId()'s own fallback) rather than
+              // re-deriving it here — a re-derived ambient lookup falls
+              // through to the global registry workspace whenever this IIFE
+              // runs detached from the request ALS (an SWR background
+              // refresh), leaking every OTHER workspace's failing smoke tests
+              // into an isolated workspace's Overview/Working "NEEDS YOU"
+              // panel (confirmed root cause).
+              const wid = smokeWorkspaceId;
               const hf = harnessFilter;
 
               const smoke = await sql<

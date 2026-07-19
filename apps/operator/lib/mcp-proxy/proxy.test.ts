@@ -204,6 +204,53 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     expect(calls).toBe(3); // two 429s absorbed, third admitted — the agent never saw a 429
   });
 
+  it('EI-16883: ABSORBS a boot-window 405 (route table not yet mounted) and returns the eventual 200', async () => {
+    let calls = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        calls++;
+        if (calls <= 2) {
+          // Mid-restart: socket accepts but /api/mcp is not mounted yet → Hono answers 405.
+          res.writeHead(405, { 'content-type': 'text/plain' });
+          res.end('Method Not Allowed');
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"mounted"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 20, log: () => {} }));
+    await listen(proxy);
+
+    const r = await request(port(proxy));
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"mounted"}');
+    expect(calls).toBe(3); // two boot-window 405s absorbed — the client never saw them
+  });
+
+  it('EI-16883: kill-switch (PAPERCUSP_MCP_PROXY_ABSORB_BOOT=0) surfaces the 405 instead of absorbing it', async () => {
+    const prev = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT;
+    process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT = '0';
+    try {
+      const upstream = track(
+        http.createServer((_req, res) => {
+          res.writeHead(405, { 'content-type': 'text/plain' });
+          res.end('Method Not Allowed');
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 2_000, retryBackoffMs: 20, log: () => {} }));
+      await listen(proxy);
+
+      const r = await request(port(proxy));
+      expect(r.status).toBe(405);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT;
+      else process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT = prev;
+    }
+  });
+
   it('P-010: kill-switch (PAPERCUSP_MCP_PROXY_ABSORB_429=0) surfaces the 429 instead of absorbing it', async () => {
     const prev = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429;
     process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 = '0';

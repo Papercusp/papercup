@@ -196,10 +196,21 @@ export default function AdvOverviewTab() {
   const attentionQ = usePlanAttention();
 
   // Roster (live fleet) — LIVE via dev.coordPresence (push-driven by the
-  // coord_presence→query bridge). Workspace-scoped server-side (no args). The
-  // resolver already drops stale rows; we keep selectLiveAgents' stale filter as
-  // a belt-and-braces guard on the client-derived liveness.
-  const rosterQ = useSyncQuery<PresenceRow>({ queryName: 'dev.coordPresence', staleTime: 8_000 });
+  // coord_presence→query bridge). EI-1541: the resolver's `workspace` arg is
+  // NOT optional-but-workspace-scoped-by-default — omitting it passes
+  // `workspaceId: null` straight through to PgPresenceStore.list, which reads
+  // `WHERE TRUE` (every workspace, unfiltered) rather than falling back to the
+  // caller's own workspace. Pass it explicitly, exactly like the Activity tile
+  // below (`userActions.byHarness`/`.recent`) already does — otherwise an
+  // isolated workspace's Overview/Working AGENTS panel shows every OTHER
+  // workspace's live agents. The resolver already drops stale rows; we keep
+  // selectLiveAgents' stale filter as a belt-and-braces guard on the
+  // client-derived liveness.
+  const rosterQ = useSyncQuery<PresenceRow>({
+    queryName: 'dev.coordPresence',
+    args: { workspace: getBrowserWorkspaceId() },
+    staleTime: 8_000,
+  });
 
   // Activity (recent action stream). A harness selected → userActions.byHarness (that
   // harness + workspace); All-Pots (no harness) → the fleet-wide userActions.recent feed.

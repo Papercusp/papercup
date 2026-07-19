@@ -65,6 +65,13 @@ export async function invokeServerCapability(opts: {
   name: string;
   args?: unknown;
   confirmed?: boolean;
+  /** EI-1751: an optional caller-supplied, process-stable id (e.g. a pui
+   *  instance's `pui-<pid>`) — folded into `ctx.uiClientId` for per-caller
+   *  telemetry attribution ONLY. Every palette-loopback call still runs as
+   *  the same fixed `spawnId='palette'` operator principal below; existing
+   *  consumers keyed on that literal (fleet-ekg/features.ts,
+   *  decision-ledger/emit.ts's isReadShapedCoordPoll) are unaffected. */
+  callerSid?: string;
 }): Promise<InvokeResult> {
   // The projected registry is the lookup of record — it carries EVERY tool
   // (principal-gated, role-gated, plugin); the legacy getCatalog() misses all
@@ -110,7 +117,9 @@ export async function invokeServerCapability(opts: {
       runId: globalThis.crypto.randomUUID(),
       spawnId: 'palette',
       parentSpawnId: null,
-      uiClientId: null,
+      // EI-1751: attribution-only — see the opts.callerSid doc comment above.
+      // Every literal 'palette'-keyed consumer reads ctx.spawnId, untouched.
+      uiClientId: opts.callerSid ?? null,
       isSuperuser: false,
       gateBypass: { capability: true, quota: true },
       profile: 'engineer',

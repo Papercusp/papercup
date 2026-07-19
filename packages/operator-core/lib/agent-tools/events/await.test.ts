@@ -265,6 +265,42 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
   });
 });
 
+describe('EI-13089 — the FAMILY-PREFIX-MISSING-REQUIRED-PARAM guard', () => {
+  it('WARNS on a bare family prefix whose required param was dropped — and still REGISTERS it (warn, never reject)', async () => {
+    // work-item:done:<id> — id is REQUIRED; nothing ever fires the bare 'work-item:done'.
+    const out = await call({ event: 'work-item:done' });
+
+    expect(out.family_prefix_missing_param).toBe(true);
+    expect(out.family_prefix_missing_param_advice).toMatch(/FAMILY PREFIX for 'work-item-done'/);
+    expect(out.family_prefix_missing_param_advice).toMatch(/can only TIME OUT/);
+    expect(out.family_prefix_missing_param_advice).toMatch(/work-item:done:\*/);
+
+    // Fail-open: still registers, same policy as the orphan-key guard.
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    // The false-positive orphan warning must NOT ALSO fire — keyMatchesCatalog still
+    // reports this key as "known" (it's a real family prefix), just not fireable bare.
+    expect(out.unknown_event_key).toBeUndefined();
+  });
+
+  it('stays SILENT on an OPTIONAL-param family bare prefix — that key really does fire (buildKey collapse rule)', async () => {
+    const out = await call({ event: 'release:deployed' });
+    expect(out.family_prefix_missing_param).toBeUndefined();
+    expect(out.family_prefix_missing_param_advice).toBeUndefined();
+  });
+
+  it('stays SILENT on the fully-interpolated concrete key', async () => {
+    const out = await call({ event: 'work-item:done:WI-4528' });
+    expect(out.family_prefix_missing_param).toBeUndefined();
+  });
+
+  it('stays silent on a PATTERN await (a glob already covers "any instance")', async () => {
+    const out = await call({ event: 'work-item:done:*' });
+    expect(out.family_prefix_missing_param).toBeUndefined();
+  });
+});
+
 describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-await incident)', () => {
   it('awaiting work-item:done:<id> for an ALREADY-settled item answers already_done and registers NOTHING', async () => {
     vi.mocked(liveSettledProbe).mockResolvedValueOnce({ verdict: 'settled', itemState: 'resolved' });

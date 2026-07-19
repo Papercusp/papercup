@@ -339,6 +339,10 @@ interface TranscriptAnchor {
   /** File size at the last read; (settled, sizeSeen] is the raw-counted partial tail. */
   sizeSeen: number;
   at: number;
+  /** EI-13120: last time `path` was CONFIRMED to still be the owner's live transcript
+   *  (a fresh resolveSessionRef+findSessionTranscript agreed with it). Reset on every
+   *  reseed; refreshed by the periodic re-verify in `currentContextTokensForOwner`. */
+  verifiedAt: number;
 }
 
 const anchors = new Map<string, TranscriptAnchor>();
@@ -384,6 +388,7 @@ function seedAnchorFromFile(pathStr: string): TranscriptAnchor | null {
       const countedView = view.toString('latin1', idx === -1 ? 0 : idx);
       const imageExcess = imageExcessIn(countedView);
       const tureExcess = toolUseResultExcessIn(countedView);
+      const now = Date.now();
       return {
         path: pathStr,
         countStart,
@@ -391,7 +396,8 @@ function seedAnchorFromFile(pathStr: string): TranscriptAnchor | null {
         tureExcess,
         settled: start + settledLen,
         sizeSeen: size,
-        at: Date.now(),
+        at: now,
+        verifiedAt: now,
       };
     } finally {
       fs.closeSync(fd);
@@ -443,26 +449,24 @@ function advanceAnchor(a: TranscriptAnchor, opts: { syncCap?: number } = {}): 'o
   }
 }
 
-/**
- * The live per-render read: EXACT current context tokens for an owner, derived
- * from the transcript's state at THIS call (anchored-incremental, so the cost is
- * the append delta, not a tail scan). Resolution/degradation contract matches
- * estimateContextTokensForOwner: OMP/Codex and unresolvable transcripts → null.
- * `reseed: true` forces a fresh full scan (periodic ground-truthing / boundary
- * refresh) instead of trusting the anchor.
- */
-export async function currentContextTokensForOwner(
-  ownerId: string,
-  opts: { reseed?: boolean } = {},
-): Promise<number | null> {
-  const a = anchors.get(ownerId);
-  if (a && !opts.reseed) {
-    try {
-      if (advanceAnchor(a) === 'ok') return anchorTokens(a);
-    } catch {
-      /* rotated/unreadable — fall through to reseed */
-    }
-  }
+/** EI-13120: bound on how long a per-process anchor can go without re-confirming
+ *  `path` is still the owner's LIVE transcript. On a clustered operator (each
+ *  :3070 worker keeps its own anchor Map — see the file-header note), a
+ *  carry-respawn's `sessionRespawned` report lands on exactly ONE worker and
+ *  clears only THAT process's anchor; sibling workers never learn the old
+ *  transcript died, so `advanceAnchor`'s "size unchanged ⇒ ok" fast path keeps
+ *  replaying the frozen pre-respawn reading FOREVER on any request that happens
+ *  to route to them (a fresh post-compaction wake re-reporting the byte-identical
+ *  pre-compaction %). Re-resolving the live path is a DB read (resolveSessionRef)
+ *  + a dir lookup — too costly for every call (the whole point of the anchor is
+ *  to avoid that), so it's done at most once per this interval per process. */
+const PATH_REVERIFY_MS = 30_000;
+
+/** Resolve the CURRENT live transcript path for an owner (primary session_id
+ *  lookup + the P-016 stale-session-id fallback), or null when untracked
+ *  (OMP/Codex/unresolvable). Shared by the initial seed and the periodic
+ *  re-verify so both paths make the SAME "what is live right now" call. */
+async function resolveLiveTranscriptPath(ownerId: string): Promise<string | null> {
   const ref = await resolveSessionRef(ownerId);
   if (!ref || ref.agent === 'omp' || ref.agent === 'codex') return null;
   let p: string | null = null;
@@ -475,6 +479,60 @@ export async function currentContextTokensForOwner(
   }
   // P-016 fallback: stale/rotated session_id → newest jsonl under the owner root.
   if (!p) p = newestTranscriptUnderOwner(ownerId);
+  return p;
+}
+
+/**
+ * The live per-render read: EXACT current context tokens for an owner, derived
+ * from the transcript's state at THIS call (anchored-incremental, so the cost is
+ * the append delta, not a tail scan). Resolution/degradation contract matches
+ * estimateContextTokensForOwner: OMP/Codex and unresolvable transcripts → null.
+ * `reseed: true` forces a fresh full scan (periodic ground-truthing / boundary
+ * refresh) instead of trusting the anchor.
+ *
+ * EI-13120: even on a byte-advance 'ok', an anchor older than
+ * {@link PATH_REVERIFY_MS} since its last path confirmation re-resolves the
+ * owner's live transcript path before trusting it — this is what bounds a
+ * cross-process-stale anchor (see that constant's doc) to a short window
+ * instead of "until this worker happens to be told otherwise", which on today's
+ * cluster is never.
+ */
+export async function currentContextTokensForOwner(
+  ownerId: string,
+  opts: { reseed?: boolean } = {},
+): Promise<number | null> {
+  const a = anchors.get(ownerId);
+  if (a && !opts.reseed) {
+    try {
+      if (advanceAnchor(a) === 'ok') {
+        if (Date.now() - a.verifiedAt <= PATH_REVERIFY_MS) return anchorTokens(a);
+        const livePath = await resolveLiveTranscriptPath(ownerId);
+        if (livePath === a.path) {
+          a.verifiedAt = Date.now();
+          return anchorTokens(a);
+        }
+        if (livePath == null) {
+          // Resolution failed/untracked THIS call — transient DB/fs hiccup or a
+          // genuinely untracked owner. Fail open on the existing anchor (don't
+          // flap to null / wipe good state on a blip); retry the re-verify next call.
+          return anchorTokens(a);
+        }
+        // livePath resolved to a DIFFERENT file: this anchor is tracking a dead
+        // transcript (a carry-respawn's successor, invisible to this process).
+        // Fall through and reseed directly against the confirmed-live path.
+        const seeded = seedAnchorFromFile(livePath);
+        if (seeded) {
+          anchors.set(ownerId, seeded);
+          return anchorTokens(seeded);
+        }
+        // seed failed (fs blip) — degrade to the stale anchor rather than null.
+        return anchorTokens(a);
+      }
+    } catch {
+      /* rotated/unreadable — fall through to reseed */
+    }
+  }
+  const p = await resolveLiveTranscriptPath(ownerId);
   if (!p) return null;
   const seeded = seedAnchorFromFile(p);
   if (!seeded) return null;
@@ -489,12 +547,27 @@ export async function currentContextTokensForOwner(
  * rather than a possibly-stale number, and the next call reads the corrected
  * anchor. (An owner never read in this process before seeds in the background
  * the same way.)
+ *
+ * EI-13120: a sync call can't itself await the path re-verify `currentContextTokensForOwner`
+ * does, but it must not let THIS process's anchor go unverified forever either — so past
+ * {@link PATH_REVERIFY_MS} since the last confirmation it still returns the (bounded-stale)
+ * anchor reading for THIS call, but also kicks the same background reseed used for a cold
+ * owner; that call's internal re-verify self-corrects the shared anchor for every subsequent
+ * call (sync or async) on this process.
  */
 export function currentContextTokensSyncForOwner(ownerId: string): number | null {
   const a = anchors.get(ownerId);
   if (a) {
     try {
-      if (advanceAnchor(a, { syncCap: SYNC_DELTA_CAP }) === 'ok') return anchorTokens(a);
+      if (advanceAnchor(a, { syncCap: SYNC_DELTA_CAP }) === 'ok') {
+        if (Date.now() - a.verifiedAt > PATH_REVERIFY_MS && !seedInFlight.has(ownerId)) {
+          seedInFlight.add(ownerId);
+          void currentContextTokensForOwner(ownerId)
+            .catch(() => null)
+            .finally(() => seedInFlight.delete(ownerId));
+        }
+        return anchorTokens(a);
+      }
     } catch {
       /* rotated/unreadable — background reseed below */
     }

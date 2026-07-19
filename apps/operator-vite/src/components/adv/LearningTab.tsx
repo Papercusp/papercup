@@ -1428,7 +1428,7 @@ function GymView({
           className="pc-learning__muted pc-learning__scopenote"
           title={`This ${t("pot")}'s own gym harness has no recorded experiments; showing the workspace-wide rollup instead so real data is never hidden.`}
         >
-          Showing gym experiments from all {t("pot", { plural: true, lower: true })} — none are scoped to this {t("pot")} yet.
+          {`Showing gym experiments from all ${t("pot", { plural: true, lower: true })} — none are scoped to this ${t("pot")} yet.`}
         </p>
       ) : null}
 

@@ -62,6 +62,35 @@ test('readMemberUsage sums tokens/cost/turns + coerces null/text columns to numb
   assert.deepEqual(empty, { tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 });
 });
 
+// WI-273: benchmark arm telemetry undercounted a re-placed task's cost because a recovery worker's
+// agent_usage_samples rows carry role='merge-resolver' (not 'bee'/'cup') under the SAME per-task
+// harness_slug. `fakeSql` above returns a fixed row set regardless of the query text, so it can't
+// catch a regression where someone re-adds a `role = ...` WHERE clause — this test captures the
+// actual SQL sent and asserts it groups by harness_slug ALONE (no role predicate), so every role's
+// samples for a member are summed together. DB-verified live 2026-06-20 (su-10912216-benchmark):
+// harness_slug 'xbq72ugvazsm...protonmail...' carried ONLY role=merge-resolver rows ($7.75, 4
+// samples) with zero role=bee/cup rows for that task — a role-filtered query would have silently
+// zeroed it despite a real, graded diff.
+test('WI-273: readMemberUsage query has NO role filter — sums every role sharing the member harness_slug', async () => {
+  let capturedQuery = '';
+  const capturingSql = ((strings: TemplateStringsArray) => {
+    capturedQuery = strings.join('');
+    return Promise.resolve([{ tokens_in: '10', tokens_out: '5', cost_usd: '17.60', turns: '8' }]);
+  }) as unknown as postgres.Sql;
+
+  const usage = await readMemberUsage(capturingSql, 'xbq72ugvazsminstanceprotonmailwebclix7ip', 'ws-1');
+
+  assert.doesNotMatch(
+    capturedQuery,
+    /role/i,
+    'readMemberUsage must sum agent_usage_samples by harness_slug alone — a role predicate silently ' +
+      'zeros out re-placed/recovery work (WI-273: merge-resolver-only tasks reported $0/turns=0)',
+  );
+  assert.match(capturedQuery, /harness_slug/);
+  // The (unfiltered) query result — including merge-resolver-only samples — is passed through untouched.
+  assert.deepEqual(usage, { tokensIn: 10, tokensOut: 5, costUsd: 17.6, turns: 8 });
+});
+
 test('readMemberBeeSpawns maps the bee spawn rows + coerces the timestamps (finished may be null)', async () => {
   const t0 = new Date('2026-06-15T05:00:00Z');
   const t1 = new Date('2026-06-15T05:10:00Z');

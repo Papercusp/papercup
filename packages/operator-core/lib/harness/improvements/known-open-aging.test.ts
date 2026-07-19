@@ -183,6 +183,29 @@ describe('planKnownOpenAging — the threshold/cool-down rules', () => {
     expect(out[0].priorSeverityBumped).toBe(false);
   });
 
+  it('EI-14763: a freshly re-minted item does NOT inherit the KEY\'s old run (clock clamps to createdAt)', () => {
+    // The watchdogKey fired continuously for 73h, but the CURRENT item was minted
+    // 18 min ago (a resolve→re-mint within a cooldown). The per-KEY run says 73h;
+    // the clamp restarts the clock at the item's own creation → no phantom escalate.
+    const key = 'coordination:stalled-claim';
+    const runs = new Map([[key, hoursAgo(73)]]);
+    const freshMint = item({ id: 'EI-NEW', createdAt: new Date(NOW - 18 * 60_000).toISOString() }, key);
+    expect(planKnownOpenAging(runs, [freshMint], keyOf, { nowMs: NOW })).toEqual([]);
+
+    // Control: a genuinely long-open item (createdAt precedes the run) still escalates,
+    // and its reported clock reflects the item, not a clock older than it existed.
+    const genuinelyOld = item({ id: 'EI-OLD', createdAt: new Date(hoursAgo(100)).toISOString() }, key);
+    const out = planKnownOpenAging(runs, [genuinelyOld], keyOf, { nowMs: NOW });
+    expect(out).toHaveLength(1);
+    expect(out[0].issueId).toBe('EI-OLD');
+    expect(out[0].firstSeenMs).toBe(hoursAgo(73)); // the run start, not the older createdAt
+    expect(out[0].openForMs).toBe(73 * 3_600_000);
+
+    // Absent createdAt → no clamp (older callers unchanged): the 73h run escalates.
+    const noCreated = item({ id: 'EI-NC' }, key);
+    expect(planKnownOpenAging(runs, [noCreated], keyOf, { nowMs: NOW })).toHaveLength(1);
+  });
+
   it('caps per tick, longest-open first; resolved items are ignored', () => {
     const runs = new Map([
       ['service-down:a', hoursAgo(30)],

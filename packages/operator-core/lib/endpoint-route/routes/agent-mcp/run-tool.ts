@@ -18,6 +18,12 @@ interface Body {
   name?: unknown;
   args?: unknown;
   confirmed?: unknown;
+  /** EI-1751: an optional CALLER-supplied, process-stable id (e.g. the pui's
+   *  `pui-<pid>`) — folded into the dispatch ctx as `uiClientId` purely for
+   *  per-caller telemetry attribution. Never trusted for anything beyond
+   *  labeling (this route already runs as the fixed `spawnId='palette'`
+   *  operator principal regardless of what's passed here). */
+  callerSid?: unknown;
 }
 
 export default defineTool({
@@ -42,10 +48,12 @@ export default defineTool({
       return Response.json({ ok: false, error: 'missing_name' }, { status: 400 });
     }
 
+    const callerSid = typeof body.callerSid === 'string' ? body.callerSid.trim().slice(0, 128) : '';
     const r = await invokeServerCapability({
       name,
       args: body.args,
       confirmed: body.confirmed === true,
+      ...(callerSid ? { callerSid } : {}),
     });
     if (!r.ok) {
       return Response.json({ ok: false, error: r.code, message: r.message }, { status: r.status });

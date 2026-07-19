@@ -19,6 +19,7 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import {
   keyMatchesCatalog,
   mergeInstalledEventCatalog,
+  findRequiredParamPrefixMatch,
   type EventCatalogEntry,
 } from '../../events/await/catalog';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
@@ -329,6 +330,27 @@ export default defineTool({
     // announced gate, a hand-minted pair key), and a hard reject would break them.
     // And if the installed tier cannot be CONFIRMED, stay silent: a false "nothing
     // emits this" is worse than no warning at all (it trains the warning out).
+    // ── EI-13089: the bare FAMILY-PREFIX guard. `keyMatchesCatalog` (used by the
+    // orphan-key probe just below) treats a family's prefix as a match whether its
+    // first placeholder is required or optional — correct for optional (the bare
+    // key IS the real global emit, e.g. `release:deployed`) but WRONG for required
+    // (no emitter ever fires the bare literal, e.g. `work-item:done` with no id) —
+    // so that probe alone would stay silent and this await could only ever TIME
+    // OUT. Cheap + synchronous (static catalog only, no installed-tier I/O); same
+    // guard scope as the orphan probe (skip on a pattern or an already-announced
+    // gate — both are intentional, not a dropped param). Warns, never rejects.
+    let requiredParamPrefixMismatch: { family: string; keyTemplate: string; paramName: string } | null = null;
+    if (!patternAwait && !announcedGate) {
+      const hit = findRequiredParamPrefixMatch(eventKey);
+      if (hit) {
+        requiredParamPrefixMismatch = {
+          family: hit.entry.family,
+          keyTemplate: hit.entry.keyTemplate,
+          paramName: hit.param.name,
+        };
+      }
+    }
+
     let unknownEventKey = false;
     if (!patternAwait && !announcedGate) {
       const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
@@ -453,6 +475,12 @@ export default defineTool({
               ? {
                   unknown_event_key: true,
                   unknown_event_key_advice: `NO REGISTERED EMITTER for "${eventKey}" — it matches no family in events:catalog and no announced gate, so nothing in this system will ever fire it and this await can only TIME OUT. If you mistyped a key, events:cancel and re-await the exact one (events:catalog lists them). If a peer is meant to emit it, have them DECLARE it first (events:emit { announce:true }) and await the key it returns. Registered anyway — this is a warning, not a refusal.`,
+                }
+              : {}),
+            ...(requiredParamPrefixMismatch
+              ? {
+                  family_prefix_missing_param: true,
+                  family_prefix_missing_param_advice: `"${eventKey}" is the FAMILY PREFIX for '${requiredParamPrefixMismatch.family}' (template ${requiredParamPrefixMismatch.keyTemplate}), but its '${requiredParamPrefixMismatch.paramName}' param is REQUIRED — no emitter ever fires the bare key, so this await can only TIME OUT. Did you mean the parameterized key (fill in ${requiredParamPrefixMismatch.paramName}), or the glob form "${eventKey}:*" to wake on ANY instance? Registered anyway — this is a warning, not a refusal.`,
                 }
               : {}),
             expires_ts: row.expiresTs,

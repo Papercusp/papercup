@@ -243,6 +243,21 @@ export interface AgingItemInput {
   severity: IssueSeverity;
   title: string;
   payload: unknown | null;
+  /**
+   * When the ITEM was created (EI-14763). The aging clock is clamped to this so a
+   * freshly re-minted item can never inherit a days-old per-KEY run (see the
+   * clamp in `planKnownOpenAging`). EngineerIssue.createdAt (ISO) satisfies it;
+   * absent ⇒ no clamp (older callers behave exactly as before).
+   */
+  createdAt?: string | Date | null;
+}
+
+/** Pure: parse an item's createdAt to epoch-ms (null when absent/malformed). */
+export function itemCreatedMs(item: AgingItemInput): number | null {
+  const c = item.createdAt;
+  if (c == null) return null;
+  const ms = c instanceof Date ? c.getTime() : Date.parse(String(c));
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /**
@@ -275,11 +290,20 @@ export function planKnownOpenAging(
   }
 
   const decisions: AgingDecision[] = [];
-  for (const [key, firstSeenMs] of runs) {
+  for (const [key, runFirstSeenMs] of runs) {
     const item = openByKey.get(key);
     if (!item) continue;
     const infra = isInfraClassKey(key);
     const thresholdMs = infra ? infraMs : generalMs;
+    // EI-14763: the run start is derived per-KEY from the tick history, which can
+    // span a resolve→re-mint boundary — a watchdogKey that keeps firing across a
+    // resolution carries its OLD run onto a freshly-minted item, so a minutes-old
+    // item read as "73h old" and phantom-escalated major→critical to the human.
+    // Clamp the aging clock to the ITEM's own creation: an item cannot be older
+    // than it existed, so a genuinely new mint restarts the clock while a truly
+    // long-open item is unaffected (its createdAt precedes the run).
+    const createdMs = itemCreatedMs(item);
+    const firstSeenMs = createdMs != null ? Math.max(runFirstSeenMs, createdMs) : runFirstSeenMs;
     const openForMs = nowMs - firstSeenMs;
     if (openForMs < thresholdMs) continue;
     const state = parseAgingState(item.payload);

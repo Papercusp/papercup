@@ -112,8 +112,8 @@ const session = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const livePresence = { stale: false, revoked: false } as never;
-const stalePresence = { stale: true, revoked: false } as never;
+const livePresence = { stale: false, revoked: false };
+const stalePresence = { stale: true, revoked: false };
 
 function fakeOmpPty(id = 'pty-omp') {
   return {

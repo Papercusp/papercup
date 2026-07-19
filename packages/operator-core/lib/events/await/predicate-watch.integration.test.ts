@@ -11,6 +11,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../test/_org-test-db';
+import type { PredicateOp } from './predicate-watch';
 
 const h = vi.hoisted(() => ({
   sql: null as any,
@@ -48,7 +49,7 @@ async function seedWatch(opts: {
   once?: boolean;
   awaitOnce?: boolean;
   intervalSec?: number;
-  op?: pw.PredicateOp;
+  op?: PredicateOp;
   value?: unknown;
   path?: string;
 }) {

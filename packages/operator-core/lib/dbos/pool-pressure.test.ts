@@ -16,7 +16,7 @@
  *    and publishes lastPoolProbeMs()/At().
  *  - recordPoolShed / poolShedCount: the same-process shed counter increments.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyPoolPressure,
   probePoolLatencyMs,
@@ -25,6 +25,8 @@ import {
   lastPoolProbeAt,
   poolShedCount,
   recordPoolShed,
+  recordPoolShedEvent,
+  hasPoolShedInWindow,
   __resetPoolPressureForTest,
   CRITICAL_PROBE_MS,
 } from './pool-pressure';
@@ -104,5 +106,86 @@ describe('pool-shed counter (same-process attribution)', () => {
     expect(recordPoolShed()).toBe(1);
     expect(recordPoolShed()).toBe(2);
     expect(poolShedCount()).toBe(2);
+  });
+});
+
+describe('recordPoolShedEvent (EI-13108 ask 2: durable shed-visibility log)', () => {
+  it('fire-and-forget: calls the injected insert with the right args and resolves without awaiting it', async () => {
+    const calls: Array<[string, number, number, string]> = [];
+    const insert = async (workspaceId: string, shedCount: number, probeMs: number, host: string) => {
+      calls.push([workspaceId, shedCount, probeMs, host]);
+    };
+    recordPoolShedEvent('ws-1', 3, 2500, insert, async () => 'test-host');
+    // Synchronous call returns immediately (fire-and-forget) — the insert lands on a
+    // later microtask; flush it before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([['ws-1', 3, 2500, 'test-host']]);
+  });
+
+  it('never throws even when the injected insert rejects (best-effort telemetry)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(() =>
+      recordPoolShedEvent(
+        'ws-1',
+        1,
+        2500,
+        async () => {
+          throw new Error('insert failed');
+        },
+        async () => 'test-host',
+      ),
+    ).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(warnSpy).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
+  });
+
+  it('defaults probeMs to the current lastPoolProbeMs() when the arg is omitted', async () => {
+    const values = [0, 777, 777];
+    let i = 0;
+    await probePoolLatencyMs(async () => 1, () => values[Math.min(i++, values.length - 1)]);
+    expect(lastPoolProbeMs()).toBe(777);
+    const calls: number[] = [];
+    // probeMs omitted entirely ⇒ the `= lastPoolProbeMs()` default parameter applies.
+    recordPoolShedEvent(
+      'ws-1',
+      1,
+      undefined,
+      async (_w, _s, probeMs) => {
+        calls.push(probeMs);
+      },
+      async () => 'h',
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([777]);
+  });
+});
+
+describe('hasPoolShedInWindow (EI-13108 ask 2: staleness-consumer query helper)', () => {
+  it('returns true when the injected query finds a shed in the window', async () => {
+    const result = await hasPoolShedInWindow('ws-1', 60_000, async (workspaceId, windowMs) => {
+      expect(workspaceId).toBe('ws-1');
+      expect(windowMs).toBe(60_000);
+      return true;
+    });
+    expect(result).toBe(true);
+  });
+
+  it('returns false when the injected query finds nothing', async () => {
+    const result = await hasPoolShedInWindow('ws-1', 60_000, async () => false);
+    expect(result).toBe(false);
+  });
+
+  it('fail-soft: a query error returns false, never throws (no shed-signal ≠ claiming a shed)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await hasPoolShedInWindow('ws-1', 60_000, async () => {
+      throw new Error('db unavailable');
+    });
+    expect(result).toBe(false);
+    expect(warnSpy).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
   });
 });

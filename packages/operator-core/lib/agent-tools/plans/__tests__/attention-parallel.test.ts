@@ -18,6 +18,8 @@ const M = vi.hoisted(() => ({
   planItemsToAttention: vi.fn(() => [] as unknown[]),
   listEscalations: vi.fn(async () => [] as unknown[]),
   listConversations: vi.fn(async () => [] as unknown[]),
+  readInbox: vi.fn(async () => [] as unknown[]),
+  readAckedMsgIds: vi.fn(async () => new Set<string>()),
 }));
 
 // NOTE: vi.mock paths resolve relative to THIS test file (one level deeper, in
@@ -36,8 +38,8 @@ vi.mock('../../coordination/escalations', () => ({ listEscalations: M.listEscala
 vi.mock('../../coordination/conversations', () => ({ listConversationsWithTopics: M.listConversations }));
 // Remaining sources → empty (no PG in the unit env).
 vi.mock('../../coordination/messages', () => ({
-  readInbox: vi.fn(async () => []),
-  readAckedMsgIds: vi.fn(async () => new Set()),
+  readInbox: M.readInbox,
+  readAckedMsgIds: M.readAckedMsgIds,
 }));
 vi.mock('../../coordination/identity', () => ({ ADMIN_COORD_UI_OWNER: 'admin' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -67,6 +69,7 @@ import tool from '../attention';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { resetOperatorCacheForTests } from '../../../cache';
 import { _refreshCacheLayerForTests } from '../../../cache/instance';
+import { currentRequestWorkspaceId } from '../../../workspace-als';
 
 const CTX = {
   log: vi.fn(),
@@ -99,6 +102,8 @@ beforeEach(async () => {
   M.planItemsToAttention.mockReturnValue([]);
   M.listEscalations.mockResolvedValue([]);
   M.listConversations.mockResolvedValue([]);
+  M.readInbox.mockResolvedValue([]);
+  M.readAckedMsgIds.mockResolvedValue(new Set());
   // plans:attention now caches its aggregation (cache-expensive-tool-reads P-003);
   // this test characterizes the RAW source aggregation, so disable the cache (bypass)
   // + reset the singleton so each case re-runs every source with its freshly-set mocks.
@@ -160,5 +165,27 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     });
     await run();
     expect(escStarted && convStarted).toBe(true);
+  });
+
+  it('EI-1541 regression: escalations + messages reads are pinned to the REQUEST workspace, not the ambient global', async () => {
+    // The bug: listEscalations/readInbox read through coordLog, which resolves
+    // its workspace partition from an AMBIENT (request-ALS) lookup with no
+    // parameter of its own — so a source that forgot to pin the ALS around the
+    // call would silently read whatever workspace happened to be ambient
+    // (often the process-global registry workspace, not this request's ws).
+    // Assert the ALS observed INSIDE each mocked read is exactly CTX.workspaceId.
+    let seenDuringEscalations: string | undefined;
+    let seenDuringInbox: string | undefined;
+    M.listEscalations.mockImplementation(async () => {
+      seenDuringEscalations = currentRequestWorkspaceId();
+      return [];
+    });
+    M.readInbox.mockImplementation(async () => {
+      seenDuringInbox = currentRequestWorkspaceId();
+      return [];
+    });
+    await run(); // CTX.workspaceId = 'ws'
+    expect(seenDuringEscalations).toBe('ws');
+    expect(seenDuringInbox).toBe('ws');
   });
 });
