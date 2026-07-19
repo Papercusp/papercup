@@ -220,6 +220,60 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
   });
 
+  // EI-16710: featureMatchesRecord must key the workspace match off the EXPLICITLY
+  // threaded scope.workspaceId — never an ambient/global resolver — or a genuinely
+  // in-scope feature-family item spuriously fails to match (and, in the live path,
+  // reconcileFleetScopeClaims wrongly releases + re-arms the cooldown on the member's
+  // own valid claim every single call).
+  it('EI-16710: a feature-family item matches scope using the caller-supplied workspaceId, not an ambient global', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'bugs', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({
+      source: 'fleet',
+      spec: {
+        specVersion: '1.0',
+        specId: 'bugs-rev4',
+        revision: 4,
+        view: { filter: { field: 'kind', op: '=', value: 'feature' } },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      },
+      revision: 4,
+      updatedBy: 'su-leader',
+      updatedAt: 'now',
+    });
+    admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+    admissionMocks.getWorkItem.mockResolvedValue({
+      id: 'WI-feat',
+      family: 'feature',
+      kind: 'feature',
+      title: 'WI-feat',
+      summary: 'WI-feat',
+      state: 'todo',
+      assignee: null,
+      payload: {},
+      createdAt: '2026-07-19T00:00:00.000Z',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    });
+    // The outer EXISTS query's own raw SQL text contains `workspace_id =`; the nested
+    // harness_slug/TRUE fragment does not — keying off that isolates exactly what
+    // value the outer query received for `workspaceId`, independent of any ambient
+    // resolver the (buggy) old code might otherwise have consulted.
+    admissionMocks.sql.mockImplementation((strings: readonly string[], ...values: unknown[]) => {
+      if (strings.some((s) => s.includes('workspace_id ='))) {
+        return Promise.resolve([{ matched: values[0] === 'papercusp-workspace' }]);
+      }
+      return 'FRAGMENT';
+    });
+
+    const admission = await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: 'WI-feat',
+      workspaceId: 'papercusp-workspace',
+    });
+
+    expect(admission).toMatchObject({ allowed: true, scoped: true });
+    expect(admissionMocks.sql).toHaveBeenCalled();
+  });
+
   // EI-12832: while a fleet is winding-down (paused via fleet:pause / fleet:wind-down),
   // a member must not acquire NEW work — the by-id claim path (admitWorkItemForFleetTarget)
   // must consult the durable control_state, not just spec-match. Regression: a compliant

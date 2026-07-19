@@ -271,13 +271,28 @@ async function writeToPg(
     -- when both are known, else by the SYMMETRIC content digest (local rows are
     -- author_pubkey-NULL by design, mig 214), so every replica settles on the
     -- same value in one exchange. The digest covers CONTENT columns only.
+    --
+    -- EI-16756: terminal_owner/terminal_completion_ref MUST be in this digest.
+    -- They were originally omitted as "bookkeeping", but they are not — they are
+    -- the completion-integrity attribution pair, and two DIFFERENT completions of
+    -- the same item routinely converge to an IDENTICAL status/taken_by (terminal
+    -- status, taken_by NULL) while carrying DIFFERENT terminal_owner/ref. With
+    -- those two columns excluded, such ops hash to the SAME digest, so the tie
+    -- branch's "equal digest ⇒ identical content ⇒ applying is a no-op" invariant
+    -- is FALSE for them: a stale/racing peer completion can silently overwrite the
+    -- correct completer's terminal_owner while every other field looks converged
+    -- (observed live: a completion's terminalCompletionRef matched the caller's own
+    -- text exactly, but terminalOwner was stamped as an unrelated peer who had
+    -- earlier briefly held the same item).
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
-                          EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text)),
+                          EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text,
+                          EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref)),
             work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
             md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
-                          work_items.status, work_items.taken_by, work_items.payload::text)))
+                          work_items.status, work_items.taken_by, work_items.payload::text,
+                          work_items.terminal_owner, work_items.terminal_completion_ref)))
   `;
 }
 

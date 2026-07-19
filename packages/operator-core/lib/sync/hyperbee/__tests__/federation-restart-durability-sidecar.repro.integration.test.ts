@@ -877,14 +877,18 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
       const initDrained = await drainOutboxOnce(owner.handle, dbOwner.sql);
       expect(initDrained, 'owner outbox (roster + F-init) did not drain to its own log').toBeGreaterThanOrEqual(3);
 
+      let _dbgLast = '';
       const initOk = await pollUntil(
         async () => {
           const admitted = member.handle.admitted.has(ownerLogKey);
           const feat = await readFeature(orgDb.adminSql, HIVE_HOME, 'F-init');
+          _dbgLast = `admitted=${admitted} admittedSize=${member.handle.admitted.size} ownerLogLen=${owner.handle.ownLog.length} feat=${!!feat}`;
           return admitted && feat ? true : undefined;
         },
         { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
       );
+      // eslint-disable-next-line no-console
+      console.error(`[DEBUG initOk] ${_dbgLast}`);
       expect(initOk, 'initial roster+feature federation never completed via the real poll-driven path').toBe(true);
 
       // ── The soak: N cycles, alternating restart target exactly like

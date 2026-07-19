@@ -232,6 +232,9 @@ import '../../overwatch/loop';
 import './release-actions';
 import './fleet-headcount-action';
 import './improvement-actions';
+// knowledge-pack-loop-integrity-2026-07-19: fleet-lessons last-mile delivery
+// (P-006) + the knowledge-hygiene cleanup routine (P-008).
+import './knowledge-pack-actions';
 import './p2p-perf-actions';
 // (scout's bespoke system:scout-cycle action is RETIRED — P-130; scout runs via the
 //  `scout` blueprint. register-scout-action no longer registers anything; the

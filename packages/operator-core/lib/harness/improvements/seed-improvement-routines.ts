@@ -49,6 +49,13 @@ const ROUTINES = [
   // safe tier like the watchdog/triage passes. Weekly: the signal is a slow
   // cross-agent DX pattern, not something sub-hour freshness would help.
   { name: 'improvement-invalid-args-miner', target: 'system:improvement-invalid-args-miner', cron: '0 0 4 * * 0', arm: 'safe' }, // weekly, Sun 04:00
+  // knowledge-pack-loop-integrity-2026-07-19 P-006/P-008 (registered in
+  // routines/knowledge-pack-actions.ts): the fleet-lessons last-mile delivery
+  // pass (bounded, D-003-preserving — clashes always skip) and the
+  // knowledge-hygiene cleanup (stale-item re-review + contradiction sweep +
+  // dismissed-candidate prune). Both conservative-by-construction ⇒ safe tier.
+  { name: 'knowledge-pack-delivery', target: 'system:knowledge-pack-delivery', cron: '0 30 */6 * * *', arm: 'safe' }, // every 6 h at :30 (offset from triage)
+  { name: 'knowledge-pack-hygiene', target: 'system:knowledge-pack-hygiene', cron: '0 0 5 * * *', arm: 'safe' }, // daily 05:00
   { name: 'improvement-implement', target: 'system:improvement-implement', cron: '0 */30 * * * *', arm: 'owner' }, // every 30 min
 ] as const;
 

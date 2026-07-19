@@ -25,6 +25,11 @@ export type CandidateStatus = 'pending' | 'adopted' | 'dismissed';
 /** The machine `by` identity stamped on every auto-decided candidate. */
 export const AUTO_ADOPT_REVIEWER = 'fleet-candidate-auto-review';
 
+/** The fleet-curated pack candidate adoption writes into (created on first
+ *  adoption). Client-safe: a pure string both the server modules and the /adv
+ *  Learnings view need. */
+export const FLEET_LESSONS_PACK_ID = 'fleet-lessons';
+
 export interface KnowledgePackCandidate {
   id: string;
   signature: string;

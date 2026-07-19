@@ -451,6 +451,35 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
               ...(res.error ? { error: res.error } : {}),
             };
           }
+          // knowledge-pack-loop-integrity-2026-07-19 P-006a: a new pot ALSO
+          // seeds the SHARED fleet-lessons pack (cross-hive lessons adopted
+          // from the candidate loop) so it starts current instead of waiting
+          // for the delivery routine's next tick. Best-effort + undo-stacked
+          // like the blueprint pack; skipped when absent/empty or when it IS
+          // the declared pack.
+          try {
+            const { FLEET_LESSONS_PACK_ID } = await import('../../knowledge-packs/candidates-shared');
+            if (packId !== FLEET_LESSONS_PACK_ID) {
+              const fleet = await loadKnowledgePack(FLEET_LESSONS_PACK_ID);
+              if (fleet && fleet.pack.items.length > 0) {
+                const fr = await seedPackIntoPot({
+                  workspaceId: ws,
+                  potSlug: opts.slug,
+                  pack: fleet.pack,
+                  ...(opts.projectShapes ? { shapes: opts.projectShapes } : {}),
+                  ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
+                });
+                undo.push(fr.undo);
+                console.log(
+                  `[pot:create] seeded fleet-lessons v${fr.packVersion} (${fr.seeded} learning(s)) into ${opts.slug}`,
+                );
+              }
+            }
+          } catch (e) {
+            console.warn(
+              `[pot:create] fleet-lessons seed failed (${opts.slug}, best-effort): ${e instanceof Error ? e.message : e}`,
+            );
+          }
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

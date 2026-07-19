@@ -287,7 +287,7 @@ describe('publishSeatOfferForDelegation — revoke (remove:true)', () => {
 
   it('WI-5447: revoke with an explicit hiveOverride on a multi-hive workspace still restricts to that ONE hive', async () => {
     const stored = storedOf({ ...freshRecord(), recordVersion: 2 });
-    const getRecord = vi.fn(async () => stored);
+    const getRecord = vi.fn(async (_ws: string, _homeSlug: string) => stored);
     const { d, putRecord } = deps({
       resolveScope: vi.fn(async () => ({ kind: 'many' as const, candidates: ['hive-a', 'hive-b'] })),
       getRecord,
