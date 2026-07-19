@@ -20,8 +20,11 @@ import { getFeatureBlockers } from './dbos/feature-blockers-edges';
 import { getWorkItemDepBlockers } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
 
-/** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed). */
-export const ISSUE_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['resolved', 'closed']);
+/** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed).
+ *  work-item-status-full-unify (2026-07-19): + the unified terminals (`done`/`dropped`) as a
+ *  TRANSITIONAL SUPERSET across the status-backfill migration (resolved→done, closed→dropped).
+ *  Narrow to ['done','dropped'] after the cleanup pass. */
+export const ISSUE_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['resolved', 'closed', 'done', 'dropped']);
 
 /**
  * Cross-family terminal set (F2): feature {passed,deprecated} ∪ issue {resolved,closed}. A blocker

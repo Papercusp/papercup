@@ -8,8 +8,12 @@ import {
   groupRoutes,
   listedFiles,
   REPO_ROOT,
-  // @ts-expect-error — the .mjs CLI has no declaration file; the diagnostic lands
-  // on the `from` line of this multi-line import, not the line above the import.
+  // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
+  // line of this multi-line import, so the suppression directive itself must
+  // be the LAST comment line immediately above that line (a directive on an
+  // earlier comment line, with another comment line between it and the code,
+  // is not recognized by tsc).
+  // @ts-expect-error
 } from '../../../../scripts/test-files.mjs';
 
 describe('test-files router', () => {

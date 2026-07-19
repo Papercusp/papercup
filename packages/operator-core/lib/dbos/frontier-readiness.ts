@@ -21,8 +21,11 @@
  * Pure (no IO) so both consumers unit-test the predicate with no database.
  */
 
-/** Statuses that make a node TERMINAL — a blocker in this set is satisfied. */
-export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['passed', 'deprecated']);
+/** Statuses that make a node TERMINAL — a blocker in this set is satisfied.
+ *  work-item-status-full-unify (2026-07-19): carries the unified terminals (`done`/`dropped`)
+ *  alongside the legacy ones as a TRANSITIONAL SUPERSET — a post-migration `done` blocker must
+ *  still satisfy its dependents. Narrow to ['done','dropped'] after the cleanup pass. */
+export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['passed', 'deprecated', 'done', 'dropped']);
 
 /** The minimum a node needs to be partitioned: its id, status, and resolved blockers. */
 export interface ReadinessNode {

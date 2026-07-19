@@ -58,7 +58,9 @@ export async function previewSpecPoolEffect(
   opts: { workspaceId: string; harness?: string | null },
 ): Promise<SpecPoolEffect> {
   const sql = getOrgPg().sql;
-  const states = [...(spec.states ?? ['todo'])];
+  // Mirrors claimFloorsWhereSql's transitional ['todo','open'] default (work-item-status-full-unify)
+  // so the WI-5212 pool-effect preview counts the SAME pool the real claim runs against.
+  const states = [...(spec.states ?? ['todo', 'open'])];
   const harness = opts.harness ?? null;
   const filter = compileFilter(sql, spec.view.filter);
   const rows = (await sql`

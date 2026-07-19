@@ -2677,6 +2677,59 @@ A single command with input redirection returns grep’s exit status directly; `
 
 The capture-then-here-string form is the clearest and is what the codebase now uses. Watch for this whenever you write `{ … } | grep -q … && …` (or `| grep -q … || …`) in a `set -o pipefail` script.
 
+# A behavior cutover isn't done when :3070 is fixed — enumerate EVERY process that loads the changed module
+
+> P-022 retired native /compact fleet-wide, but the long-lived standalone bg-host process (which loads the same compaction-watchdog module via dbos/bootstrap.ts) wasn't restarted by the deploy and kept enforcing pre-cutover behavior for ~13h, completely silently — the zero-invocation transcript audit can't see a stale ENFORCER, only stale enforced sessions. Fixed with a boot-time self-check (staleCutoversForProcessStart) plus a durable checklist for the next cutover (EI-16190).
+
+## What
+
+[Section titled “What”](#what)
+
+P-022 (WI-4998, “native `/compact` is retired”) shipped, deployed, and *looked* fully cut over: `:3070` restarted into the new code, every psu Claude child ran with `DISABLE_COMPACT`, and the zero-invocation transcript audit (`native-compaction-audit.ts`) found no `compact_boundary` rows in sessions started after the cutover. Verdict: clean.
+
+Except **`papercup-bg-host.service`** — a separate, long-lived process that also loads `compaction-compliance-watchdog.ts` (via `dbos/bootstrap.ts`’s `startCompactionComplianceWatchdog`) — had been running since **2026-07-17 22:26Z**, hours before the P-022 rewrite landed. A deploy restarts `:3070`; it does **not** restart bg-host. So for \~13 hours, bg-host’s watchdog kept force-injecting the OLD `mode:'compact'` control message into live psu-pty hosts. The current-code psu-pty-host had no handler for that stale mode (“Unknown command: `/compact`” from the CLI, since `DISABLE_COMPACT=1`), so the inject silently no-op’d — the agent got a **false** “you were just compacted” continuation banner while its context stayed exactly where it was.
+
+## Why the existing audit couldn’t catch this
+
+[Section titled “Why the existing audit couldn’t catch this”](#why-the-existing-audit-couldnt-catch-this)
+
+The transcript audit is a **completion-criterion check on sessions**: it scans Claude project transcripts for `compact_boundary` rows and asserts none exist post-cutover. That is the right check for *“did any session actually native-compact,”* but it has no visibility into *“is the enforcer itself running current code.”* A stale enforcer that fails safe (drops the write) or fails silently (the psu-pty host of 2026-07-17) produces **zero** transcript evidence either way — the audit reads “clean” while the enforcement mechanism underneath it is broken. **Session-side auditing and enforcer-side freshness are orthogonal; you need both.**
+
+## The durable checklist for the *next* behavior cutover
+
+[Section titled “The durable checklist for the next behavior cutover”](#the-durable-checklist-for-the-next-behavior-cutover)
+
+Before declaring a behavior cutover complete, enumerate **every process** that loads the changed module — not just the one a deploy restarts:
+
+1. `rg` the import chain from the changed module outward. For anything reached through `dbos/bootstrap.ts`, that means every process that calls the shared bootstrap: `:3070` (`papercup-dev-api`), `:3170` (staging), AND standalone long-lived hosts like `papercup-bg-host.service` that boot the same bootstrap function outside the request-serving process.
+2. Also check the gateway / embed-sidecar processes if the change touches anything they load — they’re the same class of “deploy doesn’t restart me” process as bg-host.
+3. **Restart each one explicitly** as part of the cutover, don’t assume the deploy pipeline covers it. `dev:restart { target: 'bg-host' }` is the tool for bg-host specifically.
+4. If a genuinely-independent audit exists for the behavior being retired (like `native-compaction-audit.ts`), remember what it actually proves: session outcomes, not enforcer freshness. It cannot substitute for step 1–3.
+
+## The added defense: a boot-time self-check on the enforcer itself
+
+[Section titled “The added defense: a boot-time self-check on the enforcer itself”](#the-added-defense-a-boot-time-self-check-on-the-enforcer-itself)
+
+Since a human can forget step 1–3 for some future cutover the same way this one was missed, `compaction-compliance-watchdog.ts` now self-checks at start:
+
+* `WATCHDOG_BEHAVIOR_CUTOVERS` is a small registry of `{ id, atMs, note }` — one entry per known behavior cutover this watchdog’s code must run at-or-after.
+* `staleCutoversForProcessStart(processStartedAtMs, cutovers?)` is a pure, exported, unit-tested function: given this process’s boot instant, it returns which known cutovers it *predates*.
+* `startCompactionComplianceWatchdog()` computes its own boot instant (`Date.now() - process.uptime() * 1000`), logs a one-line version/boot stamp on every start (so a stale host is trivially greppable across every host’s logs: `journalctl | grep 'compaction-watchdog] starting'`), and — if it predates any registered cutover — logs a loud `console.warn` AND raises a best-effort advisory coord escalation (deduped per process) naming the exact cutover it missed and telling the operator to restart it.
+
+Add a new entry to `WATCHDOG_BEHAVIOR_CUTOVERS` for every future watchdog behavior change so the *next* forgotten-process class self-flags at boot instead of running silently for 13 hours until an owner notices garbled context-usage behavior.
+
+## Related: the psu-pty-host side already screams on a stale sender
+
+[Section titled “Related: the psu-pty-host side already screams on a stale sender”](#related-the-psu-pty-host-side-already-screams-on-a-stale-sender)
+
+`psu-pty-host.mjs`’s control-message handler treats an incoming `mode:'compact'` as proof of a stale pre-P-022 sender (since no current code ever sends it) and drops it **loudly** — an `appendHostEvent('retired-mode-dropped', …)` durable row plus a `stderr` line naming EI-16190 and telling the operator to find and restart the stale sender. That fix protects the *receiving* side (the psu-pty host); the watchdog self-check above protects the *sending* side (bg-host) from staying stale in the first place. Both matter: a receiver-side loud-drop only helps if something is watching stderr/host-events; a sender-side boot self-check surfaces the problem the moment the stale process starts, without requiring the stale behavior to ever actually fire.
+
+## TL;DR for the next agent
+
+[Section titled “TL;DR for the next agent”](#tldr-for-the-next-agent)
+
+A deploy that restarts `:3070` is not the same as “every process that runs this code got the fix.” Grep the import chain for every long-lived standalone host (bg-host, gateway, embed-sidecar) before declaring a cutover done, and restart each one explicitly. A session-outcome audit (no native compact\_boundary rows) proves sessions behaved — it does not prove the enforcer is current; you need both an outcome audit and an enforcer freshness check.
+
 # Best-effort PG writes swallow cast errors — pin the rows, and know jsonb int casts ERROR on fractions
 
 > jsonb_to_recordset(... AS x(col int)) raises 'invalid input syntax for type integer: "0.5"' instead of rounding — a fractional value in a payload silently kills the WHOLE statement. Inside a warn-and-continue try/catch (the scout lens-weight upsert pattern), that failure is invisible: tests pass on no-error, prod state just goes stale. Second occurrence of this exact class on the same seam (bytes.js Array serialization was the first). Rule: a best-effort write needs a test that asserts the ROWS LANDED, never just no-throw; and round/truncate explicitly before any jsonb int cast.
@@ -16523,6 +16576,8 @@ Use the narrowest purpose-built door that matches the intent:
 | Launch N agents on a plan (the ergonomic door)                      | `fleet:launch-on-plan`                            |
 | Run an arbitrary command in a window                                | `capability:terminal`                             |
 | Use the “+” / “Resume in new terminal” desktop buttons              | the `/console/launch` route → `spawnConsole`      |
+| Reconfigure ONE running fleet member (no respawn)                   | `fleet:reconfigure-member`                        |
+| Change a member’s boot-baked settings (model/account/…)             | `fleet:respawn-member`                            |
 
 ## Why the doors are distinct
 
@@ -16544,6 +16599,23 @@ The desktop “+” and “Resume in new terminal” buttons are UI actions, not
 * If the request is specifically **N agents on a plan**, use `fleet:launch-on-plan`.
 * If the subject is a **command**, use `capability:terminal`.
 * If the action came from the desktop console UI, follow `/console/launch` → `spawnConsole`.
+
+## Per-member config + runtime reconfigure (per-member-declarative-launch-specs)
+
+[Section titled “Per-member config + runtime reconfigure (per-member-declarative-launch-specs)”](#per-member-config--runtime-reconfigure-per-member-declarative-launch-specs)
+
+A multi-agent launch is **declarative**: pass `members: MemberSpec[]` to either `capability:launch-agent` or `fleet:launch-on-plan`. Entry `i` configures agent `i` (index-aligned to `count`); each set field OVERRIDES the flat top-level arg for that agent only, an unset field falls through to the flat arg then the system default, and a shorter array is fine (`count` defaults to `members.length`). `MemberSpec` carries `model`, `effort`, `account`, `carry`, `contextSize`, `compactionLimit`, `role`, `agent`, `brief`, `claimKinds`, `headless`, and more (see `agent-launch-core.ts`).
+
+Door note: `carry` / `claimKinds` seed a **self-pulling fleet** member’s baseline + per-member claim spec, so they are honored ONLY by `fleet:launch-on-plan`. The general `capability:launch-agent` door opens raw agents — it IGNORES those two fields (and warns), so use `fleet:launch-on-plan` when a member needs a carry mode or a claim-kind lane.
+
+Once a fleet is running, reconfigure ONE member without re-authoring the whole launch — the setting’s nature picks the tool (D-003):
+
+| Setting                                                     | Fixed at launch? | Tool                                                           |
+| ----------------------------------------------------------- | ---------------- | -------------------------------------------------------------- |
+| compaction limit, claim spec, next-wake brief               | no — runtime     | `fleet:reconfigure-member` (adjusts in place, no respawn)      |
+| model, effort, account, contextSize, agent, compactionLimit | yes — boot-baked | `fleet:respawn-member` (drains + relaunches with the new spec) |
+
+`fleet:reconfigure-member` applies each lever directly — compaction limit via the cross-session setter (clamped to the member’s own spec+role ceiling), claim spec under the member’s cupId (applied on its next `scheduler:get_next`), and the brief as a next-wake coord message. `fleet:respawn-member` KILLS the old session (releasing its claims via `fleet:kill`) then fresh-launches a replacement into the same fleet — a new identity that inherits the fleet claim lane; it ABORTS the relaunch if the kill fails, so a lane is never double-run. Both default `fleet` to the single fleet you lead and are authorized to the fleet’s leader, the queen, or the owner.
 
 Deep dives: [desktop fleet vs. loop cup](/internal/docs/agent-insights/desktop-fleet-vs-loop-cup), [launching, resuming and forking agents](/internal/docs/agent-insights/launching-resuming-and-forking-agents), and [native console](/internal/docs/desktop/native-console).
 

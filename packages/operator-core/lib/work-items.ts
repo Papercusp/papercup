@@ -2341,7 +2341,11 @@ export function releaseCooldownSec(): number {
 }
 
 export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
-  const states = opts.states ?? ['todo'];
+  // work-item-status-full-unify (2026-07-19): the claimable-floor DEFAULT is the transitional
+  // union ['todo','open'] — `open` is the unified claimable token (feature `todo`→`open` in the
+  // backfill), and pre-migration this also surfaces drift rows already sitting at `open`. An
+  // explicit opts.states still narrows. Collapses to ['open'] after the cleanup pass.
+  const states = opts.states ?? ['todo', 'open'];
   const cooldown = releaseCooldownSec();
   return sql`
     harness_slug = ${opts.harness}

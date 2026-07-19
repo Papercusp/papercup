@@ -567,9 +567,11 @@ describe("LearningTab — Improvements view (default)", () => {
   it("renders the scoreboard from the digest rollups", () => {
     render(<LearningTab />);
     expect(screen.getByRole("tab", { name: /Improvements/ })).toBeTruthy();
-    expect(screen.getByText("135")).toBeTruthy(); // captured total
-    expect(screen.getByText("117")).toBeTruthy(); // open
-    expect(screen.getByText("15")).toBeTruthy(); // resolved (byState)
+    expect(screen.getByText("135")).toBeTruthy(); // captured (stat line)
+    // open now rides the quiet header signal ("117 open") rather than a standalone
+    // hero number (owner ask 2026-07-19: header pill + metric tiles → one stat line).
+    expect(screen.getByText(/117\s+open/)).toBeTruthy(); // open (header signal)
+    expect(screen.getByText("15")).toBeTruthy(); // resolved (stat line)
   });
 
   it("lists both lanes in the all view", () => {
@@ -647,7 +649,7 @@ describe("LearningTab — Improvements view (default)", () => {
     };
     render(<LearningTab />);
     expect(
-      document.querySelector(".pc-learning-visual__layout--improvements"),
+      document.querySelector(".pc-learning-visual__statline"),
     ).toBeNull();
     expect(document.querySelector(".pc-hqdrain")).toBeNull();
     expect(
@@ -659,7 +661,8 @@ describe("LearningTab — Improvements view (default)", () => {
 
   it("renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health", () => {
     render(<LearningTab />);
-    fireEvent.click(screen.getByRole("button", { name: "Loop diagnostics" }));
+    // Loop diagnostics is always visible now (owner ask 2026-07-19) — it's a
+    // standard header, no longer a collapsible the test must click open.
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip).toBeTruthy();
     expect(strip.textContent).toContain("12"); // captured 7d
@@ -687,11 +690,11 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    fireEvent.click(screen.getByRole("button", { name: "Loop diagnostics" }));
+    // Loop diagnostics always visible (owner ask 2026-07-19) — no disclosure to open.
     expect(
       screen.queryByLabelText("Improvement flow (trailing window)"),
     ).toBeNull();
-    expect(screen.getByText("135")).toBeTruthy(); // the stock scoreboard still renders
+    expect(screen.getByText("135")).toBeTruthy(); // the stat line still renders
   });
 
   it("renders the dispatch-ledger chip when flow.dispatch is present — fired/fixed counts, red on dead dispatches (P-010 / B-04)", () => {
@@ -719,7 +722,7 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    fireEvent.click(screen.getByRole("button", { name: "Loop diagnostics" }));
+    // Loop diagnostics always visible (owner ask 2026-07-19) — no disclosure to open.
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip.textContent).toMatch(/dispatch\s*6\s*fired \/\s*3\s*fixed/);
     expect(strip.textContent).toContain("3 dead"); // overdue + fire-failed + orphaned

@@ -46,7 +46,11 @@ import type { SystemHealth } from '../system-health/types';
  * coalesced fine the whole time). Applied uniformly to every anomaly rather
  * than one kind at a time, same rationale as the original EI-13557 fix.
  */
-function anomalyConditionKey(kind: AnomalyKind): string {
+// Exported (EI-16151): escalation-aging-alarm.ts needs the SAME key
+// `detectAnomalies` puts on the `escalation-aging` anomaly's `suggestedAction`, so
+// its deterministic periodic actor and the LLM-Kettle's prompt-instructed escalate
+// call always coalesce onto one open row, never fork on drift between the two.
+export function anomalyConditionKey(kind: AnomalyKind): string {
   return `overwatch:${kind}`;
 }
 

@@ -49,6 +49,7 @@ import { markShuttingDown } from '@papercusp/operator-core/lib/shutdown-state';
 import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
 import { startConditionStalenessAlarm } from '@papercusp/operator-core/lib/system-health/condition-staleness-alarm';
+import { startEscalationAgingAlarm } from '@papercusp/operator-core/lib/overwatch/escalation-aging-alarm';
 import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
 import {
   startWorkerHeartbeat,
