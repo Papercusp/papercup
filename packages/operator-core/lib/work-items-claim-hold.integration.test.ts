@@ -162,6 +162,67 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
   it('returns null for an id that does not exist', async () => {
     expect(await wi.setWorkItemClaimHold('WI-nonexistent', true, { harness: H })).toBeNull();
   });
+
+  // EI-15345 (regression): the durable hold must persist even when the caller's ambient
+  // activeWorkspaceId() does NOT match the item's OWN workspace.
+  //
+  // THE BUG: setWorkItemClaimHold derived its write scope from a bare activeWorkspaceId() /
+  // issuesScopeWorkspace() — resolved several awaits deep in the release-tool call chain. When
+  // the AsyncLocalStorage request scope is lost there (the WI-5261 class, "confirmed live for
+  // papercusp-workspace, 2026-07-17" — the exact WI-1281 incident date), activeWorkspaceId()
+  // silently falls through to the process-global default. Its `getWorkItem(id)` lookup (which
+  // pins to activeWorkspaceId()) then returned null, so the whole call no-op'd: the release
+  // reported success but payload._claimHold was NEVER persisted, and scheduler:get_next — which
+  // is already WI-5261-hardened to resolve the item's correct workspace AND applies the
+  // _claimHold feature floor — kept re-serving the item (WI-1281 re-served ~2h later, twice).
+  //
+  // The fix resolves the item's ACTUAL workspace by id (ambient-independent) and scopes the
+  // write to it. This is the ONLY assertion the pre-fix code fails.
+  describe('persists across a workspace-scope mismatch (EI-15345)', () => {
+    async function seedFeatureInWorkspace(id: string, workspace: string) {
+      await db.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+        VALUES (${H}, ${id}, 'feature', 'todo', NULL, ${workspace}, 100, 100)`;
+    }
+    async function payloadInWorkspace(id: string, workspace: string) {
+      const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`
+        SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${workspace} AND feature_id = ${id}`;
+      return rows[0]?.payload ?? null;
+    }
+
+    it('holds a feature-family item whose workspace differs from the ambient activeWorkspaceId()', async () => {
+      await seedFeatureInWorkspace('WI-ws-mismatch', 'ws-real');
+      // The caller's request scope was lost — activeWorkspaceId() reports the WRONG workspace.
+      h.activeWs = 'ws-other';
+
+      const res = await wi.setWorkItemClaimHold('WI-ws-mismatch', true, {
+        harness: H,
+        parkedBy: 'su-x',
+        parkedReason: 'do not re-circulate',
+      });
+
+      // The write must land on the item's OWN workspace, not the ambient one.
+      expect(res).toMatchObject({ id: 'WI-ws-mismatch', hold: true, applicable: true });
+      expect(await payloadInWorkspace('WI-ws-mismatch', 'ws-real')).toMatchObject({
+        _claimHold: true,
+        claim_hold_by: 'su-x',
+        claim_hold_reason: 'do not re-circulate',
+      });
+    });
+
+    it('prefers the active-workspace row when the same id exists in two workspaces', async () => {
+      await seedFeatureInWorkspace('WI-ws-dup', 'ws-active');
+      await seedFeatureInWorkspace('WI-ws-dup', 'ws-idle');
+      h.activeWs = 'ws-active';
+
+      await wi.setWorkItemClaimHold('WI-ws-dup', true, { harness: H, parkedBy: 'su-y' });
+
+      // Only the ACTIVE-workspace row is held; the idle-workspace namesake is untouched.
+      expect(await payloadInWorkspace('WI-ws-dup', 'ws-active')).toMatchObject({ _claimHold: true });
+      expect(await payloadInWorkspace('WI-ws-dup', 'ws-idle')).toBeNull();
+    });
+  });
 });
 
 describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {

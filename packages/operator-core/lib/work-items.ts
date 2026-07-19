@@ -2664,16 +2664,32 @@ export async function setWorkItemClaimHold(
     leaseOnly?: boolean;
   } = {},
 ): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
-  const wi = await getWorkItem(id, opts.harness);
-  if (!wi) return null;
   const { sql } = getOrgPg();
-  const issueWs = issuesScopeWorkspace();
-  // P-006: BOTH families now — the feature claim floor honors _claimHold too
-  // (claimFloorsWhereSql), so the hold is meaningful on features (the WI-3548
-  // leader-held incident class). Both families are rows of the ONE work_items
-  // base table; features may live under the active workspace rather than the
-  // issue scope, so match either.
-  const ws = activeWorkspaceId();
+  // EI-15345: resolve the item's ACTUAL workspace by id, AMBIENT-INDEPENDENT. The old path
+  // derived the write scope from a bare `activeWorkspaceId()` / `issuesScopeWorkspace()` and a
+  // `getWorkItem(id)` lookup that pins to `activeWorkspaceId()` — both resolved several awaits
+  // deep in the release-tool call chain (release handler -> releaseOne -> here). When the
+  // AsyncLocalStorage request scope is lost there (the WI-5261 class, "confirmed live for
+  // papercusp-workspace, 2026-07-17" — the exact WI-1281 incident date), `activeWorkspaceId()`
+  // silently falls through to the process-global default. When that did NOT match the item's own
+  // workspace, `getWorkItem` returned null and this whole function no-op'd: the `release
+  // {claimHold:true}` call reported success but `_claimHold` was NEVER persisted, so
+  // `scheduler:get_next` (already WI-5261-hardened to resolve the correct workspace, and it
+  // DOES apply the `_claimHold` feature floor via `claimFloorsWhereSql`) kept re-serving the item.
+  //
+  // Locate the row by id from the ONE work_items surface — PREFER the active-workspace row when
+  // present (unchanged behavior for the healthy case + disambiguates a cross-workspace id
+  // collision, F-B3), else take the row regardless of ambient scope. Both families live in the
+  // work_items view; the write below targets it scoped by the row's OWN (workspace_id, feature_id).
+  const located = await sql<{ harness_slug: string | null; workspace_id: string }[]>`
+    SELECT harness_slug, workspace_id
+      FROM harness_shared.work_items
+     WHERE feature_id = ${id}
+       AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}
+     ORDER BY (workspace_id = ${activeWorkspaceId()}) DESC, updated_ts DESC NULLS LAST
+     LIMIT 1`;
+  if (!located[0]) return null;
+  const ws = located[0].workspace_id;
   const holdPatch = JSON.stringify({
     _claimHold: true,
     ...(opts.by ? { held_open_by: opts.by, held_open_at: new Date().toISOString() } : {}),
@@ -2691,10 +2707,10 @@ export async function setWorkItemClaimHold(
                     - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
            END,
            updated_ts = ${Date.now()}
-     WHERE workspace_id IN (${issueWs}, ${ws}) AND feature_id = ${id}
+     WHERE workspace_id = ${ws} AND feature_id = ${id}
      RETURNING payload`;
   if (!rows[0]) return null;
-  return { id, harness: wi.harness, hold, applicable: true };
+  return { id, harness: located[0].harness_slug ?? null, hold, applicable: true };
 }
 
 /** P-006: who holds a work-item OPEN (payload.held_open_by), or null.
