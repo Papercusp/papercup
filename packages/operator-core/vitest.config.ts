@@ -1,4 +1,4 @@
-import { defineVitestConfig } from '@papercusp/test-config';
+import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
 
 // operator-core unit tests. Resolution of internal imports is relative
 // (no @/ alias in this package); @papercusp/* workspace deps resolve via the

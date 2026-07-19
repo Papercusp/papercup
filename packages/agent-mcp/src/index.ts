@@ -29,6 +29,11 @@ export { defineTool } from '@papercusp/tooldef';
 // naming a durable entity is declared `entityRef('pot')` right where the tool is
 // written, with no extra import path to discover.
 export { entityRef, type EntityKind } from '@papercusp/tooldef';
+// P-004b: the tools/list overlay that publishes small entity vocabularies as
+// enums, plus the revision fingerprint a transport polls to decide whether a
+// `notifications/tools/list_changed` is warranted. Re-exported here because the
+// HTTP MCP transport imports its whole tooldef surface through this package.
+export { applyEntityRefEnums, entityEnumRevision } from '@papercusp/tooldef';
 // Payload tiers (context-trimming-tiers-2026-07-01 D-004): the trimmed/standard/full
 // axis over WHAT a tool returns. Hosts parse the session tier (parsePayloadTier) into
 // ctx.contextTier; tools declare per-tier `shape` projections on defineTool.

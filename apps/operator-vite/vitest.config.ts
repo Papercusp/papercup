@@ -1,4 +1,4 @@
-import { defineVitestConfig } from '@papercusp/test-config';
+import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
 import { mergeConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 

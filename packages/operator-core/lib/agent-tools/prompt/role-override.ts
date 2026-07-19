@@ -12,7 +12,7 @@
  * one-call revert) and operator-authority gated; get/list are open reads.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { defineTool, entityRef, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import {
@@ -42,19 +42,22 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 30 } },
   args: z.discriminatedUnion('op', [
-    z.object({ op: z.literal('get'), harness: z.string().min(1).max(120), role: z.string().min(1).max(80) }),
+    z.object({ op: z.literal('get'), harness: z.string().min(1).max(120), role: entityRef('role', { max: 80 }) }),
     z.object({ op: z.literal('list'), harness: z.string().min(1).max(120) }),
     z.object({
       op: z.literal('set'),
       harness: z.string().min(1).max(120),
-      role: z.string().min(1).max(80),
+      role: entityRef('role', { max: 80 }),
       content: z.string().min(1).max(100_000).describe('The full replacement prompt markdown for this (harness, role).'),
       dryRun: z.boolean().optional(),
     }),
     z.object({
       op: z.literal('clear'),
       harness: z.string().min(1).max(120),
-      role: z.string().min(1).max(80).optional().describe('Omit to clear ALL role overrides for the harness.'),
+      role: entityRef('role', {
+        max: 80,
+        describe: 'Omit to clear ALL role overrides for the harness.',
+      }).optional(),
       dryRun: z.boolean().optional(),
     }),
   ]),

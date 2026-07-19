@@ -8,7 +8,7 @@
  * operator-authority + flag-gated + audited/revertible (a wrong revoke is one call back).
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { defineTool, entityRef, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -34,7 +34,7 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
-    role: z.string().min(1).max(80).describe('The role to revoke capabilities from.'),
+    role: entityRef('role', { max: 80, describe: 'The role to revoke capabilities from.' }),
     capabilities: z.array(z.string().min(1).max(120)).min(1).describe('Capability strings to remove.'),
     dryRun: z.boolean().optional(),
   }),

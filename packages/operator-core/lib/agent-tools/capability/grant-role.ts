@@ -15,7 +15,7 @@
  * one-call revert).
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { defineTool, entityRef, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -45,7 +45,10 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
-    role: z.string().min(1).max(80).describe('The role to grant capabilities to (e.g. "planner", "cup").'),
+    role: entityRef('role', {
+      max: 80,
+      describe: 'The role to grant capabilities to (e.g. "planner", "cup").',
+    }),
     capabilities: z.array(z.string().min(1).max(120)).min(1).describe('Capability strings to add, e.g. ["plans:write"].'),
     dryRun: z.boolean().optional(),
   }),

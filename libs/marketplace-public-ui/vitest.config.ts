@@ -1,4 +1,4 @@
-import { defineVitestConfig } from '@papercusp/test-config';
+import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
 import { mergeConfig } from 'vitest/config';
 
 // P-006: marketplace-public-ui had no test infra. The shared config provides the

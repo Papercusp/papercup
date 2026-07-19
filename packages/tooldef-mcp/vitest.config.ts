@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config';
+import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
 
 export default defineConfig({
   test: {

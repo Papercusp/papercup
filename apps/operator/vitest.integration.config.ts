@@ -1,4 +1,4 @@
-import { defineVitestConfig, BASELINE_SCHEMA_GLOBAL_SETUP_PATH } from '@papercusp/test-config';
+import { defineVitestConfig, BASELINE_SCHEMA_GLOBAL_SETUP_PATH } from '@papercusp/test-config/vitest-config';
 
 // The admin test-runs reporter is auto-wired by defineVitestConfig — so
 // apps/operator's *.integration.test.ts files record to harness_shared.test_runs

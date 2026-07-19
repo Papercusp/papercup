@@ -11,7 +11,7 @@
  * guard + new_subagent:approve's requireRoles).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { openEscalation } from '../coordination/escalations';
 
@@ -34,7 +34,9 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   args: z.object({
-    role: z.string().min(1).describe('The child agent role to spawn (an AGENT_ROLES id or a plugin-namespaced role).'),
+    role: entityRef('role', {
+      describe: 'The child agent role to spawn (an AGENT_ROLES id or a plugin-namespaced role).',
+    }),
     harness: z.string().optional().describe('Harness slug to spawn into.'),
     feature: z.string().optional().describe('Feature id the child should work, if any.'),
     reason: z.string().min(1).describe('Why this spawn is worth it — the brain reads this to decide.'),

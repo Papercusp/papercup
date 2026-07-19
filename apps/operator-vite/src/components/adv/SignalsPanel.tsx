@@ -602,7 +602,7 @@ export function SignalsPanel({
       .pc-signals__card-summary.is-doc { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
       .pc-signals__newflag {
         margin-left: auto; padding: 0 6px; border-radius: 999px;
-        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
         color: var(--accent, #7dd3fc);
         border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 40%, transparent);
       }

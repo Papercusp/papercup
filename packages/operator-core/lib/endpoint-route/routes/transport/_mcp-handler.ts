@@ -27,6 +27,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import {
   getCatalog,
   toArgsJsonSchema,
+  applyEntityRefEnums,
   getPromptCatalog,
   getResourceCatalog,
   dispatch,
@@ -1481,7 +1482,7 @@ const handler = createMcpHandler(
         // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
         // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
         return {
-          tools: filtered.map((t) => {
+          tools: await Promise.all(filtered.map(async (t) => {
             const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
             const out: Record<string, unknown> = { ...t };
             if (tt.inputSchema) {
@@ -1493,12 +1494,18 @@ const handler = createMcpHandler(
                 typeof tt.name === 'string'
                   ? advertisedArgsSchema(tt.name, tt.inputSchema as Record<string, unknown>)
                   : (tt.inputSchema as Record<string, unknown>);
+              // Publish small entity vocabularies as enums (P-004b). The listing
+              // carries only the CONVERTED schema, so the entity-ref sites are
+              // read back off the tool's live args schema by name; a listing with
+              // no resolvable def (a plugin/pinned entry) simply gets no overlay.
+              const def = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : null;
+              if (def?.args) await applyEntityRefEnums(def.args, advertised);
               out.inputSchema = sanitizeToolSchema(advertised);
             }
             // outputSchema (P-010) gets the same boolean-subschema objectification.
             if (tt.outputSchema) out.outputSchema = sanitizeToolSchema(tt.outputSchema);
             return out;
-          }),
+          })),
         };
       },
     );

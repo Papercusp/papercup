@@ -25,7 +25,7 @@
  * can drop it immediately and skip even that window.
  */
 
-import { setEntityResolver, type EntityResolver } from '@papercusp/tooldef';
+import { setEntityResolver, setEntityEnum, type EntityResolver } from '@papercusp/tooldef';
 import { similarity } from '@papercusp/operator-core/lib/operator-fuzzy-dedup';
 
 /** How long a loaded entity set is trusted before a refresh. */
@@ -130,10 +130,62 @@ async function loadHarnessSlugs(): Promise<string[]> {
   return rows.map((r) => r.slug);
 }
 
-/** Register Papercusp's resolvers. Idempotent; safe to call more than once. */
+/**
+ * Agent roles. Unlike pots/harnesses this is a CODE-DEFINED vocabulary, not a
+ * table — so it is small, static (it changes only when the binary does), and
+ * therefore the one kind here worth publishing into `tools/list`.
+ *
+ * It is nonetheless an OPEN set: plugins contribute `<plugin>:<role>` ids at
+ * runtime that no startup enumeration can see. So the resolver accepts a
+ * namespaced id, and the published fragment pairs the built-in enum with a
+ * pattern for the tail (see `openPattern`) — advertising a closed list here
+ * would be a lie that rejects legitimate plugin roles.
+ */
+const NAMESPACED_ROLE = /^[a-z0-9][a-z0-9_-]*:[a-z0-9][a-z0-9_-]*$/;
+
+async function loadRoles(): Promise<string[]> {
+  const { AGENT_ROLES } = await import('./role-config');
+  return [...AGENT_ROLES];
+}
+
+function makeRoleResolver(): EntityResolver {
+  const inner = makeSetResolver('role', loadRoles);
+  return async (values) => {
+    // Namespaced plugin roles are valid-but-unenumerable: filter them out
+    // before the set check so they are never reported unknown.
+    const checkable = values.filter((v) => !NAMESPACED_ROLE.test(v));
+    if (!checkable.length) return { unknown: [] };
+    return inner(checkable);
+  };
+}
+
+/**
+ * Register Papercusp's resolvers (dispatch-time enforcement) and publishable
+ * vocabularies (`tools/list` enums). Idempotent; safe to call more than once.
+ *
+ * ⚠ THE TWO ARE INTENTIONALLY NOT THE SAME SET. Enforcement is cheap — a cached
+ * membership test — so every kind gets a resolver. PUBLISHING is a prompt-prefix
+ * cost paid by every session, so it is capped: measured 2026-07-19, pots=142 and
+ * harness slugs=428 are far past any sane cap and publish NOTHING (the
+ * dispatch-time "unknown pot X — did you mean Y" stays their whole UX). Roles
+ * (54, static) are under the cap and do publish. If you are tempted to raise a
+ * cap so a big set publishes, price it first: an enum is re-serialized into
+ * every arg site of every tool naming the kind, in every session.
+ */
 export function registerPapercuspEntityResolvers(): void {
   setEntityResolver('pot', makeSetResolver('pot', loadPots));
   setEntityResolver('harness', makeSetResolver('harness', loadHarnessSlugs));
+  setEntityResolver('role', makeRoleResolver());
+
+  // Registered even though they are over-cap today: the cap is enforced inside
+  // the overlay, so these publish nothing now and start publishing on their own
+  // once the P-006/P-007 backfill collapses harness_slug onto the pot registry.
+  setEntityEnum('pot', loadPots);
+  setEntityEnum('harness', loadHarnessSlugs);
+  setEntityEnum('role', loadRoles, {
+    maxValues: 80,
+    openPattern: NAMESPACED_ROLE.source,
+  });
 }
 
 registerPapercuspEntityResolvers();

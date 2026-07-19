@@ -4338,10 +4338,10 @@ export function LearningStyles() {
       .pc-learning__view-tab:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 10%, transparent); }
       .pc-learning__view-tab[aria-selected="true"] {
         color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel, var(--bg, transparent)));
+        background: color-mix(in srgb, var(--accent) 8%, var(--bg, transparent));
         border-color: var(--border);
         /* Erase the rail beneath the active tab — the "connected" tab look. */
-        border-bottom-color: color-mix(in srgb, var(--accent) 8%, var(--bg-panel, var(--bg, transparent)));
+        border-bottom-color: color-mix(in srgb, var(--accent) 8%, var(--bg, transparent));
         box-shadow: inset 0 2px 0 var(--accent);
       }
       /* Overflow affordance (P-007): fade the clipped edge of the view strip so

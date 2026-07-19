@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { ADMIN_TEST_RUNS_REPORTER_PATH, sharedHostWorkerCap } from '@papercusp/test-config';
+import { ADMIN_TEST_RUNS_REPORTER_PATH, sharedHostWorkerCap } from '@papercusp/test-config/vitest-config';
 
 // This workspace previously had no vitest config (pure vitest defaults). The only
 // thing added here is the /admin/testing status-chip reporter — everything else

@@ -13,7 +13,7 @@
  * LIVE (no dark flag), like the other operational dials.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { defineTool, entityRef, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import {
   readQuotaOverrides,
@@ -49,7 +49,7 @@ export default defineTool({
       .object({
         op: z.literal('set'),
         toolName: z.string().min(1).max(120),
-        role: z.string().min(1).max(80),
+        role: entityRef('role', { max: 80 }),
         perChunk: quotaField.optional(),
         perRun: quotaField.optional(),
         perDay: quotaField.optional(),
@@ -58,7 +58,7 @@ export default defineTool({
       .refine((a) => a.perChunk !== undefined || a.perRun !== undefined || a.perDay !== undefined, {
         message: 'set requires at least one of perChunk / perRun / perDay (or use op:clear)',
       }),
-    z.object({ op: z.literal('clear'), toolName: z.string().min(1).max(120), role: z.string().min(1).max(80), dryRun: z.boolean().optional() }),
+    z.object({ op: z.literal('clear'), toolName: z.string().min(1).max(120), role: entityRef('role', { max: 80 }), dryRun: z.boolean().optional() }),
   ]),
   async handler(args, ctx) {
     if (args.op === 'get') {

@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { ADMIN_TEST_RUNS_REPORTER_PATH, sharedHostWorkerCap } from '@papercusp/test-config';
+import { ADMIN_TEST_RUNS_REPORTER_PATH, sharedHostWorkerCap } from '@papercusp/test-config/vitest-config';
 
 // Reporter-only config (was vitest defaults) for the /admin/testing status chips.
 // Fail-soft; opt-out via env.

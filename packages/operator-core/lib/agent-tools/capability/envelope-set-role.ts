@@ -41,12 +41,12 @@ export default defineTool({
     z.object({ op: z.literal('get') }),
     z.object({
       op: z.literal('set'),
-      role: z.string().min(1).max(80),
+      role: entityRef('role', { max: 80 }),
       denyCapabilities: z.array(z.string().min(1).max(120)).max(100).optional(),
       allowCapabilities: z.array(z.string().min(1).max(120)).max(100).optional(),
       dryRun: z.boolean().optional(),
     }),
-    z.object({ op: z.literal('clear'), role: z.string().min(1).max(80), dryRun: z.boolean().optional() }),
+    z.object({ op: z.literal('clear'), role: entityRef('role', { max: 80 }), dryRun: z.boolean().optional() }),
   ]),
   async handler(args, ctx) {
     if (args.op === 'get') {
