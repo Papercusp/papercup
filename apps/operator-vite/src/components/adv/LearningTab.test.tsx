@@ -434,6 +434,23 @@ vi.mock("@papercusp/sync", () => ({
                 ? hiveListResult
                 : opts.queryName === "learning.hive"
                   ? hiveResult
+                  : opts.queryName === "learning.retain"
+                    ? {
+                        data: [
+                          {
+                            banked: { improvementsFiled7d: 5, plansDrafted7d: 2 },
+                            lensWeights: null,
+                            rubricChanges: [],
+                            insightDocs: [],
+                            recipes: [],
+                            generatedAt: "2026-07-19T00:00:00.000Z",
+                          },
+                        ],
+                        loading: false,
+                        fetching: false,
+                        error: null,
+                        invalidate: vi.fn(),
+                      }
                   : opts.queryName === "knowledgePacks.list" ||
                       opts.queryName === "knowledgePacks.candidates"
                     ? {
@@ -1030,7 +1047,7 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     expect(screen.getByText("Routed ideas")).toBeTruthy();
     expect(screen.getByText("Cache-warmup plan draft")).toBeTruthy();
     expect(screen.queryByText("Tighter scoper prompt")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Reviewed ideas/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
     expect(screen.getByText("Tighter scoper prompt")).toBeTruthy();
     expect(screen.getByText("reframing")).toBeTruthy(); // lens chip
     expect(screen.getByText("won")).toBeTruthy(); // classified outcome shown
@@ -1101,7 +1118,7 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
   it("renders the trace's grounding gap dimmed when no refs were recorded (P-004)", () => {
     nuqsState.itrace = "idea-2";
     render(<ScoutView />);
-    fireEvent.click(screen.getByRole("button", { name: /Reviewed ideas/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
     const trace = screen.getByLabelText(
       "Pipeline trace for Tighter scoper prompt",
     );
@@ -1170,7 +1187,7 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
     // value) → the attribution chip routes it through the lexicon; under the echo
     // mock t('brain') → 'brain' (restore-pot-lexicon P-006).
-    fireEvent.click(screen.getByRole("button", { name: /Reviewed ideas/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
     expect(screen.getByText("★4 · brain")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Grade this idea" }),
@@ -1197,7 +1214,7 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     // Optimistic: the row leaves the ungraded queue and joins reviewed history.
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /Reviewed ideas/ }).textContent,
+        screen.getByRole("button", { name: /Graded ideas/ }).textContent,
       ).toContain("2"),
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));

@@ -3720,13 +3720,20 @@ function LearningsView({
   // rubric changes, insight docs, and recipes are retained learning too) +
   // the banked-this-week strip counts. One slim read; every leg degrades
   // independently server-side.
-  const extras = useSyncQuery<RetainExtrasSnapshot>({
+  const extras = useSyncQuery<RetainExtrasSnapshot | undefined>({
     queryName: "learning.retain",
     args: hive ? { hive } : {},
     enabled: hiveReady,
     staleTime: 60_000,
   });
-  const extrasSnap = extras.data?.[0];
+  // Shape-guard the extras row: a server without the learning.retain resolver
+  // (or a mis-routed read) must degrade to "sections absent", never crash the
+  // whole Retain render.
+  const extrasRaw = extras.data?.[0] as RetainExtrasSnapshot | undefined;
+  const extrasSnap =
+    extrasRaw && typeof extrasRaw === "object" && extrasRaw.banked
+      ? extrasRaw
+      : undefined;
   // Same share-of-total render as the Ideas view's lens strip — one visual
   // language for "how the ideator will lean".
   const retainLensEntries = useMemo<Array<[string, number]>>(() => {
