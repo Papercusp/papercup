@@ -16,12 +16,71 @@
  * To add/remove a lib, edit BORROWABLE below and re-run. Membership is
  * curated here (not a package.json keyword) so tagging a submodule never
  * requires a submodule commit. See papercusp-systems-abstraction-2026-05-29.
+ *
+ * EI-14414: a brand-new submodule repo has NO .gitignore of its own — the
+ * superproject .gitignore does not reach inside a submodule (each is its own
+ * repo), and git-sync auto-commits every submodule on a schedule with no
+ * grace period. That means the moment anything creates untracked files in a
+ * fresh submodule (an `npm install`, a test run), git-sync can sweep
+ * `node_modules`/build scratch straight into its history within minutes —
+ * exactly what happened extracting @papercusp/model-pricing (WI-5143). So
+ * this script, already the single source of truth for the borrowable set,
+ * also scaffolds/verifies each submodule-rooted lib's `.gitignore`: `--check`
+ * fails CI if one is missing (same as a stale BORROWABLE.md); the default
+ * write mode creates the standard one on the spot, so adding a lib to
+ * BORROWABLE and running `npm run gen:borrowable` can never forget it.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Standard .gitignore for a new borrowable-lib submodule (verbatim from
+ * `libs/generic/rate-limit/.gitignore`, the WI-4419-hardened template already
+ * used across the existing libs). Applied only to submodule ROOTS (not a
+ * nested path inside an already-covered submodule) that don't have one yet.
+ */
+const STANDARD_LIB_GITIGNORE = `node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+junit.xml
+.DS_Store
+
+# WI-4419 (2026-07-12): agent state dirs (.papercusp/) appear inside submodules too,
+# and git-sync auto-commits the superproject AND every submodule — so any scratch a
+# gitignore does not cover is committed automatically and then swept into every
+# release bundle by the sidecar source-tar glob. The superproject .gitignore does NOT
+# reach inside a submodule, so the guard must be repeated here. Depth-matching (**/)
+# on purpose: a slash-bearing pattern is anchored to THIS file's directory.
+.papercusp/scratch/
+.papercusp/vitest-tmp/
+.papercusp/tmp/
+.papercusp/tmp-*/
+.papercusp/logs/
+.papercusp/bench-reports/
+.papercusp/pi-sessions/
+**/.papercusp/scratch/
+**/.papercusp/vitest-tmp/
+**/.papercusp/tmp/
+**/.papercusp/tmp-*/
+**/.papercusp/logs/
+**/.papercusp/bench-reports/
+**/.papercusp/pi-sessions/
+`;
+
+/** Submodule ROOTS (non-nested) among BORROWABLE that are missing a `.gitignore`. */
+function findMissingGitignores(submodules) {
+  const missing = [];
+  for (const [p] of BORROWABLE) {
+    const src = sourceFor(p, submodules);
+    if (src.kind !== 'submodule' || src.nested) continue;
+    if (!existsSync(join(ROOT, p, '.gitignore'))) missing.push(p);
+  }
+  return missing;
+}
 
 /** The borrowable set — genuinely generic, zero retained domain tie-in. */
 const BORROWABLE = [
@@ -138,8 +197,7 @@ function row(p, fallbackDesc, submodules) {
   return `| \`${pkg.name}\` | ${desc} | ${repoCell(sourceFor(p, submodules))} |`;
 }
 
-function build() {
-  const submodules = parseGitmodules();
+function build(submodules) {
   const byCat = {};
   for (const [p, cat, fb] of BORROWABLE) (byCat[cat] ??= []).push(row(p, fb, submodules));
 
@@ -188,17 +246,33 @@ function build() {
   return lines.join('\n') + '\n';
 }
 
-const out = build();
+const submodules = parseGitmodules();
+const out = build(submodules);
 const target = join(ROOT, 'BORROWABLE.md');
+const missingGitignores = findMissingGitignores(submodules);
 if (process.argv.includes('--check')) {
   let cur = '';
   try { cur = readFileSync(target, 'utf8'); } catch { /* missing */ }
+  let failed = false;
   if (cur !== out) {
     console.error('BORROWABLE.md is stale — run `npm run gen:borrowable` and commit.');
-    process.exit(1);
+    failed = true;
   }
+  if (missingGitignores.length) {
+    console.error(
+      `EI-14414: ${missingGitignores.length} borrowable submodule(s) missing a .gitignore ` +
+      `(git-sync can sweep node_modules/build scratch into their history): ${missingGitignores.join(', ')}\n` +
+      'Run `npm run gen:borrowable` to scaffold the standard one, then commit.',
+    );
+    failed = true;
+  }
+  if (failed) process.exit(1);
   console.log('BORROWABLE.md is up to date.');
 } else {
   writeFileSync(target, out);
   console.log(`Wrote ${target} (${BORROWABLE.length} borrowable + ${SEAMED.length} seam'd).`);
+  for (const p of missingGitignores) {
+    writeFileSync(join(ROOT, p, '.gitignore'), STANDARD_LIB_GITIGNORE);
+    console.log(`EI-14414: scaffolded missing ${p}/.gitignore (standard borrowable-lib template).`);
+  }
 }

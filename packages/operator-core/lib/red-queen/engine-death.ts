@@ -23,12 +23,23 @@
  *     ride DBOS, the routines engine, or background-worker workflows, so it
  *     survives exactly the failure it watches for. Flag-gated per D-001
  *     (checked every pass, so a P-001 flag flip arms it without a restart).
+ *
+ * The LIVE sentinel's read is scoped to `activeWorkspaceId()` (EI-14375,
+ * 2026-07-19) — unlike the engine's own dispatch, which correctly spans every
+ * tenant, THIS detector exists to answer "is THIS host's engine alive", so it
+ * must only look at THIS host's own workspace. An earlier unscoped version
+ * read active routines across every tenant sharing the Postgres instance and
+ * declared papercusp's production engine dead whenever an unrelated
+ * tenant's routines were idle — a real, evidenced false alarm (see EI-14375:
+ * bg-host-watchdog logged continuous healthy ticks the whole time the
+ * unscoped sentinel reported "7/7 active routines overdue").
  */
 
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { WatchdogCollector, WatchdogSignal } from '../harness/improvements/watchdog';
 import { captureImprovement } from '../harness/improvements/capture-core';
+import { activeWorkspaceId } from '../workspace-registry';
 import { SANDBOX_SCOPE, SANDBOX_WORKSPACE_ID } from './types';
 
 /** The slice of a routines row the detector needs. */
@@ -157,12 +168,27 @@ export function engineDeathDrillCollector(snapshot: RoutineLivenessRow[], nowMs?
   };
 }
 
-/** Read the live routine-liveness slice (read-only; safe out-of-band). */
-export async function readRoutineLivenessRows(sql: Sql): Promise<RoutineLivenessRow[]> {
+/**
+ * Read the live routine-liveness slice (read-only; safe out-of-band).
+ *
+ * SCOPED to `workspaceId` (EI-14375, 2026-07-19): `harness_shared.routines` is
+ * multi-tenant — this dev box alone has 'papercusp-workspace', 'default'
+ * (cross-hive/global routines), and ad-hoc test workspaces sharing one
+ * Postgres. The unscoped version of this query read active rows across EVERY
+ * tenant and declared "the routines engine is dead" (with THIS host's
+ * papercusp-specific runbook + remediation paths) whenever any OTHER
+ * tenant's routine set happened to be idle/overdue — even while this host's
+ * own engine was provably healthy (bg-host-watchdog logged continuous
+ * healthy ticks for the entire window EI-14375 was open). Scoping to the
+ * sentinel's own workspace makes the signal mean what its message claims:
+ * THIS host's engine, not some unrelated tenant's.
+ */
+export async function readRoutineLivenessRows(sql: Sql, workspaceId: string): Promise<RoutineLivenessRow[]> {
   const rows = await sql<{ name: string; active: boolean; next_fire_at: string | Date | null }[]>`
     SELECT name, active, next_fire_at
       FROM harness_shared.routines
      WHERE active = true
+       AND workspace_id = ${workspaceId}
      LIMIT 500`;
   return rows.map((r) => ({ name: r.name, active: r.active, nextFireAt: r.next_fire_at }));
 }
@@ -236,7 +262,7 @@ export function armEngineDeathSentinel(intervalMs: number = ENGINE_DEATH_SENTINE
       const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
       return getFlag(FLAGS.RED_QUEEN, 'red-queen-sentinel');
     },
-    readRows: async () => readRoutineLivenessRows((await import('@papercusp/db-org')).getOrgPg().sql),
+    readRows: async () => readRoutineLivenessRows((await import('@papercusp/db-org')).getOrgPg().sql, activeWorkspaceId()),
     capture: captureImprovement,
     log: (m) => console.log(`[red-queen-sentinel] ${m}`),
   };
