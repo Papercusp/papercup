@@ -1815,6 +1815,22 @@ export const FLAGS = {
   // never triggers (the flag has no effect, byte-identical to today). Owner flips ON after
   // reviewing the privacy implications + confirming both pot-visibility + member-admission gates.
   MEM0_FEDERATION_EGRESS: "papercusp-mem0-federation-egress",
+  // WI-254 (EI-1618 item 2): gates the in-process periodic federation-drain
+  // reconcile tick (run-drain-reconcile.ts) — flags a LIVE booted harness whose
+  // substrate_outbox is undrained past 60s (captured but not federating, the
+  // EI-681 silent-stall class) and files a deduped improvement. DEFAULT ON (not
+  // in DARK_FLAGS): the code ships ready + tested (own unit tests +
+  // dedup-by-watchdog-key so a stall files at most one open issue), it is
+  // read-mostly (one group-scan query + a deduped capture) and sheds under
+  // saturation, so it is not the "genuinely incomplete/unsafe" / owner-authority
+  // / cutover-kill-switch case the dark allowlist exists for — per repo policy,
+  // shipping it dark "pending human review" while tested is exactly the parking-
+  // lot abuse the policy bans. Previously gated by a raw `process.env.
+  // PAPERCUSP_FEDERATION_DRAIN_RECONCILE` boolean (banned pattern — env gates are
+  // for launch-time/test/dev config only, `lint:env-feature-gates`); replaced
+  // with this FLAGS entry. OFF ⇒ pure no-op kill-switch — the tick returns
+  // immediately, byte-identical to before this flag existed.
+  FEDERATION_DRAIN_RECONCILE: "papercusp-federation-drain-reconcile",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

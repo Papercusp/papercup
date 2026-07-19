@@ -73,6 +73,22 @@ export function isInfraClassKey(watchdogKey: string): boolean {
   return KNOWN_OPEN_INFRA_SOURCES.some((s) => watchdogKey.startsWith(`${s}:`));
 }
 
+/**
+ * EI-14854: the STABLE coalescing key for a watchdogKey's aging escalations —
+ * severity- AND duration-INDEPENDENT, keyed only on the continuous condition (the
+ * watchdogKey). Passed as the escalation's `subjectSignature` (a conditionKey, per
+ * coord:escalate's guidance) so every re-detection of ONE condition COALESCES onto
+ * ONE open row (bumping repeatCount) instead of minting a fresh escalation each
+ * ~30-min tick. The old default fell back to `normalizeSubjectSignature(summary)`,
+ * but the summary embeds a live `~Nh` duration AND the current issueId (which
+ * re-mints as the underlying item is resolved+re-captured), so it never matched
+ * the prior row — one continuous stalled-claim condition minted an unbounded flood
+ * of un-coalesced advisory escalations.
+ */
+export function agingConditionKey(watchdogKey: string): string {
+  return `known-open-aging:${watchdogKey}`;
+}
+
 // ── options ──────────────────────────────────────────────────────────────────
 
 export interface KnownOpenAgingOptions {
@@ -345,7 +361,13 @@ export interface KnownOpenAgingDeps {
   stampPayload: (id: string, patch: Record<string, unknown>) => Promise<unknown>;
   bumpSeverity: (id: string, to: IssueSeverity) => Promise<unknown>;
   comment: (id: string, body: string) => Promise<unknown>;
-  escalate: (input: { severity: 'advisory'; summary: string; body: string }) => Promise<unknown>;
+  escalate: (input: {
+    severity: 'advisory';
+    summary: string;
+    body: string;
+    /** EI-14854: a stable conditionKey (subjectSignature) so re-detections coalesce. */
+    meta?: { dedupKind?: string; subjectSignature?: string };
+  }) => Promise<unknown>;
 }
 
 const defaultDeps: KnownOpenAgingDeps = {
@@ -457,6 +479,11 @@ export async function processKnownOpenAging(
           `Known-open aging: ${dec.watchdogKey} still firing after ~${hours(dec.openForMs)} ` +
           `(${dec.issueId}${dec.bumpTo ? `, severity → ${dec.bumpTo}` : ''})`,
         body: escalationBody(dec),
+        // EI-14854: coalesce on the CONDITION (the watchdogKey), not the summary —
+        // the summary's live `~Nh` duration + re-minted issueId made every tick a
+        // fresh, un-coalesced escalation. A stable subjectSignature keys the ONE
+        // open row so re-detections bump repeatCount instead of proliferating.
+        meta: { subjectSignature: agingConditionKey(dec.watchdogKey) },
       });
     } catch (e) {
       console.warn(`[improvement-watchdog] aging coord:escalate failed for ${dec.issueId} (${dec.watchdogKey}): ${e instanceof Error ? e.message : e}`);

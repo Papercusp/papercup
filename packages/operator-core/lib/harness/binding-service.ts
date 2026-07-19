@@ -419,22 +419,37 @@ export async function claimBinding(input: { binding_id: string }): Promise<Bindi
       required: 'maintain or admin',
     });
   }
-  if (existing!.claimed_by_github_user_ids.includes(me.id)) {
-    // Idempotent re-claim.
-    existing!.last_permission_verified_at = new Date().toISOString();
-    await upsertCacheRow(workspaceId, existing!);
-    return existing!;
-  }
+  // EI-1626: append via a single atomic SQL set-union UPDATE instead of a JS
+  // read→modify→write. The old code computed `[...existing.ids, me.id]` (and,
+  // on the idempotent-reclaim branch, rewrote `existing` verbatim) from the
+  // `existing` snapshot read above, then wrote it wholesale via upsertCacheRow
+  // (ON CONFLICT DO UPDATE SET claimed_by_github_user_ids = EXCLUDED...). Two
+  // maintainers claiming concurrently could both read the same stale snapshot
+  // and last-write-wins one claimant out of the array — and the "idempotent"
+  // branch had the identical bug (it rewrites `existing.claimed_by_github_user_ids`
+  // verbatim, silently dropping any claimant added by a concurrent claim that
+  // landed between this call's read and write). A single UPDATE's SET clause
+  // is evaluated against the row's CURRENT (not snapshotted) column value, so
+  // computing the union+dedupe inline makes read+write atomic per row —
+  // regardless of interleaving, every concurrent claimant's id survives.
   const nowIso = new Date().toISOString();
-  const updated: BindingRecord = {
-    ...existing!,
-    claim_status: 'claimed',
-    claimed_by_github_user_ids: [...existing!.claimed_by_github_user_ids, me.id],
-    claimed_at: existing!.claimed_at ?? nowIso,
-    last_permission_verified_at: nowIso,
-  };
-  await upsertCacheRow(workspaceId, updated);
-  return updated;
+  const { sql } = getOrgPg();
+  const rows = (await sql`
+    UPDATE harness_shared.shared_repo_binding_cache
+    SET claimed_by_github_user_ids = ARRAY(
+          SELECT DISTINCT unnest(claimed_by_github_user_ids || ARRAY[${me.id}::bigint])
+          ORDER BY 1
+        ),
+        claim_status = 'claimed',
+        claimed_at = COALESCE(claimed_at, ${nowIso}),
+        last_permission_verified_at = ${nowIso}
+    WHERE workspace_id = ${workspaceId}
+      AND provider = 'github'
+      AND github_repository_id = ${existing!.github_repository_id}
+    RETURNING *
+  `) as unknown as SrbcRow[];
+  if (rows.length === 0) fail({ code: 'BINDING_NOT_FOUND' });
+  return rowToBinding(rows[0]!);
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   bumpedSeverity,
   planKnownOpenAging,
   processKnownOpenAging,
+  agingConditionKey,
   type KnownOpenTickSample,
   type AgingItemInput,
   type KnownOpenAgingDeps,
@@ -228,7 +229,12 @@ describe('processKnownOpenAging — the brief\'s synthetic end-to-end (escalates
   function recordingDeps(items: AgingItemInput[], history: KnownOpenTickSample[]) {
     const calls: string[] = [];
     const stamps: Record<string, unknown>[] = [];
-    const escalations: { severity: string; summary: string; body: string }[] = [];
+    const escalations: {
+      severity: string;
+      summary: string;
+      body: string;
+      meta?: { dedupKind?: string; subjectSignature?: string };
+    }[] = [];
     const bumps: { id: string; to: string }[] = [];
     const comments: string[] = [];
     const deps: Partial<KnownOpenAgingDeps> = {
@@ -328,5 +334,40 @@ describe('processKnownOpenAging — the brief\'s synthetic end-to-end (escalates
     const readHistory = vi.fn();
     expect(await processKnownOpenAging('ws', [], {}, { readHistory })).toEqual([]);
     expect(readHistory).not.toHaveBeenCalled();
+  });
+
+  it('EI-14854: aging escalations for one condition carry a STABLE conditionKey (they coalesce), independent of duration + re-minted issueId', async () => {
+    const key = 'stalled-claim:stalled-work-item-claims'; // the live flooding condition
+    // createdAt predates the run so the EI-14763 clamp never interferes — both
+    // ticks escalate, isolating the coalescing-key behaviour under test.
+    const oldCreated = new Date(hoursAgo(200)).toISOString();
+
+    // Tick 1 — the condition has fired continuously for ~96h; item EI-FIRST open.
+    const first = item({ id: 'EI-FIRST', severity: 'critical', createdAt: oldCreated }, key);
+    const r1 = recordingDeps([first], steadyHistory(key, 96));
+    await processKnownOpenAging('ws', [key], { nowMs: NOW }, r1.deps);
+    expect(r1.escalations).toHaveLength(1);
+
+    // Tick 2 (~1h later) — the underlying item was resolved + RE-MINTED as EI-SECOND
+    // (a NEW issueId, no prior aging stamp) and the duration advanced to ~98h.
+    const second = item({ id: 'EI-SECOND', severity: 'critical', createdAt: oldCreated }, key);
+    const r2 = recordingDeps([second], steadyHistory(key, 98));
+    await processKnownOpenAging('ws', [key], { nowMs: NOW + 3_600_000 }, r2.deps);
+    expect(r2.escalations).toHaveLength(1);
+
+    // The two SUMMARIES differ (live duration + re-minted issueId) — EXACTLY what
+    // made the old summary-derived subjectSignature never match, minting a fresh
+    // un-coalesced escalation (and EI) every ~30-min tick (the EI-14854 flood)...
+    expect(r1.escalations[0].summary).not.toBe(r2.escalations[0].summary);
+    // ...but the coalescing key (meta.subjectSignature) is IDENTICAL + scoped to the
+    // CONDITION (the watchdogKey), so openEscalation dedups both onto ONE open row
+    // (bumping repeatCount) instead of proliferating.
+    const sig1 = r1.escalations[0].meta?.subjectSignature;
+    const sig2 = r2.escalations[0].meta?.subjectSignature;
+    expect(sig1).toBe(agingConditionKey(key));
+    expect(sig2).toBe(agingConditionKey(key));
+    expect(sig1).toBe(sig2);
+    // The stable key is duration/issueId-free — it depends ONLY on the watchdogKey.
+    expect(agingConditionKey(key)).toBe('known-open-aging:stalled-claim:stalled-work-item-claims');
   });
 });

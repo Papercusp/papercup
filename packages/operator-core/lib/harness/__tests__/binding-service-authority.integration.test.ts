@@ -312,13 +312,37 @@ describe('claimBinding — multi-claimant + idempotency (Brief AI scenario 7)', 
     for (const r of results) expect(r.status).toBe('fulfilled');
     const row = await rawRow();
     const ids = (row?.claimed_by_github_user_ids as number[]).map(Number).sort();
-    // The row is never corrupt and status is claimed. Whether BOTH ids land or
-    // one is lost depends on read-modify-write interleave (see AI-6); the
-    // invariant we hold here is no-corruption + at-least-one + claimed.
+    // EI-1626 fix: claimBinding now appends via a single atomic SQL set-union
+    // UPDATE (no JS read-modify-write snapshot), so the row is never corrupt
+    // AND no concurrent claimant is ever lost — BOTH ids land regardless of
+    // interleaving. This replaces the old weaker "at-least-one-survives"
+    // invariant that merely pinned the pre-fix lost-update behavior as
+    // "acceptable" rather than verifying it doesn't happen.
     expect(row?.claim_status).toBe('claimed');
-    expect(ids.length).toBeGreaterThanOrEqual(1);
-    expect(ids.every((n) => n === 30 || n === 40)).toBe(true);
+    expect(ids).toEqual([30, 40]);
     expect(new Set(ids).size).toBe(ids.length); // no duplicate id
+  });
+
+  it('an idempotent re-claim racing with a second maintainer must not drop the second claimant', async () => {
+    // Regression guard for the "idempotent re-claim" branch's own instance of
+    // EI-1626: the old code rewrote `existing.claimed_by_github_user_ids`
+    // verbatim on re-claim, which could wipe out a claimant added by a
+    // concurrent claim landing between this call's read and write.
+    h.perm = { carol: 'admin', dave: 'admin' };
+    h.acting = { login: 'carol', id: 30 };
+    await svc.claimBinding({ binding_id: 'github:555' }); // carol claims first, sequentially
+    h.actingQueue = [
+      { login: 'carol', id: 30 }, // re-claim (idempotent)
+      { login: 'dave', id: 40 }, // new claimant, racing the re-claim
+    ];
+    const results = await Promise.allSettled([
+      svc.claimBinding({ binding_id: 'github:555' }),
+      svc.claimBinding({ binding_id: 'github:555' }),
+    ]);
+    for (const r of results) expect(r.status).toBe('fulfilled');
+    const row = await rawRow();
+    const ids = (row?.claimed_by_github_user_ids as number[]).map(Number).sort();
+    expect(ids).toEqual([30, 40]);
   });
 });
 

@@ -22,8 +22,12 @@ the route half of G-004 + the EI-1618 drain-health wiring are PROVEN on the real
 binary, not just in tests. The only thing still pending is the pixel-level GUI screenshot
 of `HiveFederationStatus` (a VirtualGL drive, never `:0`) — the same optional last-mile
 already accepted as covered by the component render tests. WI-254 (the proactive periodic
-drain reconcile, EI-1618 item 2) is BUILT + tested (30 tests), shipped default-OFF
-(`PAPERCUSP_FEDERATION_DRAIN_RECONCILE=1`) pending an enablement review.
+drain reconcile, EI-1618 item 2) is BUILT + tested. UPDATE 2026-07-19: it shipped dark
+behind an ad-hoc `PAPERCUSP_FEDERATION_DRAIN_RECONCILE=1` env var pending an enablement
+review — that violated the no-env-feature-gates + finished-work-never-ships-dark policy
+(the code was ready + tested, so per policy it ships live, not parked). Converted to a
+proper `FLAGS.FEDERATION_DRAIN_RECONCILE` entry, DEFAULT ON (not in DARK_FLAGS), and
+verified live via targeted tests. WI-254 is now resolved.
 
 ---
 

@@ -805,6 +805,21 @@ export async function readScoutSnapshot(
       parsed.push({ row, flat, prevRefs });
     }
 
+    // Legacy-row heal (owner-reported 2026-07-19): rows written before the
+    // cycle-deps stamp-before-persist fix carry NO previousCycleRefs, so their
+    // delta split reads structurally empty. For those rows ONLY, derive the
+    // baseline from the next-older sibling's flattened refs (rows are newest-
+    // first). A row's own stamped baseline always wins when present — the
+    // sibling derivation is a display heal for pre-fix history, and the last
+    // (oldest-fetched) row keeps the no-baseline ⇒ all-standing rule.
+    for (let i = 0; i < parsed.length; i += 1) {
+      const entry = parsed[i];
+      const older = parsed[i + 1];
+      if (entry.prevRefs.size === 0 && older) {
+        entry.prevRefs = new Set(older.flat.map((p) => p.ref));
+      }
+    }
+
     digestHistory = parsed.map(({ row, flat, prevRefs }) => {
       // No previousCycleRefs (first-ever snapshot) ⇒ nothing is provably
       // "new"; the whole corpus reads as standing, same rule `digest` uses.

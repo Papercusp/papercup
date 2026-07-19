@@ -684,16 +684,21 @@ const steeringChurnSweepCheck: PeriodicCheck = {
 // caught without a reader. Composes with substrate-outbox-backstop-gc (alert@60s vs
 // its GC@48h — a huge no-race margin). Lives here (NOT a DBOS workflow) per EI-1622:
 // an ephemeral health check on a durable workflow is the workflow_status-bloat that
-// froze the routine engine. Default OFF (opt-in PAPERCUSP_FEDERATION_DRAIN_RECONCILE=1)
-// pending fleet-alert review — the code ships ready + tested, enablement is a human
-// decision. HEAVY (substrate_outbox group-scan) → sheds under saturation; a stall
-// persists, so a shed tick is caught next interval.
+// froze the routine engine. Flag-gated (FEDERATION_DRAIN_RECONCILE); DEFAULT ON (not
+// in DARK_FLAGS — the code ships ready + tested, so per repo policy it ships live,
+// not parked dark pending review; verified live 2026-07-19). Was previously an
+// ad-hoc `process.env.PAPERCUSP_FEDERATION_DRAIN_RECONCILE` gate (banned pattern,
+// lint:env-feature-gates) — replaced with this FLAGS entry. HEAVY (substrate_outbox
+// group-scan) → sheds under saturation; a stall persists, so a shed tick is caught
+// next interval.
 const federationDrainReconcileCheck: PeriodicCheck = {
   name: 'federation-drain-reconcile',
   intervalMs: 300_000,
   shed: true,
   tick: async () => {
-    if (process.env.PAPERCUSP_FEDERATION_DRAIN_RECONCILE !== '1') return;
+    const { FLAGS } = await import('@papercusp/flags');
+    const { getFlag } = await import('@papercusp/flags/server');
+    if (!(await getFlag(FLAGS.FEDERATION_DRAIN_RECONCILE, 'system'))) return;
     const { runDrainReconcileOnce } = await import('../sync/hyperbee/run-drain-reconcile');
     await runDrainReconcileOnce();
   },

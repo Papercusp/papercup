@@ -582,12 +582,18 @@ export function buildScoutCycleDeps(
       try {
         const { readPreviousSnapshotRefs, persistDigestSnapshot } = await import('./digest-snapshots');
         const prevRefs = await readPreviousSnapshotRefs();
+        // Stamp BEFORE persist (owner-reported 2026-07-19: every Signals cycle showed
+        // "delta leg was empty"): the persisted row is what the Learning-tab reader
+        // splits new-vs-standing from, and the old persist-then-stamp order meant NO
+        // row ever carried its baseline — the delta split was structurally empty for
+        // every cycle. flattenDigest walks lanes only, so the stamped key never
+        // feeds the next cycle's readPreviousSnapshotRefs baseline (chain unchanged).
+        if (prevRefs.size > 0) digest.previousCycleRefs = [...prevRefs];
         await persistDigestSnapshot({
           digest,
           installSlug: opts.harnessSlug,
           cycleId: opts.cycleId ?? null,
         });
-        if (prevRefs.size > 0) digest.previousCycleRefs = [...prevRefs];
       } catch (err) {
         console.warn(
           '[scout/cycle-deps] digest-snapshot leg failed (cycle unaffected):',

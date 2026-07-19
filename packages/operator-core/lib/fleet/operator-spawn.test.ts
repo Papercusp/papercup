@@ -63,7 +63,12 @@ vi.mock('../owner-steering', () => ({
   effectiveMaxBees: vi.fn((_steering: unknown, base: number) => base),
 }));
 vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
-vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnceWithFallback: vi.fn() }));
+vi.mock('../dbos/orchestrator-runner', () => ({
+  spawnInvokeOnceWithFallback: vi.fn(),
+  // EI-361: operator-spawn.ts reads this for the timeout-kill errorMessage fallback
+  // when the spawn didn't override timeoutMs — mirror the real default (45min).
+  invokeTimeoutMs: vi.fn(() => 2_700_000),
+}));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
 // Per-hive override resolver (P-012/P-013) is a PG-backed spawn dep like its siblings —
@@ -312,6 +317,40 @@ describe('spawnAgentInHarness — happy path', () => {
       exitCode: 1,
       errorMessage: 'boom',
     }));
+  });
+
+  it('EI-361: a timeout-killed child (empty stderr, timedOut:true) records a self-explaining errorMessage instead of null', async () => {
+    // Pre-fix: a SIGTERM'd child almost always exits with EMPTY stderr (it never got
+    // a chance to write anything), so `(r.stderr||'')||null` recorded exit 143 with
+    // error_message NULL — indistinguishable from an unexplained crash without
+    // separately noticing the run lasted exactly the timeout budget.
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({
+      output: '', exitCode: 143, stderr: '', timedOut: true,
+    });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+    expect(res.ok).toBe(true);
+    await flush();
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId,
+      status: 'failed',
+      exitCode: 143,
+      errorMessage: expect.stringContaining('invoke timeout'),
+    }));
+    const call = vi.mocked(finishSpawn).mock.calls.find((c) => c[1]?.spawnId === res.spawnId);
+    expect(call?.[1]?.errorMessage).toContain('2700000ms');
+  });
+
+  it('EI-361: a timeout-killed child honors the per-spawn timeoutMs override in the errorMessage', async () => {
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({
+      output: '', exitCode: 143, stderr: '', timedOut: true,
+    });
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1', harness: 'demo', role: 'cup', timeoutMs: 120_000,
+    });
+    expect(res.ok).toBe(true);
+    await flush();
+    const call = vi.mocked(finishSpawn).mock.calls.find((c) => c[1]?.spawnId === res.spawnId);
+    expect(call?.[1]?.errorMessage).toContain('120000ms');
   });
 
   it('an exit-0 child with non-empty stderr persists stderr as errorMessage (WI-111 — session-limit diagnostic)', async () => {

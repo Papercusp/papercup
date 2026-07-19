@@ -641,6 +641,34 @@ describe('digest history (WI-5417 browseable per-cycle digest)', () => {
     expect(snap.digest?.cycleId).toBe('scout-3');
   });
 
+  it('LEGACY-ROW HEAL (owner-reported 2026-07-19): a stamp-less row with an older sibling derives its delta from the sibling instead of reading all-standing', async () => {
+    // Pre-fix persisted rows carry NO previousCycleRefs (the writer stamped AFTER
+    // persisting) — the symptom was EVERY cycle showing "the delta leg was empty".
+    const legacyNewest = mkDigestRow({
+      cycleId: 'scout-legacy-2',
+      createdAt: new Date('2026-07-18T05:00:00Z'),
+      refs: ['wi:EI-1', 'wi:EI-9'], // EI-9 new vs the sibling below
+      previousCycleRefs: [],
+    });
+    const legacyOlder = mkDigestRow({
+      cycleId: 'scout-legacy-1',
+      createdAt: new Date('2026-07-18T04:00:00Z'),
+      refs: ['wi:EI-1'],
+      previousCycleRefs: [],
+    });
+    const sql = fakeSql({ digestSnapshots: async () => [legacyNewest, legacyOlder] });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.digest?.cycleId).toBe('scout-legacy-2');
+    expect(snap.digest?.newEntries.map((e) => e.ref)).toEqual(['wi:EI-9']);
+    expect(snap.digest?.standingEntries.map((e) => e.ref)).toEqual(['wi:EI-1']);
+    expect(snap.digestHistory[0]).toMatchObject({ cycleId: 'scout-legacy-2', newCount: 1, standingCount: 1 });
+    // The oldest-fetched row has no sibling — keeps the all-standing rule.
+    expect(snap.digestHistory[1]).toMatchObject({ cycleId: 'scout-legacy-1', newCount: 0, standingCount: 1 });
+    // A row's OWN stamped baseline always wins over sibling derivation (row2's
+    // stamp says EI-1 standing even though a sibling-derivation would agree here;
+    // the mixed fixture set above — row3/row2/row1 — pins the stamped path).
+  });
+
   it('the first-ever snapshot (no previousCycleRefs) reads entirely as standing, never mislabeled new', async () => {
     const sql = fakeSql({ digestSnapshots: async () => [row1] });
     const snap = await readScoutSnapshot(sql, 'ws-1');

@@ -18,6 +18,19 @@
  * → 200 with the no-binding shape (status 'unclaimed', empty claimants),
  * never a 500.
  *
+ * EI-1625 (federation gap): `harness_shared.shared_repo_binding_cache` is
+ * workspace-scoped and NOT federated (no capture_substrate_outbox trigger,
+ * not in PEER_LOG_TABLES) — a JOINER of a shared hive never gets a local row
+ * for the owner's claim, so this read always fell back to the no-binding
+ * ("unclaimed") shape for every member, an active falsehood for a hive the
+ * owner HAS claimed. Fixed via the cheaper of the ticket's two options: when
+ * the local row is absent, fall back to the Cupboard central listing (the
+ * cross-workspace claim-status authority, already the source `lookupHiveForRepo`
+ * queries for the paste-time repo resolver) keyed by this harness's known
+ * `github_repository_id` from the harness registry. Cupboard unreachable/unknown
+ * degrades to the original no-binding shape — never a 500, never worse than
+ * before this fix.
+ *
  * Plan: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24 P-069.
  */
 
@@ -25,6 +38,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveLocalGithubIdentity } from '../../../identity/resolve-local-github-identity';
+import { loadHarnessRegistry } from '../../../harness-registry';
+import { resolveCupboardBaseUrl } from '../../../cupboard/base-url';
+import { composeBindingId } from '../../../harness/binding-types';
 import {
   resolveClaimStatus,
   type ClaimStatusRow,
@@ -118,6 +134,94 @@ async function viewerId(): Promise<number | null> {
   }
 }
 
+/** Shape of the public worker's GET /binding/:id response (apps/operator-public). */
+interface CupboardBindingResponse {
+  exists: boolean;
+  harness?: {
+    claim_status: BindingClaimStatus | null;
+    claimant_github_login: string | null;
+    publisher_github_login: string | null;
+  };
+}
+
+function summaryForFallback(
+  status: BindingClaimStatus,
+  claimantLogin: string | null,
+  provisionalOwnerLogin: string | null,
+): string {
+  if (status === 'claimed') {
+    return claimantLogin ? `Claimed by @${claimantLogin}.` : 'Claimed.';
+  }
+  if (status === 'stale') {
+    return 'The last claimant lost their GitHub permission — provisional-owner controls are re-enabled.';
+  }
+  if (status === 'superseded') {
+    return 'This harness has been superseded by a newer canonical binding.';
+  }
+  return provisionalOwnerLogin
+    ? `Unclaimed — @${provisionalOwnerLogin} is the provisional owner.`
+    : 'Unclaimed — no provisional owner recorded.';
+}
+
+/**
+ * EI-1625 fallback (used only when the LOCAL binding-cache row is absent —
+ * the common case for a shared-hive member, since the cache never federates).
+ * Resolves this harness's `github_repository_id` from the harness registry,
+ * then asks the Cupboard central index for the real claim status — the same
+ * central-index leg `lookupHiveForRepo` already queries for paste-time repo
+ * resolution. Best-effort throughout: any miss/failure returns null so the
+ * caller degrades to the original no-binding ("unclaimed") shape.
+ */
+export async function resolveCupboardClaimFallback(
+  slug: string,
+  workspaceId: string,
+  viewer: number | null,
+  deps: {
+    loadRegistry?: typeof loadHarnessRegistry;
+    fetchFn?: typeof fetch;
+  } = {},
+): Promise<ClaimStatusResponse | null> {
+  try {
+    const load = deps.loadRegistry ?? loadHarnessRegistry;
+    const reg = await load(workspaceId);
+    const project = reg.projects.find((p) => p.slug === slug);
+    const repoId = project?.github_repository_id;
+    if (!repoId) return null;
+
+    const fetchFn = deps.fetchFn ?? fetch;
+    const res = await fetchFn(`${resolveCupboardBaseUrl()}/binding/${repoId}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as CupboardBindingResponse;
+    if (!body.exists || !body.harness) return null;
+    const h = body.harness;
+    if (!h.claim_status) return null;
+    const status = h.claim_status;
+    const claimantLogin = h.claimant_github_login ?? null;
+    const provisionalOwnerLogin = h.publisher_github_login ?? null;
+    // Cupboard's public listing carries logins, not numeric GitHub user ids —
+    // viewer-scoped predicates stay conservatively false (never fabricate a
+    // claim-CTA or "you're the claimant" state we can't actually verify).
+    void viewer;
+
+    return {
+      status,
+      binding_id: composeBindingId('github', repoId),
+      claimant_login: claimantLogin,
+      claimants: [],
+      provisional_owner_login: provisionalOwnerLogin,
+      viewer_is_provisional_owner: false,
+      viewer_is_claimant: false,
+      viewer_can_claim: false,
+      superseded_by_href: null,
+      summary: summaryForFallback(status, claimantLogin, provisionalOwnerLogin),
+    };
+  } catch {
+    return null;
+  }
+}
+
 const get = defineTool({
   method: 'GET',
   path: '/harness/:slug/claim-status',
@@ -138,7 +242,11 @@ const get = defineTool({
          LIMIT 1
       `) as unknown as SrbcRow[];
       const row = rows[0];
-      if (!row) return Response.json(toResponse(resolveClaimStatus(null, viewer)));
+      if (!row) {
+        const fallback = await resolveCupboardClaimFallback(slug, workspaceId, viewer);
+        if (fallback) return Response.json(fallback);
+        return Response.json(toResponse(resolveClaimStatus(null, viewer)));
+      }
 
       const claimantIds = parseIdArray(row.claimed_by_github_user_ids);
 

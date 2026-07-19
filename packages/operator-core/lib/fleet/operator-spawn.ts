@@ -27,7 +27,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry, isEphemeralForeignProject } from '../harness-registry';
-import { spawnInvokeOnceWithFallback } from '../dbos/orchestrator-runner';
+import { spawnInvokeOnceWithFallback, invokeTimeoutMs } from '../dbos/orchestrator-runner';
 import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -1656,10 +1656,21 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
         },
         { log: (m) => console.log(`[operator-spawn] ${spawnId} ${m}`) },
       );
+      // EI-361: a timeout kill (SIGTERM at the invoke-timeout budget) almost always
+      // produces EMPTY stderr — the child is just killed, it never gets a chance to
+      // write anything — so falling back to `(r.stderr || '') || null` recorded exit
+      // 143 with error_message NULL, indistinguishable from an unexplained crash. `r`
+      // already carries `timedOut` (set by runChild's timer in orchestrator-runner.ts);
+      // surface it explicitly with the actual budget that was exceeded, so the nursery
+      // row self-explains instead of requiring a "was it exactly N seconds" forensic.
+      const effectiveTimeoutMs = input.timeoutMs ?? invokeTimeoutMs();
+      const errorMessage = r.timedOut
+        ? `invoke timeout after ${effectiveTimeoutMs}ms (${Math.round(effectiveTimeoutMs / 1000)}s) — SIGTERM'd (EI-361)`
+        : (r.stderr || '').slice(-2000) || null;
       return completeSpawn({
         status: finalStatus,
         exitCode: r.exitCode,
-        errorMessage: (r.stderr || '').slice(-2000) || null,
+        errorMessage,
         outputTail: (r.output || '').slice(-2000) || null,
       });
     })
