@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '@papercusp/operator-core/lib/harness/issue-types';
 
@@ -283,6 +284,9 @@ function toMs(v: number | string | null | undefined): number | undefined {
  */
 export function useHarnessAgents(slug: string): {
   agents: HarnessAgentRun[] | null;
+  /** True store total (row[0]._meta.total): the list read is capped (P-004), so the
+   *  loaded `agents.length` is a WINDOW, not the count — use this for count labels. */
+  total: number;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -323,7 +327,9 @@ export function useHarnessAgents(slug: string): {
     setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
   }, [syncError]);
 
-  return { agents, loading: agents === null && !error, error, refresh };
+  // True store total rides row[0]._meta (P-004 cap); falls back to the loaded length.
+  const total = Array.isArray(syncRows) ? readListTotal(syncRows) : (agents?.length ?? 0);
+  return { agents, total, loading: agents === null && !error, error, refresh };
 }
 
 // ───────── Logs (run.log.jsonl history) ─────────

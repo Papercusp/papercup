@@ -243,6 +243,11 @@ export interface AttentionItem {
    *  on this Decision + WHY it's gated. Set for `needsHuman` items only. */
   authorizer?: 'you' | 'queen-eligible' | null;
   whyGated?: 'protected' | 'owner-only' | 'unarmed' | 'above-ceiling' | null;
+  /** ISO timestamp of when the underlying event occurred (message/escalation
+   *  sent, work-item updated, gate opened, report turn, …). Drives the Inbox
+   *  card's date + recency ordering (inbox-pane-active-scope-dates-filters-2026-07-19).
+   *  Null when a source has no natural per-item timestamp. */
+  occurredAt?: string | null;
 }
 
 export interface AttentionGroup {

@@ -53,6 +53,7 @@ import {
 import {
   planItemsToAttention,
   reportTurnsToAttention,
+  toIsoOrNull,
   dropConvertedPlanItems,
   dropDuplicateNeedsHumanWorkItems,
   dropDuplicateBlockedWorkItems,
@@ -247,6 +248,11 @@ export default defineTool({
       },
       async () => {
         const items: AttentionItem[] = [];
+        // Narrow an unknown source-row timestamp to what toIsoOrNull accepts, so
+        // each pushed item can carry `occurredAt` for the Inbox card date
+        // (inbox-pane-active-scope-dates-filters-2026-07-19).
+        const tsOf = (v: unknown): string | number | null =>
+          typeof v === "string" || typeof v === "number" ? v : null;
         // plan-slug → harness, so coord escalations/messages that carry a plan_slug
         // but no recorded harness can still be scoped (backfills items raised before
         // coord:escalate/coord:send began recording the originating harness).
@@ -321,8 +327,8 @@ export default defineTool({
                 listEscalations({ status: "open" }),
               );
               for (const e of escs) {
-                items.push(
-                  coordEscalationToAttention({
+                items.push({
+                  ...coordEscalationToAttention({
                     msgId: e.msg_id,
                     severity: e.severity,
                     summary: typeof e.summary === "string" ? e.summary : "",
@@ -337,7 +343,8 @@ export default defineTool({
                     // The escalating agent — drives the "Message owner" action (D-005).
                     from: typeof e.from === "string" ? e.from : null,
                   }),
-                );
+                  occurredAt: toIsoOrNull(tsOf((e as { ts?: unknown }).ts)),
+                });
               }
             } catch {
               /* best-effort */
@@ -374,8 +381,8 @@ export default defineTool({
                   lifecycle?: unknown;
                   report?: unknown;
                 };
-                items.push(
-                  coordMessageToAttention({
+                items.push({
+                  ...coordMessageToAttention({
                     msgId: m.msg_id,
                     summary:
                       typeof m.summary === "string" ? m.summary : undefined,
@@ -402,7 +409,8 @@ export default defineTool({
                     // renders it as a 📋 card in the Inbox detail pane.
                     report: mm.report,
                   }),
-                );
+                  occurredAt: toIsoOrNull(tsOf((m as { ts?: unknown }).ts)),
+                });
               }
             } catch {
               /* best-effort */
@@ -485,15 +493,22 @@ export default defineTool({
                 const slug = c.scope?.startsWith("harness:")
                   ? c.scope.slice("harness:".length)
                   : null;
-                items.push(
-                  improvementToAttention({
+                items.push({
+                  ...improvementToAttention({
                     issueId: c.id,
                     title: c.title,
                     body: c.body,
                     severity: c.severity,
                     harnessSlug: slug,
                   }),
-                );
+                  occurredAt: toIsoOrNull(
+                    tsOf(
+                      (c as { updatedAt?: unknown; createdAt?: unknown })
+                        .updatedAt ??
+                        (c as { createdAt?: unknown }).createdAt,
+                    ),
+                  ),
+                });
               }
             } catch {
               /* best-effort */
@@ -510,14 +525,15 @@ export default defineTool({
               for (const s of cands) {
                 if (harnessFilter && s.targetHarness !== harnessFilter)
                   continue;
-                items.push(
-                  standingApprovalToAttention({
+                items.push({
+                  ...standingApprovalToAttention({
                     capability: s.capability,
                     targetHarness: s.targetHarness,
                     count: s.count,
                     lastSeenAt: s.lastSeenAt,
                   }),
-                );
+                  occurredAt: toIsoOrNull(tsOf(s.lastSeenAt)),
+                });
               }
             } catch {
               /* best-effort */
@@ -549,8 +565,8 @@ export default defineTool({
                 if (answered) continue;
                 const id = typeof c.id === "string" ? c.id : null;
                 if (!id) continue;
-                items.push(
-                  conversationToAttention({
+                items.push({
+                  ...conversationToAttention({
                     conversationId: id,
                     title:
                       typeof c.title === "string" ? c.title : "Open question",
@@ -558,7 +574,8 @@ export default defineTool({
                     askerId: typeof c.asker_id === "string" ? c.asker_id : null,
                     harnessSlug: resolveHarness(c.harness_slug, null),
                   }),
-                );
+                  occurredAt: toIsoOrNull(tsOf(c.updated_at ?? c.created_at)),
+                });
               }
             } catch {
               /* best-effort */
@@ -605,8 +622,8 @@ export default defineTool({
                 harness: harnessFilter,
               });
               for (const r of rows) {
-                items.push(
-                  workItemNeedsHumanToAttention({
+                items.push({
+                  ...workItemNeedsHumanToAttention({
                     workItemId: r.feature_id,
                     itemKind: r.item_kind ?? "unknown",
                     title: r.title ?? r.feature_id,
@@ -614,7 +631,8 @@ export default defineTool({
                     harnessSlug: resolveHarness(r.harness_slug, null),
                     ownerAgentId: r.taken_by,
                   }),
-                );
+                  occurredAt: toIsoOrNull(r.updated_ts),
+                });
               }
             } catch {
               /* best-effort */
@@ -636,8 +654,8 @@ export default defineTool({
                 harness: harnessFilter ?? undefined,
               });
               for (const w of walls) {
-                items.push(
-                  ownerWallToAttention({
+                items.push({
+                  ...ownerWallToAttention({
                     source: w.source,
                     ownerId: w.ownerId,
                     harnessSlug: resolveHarness(w.harness, null),
@@ -647,7 +665,16 @@ export default defineTool({
                     waitingHours: w.waitingHours,
                     status: w.status,
                   }),
-                );
+                  // A wall has no stored timestamp, but waitingHours is how long
+                  // it has been open — derive when it was raised.
+                  occurredAt:
+                    typeof w.waitingHours === "number" &&
+                    Number.isFinite(w.waitingHours)
+                      ? new Date(
+                          Date.now() - w.waitingHours * 3_600_000,
+                        ).toISOString()
+                      : null,
+                });
               }
             } catch {
               /* best-effort */
@@ -703,8 +730,8 @@ export default defineTool({
                   : null;
                 const waitingHours =
                   openedMs != null ? (now - openedMs) / 3_600_000 : null;
-                items.push(
-                  blockedSessionToAttention({
+                items.push({
+                  ...blockedSessionToAttention({
                     sessionId: g.session_id,
                     client: g.client,
                     refId: g.ref_id,
@@ -714,7 +741,8 @@ export default defineTool({
                     harnessSlug: resolveHarness(g.harness_slug, null),
                     waitingHours,
                   }),
-                );
+                  occurredAt: toIsoOrNull(g.opened_at ?? null),
+                });
               }
             } catch {
               /* best-effort */
@@ -738,8 +766,8 @@ export default defineTool({
                 harness: harnessFilter,
               });
               for (const r of rows) {
-                items.push(
-                  blockedWorkItemToAttention({
+                items.push({
+                  ...blockedWorkItemToAttention({
                     workItemId: r.feature_id,
                     itemKind: r.item_kind ?? "unknown",
                     title: r.title ?? r.feature_id,
@@ -753,7 +781,8 @@ export default defineTool({
                       ? `${r.harness_slug}#${r.feature_id}`
                       : null,
                   }),
-                );
+                  occurredAt: toIsoOrNull(r.updated_ts),
+                });
               }
             } catch {
               /* best-effort */

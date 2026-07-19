@@ -73,6 +73,12 @@ const clampedLimitOpt = (cap: number) =>
     .transform((v) => Math.min(v, cap))
     .optional();
 
+// Default cap for the unbounded agentRunsConsolidated.bySlug list read (P-004,
+// whole-app-sync-payload-audit-2026-07-19). Matches the workItems.byHarness window —
+// the run-history grid ships recent activity, not unbounded history. The true total
+// still rides row[0]._meta so the count label is honest.
+const RUNS_LIST_CAP = 2000;
+
 // Coerce any top-level BigInt field on each row to a Number so the rows survive the
 // rest-query-batch serializer (a plain JSON.stringify, which THROWS on a BigInt → a 500
 // whenever the resolver returns rows). A bigserial({ mode: 'bigint' }) PK (user_actions.id
@@ -208,7 +214,13 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
       costIsEstimate: t.costIsEstimate,
       spawnStatus: spawn.spawnStatus,
       exitCode: spawn.exitCode,
-      errorMessage: spawn.errorMessage,
+      // Tooltip-sufficient truncation (whole-app-sync-payload-audit-2026-07-19 P-004):
+      // errorMessage is rendered ONLY as the failed/cancelled/reaped outcome-chip
+      // tooltip (run-outcome.ts) — a tooltip never needs a full message, and across
+      // ~3k non-null rows this field was ~1.46MB of the list payload. Cap at 1000
+      // chars: the max observed was 2431, so this clips only the long tail while the
+      // chip + exit code stay fully intact.
+      errorMessage: sql<string | null>`left(${spawn.errorMessage}, 1000)`.as('errorMessage'),
       sessionId: spawn.sessionId,
     })
     .from(t)
@@ -226,7 +238,38 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
         : sql`coalesce(${t.harnessSlug}, ${spawn.harnessSlug}) = ${harnessSlug}`,
     )
     .orderBy(desc(tsExpr));
-  return (limit != null ? await q.limit(limit) : await q) as unknown[];
+  // Bound the LIST read (whole-app-sync-payload-audit-2026-07-19 P-004). `.recent`
+  // already passes limit 50; `.bySlug` used to be UNBOUNDED — on papercusp that was
+  // 5.7k runs ≈ 4.35MB re-shipped into the webview on every work_items write (the
+  // invalidation bridge). Unlike the feature/work-item lists there is little per-row
+  // waste here (costs/tokens/status all render), so the lever is the row count: the
+  // run-history grid only needs recent activity. Cap at RUNS_LIST_CAP and carry the
+  // TRUE total on row[0]._meta so the grid's count label stays honest (readListTotal);
+  // the count query runs ONLY when the cap is actually hit.
+  const effectiveLimit = limit ?? RUNS_LIST_CAP;
+  const rows = (await q.limit(effectiveLimit)) as Record<string, unknown>[];
+  if (rows.length < effectiveLimit) return attachListMeta(rows, { total: rows.length });
+  const total = await countRunsForHarness(harnessSlug, workspaceId);
+  return attachListMeta(rows, { total });
+}
+
+/** True run count for a harness = distinct (harness, run) across BOTH stores (the
+ *  full-outer union the list read draws from). Cheap: two indexed scans + a UNION,
+ *  and only called when the list read hit its cap (P-004). */
+async function countRunsForHarness(harnessSlug: string, workspaceId?: string): Promise<number> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const scope =
+    workspaceId != null
+      ? sql`harness_slug = ${harnessSlug} AND workspace_id = ${workspaceId}`
+      : sql`harness_slug = ${harnessSlug}`;
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM (
+      SELECT run_id FROM harness_shared.agent_runs_consolidated WHERE ${scope}
+      UNION
+      SELECT run_id FROM harness_shared.spawned_agents WHERE ${scope}
+    ) u`;
+  return rows[0]?.n ?? 0;
 }
 
 async function resolveDesignFeatures(args: { harnessSlug: string; workspaceId: string }): Promise<unknown[]> {

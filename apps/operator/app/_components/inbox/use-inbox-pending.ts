@@ -35,6 +35,52 @@ export function effectiveTier(i: AttentionItem): AttentionTier {
   return 'activity';
 }
 
+/**
+ * Recency window (days) beyond which a stale ACTIVITY-tier inbox item (a
+ * lifecycle/broadcast FYI, an ungraded rollup) is dropped from the human Inbox.
+ * Decisions and Alerts are current-state and never expire on age.
+ */
+export const INBOX_STALE_DAYS = 14;
+
+/**
+ * The Inbox "truly currently active" scope predicate
+ * (inbox-pane-active-scope-dates-filters-2026-07-19 P-101). The shared
+ * `plans.attention` feed is the WHOLE attention firehose (~15 sources incl. every
+ * non-terminal plan item across every plan) — correct for the /adv Queue, wrong
+ * for a HUMAN inbox, where it renders hundreds of backlog rows that are not
+ * awaiting the owner. This narrows the feed to what genuinely belongs in an inbox:
+ *   - DROP the plan-item execution backlog (todo/wip/blocked plan items) — those
+ *     belong in the Queue/Working tab. A needs-human plan DECISION always stays.
+ *   - KEEP every Decision and Alert (owner-addressed asks + current-state signals
+ *     like blocked/needs-human work-items, escalations, smoke-fails) regardless of
+ *     age — a decision doesn't expire, and blocked-work drill-ins depend on it.
+ *   - RECENCY-BOUND only the Activity tier (auto/lifecycle broadcasts, old FYIs,
+ *     the scout-grade rollup): drop it once older than INBOX_STALE_DAYS. An item
+ *     with no `occurredAt` is kept (staleness can't be proven).
+ */
+export function isInboxActive(i: AttentionItem, now: number = Date.now()): boolean {
+  const tier = effectiveTier(i);
+  // Plan-item execution backlog → the Queue, not the Inbox (a needs-human
+  // plan-item is tier 'decision' and is kept by the next clause).
+  if (i.kind === 'plan-item' && tier !== 'decision') return false;
+  // Decisions + Alerts are current-state — always kept.
+  if (tier !== 'activity') return true;
+  // Activity tier: recency-bound the append-heavy broadcast/FYI stream.
+  const at = i.occurredAt ? new Date(i.occurredAt).getTime() : null;
+  if (at != null && Number.isFinite(at) && (now - at) / 86_400_000 > INBOX_STALE_DAYS) {
+    return false;
+  }
+  return true;
+}
+
+/** Apply {@link isInboxActive} to a feed — the Inbox pane's scoped item set. */
+export function scopeInboxItems(
+  items: readonly AttentionItem[],
+  now: number = Date.now(),
+): AttentionItem[] {
+  return items.filter((i) => isInboxActive(i, now));
+}
+
 export interface InboxAttention {
   items: AttentionItem[];
   loading: boolean;

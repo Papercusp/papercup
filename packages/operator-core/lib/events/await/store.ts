@@ -1172,7 +1172,7 @@ export async function recordKeyFire(input: {
     INSERT INTO harness_shared.event_key_fires
       (workspace_id, event_key, first_fired_at, last_fired_at, last_fired_by, last_payload, fire_count)
     VALUES
-      (${ws}, ${eventKey}, now(), now(), ${input.firedBy ?? null},
+      (${ws}, ${input.eventKey}, now(), now(), ${input.firedBy ?? null},
        ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb, 1)
     ON CONFLICT (workspace_id, event_key) DO UPDATE
        SET last_fired_at = now(),

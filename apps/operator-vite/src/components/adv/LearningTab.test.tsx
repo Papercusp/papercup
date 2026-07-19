@@ -1146,7 +1146,11 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     expect(trace.textContent).toContain("won");
   });
 
-  it("turns route bars into filters and defaults to an eight-item decision queue", () => {
+  it("splits ungraded ideas into an 8-item decision queue + an 'earlier' disclosure, each as per-lens overlapping stacks", () => {
+    // 10 ungraded ideas, all one lens → one stack in the decision queue (top
+    // card visible, 8 total) and one stack of the remaining 2 behind the
+    // "Earlier ungraded ideas" disclosure (owner ask 2026-07-19 — the cards
+    // OVERLAP, so only the top of each stack shows its title at a time).
     const recent = Array.from({ length: 10 }, (_, index) => ({
       ...scoutSnapshot.recent[0],
       ideaId: `queue-${index}`,
@@ -1167,11 +1171,20 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       invalidate: vi.fn(),
     };
     const { rerender } = render(<ScoutView />);
-    expect(screen.getAllByText(/Queue idea/)).toHaveLength(8);
+    // Decision queue: one lens stack, only the top card's title is rendered.
+    expect(screen.getByText("Decision queue")).toBeTruthy();
+    expect(screen.getByText("Queue idea 1")).toBeTruthy();
+    expect(screen.queryByText("Queue idea 2")).toBeNull();
+    // The stack's count control reports 8 (of 10; the other 2 are "earlier").
+    expect(screen.getByText("of").closest("span")?.textContent).toContain("8");
+    // Step the deck: the top card advances to the next idea.
+    fireEvent.click(screen.getAllByRole("button", { name: "Next card" })[0]);
+    expect(screen.getByText("Queue idea 2")).toBeTruthy();
+    // The remaining 2 live behind the "Earlier ungraded ideas" disclosure.
     fireEvent.click(
       screen.getByRole("button", { name: /Earlier ungraded ideas/ }),
     );
-    expect(screen.getAllByText(/Queue idea/)).toHaveLength(10);
+    expect(screen.getByText("Queue idea 9")).toBeTruthy();
     const planFilter = screen
       .getByLabelText("Idea routing")
       .querySelector("button") as HTMLButtonElement;

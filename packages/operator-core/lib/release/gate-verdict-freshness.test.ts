@@ -36,6 +36,9 @@ describe('evaluateGateVerdictFreshness', () => {
     expect(v.stale).toBe(true);
     expect(v.reason).toMatch(/without producing a new one/);
     expect(v.reason).toMatch(/SKIPPED/);
+    // EI-13714: writer-starvation is UNVERIFIED, not proof of green — callers must not treat it
+    // the same as a pin-advance (see the pin-advance case below + git-pipeline-stats.ts).
+    expect(v.reasonCode).toBe('writer-starved');
   });
 
   it('⭐ flags a red the pin has advanced past — the pin only moves on a GREEN checkpoint', () => {
@@ -46,6 +49,10 @@ describe('evaluateGateVerdictFreshness', () => {
     });
     expect(v.stale).toBe(true);
     expect(v.reason).toMatch(/only moves on a GREEN checkpoint/);
+    // EI-13714: pin-advance is HARD PROOF a green happened — the one reasonCode a caller may
+    // treat as "reset the streak to 0", not merely "unknown" (git-pipeline-stats.ts's
+    // pinProvenGateCorrection is the one place that acts on this).
+    expect(v.reasonCode).toBe('pin-advance');
   });
 
   it('compares pins by short sha — a full sha and its 12-char prefix are the SAME pin, not a move', () => {
@@ -74,6 +81,7 @@ describe('evaluateGateVerdictFreshness', () => {
       observedAtMs: LAST_VERDICT - 50 * H, // ancient, and the routine has fired since
     });
     expect(v.stale).toBe(false);
+    expect(v.reasonCode).toBeNull();
   });
 
   it('tolerates one late fire — 1.5× the interval of slack, so a slightly-delayed tick is not "starved"', () => {
@@ -118,6 +126,8 @@ describe('evaluateGateVerdictFreshness', () => {
       expect(v.reason).toMatch(/re-triage/);
       expect(v.reason).toMatch(/9f8e7d6c5b4a/);
       expect(v.reason).toMatch(/PASSED/);
+      // EI-13714: retriage-proven is NOT a full-suite green proof — distinct from pin-advance.
+      expect(v.reasonCode).toBe('retriage-proven');
     });
 
     it('does not flag a genuinely-broken red whose retriage never found a stale-candidate', () => {

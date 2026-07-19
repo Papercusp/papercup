@@ -55,12 +55,32 @@ beforeAll(async () => {
       expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
       fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
       once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
-      payload_filter jsonb
+      payload_filter jsonb,
+      causal_generation bigint, expected_condition jsonb, superseded_at timestamptz,
+      fired_by text, fired_payload jsonb
     )`);
   await rootSql.unsafe(`
     CREATE UNIQUE INDEX event_awaits_inbox_wake_one_per_agent
       ON harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
       WHERE policy = 'wake' AND once = false AND cancelled_at IS NULL AND event_key LIKE 'coord:inbox-wake:%'`);
+  // FAITHFUL to mig 163 — event_wake_deliveries — needed by inspectEventKey (EI-13705 tests below).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.event_wake_deliveries (
+      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      workspace_id text NOT NULL DEFAULT 'default', await_id bigint NOT NULL,
+      subscriber_id text NOT NULL, event_key text NOT NULL, payload jsonb, summary text,
+      status text NOT NULL DEFAULT 'pending', channel text, attempts integer NOT NULL DEFAULT 0,
+      last_error text, next_attempt_at timestamptz NOT NULL DEFAULT now(),
+      created_at timestamptz NOT NULL DEFAULT now(), delivered_at timestamptz
+    )`);
+  // FAITHFUL to mig 632 (EI-13705) — the unconditional per-key fire latch.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.event_key_fires (
+      workspace_id text NOT NULL DEFAULT 'default', event_key text NOT NULL,
+      first_fired_at timestamptz NOT NULL DEFAULT now(), last_fired_at timestamptz NOT NULL DEFAULT now(),
+      last_fired_by text, last_payload jsonb, fire_count bigint NOT NULL DEFAULT 1,
+      PRIMARY KEY (workspace_id, event_key)
+    )`);
   hb.sql = rootSql;
 }, 90_000);
 
@@ -70,6 +90,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.event_awaits RESTART IDENTITY`;
+  await rootSql`TRUNCATE harness_shared.event_wake_deliveries RESTART IDENTITY`;
+  await rootSql`TRUNCATE harness_shared.event_key_fires`;
 });
 
 describe('await-event store (PG)', () => {
@@ -317,5 +339,55 @@ describe('await-event store (PG)', () => {
 
     // empty input short-circuits to an empty map
     expect((await countActiveAwaitsByPrefixes([])).size).toBe(0);
+  });
+});
+
+// ── EI-13705: the unconditional per-key fire latch (mig 632) ──────────────────
+describe('recordKeyFire / getKeyFireLatch / inspectEventKey.fireLatch (PG)', () => {
+  it('getKeyFireLatch is null for a key that has never fired', async () => {
+    expect(await getKeyFireLatch('never:fired')).toBeNull();
+  });
+
+  it('recordKeyFire inserts a fresh latch row (fire_count=1) for a brand-new key', async () => {
+    await recordKeyFire({ eventKey: 'p2p-git:phase3-open', firedBy: 'su-63834d42', payload: { sha: 'abc' } });
+    const latch = await getKeyFireLatch('p2p-git:phase3-open');
+    expect(latch).toMatchObject({ eventKey: 'p2p-git:phase3-open', lastFiredBy: 'su-63834d42', fireCount: 1 });
+    expect(latch!.lastPayload).toEqual({ sha: 'abc' });
+    expect(latch!.firstFiredAt).toEqual(latch!.lastFiredAt); // first fire: first == last
+  });
+
+  it('a second recordKeyFire on the SAME key upserts in place — increments fire_count, refreshes last_*, keeps first_fired_at', async () => {
+    await recordKeyFire({ eventKey: 'k:repeat', firedBy: 'source-1', payload: { n: 1 } });
+    const first = await getKeyFireLatch('k:repeat');
+    await recordKeyFire({ eventKey: 'k:repeat', firedBy: 'source-2', payload: { n: 2 } });
+    const second = await getKeyFireLatch('k:repeat');
+
+    expect(await rootSql`SELECT 1 FROM harness_shared.event_key_fires WHERE event_key = 'k:repeat'`).toHaveLength(1); // ONE row, not two
+    expect(second!.fireCount).toBe(2);
+    expect(second!.lastFiredBy).toBe('source-2');
+    expect(second!.lastPayload).toEqual({ n: 2 });
+    expect(second!.firstFiredAt).toEqual(first!.firstFiredAt); // first_fired_at is never overwritten
+  });
+
+  it('recordKeyFire with no payload/firedBy stores nulls (an anonymous/payload-less emit still latches)', async () => {
+    await recordKeyFire({ eventKey: 'k:bare' });
+    const latch = await getKeyFireLatch('k:bare');
+    expect(latch).toMatchObject({ eventKey: 'k:bare', lastFiredBy: null, lastPayload: null, fireCount: 1 });
+  });
+
+  it('inspectEventKey folds the fire latch in alongside announcements/waiters/deliveries', async () => {
+    await recordKeyFire({ eventKey: 'k:inspect', firedBy: 'su-x' });
+    const history = await inspectEventKey('k:inspect');
+    expect(history.announcements).toEqual([]);
+    expect(history.waiters).toEqual([]);
+    expect(history.deliveries).toEqual([]);
+    expect(history.fireLatch).toMatchObject({ eventKey: 'k:inspect', lastFiredBy: 'su-x', fireCount: 1 });
+  });
+
+  it('inspectEventKey.fireLatch is null for a key with waiters/deliveries but that was never routed through recordKeyFire (isolation — the latch is its own store, not derived)', async () => {
+    await registerAwait({ subscriberId: 'sub-z', eventKey: 'k:no-latch' });
+    const history = await inspectEventKey('k:no-latch');
+    expect(history.waiters).toHaveLength(1);
+    expect(history.fireLatch).toBeNull();
   });
 });

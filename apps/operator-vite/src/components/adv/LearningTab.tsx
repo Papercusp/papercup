@@ -73,6 +73,7 @@ import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
+import { CardStack } from "@/app/harness/CardStack";
 import { statusToneColor } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
@@ -2969,7 +2970,6 @@ export function ScoutView({
   // Titles for the opaque wi: grounding refs (server-resolved, P-004);
   // pre-deploy snapshots lack the field — fall back to the raw ref.
   const groundingTitles = snap?.groundingTitles ?? {};
-  const [showEarlier, setShowEarlier] = useState(false);
   const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>(
     {},
   );
@@ -2980,7 +2980,6 @@ export function ScoutView({
       railFilter ? recent.filter((item) => item.rail === railFilter) : recent,
     [railFilter, recent],
   );
-  useEffect(() => setShowEarlier(false), [railFilter]);
   // P-003: the view badge evaluates the rubric's drift markers (server-derived
   // health), NOT data-presence — "there are rows" is not "the loop is healthy".
   useEffect(() => {
@@ -2999,7 +2998,12 @@ export function ScoutView({
   };
   const reviewItems = filteredRecent.filter((item) => !effectiveGrade(item));
   const reviewedItems = filteredRecent.filter((item) => effectiveGrade(item));
-  const queueItems = showEarlier ? reviewItems : reviewItems.slice(0, 8);
+  // Two DISTINCT ungraded sections (owner ask 2026-07-19): the decision queue
+  // (the 8 highest-priority to grade now) and everything older behind its own
+  // disclosure — no longer one truncated list toggled in place.
+  const DECISION_QUEUE_SIZE = 8;
+  const decisionQueue = reviewItems.slice(0, DECISION_QUEUE_SIZE);
+  const earlierUngraded = reviewItems.slice(DECISION_QUEUE_SIZE);
 
   const submitGrade = async (
     item: ScoutRoutedItem,
@@ -3357,6 +3361,160 @@ export function ScoutView({
     );
   };
 
+  // Card variant of an idea for the overlapping-stack browser (owner ask
+  // 2026-07-19). The lens rides the GROUP header (renderLensStacks), so the
+  // card omits the lens chip — the whole stack is one lens. Same interactive
+  // grade + trace affordances as the row.
+  const renderIdeaCard = (item: ScoutRoutedItem) => {
+    const meta = RAIL_META[item.rail] ?? {
+      label: item.rail,
+      desc: "Routed idea",
+      color: "#94a3b8",
+    };
+    const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
+    const eff = effectiveGrade(item);
+    const isOpen = gradeOpen === item.ideaId;
+    const isTraceOpen = traceOpen === item.ideaId;
+    const saving = savingId === item.ideaId;
+    return (
+      <div className="pc-learning__ideacard">
+        <div className="pc-learning__ideacard-head">
+          <span
+            className="pc-learning__id"
+            style={{ color: meta.color }}
+            title={meta.desc}
+          >
+            <span
+              className="pc-learning__sev"
+              style={{ background: meta.color }}
+              aria-hidden
+            />
+            {meta.label}
+          </span>
+          {item.outcome && item.outcome !== "pending" ? (
+            <span
+              className="pc-learning__score"
+              title="Outcome from the change feed"
+            >
+              {item.outcome}
+            </span>
+          ) : null}
+          <span className="pc-learning__age">
+            {!Number.isNaN(when) ? whenLabel(when) : ""}
+          </span>
+          <span
+            className="pc-learning__grade"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            {eff ? (
+              <span
+                className="pc-learning__gradechip"
+                title={
+                  eff.feedback
+                    ? `Graded by ${graderLabel(eff.gradedBy, t("brain"))}: “${eff.feedback}”`
+                    : `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`
+                }
+              >
+                ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
+              </span>
+            ) : null}
+            <Popover
+              open={isOpen}
+              onOpenChange={(open) =>
+                void setGradeOpen(open ? item.ideaId : null)
+              }
+              trigger={
+                <button
+                  type="button"
+                  className="pc-learning__notebtn"
+                  aria-label={eff ? "Review idea grade" : "Grade this idea"}
+                  aria-expanded={isOpen}
+                >
+                  {eff ? (
+                    <Star size={12} fill="currentColor" aria-hidden />
+                  ) : (
+                    <MessageSquarePlus size={12} aria-hidden />
+                  )}
+                </button>
+              }
+              tooltipLabel={eff ? "Review this grade" : "Grade this idea"}
+              ariaLabel={`Grade ${item.title ?? item.routedRef}`}
+              contentClassName="pc-learning__gradepopover"
+            >
+              <GradePanel
+                current={eff}
+                busy={saving}
+                onSave={(grade, feedback) => {
+                  void submitGrade(item, grade, feedback).then(
+                    () => void setGradeOpen(null),
+                  );
+                }}
+                onClose={() => void setGradeOpen(null)}
+              />
+            </Popover>
+          </span>
+        </div>
+        <button
+          type="button"
+          className="pc-learning__ideacard-title"
+          aria-expanded={isTraceOpen}
+          onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
+          title={
+            isTraceOpen
+              ? "Hide this idea's pipeline trace"
+              : "Show this idea's pipeline trace — grounding, lens, route, grade, outcome"
+          }
+        >
+          {item.title ?? item.routedRef}
+        </button>
+        {isTraceOpen ? renderTrace(item) : null}
+      </div>
+    );
+  };
+
+  // Group ungraded ideas by their producing lens ("first-principles reframing",
+  // …) and render each lens as its own overlapping card stack (owner ask
+  // 2026-07-19). Biggest stacks first so the dominant lenses lead.
+  const renderLensStacks = (items: ScoutRoutedItem[], keyPrefix: string) => {
+    const groups = new Map<string, ScoutRoutedItem[]>();
+    for (const it of items) {
+      const lens = it.lens || "unknown";
+      const bucket = groups.get(lens);
+      if (bucket) bucket.push(it);
+      else groups.set(lens, [it]);
+    }
+    const ordered = [...groups.entries()].sort(
+      (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
+    );
+    return (
+      <div className="pc-learning__lensstacks">
+        {ordered.map(([lens, group]) => (
+          <section
+            key={`${keyPrefix}-${lens}`}
+            className="pc-learning__lensgroup"
+            aria-label={`${lens} ideas`}
+          >
+            <header className="pc-learning__lensgroup-head">
+              <span className="pc-learning__lens" title="Creative lens">
+                {lens}
+              </span>
+              <span className="pc-learning__lensgroup-count">
+                {group.length}
+              </span>
+            </header>
+            <CardStack
+              items={group}
+              getKey={(it) => it.ideaId}
+              ariaLabel={`${lens} ungraded ideas`}
+              renderCard={(it) => renderIdeaCard(it)}
+            />
+          </section>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <section className="pc-learning__section">
       <LearningPageHeader
@@ -3653,27 +3811,34 @@ export function ScoutView({
               Grade failed: {gradeError}
             </p>
           ) : null}
-          {queueItems.length > 0 ? (
-            <ul className="pc-learning__list">
-              {queueItems.map(renderIdeaRow)}
-            </ul>
+          {/* Decision queue — the highest-priority ungraded, grouped into
+              per-lens overlapping stacks. A prominent, always-open section. */}
+          {decisionQueue.length > 0 ? (
+            <div className="pc-learning__queuesection">
+              <div className="pc-learning__sectionhead">
+                <h3 className="pc-learning__queuehead">Decision queue</h3>
+                <span className="pc-learning__muted">
+                  {decisionQueue.length} ungraded — grade the top of each lens
+                  stack; your 1–5 teaches the generator which lenses win.
+                </span>
+              </div>
+              {renderLensStacks(decisionQueue, "queue")}
+            </div>
           ) : (
             <LearningVisualEmpty
               icon={CheckCircle2}
               title="Review queue clear"
             />
           )}
-          {reviewItems.length > 8 ? (
-            <button
-              type="button"
-              className="pc-learning__earlierbtn"
-              aria-expanded={showEarlier}
-              onClick={() => setShowEarlier((current) => !current)}
+          {/* Earlier ungraded — everything past the decision queue, visually
+              SEPARATE behind its own disclosure, same per-lens stacks. */}
+          {earlierUngraded.length > 0 ? (
+            <LearningDisclosure
+              label="Earlier ungraded ideas"
+              count={earlierUngraded.length}
             >
-              {showEarlier
-                ? "Show decision queue only"
-                : `Earlier ungraded ideas · ${reviewItems.length - 8}`}
-            </button>
+              {renderLensStacks(earlierUngraded, "earlier")}
+            </LearningDisclosure>
           ) : null}
           {reviewedItems.length > 0 ? (
             <>
@@ -4684,8 +4849,49 @@ export function LearningStyles() {
       .pc-learning__panelbtn { padding: 4px 11px; font-size: 11.5px; font-weight: 650; border-radius: 7px; cursor: pointer; border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: transparent; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__panelbtn--primary { border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.12); color: #fcd34d; }
       .pc-learning__panelbtn:disabled { opacity: 0.5; cursor: default; }
-      .pc-learning__earlierbtn { align-self: center; padding: 5px 10px; border: 0; background: transparent; color: var(--fg-mute); font: inherit; font-size: 10.5px; cursor: pointer; }
-      .pc-learning__earlierbtn:hover { color: var(--accent); }
+      /* Ungraded ideas as per-lens overlapping stacks (owner ask 2026-07-19). */
+      .pc-learning__queuesection { margin-top: 6px; }
+      .pc-learning__queuehead {
+        margin: 0; font-size: 12px; font-weight: 720; letter-spacing: 0.01em;
+        color: var(--accent, #7dd3fc);
+      }
+      .pc-learning__lensstacks {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 12px; margin-top: 8px;
+      }
+      .pc-learning__lensgroup { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+      .pc-learning__lensgroup-head {
+        display: flex; align-items: center; gap: 8px;
+      }
+      .pc-learning__lensgroup-head .pc-learning__lens {
+        color: var(--fg, #e7eef5);
+        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 30%, var(--border));
+      }
+      .pc-learning__lensgroup-count {
+        font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+        color: var(--fg-mute, #7f9bb4);
+        padding: 1px 7px; border-radius: 999px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+      }
+      .pc-learning__ideacard {
+        display: flex; flex-direction: column; gap: 7px;
+        padding: 10px 12px; border-radius: 10px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        background: var(--bg-2, rgba(255, 255, 255, 0.04));
+      }
+      .pc-learning__ideacard-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .pc-learning__ideacard-head .pc-learning__id {
+        display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700;
+      }
+      .pc-learning__ideacard-head .pc-learning__sev {
+        width: 8px; height: 8px; min-height: 0; border-radius: 3px;
+      }
+      .pc-learning__ideacard-head .pc-learning__grade { margin-left: auto; }
+      .pc-learning__ideacard-title {
+        text-align: left; font: inherit; font-size: 12.5px; font-weight: 600; line-height: 1.4;
+        color: var(--fg, #e7eef5); background: none; border: 0; padding: 0; cursor: pointer;
+      }
+      .pc-learning__ideacard-title:hover { color: var(--accent, #7dd3fc); }
 
       .pc-learning__row--retained { grid-template-columns: 4px minmax(0, 1fr) auto; }
       .pc-learning__row--retained.is-selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }

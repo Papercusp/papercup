@@ -49,7 +49,7 @@ export default defineTool({
   name: "work_items:get",
   profile: "engineer",
   description:
-    "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. `checkpoint` is the item's in-flight state left by work_items:checkpoint (null if none was ever written) — check it before assuming state was lost on a cold resume. `checkpointAgeMs`/`checkpointUpdatedAtMs` (EI-8885) are the checkpoint's write recency — a checkpoint is a HYPOTHESIS about current state, more trustworthy the fresher it is; treat one older than your own recent activity as possibly stale and re-verify against ground truth (re-read the real file, re-run the real test) rather than trusting a prose narrative that may predate a fix landing. `checkpointStale` (present only when set): the assignee stayed active AFTER the checkpoint — don't conclude safety from it.",
+    "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. `planItemBlocked` (EI-13715, present only when set): this item carries a plan-item back-pointer whose linked plan lane is STILL effectively blocked/needs-human/stale-terminal — { reason, planSlug, itemId, effectiveStatus }. `workItem.state` alone (e.g. a bare `externalBlockers: null`) does NOT mean there's no recorded reason: check this field before treating a `blocked` item as safe to unblock, or cross-check plans:get-item yourself. `checkpoint` is the item's in-flight state left by work_items:checkpoint (null if none was ever written) — check it before assuming state was lost on a cold resume. `checkpointAgeMs`/`checkpointUpdatedAtMs` (EI-8885) are the checkpoint's write recency — a checkpoint is a HYPOTHESIS about current state, more trustworthy the fresher it is; treat one older than your own recent activity as possibly stale and re-verify against ground truth (re-read the real file, re-run the real test) rather than trusting a prose narrative that may predate a fix landing. `checkpointStale` (present only when set): the assignee stayed active AFTER the checkpoint — don't conclude safety from it.",
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     notWhen:
@@ -164,6 +164,17 @@ export default defineTool({
           });
           if (staleness.stale) checkpointStale = staleness;
         }
+        // EI-13715: blockedness has TWO sources of truth for a plan-linked work-item
+        // (payload.plan_item back-pointer) — this item's own `state`, and its linked
+        // plan-item's `effectiveStatus` (plans:get-item). Previously ONLY the latter
+        // surfaced the real reason ("blocked-by P-308"); this read gave no hint the
+        // plan gate even existed (`externalBlockers: null` reads as "blocked, reason
+        // unrecorded"), so a reader unblocked a live plan-supervised gate believing
+        // there was nothing left to check. Surface the SAME check work_items:observe
+        // / claim_next / scheduler:get_next already enforce, here too — read-only,
+        // fails open (null on no back-pointer, lookup error, or a clear lane), cheap
+        // (one plan-row read, only when the item actually carries the back-pointer).
+        const planItemBlocked = await planItemLaneBlockReason(workItem).catch(() => null);
         return {
           ok: true as const,
           id,
@@ -172,6 +183,7 @@ export default defineTool({
           checkpointAgeMs,
           checkpointUpdatedAtMs,
           ...(checkpointStale ? { checkpointStale } : {}),
+          ...(planItemBlocked ? { planItemBlocked } : {}),
         };
       },
       { keyOf: (id) => ({ id }) },

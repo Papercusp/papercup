@@ -449,7 +449,7 @@ function RunsView({
   viewTabs: ReactNode;
 }) {
   const t = useLexicon();
-  const { agents, loading, error, refresh } = useHarnessAgents(slug);
+  const { agents, total, loading, error, refresh } = useHarnessAgents(slug);
   // showAll persists in the URL (nuqs) so it survives reload + is agent-driveable.
   const [showAll, setShowAll] = useQueryState('agentsAll', parseAsBoolean.withDefault(false));
   // Dragged widths survive panel remounts (localStorage — render-only pref).
@@ -458,8 +458,10 @@ function RunsView({
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
 
   useEffect(() => {
-    if (agents) api.setTitle(`Agents · ${slug} (${agents.length} runs)`);
-  }, [agents, slug, api]);
+    // `total` is the true store count (row[0]._meta) — the list read is capped at
+    // RUNS_LIST_CAP (P-004), so agents.length is a window, not the run count.
+    if (agents) api.setTitle(`Agents · ${slug} (${total} runs)`);
+  }, [agents, total, slug, api]);
 
   const visible = useMemo<HarnessAgentRun[]>(() => {
     if (!agents) return [];
@@ -559,7 +561,7 @@ function RunsView({
           <span className="pc-adv-agents__count">{visible.length}</span>
         </button>
         {!showAll && runningCount === 0 && agents && agents.length > 0 ? (
-          <span className="pc-adv-agents__hint">{agents.length} total — none running</span>
+          <span className="pc-adv-agents__hint">{total} total — none running</span>
         ) : null}
         <Tooltip label="Refresh agent runs">
           <button

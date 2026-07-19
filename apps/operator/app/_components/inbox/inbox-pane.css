@@ -28,6 +28,63 @@
   background: color-mix(in srgb, #fb923c 12%, transparent);
 }
 .op-inbox__chip-count { font-variant-numeric: tabular-nums; opacity: 0.85; }
+
+/* ── Search + kind-facet filter (inbox-pane-active-scope-dates-filters-2026-07-19
+   P-3xx) — mimics the Queue's QueueFilterBar: a text search plus a collapsed
+   "Filter" trigger revealing per-kind facet chips. ── */
+.op-inbox__toolbar { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.op-inbox__search {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px;
+  padding: 3px 7px; border-radius: 8px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  background: var(--bg-3, rgba(255, 255, 255, 0.04));
+}
+.op-inbox__search:focus-within { border-color: color-mix(in srgb, var(--accent, #8b5cf6) 55%, transparent); }
+.op-inbox__search-icon { flex: 0 0 auto; color: var(--fg-mute, #8a8a91); }
+.op-inbox__search-input {
+  flex: 1 1 auto; min-width: 0; border: none; background: transparent; outline: none;
+  font-size: 11.5px; color: var(--fg, #e7e7ea);
+}
+.op-inbox__search-input::placeholder { color: var(--fg-mute, #8a8a91); }
+.op-inbox__search-clear {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; padding: 0; border: none; border-radius: 999px; cursor: pointer;
+  color: var(--fg-mute, #8a8a91); background: transparent;
+}
+.op-inbox__search-clear:hover { color: var(--fg, #e7e7ea); background: var(--bg-2, rgba(255, 255, 255, 0.08)); }
+.op-inbox__filter-toggle {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+  border-radius: 8px; font-size: 11px; font-weight: 640; cursor: pointer;
+  color: var(--fg-mute, #c2c2c9); background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+}
+.op-inbox__filter-toggle:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
+.op-inbox__filter-toggle.is-open {
+  color: var(--accent, #8b5cf6);
+  border-color: color-mix(in srgb, var(--accent, #8b5cf6) 50%, transparent);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 10%, transparent);
+}
+.op-inbox__filter-active {
+  min-width: 14px; height: 14px; padding: 0 4px; border-radius: 999px; font-size: 9px; font-weight: 750;
+  line-height: 14px; text-align: center; color: #fff; background: var(--accent, #8b5cf6);
+  font-variant-numeric: tabular-nums;
+}
+.op-inbox__facets { display: flex; flex-wrap: wrap; gap: 4px; }
+.op-inbox__facet {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 620; cursor: pointer;
+  color: var(--fg-mute, #c2c2c9); background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+.op-inbox__facet:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
+.op-inbox__facet.is-active {
+  color: var(--accent, #8b5cf6);
+  border-color: color-mix(in srgb, var(--accent, #8b5cf6) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 12%, transparent);
+}
+.op-inbox__facet-count { font-variant-numeric: tabular-nums; opacity: 0.8; }
+.op-inbox__facet--clear { color: var(--fg-mute, #8a8a91); font-style: italic; }
+
 .op-inbox__error { font-size: 11px; color: var(--bad, #f87171); }
 .op-inbox__loading { font-size: 11.5px; color: var(--fg-mute, #8a8a91); }
 /* WI-5365 design pass 2: empty state reads as a deliberate, centered moment —
@@ -79,13 +136,24 @@
   border: 1px solid var(--border, rgba(255, 255, 255, 0.12)); background: var(--bg-3, rgba(255, 255, 255, 0.05));
 }
 .op-inbox__meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute, #8a8a91); }
+/* Pushes the date + chat affordance to the right edge of the row header. */
+.op-inbox__rowhead-spacer { flex: 1 1 auto; min-width: 4px; }
+/* Relative "how long ago" the underlying event happened
+   (inbox-pane-active-scope-dates-filters-2026-07-19 P-2xx). Tabular so a column
+   of dates stays aligned; muted so it never competes with the title. */
+.op-inbox__date {
+  flex: 0 0 auto; font-size: 9.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--fg-mute, #8a8a91); white-space: nowrap;
+}
 /* P-007: per-row "open live chat with the originating agent" affordance —
    sits in the row header, so it must not shrink/grow with .op-inbox__meta's
    ellipsis and must not trigger .op-inbox__rowbtn's row-select (stopPropagation
    in the click handler; this is a real nested <button> now that the row is a
    `div[role=button]`, not a <button> — see InboxPane.tsx). */
 .op-inbox__chat-button {
-  flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+  /* The .op-inbox__rowhead-spacer now right-aligns the date + chat cluster, so
+     this no longer needs margin-left:auto (which would split it from the date). */
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; padding: 0; border-radius: 999px; cursor: pointer;
   color: var(--fg-mute, #8a8a91); background: transparent; border: 1px solid transparent;
 }

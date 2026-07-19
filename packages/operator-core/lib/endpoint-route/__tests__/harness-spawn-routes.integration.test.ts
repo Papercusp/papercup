@@ -338,6 +338,27 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(arg?.extraEnv).toMatchObject({ PAPERCUSP_TURN_TRIGGER: 'coord-wake' });
   });
 
+  // EI-13668: `@role:mug` (and every other role-slot selector) resolved to
+  // targets:[]/woken:0 against a truly-live Mug session because the child process
+  // never carried a durable PAPERCUSP_AGENT_ROLE — deriveAgentRole (identity.ts)
+  // fell back to the generic identity.source→role mapping ('su'/'cup') on every
+  // presence write the Mug's OWN session made after its one-shot spawn-time seed.
+  // Assert this chokepoint now stamps PAPERCUSP_AGENT_ROLE, CANONICALIZED
+  // (queen → mug, the pot-rename mapping), onto the child's extraEnv.
+  it('EI-13668: stamps extraEnv.PAPERCUSP_AGENT_ROLE with the CANONICAL role so the child\'s own presence writes report it correctly', async () => {
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({}));
+    expect(res.status).toBe(200);
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({ PAPERCUSP_AGENT_ROLE: 'mug' });
+  });
+
+  it('EI-13668: an already-canonical role is stamped unchanged', async () => {
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
+    expect(res.status).toBe(200);
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({ PAPERCUSP_AGENT_ROLE: 'worker' });
+  });
+
   // EI-506: MUG_BRIEF is the Queen→BEE situational overlay. For the QUEEN's own
   // wake the kickoff is a terse wake-reason that would render as a misleading
   // self-addressed overlay — and her wake reason is already in the wake brief's

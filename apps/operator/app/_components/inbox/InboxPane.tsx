@@ -7,6 +7,18 @@
  * (`coord:send { to: ['human'] }`), escalations, standing approvals, agent
  * questions, operator reports — with the actions to answer them inline.
  *
+ * inbox-pane-active-scope-dates-filters-2026-07-19 (owner ask 2026-07-19):
+ *   - SCOPE (P-101): the shared `plans.attention` feed is the whole attention
+ *     firehose (~15 sources incl. every non-terminal plan item across every
+ *     plan) — correct for the /adv Queue, wrong for a human inbox where it
+ *     rendered hundreds of backlog rows not awaiting the owner (the "328" bug).
+ *     `scopeInboxItems` narrows it to genuinely-active, owner-addressed items
+ *     (drops the plan-item execution backlog + recency-bounds stale activity).
+ *   - DATES (P-2xx): each row shows a relative date (from `AttentionItem.occurredAt`)
+ *     with an absolute-time tooltip; ties sort by recency.
+ *   - FILTER/SEARCH (P-3xx): a QueueFilterBar-style collapsed Filter with
+ *     per-kind facet chips + counts, plus a text search over title/body/owner/plan.
+ *
  * REUSE, not re-derivation:
  *   - data: useInboxAttention → the SAME `plans.attention` sync feed the
  *     Queue + Overview render (shared cache entry, SSE-invalidated);
@@ -18,21 +30,26 @@
  * "Discuss" here opens a chat with PAPERCUP about the item (owner ask
  * 2026-07-16): the card's discuss pick is intercepted (OtherDetail's
  * onDiscuss), a drafted message is staged via seedOperatorChatDraft, and the
- * pane flips back to the chat view — instead of the Queue's inline thread
- * with the (usually system/dead) originating agent.
+ * pane flips back to the chat view.
  *
- * Filter + selection live in the URL (nuqs `?opci` / `?opcis`) so the pane is
- * deep-linkable and agent-driveable (ui:get_state / ui:dispatch), per the
- * nuqs-by-default policy.
+ * Filter + selection + search live in the URL (nuqs `?opci` / `?opcis` /
+ * `?opcq` / `?opck` / `?opcf`) so the pane is deep-linkable and agent-driveable
+ * (ui:get_state / ui:dispatch), per the nuqs-by-default policy.
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useQueryState, useQueryStates, parseAsString, parseAsStringLiteral } from 'nuqs';
-import { Inbox as InboxIcon, MessageCircle } from 'lucide-react';
+import {
+  useQueryState,
+  useQueryStates,
+  parseAsString,
+  parseAsStringLiteral,
+  parseAsBoolean,
+} from 'nuqs';
+import { Inbox as InboxIcon, MessageCircle, Search, SlidersHorizontal, X } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
 import { TIER_LABEL, type AttentionItem, type AttentionTier } from '@/app/admin/plans/plans-api';
-import { effectiveTier, useInboxAttention } from './use-inbox-pending';
+import { effectiveTier, scopeInboxItems, useInboxAttention } from './use-inbox-pending';
 import { seedOperatorChatDraft } from './chat-seed';
 import SessionChatModal from '../chat/SessionChatModal';
 // The Queue detail card's styles (pc-items__*, pc-tier/pc-kind badges). Global
@@ -52,6 +69,33 @@ const FILTER_LABEL: Record<InboxFilter, string> = {
 
 /** Decisions first, then alerts — the order the owner should read. */
 const TIER_RANK: Record<AttentionTier, number> = { decision: 0, alert: 1, handled: 2, activity: 3 };
+
+/** A relative "how long ago" label from an ISO timestamp — "just now", "5m",
+ *  "3h", "2d", "3w", else an absolute short date. Null timestamp → null. */
+export function formatRelativeDate(iso: string | null | undefined, now = Date.now()): string | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  const secs = Math.max(0, Math.round((now - t) / 1000));
+  if (secs < 45) return 'just now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 5) return `${weeks}w`;
+  return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** Absolute timestamp for the date tooltip. */
+function formatAbsoluteDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  return new Date(t).toLocaleString();
+}
 
 /** The drafted "Papercup, look at this" message for an inbox item. */
 export function buildDiscussDraft(i: AttentionItem): string {
@@ -80,6 +124,22 @@ export function buildDiscussDraft(i: AttentionItem): string {
   );
 }
 
+/** Lowercase haystack for the text search (title + body + owner + plan/harness). */
+function searchHaystack(i: AttentionItem): string {
+  return [
+    i.title,
+    i.body,
+    i.ownerLabel,
+    i.ownerAgentId,
+    i.planSlug,
+    i.harnessSlug,
+    KIND_LABEL[i.kind] ?? i.kind,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
 export default function InboxPane({ onDiscussInChat }: {
   /** Flip the sidebar back to the chat view (the seed is already staged). */
   onDiscussInChat: () => void;
@@ -90,9 +150,16 @@ export default function InboxPane({ onDiscussInChat }: {
     parseAsStringLiteral(FILTERS).withDefault('needs'),
   );
   const [sel, setSel] = useQueryState('opcis', parseAsString);
+  // Free-text search over the scoped feed (deep-linkable/agent-driveable).
+  const [query, setQuery] = useQueryState('opcq', parseAsString.withDefault(''));
+  // Selected kind facets — comma-joined kind ids (a QueueFilterBar-style
+  // per-kind narrowing). Empty ⇒ all kinds.
+  const [kindsParam, setKindsParam] = useQueryState('opck', parseAsString.withDefault(''));
+  // Filter panel open-state (the kind-facet chips are behind the collapsed
+  // "Filter" trigger, like the Queue's).
+  const [filtersOpen, setFiltersOpen] = useQueryState('opcf', parseAsBoolean.withDefault(false));
   // The "chat-grade session context" popup (P-007): which agent's live session
-  // to show, keyed by ownerAgentId. Deep-linkable/agent-driveable like every
-  // other pane selector here (nuqs-by-default policy).
+  // to show, keyed by ownerAgentId.
   const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
   // The Queue lives on /adv (?tab=plans&view=queue) — MERGE-write the params
   // when already there; hard-navigate otherwise (this sidebar is global).
@@ -117,67 +184,97 @@ export default function InboxPane({ onDiscussInChat }: {
     [onDiscussInChat],
   );
 
+  // P-101: narrow the shared attention firehose to genuinely-active, owner-
+  // addressed items BEFORE anything else reads it — so the chip counts, the
+  // kind facets, and the list all agree and never show the backlog again.
+  const scoped = useMemo(() => scopeInboxItems(items), [items]);
+
+  const selectedKinds = useMemo(
+    () => new Set(kindsParam.split(',').map((s) => s.trim()).filter(Boolean)),
+    [kindsParam],
+  );
+  const q = query.trim().toLowerCase();
+
+  const toggleKind = useCallback(
+    (kind: string) => {
+      const next = new Set(selectedKinds);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      void setKindsParam([...next].join(','));
+    },
+    [selectedKinds, setKindsParam],
+  );
+
+  // Tier-chip counts (Needs / Alerts / All) over the SCOPED set.
   const counts = useMemo(() => {
-    const c: Record<InboxFilter, number> = { needs: 0, alerts: 0, all: items.length };
-    for (const i of items) {
+    const c: Record<InboxFilter, number> = { needs: 0, alerts: 0, all: scoped.length };
+    for (const i of scoped) {
       const tier = effectiveTier(i);
       if (tier === 'decision') c.needs += 1;
       else if (tier === 'alert') c.alerts += 1;
     }
     return c;
-  }, [items]);
+  }, [scoped]);
 
-  // Best-effort friendly label for the SessionChatModal title — looked up from
-  // whichever visible item's ownerAgentId launched it; a stale/deep-linked
-  // opcsession with no matching item just falls back to the raw id (the modal
-  // handles that fine).
+  // Kind facets present in the scoped set (id + label + count) — data-driven so
+  // every emitted kind (incl. the P-005 owner-gate kinds absent from the client
+  // union) shows a chip, in tier-then-count order.
+  const kindFacets = useMemo(() => {
+    const byKind = new Map<string, number>();
+    for (const i of scoped) byKind.set(i.kind, (byKind.get(i.kind) ?? 0) + 1);
+    return [...byKind.entries()]
+      .map(([id, count]) => ({ id, count, label: KIND_LABEL[id as AttentionItem['kind']] ?? id }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  }, [scoped]);
+
+  const activeFilterCount = selectedKinds.size + (q ? 1 : 0);
+
+  // Best-effort friendly label for the SessionChatModal title.
   const chatOwnerLabel = useMemo(
-    () => items.find((i) => i.ownerAgentId === chatOwner)?.ownerLabel ?? null,
-    [items, chatOwner],
+    () => scoped.find((i) => i.ownerAgentId === chatOwner)?.ownerLabel ?? null,
+    [scoped, chatOwner],
   );
 
-  // deterministic-status-cards-2026-07-17 P-003: when a curator card's drill-in
-  // deep-links a selection (opcis), scroll that row into view. With the list
-  // virtualized (WI-5339) the target row may not be mounted, so we scroll via
-  // the virtualizer's scrollToIndex rather than a row ref.
   const lastScrolledSel = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(() => {
-    const filtered = items.filter((i) => {
+    const filtered = scoped.filter((i) => {
       const tier = effectiveTier(i);
-      if (filter === 'needs') return tier === 'decision';
-      if (filter === 'alerts') return tier === 'alert';
+      if (filter === 'needs' && tier !== 'decision') return false;
+      if (filter === 'alerts' && tier !== 'alert') return false;
+      if (selectedKinds.size > 0 && !selectedKinds.has(i.kind)) return false;
+      if (q && !searchHaystack(i).includes(q)) return false;
       return true;
     });
-    // Stable sort: decisions on top, then alerts; ties keep server order.
+    // Stable sort: decisions on top, then alerts; within a tier, newest first
+    // (an item with no occurredAt keeps its server order via the idx tiebreak).
     return filtered
       .map((item, idx) => ({ item, idx }))
-      .sort(
-        (a, b) =>
-          TIER_RANK[effectiveTier(a.item)] - TIER_RANK[effectiveTier(b.item)] || a.idx - b.idx,
-      )
+      .sort((a, b) => {
+        const tierDelta = TIER_RANK[effectiveTier(a.item)] - TIER_RANK[effectiveTier(b.item)];
+        if (tierDelta !== 0) return tierDelta;
+        const at = a.item.occurredAt ? new Date(a.item.occurredAt).getTime() : NaN;
+        const bt = b.item.occurredAt ? new Date(b.item.occurredAt).getTime() : NaN;
+        const aok = Number.isFinite(at);
+        const bok = Number.isFinite(bt);
+        if (aok && bok && bt !== at) return bt - at; // newest first
+        if (aok !== bok) return aok ? -1 : 1; // dated before undated
+        return a.idx - b.idx;
+      })
       .map((x) => x.item);
-  }, [items, filter]);
+  }, [scoped, filter, selectedKinds, q]);
 
-  // Virtualize the row list (WI-5339): the inbox routinely holds hundreds of
-  // items (610 "needs you" / 1349 "all" observed) — rendering them all made a
-  // ~89k-px DOM and a ~600ms filter re-render in an always-visible sidebar.
-  // Rows are variable height (the selected row expands its OtherDetail inline),
-  // so heights self-correct via measureElement.
+  // Virtualize the row list (WI-5339): even scoped, the inbox can hold many rows.
   const rowVirtualizer = useVirtualizer({
     count: visible.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => 52,
+    estimateSize: () => 56,
     overscan: 8,
     getItemKey: (i) => visible[i]?.id ?? i,
   });
 
-  // Scroll a freshly deep-linked selection (opcis) into view. Guarded so it
-  // fires only when `sel` CHANGES to a new value (not on every background list
-  // refresh) — otherwise it would yank the user back after they scroll away.
-  // Uses the virtualizer (the target row may be outside the mounted window);
-  // `visible` in the deps retries after the async items load.
+  // Scroll a freshly deep-linked selection (opcis) into view.
   useEffect(() => {
     if (!sel) {
       lastScrolledSel.current = null;
@@ -209,15 +306,88 @@ export default function InboxPane({ onDiscussInChat }: {
         ))}
       </div>
 
+      {/* Search + collapsible kind-facet filter (mimics the Queue's QueueFilterBar). */}
+      <div className="op-inbox__toolbar">
+        <div className="op-inbox__search">
+          <Search size={13} aria-hidden="true" className="op-inbox__search-icon" />
+          <input
+            type="text"
+            className="op-inbox__search-input"
+            placeholder="Search inbox…"
+            value={query}
+            data-testid="inbox-search"
+            aria-label="Search inbox"
+            onChange={(e) => void setQuery(e.target.value)}
+          />
+          {query ? (
+            <button
+              type="button"
+              className="op-inbox__search-clear"
+              aria-label="Clear search"
+              data-testid="inbox-search-clear"
+              onClick={() => void setQuery('')}
+            >
+              <X size={13} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className={`op-inbox__filter-toggle${filtersOpen ? ' is-open' : ''}`}
+          aria-expanded={filtersOpen}
+          data-testid="inbox-filter-toggle"
+          onClick={() => void setFiltersOpen(!filtersOpen)}
+        >
+          <SlidersHorizontal size={13} aria-hidden="true" />
+          <span>Filter</span>
+          {activeFilterCount > 0 ? (
+            <span className="op-inbox__filter-active">{activeFilterCount}</span>
+          ) : null}
+        </button>
+      </div>
+
+      {filtersOpen && kindFacets.length > 0 ? (
+        <div className="op-inbox__facets" aria-label="Filter by kind">
+          {selectedKinds.size > 0 ? (
+            <button
+              type="button"
+              className="op-inbox__facet op-inbox__facet--clear"
+              onClick={() => void setKindsParam('')}
+              data-testid="inbox-facet-clear"
+            >
+              Clear kinds
+            </button>
+          ) : null}
+          {kindFacets.map((k) => {
+            const active = selectedKinds.has(k.id);
+            return (
+              <button
+                key={k.id}
+                type="button"
+                className={`op-inbox__facet${active ? ' is-active' : ''}`}
+                aria-pressed={active}
+                data-testid={`inbox-facet-${k.id}`}
+                onClick={() => toggleKind(k.id)}
+              >
+                <span className="op-inbox__facet-label">{k.label}</span>
+                <span className="op-inbox__facet-count">{k.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
       {error ? <div className="op-inbox__error">Error: {error}</div> : null}
       {loading && items.length === 0 ? <div className="op-inbox__loading">Loading…</div> : null}
       {!loading && !error && visible.length === 0 ? (
         <div className="op-inbox__empty" data-testid="inbox-empty">
           <InboxIcon size={20} className="op-inbox__empty-icon" aria-hidden="true" />
           <span>
-            {filter === 'needs'
-              ? 'Inbox zero — nothing needs you. Decisions, escalations and messages the fleet sends you land here.'
-              : 'Nothing here right now.'}
+            {q || selectedKinds.size > 0
+              ? 'Nothing matches your filters.'
+              : filter === 'needs'
+                ? 'Inbox zero — nothing needs you. Decisions, escalations and messages the fleet sends you land here.'
+                : 'Nothing here right now.'}
           </span>
         </div>
       ) : null}
@@ -231,6 +401,8 @@ export default function InboxPane({ onDiscussInChat }: {
             const meta = [i.ownerLabel ?? i.ownerAgentId, i.planSlug ?? i.harnessSlug]
               .filter(Boolean)
               .join(' · ');
+            const rel = formatRelativeDate(i.occurredAt);
+            const abs = formatAbsoluteDate(i.occurredAt);
             return (
               <div
                 key={vi.key}
@@ -246,10 +418,8 @@ export default function InboxPane({ onDiscussInChat }: {
                 }}
               >
                 <div className={`op-inbox__row op-inbox__row--${tier}${isSel ? ' is-selected' : ''}`}>
-              {/* A `div` (not `button`) — the row now nests a real chat-launch
-                  <button>, and nested interactive elements are invalid HTML /
-                  silently mis-parsed by the browser. Same click+keyboard
-                  contract as a button (role, tabIndex, Enter/Space). */}
+              {/* A `div` (not `button`) — the row nests a real chat-launch
+                  <button>, and nested interactive elements are invalid HTML. */}
               <div
                 role="button"
                 tabIndex={0}
@@ -271,12 +441,15 @@ export default function InboxPane({ onDiscussInChat }: {
                   />
                   <span className="op-inbox__kind">{KIND_LABEL[i.kind] ?? i.kind}</span>
                   {meta ? <span className="op-inbox__meta">{meta}</span> : null}
+                  <span className="op-inbox__rowhead-spacer" />
+                  {rel ? (
+                    <Tooltip label={abs ?? rel}>
+                      <span className="op-inbox__date" data-testid={`inbox-date-${i.id}`}>
+                        {rel}
+                      </span>
+                    </Tooltip>
+                  ) : null}
                   {i.ownerAgentId ? (
-                    // Shared Tooltip primitive, not a native title= (design-primitives
-                    // lint): title= renders the browser's own chrome, which ignores the
-                    // design tokens and never matches the tooltips everywhere else. The
-                    // aria-label below stays — it is the accessible name, which the
-                    // tooltip does not provide.
                     <Tooltip label="Open live chat with the originating agent">
                       <button
                         type="button"
@@ -297,9 +470,6 @@ export default function InboxPane({ onDiscussInChat }: {
               </div>
               {isSel ? (
                 <div className="op-inbox__detail" data-testid="inbox-detail">
-                  {/* key remounts the detail per selection so its local card
-                      state (answered/discuss/answer) resets — same contract as
-                      PlansClient's OtherDetail usage. */}
                   <OtherDetail key={i.id} item={i} onResolved={refresh} onDiscuss={onDiscuss} />
                 </div>
               ) : null}

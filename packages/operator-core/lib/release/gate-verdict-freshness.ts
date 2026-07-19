@@ -90,6 +90,17 @@ export interface GateVerdictFreshness {
    *  and do NOT dispatch anyone to fix the tests it names. */
   stale: boolean;
   reason: string | null;
+  /**
+   * WHICH rule fired, when `stale` — callers that need to distinguish PROVEN-GREEN from
+   * merely-UNVERIFIED must not just branch on `stale` (EI-13714):
+   *   - 'pin-advance'      — HARD PROOF a green happened (the pin only moves on green). A
+   *                          caller may safely treat the streak as reset to 0, not just "unknown".
+   *   - 'writer-starved'   — no new evidence either way; the true colour is genuinely unknown.
+   *   - 'retriage-proven'  — this verdict's own named failures are proven not to reproduce at a
+   *                          newer tip, but that is not a full-suite green proof.
+   * `null` when `stale` is false.
+   */
+  reasonCode: 'pin-advance' | 'writer-starved' | 'retriage-proven' | null;
 }
 
 const short = (sha: string): string => sha.slice(0, 12);
@@ -106,7 +117,7 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
   const intervalMs = input.intervalMs ?? GATE_FIRE_INTERVAL_MS;
 
   // Only a RED verdict can misdirect. A stale green is inert.
-  if (consecutiveReds <= 0) return { stale: false, reason: null };
+  if (consecutiveReds <= 0) return { stale: false, reason: null, reasonCode: null };
 
   // Rule 3 — RETRIAGE-PROVEN (EI-13288). Checked first: this is the run's OWN evidence about
   // ITSELF (a real re-test it performed, not an inference from surrounding state), so it is the
@@ -121,6 +132,7 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
         `${short(retriageStaleTip)} and they PASSED — the auto-refire cap was reached before a full ` +
         `suite could confirm ${short(retriageStaleTip)} green, so the recorded failing-test names are ` +
         `unconfirmed at record time (they may already be fixed)`,
+      reasonCode: 'retriage-proven',
     };
   }
 
@@ -132,6 +144,7 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
       reason:
         `the release pin has advanced ${short(observedFromPin)} → ${short(currentGreenPinSha)} since this red was recorded — ` +
         `the pin only moves on a GREEN checkpoint, so the gate has greened since`,
+      reasonCode: 'pin-advance',
     };
   }
 
@@ -145,10 +158,11 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
       reason:
         `the green-checkpoint has fired since this verdict without producing a new one (last verdict ${hrs}h before the last fire) — ` +
         `its runs are being SKIPPED (run-lock contention), so this red is unverified`,
+      reasonCode: 'writer-starved',
     };
   }
 
   // A blob predating `observedAt` cannot be judged by rule 2. Say so plainly instead of guessing:
   // absence of a timestamp is not evidence of freshness, but it is not evidence of staleness either.
-  return { stale: false, reason: null };
+  return { stale: false, reason: null, reasonCode: null };
 }

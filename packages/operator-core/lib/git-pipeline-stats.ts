@@ -27,7 +27,7 @@ import {
   type PipelineEventRow,
 } from './harness/git-sync/pipeline-events';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
-import { evaluateGateVerdictFreshness } from './release/gate-verdict-freshness';
+import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -191,6 +191,43 @@ export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
   };
 }
 
+export interface RawGateCounters {
+  consecutiveReds: number;
+  stalled: boolean;
+  failingTests: string[];
+  firstRedAtMs: number | null;
+}
+
+/**
+ * EI-13714 — PURE: decide whether the raw cached gate counters (`consecutiveReds` / `stalled` /
+ * `failingTests` / `firstRedAtMs`, straight off the `gate_health` blob) must be corrected before
+ * being reported anywhere, given the verdict-freshness rule that fired (if any).
+ *
+ * ONLY `'pin-advance'` is hard proof a green happened since these counters were recorded — the
+ * release pin only ever moves on a green checkpoint, so its advance past this verdict's base
+ * PROVES the streak it was raised on has already ended. `'writer-starved'` and `'retriage-proven'`
+ * only prove the cached verdict is UNVERIFIED, not that the gate is green (WI-4489's "unknown, not
+ * green" stays correct for those) — so they, and a fresh (non-stale) verdict, leave the raw
+ * counters untouched.
+ *
+ * This is the ONE place the correction is applied. Every consumer of `GitPipelineSnapshot.gate`
+ * (git-pipeline-position, release-deploy-launch's `computeDeployStatus`, why-chain's `gateLabel`,
+ * the `coord:orient` pipeline-health fold) reads these fields as-is, so deriving the corrected
+ * value here — rather than each of those independently re-checking `verdictStale` — is what keeps
+ * a `release:deploy{op:status}` reply from reporting `green:false, stalled:true` in the same
+ * response that already proves (`verdictStale:true`, pin-advance reason) that it greened.
+ *
+ * Exported + pure so this decisive branch is unit-testable without a live Postgres (the full
+ * `gitPipelineSnapshot` read is otherwise only exercised via integration test / live verification).
+ */
+export function pinProvenGateCorrection(
+  reasonCode: GateVerdictFreshness['reasonCode'],
+  raw: RawGateCounters,
+): RawGateCounters {
+  if (reasonCode !== 'pin-advance') return raw;
+  return { consecutiveReds: 0, stalled: false, failingTests: [], firstRedAtMs: null };
+}
+
 /** Compute the full pipeline snapshot for `slug` (defaults to the operator's own). */
 export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<GitPipelineSnapshot> {
   const { sql } = getOrgPg();
@@ -285,8 +322,13 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
   const verdictObservedAtMs = num(gateHealth.observedAt);
   const retriageStaleTip = typeof gateHealth.retriageStaleTip === 'string' ? gateHealth.retriageStaleTip : null;
   const retriageDetail = typeof gateHealth.retriageDetail === 'string' ? gateHealth.retriageDetail : null;
-  const { stale: gcVerdictStale, reason: gcVerdictStaleReason } = evaluateGateVerdictFreshness({
-    consecutiveReds: num(gateHealth.consecutiveReds) ?? 0,
+  const rawConsecutiveReds = num(gateHealth.consecutiveReds) ?? 0;
+  const {
+    stale: gcVerdictStale,
+    reason: gcVerdictStaleReason,
+    reasonCode: gcVerdictStaleReasonCode,
+  } = evaluateGateVerdictFreshness({
+    consecutiveReds: rawConsecutiveReds,
     observedAtMs: verdictObservedAtMs,
     observedFromPin: typeof gateHealth.lastFrom === 'string' ? gateHealth.lastFrom : null,
     // The release ("ready") pin — the green-checkpoint's own durable verdict, in git.
@@ -294,6 +336,12 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
     lastFiredAtMs: gcLastFiredMs,
     // EI-13288 — Rule 3: this verdict's own re-triage evidence, when it has any.
     retriageStaleTip,
+  });
+  const effectiveGate = pinProvenGateCorrection(gcVerdictStaleReasonCode, {
+    consecutiveReds: rawConsecutiveReds,
+    stalled: gateHealth.stallAlerted === true,
+    failingTests: strArr(gateHealth.failingTests),
+    firstRedAtMs: num(gateHealth.firstRedAt),
   });
 
   return {
@@ -324,10 +372,13 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastScopes: strArr(lastResolver?.scopes),
     },
     gate: {
-      consecutiveReds: num(gateHealth.consecutiveReds) ?? 0,
+      // EI-13714: reset to 0 when a pin advance PROVES a green happened since this count was
+      // recorded — never left as a stale, alarm-triggering streak (see `pinProvenGateCorrection`).
+      consecutiveReds: effectiveGate.consecutiveReds,
       lastGreenAtMs: num(gateHealth.lastGreenAt),
-      firstRedAtMs: num(gateHealth.firstRedAt),
-      stalled: gateHealth.stallAlerted === true,
+      firstRedAtMs: effectiveGate.firstRedAtMs,
+      // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
+      stalled: effectiveGate.stalled,
       lastFiredAtMs: gcLastFiredMs,
       fireStale: gcFireStale,
       fireStaleReason: gcFireStaleReason,
@@ -337,8 +388,9 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
-      // WI-4533: the gate's OWN verdict about what is failing (see the type's note).
-      failingTests: strArr(gateHealth.failingTests),
+      // WI-4533: the gate's OWN verdict about what is failing (see the type's note) — never the
+      // names behind a streak already proven reset (they'd misdirect a fixer at passing tests).
+      failingTests: effectiveGate.failingTests,
       retriageStaleTip,
       retriageDetail,
       flakyWorkspaces: Object.entries(flakeHistory)

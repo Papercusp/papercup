@@ -186,14 +186,16 @@ export function reportTurnsToAttention(rows: readonly OperatorReportTurnRow[]): 
     }
     const report = parseReportBlock(raw);
     if (!report) continue;
-    out.push(
-      operatorReportToAttention({
+    out.push({
+      ...operatorReportToAttention({
         turnId: row.turnId,
         conversationId: row.conversationId,
         report,
         sayText: row.text,
       }),
-    );
+      // The turn's created_at drives the Inbox card date.
+      occurredAt: toIsoOrNull(row.createdAt),
+    });
   }
   return out;
 }
