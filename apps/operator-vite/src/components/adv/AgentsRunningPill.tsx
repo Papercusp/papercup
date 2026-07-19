@@ -176,9 +176,16 @@ export function hasThinking(
  *  the backend treats its absence as "don't know", same as before, for the
  *  live-session case where this signal isn't yet available. */
 export function thinkingStreamUrl(
-  a: Pick<
-    RosterAgent,
-    'ownerId' | 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'
+  // Every field is read defensively (truthy / `!= null` / `=== false`), so all
+  // handles are genuinely OPTIONAL — a caller with only a `sessionId`, or only a
+  // `runId`, is valid (real call-sites pass a full RosterAgent). A bare `Pick`
+  // made them all REQUIRED, forcing partial call-sites and reddening the
+  // operator-vite typecheck ratchet (matches hasThinking above).
+  a: Partial<
+    Pick<
+      RosterAgent,
+      'ownerId' | 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'
+    >
   >,
 ): string | null {
   if (a.runId && a.harnessSlug) {
