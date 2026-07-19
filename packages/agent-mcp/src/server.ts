@@ -37,6 +37,7 @@ import {
   serializeToolResponse,
   formatOptsFromCtx,
   toArgsJsonSchema,
+  applyEntityRefEnums,
 } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
 import {
@@ -472,9 +473,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
     const bearer = process.env[bearerEnv] ?? '';
     const principal = bearer ? await resolveBearer(bearer) : null;
     const catalog = getCatalog();
-    const tools = catalog
+    const tools = await Promise.all(
+      catalog
       .filter((t) => !principal || principal.capabilities.has(t.capability))
-      .map((t) => {
+      .map(async (t) => {
         // GUARDED conversion, never a raw z.toJSONSchema (EI-10996 / WI-4596).
         // This runs inside the tools/list map, so an unrepresentable args schema
         // (almost always a trailing `.transform()`) throws for the WHOLE catalog,
@@ -485,10 +487,15 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
         delete (inputSchema as Record<string, unknown>).$schema;
         // Registry write-positional tools advertise a single `row` string (P-008).
         const advertised = advertisedArgsSchema(t.name, inputSchema);
+        // Publish small entity vocabularies as enums so the model cannot EMIT an
+        // invalid pot/role, rather than being corrected at dispatch (P-004b).
+        // Capped + fail-open: over-cap or unavailable kinds change nothing here.
+        await applyEntityRefEnums(t.args, advertised);
         // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
         // consumers (Ollama) can parse the tool surface. See tool-schema-sanitize.ts.
         return { name: t.name, description: t.description, inputSchema: sanitizeToolSchema(advertised) };
-      });
+      }),
+    );
     // Pin to the tool manifest (if configured) for cache-stable parity with
     // the HTTP transport. No-op when no manifest is present. See tool-manifest.ts.
     return { tools: applyToolManifest(tools) };
