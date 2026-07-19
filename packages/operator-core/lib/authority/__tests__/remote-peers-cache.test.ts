@@ -115,6 +115,11 @@ describe('routeFileLockOp — remote-peers fast path', () => {
       {
         domainToHarnessSlug: () => 'h',
         now: () => NOW,
+        // EI-14324: self ('mmm') must lose the argmin election ('aaa' < 'mmm') so the
+        // remote leg is attempted (and fails open, no transport configured) — pin
+        // against HRW_RENDEZVOUS_AUTHORITY's default-ON graduation silently flipping
+        // the winner to self, which would change `via` to 'local-authority'.
+        useHrwRendezvous: false,
         resolveSelf: async () => ({ githubUserId: 2, devicePubkey: 'mmm' }),
         fetchPresenceRows: async () => [peerRow('aaa', 'authority'), peerRow('mmm', 'self')],
       },

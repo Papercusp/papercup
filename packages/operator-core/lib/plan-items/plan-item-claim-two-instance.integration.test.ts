@@ -68,6 +68,10 @@ function depsFor(selfPubkey: string, roster = ROSTER, staleMs?: number): LockAut
   return {
     now: () => NOW,
     ...(staleMs != null ? { staleMs } : {}),
+    // EI-14324: this whole file's "argmin(device_pubkey) = 'auth-aaa'" premise (see the
+    // ROSTER comment above) only holds under argmin selection — pin it so
+    // HRW_RENDEZVOUS_AUTHORITY's default-ON graduation can't silently flip the winner.
+    useHrwRendezvous: false,
     resolveSelf: async () => ({ githubUserId: 9, devicePubkey: selfPubkey }),
     fetchPresenceRows: async () => roster,
   };

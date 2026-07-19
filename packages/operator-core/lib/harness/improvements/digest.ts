@@ -68,6 +68,14 @@ export interface ScoredItem {
   /** EI-1404: a parsed quota/rate-limit reset instant (ISO) — see policy.ts's
    *  ImprovementCandidate.dispatchHoldUntil doc. Undefined = no hold. */
   dispatchHoldUntil?: string | null;
+  /** Stable watchdog signal identity (payload.watchdogKey, '<source>:<key>').
+   *  Absent ⇒ a KEYLESS item (human-filed / manual capture, or any non-watchdog
+   *  source) — per the keyless-EI policy (P-014) these are surfaced for HUMAN
+   *  REVIEW and never auto-dispatched, so a keyless item sitting at attempts:0
+   *  is BY DESIGN, not a feed-pumping stall (EI-14223: consumers that key off
+   *  `attempts === 0` alone must further gate on `watchdogKey` presence before
+   *  treating the count as a genuine dispatcher-stuck signal). */
+  watchdogKey?: string;
 }
 
 export interface DupCluster {
@@ -405,6 +413,7 @@ export function buildDigest(
       ...(c.ideaLifecycle?.triageDecision ? { triageDecision: c.ideaLifecycle.triageDecision } : {}),
       ...(c.sourceRole ? { source: c.sourceRole } : {}),
       ...(c.dispatchHoldUntil ? { dispatchHoldUntil: c.dispatchHoldUntil } : {}),
+      ...(c.watchdogKey ? { watchdogKey: c.watchdogKey } : {}),
     };
     // Only OPEN items go into the actionable queues.
     if (!isOpen) continue;

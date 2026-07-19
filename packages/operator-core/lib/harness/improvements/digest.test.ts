@@ -137,6 +137,20 @@ describe('buildDigest', () => {
     expect(d.headline).toMatch(/need a human/);
   });
 
+  it('passes payload.watchdogKey through onto the ScoredItem, and omits it when absent (EI-14223)', () => {
+    const d = buildDigest(
+      [
+        cand({ id: 'K1', kind: 'bug', createdAt: daysAgo(1), watchdogKey: 'dispatcher-staleness:auto-implement-dispatcher' }),
+        cand({ id: 'K2', kind: 'bug', createdAt: daysAgo(1) }), // keyless — manual capture
+      ],
+      { nowMs: NOW },
+    );
+    const k1 = d.autoEligible.find((i) => i.id === 'K1');
+    const k2 = d.autoEligible.find((i) => i.id === 'K2');
+    expect(k1?.watchdogKey).toBe('dispatcher-staleness:auto-implement-dispatcher');
+    expect(k2?.watchdogKey).toBeUndefined();
+  });
+
   it('is deterministic given nowMs', () => {
     expect(buildDigest(items, { nowMs: NOW })).toEqual(buildDigest(items, { nowMs: NOW }));
   });

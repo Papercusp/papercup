@@ -60,6 +60,7 @@ import {
 import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
+import { reseedLeaderCompactionLimit } from './take-leadership-core';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
 import { resolveWorkspaceHiveScope, type WorkspaceHiveScope } from '../coordination/federation-scope';
 import { listWorkOffers } from '../../p2p/offer-store';
@@ -1190,6 +1191,9 @@ export default defineTool({
     // caller's presence — same path as fleet:create.
     const fleetSlug = fleetSlugFromName(args.name);
     let leaderRole = 'leader';
+    // P-009: the compaction-cap re-seed applied when launching INTO leadership (null unless
+    // the caller was a member launching a fleet, i.e. stuck at the 300k member cap).
+    let leaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>> = null;
     try {
       const { record } = await createFleetIfAbsent({
         workspaceId,
@@ -1201,6 +1205,11 @@ export default defineTool({
       leaderRole = fleetRoleFor(record.leaderOwnerId, ownerId);
       await heartbeatPresence(identity);
       await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
+      // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
+      // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
+      // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
+      // exactly at the member cap (an established leader stays put). Best-effort inside the helper.
+      if (leaderRole === 'leader') leaderReseed = await reseedLeaderCompactionLimit(ownerId);
       // Recolor the caller's live window to the fleet's bound scheme — every other
       // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
       // does this; a leader whose window keeps its old color while the members open
@@ -2195,6 +2204,12 @@ export default defineTool({
           `call fleet:launch-on-plan or fleet:take-leadership again for this fleet — you already lead it (a ` +
           `re-call opens NO new members for ${Math.round(RELAUNCH_SUPPRESS_MS / 1000)}s).`,
       );
+      // P-009: disclose a lifted compaction cap (you launched INTO leadership from the member cap).
+      if (leaderReseed?.reason === 'member-cap-lifted') {
+        lines.push(
+          `  ↳ compaction cap lifted ${leaderReseed.from} → ${leaderReseed.applied} tokens (P-009): you were at the 300k member cap; leaders get the full window. Your \`context: N/limit\` signal reflects it next turn.`,
+        );
+      }
       lines.push(LEADER_AUTO_MODE_DIRECTIVE);
       // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
       // insert never hand-renumbers, and the rendered length is test-guarded against balloon.

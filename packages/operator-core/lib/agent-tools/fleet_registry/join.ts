@@ -36,6 +36,21 @@ export default defineTool({
       .describe(
         "Membership role to join as. 'member' (default) = a worker in the fleet. 'leader' = take over as the fleet's leader (the per-fleet analog of the Mug — owns monitoring + coordination + driving the plan); installs you as leader and demotes + notifies the prior leader. Equivalent to fleet:take-leadership in one call.",
       ),
+    compactionLimit: z
+      .number()
+      .int()
+      .min(20_000)
+      .max(900_000)
+      .optional()
+      .describe(
+        "P-009 (only with as:'leader'): explicit soft compaction limit (tokens) for you as the new leader, clamped to the leader ceiling. OMIT to auto-lift a stuck 300k member-cap seed to the leader default (400k on [1m]).",
+      ),
+    contextSize: z
+      .enum(['full', 'trimmed'])
+      .optional()
+      .describe(
+        "P-009 (only with as:'leader'): pass to signal you are shaping this leader session yourself — SUPPRESSES the auto-lift of the compaction cap.",
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
@@ -53,9 +68,16 @@ export default defineTool({
     // as:'leader' — take over via the SHARED leadership-transfer path (EI-5704), then
     // recolor the caller's window like a normal join.
     if (args.as === 'leader') {
-      const out = await takeFleetLeadership(workspaceId, fleet, identity, ownerId);
+      const out = await takeFleetLeadership(workspaceId, fleet, identity, ownerId, {
+        compactionLimit: args.compactionLimit,
+        contextSize: args.contextSize,
+      });
       await recolorCallerTerminal(ownerId, fleet);
-      return json({ ok: true, role: 'leader', scheme: fleet.colorScheme, ...out });
+      const reseedNote =
+        out.reseed?.reason === 'member-cap-lifted'
+          ? `Compaction cap lifted ${out.reseed.from} → ${out.reseed.applied} tokens (leaders get the full window).`
+          : undefined;
+      return json({ ok: true, role: 'leader', scheme: fleet.colorScheme, ...out, ...(reseedNote ? { reseedNote } : {}) });
     }
 
     // as:'member' (default). Don't demote a leader who re-joins their own fleet (D-002).

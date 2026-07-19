@@ -31,6 +31,21 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     fleet: z.string().min(1).describe('The fleet slug to take leadership of (from fleet:list).'),
+    compactionLimit: z
+      .number()
+      .int()
+      .min(20_000)
+      .max(900_000)
+      .optional()
+      .describe(
+        "P-009: explicit soft compaction limit (tokens) for you as the new leader, clamped to the leader ceiling. OMIT to auto-lift a stuck 300k member-cap seed to the leader default (400k on [1m]) — the fix for a member-promoted-to-leader staying at the member cap. A deliberately-tuned limit is left untouched.",
+      ),
+    contextSize: z
+      .enum(['full', 'trimmed'])
+      .optional()
+      .describe(
+        'P-009: pass to signal you are shaping this leader session yourself — it SUPPRESSES the auto-lift of the compaction cap (leaves your current limit as-is).',
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
@@ -41,12 +56,22 @@ export default defineTool({
         true,
       );
     }
-    const out = await takeFleetLeadership(workspaceId, fleet, identity, ownerId);
+    const out = await takeFleetLeadership(workspaceId, fleet, identity, ownerId, {
+      compactionLimit: args.compactionLimit,
+      contextSize: args.contextSize,
+    });
     // Recolor the caller's live window to the fleet's bound scheme — becoming a
     // leader must look like it (parity with fleet:create / fleet:join, which all
     // recolor after fleet-tagging presence). Best-effort: a no-op for non-psu-hosted
     // callers, and never throws, so a recolor miss can't fail the leadership transfer.
     await recolorCallerTerminal(ownerId, fleet);
-    return json({ ok: true, scheme: fleet.colorScheme, ...out });
+    // P-009: surface a lifted compaction cap prominently so the new leader knows their window grew.
+    const reseedNote =
+      out.reseed?.reason === 'member-cap-lifted'
+        ? `Compaction cap lifted ${out.reseed.from} → ${out.reseed.applied} tokens (you were at the 300k member cap; leaders get the full window). Your per-turn \`context: N/limit\` signal reflects it next turn.`
+        : out.reseed?.reason === 'explicit-limit'
+          ? `Compaction cap set to ${out.reseed.applied} tokens (explicit).`
+          : undefined;
+    return json({ ok: true, scheme: fleet.colorScheme, ...out, ...(reseedNote ? { reseedNote } : {}) });
   },
 });

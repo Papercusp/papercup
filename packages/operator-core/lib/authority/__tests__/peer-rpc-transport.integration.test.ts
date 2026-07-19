@@ -30,6 +30,10 @@ import { signAuthorityRpcWithPrivateKeyDer } from '../authority-rpc-envelope';
 const NOW = 1_700_000_000_000;
 const remoteDeps: LockAuthorityDeps = {
   now: () => NOW,
+  // EI-14324: pin argmin selection — this fixture's whole premise ("self is NOT the
+  // min; 'aaa' is") is an argmin fact, not guaranteed once HRW_RENDEZVOUS_AUTHORITY
+  // (default-ON since 2026-07-17) picks the live selection algorithm.
+  useHrwRendezvous: false,
   resolveSelf: async () => ({ githubUserId: 2, devicePubkey: 'mmm' }),
   fetchPresenceRows: async () => [
     { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'authority-box', last_seen_ms: NOW - 1000 },

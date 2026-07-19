@@ -74,6 +74,11 @@ const HIVE_ROSTER = [
 function hiveDeps(selfPubkey: string): LockAuthorityDeps {
   return {
     now: () => NOW,
+    // EI-14324: this fixture's "authority = argmin = 'auth-aaa'" assumption (see file
+    // header + the `self === argmin` test below) only holds under argmin selection —
+    // pin it so HRW_RENDEZVOUS_AUTHORITY's default-ON graduation can't silently flip
+    // the winner (the WI-5190 class of breakage).
+    useHrwRendezvous: false,
     resolveSelf: async () => ({ githubUserId: 9, devicePubkey: selfPubkey }),
     fetchHivePresenceRows: async () => HIVE_ROSTER,
   };

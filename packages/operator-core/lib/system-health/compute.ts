@@ -493,6 +493,37 @@ export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<str
   return rows.map((r) => r.name);
 }
 
+/** The minimal ScoredItem projection this split needs (pure/unit-testable). */
+export interface AutoEligibleStuckInput {
+  attempts?: number;
+  watchdogKey?: string;
+}
+
+/**
+ * Pure (EI-14223): split the auto-eligible, attempts:0 (never-dispatched) queue
+ * into the genuine KEYED dispatcher-stuck signal (`autoEligibleStuck`) vs the
+ * KEYLESS human-review backlog (`keylessHumanReviewBacklog`). A keyless item
+ * (no `payload.watchdogKey`) is never auto-dispatched by design (P-014), so
+ * sitting at attempts:0 is expected steady-state for it, not a feed-pumping
+ * stall — bundling it into `autoEligibleStuck` inflated that metric with the
+ * ~5,600-item un-managed backlog and made it read as a permanently-growing
+ * trend, mis-triggering `@role:mug` nudges over a by-design condition Mug
+ * cannot act on.
+ */
+export function splitAutoEligibleStuck(autoEligible: AutoEligibleStuckInput[]): {
+  autoEligibleStuck: number;
+  keylessHumanReviewBacklog: number;
+} {
+  let autoEligibleStuck = 0;
+  let keylessHumanReviewBacklog = 0;
+  for (const i of autoEligible) {
+    if ((i.attempts ?? 0) !== 0) continue;
+    if (i.watchdogKey) autoEligibleStuck += 1;
+    else keylessHumanReviewBacklog += 1;
+  }
+  return { autoEligibleStuck, keylessHumanReviewBacklog };
+}
+
 async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHealth>> {
   return panelSafe<WorkFeedHealth>('workFeed', async () => {
     const { ws, potSlug } = ctx;
@@ -529,27 +560,31 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // mis-fire the engine-starvation crit + fleet blocker page.
     const { sql } = getOrgPg();
     const deadRoutineNames = await readDeadRoutines(sql, DEAD_ROUTINE_OVERDUE_MS);
-    // Auto-eligible-stuck (EI-584): improvements that ARE auto-eligible but sit at
-    // attempts:0 — eligible yet never dispatched (the feed isn't pumping them). Read
-    // the same digest collectImprovements uses; independent + fail-soft (leave 0).
+    // Auto-eligible-stuck (EI-584): KEYED improvements that ARE auto-eligible but
+    // sit at attempts:0 — eligible yet never dispatched (the feed isn't pumping
+    // them). EI-14223: split off the KEYLESS human-review backlog (attempts:0 by
+    // design, never a feed-pumping signal) via splitAutoEligibleStuck, so it can
+    // never inflate this metric into a false growing-trend alarm. Read the same
+    // digest collectImprovements uses; independent + fail-soft (leave 0s).
     let autoEligibleStuck = 0;
+    let keylessHumanReviewBacklog = 0;
     try {
       const { readImprovementItems } = await import('../harness/improvements/read-items');
       const { buildDigest } = await import('../harness/improvements/digest');
       const items = await readImprovementItems({ state: 'open', limit: 1000 });
       const digest = buildDigest(items, { nowMs: ctx.now });
-      autoEligibleStuck = digest.autoEligible.filter((i) => (i.attempts ?? 0) === 0).length;
-    } catch { /* improvements unreadable — leave 0 (the dead-routine signal still computes) */ }
+      ({ autoEligibleStuck, keylessHumanReviewBacklog } = splitAutoEligibleStuck(digest.autoEligible));
+    } catch { /* improvements unreadable — leave 0s (the dead-routine signal still computes) */ }
     const data: WorkFeedHealth = {
       frontier, frontierStuck, frontierBlocked, startedPlans, autoEligibleStuck,
-      deadRoutines: deadRoutineNames.length, deadRoutineNames,
+      keylessHumanReviewBacklog, deadRoutines: deadRoutineNames.length, deadRoutineNames,
     };
     const status = workFeedStatus(data);
     return {
       status,
       summary: data.deadRoutines > 0
         ? `DEAD ROUTINE(S): ${deadRoutineNames.slice(0, 3).join(', ')}`
-        : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}`,
+        : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}`,
       data,
       link: { label: 'Working', href: '/adv?tab=harnesses' },
       metrics: [
@@ -558,6 +593,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         m('blocked', frontierBlocked),
         m('started plans', startedPlans),
         m('auto-stuck', autoEligibleStuck, autoEligibleStuck > 0 ? 'warn' : undefined),
+        m('keyless human-review', keylessHumanReviewBacklog),
         m('dead routines', data.deadRoutines, data.deadRoutines > 0 ? 'crit' : undefined),
       ],
     };

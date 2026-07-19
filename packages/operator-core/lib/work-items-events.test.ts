@@ -427,6 +427,28 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     });
   });
 
+  it('EI-14161: carries the item\'s own payload.tags so a spec\'s tag-based exclusion is derivable', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    emitWorkItemClaimableEvent(
+      wi({ id: 'EI-128', kind: 'bug', state: 'open', assignee: null, title: 'p2p-perf regression', payload: { tags: ['p2p', 'rig'] } }),
+      'released',
+      { emit },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      payload: expect.objectContaining({ tags: ['p2p', 'rig'] }),
+    });
+  });
+
+  it('EI-14161: a tag-less item carries an empty tags array (never undefined — payload_filter needs a stable shape)', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    emitWorkItemClaimableEvent(wi({ id: 'WI-34', state: 'todo', assignee: null }), 'created', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit.mock.calls[0][0]).toMatchObject({ payload: expect.objectContaining({ tags: [] }) });
+  });
+
   it('the guard drops an ASSIGNED item — claimable never advertises work a pull would refuse', async () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');

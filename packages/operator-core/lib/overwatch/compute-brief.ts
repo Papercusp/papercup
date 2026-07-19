@@ -463,6 +463,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, potSlug: string): O
     frontier: workFeed?.frontier ?? 0,
     frontierStuck: workFeed?.frontierStuck ?? 0, // WI-3597: long-unplaced/gated subset — credited as correct idle by queenPlacementStalled
     autoEligibleStuck: workFeed?.autoEligibleStuck ?? 0, // now wired from WorkFeedHealth — activates the work-feed-stuck detector
+    keylessHumanReviewBacklog: workFeed?.keylessHumanReviewBacklog ?? 0, // EI-14223: the by-design, non-Mug-actionable keyless backlog, kept separate
     deadRoutines: workFeed?.deadRoutines ?? 0,
     blockedStranded: bees?.placements.stranded ?? 0,
   };

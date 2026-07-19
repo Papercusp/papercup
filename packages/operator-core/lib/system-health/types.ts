@@ -244,9 +244,24 @@ export interface WorkFeedHealth {
   /** Lanes held by unsatisfied blocked_by. */
   frontierBlocked: number;
   startedPlans: number;
-  /** Auto-eligible improvements stuck at attempts:0 — eligible but never dispatched
-   *  (the EI-584 dead-feed signature: the feed isn't pumping ready work). */
+  /** Auto-eligible, KEYED (payload.watchdogKey present) improvements stuck at
+   *  attempts:0 — eligible but never dispatched (the EI-584 dead-feed signature:
+   *  the feed isn't pumping ready work). EI-14223: keyless items are EXCLUDED
+   *  here (see `keylessHumanReviewBacklog`) — bundling them in inflated this
+   *  count with the ~5,600-item un-managed human-review pile, which is stuck at
+   *  attempts:0 BY DESIGN (never auto-dispatched, per the keyless-EI policy
+   *  P-014), not a genuine dispatcher stall. That inflation made this metric read
+   *  as a permanently-growing trend and mis-triggered `@role:mug` nudges over a
+   *  by-design backlog Mug cannot act on. */
   autoEligibleStuck: number;
+  /** Auto-eligible KEYLESS (no payload.watchdogKey — human-filed/manual capture)
+   *  improvements sitting at attempts:0. Per the keyless-EI policy (P-014) these
+   *  are surfaced for HUMAN REVIEW (`improvements:keyless-digest`) and are NEVER
+   *  auto-dispatched — this count is an owner/hygiene metric, NOT a Mug- or
+   *  dispatcher-actionable signal, and must never be added into
+   *  `autoEligibleStuck` or used to trigger a Mug nudge/escalation (EI-14223).
+   *  Optional; absent ⇒ 0 (prior callers/fixtures unaffected). */
+  keylessHumanReviewBacklog?: number;
   /** Active routines whose next_fire_at is long overdue (the dead-routine / EI-584 signal). */
   deadRoutines: number;
   deadRoutineNames: string[];

@@ -287,6 +287,13 @@ export function electionDeps(
   return {
     now: nowFn,
     staleMs: 600_000,
+    // EI-14324: every caller of this shared rig asserts a specific argmin(device_pubkey)
+    // winner (idA.devicePubkey < idB.devicePubkey, etc. — see cross-peer-coordination
+    // .integration.test.ts's repeated `authorityIsA = idA.devicePubkey < idB.devicePubkey`
+    // pattern). Pin argmin here so HRW_RENDEZVOUS_AUTHORITY's default-ON graduation
+    // (2026-07-17) can't silently swap in hash-based selection and break every one of
+    // them the way it broke WI-5190.
+    useHrwRendezvous: false,
     resolveSelf: async () => self,
     fetchHivePresenceRows: (potSlug: string) => queryPresenceRowsForHive(sql as never, potSlug),
   };

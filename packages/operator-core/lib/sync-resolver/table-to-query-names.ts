@@ -400,6 +400,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // coord table stays cheap (shared-hive-collaboration P-006). The (name,args)
   // dedupe bounds burst refetches.
   'harness_shared.coord_event_log': ['dev.coordFeed', 'coord.history', 'coord.inbox'],
+  // coord_open_escalations (355-coord-open-escalations-projection.sql) is the
+  // small open-escalation projection plans:attention's listEscalations source
+  // reads — NOT the same table as coord_event_log above, and (until mig 633)
+  // had no reactive trigger at all, so a new/resolved escalation never pushed
+  // a live `plans.attention` refresh regardless of plan_slug (EI-14209: the
+  // Inbox pane needed a manual reload). Bare full-bust target, same shape as
+  // harness_plans -> plans.attention below.
+  'harness_shared.coord_open_escalations': ['plans.attention'],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
   // ── Insights / activity ledger (v5 addendum 3) ──────────────────

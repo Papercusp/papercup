@@ -90,8 +90,17 @@ export interface OverwatchWorkFeedHealth {
    *  idle instead of grading queen-workitem-selection "broken" when fresh = 0.
    *  Absent ⇒ 0 (every frontier item counts as fresh — prior behaviour). */
   frontierStuck?: number;
-  /** Auto-eligible items stuck unplaced (`attempts:0`, not flowing — the EI-584 dead-feed signature). */
+  /** Auto-eligible, KEYED items stuck unplaced (`attempts:0`, not flowing — the
+   *  EI-584 dead-feed signature). EI-14223: KEYLESS items are excluded — see
+   *  `keylessHumanReviewBacklog` — so this stays a genuine dispatcher-stall
+   *  signal, never inflated by the by-design keyless human-review pile. */
   autoEligibleStuck: number;
+  /** Auto-eligible KEYLESS improvements sitting at attempts:0 — the un-managed
+   *  human-review backlog (P-014). NEVER auto-dispatched by design, so this is
+   *  NOT a Mug- or dispatcher-actionable signal: never nudge/escalate on this
+   *  number alone (EI-14223 — a growing count here is normal steady-state, not
+   *  a placement or feed-pumping stall). Optional; absent ⇒ 0. */
+  keylessHumanReviewBacklog?: number;
   /** Dead work-feed routines (EI-584: the feed stopped pumping). */
   deadRoutines: number;
   /** Items blocked on an already-resolved constraint (stranded — re-open candidates). */
@@ -318,6 +327,7 @@ export function emptyOverwatchBrief(potSlug: string): OverwatchBrief {
       frontier: 0,
       frontierStuck: 0,
       autoEligibleStuck: 0,
+      keylessHumanReviewBacklog: 0,
       deadRoutines: 0,
       blockedStranded: 0,
     },
@@ -576,7 +586,11 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   out.push('');
   out.push('### Work feed');
   const wfStuck = wf.frontierStuck ?? 0;
-  out.push(`- frontier ${wf.frontier} ready${wfStuck > 0 ? ` (${wfStuck} long-stuck/gated — correct idle, not a placement stall)` : ''} · ${wf.autoEligibleStuck} auto-eligible stuck · ` + `${wf.deadRoutines} dead routine(s) · ${wf.blockedStranded} stranded (blocked on a resolved constraint)`);
+  const wfKeyless = wf.keylessHumanReviewBacklog ?? 0;
+  out.push(`- frontier ${wf.frontier} ready${wfStuck > 0 ? ` (${wfStuck} long-stuck/gated — correct idle, not a placement stall)` : ''} · ${wf.autoEligibleStuck} auto-eligible stuck (dispatcher lane — NOT a Mug/placement signal; see auto-implement dispatcher-staleness) · ` + `${wf.deadRoutines} dead routine(s) · ${wf.blockedStranded} stranded (blocked on a resolved constraint)`);
+  if (wfKeyless > 0) {
+    out.push(`  (+ ${wfKeyless} keyless human-review-backlog item(s), attempts:0 BY DESIGN — never auto-dispatched (P-014); this is an owner/hygiene metric, do NOT nudge or escalate to Mug on it, and do not fold it into "auto-eligible stuck" above)`);
+  }
 
   const t = brief.tokens;
   out.push('');

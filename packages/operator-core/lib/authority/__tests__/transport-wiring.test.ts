@@ -103,6 +103,11 @@ describe('wireAuthorityRpcTransport', () => {
     const NOW = 1_700_000_000_000;
     const deps: LockAuthorityDeps = {
       now: () => NOW,
+      // EI-14324: the assertion below depends on self ('pk-self-zzz') NOT being the
+      // elected authority (so the remote leg is attempted and fails open) — that's an
+      // argmin-specific fact ('pk-remote' < 'pk-self-zzz'), so pin it against
+      // HRW_RENDEZVOUS_AUTHORITY's default-ON graduation silently flipping the winner.
+      useHrwRendezvous: false,
       resolveSelf: async () => ({ githubUserId: 2, devicePubkey: 'pk-self-zzz' }),
       fetchPresenceRows: async () => [
         { device_pubkey: 'pk-remote', github_user_id: 7, machine_label: 'box-b', last_seen_ms: NOW - 1000 },

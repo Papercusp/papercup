@@ -6,9 +6,43 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, tallyPlans, toolEfficiencyStatus, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, type EscalationAgingInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
+
+describe('splitAutoEligibleStuck — keyed dispatcher-stuck vs keyless human-review backlog (EI-14223)', () => {
+  it('counts only KEYED, attempts:0 items as autoEligibleStuck', () => {
+    const r = splitAutoEligibleStuck([
+      { attempts: 0, watchdogKey: 'dispatcher-staleness:auto-implement-dispatcher' },
+      { attempts: 0, watchdogKey: 'some-watchdog:key' },
+      { attempts: 1, watchdogKey: 'in-flight:key' }, // already dispatched — excluded
+    ]);
+    expect(r.autoEligibleStuck).toBe(2);
+    expect(r.keylessHumanReviewBacklog).toBe(0);
+  });
+
+  it('counts KEYLESS (no watchdogKey), attempts:0 items as keylessHumanReviewBacklog, never autoEligibleStuck', () => {
+    const r = splitAutoEligibleStuck([
+      { attempts: 0 }, // manually captured, no watchdogKey
+      { attempts: 0, watchdogKey: undefined },
+      { attempts: 1 }, // keyless but already attempted — excluded from both
+    ]);
+    expect(r.autoEligibleStuck).toBe(0);
+    expect(r.keylessHumanReviewBacklog).toBe(2);
+  });
+
+  it('does not let a large keyless pile inflate autoEligibleStuck (the EI-14223 false-alarm repro)', () => {
+    const keyless = Array.from({ length: 200 }, () => ({ attempts: 0 }));
+    const keyed = [{ attempts: 0, watchdogKey: 'dispatcher-staleness:auto-implement-dispatcher' }];
+    const r = splitAutoEligibleStuck([...keyless, ...keyed]);
+    expect(r.autoEligibleStuck).toBe(1);
+    expect(r.keylessHumanReviewBacklog).toBe(200);
+  });
+
+  it('returns zeros for an empty input', () => {
+    expect(splitAutoEligibleStuck([])).toEqual({ autoEligibleStuck: 0, keylessHumanReviewBacklog: 0 });
+  });
+});
 
 describe('observationRole — per-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
   it('prefers the stamped payload.filedByRole', () => {
