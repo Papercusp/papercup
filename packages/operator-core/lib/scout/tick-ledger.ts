@@ -180,6 +180,83 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
 }
 
 /**
+ * The RUNNING scout code's content hash, as stamped on the newest scout-origin tick
+ * (WI-5397) — i.e. what {@link ../scout-code-identity}'s `currentScoutCodeHash()`
+ * resolved to inside the bg-host PROCESS that actually wrote that tick. This is how a
+ * DIFFERENT process (e.g. the one serving `blender:success-metrics`) learns bg-host's
+ * code identity without any new cross-process channel: the tick ledger IS the channel,
+ * already shared. Null when no tick has ever stamped a hash (pre-WI-5397 history, or a
+ * process whose scout source files were unreadable at hash time).
+ */
+export async function readNewestScoutCodeHash(
+  opts: { workspaceId?: string; installSlug?: string; origin?: string } = {},
+): Promise<string | null> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const origin = opts.origin ?? 'scout';
+  const rows = await sql<Array<{ hash: string | null }>>`
+    SELECT detail->>'scoutCodeHash' AS hash
+      FROM harness_shared.scout_ticks
+     WHERE workspace_id = ${ws}
+       AND origin = ${origin}
+       ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
+     ORDER BY tick_at DESC
+     LIMIT 1`;
+  const hash = rows[0]?.hash;
+  return typeof hash === 'string' && hash.length > 0 ? hash : null;
+}
+
+/**
+ * Read EVERY scout-origin tick whose stamped `detail.scoutCodeHash` matches `codeHash`
+ * — the SOAK-METHOD read (WI-5397): the union of ticks across every bg-host generation
+ * that happened to load byte-identical scout code, UNBOUNDED by time. This is what lets
+ * the cycle-error-rate release bar accumulate a real evidence window despite bg-host
+ * restarting far more often (observed 41min-3.9h between restarts) than a rolling
+ * time-window's floor can absorb (a ~48h window needs ~20 organic ticks at a ~30min
+ * cadence; a restart resets the window's tick history to zero every single time — fact
+ * alpha-011-soak-unreachable-as-planned). Capped by `limit` (default 5000) as a sanity
+ * bound, NOT a release-window definition — unlike {@link readScoutTicks}'s `sinceMs`,
+ * there is no time floor here by design: two code-identical generations a month apart
+ * are still the SAME evidence.
+ */
+export async function readScoutTicksByCodeHash(opts: {
+  codeHash: string;
+  workspaceId?: string;
+  installSlug?: string;
+  limit?: number;
+  origin?: string;
+}): Promise<ScoutTickRow[]> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const origin = opts.origin ?? 'scout';
+  const limit = opts.limit ?? 5000;
+  const rows = await sql<TickRow[]>`
+    SELECT install_slug, tick_at, status, gate, ideas_generated, ideas_routed,
+           ideas_deduped, budget_used_usd, detail
+      FROM harness_shared.scout_ticks
+     WHERE workspace_id = ${ws}
+       AND origin = ${origin}
+       AND detail->>'scoutCodeHash' = ${opts.codeHash}
+       ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
+     ORDER BY tick_at DESC
+     LIMIT ${limit}`;
+  return rows.map((r) => {
+    const spend = r.budget_used_usd == null ? null : Number(r.budget_used_usd);
+    return {
+      status: r.status as ScoutTickStatus,
+      ...(r.gate ? { gate: r.gate } : {}),
+      ideasGenerated: r.ideas_generated ?? 0,
+      ideasRouted: r.ideas_routed ?? 0,
+      ideasDeduped: r.ideas_deduped ?? 0,
+      ...(spend != null && Number.isFinite(spend) ? { budgetUsedUsd: spend } : {}),
+      ...(r.detail && typeof r.detail === 'object' ? { detail: r.detail } : {}),
+      ...(r.install_slug ? { installSlug: r.install_slug } : {}),
+      tickAt: r.tick_at instanceof Date ? r.tick_at.toISOString() : new Date(r.tick_at).toISOString(),
+    };
+  });
+}
+
+/**
  * The epoch-ms timestamp of the most-recent SUCCESSFUL Scout cycle RUN
  * (scout_ticks status='ran') for a workspace — the cadence min-interval floor's
  * "last run" clock — or null when no cycle has ever run.

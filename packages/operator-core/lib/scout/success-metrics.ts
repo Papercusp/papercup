@@ -35,8 +35,9 @@
  */
 
 import { groundingLaneHistogram } from './scheduler';
-import { computeScoutQualityReport, buildQualityReportInputs, type ScoutQualityInputs } from './quality-metrics';
+import { computeScoutQualityReport, foldScoutTickStats, buildQualityReportInputs, type ScoutQualityInputs } from './quality-metrics';
 import type { BuildQualityInputsOptions } from './quality-metrics';
+import type { ScoutTickRecord } from './tick-ledger';
 // EI-12146: the rolling-window FALLBACK below shares its ms value with
 // resolveCriterionWindow()'s own default (rubric-template.ts is dependency-free, exactly
 // so instruments can import it without a PG edge) — the last remaining "two independent
@@ -83,6 +84,20 @@ export const LENS_DIVERSITY_SAMPLE = 20;
 export interface ProgramSuccessInputs {
   cadence: ScoutQualityInputs<CreativeLens>;
   ideas: readonly RoutedIdeaProvenance[];
+  /**
+   * WI-5397 soak-method fix: ticks sharing the CURRENTLY RUNNING scout code's content
+   * hash, spanning any number of bg-host restarts that happened to load byte-identical
+   * code — UNBOUNDED by time (see tick-ledger.ts's readScoutTicksByCodeHash). Used
+   * ONLY for the cycle-error-rate bar's denominator/numerator, replacing the
+   * time-windowed `cadence.ticks` there specifically: a fixed sinceMs window resets
+   * its tick history to near-zero on every bg-host restart (observed 41min-3.9h
+   * between restarts vs the ~30min cadence — a ~48h/~20-tick window needs ~10h
+   * UNINTERRUPTED, which restart-zeroing never allows; fact
+   * alpha-011-soak-unreachable-as-planned). Undefined ⇒ the bar falls back to the
+   * time-windowed `cadence.ticks` (pre-WI-5397 behavior — also the path every
+   * existing pure-core fixture takes, since they don't set this).
+   */
+  cadenceByCodeHash?: { ticks: readonly ScoutTickRecord[]; codeHash: string | null };
 }
 
 export type SuccessStatus = 'pass' | 'fail' | 'unknown';

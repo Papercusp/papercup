@@ -42,6 +42,7 @@ import type { ScoutPoolSnapshot } from './capacity-probe';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
+import { currentScoutCodeHash } from './scout-code-identity';
 
 /** The provenance the scheduler persists per routed idea (subset of RecordRoutedIdeaInput). */
 export interface ScoutRoutedRecord {
@@ -822,10 +823,22 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
       const installSlug = opts.workspaceId
         ? workspaceBrainScopeKey(opts.workspaceId, harnessSlug, await isWorkspaceCoordinationOn())
         : harnessSlug;
+      // WI-5397: stamp the RUNNING scout code's content identity on every tick row
+      // (gated/ran/error alike — a gated tick still proves this process's classifier
+      // code was live at this instant). This is what lets the cycle-error-rate bar
+      // aggregate across bg-host restarts that happen to load byte-identical code
+      // instead of restarting its evidence window on every restart (see
+      // scout-code-identity.ts + tick-ledger.ts's readScoutTicksByCodeHash). A null
+      // hash (unreadable source, e.g. a bundled build) omits the key rather than
+      // stamping a misleading null — an absent key never matches a hash-scoped read.
+      const scoutCodeHash = currentScoutCodeHash();
       await recordScoutTick({
         ...rec,
         installSlug,
         ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+        ...(scoutCodeHash
+          ? { detail: { ...(rec.detail ?? {}), scoutCodeHash } }
+          : {}),
       });
     },
   };

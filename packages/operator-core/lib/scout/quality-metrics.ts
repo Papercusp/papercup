@@ -133,18 +133,29 @@ export interface ScoutQualityReport<L extends string = CreativeLens> {
  * folds in the reused novelty-metrics dedup-rate; it is opt-in so the Scout call
  * (`computeScoutQualityReport(inputs)`) emits NO `dedupRate` key and stays byte-identical.
  */
-export function computeScoutQualityReport<L extends string = CreativeLens>(
-  inputs: ScoutQualityInputs<L>,
-  opts: { lenses?: readonly L[]; includeDedupRate?: boolean } = {},
-): ScoutQualityReport<L> {
-  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
+/** The pure tick-classification fold — windowCycles/errorTicks/gatedTickBreakdown/spend,
+ *  derived from ticks ALONE (no routed-idea or lens-outcome input needed). Extracted
+ *  (WI-5397) so a caller that only needs the CYCLE-error-rate numbers — e.g. the
+ *  code-hash-scoped soak read in scout/success-metrics.ts, which has no matching
+ *  routed-idea/lens-outcome snapshot for an arbitrary cross-generation tick union — can
+ *  reuse the EXACT SAME classifier {@link computeScoutQualityReport} folds into its own
+ *  report, instead of a second hand-rolled copy that could silently drift from it.
+ */
+export function foldScoutTickStats(ticks: readonly ScoutTickRecord[]): {
+  windowCycles: number;
+  totalTicks: number;
+  errorTicks: number;
+  gatedTickBreakdown: Record<string, number>;
+  totalIdeasGenerated: number;
+  totalSpendUsd: number;
+} {
   let windowCycles = 0;
   let errorTicks = 0;
   let totalIdeasGenerated = 0;
   let totalSpendUsd = 0;
   const gatedTickBreakdown: Record<string, number> = Object.fromEntries(SCOUT_TICK_GATES.map((g) => [g, 0]));
 
-  for (const t of inputs.ticks) {
+  for (const t of ticks) {
     if (t.status === 'ran') {
       windowCycles += 1;
       totalIdeasGenerated += t.ideasGenerated ?? 0;
@@ -171,6 +182,17 @@ export function computeScoutQualityReport<L extends string = CreativeLens>(
       totalSpendUsd += t.budgetUsedUsd;
     }
   }
+  return { windowCycles, totalTicks: ticks.length, errorTicks, gatedTickBreakdown, totalIdeasGenerated, totalSpendUsd };
+}
+
+export function computeScoutQualityReport<L extends string = CreativeLens>(
+  inputs: ScoutQualityInputs<L>,
+  opts: { lenses?: readonly L[]; includeDedupRate?: boolean } = {},
+): ScoutQualityReport<L> {
+  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
+  const { windowCycles, errorTicks, gatedTickBreakdown, totalIdeasGenerated, totalSpendUsd } = foldScoutTickStats(
+    inputs.ticks,
+  );
 
   let accepted = 0;
   let rejected = 0;
