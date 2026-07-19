@@ -5008,22 +5008,28 @@ export function LearningStyles() {
       /* The lens label + count render as CardStack's on-card header badge
          (pc-cardstack__header-*), so the group carries no separate head row. */
       .pc-learning__lensgroup { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+      /* Card content hierarchy (owner ask 2026-07-19, continued polish):
+         quiet meta row up top, the TITLE as the loudest element, the trace
+         ledger recessed below — readable at a glance, roomy, consistent. */
       .pc-learning__ideacard {
-        display: flex; flex-direction: column; gap: 7px;
-        padding: 10px 12px; border-radius: 10px;
+        display: flex; flex-direction: column; gap: 8px;
+        padding: 12px 14px 13px; border-radius: 10px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
         background: var(--bg-2, rgba(255, 255, 255, 0.04));
       }
-      .pc-learning__ideacard-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .pc-learning__ideacard-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 22px; }
       .pc-learning__ideacard-head .pc-learning__id {
-        display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700;
+        display: inline-flex; align-items: center; gap: 5px;
+        font-size: 9.5px; font-weight: 720; text-transform: uppercase;
+        opacity: 0.9;
       }
       .pc-learning__ideacard-head .pc-learning__sev {
-        width: 8px; height: 8px; min-height: 0; border-radius: 3px;
+        width: 7px; height: 7px; min-height: 0; border-radius: 50%;
       }
+      .pc-learning__ideacard-head .pc-learning__age { font-size: 10px; opacity: 0.85; }
       .pc-learning__ideacard-head .pc-learning__grade { margin-left: auto; }
       .pc-learning__ideacard-title {
-        text-align: left; font: inherit; font-size: 12.5px; font-weight: 600; line-height: 1.4;
+        text-align: left; font: inherit; font-size: 13px; font-weight: 660; line-height: 1.42;
         color: var(--fg, #e7eef5); background: none; border: 0; padding: 0; cursor: pointer;
       }
       .pc-learning__ideacard-title:hover { color: var(--accent, #7dd3fc); }

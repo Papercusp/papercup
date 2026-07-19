@@ -62,7 +62,11 @@ import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
-import { resolveWorkspaceHiveScope, type WorkspaceHiveScope } from '../coordination/federation-scope';
+import {
+  resolveWorkspaceHiveScope,
+  resolveSharedHiveDisambiguation,
+  type WorkspaceHiveScope,
+} from '../coordination/federation-scope';
 import { listWorkOffers } from '../../p2p/offer-store';
 import { publishSpawnRequest } from '../../p2p/spawn-request-publish';
 import { listFederatedFleetMembers } from '../../sync/hyperbee/session-presence-store';
@@ -691,38 +695,18 @@ export function remotePlacementUnsupportedArgs(args: Record<string, unknown>): s
 
 /**
  * Pure (WI-5211): pick the ONE shared hive whose federated seat-offers a
- * placement:'remote' launch consumes. Exactly-one workspaces resolve alone; on a
- * multi-hive workspace an explicit `hive` wins (validated against the shared set),
- * else the plan's `harness` disambiguates when it names a shared hive — the same
- * disambiguator resource:delegate uses on the offer-publishing side.
+ * placement:'remote' launch consumes. Thin back-compat wrapper (same name/shape
+ * this module has always exported) over the generalized
+ * `resolveSharedHiveDisambiguation` (EI-16673), which resource:offers now also
+ * uses — see federation-scope.ts for the shared logic.
  */
 export function resolveRemotePlacementHive(
   scope: WorkspaceHiveScope,
   explicitHive: string | undefined,
   harness: string | null,
 ): { ok: true; homeSlug: string } | { ok: false; error: string } {
-  if (scope.kind === 'none') {
-    return {
-      ok: false,
-      error:
-        'this workspace has NO shared hive — seat-offers federate over a shared hive, so cross-machine placement needs one (publish or join the hive first)',
-    };
-  }
-  const candidates = scope.kind === 'one' ? [scope.homeSlug] : scope.candidates;
-  const hive = explicitHive?.trim();
-  if (hive) {
-    if (candidates.includes(hive)) return { ok: true, homeSlug: hive };
-    return {
-      ok: false,
-      error: `hive \`${hive}\` is not one of this workspace's shared hives (${candidates.join(', ')}) — seat-offers only federate over a shared hive`,
-    };
-  }
-  if (scope.kind === 'one') return { ok: true, homeSlug: scope.homeSlug };
-  if (harness && candidates.includes(harness)) return { ok: true, homeSlug: harness };
-  return {
-    ok: false,
-    error: `this workspace has ${candidates.length} shared hives (${candidates.join(', ')}) — pass \`hive\` to pick the one whose delegated seat-offers this fleet uses (resource:delegate named the same hive when the seats were offered)`,
-  };
+  const picked = resolveSharedHiveDisambiguation(scope, explicitHive, harness);
+  return picked.ok ? { ok: true, homeSlug: picked.homeSlug } : { ok: false, error: picked.error };
 }
 
 /** One remote machine's open seat-offer, summarized for distribution. */

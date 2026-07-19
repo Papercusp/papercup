@@ -90,11 +90,14 @@ export interface DelegateResourceInput {
   remove?: boolean;
   /** The setting host's numeric GitHub id (display/audit). */
   createdByGithubUserId?: number | null;
-  /** WI-5211: the shared-hive home slug to advertise an agent_slot seat in when
-   *  this workspace hosts MORE THAN ONE shared hive. Without it a multi-hive
-   *  workspace can't disambiguate and the seat-offer publish silently skips, so
-   *  the seat is invisible to a fleet owner on another machine. Ignored for a
-   *  single-hive workspace and for account/gpu kinds. */
+  /** WI-5211/EI-16667: the shared-hive home slug to advertise an agent_slot seat
+   *  in when this workspace hosts MORE THAN ONE shared hive. REQUIRED in that
+   *  case for a fleet-scoped (non-potSlug) agent_slot set — omitting it is now a
+   *  loud `hive_required` refusal (not a silent publish-skip): a multi-hive
+   *  workspace can't disambiguate which hive to advertise into, and the seat
+   *  would otherwise be delegated locally but never discoverable pot-wide.
+   *  Ignored for a single-hive workspace, a potSlug-scoped delegation (the pot
+   *  names its hive directly), and account/gpu kinds. */
   hive?: string;
 }
 
@@ -115,7 +118,12 @@ function slotRef(model: string, effort: string, account: string): string {
  */
 export async function delegateResource(
   input: DelegateResourceInput,
-  opts?: { sqlOverride?: OrgSql; skipInvalidate?: boolean },
+  opts?: {
+    sqlOverride?: OrgSql;
+    skipInvalidate?: boolean;
+    /** Test seam only — overrides the ambiguous-hive check's scope resolver. */
+    resolveScopeOverride?: typeof resolveWorkspaceHiveScope;
+  },
 ): Promise<DelegateResourceResult> {
   const isSlot = input.kind === 'agent_slot';
   // agent_slot trio: explicit fields win; an axis-shaped caller (the loopback) may
@@ -130,6 +138,35 @@ export async function delegateResource(
   // derived template (the store re-derives on write; this composed one is the
   // remove-row key + the pre-P-001 non-empty placeholder).
   const resourceRef = isSlot ? (input.ref?.trim() || slotRef(model, effort, account)) : (input.ref ?? '');
+
+  // EI-16667 (D-003 fail-closed/loud-refusal invariant): an agent_slot set on a
+  // workspace with MULTIPLE shared hives can't disambiguate which hive the P2P
+  // seat-offer publish should advertise into. Without this check the local
+  // allotment write silently succeeded (ok:true) while the federation leg
+  // silently no-op'd (offer-store-publish.ts: no_single_shared_hive:many) — a
+  // caller had no way to tell the seat never became discoverable pot-wide. A
+  // pot-scoped delegation (potSlug) already names its hive directly, and a
+  // ZERO-shared-hive workspace stays fail-SOFT on purpose (a single-machine dev
+  // box must still be able to delegate seats — see offer-store-publish.ts
+  // header): only the genuinely ambiguous 'many' case, with no disambiguator,
+  // refuses loudly instead of silently creating a locally-orphaned allotment.
+  if (isSlot && !input.remove && !input.potSlug && !input.hive?.trim()) {
+    const resolveScope = opts?.resolveScopeOverride ?? resolveWorkspaceHiveScope;
+    const scope = await resolveScope(input.workspaceId ?? '');
+    if (scope.kind === 'many') {
+      return {
+        ok: false,
+        refusal: {
+          code: 'hive_required',
+          detail:
+            `this workspace has ${scope.candidates.length} shared hives — pass \`hive\` ` +
+            `(one of: ${scope.candidates.join(', ')}) so the seat-offer publish can ` +
+            'disambiguate which one to advertise the seat in; without it the seat ' +
+            'would be delegated locally but never discoverable pot-wide',
+        },
+      };
+    }
+  }
 
   const invalidate = async () => {
     if (opts?.skipInvalidate) return;
@@ -274,7 +311,7 @@ export default defineTool({
       .min(1)
       .optional()
       .describe(
-        'agent_slot: shared-hive home slug to advertise the seat in when THIS workspace has >1 shared hive (without it the cross-machine seat-offer publish can\'t disambiguate and silently skips). Ignored on a single-hive workspace.',
+        'agent_slot: shared-hive home slug to advertise the seat in — REQUIRED (loud `hive_required` refusal otherwise) when THIS workspace has >1 shared hive and potSlug is not set, since the cross-machine seat-offer publish can\'t disambiguate which hive to advertise into. Ignored on a single-hive workspace or a potSlug-scoped delegation.',
       ),
   }),
   async handler(args, ctx) {

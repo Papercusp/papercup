@@ -13,8 +13,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   resolveWorkspaceHiveScope,
+  resolveSharedHiveDisambiguation,
   resetFederationScopeCache,
   type FederationScopeDeps,
+  type WorkspaceHiveScope,
 } from './federation-scope';
 
 function makeDeps(over?: Partial<FederationScopeDeps>): FederationScopeDeps {
@@ -113,5 +115,63 @@ describe('resolveWorkspaceHiveScope', () => {
     // a different workspace is its own cache key
     await resolveWorkspaceHiveScope('ws2', { deps });
     expect(deps.listHives).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('resolveSharedHiveDisambiguation (WI-5211 / EI-16673)', () => {
+  const one: WorkspaceHiveScope = { kind: 'one', homeSlug: 'papercusp' };
+  const many: WorkspaceHiveScope = { kind: 'many', candidates: ['other-hive', 'papercusp'] };
+  const none: WorkspaceHiveScope = { kind: 'none' };
+
+  it('exactly one shared hive resolves alone, with or without an explicit hive matching it', () => {
+    expect(resolveSharedHiveDisambiguation(one, undefined, null)).toEqual({
+      ok: true,
+      homeSlug: 'papercusp',
+      candidates: ['papercusp'],
+    });
+    expect(resolveSharedHiveDisambiguation(one, 'papercusp', null)).toEqual({
+      ok: true,
+      homeSlug: 'papercusp',
+      candidates: ['papercusp'],
+    });
+  });
+
+  it('many shared hives + an explicit matching hive resolves to it', () => {
+    expect(resolveSharedHiveDisambiguation(many, 'papercusp', null)).toEqual({
+      ok: true,
+      homeSlug: 'papercusp',
+      candidates: ['other-hive', 'papercusp'],
+    });
+  });
+
+  it('many shared hives + no explicit hive but a fallback that names a shared one resolves to it', () => {
+    expect(resolveSharedHiveDisambiguation(many, undefined, 'papercusp')).toEqual({
+      ok: true,
+      homeSlug: 'papercusp',
+      candidates: ['other-hive', 'papercusp'],
+    });
+  });
+
+  it('many shared hives + no explicit hive + no matching fallback → ambiguous, with candidates surfaced (never guessed)', () => {
+    const res = resolveSharedHiveDisambiguation(many, undefined, 'not-a-hive');
+    expect(res.ok).toBe(false);
+    expect(res.candidates).toEqual(['other-hive', 'papercusp']);
+    if (!res.ok) expect(res.error).toMatch(/2 shared hives/);
+  });
+
+  it('an explicit hive NOT in the shared set is refused, never silently accepted', () => {
+    const res = resolveSharedHiveDisambiguation(many, 'private-hive', 'papercusp');
+    expect(res.ok).toBe(false);
+    expect(res.candidates).toEqual(['other-hive', 'papercusp']);
+    if (!res.ok) expect(res.error).toMatch(/private-hive.*not one of/);
+  });
+
+  it('no shared hive at all → refused with empty candidates regardless of explicit hive', () => {
+    const res = resolveSharedHiveDisambiguation(none, 'papercusp', 'papercusp');
+    expect(res).toEqual({
+      ok: false,
+      candidates: [],
+      error: expect.stringMatching(/NO shared hive/),
+    });
   });
 });

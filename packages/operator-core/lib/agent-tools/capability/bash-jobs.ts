@@ -113,6 +113,7 @@ function spawnShell(
   cwd: string,
   env: Record<string, string> | undefined,
   sandboxEnabled = false,
+  background = false,
 ): ChildProcess {
   const spawnPath = augmentedSpawnPath();
   // EI-1617: scrubExecEnv replaces the old stripHostX-only passthrough — an
@@ -125,7 +126,10 @@ function spawnShell(
   const inheritedEnv = normalizeInheritedOperatorUrl(scrubExecEnv(process.env));
   const decision = buildCapabilitySandboxCommand(
     { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', command], cwd },
-    { enabled: sandboxEnabled },
+    // EI-16635: `background` (true for startBackground's run_in_background jobs)
+    // tells the sandbox builder to omit bwrap's `--die-with-parent` — that flag
+    // is incompatible with a job contractually meant to outlive this spawn call.
+    { enabled: sandboxEnabled, background },
   );
   if (sandboxEnabled && !decision.sandboxed) {
     console.warn(
@@ -249,7 +253,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
     const logStream = safeWriteStream(logPath);
     const startedAt = Date.now();
-    const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled);
+    const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, false);
 
     let buffer = '';
     let totalBytes = 0;
@@ -338,7 +342,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   pruneFinished();
   const id = cryptoRandomId();
   const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
-  const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled);
+  // EI-16635: background:true — this job is a run_in_background spawn, meant to
+  // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
+  const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, true);
   const job: BashJob = {
     id,
     command: opts.command,

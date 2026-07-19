@@ -27,6 +27,22 @@ describe('readColdLoopMarker', () => {
     expect(readColdLoopMarker({ carry: 7, wakeCount: 'x' })).toBeNull();
     expect(readColdLoopMarker({ carry: 'cold', wakeCount: Number.NaN })).toEqual({ carry: 'cold', wakeCount: undefined });
   });
+
+  // WI-5510: routineId (the loop-instance id) rides the marker alongside
+  // wakeCount so the delivery-side stale-fire guard can tell a superseded
+  // delivery from a fresh one, scoped per loop instance.
+  it('reads routineId when present (WI-5510), ignoring wrong types / empty string', () => {
+    expect(readColdLoopMarker({ carry: 'cold', wakeCount: 3, routineId: 'routine-abc' })).toEqual({
+      carry: 'cold', wakeCount: 3, routineId: 'routine-abc',
+    });
+    // routineId alone (no carry/wakeCount) is still a real marker, not null.
+    expect(readColdLoopMarker({ routineId: 'r-1' })).toEqual({
+      carry: undefined, wakeCount: undefined, routineId: 'r-1',
+    });
+    // wrong type / empty string ⇒ dropped
+    expect(readColdLoopMarker({ carry: 'cold', routineId: 42 })).toEqual({ carry: 'cold', wakeCount: undefined });
+    expect(readColdLoopMarker({ carry: 'cold', routineId: '' })).toEqual({ carry: 'cold', wakeCount: undefined });
+  });
 });
 
 describe('coldWakeMode — the HYBRID cadence (reset each wake, recycle every Nth)', () => {

@@ -169,10 +169,27 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
     expect(tmpfsIdx).toBeLessThan(bindIdx);
   });
 
-  it('isolates process namespaces + dies with the parent', () => {
+  it('isolates process namespaces + dies with the parent (foreground: background unset)', () => {
     for (const f of ['--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup-try', '--die-with-parent']) {
       expect(d.argv).toContain(f);
     }
+  });
+
+  it('EI-16635: a BACKGROUND spawn omits --die-with-parent — it is incompatible with run_in_background outliving this call', () => {
+    const bg = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: true, background: true });
+    expect(bg.mode).toBe('bwrap');
+    expect(bg.argv).not.toContain('--die-with-parent');
+    // everything else about the containment is unchanged for a background spawn.
+    for (const f of ['--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup-try']) {
+      expect(bg.argv).toContain(f);
+    }
+    expect(seq(bg.argv, ['--ro-bind', '/', '/'])).toBe(true);
+    expect(seq(bg.argv, ['--bind', CWD, CWD])).toBe(true);
+  });
+
+  it('a FOREGROUND spawn (background:false explicit) still dies with the parent', () => {
+    const fg = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: true, background: false });
+    expect(fg.argv).toContain('--die-with-parent');
   });
 
   it('masks credential DIRS with a tmpfs at the resolved home path', () => {

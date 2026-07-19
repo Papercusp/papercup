@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../coordination/federation-scope';
 import { listWorkOffers, type StoredWorkOffer } from '../../p2p/offer-store';
 
 export interface SeatOfferSummaryRow {
@@ -48,10 +48,10 @@ export default defineTool({
   name: 'resource:offers',
   profile: 'engineer',
   description:
-    'Read-only: list OPEN standing agent-seat offers visible to this workspace — pot-wide (any fleet in the pot may spend) by default, or scoped to one `fleetSlug`. Each row: offerId, hostLabel (donor\'s friendly name, or null if unset), model, effort, count, audience. Returns {ok, potShared, rows}; potShared:false means this workspace has no single shared Hive (nothing to list). Never mutates — `resource:delegate` is the one write path.',
+    'Read-only: list OPEN standing agent-seat offers visible to this workspace — pot-wide (any fleet in the pot may spend) by default, or scoped to one `fleetSlug` / pot-scoped `potSlug`. On a workspace with MORE THAN ONE shared Hive, pass `hive` to pick which one (mirrors resource:delegate\'s own `hive` disambiguator) — without it those workspaces get potShared:false + a `candidates` list instead of silently returning nothing. Each row: offerId, hostLabel (donor\'s friendly name, or null if unset), model, effort, count, audience. Returns {ok, potShared, rows, candidates?, hiveError?}; potShared:false + no candidates means this workspace has no shared Hive at all (nothing to list); potShared:false + candidates means MULTIPLE shared hives exist and `hive` is required. Never mutates — `resource:delegate` is the one write path.',
   guidance: {
     when:
-      "\"what agent seats are available?\" / \"who has donated seats to this pot?\" / checking before `fleet:request_remote_spawn` whether an offer actually exists yet. Pass `fleetSlug` to scope to one fleet's donated seats instead of the whole pot.",
+      "\"what agent seats are available?\" / \"who has donated seats to this pot?\" / checking before `fleet:request_remote_spawn` whether an offer actually exists yet. Pass `fleetSlug` to scope to one fleet's donated seats, `potSlug` to scope to one pot-scoped grantee, or `hive` to disambiguate which shared hive to read on a multi-hive workspace (see the `candidates` field on a potShared:false response).",
     notWhen:
       'Donating or revoking a seat (resource:delegate). Spending an existing offer (fleet:request_remote_spawn). Reading inference-GATEWAY capacity for spawn sizing (fleet:capacity — a different axis entirely).',
     chaining:
@@ -62,16 +62,36 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     fleetSlug: z.string().min(1).optional().describe('scope to one fleet\'s donated seats instead of the whole pot'),
+    potSlug: z.string().min(1).optional().describe('scope to offers granted to one pot-scoped grantee (mutually exclusive in practice with fleetSlug)'),
+    hive: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'which shared hive\'s offers to read, when this workspace hosts MORE THAN ONE shared hive (resource:delegate\'s own `hive` param names the same disambiguator on the publish side). Validated against the workspace\'s actual shared-hive set.',
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     if (!ident.workspaceId) return { data: { ok: true, potShared: false, rows: [] } };
     const scope = await resolveWorkspaceHiveScope(ident.workspaceId).catch(() => ({ kind: 'none' as const }));
-    if (scope.kind !== 'one') return { data: { ok: true, potShared: false, rows: [] } };
-    const rows = await listWorkOffers(ident.workspaceId, scope.homeSlug, {
+    const picked = resolveSharedHiveDisambiguation(scope, args.hive, null);
+    if (!picked.ok) {
+      return {
+        data: {
+          ok: true,
+          potShared: false,
+          rows: [],
+          hiveError: picked.error,
+          ...(picked.candidates.length ? { candidates: picked.candidates } : {}),
+        },
+      };
+    }
+    const rows = await listWorkOffers(ident.workspaceId, picked.homeSlug, {
       kind: 'seat',
       status: 'open',
       ...(args.fleetSlug ? { fleetSlug: args.fleetSlug } : {}),
+      ...(args.potSlug ? { potSlug: args.potSlug } : {}),
     }).catch(() => [] as StoredWorkOffer[]);
     const summary = rows.map(toSummaryRow).filter((r): r is SeatOfferSummaryRow => r !== null);
     return { data: { ok: true, potShared: true, rows: summary } };

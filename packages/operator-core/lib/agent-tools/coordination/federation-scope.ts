@@ -110,3 +110,46 @@ async function resolveUncached(
 export function resetFederationScopeCache(): void {
   cache.clear();
 }
+
+/**
+ * Pure (WI-5211, generalized EI-16673): pick the ONE shared hive a
+ * multi-hive-ambiguous caller means — placement:'remote' launches (which hive's
+ * seat-offers to consume), resource:offers (which hive's offers to list), and
+ * any future seat-offer reader share this exact disambiguation shape.
+ * Exactly-one-shared-hive workspaces resolve alone; on a multi-hive workspace an
+ * explicit `hive` wins (validated against the shared set), else an optional
+ * `fallback` (e.g. the calling plan's `harness`) disambiguates when it names a
+ * shared hive — the same disambiguator resource:delegate's own `hive` param
+ * uses on the offer-PUBLISHING side (see offer-store-publish.ts).
+ */
+export function resolveSharedHiveDisambiguation(
+  scope: WorkspaceHiveScope,
+  explicitHive: string | undefined,
+  fallback: string | null,
+): { ok: true; homeSlug: string; candidates: string[] } | { ok: false; error: string; candidates: string[] } {
+  if (scope.kind === 'none') {
+    return {
+      ok: false,
+      candidates: [],
+      error:
+        'this workspace has NO shared hive — seat-offers federate over a shared hive, so this needs one (publish or join a hive first)',
+    };
+  }
+  const candidates = scope.kind === 'one' ? [scope.homeSlug] : scope.candidates;
+  const hive = explicitHive?.trim();
+  if (hive) {
+    if (candidates.includes(hive)) return { ok: true, homeSlug: hive, candidates };
+    return {
+      ok: false,
+      candidates,
+      error: `hive \`${hive}\` is not one of this workspace's shared hives (${candidates.join(', ')}) — seat-offers only federate over a shared hive`,
+    };
+  }
+  if (scope.kind === 'one') return { ok: true, homeSlug: scope.homeSlug, candidates };
+  if (fallback && candidates.includes(fallback)) return { ok: true, homeSlug: fallback, candidates };
+  return {
+    ok: false,
+    candidates,
+    error: `this workspace has ${candidates.length} shared hives (${candidates.join(', ')}) — pass \`hive\` to pick the one whose seat-offers you mean (resource:delegate named the same hive when the seats were offered)`,
+  };
+}

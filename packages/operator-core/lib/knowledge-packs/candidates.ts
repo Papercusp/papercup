@@ -17,11 +17,17 @@
  *   review   {@link reviewCandidateForAutoAdopt} — the AUTOMATED review (WI-5414
  *            reverses the old owner-gate contract: "the whole point of the
  *            learnings tab is that the things there do NOT need human
- *            supervision"). Reuses the EXISTING knowledge-pack sweep-scoring
- *            machinery (memory/conflict-check.ts + the same LLM-judge pattern
- *            manage.ts's install/upgrade review and sweepHiveConflicts already
- *            run) — the candidate's draft is judged against the fleet-lessons
- *            pack's OWN current items; a reported contradiction fails review.
+ *            supervision"). TWO stages (knowledge-pack-loop-integrity P-001):
+ *            (1) a TRANSFERABILITY judge/distiller (./candidate-review) that
+ *            rejects raw incident bodies and REWRITES a passing draft into the
+ *            compact transferable lesson the pack will actually carry; (2) the
+ *            EXISTING knowledge-pack sweep-scoring machinery
+ *            (memory/conflict-check.ts, as manage.ts's install/upgrade review
+ *            and sweepHiveConflicts already run) — the DISTILLED lesson is
+ *            judged against the fleet-lessons pack's OWN current items; a
+ *            reported contradiction fails review. An errored judge yields
+ *            verdict 'error': the candidate STAYS PENDING for the next tick
+ *            (plan D-004 — never adopt-by-default).
  *   decide   adopt or dismiss. Adoption materializes the item into the
  *            `fleet-lessons` pack under the installed packs root and bumps the
  *            pack's patch version — it NEVER touches a hive pool directly.
@@ -58,6 +64,12 @@ import {
   type KnowledgePackManifest,
 } from './pack-format';
 import type { LlmJudge } from '../memory/conflict-check';
+import type { LessonDistillerLlm } from '../transfer/types';
+import {
+  judgeCandidateTransferability,
+  normalizeCandidateSignature,
+  type DistilledCandidate,
+} from './candidate-review';
 // CandidateStatus, KnowledgePackCandidate, and AUTO_ADOPT_REVIEWER live in the
 // CLIENT-SAFE ./candidates-shared so the /adv Learnings view can use them
 // without dragging this server module (node:fs/path, PG, sync-sse →
@@ -190,18 +202,50 @@ export async function stageKnowledgePackCandidate(
     WHERE status = 'pending'`;
   if (Number(count) >= pendingCandidateCap()) return { staged: false, reason: 'pending-cap' };
 
+  // knowledge-pack-loop-integrity P-002: dedup on the INSTANCE-STRIPPED
+  // signature (log hashes / uuids / bare numbers removed) so one incident
+  // CLASS collapses to one candidate. digest.ts recurrence signatures are
+  // untouched — normalization happens only at this staging boundary.
+  const signature = normalizeCandidateSignature(input.signature);
+
   const rows = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.knowledge_pack_candidates
       (signature, title, draft_text, kind, scopes, recurrence_count,
        source_item_ids, created_by)
     VALUES
-      (${input.signature}, ${input.title}, ${input.draftText},
+      (${signature}, ${input.title}, ${input.draftText},
        ${input.kind ?? 'feedback'}, ${JSON.stringify(input.scopes)}::text::jsonb,
        ${input.recurrenceCount}, ${JSON.stringify(input.sourceItemIds ?? [])}::text::jsonb,
        ${input.createdBy ?? 'recurrence-escalation'})
     ON CONFLICT ON CONSTRAINT knowledge_pack_candidates_signature_uniq DO NOTHING
     RETURNING id`;
   if (rows.length === 0) return { staged: false, reason: 'duplicate-signature' };
+
+  // knowledge-pack-loop-integrity P-003 — the D-006 "inherit-the-bar" edge,
+  // previously aspirational (EI-18106972904923204: no writer ever linked a
+  // lesson to a candidate, so packCandidateTransferBar could never match).
+  // Admit a probationary transfer lesson keyed by lessonSignature(draftText)
+  // and linked via pack_candidate_id, so the student-transfer test can gate
+  // this candidate's adoption once the transfer harness is armed. Best-effort:
+  // staging never fails on the lesson write (the bar itself fails open).
+  try {
+    const [{ admitTransferLesson }, { lessonSignature }] = await Promise.all([
+      import('../transfer/store'),
+      import('../transfer/distill'),
+    ]);
+    await admitTransferLesson(sql, {
+      workspaceId: activeWorkspaceId(),
+      signature: lessonSignature(input.draftText),
+      title: input.title,
+      lessonText: input.draftText,
+      sourceKind: 'pack-candidate',
+      packCandidateId: rows[0]!.id,
+    });
+  } catch (e) {
+    console.warn(
+      `[knowledge-packs] transfer-lesson admit failed for candidate ${rows[0]!.id} (best-effort): ${e instanceof Error ? e.message : e}`,
+    );
+  }
 
   invalidate(['knowledgePacks.candidates']);
   return { staged: true, id: rows[0]!.id };

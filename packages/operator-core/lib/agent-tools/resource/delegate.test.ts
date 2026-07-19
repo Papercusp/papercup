@@ -211,6 +211,89 @@ describe('delegateResource — refusal passthrough + invalidate discipline', () 
   });
 });
 
+describe('delegateResource — ambiguous-hive fail-closed refusal (EI-16667)', () => {
+  const many = async () => ({ kind: 'many' as const, candidates: ['hive-a', 'hive-b'] });
+  const one = async () => ({ kind: 'one' as const, homeSlug: 'hive-a' });
+  const none = async () => ({ kind: 'none' as const });
+
+  it('a fleet-scoped agent_slot set with no hive on a >1-shared-hive workspace refuses loudly, no local write, no invalidate', async () => {
+    const r = await delegateResource(
+      { workspaceId: 'w', fleetSlug: 'x', kind: 'agent_slot', model: 'm', effort: 'high', count: 1 },
+      { resolveScopeOverride: many },
+    );
+    expect(r).toEqual({
+      ok: false,
+      refusal: {
+        code: 'hive_required',
+        detail: expect.stringContaining('hive-a, hive-b'),
+      },
+    });
+    expect(setM).not.toHaveBeenCalled();
+    expect(invalidateM).not.toHaveBeenCalled();
+  });
+
+  it('passing `hive` bypasses the refusal and proceeds to the local write', async () => {
+    const r = await delegateResource(
+      { workspaceId: 'w', fleetSlug: 'x', kind: 'agent_slot', model: 'm', effort: 'high', count: 1, hive: 'hive-a' },
+      { resolveScopeOverride: many },
+    );
+    expect(r).toMatchObject({ ok: true, action: 'set' });
+    expect(setM).toHaveBeenCalled();
+  });
+
+  it('a pot-scoped agent_slot set bypasses the refusal even with no hive (potSlug disambiguates directly)', async () => {
+    const r = await delegateResource(
+      {
+        workspaceId: 'w',
+        potSlug: 'my-pot',
+        audience: 'whole-pot',
+        kind: 'agent_slot',
+        model: 'm',
+        effort: 'high',
+        count: 1,
+      },
+      { resolveScopeOverride: many },
+    );
+    expect(r).toMatchObject({ ok: true, action: 'set' });
+    expect(setM).toHaveBeenCalled();
+  });
+
+  it('a single-shared-hive workspace proceeds without requiring `hive`', async () => {
+    const r = await delegateResource(
+      { workspaceId: 'w', fleetSlug: 'x', kind: 'agent_slot', model: 'm', effort: 'high', count: 1 },
+      { resolveScopeOverride: one },
+    );
+    expect(r).toMatchObject({ ok: true, action: 'set' });
+    expect(setM).toHaveBeenCalled();
+  });
+
+  it('a zero-shared-hive workspace stays fail-SOFT (proceeds) — a single-machine box must still delegate', async () => {
+    const r = await delegateResource(
+      { workspaceId: 'w', fleetSlug: 'x', kind: 'agent_slot', model: 'm', effort: 'high', count: 1 },
+      { resolveScopeOverride: none },
+    );
+    expect(r).toMatchObject({ ok: true, action: 'set' });
+    expect(setM).toHaveBeenCalled();
+  });
+
+  it('remove:true bypasses the refusal entirely (revoking must never require disambiguation)', async () => {
+    const r = await delegateResource(
+      { workspaceId: 'w', fleetSlug: 'x', kind: 'agent_slot', model: 'm', effort: 'high', remove: true },
+      { resolveScopeOverride: many },
+    );
+    expect(r).toEqual({ ok: true, action: 'remove', removed: 1 });
+  });
+
+  it('account/gpu kinds are never subject to the hive-ambiguity check', async () => {
+    const r = await delegateResource(
+      { workspaceId: 'w', fleetSlug: 'x', kind: 'account', ref: 'pool-main', sharePct: 10 },
+      { resolveScopeOverride: many },
+    );
+    expect(r).toMatchObject({ ok: true, action: 'set' });
+    expect(setM).toHaveBeenCalled();
+  });
+});
+
 describe('delegateResource — remove (the /res chip ×)', () => {
   it('agent_slot remove keys on the derived slot ref; explicit ref wins', async () => {
     const r = await delegateResource({ workspaceId: 'w', fleetSlug: 'x', kind: 'agent_slot', model: 'opus', effort: 'xhigh', remove: true });
