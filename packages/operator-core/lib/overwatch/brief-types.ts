@@ -517,7 +517,13 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
       'exact string as `coord:escalate`\'s `conditionKey` argument — it coalesces repeated firings ' +
       'of the SAME recurring condition onto one row instead of leaking a new open escalation every ' +
       'wake (EI-13557: a re-filed advisory whose summary embeds a live count is the classic way this ' +
-      'goes wrong — put any count/duration in `body`, never in `summary`, when a conditionKey is shown).',
+      'goes wrong — put any count/duration in `body`, never in `summary`, when a conditionKey is shown). ' +
+      'The SAME `[conditionKey: …]` also belongs on `improvements:capture`\'s `conditionKey` argument for ' +
+      'the observation you record for this anomaly — whether that observation IS the suggested action ' +
+      '(OBSERVE) or is the companion observation D-003 has you drop alongside a NUDGE/ESCALATE: pass it and a ' +
+      'still-open prior observation of the SAME condition is updated in place (repeatCount bumped) instead of ' +
+      'minting a fresh open work-item every wake (EI-15448 — this is exactly how the escalation-aging drift ' +
+      'flooded the backlog with 7,000+ near-identical open items even though its ESCALATE side coalesced fine).',
   );
 
   if (brief.wokeBy && brief.wokeBy.trim()) {

@@ -30,14 +30,14 @@ function unhealthyBrief(): OverwatchBrief {
         severity: 'info',
         subject: 'observation lane',
         detail: 'lane flat 40m while 4 bees run',
-        suggestedAction: { type: 'observe', message: 'observation lane flat while the fleet is active' },
+        suggestedAction: { type: 'observe', conditionKey: 'overwatch:observation-dark', message: 'observation lane flat while the fleet is active' },
       },
       {
         kind: 'queen-stalled',
         severity: 'critical',
         subject: 'mug',
         detail: 'last woke 47m ago (cadence 10m)',
-        suggestedAction: { type: 'nudge', target: 'mug', message: 'you have stalled past your cadence — wake and clear recoveries' },
+        suggestedAction: { type: 'nudge', target: 'mug', conditionKey: 'overwatch:queen-stalled', message: 'you have stalled past your cadence — wake and clear recoveries' },
       },
       {
         kind: 'token-paused',
@@ -58,18 +58,19 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   assert.match(out, /you never re-place work — that is the Mug/);
   // EI-13557: the intro now teaches the conditionKey contract explicitly.
   assert.match(out, /you MUST pass that\s+exact string as `coord:escalate`'s `conditionKey` argument/);
+  // EI-15448: the intro also teaches the observation-side coalescing contract.
+  assert.match(out, /also belongs on `improvements:capture`'s `conditionKey` argument/);
   assert.match(out, /\*\*Woke by:\*\* timer/);
 
   // Anomalies section + all three lines, with the action verb + target + message.
   assert.match(out, /### Anomalies — detected this wake \(act on these\)/);
-  assert.match(out, /\[critical\] queen-stalled — mug: last woke 47m ago \(cadence 10m\) → NUDGE mug: you have stalled/);
+  // EI-15448: a nudge/observe line carrying a conditionKey now surfaces it too (the
+  // D-003 companion-observation coalescing key, not just escalate's own arg).
+  assert.match(out, /\[critical\] queen-stalled — mug: last woke 47m ago \(cadence 10m\) → NUDGE mug \[conditionKey: overwatch:queen-stalled\]: you have stalled/);
   // EI-13557: the escalate line surfaces the conditionKey explicitly (before the
   // message) so the agent copies it verbatim into coord:escalate's conditionKey arg.
   assert.match(out, /\[warning\] token-paused — opus bucket: paused on RPM saturation → ESCALATE owner \[conditionKey: overwatch:token-paused\]: opus bucket paused/);
-  // A nudge/observe line never carries a conditionKey annotation (escalate-only).
-  assert.doesNotMatch(out, /NUDGE mug \[conditionKey/);
-  assert.doesNotMatch(out, /OBSERVE \[conditionKey/);
-  assert.match(out, /\[info\] observation-dark — observation lane: lane flat 40m while 4 bees run → OBSERVE: observation lane flat/);
+  assert.match(out, /\[info\] observation-dark — observation lane: lane flat 40m while 4 bees run → OBSERVE \[conditionKey: overwatch:observation-dark\]: observation lane flat/);
 
   // Health panels — one line each, every field surfaced.
   assert.match(out, /### Mug\n- last woke 2026-06-15T01:00:00Z \[STALLED\] · cadence OFF · driving 3 placement\(s\) · next unscheduled/);
