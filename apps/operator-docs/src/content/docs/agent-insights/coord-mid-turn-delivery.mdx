@@ -81,7 +81,7 @@ nudges are an *optimization*; the wake + escalation-ladder legs are the
 
 | Backend | Native background primitive | Semantics | Nudge |
 | --- | --- | --- | --- |
-| **Claude Code** | `Bash { run_in_background: true }` | **Same session** — the command detaches, the agent keeps taking turns, and the harness re-invokes the SAME session when it exits. No delegation, no context loss. | `pretooluse-bash-resource-gate.sh` emits a **soft advisory** (`permissionDecision:'allow'` + `additionalContext`) when a foreground `Bash` explicitly requests `timeout > 120s`. Never a deny. |
+| **Claude Code** | `Bash { run_in_background: true }` | **Same session** — the command detaches, the agent keeps taking turns, and the harness re-invokes the SAME session when it exits. No delegation, no context loss. ⚠️ "same session" here means the same *live OS process*, taking its own next turn — see the Gotchas entry below, this does **not** cover a loop/carry process-respawn boundary. | `pretooluse-bash-resource-gate.sh` emits a **soft advisory** (`permissionDecision:'allow'` + `additionalContext`) when a foreground `Bash` explicitly requests `timeout > 120s`. Never a deny. |
 | **OMP** | its `job` primitive | detached job, same session observes completion | OMP's own hook surface (`coord-hook.ts`), **not** the shell gate — do not add a CC-shaped nudge for it there. |
 | **Codex** | **none** in our integration | — | **No nudge.** The gate deliberately skips `exec_command`/`local_shell`/`shell`; advising a primitive the backend lacks is worse than silence. Covered by the wake + ladder legs. |
 | any backend, last resort | `capability:bash { run_in_background } → capability:bash_output` | server-side detach — backend-agnostic but dies on operator restart (`stranded_by_operator_restart`) and adds operator load | fallback only, never the default (plan decision D-002). |
@@ -135,6 +135,19 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
 
 ## Gotchas
 
+- **A native `run_in_background` task does NOT survive a loop/carry process
+  respawn**, even though the row above says backgrounding is "same session."
+  That claim covers the ordinary continuous-turn case only. A **cold**-carry
+  loop wake, a **warm** loop wake that lands on the "process exited →
+  `claude --resume`" ladder rung, or a compaction carry-respawn/recycle all
+  replace the underlying OS process — the native task registry lives in that
+  process's own memory, so it's gone even though the *logical* session
+  continues. Never checkpoint `"await background task <id>"` as a loop's next
+  action; foreground the work instead, or use `capability:bash` (operator-
+  process-owned, reattachable) if it must outlive a wake boundary. Full
+  writeup:
+  [cold-loop-wake kills native background Bash tasks](/internal/docs/agent-insights/cold-loop-wake-kills-native-background-bash-tasks)
+  (EI-16611).
 - **No MCP `tools/list_changed`** is emitted, so a tool-surface change (add/remove
   a verb) leaves *running* agent sessions with a **stale cached catalog** until
   they relaunch. New sessions are correct.

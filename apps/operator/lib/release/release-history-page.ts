@@ -422,19 +422,25 @@ function renderArtifacts(artifacts: ReleaseArtifact[]): string {
     return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
   }
 
-  // The Server build is a real published artifact, and it is NOT what a beta
-  // tester wants — they want the GUI installer. It gets a footnote, not a row in
-  // the main table, and specifically not silence: dropping it entirely would make
-  // this page's account of what shipped quietly incomplete, which is the same
-  // class of half-truth as a manifest that advertises a file that isn't there.
+  // Papercusp Server is the backend (operator + embedded database). Its
+  // relationship to the GUI is PLATFORM-DEPENDENT, and getting this wrong strands
+  // a mac/Windows tester with an app that won't start:
+  //   • Linux  — the GUI self-hosts its own backend, so the GUI installer alone
+  //              works; the Server is OPTIONAL (headless / agents without the GUI).
+  //   • macOS + Windows — the GUI has NO built-in backend; it launches the separate
+  //              Papercusp Server and FATALS without it. So a mac/Win user needs BOTH.
+  // The old note ("the headless server build — you want the GUI") was true only on
+  // Linux and misleading everywhere else. State the requirement plainly.
   const serverNote =
     server.length > 0
-      ? `\n<p class="n">Also published: ${server
+      ? `\n<p class="n"><strong>Papercusp Server</strong> — ${server
           .map(
             (a) =>
               `<a href="${escapeHtml(a.url)}">${escapeHtml(a.name)}</a> (${escapeHtml(formatBytes(a.size))})`,
           )
-          .join(', ')} — the headless server build. If you're testing the app, you want the installer above.</p>`
+          .join(
+            ', ',
+          )} — is the backend (operator + embedded database). <strong>On Linux</strong> the GUI installer above already includes its own backend, so it runs on its own and the Server is optional (only needed to keep agents running with the GUI closed). <strong>On macOS &amp; Windows</strong> the GUI needs the Server installed alongside it — install <strong>both</strong>, or the app can't start its backend.</p>`
       : '';
 
   if (desktop.length === 0 && mobile.length === 0) {

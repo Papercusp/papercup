@@ -282,23 +282,45 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
   },
 ];
 
+const DEFAULT_OWNER: RuntimeOwnership = {
+  host: 'operator-release',
+  releasePipelineApplies: true,
+  restartTarget: 'staging',
+  activation:
+    'Served by the operator. The green pipeline carries it to the live :3070 operator (release checkout) — or restart the staging host to exercise it NOW on :3170: dev:restart { target: "staging", confirm: true }.',
+};
+
+/**
+ * ALL processes that run this path — a path can have more than one consumer
+ * on DIFFERENT activation routes (WI-5440: e.g. a file read by both a
+ * bg-host-only routine AND an operator-served MCP tool). Returns the full
+ * list, always in the order declared on `RUNTIME_OWNERS` (single-owner paths
+ * — the overwhelming majority — get a 1-element array). `null` when we cannot
+ * tell (a sha-only probe), which conservatively keeps the default
+ * release-pipeline reading.
+ */
+export function classifyRuntimeOwners(relPath: string | null | undefined): RuntimeOwnership[] | null {
+  if (!relPath) return null;
+  const p = relPath.replace(/^\.?\//, '');
+  const hit = RUNTIME_OWNERS.find((r) => r.match.test(p));
+  if (hit) return Array.isArray(hit.own) ? hit.own : [hit.own];
+  return [DEFAULT_OWNER];
+}
+
 /**
  * Which process runs this path — and therefore whether the release pipeline is
  * the activation path for it at all. `null` when we cannot tell (a sha-only
  * probe), which conservatively keeps the default release-pipeline reading.
+ *
+ * EI-16183/WI-5440: this collapses to the FIRST-declared owner and so hides
+ * any second consumer a path may have — kept only for callers that
+ * genuinely want a single best-guess answer (and for back-compat). Prefer
+ * `classifyRuntimeOwners` (plural) for anything that acts on the result,
+ * so a dual-owner path is never silently routed as single-owner.
  */
 export function classifyRuntimeOwner(relPath: string | null | undefined): RuntimeOwnership | null {
-  if (!relPath) return null;
-  const p = relPath.replace(/^\.?\//, '');
-  const hit = RUNTIME_OWNERS.find((r) => r.match.test(p));
-  if (hit) return hit.own;
-  return {
-    host: 'operator-release',
-    releasePipelineApplies: true,
-    restartTarget: 'staging',
-    activation:
-      'Served by the operator. The green pipeline carries it to the live :3070 operator (release checkout) — or restart the staging host to exercise it NOW on :3170: dev:restart { target: "staging", confirm: true }.',
-  };
+  const owners = classifyRuntimeOwners(relPath);
+  return owners ? owners[0] : null;
 }
 
 /**
@@ -377,9 +399,18 @@ export interface PipelinePosition {
   /**
    * EI-10895: which process actually RUNS this path, and therefore whether the
    * staging→main→:3070 pipeline is its activation path at all. `null` for a
-   * sha-only probe (no path to classify).
+   * sha-only probe (no path to classify). This is `runtimes[0]` — kept for
+   * back-compat; a dual-consumer path (WI-5440) is fully described only in
+   * `runtimes`, never in this single field.
    */
   runtime: RuntimeOwnership | null;
+  /**
+   * WI-5440: ALL processes that run this path (usually 1). When this has more
+   * than one entry, the path has genuinely distinct consumers on different
+   * activation routes — a single `runtime`/`activation` answer would be
+   * WRONG for at least one of them. `null` for a sha-only probe.
+   */
+  runtimes: RuntimeOwnership[] | null;
   /** One human-readable line. */
   summary: string;
   notes: string[];
@@ -410,6 +441,15 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   }
   const subj = p.targetSubject ? ` "${p.targetSubject.slice(0, 60)}"` : '';
   const dirty = p.dirtyUncommitted ? ' ⚠ +uncommitted edits' : '';
+
+  // WI-5440: a path with MULTIPLE consumers on different activation routes —
+  // naming only one (the old single-`runtime` behavior) can confidently route
+  // an activation decision the WRONG way for whichever consumer isn't named.
+  // Lead with the split itself; per-consumer detail lives in `runtimes`.
+  if (p.runtimes && p.runtimes.length > 1) {
+    const hosts = p.runtimes.map((r) => r.host).join(' + ');
+    return `${label} @${p.targetShortSha}${subj}: MULTIPLE CONSUMERS on different activation routes (${hosts}) — see \`runtimes\` for each one's own host + activation; do not assume a single deploy or restart activates ALL of them.${dirty}`;
+  }
 
   // EI-10895: for a path the release pipeline does NOT carry, the deploy ticks are
   // not just noise — a `deployed ✗` reads as "still stuck in the pipeline" and sends
@@ -549,7 +589,15 @@ export async function gitPipelinePosition(
   // EI-10895: classify against the SUPERPROJECT-relative path (a submodule path is
   // resolved inside its own repo above, but the runtime map keys on the repo-relative
   // path the caller passed).
-  const runtime = classifyRuntimeOwner(inp.path ?? null);
+  const runtimes = classifyRuntimeOwners(inp.path ?? null);
+  const runtime = runtimes ? runtimes[0] : null;
+  if (runtimes && runtimes.length > 1) {
+    notes.push(
+      `This path has ${runtimes.length} distinct consumers on DIFFERENT activation routes (${runtimes
+        .map((r) => r.host)
+        .join(' + ')}) — see \`runtimes\` for each one's own host/activation; do not act on \`runtime\`/\`activation\` alone.`,
+    );
+  }
   const caveat = runtime?.releasePipelineApplies ? sharedHostCaveat(inp.path ?? null) : null;
   if (caveat) notes.push(caveat);
 
@@ -567,6 +615,7 @@ export async function gitPipelinePosition(
     gate,
     gitSyncLastStatus: snap.gitSync.lastStatus,
     runtime,
+    runtimes,
     notes,
   };
   return { ...base, summary: summarizePosition(base) };

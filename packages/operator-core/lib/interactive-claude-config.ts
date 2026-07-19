@@ -668,6 +668,84 @@ export function ensureOnboardingComplete(home: string): boolean {
   }
 }
 
+/**
+ * Ensure `~/.claude.json`'s per-PROJECT trust entry for `cwd` has every flag
+ * that gates an INTERACTIVE prompt already pre-accepted, so a HEADLESS launch
+ * into a cwd claude has never opened before cannot wedge on a TTY prompt
+ * nobody is there to answer.
+ *
+ * EI-16574: a brand-new clone (`pot:create_from_repo` → a cwd claude has never
+ * opened) has no `projects[cwd]` entry at all. The user-level CLAUDE.md's
+ * external `@`-import (`@~/.papercusp/compaction-strategy.md`) then trips the
+ * "Allow external CLAUDE.md file imports?" TTY prompt — gated behind
+ * `hasClaudeMdExternalIncludesApproved` on that PROJECT'S entry, not the
+ * GLOBAL `hasCompletedOnboarding` flag `ensureOnboardingComplete` above
+ * already repairs (a genuinely separate gate, keyed per-cwd). A headless
+ * member has nobody to answer it: it hangs FOREVER, holding a fleet slot,
+ * with zero error surfaced — `fleet:launch-on-plan` reports the member as
+ * launched (a durable join event is NOT liveness).
+ *
+ * Belt-and-braces: also pre-accept `hasTrustDialogAccepted` (the sibling
+ * "Do you trust the files in this folder?" prompt) — any interactive-only
+ * gate on a brand-new project directory is the same hang by a different
+ * door, and this function is only ever reached from an automated psu launch
+ * (never a plain human `claude` invocation), so pre-accepting every
+ * per-project gate here is always correct, not a UX shortcut taken on
+ * someone's behalf.
+ *
+ * Touches ONLY `projects[cwd]`'s trust keys — merges into whatever entry
+ * already exists (never clobbers that project's `mcpServers`/history/metrics
+ * on an already-trusted cwd); atomic (temp + rename — the file is hot, many
+ * live sessions write it); idempotent (no-ops once every flag already reads
+ * true); fail-open (a launch must never die on a repair hiccup).
+ */
+export function ensureProjectTrust(home: string, cwd: string): boolean {
+  const path = join(home, '.claude.json');
+  const trustFlags = {
+    hasTrustDialogAccepted: true,
+    hasClaudeMdExternalIncludesApproved: true,
+    hasClaudeMdExternalIncludesWarningShown: true,
+    hasCompletedProjectOnboarding: true,
+  };
+  try {
+    if (!existsSync(path)) {
+      // Mirrors ensureOnboardingComplete's WI-4431 leg: a box with no global
+      // config yet still needs THIS launch's cwd pre-trusted, not just the
+      // global onboarding flag.
+      writeFileSync(
+        path,
+        JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { ...trustFlags } } }, null, 2),
+        { mode: 0o600 },
+      );
+      return true;
+    }
+    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    if (!cfg || typeof cfg !== 'object') return false;
+    const projects = (cfg.projects && typeof cfg.projects === 'object' ? cfg.projects : {}) as Record<
+      string,
+      unknown
+    >;
+    const existing = (projects[cwd] && typeof projects[cwd] === 'object' ? projects[cwd] : {}) as Record<
+      string,
+      unknown
+    >;
+    const alreadyTrusted =
+      existing.hasTrustDialogAccepted === true &&
+      existing.hasClaudeMdExternalIncludesApproved === true &&
+      existing.hasClaudeMdExternalIncludesWarningShown === true &&
+      existing.hasCompletedProjectOnboarding === true;
+    if (alreadyTrusted) return false;
+    projects[cwd] = { ...existing, ...trustFlags };
+    cfg.projects = projects;
+    const tmp = `${path}.psu-project-trust.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false; // a wizard-blocked session is louder than a failed repair
+  }
+}
+
 /** True if a path already exists as a real file/dir OR as a (possibly dangling)
  *  symlink — `existsSync` returns false for a dangling link, but on resume we
  *  must still treat an existing link as "leave it". */
@@ -724,6 +802,16 @@ export function writeInteractiveClaudeConfig(opts: {
    * session can disclose its degraded psu tracking.
    */
   recovery?: { playbookPath?: string | null; nativeSessionId?: string | null };
+  /**
+   * EI-16574: the cwd the claude child is about to launch in. When given,
+   * `ensureProjectTrust` pre-accepts that cwd's per-project trust flags
+   * (external-CLAUDE.md-imports + trust-dialog) BEFORE the mirror below
+   * symlinks `.claude.json` in — otherwise a brand-new cwd (no prior
+   * `projects[cwd]` entry) can wedge a HEADLESS launch forever on a TTY
+   * prompt nobody is there to answer. Omit only for a launch whose cwd is
+   * already known-trusted (e.g. a resume into an existing session's cwd).
+   */
+  cwd?: string;
 }): InteractiveClaudeConfig {
   const home = opts.home ?? homedir();
   const configDir = sessionClaudeConfigDir(opts.sid);

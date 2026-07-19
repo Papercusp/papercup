@@ -151,6 +151,36 @@ describe('agentProducedTurn — capacity_shed vs infra_loss classification (P-00
     const r = agentProducedTurn(body, 'h/queen', { gatewayThrottled: true });
     expect(r.failureClass).toBe('infra_loss');
   });
+
+  // EI-16502: the outer-process activity-heartbeat marker (invoke.ts
+  // `echoActivityToOuterProcess`, WI-3302) is echoed to the SAME stderr the
+  // capacity_shed fingerprint inspects. Before the fix, ANY stderr consisting
+  // only of that marker defeated `stderr === ''` and silently forced a genuine
+  // capacity-shed death to misclassify as infra_loss.
+  it('capacity_shed still fires when stderr is ONLY repeated activity-heartbeat marker lines', () => {
+    const body = JSON.stringify({
+      ok: false,
+      exitCode: 1,
+      timedOut: false,
+      stderr: '[papercusp:activity]\n'.repeat(50),
+      agentOutput: 'I will check…',
+    });
+    const r = agentProducedTurn(body, 'h/queen', { gatewayThrottled: true });
+    expect(r.failureClass).toBe('capacity_shed');
+    expect(r.detail).toContain('RETRYABLE');
+  });
+
+  it('infra_loss (real crash) still wins when stderr has heartbeat noise PLUS a real trail', () => {
+    const body = JSON.stringify({
+      ok: false,
+      exitCode: 1,
+      timedOut: false,
+      stderr: '[papercusp:activity]\n[papercusp:activity]\nSegmentation fault\n[papercusp:activity]\n',
+      agentOutput: '',
+    });
+    const r = agentProducedTurn(body, 'h/queen', { gatewayThrottled: true });
+    expect(r.failureClass).toBe('infra_loss');
+  });
 });
 
 // B3 / autonomous-loop-hardening F1 — a "Prompt is too long" death (B1: overwatch launched
@@ -231,5 +261,43 @@ describe('agentProducedTurn — context_overflow (prompt-too-long) classificatio
       'papercusp/overwatch',
     );
     expect(r.failureClass).toBe('infra_loss');
+  });
+
+  // EI-16502: a real diagnostic (auth/usage/context signature) landing in
+  // rawStdoutTail must still classify correctly even when stderr is nothing
+  // but the activity-heartbeat marker — the marker must not crowd it out nor
+  // itself get matched as "content".
+  it('a real auth_error signature in rawStdoutTail is not masked by heartbeat-only stderr', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '[papercusp:activity]\n[papercusp:activity]\n',
+        agentOutput: '',
+        rawStdoutTail: 'unexpected status 401 Unauthorized: auth error code: invalid_api_key',
+      }),
+      'papercusp/queen',
+    );
+    expect(r.failureClass).toBe('auth_error');
+  });
+
+  // Marker-only stderr AND rawStdoutTail, with no other diagnostic at all — the
+  // genuinely-silent-death case must fall through cleanly to infra_loss (not
+  // 'other'/misclassified), with the persisted detail carrying no marker noise.
+  it('falls through cleanly to infra_loss when BOTH stderr and rawStdoutTail are heartbeat-only noise', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '[papercusp:activity]\n'.repeat(20),
+        agentOutput: '',
+        rawStdoutTail: '[papercusp:activity]\n'.repeat(20),
+      }),
+      'papercusp/cup',
+    );
+    expect(r.failureClass).toBe('infra_loss');
+    expect(r.detail).not.toContain('papercusp:activity');
   });
 });

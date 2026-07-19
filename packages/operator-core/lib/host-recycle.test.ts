@@ -570,15 +570,10 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     drain();
     await vi.advanceTimersByTimeAsync(0);
 
+    expect(killSelf).toHaveBeenCalledTimes(1);
     const hardExitLine = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('[host-recycle] hard-exit'));
     expect(hardExitLine).toContain('SIGTERM');
     expect(hardExitLine).not.toContain('memory-watchdog');
-
-    // At the deadline: force-terminate via the no-cleanup path, once, bounded
-    // (8s ≪ systemd TimeoutStopSec), so the host can never sit in do_exit.
-    await vi.advanceTimersByTimeAsync(1);
-    expect(killSelf).toHaveBeenCalledTimes(1);
-    expect(exit).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 });

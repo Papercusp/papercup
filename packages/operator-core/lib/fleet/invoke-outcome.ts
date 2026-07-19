@@ -223,7 +223,7 @@ export function agentProducedTurn(
   // BOTH the body fingerprint AND the live gateway-throttled corroboration are required
   // — never relabel on one signal alone (the never-flip-on-uncertainty contract).
   const exitCode = typeof b.exitCode === 'number' ? b.exitCode : null;
-  const stderr = typeof b.stderr === 'string' ? b.stderr : '';
+  const stderr = stripActivityHeartbeat(typeof b.stderr === 'string' ? b.stderr : '');
   const midTurnCleanExit = exitCode === 1 && b.timedOut !== true && stderr.trim().length === 0;
   if (midTurnCleanExit && opts.gatewayThrottled === true) {
     return {

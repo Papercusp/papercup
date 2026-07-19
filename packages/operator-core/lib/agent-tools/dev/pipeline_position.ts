@@ -17,7 +17,7 @@ export default defineTool({
   name: 'dev:pipeline_position',
   profile: 'engineer',
   description:
-    '"Is my edit live YET — and what actually makes it live?" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE, so a deploy NEVER carries their code — the edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy.',
+    '"Is my edit live YET — and what actually makes it live?" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE, so a deploy NEVER carries their code — the edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy. A FEW paths have two genuinely distinct consumers on different routes (e.g. read by both a bg-host routine AND an operator-served tool) — for those you get `activations` (plural, one per consumer) instead of a single `activation`; check the one matching the consumer you actually care about.',
   capability: 'intel:read',
   guidance: {
     when: 'After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.',
@@ -47,6 +47,38 @@ export default defineTool({
       return { data: { error: 'Provide a path or a sha.' } };
     }
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha });
+
+    // WI-5440: a path can have MORE THAN ONE consumer on DIFFERENT activation
+    // routes (e.g. a file read by both a bg-host-only routine and an
+    // operator-served MCP tool) — collapsing to a single `activation` block
+    // confidently routes the activation decision the WRONG way for whichever
+    // consumer isn't named. When `runtimes` has more than one entry, return
+    // one activation per consumer instead of picking one.
+    const runtimes = result.runtimes;
+    if (runtimes && runtimes.length > 1) {
+      const anyReleaseCarried = runtimes.some((r) => r.releasePipelineApplies);
+      return {
+        data: {
+          ...result,
+          activations: runtimes.map((r) => ({
+            hint: r.activation,
+            host: r.host,
+            releasePipelineApplies: r.releasePipelineApplies,
+            ...(r.restartTarget ? { tool: 'dev:restart', args: { target: r.restartTarget, confirm: true } } : {}),
+          })),
+          note: anyReleaseCarried
+            ? `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
+                .map((r) => r.host)
+                .join(' + ')}) — at least one of them (${runtimes
+                .filter((r) => r.releasePipelineApplies)
+                .map((r) => r.host)
+                .join(', ')}) genuinely needs the deploy pipeline, so do NOT blanket-skip deploy:await; check each entry in \`activations\` against which consumer you actually care about before picking a route.`
+            : `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
+                .map((r) => r.host)
+                .join(' + ')}), none carried by the release pipeline — do NOT deploy:await; pick the restart matching the consumer you care about from \`activations\`.`,
+        },
+      };
+    }
 
     // EI-10895: the `awaitable` below is only TRUE ADVICE for code the release
     // pipeline actually carries. For a staging-tree tsx host (gateway / bg-host /
