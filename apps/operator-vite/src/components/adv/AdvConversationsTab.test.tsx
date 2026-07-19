@@ -615,11 +615,17 @@ describe('AdvConversationsTab — unified communication views', () => {
       created_at: Date.now() - 120_000, archived_at: null, total_input_tokens: 0, total_output_tokens: 0,
       total_cost_usd_cents: 0, turns: 6,
     }]);
-    render(<AdvConversationsTab />);
-    expect(screen.getByText('Questions & discussions')).toBeTruthy();
-    expect(screen.getByText('Group decisions')).toBeTruthy();
-    expect(screen.getByText('Agent chat')).toBeTruthy();
-    expect(screen.getByText('Work-item mail')).toBeTruthy();
+    const { container } = render(<AdvConversationsTab />);
+    // Each communication type shows as a kind PILL in the list. (The always-
+    // visible facet filter chips also carry these labels now, so scope the
+    // assertion to the list pills rather than a whole-document text match.)
+    const kindPills = Array.from(
+      container.querySelectorAll('.pc-advconv__unified-kind'),
+    ).map((el) => el.textContent);
+    expect(kindPills).toContain('Questions & discussions');
+    expect(kindPills).toContain('Group decisions');
+    expect(kindPills).toContain('Agent chat');
+    expect(kindPills).toContain('Work-item mail');
     expect(screen.queryByRole('tab', { name: /Agent chats/i })).toBeNull();
     expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
   });

@@ -63,6 +63,15 @@ export function watchdogStaleSec(): number {
   return Number.isFinite(n) && n >= 30 ? n : 900;
 }
 
+/** EI-16038: the ceiling a geometrically-backed-off debounce window may grow to for a
+ *  chronically-repeating (source,reason) premise — a stuck alarm still surfaces at least
+ *  this often (never falls silent forever), but never faster than this once it has
+ *  demonstrably been re-firing on an UNCHANGED premise. Default 24h; env-tunable. */
+export function watchdogBackoffCapHours(): number {
+  const n = Number(process.env.PAPERCUSP_WATCHDOG_BACKOFF_CAP_HOURS ?? 24);
+  return Number.isFinite(n) && n > 0 ? n : 24;
+}
+
 /** Validate the install dimension before a watchdog acts on persisted state.
  * The workspace papercup is synthetic by design; every other slug must still
  * be a registered Pot. A registry read failure is unknown, not proof of a
@@ -255,15 +264,18 @@ export async function recordFire(opts: {
   reason: string;
   wakeAt: Date | null;
   demand?: PotDemand | null;
+  /** repeat_count to persist on this row (default 1 — a fresh, non-backoff-tracked fire). */
+  repeatCount?: number;
 }): Promise<void> {
   try {
     const { sql } = getOrgPg();
     await sql`
       INSERT INTO harness_shared.pot_watchdog_fires
-        (workspace_id, install_slug, source, reason, wake_at, demand)
+        (workspace_id, install_slug, source, reason, wake_at, demand, repeat_count)
       VALUES (
         ${opts.workspaceId}, ${opts.installSlug}, ${opts.source}, ${opts.reason},
-        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::text::jsonb
+        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::text::jsonb,
+        ${opts.repeatCount ?? 1}
       )`;
   } catch (e) {
     // Observability must never break the arm (or boot) — mig 212 may be pending.
@@ -271,13 +283,89 @@ export async function recordFire(opts: {
   }
 }
 
+// ── EI-16038: generalized geometric backoff on an unchanged (source,reason) premise ──
+//
+// 1,603 recorded fires that armed no wake spanned only 589 distinct (source,reason)
+// premises — 69.8% exact repeats, with single objects (one stuck scout draft, one
+// itemless ratified plan, one turn-after-turn missing scorecard) re-firing hundreds of
+// times at a FIXED cadence over weeks because the debounce window a caller passes is
+// static: once a fire lands, the NEXT identical fire is permitted the instant
+// `windowHours` elapses, forever, regardless of how many times it has already repeated.
+//
+// `computeWatchdogBackoff` is the pure decision this generalizes to every source: when
+// the current `reason` exactly matches the LAST recorded fire's reason for this
+// (workspace, install, source) key, the required quiet window doubles per consecutive
+// repeat (capped — see watchdogBackoffCapHours) instead of staying fixed at the caller's
+// base window. A CHANGED reason (the premise genuinely moved — a different draft, a
+// grown/shrunk count, a new oldest-stale timestamp bucket) resets the streak and fires
+// immediately, exactly like today — this only suppresses a alarm that is, byte for byte,
+// still complaining about the same unresolved thing it complained about last time.
+
+export interface WatchdogBackoffLast {
+  reason: string;
+  firedAtMs: number;
+  /** repeat_count stamped on that last row (1 = it was itself a fresh/reset fire). */
+  repeatCount: number;
+}
+
+export interface WatchdogBackoffDecision {
+  /** true = suppress: unchanged premise, still within its (possibly grown) window. */
+  skip: boolean;
+  /** repeat_count the caller should persist if it proceeds (1 = fresh/reset premise). */
+  repeatCount: number;
+  /** the debounce window (hours) actually applied this decision. */
+  effectiveWindowHours: number;
+}
+
+/** PURE (no DB, no clock — `now` is an arg): decide whether an unchanged premise should
+ *  still be suppressed under geometric backoff. `last` is the most recent fire recorded
+ *  for this exact (workspaceId, installSlug, source) key, or null if none exists yet. */
+export function computeWatchdogBackoff(args: {
+  now: number;
+  baseWindowHours: number;
+  capHours: number;
+  last: WatchdogBackoffLast | null;
+  reason: string;
+}): WatchdogBackoffDecision {
+  const baseWindowHours = Number.isFinite(args.baseWindowHours) && args.baseWindowHours > 0 ? args.baseWindowHours : 1;
+  if (!args.last || args.last.reason !== args.reason) {
+    // No prior fire, or the premise genuinely changed — never suppress a fresh signal;
+    // the streak resets to 1 (this fire, if it proceeds, is the new streak's first).
+    return { skip: false, repeatCount: 1, effectiveWindowHours: baseWindowHours };
+  }
+  const repeatCount = args.last.repeatCount + 1;
+  // Double the window per consecutive identical repeat, capped so a chronic stuck alarm
+  // still surfaces at least once per capHours rather than eventually falling silent.
+  // `- 1` on the exponent so the FIRST repeat (repeatCount=2) still uses baseWindowHours
+  // (a single re-confirmation isn't yet "chronic"); clamp the exponent itself so a
+  // years-long streak can't overflow `2 ** n` before the outer cap even applies.
+  const exponent = Math.min(Math.max(0, repeatCount - 2), 30);
+  const capHours = Number.isFinite(args.capHours) && args.capHours > 0 ? args.capHours : 24;
+  const effectiveWindowHours = Math.min(baseWindowHours * 2 ** exponent, Math.max(capHours, baseWindowHours));
+  const elapsedHours = (args.now - args.last.firedAtMs) / 3_600_000;
+  return { skip: elapsedHours < effectiveWindowHours, repeatCount, effectiveWindowHours };
+}
+
 /** Recent fallback-fire count — the "watchdog fired N times" health signal
- *  (P-012/D-004) surfaced in pot:status. */
+ *  (P-012/D-004) surfaced in pot:status.
+ *
+ *  `scopeKey` (EI-16071) narrows the debounce below the 3-part
+ *  (workspaceId, installSlug, source) key to a SUB-CONDITION sharing that
+ *  source — e.g. one rubricId among several release-gating rubrics sharing
+ *  source `'rubric-staleness'`. Without it, the FIRST stale sub-condition's
+ *  fire silently debounces every OTHER sub-condition sharing the source for
+ *  the rest of the window (coverage degrades to exactly one alert per
+ *  source per window, regardless of how many distinct things are stale).
+ *  Matched via a `reason LIKE '%scopeKey%'` substring match — callers must
+ *  embed the scope key verbatim in their fire `reason` (as the existing
+ *  rubric-staleness reasons already do, quoting the rubricId). Omitted ⇒
+ *  today's exact source-only behavior, unchanged. */
 export async function recentWatchdogFires(
   workspaceId: string,
   installSlug: string,
   windowHours = 24,
   source?: WatchdogSource,
+  scopeKey?: string,
 ): Promise<number> {
   try {
     const { sql } = getOrgPg();
@@ -285,7 +373,8 @@ export async function recentWatchdogFires(
       SELECT count(*)::int AS n FROM harness_shared.pot_watchdog_fires
       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
         AND fired_at > now() - make_interval(hours => ${windowHours})
-        AND ${source ? sql`source = ${source}` : sql`TRUE`}`;
+        AND ${source ? sql`source = ${source}` : sql`TRUE`}
+        AND ${scopeKey ? sql`reason LIKE ${`%${scopeKey}%`}` : sql`TRUE`}`;
     return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
   } catch {
     return 0; // mig 212 pending → no signal, not an error
@@ -336,19 +425,29 @@ export async function claimWatchdogFire(opts: {
   wakeAt: Date | null;
   demand?: PotDemand | null;
   windowHours?: number;
+  /** EI-16071: narrows both the advisory-lock key and the debounce check to a
+   *  SUB-CONDITION sharing `source` (mirrors `recentWatchdogFires`' `scopeKey`)
+   *  — e.g. one rubricId among several release-gating rubrics. Omitted ⇒
+   *  today's exact source-only behavior. Matched via `reason LIKE '%scopeKey%'`;
+   *  callers must embed the scope key verbatim in `reason`. */
+  scopeKey?: string;
 }): Promise<boolean> {
-  const { workspaceId, installSlug, source, windowHours = 24 } = opts;
+  const { workspaceId, installSlug, source, windowHours = 24, scopeKey } = opts;
   try {
     const { sql } = getOrgPg();
     return await sql.begin(async (tx) => {
-      // hashtextextended gives a stable 64-bit lock key from the 3-part
-      // debounce key; `0` (the salt arg) keeps it deterministic across calls.
-      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${workspaceId}::${installSlug}::${source}`}, 0))`;
+      // hashtextextended gives a stable 64-bit lock key from the debounce key;
+      // `0` (the salt arg) keeps it deterministic across calls. scopeKey (when
+      // present) is folded into the lock key too, so two distinct scoped
+      // conditions sharing (workspaceId, installSlug, source) never serialize
+      // on the same advisory lock.
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${workspaceId}::${installSlug}::${source}::${scopeKey ?? ''}`}, 0))`;
       const rows = await tx<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM harness_shared.pot_watchdog_fires
         WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
           AND fired_at > now() - make_interval(hours => ${windowHours})
-          AND source = ${source}`;
+          AND source = ${source}
+          AND ${scopeKey ? sql`reason LIKE ${`%${scopeKey}%`}` : sql`TRUE`}`;
       if (Number(rows[0]?.n ?? 0) > 0) return false;
       await tx`
         INSERT INTO harness_shared.pot_watchdog_fires

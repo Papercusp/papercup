@@ -6,11 +6,98 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   buildRunOpts,
   classifyArtifact,
+  computeReleaseCompleteness,
+  formatCompletenessAlert,
   releaseTag,
   scanArtifacts,
   scanMobileArtifactSources,
   scanMobileArtifacts,
 } from './record-release-cli';
+
+describe('computeReleaseCompleteness — every desktop product×platform, not just GUI (WI-5515)', () => {
+  const gui = (platform: string) => ({ product: 'gui' as const, platform });
+  const server = (platform: string) => ({ product: 'server' as const, platform });
+
+  it('flags a linux-only cut as missing mac + windows for BOTH gui and server', () => {
+    const { missing, complete } = computeReleaseCompleteness([
+      gui('linux-x86_64'),
+      server('linux-x86_64'),
+    ]);
+    expect(complete).toBe(false);
+    expect(missing).toEqual([
+      { product: 'gui', platform: 'darwin-universal' },
+      { product: 'gui', platform: 'windows-x86_64' },
+      { product: 'server', platform: 'darwin-universal' },
+      { product: 'server', platform: 'windows-x86_64' },
+    ]);
+  });
+
+  it('catches the exact gap the owner hit: full GUI + linux Server, but NO mac/windows Server', () => {
+    const { missing, complete } = computeReleaseCompleteness([
+      gui('linux-x86_64'),
+      gui('darwin-universal'),
+      gui('windows-x86_64'),
+      server('linux-x86_64'),
+    ]);
+    expect(complete).toBe(false);
+    // GUI is complete; the miss is Server on mac + windows — invisible to the old
+    // gui-only check.
+    expect(missing).toEqual([
+      { product: 'server', platform: 'darwin-universal' },
+      { product: 'server', platform: 'windows-x86_64' },
+    ]);
+  });
+
+  it('is complete only when both products cover all three desktop platforms', () => {
+    const { missing, complete } = computeReleaseCompleteness([
+      gui('linux-x86_64'),
+      gui('darwin-universal'),
+      gui('windows-x86_64'),
+      server('linux-x86_64'),
+      server('darwin-universal'),
+      server('windows-x86_64'),
+    ]);
+    expect(complete).toBe(true);
+    expect(missing).toEqual([]);
+  });
+
+  it('does NOT count mobile toward completeness (a desktop cut with no phone build is complete)', () => {
+    const { complete } = computeReleaseCompleteness([
+      gui('linux-x86_64'),
+      gui('darwin-universal'),
+      gui('windows-x86_64'),
+      server('linux-x86_64'),
+      server('darwin-universal'),
+      server('windows-x86_64'),
+      { product: 'mobile', platform: 'android-universal' },
+    ]);
+    expect(complete).toBe(true);
+  });
+
+  it('extra AppImage/deb on the same platform does not double-satisfy or break the check', () => {
+    // linux GUI ships BOTH deb and AppImage — same product×platform, still one slot.
+    const { missing } = computeReleaseCompleteness([gui('linux-x86_64'), gui('linux-x86_64')]);
+    expect(missing).toContainEqual({ product: 'server', platform: 'linux-x86_64' });
+  });
+});
+
+describe('formatCompletenessAlert — non-blocking, names every missing slot (WI-5515)', () => {
+  it('is empty when nothing is missing (a complete release prints no alert)', () => {
+    expect(formatCompletenessAlert('0.0.12', 'alpha', [])).toBe('');
+  });
+
+  it('names the version + each missing product/platform and says it is NOT a rejection', () => {
+    const alert = formatCompletenessAlert('0.0.12', 'alpha', [
+      { product: 'server', platform: 'darwin-universal' },
+      { product: 'server', platform: 'windows-x86_64' },
+    ]);
+    expect(alert).toContain('INCOMPLETE RELEASE: 0.0.12 (alpha)');
+    expect(alert).toContain('SERVER');
+    expect(alert).toContain('macOS (universal)');
+    expect(alert).toContain('Windows (x64)');
+    expect(alert).toContain('NOT a rejection');
+  });
+});
 
 describe('classifyArtifact — real filenames from real cuts, not invented ones', () => {
   it('maps the linux artifacts', () => {

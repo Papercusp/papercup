@@ -722,6 +722,10 @@ export async function regenerateOnly(scope: Scope, outDir: string): Promise<numb
   try {
     const { pages } = await generateSite(sql, scope, outDir);
     console.log(`[record-release] regenerated ${pages} page(s) → ${outDir}  (registry untouched)`);
+    // Fire the completeness alert on regenerate too (WI-5515): re-rendering the
+    // page after an incremental upload must still SURFACE what remains absent per
+    // version, so a partial release is never silently normalized. NON-BLOCKING.
+    await warnIncompleteReleases(sql, scope);
     return 0;
   } finally {
     await sql.end({ timeout: 5 });
