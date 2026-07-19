@@ -1,0 +1,47 @@
+import { describe, expect, it } from 'vitest';
+import { deriveRepoPathsFromText } from './_derive-paths';
+
+describe('deriveRepoPathsFromText (EI-16028)', () => {
+  it('extracts a single repo-relative path mentioned in prose', () => {
+    expect(deriveRepoPathsFromText('fix the bug in packages/operator-core/lib/foo.ts please')).toEqual([
+      'packages/operator-core/lib/foo.ts',
+    ]);
+  });
+
+  it('extracts multiple distinct paths across several prefixes, deduped, order-preserved', () => {
+    const text =
+      'root-caused in libs/papercusp/lib/bar.ts and mirrored in apps/operator/app/baz.tsx; ' +
+      'also touches packages/operator-core/lib/foo.ts again (packages/operator-core/lib/foo.ts).';
+    expect(deriveRepoPathsFromText(text)).toEqual([
+      'libs/papercusp/lib/bar.ts',
+      'apps/operator/app/baz.tsx',
+      'packages/operator-core/lib/foo.ts',
+    ]);
+  });
+
+  it('strips trailing prose punctuation (period, comma, colon, closing paren/quote)', () => {
+    expect(deriveRepoPathsFromText('see scripts/next-migration.mjs.')).toEqual(['scripts/next-migration.mjs']);
+    expect(deriveRepoPathsFromText('(scripts/next-migration.mjs)')).toEqual(['scripts/next-migration.mjs']);
+    expect(deriveRepoPathsFromText('scripts/next-migration.mjs, then re-run')).toEqual([
+      'scripts/next-migration.mjs',
+    ]);
+  });
+
+  it('returns empty for text with no repo-path mentions', () => {
+    expect(deriveRepoPathsFromText('the gateway is admission-starved, raise the ceiling')).toEqual([]);
+  });
+
+  it('returns empty for empty/undefined-ish text', () => {
+    expect(deriveRepoPathsFromText('')).toEqual([]);
+  });
+
+  it('ignores a bare prefix with nothing meaningful after it', () => {
+    expect(deriveRepoPathsFromText('somewhere under src/ we should look')).toEqual([]);
+  });
+
+  it('caps at the configured max (default 12)', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `packages/pkg${i}/lib/file.ts`).join(' ');
+    expect(deriveRepoPathsFromText(many)).toHaveLength(12);
+    expect(deriveRepoPathsFromText(many, { max: 3 })).toHaveLength(3);
+  });
+});

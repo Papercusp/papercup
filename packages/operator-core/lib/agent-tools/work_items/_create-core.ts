@@ -29,6 +29,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
+import { deriveRepoPathsFromText } from './_derive-paths';
 
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
@@ -253,6 +254,22 @@ export async function createOneWorkItem(
       routingHint && !(args.payload && 'routingHint' in args.payload)
         ? { ...(args.payload ?? {}), routingHint }
         : args.payload;
+    // EI-16028: the scheduler's live `affinity(bee.held_paths, item.paths)` rank term
+    // reads `payload.paths`, but that field is caller-supplied only — ~90% of
+    // work-items never set it, so affinity silently collapses to NEUTRAL for almost
+    // the entire claimable pool. Fall back to paths extracted from the item's own
+    // title/summary text ONLY when the caller supplied none explicitly (never
+    // overrides/clobbers an explicit — including explicit-empty — `payload.paths`).
+    const explicitPaths = Array.isArray(payloadWithHint?.paths)
+      ? (payloadWithHint.paths as unknown[]).filter((p): p is string => typeof p === 'string')
+      : undefined;
+    const payloadWithPaths =
+      explicitPaths === undefined
+        ? (() => {
+            const derived = deriveRepoPathsFromText(`${args.title}\n${args.summary ?? ''}`);
+            return derived.length > 0 ? { ...(payloadWithHint ?? {}), paths: derived } : payloadWithHint;
+          })()
+        : payloadWithHint;
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
@@ -262,7 +279,7 @@ export async function createOneWorkItem(
       severity: args.severity,
       parent: args.parent,
       topics: args.topics,
-      payload: payloadWithHint,
+      payload: payloadWithPaths,
       createdBy: ctx.ownerId,
       urgent: args.urgent,
       // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`

@@ -967,7 +967,7 @@ async function upsertPlacement(
       -- most recent recovery episode START), not an ephemeral "currently recovering"
       -- flag. It used to fall to NULL the instant status left 'recovering' (the ELSE
       -- NULL branch below, now removed) — but nothing in this codebase ever reads the
-      -- column outside a `status = 'recovering'` guard (evaluatePlacement's stale-recovery
+      -- column outside a status = 'recovering' guard (evaluatePlacement's stale-recovery
       -- check, soak-report's stale_recovering aggregate), so that NULL-on-exit served no
       -- functional purpose while making the column read NULL on effectively every
       -- placement (recoveries usually resolve within one sweep, so an analytical

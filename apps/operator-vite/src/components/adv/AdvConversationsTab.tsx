@@ -667,6 +667,7 @@ function UnifiedInboxView() {
               />
             </label>
             <ColumnFilterBar
+              layout="facets"
               controller={columnFilters.controller}
               activeChips={columnFilters.activeChips}
               hasActive={columnFilters.hasActive}
@@ -3295,6 +3296,14 @@ function AdvConvStyles() {
       .pc-advconv__unified-tools .pc-advpanel__filterbar {
         flex: 0 1 auto;
         min-width: 0;
+      }
+      /* facets layout: drop onto its own full-width line below the search, so
+         the always-visible facet chips have room to wrap. */
+      .pc-advconv__unified-tools .pc-advpanel__filterbar--facets {
+        flex: 1 1 100%;
+        padding: 2px 0 0;
+        row-gap: 6px;
+        column-gap: 10px;
       }
       .pc-advconv__unified-reset {
         flex: 0 0 auto;

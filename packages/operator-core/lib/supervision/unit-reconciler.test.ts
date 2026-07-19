@@ -7,6 +7,7 @@ import {
   parseSystemctlListUnits,
   parseSystemctlShowProperties,
   isUnitDown,
+  isAdministrativelyPaused,
   decideReconcile,
   initialFlapState,
   reconcileTick,
@@ -39,6 +40,15 @@ const REPORT_ONLY_ENTRY: SupervisionEntry = {
   unit: 'papercup-live-federation-gate',
   criticality: 'important',
   autoRestart: false,
+};
+
+// WI-5378: the actual entry whose auto-heal (WI-5376) fought a deliberate pause.
+const TIMER_ENTRY: SupervisionEntry = {
+  name: 'live-federation-gate-timer',
+  layer: 'systemd-user',
+  unit: 'papercup-live-federation-gate.timer',
+  criticality: 'important',
+  autoRestart: true,
 };
 
 const LIST_UNITS_FIXTURE = [
@@ -113,6 +123,18 @@ describe('isUnitDown', () => {
   });
   it('an undefined status (unit not reported at all) is down', () => {
     expect(isUnitDown(undefined)).toBe(true);
+  });
+});
+
+describe('isAdministrativelyPaused (WI-5378)', () => {
+  it('disabled and masked are paused', () => {
+    expect(isAdministrativelyPaused('disabled')).toBe(true);
+    expect(isAdministrativelyPaused('masked')).toBe(true);
+  });
+  it('enabled/static/linked/generated/unknown/undefined are NOT paused', () => {
+    for (const s of ['enabled', 'static', 'linked', 'generated', 'transient', 'bad', undefined]) {
+      expect(isAdministrativelyPaused(s)).toBe(false);
+    }
   });
 });
 
@@ -292,6 +314,87 @@ describe('decideReconcile', () => {
     state = decideReconcile({ entry: AUTORESTART_ENTRY, status: up('papercup-mcp-proxy.service'), show: undefined, state, autoRestartFlagOn: true, now: 1000 + HEALTHY_RESET_MS + 1 }).nextState;
     expect(state.gaveUp).toBe(false);
     expect(state.restarts).toEqual([]);
+  });
+
+  it('WI-5378: down + autoRestart:true + disabled UnitFileState -> report-only "paused", never restart', () => {
+    const { action, nextState } = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: down('papercup-live-federation-gate.timer'),
+      show: { result: 'success', unitFileState: 'disabled' },
+      state: initialFlapState('papercup-live-federation-gate.timer'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(action).toEqual({ kind: 'report-only', unit: 'live-federation-gate-timer', reason: 'paused', notify: true });
+    // Second tick, still paused — no re-notify (transition-only, like the other report-only paths).
+    const r2 = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: down('papercup-live-federation-gate.timer'),
+      show: { result: 'success', unitFileState: 'disabled' },
+      state: nextState,
+      autoRestartFlagOn: true,
+      now: 2000,
+    });
+    expect(r2.action).toEqual({ kind: 'report-only', unit: 'live-federation-gate-timer', reason: 'paused', notify: false });
+  });
+
+  it('WI-5378: masked UnitFileState is also treated as an intentional pause', () => {
+    const { action } = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: down('papercup-live-federation-gate.timer'),
+      show: { result: 'success', unitFileState: 'masked' },
+      state: initialFlapState('papercup-live-federation-gate.timer'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(action).toEqual({ kind: 'report-only', unit: 'live-federation-gate-timer', reason: 'paused', notify: true });
+  });
+
+  it('WI-5378: a unit that already gave up (crash-loop) but is then disabled is recognized as paused, not "already-escalated", and its flap state resets', () => {
+    const gaveUp = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: down('papercup-live-federation-gate.timer'),
+      show: { result: 'start-limit-hit', unitFileState: 'enabled' },
+      state: initialFlapState('papercup-live-federation-gate.timer'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    }).nextState;
+    expect(gaveUp.gaveUp).toBe(true);
+
+    const paused = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: down('papercup-live-federation-gate.timer'),
+      show: { result: 'start-limit-hit', unitFileState: 'disabled' },
+      state: gaveUp,
+      autoRestartFlagOn: true,
+      now: 2000,
+    });
+    expect(paused.action).toEqual({ kind: 'report-only', unit: 'live-federation-gate-timer', reason: 'paused', notify: false });
+    expect(paused.nextState.gaveUp).toBe(false);
+    expect(paused.nextState.restarts).toEqual([]);
+    expect(paused.nextState.backoffIndex).toBe(0);
+    expect(paused.nextState.lastRestartAt).toBeNull();
+  });
+
+  it('WI-5378: re-enabling a paused unit resumes normal restart behavior on the very next tick', () => {
+    const paused = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: down('papercup-live-federation-gate.timer'),
+      show: { result: 'success', unitFileState: 'disabled' },
+      state: initialFlapState('papercup-live-federation-gate.timer'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    }).nextState;
+
+    const resumed = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: down('papercup-live-federation-gate.timer'),
+      show: { result: 'success', unitFileState: 'enabled' },
+      state: paused,
+      autoRestartFlagOn: true,
+      now: 2000,
+    });
+    expect(resumed.action).toEqual({ kind: 'restart', unit: 'live-federation-gate-timer', backoffSec: BACKOFF_SEQUENCE_SEC[0] });
   });
 
   it('activating is treated as NOT down (never restart a unit mid-start)', () => {
@@ -555,5 +658,33 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'status')).toBe(true);
     // It read healthy at every tick — the down/restart path never engaged.
     expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart')).toBe(false);
+  });
+
+  it('WI-5378: a deliberately disabled autoRestart:true unit (the live-federation-gate timer, stopped+disabled to pause the gate) is NEVER restarted, and the reconciler reports the pause instead', async () => {
+    const timerDisabledFixture = [
+      'papercup-live-federation-gate.timer                loaded inactive dead    Nightly trigger for the live 2-peer federation gate',
+      '',
+    ].join('\n');
+    const deps = makeDeps({
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return timerDisabledFixture;
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\nRestart=no\nUnitFileState=disabled\n';
+        if (args[0] === 'restart') return '';
+        return '';
+      }),
+      registry: () => [TIMER_ENTRY],
+    });
+    const result = await reconcileTick(deps);
+    expect(result.checked).toBe(1);
+    // The whole point of the fix: no restart call was ever issued against the paused timer.
+    expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart')).toBe(false);
+    const pausedNotifies = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('respecting the pause'));
+    expect(pausedNotifies).toHaveLength(1);
+
+    // A second tick, still disabled — no repeat restart attempt and no re-notify.
+    await reconcileTick(deps);
+    expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart')).toBe(false);
+    const pausedNotifiesAfter = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('respecting the pause'));
+    expect(pausedNotifiesAfter).toHaveLength(1);
   });
 });

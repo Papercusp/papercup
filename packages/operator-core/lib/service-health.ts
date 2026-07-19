@@ -591,6 +591,15 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // touches an in-flight gate run. autoRestart:true so this heals itself within the reconciler's
   // normal backoff ladder, and — if something keeps killing it — the existing give-up escalation
   // pages loudly instead of the timer just staying dark.
+  //
+  // WI-5378: that auto-heal fought a DELIBERATE pause — `systemctl --user stop` alone reads
+  // identically to a crash, so a leader-ordered pause got silently re-armed within minutes.
+  // `unit-reconciler.ts`'s `isAdministrativelyPaused` now checks the unit's persisted
+  // `UnitFileState` and treats `disabled`/`masked` as intentional (report-only, never
+  // restarted) regardless of `autoRestart`. **To pause the gate, `systemctl --user disable
+  // --now papercup-live-federation-gate.timer`** (a bare `stop` — or disabling the `.service`,
+  // which is `static` and has no `[Install]` section — does NOT persist and WILL be undone).
+  // `enable --now` to resume.
   { name: 'live-federation-gate-timer', layer: 'systemd-user', unit: 'papercup-live-federation-gate.timer', criticality: 'important', autoRestart: true },
 ];
 

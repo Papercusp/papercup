@@ -320,6 +320,19 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
     };
   }
 
+  // WI-5378: a deliberately disabled/masked unit is DOWN ON PURPOSE — never fight the pause.
+  // Reset any accumulated flap state (a pause is not a crash-loop) so resuming starts fresh.
+  if (isAdministrativelyPaused(show?.unitFileState)) {
+    state.gaveUp = false;
+    state.restarts = [];
+    state.backoffIndex = 0;
+    state.lastRestartAt = null;
+    return {
+      action: { kind: 'report-only', unit: entry.name, reason: 'paused', notify: justWentDown },
+      nextState: state,
+    };
+  }
+
   if (state.gaveUp) {
     return { action: { kind: 'already-escalated', unit: entry.name }, nextState: state };
   }
@@ -454,13 +467,18 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // healthy or not — a unit can be UP the whole time yet have drifted Restart= policy). A
     // report-only entry (autoRestart:false) or a flag-off tick skips the call entirely (neither
     // check applies to it).
-    let show: { result?: string; restart?: string; nRestarts?: number } | undefined;
+    let show: { result?: string; restart?: string; nRestarts?: number; unitFileState?: string } | undefined;
     if (entry.autoRestart) {
       try {
-        const raw = await deps.execUser(['show', entry.unit, '-p', 'Result,NRestarts,Restart']);
+        const raw = await deps.execUser(['show', entry.unit, '-p', 'Result,NRestarts,Restart,UnitFileState']);
         const props = parseSystemctlShowProperties(raw);
         const nRestarts = props.NRestarts != null ? Number(props.NRestarts) : undefined;
-        show = { result: props.Result, restart: props.Restart, nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined };
+        show = {
+          result: props.Result,
+          restart: props.Restart,
+          nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined,
+          unitFileState: props.UnitFileState,
+        };
       } catch {
         /* best-effort — decideReconcile treats a missing `show` as "no start-limit-hit signal";
          *  the drift check below just skips this tick when `show` is unavailable. */
@@ -518,7 +536,10 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     const { action, nextState } = decideReconcile({
       entry,
       status,
-      show: autoRestartFlagOn && !state.gaveUp ? show : undefined,
+      // WI-5378: pass `show` through even once `state.gaveUp` — decideReconcile now checks
+      // the pause signal (`unitFileState`) BEFORE the gaveUp short-circuit, so an operator
+      // disabling a crash-looped unit to intentionally silence it must still be observed.
+      show: autoRestartFlagOn ? show : undefined,
       state: { ...state, restartDriftWarned: drift.nextWarned },
       autoRestartFlagOn,
       now,
@@ -565,7 +586,9 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
               summary:
                 action.reason === 'unit-not-found'
                   ? `⚠ supervision: \`${entry.unit}\` not found by systemctl --user (removed/never installed?) — report-only`
-                  : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
+                  : action.reason === 'paused'
+                    ? `⏸ supervision: \`${entry.unit}\` is down but administratively disabled/masked — respecting the pause, NOT auto-restarting (\`systemctl --user enable --now ${entry.unit}\` to resume)`
+                    : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
               category: 'supervision',
             })
             .catch(() => {});

@@ -48,7 +48,20 @@ const OWNER_TAG_RE = /\[owner:[^\]]+\]/i;
  *  ordinary prose and train agents to ignore the warning. */
 const OWNER_ATTRIBUTION_RE =
   /\b(?:the )?owner\s+(?:said|says|wants|needs|requires|required|approved|approves|told me|instructed|directed|asked|demands|set an? (?:explicit )?gate|gave permission)\b/i;
-const BARE_GATE_IMPERATIVE_RE = /\bdo not\b.{0,80}\buntil\b/i;
+/**
+ * A "do not X until Y" match, but ONLY when it reads as an IMPERATIVE — no
+ * expressed subject, the grammatical hallmark of a command — rather than a
+ * DECLARATIVE description of some OTHER subject's behavior ("they do not
+ * reorder until their lanes ship" is a measurement, not a directive). The
+ * negative lookbehind requires "do not" NOT be immediately preceded (past any
+ * intervening whitespace) by an alphanumeric character, i.e. by a word acting
+ * as an explicit subject: a genuine imperative always opens a sentence/clause
+ * (preceded only by punctuation, a list marker, a quote, or nothing at all).
+ * EI-16031: found false-positiving on plain technical prose describing a
+ * third party's ("they"/"it"/a system noun's) behavior with zero owner
+ * attribution — the false alarm trains agents to dismiss the real ones.
+ */
+const BARE_GATE_IMPERATIVE_RE = /(?<![A-Za-z0-9]\s*)\bdo not\b.{0,80}\buntil\b/i;
 
 /**
  * An explicit PROVENANCE-block header. An agent complies with the nudge by writing a block

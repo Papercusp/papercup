@@ -99,6 +99,103 @@ export function classifyArtifact(name: string): Pick<ReleaseArtifact, 'product' 
   return null;
 }
 
+/**
+ * The desktop artifact matrix a COMPLETE release is expected to carry: every
+ * desktop PRODUCT on every desktop PLATFORM. This is the single source of truth
+ * for the completeness alert (WI-5515 / owner directive 2026-07-19).
+ *
+ * Mobile is deliberately EXCLUDED — a desktop cut with no phone build is legal and
+ * is reported on its own line, never as a "missing" desktop artifact. `server` IS
+ * included: the old check here covered only `gui`, so a version that shipped a
+ * linux Server but no mac/windows Server passed as "complete" silently — the exact
+ * gap this catches.
+ */
+export const REQUIRED_DESKTOP_PLATFORMS = [
+  'linux-x86_64',
+  'darwin-universal',
+  'windows-x86_64',
+] as const;
+export const REQUIRED_DESKTOP_PRODUCTS = ['gui', 'server'] as const;
+export type RequiredDesktopProduct = (typeof REQUIRED_DESKTOP_PRODUCTS)[number];
+export type RequiredDesktopPlatform = (typeof REQUIRED_DESKTOP_PLATFORMS)[number];
+
+export interface MissingArtifactSlot {
+  product: RequiredDesktopProduct;
+  platform: RequiredDesktopPlatform;
+}
+
+/**
+ * Which (product × platform) desktop slots a release's artifacts do NOT cover.
+ * PURE (takes just the classified artifacts) so it is trivially unit-testable and
+ * reusable by the page renderer. Mobile artifacts are ignored — never required.
+ */
+export function computeReleaseCompleteness(
+  artifacts: Pick<ReleaseArtifact, 'product' | 'platform'>[],
+): { missing: MissingArtifactSlot[]; complete: boolean } {
+  const have = new Set(artifacts.map((a) => `${a.product}:${a.platform}`));
+  const missing: MissingArtifactSlot[] = [];
+  for (const product of REQUIRED_DESKTOP_PRODUCTS) {
+    for (const platform of REQUIRED_DESKTOP_PLATFORMS) {
+      if (!have.has(`${product}:${platform}`)) missing.push({ product, platform });
+    }
+  }
+  return { missing, complete: missing.length === 0 };
+}
+
+const PLATFORM_LABEL: Record<string, string> = {
+  'linux-x86_64': 'Linux (x86_64)',
+  'darwin-universal': 'macOS (universal)',
+  'windows-x86_64': 'Windows (x64)',
+};
+
+/**
+ * A prominent, unmissable alert naming every expected-but-absent desktop artifact
+ * for a version. NON-BLOCKING by design (owner directive: incremental uploads must
+ * never be rejected) — its job is to make a partial release a CONSCIOUS, confirmed
+ * choice, not to stop it. Returns the block as a string so the record path and the
+ * regenerate path render it identically. Empty string when the release is complete.
+ */
+export function formatCompletenessAlert(
+  version: string,
+  channel: string,
+  missing: MissingArtifactSlot[],
+): string {
+  if (missing.length === 0) return '';
+  const rule = '  ══════════════════════════════════════════════════════════════════';
+  const lines: string[] = ['', rule, `  ⚠  INCOMPLETE RELEASE: ${version} (${channel})`, rule];
+  lines.push('  Expected installers NOT yet uploaded for this version:');
+  for (const m of missing) {
+    lines.push(`    ✗ ${m.product.toUpperCase().padEnd(6)} · ${PLATFORM_LABEL[m.platform] ?? m.platform}`);
+  }
+  lines.push('');
+  lines.push('  This is NOT a rejection — incremental uploads are allowed. But CONFIRM');
+  lines.push('  the omission is intentional (e.g. WI-5028: mac/windows Server is infra-');
+  lines.push('  blocked) or upload the missing artifact(s) and re-record / regenerate.');
+  lines.push(rule);
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
+ * Print the completeness alert for EVERY recorded release that is incomplete.
+ * Runs on --regenerate so an agent who just uploaded a missing artifact and
+ * re-rendered the page still SEES what remains absent per version — a partial
+ * release is never silently normalized. NON-BLOCKING.
+ */
+export async function warnIncompleteReleases(sql: postgres.Sql, scope: Scope): Promise<number> {
+  const rows = await listReleases(sql, scope.workspaceId);
+  const incomplete = rows
+    .map((r) => ({ r, c: computeReleaseCompleteness(r.artifacts) }))
+    .filter((x) => !x.c.complete);
+  if (incomplete.length === 0) return 0;
+  console.warn(
+    `\n[record-release] ${incomplete.length} recorded release(s) are INCOMPLETE ` +
+      `(missing expected installers — confirm each is intentional):`,
+  );
+  for (const { r, c } of incomplete) console.warn(formatCompletenessAlert(r.version, r.channel, c.missing));
+  return incomplete.length;
+}
+
 /** `desktop-v0.0.9-alpha` — the object-key directory a cut's artifacts live under. */
 export function releaseTag(version: string, channel: string): string {
   return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
@@ -536,27 +633,20 @@ export async function run(opts: RecordOpts): Promise<number> {
     const mobileArtifacts = scanMobileArtifacts(opts.mobileRoot, opts.version, tag);
     const artifacts = [...desktopArtifacts, ...mobileArtifacts];
 
-    // A release that records only SOME platforms must never look like a complete
-    // one. 0.0.8 went out advertising itself to every beta tester while carrying
-    // linux artifacts alone — a Mac or Windows tester had nothing to download, and
-    // nothing anywhere said so. Name the platforms that are missing a GUI installer,
-    // loudly, every time. (Not fatal: a deliberate single-platform cut is legal —
-    // but it has to be a CHOICE, made in the open, not a silent omission.)
-    // NB: mobile is NOT in this required set — a desktop cut with no phone build is
-    // legal and must not warn; the mobile summary below reports mobile separately.
-    const guiPlatforms = new Set(
-      artifacts.filter((a) => a.product === 'gui').map((a) => a.platform),
-    );
-    const missing = (['linux-x86_64', 'darwin-universal', 'windows-x86_64'] as const).filter(
-      (p) => !guiPlatforms.has(p),
-    );
-    if (missing.length > 0) {
-      console.warn(
-        `  ⚠ NO GUI INSTALLER for: ${missing.join(', ')} — a tester on ${
-          missing.length === 1 ? 'that platform' : 'those platforms'
-        } will have nothing to download, and the in-app Update Center will offer them no update.`,
-      );
-      console.warn(`    Scanned roots:\n${opts.bundleDirs.map((d) => `      ${d}`).join('\n')}`);
+    // A release that records only SOME product×platform slots must never look like
+    // a complete one. 0.0.8 went out advertising itself to every beta tester while
+    // carrying linux artifacts alone — a Mac or Windows tester had nothing to
+    // download, and nothing anywhere said so. The old check here covered ONLY the
+    // gui product, so a version with a linux Server but no mac/windows Server passed
+    // silently too. computeReleaseCompleteness covers BOTH products across all three
+    // desktop platforms. NON-FATAL: a deliberate partial cut is legal (e.g. WI-5028:
+    // mac/win Server is infra-blocked) — but it must be a CHOICE made in the open,
+    // confirmed each time, not a silent omission. (Mobile is reported separately
+    // below and is never part of the required desktop set.)
+    const completeness = computeReleaseCompleteness(artifacts);
+    if (!completeness.complete) {
+      console.warn(formatCompletenessAlert(opts.version, opts.channel, completeness.missing));
+      console.warn(`  Scanned roots:\n${opts.bundleDirs.map((d) => `    ${d}`).join('\n')}`);
     }
 
     const row: ReleaseRow = {

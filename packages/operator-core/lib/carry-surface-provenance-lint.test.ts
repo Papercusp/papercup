@@ -36,6 +36,35 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0].kind).toBe('bare-gate-imperative');
   });
 
+  // EI-16031: a "do not X until Y" match must be an IMPERATIVE (no expressed
+  // subject) to flag — a DECLARATIVE sentence describing some other subject's
+  // behavior is a measurement, not a directive, and must not false-positive.
+  it('EI-16031: does NOT flag a descriptive "<subject> do not X until Y" sentence with no attribution', () => {
+    const r = lintCarrySurfaceProvenance(
+      'tag_weight is in the claim-spec rank vocabulary but compiles to NEUTRAL ' +
+        '("they do not reorder until their lanes ship"), referenced by 0 of 133 live specs.',
+    );
+    expect(r.flagged).toBe(false);
+    expect(r.matches).toEqual([]);
+  });
+
+  it('EI-16031: does NOT flag other third-person-subject "does not ... until" descriptions', () => {
+    expect(lintCarrySurfaceProvenance('the scheduler does not reorder until lanes ship').flagged).toBe(false);
+    expect(lintCarrySurfaceProvenance('it does not retry until the backoff window elapses').flagged).toBe(false);
+  });
+
+  it('EI-16031: still flags a genuine bare directive at the start of a sentence', () => {
+    const r = lintCarrySurfaceProvenance('do not resolve WI-3532 until the UI pass is done');
+    expect(r.flagged).toBe(true);
+    expect(r.matches[0].kind).toBe('bare-gate-imperative');
+  });
+
+  it('EI-16031: still flags a bare directive after a sentence boundary', () => {
+    const r = lintCarrySurfaceProvenance('Finished the audit pass. Do not deploy until reviewed.');
+    expect(r.flagged).toBe(true);
+    expect(r.matches[0].kind).toBe('bare-gate-imperative');
+  });
+
   it('does NOT flag when the line carries a NON-OWNER source tag', () => {
     expect(lintCarrySurfaceProvenance('[self-imposed] do not resolve WI-3532 until the UI pass is done').flagged).toBe(false);
     expect(lintCarrySurfaceProvenance('[peer:su-4dc3b] the owner approved this').flagged).toBe(false);

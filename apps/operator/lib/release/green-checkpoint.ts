@@ -1721,7 +1721,7 @@ export async function runGreenCheckpoint(
       deps.log(`migration preflight skipped (${e instanceof Error ? e.message : e})`);
     }
   }
-  const { green, summary, failingTests, flakeSuspects, failingFiles = [], logPath } = await deps.runGreen(
+  const { green, summary, failingTests, flakeSuspects, failingFiles = [], logPath, isolationNote } = await deps.runGreen(
     cfg.checkpointRoot,
     lastReady,
   );
@@ -1953,6 +1953,7 @@ export async function runGreenCheckpoint(
       ...(retriage ? { retriage } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
+      ...(isolationNote ? { isolationNote } : {}),
     };
   }
 
@@ -2389,6 +2390,7 @@ export function realCheckpointDeps(
           // PASSING re-run flips to green (surfaced as a flake suspect); a re-crash or any
           // real failure stays red. Fail-safe — proof required, never a blanket green.
           const crash = await attemptWorkerCrashAbsorption(fullOutput, workspaceRerun, log);
+          isolationNote = crash.note;
           if (crash.absorbedToGreen) {
             green = true;
             flakeSuspects = crash.flakeSuspects;
@@ -2448,6 +2450,7 @@ export function realCheckpointDeps(
         ...(flakeSuspects?.length ? { flakeSuspects } : {}),
         ...(failingFiles.length ? { failingFiles } : {}),
         ...(logPath ? { logPath } : {}),
+        ...(isolationNote ? { isolationNote } : {}),
       };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
