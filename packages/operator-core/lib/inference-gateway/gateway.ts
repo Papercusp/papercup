@@ -580,7 +580,9 @@ export function normalizeGatewayRequestBody(bodyBuf: Buffer): {
 /** Prompt-cache policy kill-switches (gateway-cache-plane-shared-prefix-ttl-2026-07-19 D-002).
  *  Read per-request so a flip takes effect on the next request, not the next restart. */
 const cachePolicyOn = () => process.env.PAPERCUSP_CACHE_POLICY !== '0';
-const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT !== '0';
+// OPT-IN: measured a no-op 2026-07-19 (identical read/write with and without) and it caused
+// EI-16980. Enable only with P-004 + a measured read-delta.
+const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT === '1';
 /** How many `prompt_cache_key` buckets the codex traffic is spread across. OpenAI degrades a
  *  single key past ~15 req/min; fewer buckets = more cross-session sharing. */
 const codexCacheShards = () => {

@@ -63,7 +63,7 @@ describe('applyAnthropicCachePolicy — ttl upgrade (P-001)', () => {
 describe('applyAnthropicCachePolicy — shared tools breakpoint (P-003)', () => {
   it('injects a breakpoint on the LAST tool (the org-shared per-variant span)', () => {
     const body: Record<string, unknown> = { tools: [{ name: 'a' }, { name: 'b' }, { name: 'c' }] };
-    const s = applyAnthropicCachePolicy(body);
+    const s = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect(s.toolsBreakpointInjected).toBe(true);
     expect((body.tools as any)[2].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
     expect((body.tools as any)[0].cache_control).toBeUndefined();
@@ -79,7 +79,7 @@ describe('applyAnthropicCachePolicy — shared tools breakpoint (P-003)', () => 
         { type: 'text', cache_control: cc() },
       ],
     };
-    const s = applyAnthropicCachePolicy(body);
+    const s = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect(s.breakpointsBefore).toBe(ANTHROPIC_MAX_BREAKPOINTS);
     expect(s.toolsBreakpointInjected).toBe(false);
     expect(s.toolsBreakpointSkippedNoBudget).toBe(true);
@@ -88,16 +88,27 @@ describe('applyAnthropicCachePolicy — shared tools breakpoint (P-003)', () => 
 
   it('does not double-mark a tools array the client already marked', () => {
     const body: Record<string, unknown> = { tools: [{ name: 'a' }, { name: 'b', cache_control: cc() }] };
-    const s = applyAnthropicCachePolicy(body);
+    const s = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect(s.toolsBreakpointInjected).toBe(false);
     expect(s.ttlUpgraded).toBe(1);
   });
 
   it('is idempotent — a second pass changes nothing', () => {
     const body: Record<string, unknown> = { tools: [{ name: 'a' }], system: [{ type: 'text', cache_control: cc() }] };
-    applyAnthropicCachePolicy(body);
-    const second = applyAnthropicCachePolicy(body);
+    applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
+    const second = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect(second.changed).toBe(false);
+  });
+
+  it('DEFAULTS OFF — the injection is opt-in after the 2026-07-19 A/B measured it a no-op', () => {
+    // Controlled A/B (proxy with vs without the injection, differing system prompts) produced
+    // IDENTICAL usage: write_1h=31426, read=9724 in both arms. Zero benefit, and it caused
+    // EI-16980. So an unqualified call must NOT touch tools; only an explicit opt-in does.
+    const body: Record<string, unknown> = { tools: [{ name: 'a' }, { name: 'b' }] };
+    const s = applyAnthropicCachePolicy(body);
+    expect(s.toolsBreakpointInjected).toBe(false);
+    expect((body.tools as any)[1].cache_control).toBeUndefined();
+    expect(s.changed).toBe(false);
   });
 
   it('opt-out leaves tools untouched (ttl-only mode)', () => {
@@ -128,7 +139,7 @@ describe('defer_loading × cache_control is a hard 400 — never emit the pair',
         { name: 'b', defer_loading: true },
       ],
     };
-    const s = applyAnthropicCachePolicy(body);
+    const s = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect(s.toolsBreakpointInjected).toBe(true);
     expect((body.tools as any)[1].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
     expect((body.tools as any)[3].cache_control).toBeUndefined();
@@ -139,7 +150,7 @@ describe('defer_loading × cache_control is a hard 400 — never emit the pair',
     const body: Record<string, unknown> = {
       tools: [{ name: 'a', defer_loading: true }, { name: 'b', defer_loading: true }],
     };
-    const s = applyAnthropicCachePolicy(body);
+    const s = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect(s.toolsBreakpointInjected).toBe(false);
     expect(s.toolsBreakpointSkippedAllDeferred).toBe(true);
     expect(s.changed).toBe(false);
@@ -148,14 +159,14 @@ describe('defer_loading × cache_control is a hard 400 — never emit the pair',
 
   it('treats defer_loading:false as markable (only truthy defers)', () => {
     const body: Record<string, unknown> = { tools: [{ name: 'a', defer_loading: false }] };
-    applyAnthropicCachePolicy(body);
+    applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect((body.tools as any)[0].cache_control).toBeDefined();
     invariant(body);
   });
 
   it('fails CLOSED on an unexpected truthy defer_loading spelling', () => {
     const body: Record<string, unknown> = { tools: [{ name: 'a', defer_loading: { mode: 'lazy' } }] };
-    const s = applyAnthropicCachePolicy(body);
+    const s = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: true });
     expect(s.toolsBreakpointSkippedAllDeferred).toBe(true);
     invariant(body);
   });
@@ -172,7 +183,7 @@ describe('defer_loading × cache_control is a hard 400 — never emit the pair',
       }),
       'utf8',
     );
-    const out = rewriteAnthropicCacheBody(buf);
+    const out = rewriteAnthropicCacheBody(buf, { injectToolsBreakpoint: true });
     const parsed = JSON.parse(out.body.toString('utf8'));
     expect(parsed.tools[0].cache_control).toBeDefined(); // the one non-deferred tool
     invariant(parsed);
@@ -194,7 +205,7 @@ describe('rewriteAnthropicCacheBody — buffer contract', () => {
 
   it('round-trips a rewritten body as valid JSON', () => {
     const buf = Buffer.from(JSON.stringify({ tools: [{ name: 'a' }] }), 'utf8');
-    const r = rewriteAnthropicCacheBody(buf);
+    const r = rewriteAnthropicCacheBody(buf, { injectToolsBreakpoint: true });
     expect(JSON.parse(r.body.toString('utf8')).tools[0].cache_control.ttl).toBe('1h');
   });
 });

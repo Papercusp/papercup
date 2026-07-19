@@ -118,7 +118,8 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
       if (process.env.PAPERCUSP_CACHE_POLICY !== '0' && body.length && isCacheableAnthropicPath(url)) {
         try {
           const out = rewriteAnthropicCacheBody(body, {
-            injectToolsBreakpoint: process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT !== '0',
+            // OPT-IN (measured no-op 2026-07-19; caused EI-16980) — see cache-policy.ts header.
+            injectToolsBreakpoint: process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT === '1',
           });
           if (out.stats) {
             if (out.body !== body) stats.rewritten++;

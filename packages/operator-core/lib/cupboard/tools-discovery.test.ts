@@ -258,6 +258,46 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(schemaToText('nope')).toBeNull();
   });
 
+  describe('EI-13181: numeric/length bounds (same lossy-discovery class as EI-13164 — a min/max is dropped just like an enum was)', () => {
+    it('a min+max integer (sessions:digest\'s real z.number().int().min(1).max(100)) renders the inclusive range', () => {
+      // zod's toJSONSchema for `z.number().int().min(1).max(100).optional().describe('Default 30.')`
+      // emits `{ type:"integer", minimum:1, maximum:100, description:"Default 30." }` — the exact
+      // shape that used to render as a bare `limit?:integer` with the ceiling invisible until a
+      // call with limit:200 was rejected at runtime.
+      const txt = schemaToText({
+        properties: { limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Default 30.' } },
+      });
+      expect(txt).toBe('limit?:integer(1-100) Default 30.');
+    });
+
+    it('a max-only bound renders as ≤N', () => {
+      expect(schemaToText({ properties: { limit: { type: 'integer', maximum: 100 } } })).toBe('limit?:integer(≤100)');
+    });
+
+    it('a min-only bound renders as ≥N', () => {
+      expect(schemaToText({ properties: { count: { type: 'number', minimum: 1 } } })).toBe('count?:number(≥1)');
+    });
+
+    it('a string maxLength renders the same way (e.g. hardText caps)', () => {
+      expect(schemaToText({ properties: { title: { type: 'string', maxLength: 400 } } })).toBe('title?:string(≤400)');
+    });
+
+    it('an array maxItems renders the same way (e.g. a `paths` cap)', () => {
+      expect(schemaToText({ properties: { paths: { type: 'array', maxItems: 20 } } })).toBe('paths?:array(≤20)');
+    });
+
+    it('no bound declared → no parens (unchanged from before)', () => {
+      expect(schemaToText({ properties: { key: { type: 'string' } } })).toBe('key?:string');
+    });
+
+    it('an enum never gets a bound suffix even if minimum/maximum were also present (zod never emits both, but stay defensive)', () => {
+      const txt = schemaToText({
+        properties: { mode: { type: 'string', enum: ['a', 'b'], minimum: 1, maximum: 2 } },
+      });
+      expect(txt).toBe('mode?:enum(a|b)');
+    });
+  });
+
   it('EI-13190: names a nested object property\'s own fields, marking its required ones', () => {
     // Mirrors locks:acquire's `wait: z.object({ max_sec }).optional()` — the
     // exact shape that used to render as bare `wait?:object`, hiding that

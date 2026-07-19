@@ -96,7 +96,9 @@ describe('cache-proxy — credential passthrough (D-005: NOT an account substitu
 });
 
 describe('cache-proxy — body policy', () => {
-  it('applies the ttl + tools breakpoint on /v1/messages', async () => {
+  it('applies the ttl rewrite on /v1/messages, and by DEFAULT leaves tools alone', async () => {
+    // Default posture after the 2026-07-19 A/B: ttl upgrade yes, tools breakpoint no
+    // (measured no-op; see cache-policy.ts header).
     const up = upstreamEcho();
     await listen(up.server);
     const proxy = track(createCacheProxy({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: port(up.server), upstreamInsecure: true, log: () => {} }));
@@ -113,8 +115,26 @@ describe('cache-proxy — body policy', () => {
 
     const fwd = JSON.parse(up.seen[0].body);
     expect(fwd.system[0].cache_control.ttl).toBe('1h');
-    expect(fwd.tools[1].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(fwd.tools[1].cache_control).toBeUndefined();
     expect(Number(up.seen[0].headers['content-length'])).toBe(Buffer.byteLength(up.seen[0].body));
+  });
+
+  it('injects the tools breakpoint when explicitly opted in', async () => {
+    const prev = process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT;
+    process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT = '1';
+    try {
+      const up = upstreamEcho();
+      await listen(up.server);
+      const proxy = track(createCacheProxy({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: port(up.server), upstreamInsecure: true, log: () => {} }));
+      await listen(proxy);
+      await request(port(proxy), {
+        body: JSON.stringify({ model: 'claude-opus-4-8', tools: [{ name: 'a' }, { name: 'b' }], messages: [] }),
+      });
+      expect(JSON.parse(up.seen[0].body).tools[1].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT;
+      else process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT = prev;
+    }
   });
 
   it('NEVER forwards defer_loading + cache_control on one tool (live 400 regression)', async () => {
@@ -122,28 +142,37 @@ describe('cache-proxy — body policy', () => {
     // Claude Code defer the whole MCP catalog, and the API rejects any tool carrying both
     // defer_loading and cache_control. Asserted at the PROXY boundary (not just the pure
     // module) because this is the surface that actually reaches Anthropic.
-    const up = upstreamEcho();
-    await listen(up.server);
-    const proxy = track(createCacheProxy({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: port(up.server), upstreamInsecure: true, log: () => {} }));
-    await listen(proxy);
+    // Exercised with the injection FORCED ON — the default is off, but the guarantee that
+    // matters is: even when someone opts in, the illegal pair can never reach Anthropic.
+    const prev = process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT;
+    process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT = '1';
+    try {
+      const up = upstreamEcho();
+      await listen(up.server);
+      const proxy = track(createCacheProxy({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: port(up.server), upstreamInsecure: true, log: () => {} }));
+      await listen(proxy);
 
-    await request(port(proxy), {
-      body: JSON.stringify({
-        model: 'claude-opus-4-8',
-        tools: [
-          { name: 'tool_search_tool_bm25' },
-          { name: 'mcp__papercusp-su__work_items_get', defer_loading: true },
-          { name: 'mcp__papercusp-su__coord_orient', defer_loading: true },
-        ],
-        messages: [],
-      }),
-    });
+      await request(port(proxy), {
+        body: JSON.stringify({
+          model: 'claude-opus-4-8',
+          tools: [
+            { name: 'tool_search_tool_bm25' },
+            { name: 'mcp__papercusp-su__work_items_get', defer_loading: true },
+            { name: 'mcp__papercusp-su__coord_orient', defer_loading: true },
+          ],
+          messages: [],
+        }),
+      });
 
-    const fwd = JSON.parse(up.seen[0].body);
-    for (const t of fwd.tools) {
-      expect(Boolean(t.defer_loading) && Boolean(t.cache_control), `illegal pair on ${t.name}`).toBe(false);
+      const fwd = JSON.parse(up.seen[0].body);
+      for (const t of fwd.tools) {
+        expect(Boolean(t.defer_loading) && Boolean(t.cache_control), `illegal pair on ${t.name}`).toBe(false);
+      }
+      expect(fwd.tools[0].cache_control).toBeDefined(); // anchored on the only legal tool
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT;
+      else process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT = prev;
     }
-    expect(fwd.tools[0].cache_control).toBeDefined(); // anchored on the only legal tool
   });
 
   it('leaves non-cacheable paths untouched (count_tokens, batches, models)', async () => {

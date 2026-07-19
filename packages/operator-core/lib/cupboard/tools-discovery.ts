@@ -149,6 +149,14 @@ export function schemaToText(inputSchema: unknown): string | null {
       enum?: unknown;
       properties?: unknown;
       required?: unknown;
+      minimum?: unknown;
+      maximum?: unknown;
+      exclusiveMinimum?: unknown;
+      exclusiveMaximum?: unknown;
+      minLength?: unknown;
+      maxLength?: unknown;
+      minItems?: unknown;
+      maxItems?: unknown;
     };
     // EI-13164: an `enum` property's JSON-schema output ALSO carries `type:"string"`
     // (zod's own toJSONSchema emits both for `z.enum([...])`, confirmed for
@@ -172,9 +180,24 @@ export function schemaToText(inputSchema: unknown): string | null {
         : typeof p.type === 'string'
           ? p.type
           : '';
+    // EI-13181: same lossy-discovery bug class as EI-13164/EI-13176, but for a
+    // number/string/array BOUND instead of an enum — `z.number().max(100)` etc.
+    // renders its JSON-schema `maximum`/`minimum`/`*Length`/`*Items` right next
+    // to `type`, but schemaToText only ever read `type`, so a caller learned
+    // `limit?:integer` with no hint that >100 is rejected until the call
+    // failed. Render the bound inline (e.g. `integer(1-100)`, `string(≤400)`,
+    // `array(≤20)`) whenever the schema declares one — strictly additive, never
+    // fires for a property with no bound.
+    const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const lo = numOrNull(p.minimum) ?? numOrNull(p.exclusiveMinimum) ?? numOrNull(p.minLength) ?? numOrNull(p.minItems);
+    const hi = numOrNull(p.maximum) ?? numOrNull(p.exclusiveMaximum) ?? numOrNull(p.maxLength) ?? numOrNull(p.maxItems);
+    const bound = lo != null && hi != null ? `${lo}-${hi}` : hi != null ? `≤${hi}` : lo != null ? `≥${lo}` : '';
     const nested = nestedObjectFieldsText(p);
     const desc = typeof p.description === 'string' ? p.description.trim() : '';
-    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${nested}` : ''}`;
+    // Never double up with the enum text (already shows its own values) — a
+    // bound is meaningless for an enum anyway (zod never emits both).
+    const boundText = bound && !(enumValues && enumValues.length > 0) ? `(${bound})` : '';
+    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${boundText}${nested}` : ''}`;
     parts.push(desc ? `${head} ${desc}` : head);
   }
   return parts.length > 0 ? parts.join('; ') : null;

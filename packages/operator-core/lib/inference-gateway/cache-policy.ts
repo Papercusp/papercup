@@ -97,15 +97,24 @@ function ephemeralMarker(block: Record<string, unknown>): Record<string, unknown
  *
  * 1. TTL (P-001): every ephemeral `cache_control` without an explicit `ttl` gets the extended
  *    tier. A client-set ttl (either value) is left alone — client intent wins.
- * 2. Shared tools breakpoint (P-003): the `tools` array renders at prefix position 0 and is
- *    byte-identical across every session on the same tool-list variant + model, so a breakpoint
- *    at its END creates a cache entry that EVERY same-variant session in the org reads instead
- *    of writing. Without it the earliest breakpoint typically sits after the system prompt,
- *    whose per-session bytes fork the entry per session. Injected only when the client left
- *    the last tool unmarked AND the 4-marker budget has room.
+ * 2. Shared tools breakpoint (P-003) — OFF BY DEFAULT, see `injectToolsBreakpoint`. The theory
+ *    was that the `tools` array (prefix position 0, byte-identical across same-variant sessions)
+ *    would be shareable only if we marked its end, because the earliest client breakpoint sits
+ *    after the per-session system prompt. MEASURED 2026-07-19 AND DISPROVEN: a controlled A/B
+ *    (two `claude -p` runs with deliberately different system prompts, one through a proxy with
+ *    the injection and one without) produced IDENTICAL usage — write_1h=31426, read=9724 in both
+ *    arms. Claude Code's own breakpoint placement already yields that shared span, so the
+ *    injection bought nothing while costing a production incident (a tool carrying both
+ *    defer_loading and cache_control is a hard 400 — EI-16980). Kept, tested and flag-gated
+ *    rather than deleted because the psu case is NOT the case measured: a psu playbook puts
+ *    per-session bytes EARLY in the system prompt, where the shared span may genuinely collapse
+ *    to the tools array. Re-enable only alongside P-004 (prefix stabilization) AND a measured
+ *    read-delta — never on theory alone, which is exactly how this went wrong the first time.
  */
 export function applyAnthropicCachePolicy(
   body: Record<string, unknown>,
+  /** `injectToolsBreakpoint` defaults to FALSE (measured no-op — see the header). Pass true to
+   *  opt in; the callers gate it behind PAPERCUSP_CACHE_TOOLS_BREAKPOINT=1. */
   opts: { ttl?: string; injectToolsBreakpoint?: boolean } = {},
 ): AnthropicCacheStats {
   const ttl = opts.ttl ?? ANTHROPIC_EXTENDED_TTL;
@@ -141,7 +150,7 @@ export function applyAnthropicCachePolicy(
     }
   }
 
-  if (opts.injectToolsBreakpoint !== false) {
+  if (opts.injectToolsBreakpoint === true) {
     const tools = body.tools;
     if (Array.isArray(tools) && tools.length > 0) {
       // A tool marked `defer_loading` CANNOT also carry `cache_control` — the API rejects the
