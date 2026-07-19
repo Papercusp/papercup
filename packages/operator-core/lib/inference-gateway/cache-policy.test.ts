@@ -108,6 +108,77 @@ describe('applyAnthropicCachePolicy — shared tools breakpoint (P-003)', () => 
   });
 });
 
+describe('defer_loading × cache_control is a hard 400 — never emit the pair', () => {
+  // REGRESSION (2026-07-19, live incident): the first cut marked the LAST tool unconditionally.
+  // Every tool-search session (the fleet forces ENABLE_TOOL_SEARCH=true) defers most of its
+  // catalog, so that landed on a deferred tool and the API rejected the whole request:
+  // "Tool 'X' cannot have both defer_loading=true and cache_control set."
+  const invariant = (body: Record<string, unknown>) => {
+    for (const t of (body.tools as Record<string, unknown>[]) ?? []) {
+      expect(Boolean(t.defer_loading) && Boolean(t.cache_control), `illegal pair on ${String(t.name)}`).toBe(false);
+    }
+  };
+
+  it('marks the last NON-deferred tool when the tail is deferred', () => {
+    const body: Record<string, unknown> = {
+      tools: [
+        { name: 'search' },
+        { name: 'invoke' },
+        { name: 'a', defer_loading: true },
+        { name: 'b', defer_loading: true },
+      ],
+    };
+    const s = applyAnthropicCachePolicy(body);
+    expect(s.toolsBreakpointInjected).toBe(true);
+    expect((body.tools as any)[1].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect((body.tools as any)[3].cache_control).toBeUndefined();
+    invariant(body);
+  });
+
+  it('injects NOTHING when every tool is deferred (no legal anchor exists)', () => {
+    const body: Record<string, unknown> = {
+      tools: [{ name: 'a', defer_loading: true }, { name: 'b', defer_loading: true }],
+    };
+    const s = applyAnthropicCachePolicy(body);
+    expect(s.toolsBreakpointInjected).toBe(false);
+    expect(s.toolsBreakpointSkippedAllDeferred).toBe(true);
+    expect(s.changed).toBe(false);
+    invariant(body);
+  });
+
+  it('treats defer_loading:false as markable (only truthy defers)', () => {
+    const body: Record<string, unknown> = { tools: [{ name: 'a', defer_loading: false }] };
+    applyAnthropicCachePolicy(body);
+    expect((body.tools as any)[0].cache_control).toBeDefined();
+    invariant(body);
+  });
+
+  it('fails CLOSED on an unexpected truthy defer_loading spelling', () => {
+    const body: Record<string, unknown> = { tools: [{ name: 'a', defer_loading: { mode: 'lazy' } }] };
+    const s = applyAnthropicCachePolicy(body);
+    expect(s.toolsBreakpointSkippedAllDeferred).toBe(true);
+    invariant(body);
+  });
+
+  it('holds through the buffer path on a realistic tool-search body', () => {
+    const buf = Buffer.from(
+      JSON.stringify({
+        model: 'claude-opus-4-8',
+        tools: [
+          { name: 'tool_search_tool_bm25' },
+          ...Array.from({ length: 40 }, (_, i) => ({ name: `mcp__papercusp_su__t${i}`, defer_loading: true })),
+        ],
+        system: [{ type: 'text', text: 'x', cache_control: { type: 'ephemeral' } }],
+      }),
+      'utf8',
+    );
+    const out = rewriteAnthropicCacheBody(buf);
+    const parsed = JSON.parse(out.body.toString('utf8'));
+    expect(parsed.tools[0].cache_control).toBeDefined(); // the one non-deferred tool
+    invariant(parsed);
+  });
+});
+
 describe('rewriteAnthropicCacheBody — buffer contract', () => {
   it('returns the ORIGINAL buffer instance when nothing changed (byte-identical forward)', () => {
     const buf = Buffer.from(JSON.stringify({ model: 'claude-opus-4-8', messages: [] }), 'utf8');

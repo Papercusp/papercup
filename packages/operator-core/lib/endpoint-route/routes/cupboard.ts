@@ -38,6 +38,20 @@ import { getPluginHost } from '../../plugin-host-runtime';
 // (the old behavior) yielded an empty URL and a silently-empty listing
 // (`cupboard_url_missing`); the resolver's hardcoded default fixes that.
 
+/**
+ * Upstream timeout for every Cupboard-worker proxy hop.
+ *
+ * The worker answers in ~0.3s, so this budget exists only to bound a HUNG
+ * upstream — and an unreachable host is exactly the failure mode that hurts:
+ * a dead DNS target accepts TCP :443 and then never completes the TLS
+ * handshake, so the request hangs for the full budget before the UI can show
+ * anything (cupboard-dead-default-host-2026-07-19 — the branded host did this
+ * for every unconfigured process). 10s of dead air per Cupboard call made the
+ * storefront feel wedged rather than degraded; 5s still leaves ~16x headroom
+ * over a healthy response while halving the worst-case stall.
+ */
+const CUPBOARD_UPSTREAM_TIMEOUT_MS = 5_000;
+
 // ─── GET /cupboard/listings ───────────────────────────────────────
 
 const listCupboardListings = defineTool({
@@ -57,7 +71,7 @@ const listCupboardListings = defineTool({
     try {
       let res = await fetch(upstream.toString(), {
         headers: { 'User-Agent': 'papercusp-operator/1' },
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(CUPBOARD_UPSTREAM_TIMEOUT_MS),
       });
       // Transitional: a worker not yet on migration 004 has no /listings — fall
       // back to /harnesses (harness-kind only). Self-heals once the worker ships
@@ -70,7 +84,7 @@ const listCupboardListings = defineTool({
         });
         res = await fetch(fallback.toString(), {
           headers: { 'User-Agent': 'papercusp-operator/1' },
-          signal: AbortSignal.timeout(10_000),
+          signal: AbortSignal.timeout(CUPBOARD_UPSTREAM_TIMEOUT_MS),
         });
       }
       if (!res.ok) {
@@ -111,13 +125,13 @@ const getCupboardListing = defineTool({
     try {
       let res = await fetch(`${base}/listings/${encodeURIComponent(id)}`, {
         headers: { 'User-Agent': 'papercusp-operator/1' },
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(CUPBOARD_UPSTREAM_TIMEOUT_MS),
       });
       // Transitional fallback for a pre-migration-004 worker (see list handler).
       if (res.status === 404) {
         res = await fetch(`${base}/harnesses/${encodeURIComponent(id)}`, {
           headers: { 'User-Agent': 'papercusp-operator/1' },
-          signal: AbortSignal.timeout(10_000),
+          signal: AbortSignal.timeout(CUPBOARD_UPSTREAM_TIMEOUT_MS),
         });
       }
       if (!res.ok) {
@@ -153,7 +167,7 @@ export const getCupboardBindings = defineTool({
     try {
       const res = await fetch(`${base}/bindings?repo_ids=${encodeURIComponent(repoIds)}`, {
         headers: { 'User-Agent': 'papercusp-operator/1' },
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(CUPBOARD_UPSTREAM_TIMEOUT_MS),
       });
       // A worker predating P-011 (no /bindings route) or any upstream failure ⇒
       // "no badges yet", not an error: the search panel stays fully functional.
@@ -262,7 +276,7 @@ async function forwardToCupboardAuthed(
         ...(init.body != null ? { 'Content-Type': 'application/json' } : {}),
       },
       body: init.body,
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(CUPBOARD_UPSTREAM_TIMEOUT_MS),
     });
   } catch (e) {
     return Response.json(

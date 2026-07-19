@@ -1865,6 +1865,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     ttlUpgraded: 0,
     toolsBreakpointInjected: 0,
     toolsBreakpointSkippedNoBudget: 0,
+    /** Tool-search sessions: every tool deferred ⇒ no legal cache anchor (see cache-policy). */
+    toolsBreakpointSkippedAllDeferred: 0,
     breakpointHistogram: [0, 0, 0, 0, 0] as number[],
     codexRequests: 0,
     codexLegacyRetention: 0,
@@ -1880,6 +1882,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       cachePolicyStats.ttlUpgraded += s.ttlUpgraded;
       if (s.toolsBreakpointInjected) cachePolicyStats.toolsBreakpointInjected++;
       if (s.toolsBreakpointSkippedNoBudget) cachePolicyStats.toolsBreakpointSkippedNoBudget++;
+      if (s.toolsBreakpointSkippedAllDeferred) cachePolicyStats.toolsBreakpointSkippedAllDeferred++;
       const idx = Math.min(s.breakpointsBefore, cachePolicyStats.breakpointHistogram.length - 1);
       cachePolicyStats.breakpointHistogram[idx]++;
     } else {

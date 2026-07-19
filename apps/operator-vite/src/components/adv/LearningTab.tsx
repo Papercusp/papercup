@@ -179,9 +179,29 @@ const STAGE_DESCRIPTIONS: Record<LearningStage, string> = {
   observe: "What the system sees: raw signals, observations, rubric grades.",
   analyze: "What idea generation does with it, cycle by cycle.",
   improve: "What the loop produced: ideas, experiments, and the work backlog.",
-  verify: "Did it actually get better — benchmarks, scoring trends, the release gate.",
   retain: "What the system keeps: shared memory and adopted lessons.",
+  // Generic / whole-system, NOT per-run (owner ask 2026-07-19) — every view
+  // here measures the system at large, so it reads as the outermost ring after
+  // the loop banks its lesson. Per-run outcomes live in Improve → Ideas.
+  verify:
+    "Is the SYSTEM measurably better over time — benchmarks, scoring trends, the release gate (whole-system, not per-idea).",
 };
+
+/** The Verify stage's views — hoisted so the stage can be declared LAST in
+ *  {@link STAGES} (owner ask 2026-07-19) without burying the list mid-array. */
+const VERIFY_VIEWS: ReadonlyArray<{ id: LView; label: string; icon: typeof Eye }> = [
+  { id: "benchmark", label: "Benchmark", icon: FlaskConical },
+  // P-006: this view renders hive-eval SCORING trends (is orchestration
+  // quality improving?), not an orchestration control surface — the label
+  // says what the numbers are, not what they measure over.
+  { id: "orchestration", label: "Pot scoring", icon: GitBranch },
+  { id: "bakeoff", label: "Framework bake-off", icon: Repeat2 },
+  { id: "wake-efficiency", label: "Wake efficiency", icon: Hourglass },
+  { id: "ekg", label: "EKG", icon: Activity },
+  { id: "red-queen", label: "Red Queen", icon: Radar },
+  { id: "experiments", label: "Experiments", icon: Beaker },
+  { id: "frontier", label: "Frontier", icon: Telescope },
+];
 
 const STAGES: ReadonlyArray<{
   id: LearningStage;
@@ -220,28 +240,26 @@ const STAGES: ReadonlyArray<{
     ],
   },
   {
-    id: "verify",
-    label: "Verify",
-    icon: Gauge,
-    views: [
-      { id: "benchmark", label: "Benchmark", icon: FlaskConical },
-      // P-006: this view renders hive-eval SCORING trends (is orchestration
-      // quality improving?), not an orchestration control surface — the label
-      // says what the numbers are, not what they measure over.
-      { id: "orchestration", label: "Pot scoring", icon: GitBranch },
-      { id: "bakeoff", label: "Framework bake-off", icon: Repeat2 },
-      { id: "wake-efficiency", label: "Wake efficiency", icon: Hourglass },
-      { id: "ekg", label: "EKG", icon: Activity },
-      { id: "red-queen", label: "Red Queen", icon: Radar },
-      { id: "experiments", label: "Experiments", icon: Beaker },
-      { id: "frontier", label: "Frontier", icon: Telescope },
-    ],
-  },
-  {
     id: "retain",
     label: "Retain",
     icon: Brain,
     views: [{ id: "learnings", label: "Learnings", icon: Brain }],
+  },
+  // Verify sits AFTER Retain (owner ask 2026-07-19: "is the verify actually
+  // verifying the runs... if it's a generic verify putting it before retain is
+  // weird"). It is generic: every view here reads a WHOLE-SYSTEM measurement
+  // (learning.releaseReadiness, learning.hiveEvalTrend, learning.bakeoff,
+  // learning.soakReport, wake efficiency) — none of them joins to the ideas or
+  // improvements this loop just produced. Per-RUN outcome tracking already
+  // lives in Improve (the Ideas funnel routed→filed→claimed→done and the
+  // per-idea trace ending in grade→outcome). So this is the outermost feedback
+  // ring — "did the system as a whole get better" — which follows banking the
+  // lesson rather than gating it. See the same note on STAGE_DESCRIPTIONS.
+  {
+    id: "verify",
+    label: "Verify",
+    icon: Gauge,
+    views: VERIFY_VIEWS,
   },
 ];
 
@@ -4300,17 +4318,32 @@ export function LearningStyles() {
       }
       .pc-learning__controls { min-height: 30px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .pc-learning__view-tabs { min-width: 0; max-width: 100%; }
-      .pc-learning__view-list { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 0; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--border); background: transparent; }
+      /* Real TAB shapes (owner ask 2026-07-19: "make the tabs inside all the
+         steps look more like tabs"): each view tab is a top-rounded box that
+         sits ON the strip's baseline rail; the selected one adopts the panel
+         background and punches a hole through the rail so it reads as
+         physically connected to the content below, instead of the previous
+         underline-only treatment. */
+      .pc-learning__view-list { display: inline-flex; align-items: flex-end; gap: 3px; max-width: 100%; padding: 0 3px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; border-bottom: 1px solid var(--border); background: transparent; }
       .pc-learning__view-tab {
-        display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 5px 9px 6px;
-        border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
+        display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 5px 11px 6px;
+        border: 1px solid transparent; border-bottom: 1px solid transparent;
+        border-radius: 8px 8px 0 0; margin-bottom: -1px;
+        background: color-mix(in srgb, var(--fg-mute) 7%, transparent);
         color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 620;
         transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
       }
       .pc-learning__view-icon { position: relative; display: grid; place-items: center; width: 18px; height: 18px; flex: none; border: 1px solid transparent; border-radius: 50%; }
       .pc-learning__view-icon .pc-learning__statusmark { right: -3px; bottom: -3px; width: 6px; height: 6px; border-width: 1.5px; }
-      .pc-learning__view-tab:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 5%, transparent); }
-      .pc-learning__view-tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+      .pc-learning__view-tab:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+      .pc-learning__view-tab[aria-selected="true"] {
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel, var(--bg, transparent)));
+        border-color: var(--border);
+        /* Erase the rail beneath the active tab — the "connected" tab look. */
+        border-bottom-color: color-mix(in srgb, var(--accent) 8%, var(--bg-panel, var(--bg, transparent)));
+        box-shadow: inset 0 2px 0 var(--accent);
+      }
       /* Overflow affordance (P-007): fade the clipped edge of the view strip so
          hidden tabs read as "more this way" (background-independent CSS mask,
          -webkit- prefixed for the WebKitGTK desktop) — same pattern as

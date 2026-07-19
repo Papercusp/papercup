@@ -70,6 +70,9 @@ export interface CacheProxyStats {
   ttlUpgraded: number;
   toolsBreakpointInjected: number;
   toolsBreakpointSkippedNoBudget: number;
+  /** Tool-search sessions: every tool deferred ⇒ no legal cache anchor (defer_loading +
+   *  cache_control on one tool is a hard 400). Expected to be the COMMON case fleet-wide. */
+  toolsBreakpointSkippedAllDeferred: number;
   upstreamErrors: number;
 }
 
@@ -84,6 +87,7 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
     ttlUpgraded: 0,
     toolsBreakpointInjected: 0,
     toolsBreakpointSkippedNoBudget: 0,
+    toolsBreakpointSkippedAllDeferred: 0,
     upstreamErrors: 0,
   };
 
@@ -121,6 +125,7 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             stats.ttlUpgraded += out.stats.ttlUpgraded;
             if (out.stats.toolsBreakpointInjected) stats.toolsBreakpointInjected++;
             if (out.stats.toolsBreakpointSkippedNoBudget) stats.toolsBreakpointSkippedNoBudget++;
+            if (out.stats.toolsBreakpointSkippedAllDeferred) stats.toolsBreakpointSkippedAllDeferred++;
           }
           body = out.body;
         } catch (e) {

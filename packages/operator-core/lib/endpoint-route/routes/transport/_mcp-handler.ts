@@ -384,6 +384,13 @@ const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
   'sessions:read',
   'sessions:list',
   'sessions:timeline',
+  // sessions:digest (EI-10888, added AFTER this allowlist's original P-005/P-006 pass —
+  // EI-13175: it was never backported here, so a workspace-scoped psu session got
+  // `workspace_forbidden` on a tool it never asked to span workspaces with). Same
+  // self-confining profile as its sessions:* siblings above: its query filters
+  // `WHERE (workspace_id = ctx.workspaceId OR workspace_id = 'default')` (digest.ts) —
+  // it never reads another workspace's tenant data from a scoped caller.
+  'sessions:digest',
 ]);
 
 /** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —

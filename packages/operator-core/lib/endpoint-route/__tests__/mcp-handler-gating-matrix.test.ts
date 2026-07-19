@@ -537,7 +537,7 @@ describe('scoped-superuser-workspace-clamp', () => {
     // psu session — the EI-1810 failure shape. The allowlist exempts them (reaching
     // the handler is the assertion; a handler error on stubbed PG is irrelevant).
     h.scopedClampFlag.value = true;
-    for (const name of ['search:fulltext', 'search:semantic', 'sessions:search', 'sessions:read', 'sessions:list', 'sessions:timeline']) {
+    for (const name of ['search:fulltext', 'search:semantic', 'sessions:search', 'sessions:read', 'sessions:list', 'sessions:timeline', 'sessions:digest']) {
       const res = await callTool(name, { query: 'pricing' }, scoped('ws-test'));
       expect(textOf(res), name).not.toContain('workspace_forbidden'); // NOT denied by the clamp
     }

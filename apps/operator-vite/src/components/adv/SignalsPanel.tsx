@@ -118,6 +118,62 @@ function laneLabel(lane: string): string {
   return lane.replace(/-/g, " ");
 }
 
+/** Group digest entries by lane (owner ask 2026-07-19: "make the standing
+ *  corpus cards stacked by their type"). Groups render in the CANONICAL
+ *  FED_LANE_DOCS order with unknown lanes appended alphabetically — a stable
+ *  stack that does not reshuffle between cycles as per-lane counts shift
+ *  (count-ordering would make the same corpus look reorganized every tick). */
+function groupByLane<T extends { lane: string }>(
+  entries: readonly T[],
+): Array<[string, T[]]> {
+  const groups = new Map<string, T[]>();
+  for (const e of entries) {
+    const existing = groups.get(e.lane);
+    if (existing) existing.push(e);
+    else groups.set(e.lane, [e]);
+  }
+  const canonical = Object.keys(FED_LANE_DOCS);
+  return [...groups.entries()].sort(([a], [b]) => {
+    const ia = canonical.indexOf(a);
+    const ib = canonical.indexOf(b);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.localeCompare(b);
+  });
+}
+
+/** One reference card per lane — the taxonomy rendered as cards rather than a
+ *  definition grid (owner ask 2026-07-19). Shared by the trigger-lane and
+ *  fed-lane groups so the two can never drift apart visually. */
+function laneCards(
+  docs: Record<string, string>,
+  colors: Record<string, string>,
+  ariaLabel: string,
+) {
+  return (
+    <ul className="pc-signals__cards" aria-label={ariaLabel}>
+      {Object.entries(docs).map(([lane, doc]) => (
+        <li
+          key={lane}
+          className="pc-signals__card"
+          style={
+            { "--lane-color": colors[lane] ?? hashLaneColor(lane) } as CSSProperties
+          }
+        >
+          <header className="pc-signals__card-head">
+            <span className="pc-signals__lane">
+              <i aria-hidden />
+              {laneLabel(lane)}
+            </span>
+          </header>
+          <p className="pc-signals__card-summary is-doc">{doc}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function formatTime(iso: string | null): string {
   if (!iso) return "—";
   const ms = Date.parse(iso);
@@ -334,19 +390,30 @@ export function SignalsPanel({
               </p>
               {digest.newEntries.length > 0 ? (
                 <ul
-                  className="pc-signals__digest"
+                  className="pc-signals__cards"
                   aria-label="New digest entries since the previous cycle"
                 >
                   {digest.newEntries.map((e) => (
-                    <li key={e.ref} className="is-new">
-                      <Tooltip label={FED_LANE_DOCS[e.lane] ?? e.lane}>
-                        <span className="pc-signals__fedchip">
-                          new · {laneLabel(e.lane)}
-                        </span>
-                      </Tooltip>
-                      <span className="pc-signals__digest-summary">
-                        {e.summary}
-                      </span>
+                    <li
+                      key={e.ref}
+                      className="pc-signals__card is-new"
+                      style={
+                        {
+                          "--lane-color":
+                            FED_LANE_COLOR[e.lane] ?? hashLaneColor(e.lane),
+                        } as CSSProperties
+                      }
+                    >
+                      <header className="pc-signals__card-head">
+                        <Tooltip label={FED_LANE_DOCS[e.lane] ?? e.lane}>
+                          <span className="pc-signals__lane">
+                            <i aria-hidden />
+                            {laneLabel(e.lane)}
+                          </span>
+                        </Tooltip>
+                        <span className="pc-signals__newflag">new</span>
+                      </header>
+                      <p className="pc-signals__card-summary">{e.summary}</p>
                       {renderSourceChip(e.ref)}
                     </li>
                   ))}
@@ -362,32 +429,56 @@ export function SignalsPanel({
                   label="Standing corpus"
                   count={digest.standingEntries.length}
                 >
-                  <ul
-                    className="pc-signals__digest"
-                    aria-label="Standing digest entries"
-                  >
-                    {digest.standingEntries.map((e) => (
-                      <li key={e.ref}>
-                        <Tooltip label={FED_LANE_DOCS[e.lane] ?? e.lane}>
-                          <span className="pc-signals__fedchip">
-                            {laneLabel(e.lane)}
-                          </span>
-                        </Tooltip>
-                        <span className="pc-signals__digest-summary">
-                          {e.summary}
-                        </span>
-                        {renderSourceChip(e.ref)}
-                      </li>
-                    ))}
+                  <div className="pc-signals__cardstack">
+                    {groupByLane(digest.standingEntries).map(
+                      ([lane, entries]) => (
+                        <section
+                          key={lane}
+                          className="pc-signals__lanegroup"
+                          style={
+                            {
+                              "--lane-color":
+                                FED_LANE_COLOR[lane] ?? hashLaneColor(lane),
+                            } as CSSProperties
+                          }
+                        >
+                          <header className="pc-signals__lanegroup-head">
+                            <Tooltip label={FED_LANE_DOCS[lane] ?? lane}>
+                              <span className="pc-signals__lane">
+                                <i aria-hidden />
+                                {laneLabel(lane)}
+                              </span>
+                            </Tooltip>
+                            <span className="pc-signals__lanegroup-count">
+                              {entries.length}
+                            </span>
+                          </header>
+                          {/* The lane rides the GROUP header, so the cards
+                              inside carry only their own content — that is the
+                              point of stacking by type. */}
+                          <ul
+                            className="pc-signals__cards"
+                            aria-label={`${laneLabel(lane)} standing entries`}
+                          >
+                            {entries.map((e) => (
+                              <li key={e.ref} className="pc-signals__card">
+                                <p className="pc-signals__card-summary">
+                                  {e.summary}
+                                </p>
+                                {renderSourceChip(e.ref)}
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      ),
+                    )}
                     {digest.truncated ? (
-                      <li>
-                        <em>
-                          …capped for display — the full digest is in
-                          scout_digest_snapshots.
-                        </em>
-                      </li>
+                      <p className="pc-signals__digest-none">
+                        …capped for display — the full digest is in
+                        scout_digest_snapshots.
+                      </p>
                     ) : null}
-                  </ul>
+                  </div>
                 </LearningDisclosure>
               ) : null}
             </>
@@ -401,43 +492,15 @@ export function SignalsPanel({
           >
             <div className="pc-signals__taxonomygroup">
               <h4>Trigger lanes — what fires a cycle</h4>
-              <ul className="pc-signals__taxonomy" aria-label="Trigger lanes explained">
-                {Object.entries(TRIGGER_LANE_DOCS).map(([lane, doc]) => {
-                  const color = TRIGGER_LANE_COLOR[lane] ?? hashLaneColor(lane);
-                  return (
-                    <li key={lane}>
-                      <span
-                        className="pc-signals__lane"
-                        style={{ "--lane-color": color } as CSSProperties}
-                      >
-                        <i aria-hidden />
-                        {laneLabel(lane)}
-                      </span>
-                      <p>{doc}</p>
-                    </li>
-                  );
-                })}
-              </ul>
+              {laneCards(
+                TRIGGER_LANE_DOCS,
+                TRIGGER_LANE_COLOR,
+                "Trigger lanes explained",
+              )}
             </div>
             <div className="pc-signals__taxonomygroup">
               <h4>Fed lanes — what the digest reads</h4>
-              <ul className="pc-signals__taxonomy" aria-label="Fed lanes explained">
-                {Object.entries(FED_LANE_DOCS).map(([lane, doc]) => {
-                  const color = FED_LANE_COLOR[lane] ?? hashLaneColor(lane);
-                  return (
-                    <li key={lane}>
-                      <span
-                        className="pc-signals__lane"
-                        style={{ "--lane-color": color } as CSSProperties}
-                      >
-                        <i aria-hidden />
-                        {laneLabel(lane)}
-                      </span>
-                      <p>{doc}</p>
-                    </li>
-                  );
-                })}
-              </ul>
+              {laneCards(FED_LANE_DOCS, FED_LANE_COLOR, "Fed lanes explained")}
             </div>
           </LearningDisclosure>
         </>
@@ -511,20 +574,53 @@ export function SignalsPanel({
         margin: 4px 2px 4px; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
         color: var(--fg-mute, #7f9bb4);
       }
-      .pc-signals__taxonomy {
+      /* Card grid (owner ask 2026-07-19): the digest entries and the lane
+         taxonomy read as CARDS rather than dense rows — each card carries its
+         lane accent on the left edge so type is legible at a glance, and the
+         summary wraps to 3 lines instead of being ellipsized to one. */
+      .pc-signals__cards {
         list-style: none; margin: 0; padding: 0;
-        display: grid; grid-template-columns: repeat(2, minmax(230px, 1fr)); gap: 4px 10px;
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px;
       }
-      .pc-signals__taxonomy li {
-        display: grid; grid-template-columns: 150px 1fr; align-items: baseline; gap: 8px;
-        padding: 4px 8px; border-radius: 6px; font-size: 11.5px;
+      .pc-signals__card {
+        display: flex; flex-direction: column; align-items: flex-start; gap: 5px;
+        padding: 8px 10px; border-radius: 8px; font-size: 11px;
+        color: var(--fg-dim, #b9d4e8);
         border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
-        color: var(--fg-mute, #7f9bb4);
+        border-left: 3px solid var(--lane-color, var(--border, rgba(125, 211, 252, 0.12)));
+        background: color-mix(in srgb, var(--lane-color, transparent) 4%, transparent);
       }
-      .pc-signals__taxonomy li p { margin: 0; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-signals__card.is-new {
+        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 30%, transparent);
+        border-left-color: var(--lane-color, var(--accent, #7dd3fc));
+      }
+      .pc-signals__card-head { display: flex; align-items: center; gap: 6px; width: 100%; }
+      .pc-signals__card-summary {
+        margin: 0; font-size: 11px; line-height: 1.45; width: 100%;
+        display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+      }
+      .pc-signals__card-summary.is-doc { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-signals__newflag {
+        margin-left: auto; padding: 0 6px; border-radius: 999px;
+        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+        color: var(--accent, #7dd3fc);
+        border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 40%, transparent);
+      }
+      /* Standing corpus stacks its cards BY LANE (owner ask 3b) — the lane
+         rides the group header, never repeated on every card inside it. */
+      .pc-signals__cardstack { display: flex; flex-direction: column; gap: 11px; }
+      .pc-signals__lanegroup { display: flex; flex-direction: column; gap: 5px; }
+      .pc-signals__lanegroup-head {
+        display: flex; align-items: center; gap: 8px; padding-inline: 2px;
+        border-left: 3px solid var(--lane-color, transparent); padding-left: 7px;
+      }
+      .pc-signals__lanegroup-count {
+        font-size: 9.5px; font-variant-numeric: tabular-nums; color: var(--fg-mute, #7f9bb4);
+        padding: 0 6px; border-radius: 999px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+      }
       @media (max-width: 900px) {
-        .pc-signals__taxonomy { grid-template-columns: 1fr; }
-        .pc-signals__taxonomy li { grid-template-columns: 1fr; }
+        .pc-signals__cards { grid-template-columns: 1fr; }
       }
       .pc-signals__lane { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; color: var(--lane-color, var(--fg-mute)); }
       .pc-signals__lane i { width: 7px; height: 7px; border-radius: 50%; background: var(--lane-color); flex: none; }

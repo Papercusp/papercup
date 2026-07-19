@@ -150,8 +150,28 @@ export function schemaToText(inputSchema: unknown): string | null {
       properties?: unknown;
       required?: unknown;
     };
+    // EI-13164: an `enum` property's JSON-schema output ALSO carries `type:"string"`
+    // (zod's own toJSONSchema emits both for `z.enum([...])`, confirmed for
+    // `severity: z.enum(['critical','major','minor','nit'])` → `{ type:"string",
+    // enum:[...] }`) — so the `type` branch below fired first and the enum branch
+    // was DEAD CODE for every real zod enum, silently downgrading the discovered
+    // shape to a bare `:string`. A caller then had no way to learn the allowed
+    // values short of a rejected write (tools:find showed `severity?:string`;
+    // passing a plausible-but-wrong value like "low" surfaced the real
+    // critical|major|minor|nit set only in the runtime error). Check enum FIRST,
+    // and render its actual member values (not just the word "enum") — strictly
+    // more informative than either the old enum-only or type-only text.
+    const enumValues = Array.isArray(p.enum)
+      ? (p.enum as unknown[]).filter((v): v is string | number | boolean =>
+          typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+        )
+      : null;
     const type =
-      typeof p.type === 'string' ? p.type : Array.isArray(p.enum) ? 'enum' : '';
+      enumValues && enumValues.length > 0
+        ? `enum(${enumValues.join('|')})`
+        : typeof p.type === 'string'
+          ? p.type
+          : '';
     const nested = nestedObjectFieldsText(p);
     const desc = typeof p.description === 'string' ? p.description.trim() : '';
     const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${nested}` : ''}`;

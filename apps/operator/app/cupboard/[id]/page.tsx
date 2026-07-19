@@ -56,7 +56,7 @@ import {
   LISTING_ACTION_LABEL,
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
-import { CupboardErrorState } from '../CupboardErrorState';
+import { CupboardErrorState, cupboardHttpError } from '../CupboardErrorState';
 import KnowledgePackInstall from './KnowledgePackInstall';
 import BundleAppInstall from './BundleAppInstall';
 import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
@@ -118,7 +118,13 @@ export default function CupboardDetailPage() {
     setLoading(true);
     setError(null);
     fetch(`/api/cupboard/listings/${id}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      // cupboardHttpError (not a bare `HTTP ${status}`) folds in the upstream
+      // cause the proxy forwards in its JSON body — the operator collapses
+      // EVERY upstream failure into a 503, so that body is the ONLY place the
+      // real reason ("TimeoutError…", "ENOTFOUND", "cupboard: HTTP 500")
+      // survives. Dropping it is why a dead Cupboard host reported nothing
+      // beyond "may be briefly unavailable" (cupboard-dead-default-host-2026-07-19).
+      .then(async (r) => (r.ok ? r.json() : Promise.reject(await cupboardHttpError(r))))
       .then((data: { listing: HarnessListing }) => { setListing(data.listing); })
       .catch((err: unknown) => { setError(String(err)); })
       .finally(() => setLoading(false));

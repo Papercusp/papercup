@@ -433,3 +433,55 @@ describe('CupboardDetailPage — standalone app download (P-005)', () => {
     });
   });
 });
+
+/**
+ * The detail page must SURFACE the upstream cause, not swallow it
+ * (cupboard-dead-default-host-2026-07-19).
+ *
+ * The operator proxy collapses every upstream failure — TLS hang, DNS miss,
+ * connection refused — into a bare 503, forwarding the real reason only in the
+ * JSON body's `error`. This page used to reject with `new Error('HTTP ' +
+ * status)`, throwing that body away, so a Cupboard pointed at a dead host
+ * reported nothing more useful than "it may be briefly unavailable" and sent
+ * real debugging down the wrong path. `cupboardHttpError` folds the body in.
+ */
+describe('CupboardDetailPage — Cupboard failure surfaces its upstream cause', () => {
+  function mockListingFailure(status: number, body: unknown) {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes('/api/cupboard/listings/')) {
+        return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  it('names the proxy-forwarded upstream cause on a 503 instead of a bare status', async () => {
+    mockListingFailure(503, { error: 'TimeoutError: The operation was aborted due to timeout' });
+    render(<CupboardDetailPage />);
+
+    const state = await screen.findByTestId('cupboard-error-state');
+    // The actual cause must reach the user — this is the whole point.
+    expect(state.textContent).toContain('TimeoutError');
+    expect(state.textContent).toContain("Couldn't reach the Cupboard server");
+  });
+
+  it('still degrades gracefully when the proxy body carries no cause', async () => {
+    mockListingFailure(503, {});
+    render(<CupboardDetailPage />);
+
+    const state = await screen.findByTestId('cupboard-error-state');
+    expect(state.textContent).toContain("Couldn't reach the Cupboard server");
+    // No invented detail parenthetical when the body told us nothing.
+    expect(state.textContent).toContain('may be briefly unavailable');
+  });
+
+  it('reports a missing listing as gone, not as unreachable', async () => {
+    mockListingFailure(404, { error: 'cupboard: HTTP 404' });
+    render(<CupboardDetailPage />);
+
+    const state = await screen.findByTestId('cupboard-error-state');
+    expect(state.textContent).toContain("doesn't exist");
+  });
+});

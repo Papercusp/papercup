@@ -173,6 +173,20 @@ export default defineConfig({
     // never 404s a lazy import; a release/CI `build` (no --watch, no retain env)
     // still empties for a clean bundle. The prune plugin (below) caps growth.
     emptyOutDir: !retainDistChunks,
+    // MUST stay 'esbuild'. Vite 8 is rolldown-backed, and rolldown's DEFAULT
+    // minifier emits a bundle in which a component reference mangles to
+    // `undefined` — every route then dies at render with React #306 ("Element
+    // type is invalid ... but got: undefined"), taking the whole chrome subtree
+    // (ChromeShell + EnvSwitcherBar) with it. The dev server never sees it
+    // (unbundled module-per-file), so it only breaks the BUILT app — i.e. the
+    // shipped desktop artifact, while :3055 looks healthy.
+    //
+    // Isolated 2026-07-19 by a three-way build of identical source:
+    //   default (rolldown)  -> React #306 on every route, blank/error app
+    //   --minify false      -> renders correctly
+    //   --minify esbuild    -> renders correctly, and still minified
+    // Do not drop this to "take the default" without re-running that comparison.
+    minify: 'esbuild',
   },
   server: {
     port: 3055,

@@ -42,6 +42,9 @@ export interface AnthropicCacheStats {
   toolsBreakpointInjected: boolean;
   /** We wanted the tools breakpoint but the client already used all 4 slots. */
   toolsBreakpointSkippedNoBudget: boolean;
+  /** We wanted the tools breakpoint but EVERY tool is defer_loading (tool-search sessions):
+   *  a tool may not carry both `defer_loading` and `cache_control` — the API 400s. */
+  toolsBreakpointSkippedAllDeferred: boolean;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -64,6 +67,21 @@ function cacheableBlocks(body: Record<string, unknown>): Record<string, unknown>
     }
   }
   return out;
+}
+
+/** True when a tool is marked for deferred loading (tool-search). Such a tool may NOT carry a
+ *  `cache_control` marker — the pairing is a hard 400. Treated as deferred on ANY truthy value
+ *  so a future spelling (e.g. an object form) fails CLOSED rather than re-breaking sessions. */
+export function isDeferredTool(tool: unknown): boolean {
+  return isRecord(tool) && Boolean(tool.defer_loading);
+}
+
+/** Index of the last tool that can legally anchor a cache breakpoint, or -1 when none can. */
+export function findLastNonDeferredToolIndex(tools: readonly unknown[]): number {
+  for (let i = tools.length - 1; i >= 0; i--) {
+    if (isRecord(tools[i]) && !isDeferredTool(tools[i])) return i;
+  }
+  return -1;
 }
 
 /** An ephemeral cache_control marker, if this block carries one. */
@@ -97,6 +115,7 @@ export function applyAnthropicCachePolicy(
     breakpointsBefore: 0,
     toolsBreakpointInjected: false,
     toolsBreakpointSkippedNoBudget: false,
+    toolsBreakpointSkippedAllDeferred: false,
   };
 
   const blocks = cacheableBlocks(body);
@@ -125,15 +144,27 @@ export function applyAnthropicCachePolicy(
   if (opts.injectToolsBreakpoint !== false) {
     const tools = body.tools;
     if (Array.isArray(tools) && tools.length > 0) {
-      const last = tools[tools.length - 1];
-      if (isRecord(last) && !isRecord(last.cache_control)) {
-        if (stats.breakpointsBefore < ANTHROPIC_MAX_BREAKPOINTS) {
-          last.cache_control = { type: 'ephemeral', ttl };
-          stats.toolsBreakpointInjected = true;
-          stats.changed = true;
-        } else {
-          // At budget: a 5th marker is a 400. Skipping costs us the shared span, never the request.
-          stats.toolsBreakpointSkippedNoBudget = true;
+      // A tool marked `defer_loading` CANNOT also carry `cache_control` — the API rejects the
+      // whole request with a 400 ("Tools with defer_loading cannot use prompt caching"). Every
+      // tool-search session (the fleet forces ENABLE_TOOL_SEARCH=true) defers most of its
+      // catalog, so the naive "mark the last tool" lands on a deferred tool and breaks the
+      // session outright. Mark the LAST NON-DEFERRED tool instead: it still ends a stable,
+      // org-shareable prefix (tools render in order at position 0) and is always legal.
+      // If every tool is deferred there is no legal anchor — skip, and record why.
+      const idx = findLastNonDeferredToolIndex(tools);
+      if (idx === -1) {
+        stats.toolsBreakpointSkippedAllDeferred = true;
+      } else {
+        const anchor = tools[idx];
+        if (isRecord(anchor) && !isRecord(anchor.cache_control)) {
+          if (stats.breakpointsBefore < ANTHROPIC_MAX_BREAKPOINTS) {
+            anchor.cache_control = { type: 'ephemeral', ttl };
+            stats.toolsBreakpointInjected = true;
+            stats.changed = true;
+          } else {
+            // At budget: a 5th marker is a 400. Skipping costs the shared span, never the request.
+            stats.toolsBreakpointSkippedNoBudget = true;
+          }
         }
       }
     }

@@ -233,8 +233,22 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(txt).toBe('key:string the flag key; enabled?:boolean on or off');
   });
 
-  it('uses "enum" as the type for an enum property and tolerates a missing description', () => {
-    expect(schemaToText({ properties: { mode: { enum: ['a', 'b'] } } })).toBe('mode?:enum');
+  it('renders an enum property\'s actual member values (no type set) and tolerates a missing description', () => {
+    expect(schemaToText({ properties: { mode: { enum: ['a', 'b'] } } })).toBe('mode?:enum(a|b)');
+  });
+
+  it('EI-13164: an enum property still renders its member values when the JSON schema ALSO carries type:"string" — the real zod z.enum() shape, previously dead-coded to a bare :string', () => {
+    // zod's own toJSONSchema for `z.enum(['critical','major','minor','nit'])` emits
+    // BOTH `type:"string"` and `enum:[...]` — the exact shape that used to lose the
+    // enum entirely (the `type` branch matched first), so tools:find described
+    // `improvements:capture`'s `severity` arg as a bare `:string` and a plausible
+    // value ("low") was accepted by discovery but rejected at call time.
+    const txt = schemaToText({
+      properties: {
+        severity: { type: 'string', enum: ['critical', 'major', 'minor', 'nit'], description: 'how bad' },
+      },
+    });
+    expect(txt).toBe('severity?:enum(critical|major|minor|nit) how bad');
   });
 
   it('returns null for a no-arg / absent / non-object schema', () => {
