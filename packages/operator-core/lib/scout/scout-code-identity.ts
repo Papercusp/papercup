@@ -18,15 +18,23 @@
  * (not "every scout file") so an unrelated edit elsewhere doesn't spuriously zero the
  * soak-aggregation denominator (see {@link ./tick-ledger}'s readScoutTicksByCodeHash).
  *
- * MEMOIZED ON FIRST CALL, not at this module's own import — {@link currentScoutCodeHash}
- * is called from inside `scheduler.ts`'s tick-recording path (the first real activity
- * after a scout tick's cadence/fire gates pass), which is at-or-after whichever instant
- * the target files actually loaded in THIS process (their exact load instant relative
- * to hono-host boot was NOT conclusively resolved during WI-5397's build — the empirical
- * "loads lazily at first tick" claim from an earlier design pass could not be reproduced
- * against the current import graph, which traces as fully static/eager from
- * blueprint-steps/index.ts — but it does not matter: once computed the hash is frozen
- * for the process's lifetime, same as the code it describes).
+ * COMPUTED EAGERLY AT MODULE EVALUATION (a module-scope value, not a lazy first-call
+ * memo) — corrected post-build (design review, WI-5397): this module's own import IS
+ * eager (the traced import graph — blueprint-steps/index.ts → ops/scout-cycle.ts →
+ * scout/run.ts → scheduler.ts → this module — is fully static, so evaluating this file
+ * happens at hono-host BOOT, alongside every other eagerly-loaded scout module). An
+ * earlier revision deferred the read to {@link currentScoutCodeHash}'s FIRST CALL
+ * (inside scheduler.ts's tick-recording path) reasoning that first-call was "close
+ * enough" to load time — but on a continuously fleet-edited shared working tree, the
+ * gap between eager-import (boot) and first scout tick was measured at ~32 MINUTES
+ * (boot 00:37:45Z → first tick 01:09:56Z). An edit to capacity-errors.ts / scheduler.ts
+ * / quality-metrics.ts landing in that window would have been hashed by the lazy
+ * first-call read even though this process never actually loaded those bytes — the
+ * EXACT "tree moved out from under a long-lived process" failure mode this whole
+ * module exists to solve, reintroduced via the memo's own timing. Reading the files at
+ * module-evaluation time instead ties the hash to as close to this process's true
+ * import instant as a runtime fs read can get — eager imports make that gap NEAR-ZERO,
+ * not large; "eager therefore a lazy first-call read is safe" had it backwards.
  */
 import { fileURLToPath } from 'node:url';
 import { computeCombinedSourceHash } from './src-hash';
@@ -38,23 +46,28 @@ import { computeCombinedSourceHash } from './src-hash';
  *  future hash for byte-identical code, spuriously breaking the soak union). */
 export const SCOUT_CODE_IDENTITY_FILES = ['./capacity-errors.ts', './scheduler.ts', './quality-metrics.ts'] as const;
 
-let cached: string | null | undefined; // undefined = not yet computed this process
-
 function resolvePaths(): string[] {
   const dir = fileURLToPath(new URL('.', import.meta.url));
   return SCOUT_CODE_IDENTITY_FILES.map((rel) => dir + rel.replace(/^\.\//, ''));
 }
 
+/** Computed once, AT THIS MODULE'S OWN EVALUATION (see the module docblock) — not
+ *  lazily on first access. `let`, not `const`, only so {@link _resetScoutCodeHashForTest}
+ *  can force a fresh read in a long-lived test process; production code never mutates it
+ *  again after this line runs. */
+let cached: string | null = computeCombinedSourceHash(resolvePaths());
+
 /** The running scout code's identity — sha256(first 16 hex) over
- *  {@link SCOUT_CODE_IDENTITY_FILES}' concatenated CURRENT bytes, computed once and
- *  cached for this process's lifetime. Null when any file is unreadable (a bundled
- *  build with no on-disk source, a permissions issue, ...) — never a partial hash. */
+ *  {@link SCOUT_CODE_IDENTITY_FILES}' concatenated bytes AS OF this module's own
+ *  evaluation instant (see module docblock for why that beats a first-call memo), fixed
+ *  for the rest of the process's lifetime. Null when any file was unreadable at that
+ *  instant (a bundled build with no on-disk source, a permissions issue, ...) — never a
+ *  partial hash. */
 export function currentScoutCodeHash(): string | null {
-  if (cached === undefined) cached = computeCombinedSourceHash(resolvePaths());
   return cached;
 }
 
-/** Test-only — clear the memo so a test can force recomputation. */
+/** Test-only — force a fresh read from disk (simulates re-evaluating this module). */
 export function _resetScoutCodeHashForTest(): void {
-  cached = undefined;
+  cached = computeCombinedSourceHash(resolvePaths());
 }
