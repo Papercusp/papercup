@@ -18,7 +18,9 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 const {
+  AUTO_ADOPT_REVIEWER,
   FLEET_LESSONS_PACK_ID,
+  autoAdoptPendingCandidates,
   decideKnowledgePackCandidate,
   listKnowledgePackCandidates,
   stageKnowledgePackCandidate,
@@ -216,5 +218,60 @@ describe('knowledge-pack candidates (real PG, migration 239)', () => {
     if (!staged.staged) throw new Error('stage failed');
     const all = await listKnowledgePackCandidates({});
     expect(all.map((r) => r.signature)).toContain('sig-global-visible');
+  });
+
+  it('listKnowledgePackCandidates filters by decidedBy (the recent-auto-adoptions strip read, WI-5414)', async () => {
+    const staged = await stageKnowledgePackCandidate(stageInput('sig-decided-by-filter'));
+    if (!staged.staged) throw new Error('stage failed');
+    await decideKnowledgePackCandidate({
+      id: staged.id,
+      action: 'adopt',
+      by: AUTO_ADOPT_REVIEWER,
+      workspaceId: WS,
+      packsRoot,
+    });
+    const byMachine = await listKnowledgePackCandidates({ status: 'adopted', decidedBy: AUTO_ADOPT_REVIEWER });
+    expect(byMachine.map((r) => r.id)).toContain(staged.id);
+    const byOwner = await listKnowledgePackCandidates({ status: 'adopted', decidedBy: 'owner' });
+    expect(byOwner.map((r) => r.id)).not.toContain(staged.id);
+  });
+
+  describe('autoAdoptPendingCandidates (WI-5414 — real PG list/decide, injected review)', () => {
+    it('auto-adopts a passing candidate against real PG, stamping the machine identity + verdict note', async () => {
+      const staged = await stageKnowledgePackCandidate(stageInput('sig-auto-adopt-pass'));
+      if (!staged.staged) throw new Error('stage failed');
+
+      const result = await autoAdoptPendingCandidates(
+        { packsRoot, workspaceId: WS },
+        { review: async () => ({ verdict: 'pass', reason: 'no conflict (test stub)' }) },
+      );
+      expect(result.adopted).toBeGreaterThanOrEqual(1);
+
+      const [row] = (await listKnowledgePackCandidates({ status: 'adopted' })).filter((r) => r.id === staged.id);
+      expect(row).toMatchObject({
+        status: 'adopted',
+        decidedBy: AUTO_ADOPT_REVIEWER,
+        packId: FLEET_LESSONS_PACK_ID,
+      });
+      expect(row?.decisionNote).toContain('no conflict (test stub)');
+    });
+
+    it('auto-dismisses a failing candidate, recording the verdict as the decision note', async () => {
+      const staged = await stageKnowledgePackCandidate(stageInput('sig-auto-adopt-fail'));
+      if (!staged.staged) throw new Error('stage failed');
+
+      await autoAdoptPendingCandidates(
+        { packsRoot, workspaceId: WS },
+        { review: async (c) => (c.title.includes('sig-auto-adopt-fail') ? { verdict: 'fail', reason: 'conflicts (test stub)' } : { verdict: 'pass', reason: 'clean' }) },
+      );
+
+      const [row] = (await listKnowledgePackCandidates({ status: 'dismissed' })).filter((r) => r.id === staged.id);
+      expect(row).toMatchObject({ status: 'dismissed', decidedBy: AUTO_ADOPT_REVIEWER });
+      expect(row?.decisionNote).toContain('conflicts (test stub)');
+
+      // Terminal — the signature never re-stages, same as an owner dismiss.
+      const restage = await stageKnowledgePackCandidate(stageInput('sig-auto-adopt-fail'));
+      expect(restage).toEqual({ staged: false, reason: 'duplicate-signature' });
+    });
   });
 });
