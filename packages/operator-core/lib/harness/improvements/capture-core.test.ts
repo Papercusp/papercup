@@ -636,3 +636,147 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     expect(called).toBe(false);
   });
 });
+
+describe('captureImprovement — observation coalescing by conditionKey (EI-15448)', () => {
+  /** A stateful watchdogKey-aware store: findIssuesByWatchdogKeys/mergeIssuePayload/
+   *  updateIssuePatch all operate on the SAME in-memory `store` array so a 2nd call
+   *  in the same test genuinely finds the 1st call's row — exercising the real
+   *  coalesce loop, not a canned return. */
+  function coalesceDeps(): CaptureDeps & { created: CreateIssueInput[]; store: EngineerIssue[] } {
+    const created: CreateIssueInput[] = [];
+    const store: EngineerIssue[] = [];
+    let nextId = 100;
+    return {
+      created,
+      store,
+      searchIssues: async () => [],
+      createIssue: async (input) => {
+        created.push(input);
+        const issue = existing({
+          id: `EI-${nextId++}`,
+          title: input.title,
+          kind: (input.kind as 'bug' | 'change') ?? 'change',
+          payload: input.payload ?? null,
+        });
+        store.push(issue);
+        return issue;
+      },
+      findIssuesByWatchdogKeys: async (keys) =>
+        store.filter((i) => {
+          const k = (i.payload as Record<string, unknown> | null)?.watchdogKey;
+          return typeof k === 'string' && keys.includes(k);
+        }),
+      mergeIssuePayload: async (id, patch) => {
+        const i = store.find((x) => x.id === id);
+        if (!i) return null;
+        i.payload = { ...(i.payload as Record<string, unknown> | null), ...patch };
+        return i;
+      },
+      updateIssuePatch: async (id, patch) => {
+        const i = store.find((x) => x.id === id);
+        if (!i) return null;
+        if (patch.title !== undefined) i.title = patch.title;
+        if (patch.body !== undefined) i.body = patch.body;
+        return i;
+      },
+    };
+  }
+
+  it('2 calls with the SAME watchdogKey + lane:observation → 1 row, repeatCount:2, reason:coalesced', async () => {
+    const d = coalesceDeps();
+    const first = await captureImprovement(
+      { title: 'escalation-aging holding flat at 312', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:escalation-aging' },
+      d,
+    );
+    expect(first.created).toBe(true);
+    expect(d.created).toHaveLength(1);
+    expect((d.store[0].payload as Record<string, unknown>).watchdogKey).toBe('overwatch:escalation-aging');
+
+    const second = await captureImprovement(
+      { title: 'escalation-aging holding flat at 318', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:escalation-aging' },
+      d,
+    );
+    expect(second.created).toBe(false);
+    expect(second.reason).toBe('coalesced');
+    expect(d.created).toHaveLength(1); // still only ONE row ever created
+    expect(d.store).toHaveLength(1);
+    expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(2);
+    expect(d.store[0].title).toBe('escalation-aging holding flat at 318'); // title refreshed to latest reading
+    expect(second.issue?.id).toBe(first.issue?.id);
+  });
+
+  it('a 3rd call with the same key bumps repeatCount to 3 (running count, not a flip-flag)', async () => {
+    const d = coalesceDeps();
+    await captureImprovement(
+      { title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' },
+      d,
+    );
+    await captureImprovement(
+      { title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' },
+      d,
+    );
+    const third = await captureImprovement(
+      { title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' },
+      d,
+    );
+    expect(third.reason).toBe('coalesced');
+    expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(3);
+    expect(d.created).toHaveLength(1);
+  });
+
+  it('a call WITHOUT watchdogKey always re-files, even when a same-titled observation already exists', async () => {
+    const d = coalesceDeps();
+    await captureImprovement({ title: 'a one-off reading', kind: 'change', lane: 'observation' }, d);
+    const second = await captureImprovement({ title: 'a one-off reading', kind: 'change', lane: 'observation' }, d);
+    expect(second.created).toBe(true);
+    expect(d.created).toHaveLength(2); // no coalescing — 2 distinct rows
+  });
+
+  it('a DIFFERENT watchdogKey never coalesces onto another key\'s open row', async () => {
+    const d = coalesceDeps();
+    await captureImprovement(
+      { title: 'condition A', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:a' },
+      d,
+    );
+    const res = await captureImprovement(
+      { title: 'condition B', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:b' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(d.created).toHaveLength(2);
+  });
+
+  it('watchdogKey is IGNORED outside the observation lane (non-observation dedup/coalesce is unaffected)', async () => {
+    const d = coalesceDeps();
+    const first = await captureImprovement(
+      { title: 'a real bug', kind: 'bug', watchdogKey: 'overwatch:not-an-observation' },
+      d,
+    );
+    const second = await captureImprovement(
+      { title: 'a real bug', kind: 'bug', watchdogKey: 'overwatch:not-an-observation' },
+      d,
+    );
+    expect(first.created).toBe(true);
+    // non-observation capture path: the ordinary search-first dedup applies (searchIssues
+    // stubbed to [] here), NOT the watchdogKey coalesce — so this re-files, not "coalesced".
+    expect(second.created).toBe(true);
+    expect(second.reason).not.toBe('coalesced');
+  });
+
+  it('a CLOSED/resolved row carrying the same key does not coalesce (only an OPEN prior does)', async () => {
+    const d = coalesceDeps();
+    const first = await captureImprovement(
+      { title: 'condition C', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:c' },
+      d,
+    );
+    d.store[0].state = 'resolved';
+    const second = await captureImprovement(
+      { title: 'condition C recurred', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:c' },
+      d,
+    );
+    expect(second.created).toBe(true);
+    expect(second.reason).not.toBe('coalesced');
+    expect(d.created).toHaveLength(2);
+    expect(first.issue?.id).not.toBe(second.issue?.id);
+  });
+});

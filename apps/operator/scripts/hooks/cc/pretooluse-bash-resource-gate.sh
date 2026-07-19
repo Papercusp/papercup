@@ -461,6 +461,56 @@ if _tat_sub in TAT_MUTATING or _tat_sub in TAT_BRIDGE_READ:
         if _bridges and (_mutating or len(_bridges) > 1):
             deny(_tauri_target_deny_reason(_tat_sub, _bridges, _mutating))
 
+# ── tauri-agent-tools raw-JSON --token advisory (EI-15605) ─────────────────
+# SOFT/ADVISORY (never blocks — same third-party-package rationale as the
+# target guard above: the CLI is a third-party global npm install, so we
+# cannot make it validate/error better itself). The dev-bridge token file
+# (/tmp/tauri-dev-bridge-<pid>.token) is a JSON object
+# `{"port":N,"token":"...","pid":N}`, NOT a bare token string. Piping its raw
+# content straight into `--token` (e.g. `--token "$(cat /tmp/tauri-dev-bridge-
+# <pid>.token)"`) silently fails auth ("Bridge authentication failed — check
+# your token") even though the token itself is correct inside that JSON —
+# cost 3 failed eval attempts (raw cat, trimmed cat, `require()` on a
+# .token extension Node refuses to parse) before spotting the wrapper.
+# Catches both the inline substitution form and the assign-then-use form
+# (`TOK=$(cat …/*.token); … --token "$TOK"`); skipped whenever the same
+# substitution already shows evidence of JSON extraction (jq/python/node/
+# JSON.parse/json.load) — that's presumably already doing it right.
+try:
+    if not ADVISORY:
+        _tok_hint_re = re.compile(r'(?:\bcat\s+|<\s*)\S*\.token\b')
+        _tok_extracted_re = re.compile(r'\bjq\b|\bpython3?\b|\bnode\b|JSON\.parse|json\.load')
+        _tok_flagged = False
+        # (a) inline: --token "$(cat …/*.token)"
+        for _tok_body in re.findall(r'--token[=\s]+"?\$\(([^)]*)\)"?', command):
+            if _tok_hint_re.search(_tok_body) and not _tok_extracted_re.search(_tok_body):
+                _tok_flagged = True
+                break
+        # (b) assign-then-use: VAR=$(cat …/*.token) ... --token "$VAR"
+        if not _tok_flagged:
+            for _tok_var, _tok_body in re.findall(r'\b([A-Za-z_]\w*)=\$\(([^)]*)\)', command):
+                if _tok_hint_re.search(_tok_body) and not _tok_extracted_re.search(_tok_body):
+                    if re.search(r'--token[=\s]+"?\$\{?' + re.escape(_tok_var) + r'\b', command):
+                        _tok_flagged = True
+                        break
+        if _tok_flagged:
+            ADVISORY = (
+                'tauri-agent-tools --token advisory (EI-15605): the dev-bridge token file '
+                '(/tmp/tauri-dev-bridge-<pid>.token) is JSON — {"port":N,"token":"...","pid":N} '
+                '— not a bare token string. Passing its raw content as --token silently fails '
+                'auth ("Bridge authentication failed — check your token") even though the '
+                'token itself is correct. Extract the field first, e.g. '
+                '`--token "$(jq -r .token /tmp/tauri-dev-bridge-<pid>.token)"` (or a '
+                '`node -e \'process.stdout.write(JSON.parse(require("fs").readFileSync('
+                'process.argv[1],"utf8")).token)\' /tmp/tauri-dev-bridge-<pid>.token` '
+                'one-liner if jq is unavailable). Usually simplest: skip --port/--token '
+                'entirely and let `tauri-agent-tools probe`/auto-discovery find the bridge '
+                '(pass --pid <pid> to disambiguate multiple bridges). Advisory only; this '
+                'command is proceeding as issued.'
+            )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # Destructive tree-wide git guard (hive-loop-supervision-2026-06-21): a
 # pathspec-less `git reset --hard` / `git checkout|restore .` (or `:/`) /
 # `git clean -f*` / `git stash` on the SHARED staging checkout discards EVERY
