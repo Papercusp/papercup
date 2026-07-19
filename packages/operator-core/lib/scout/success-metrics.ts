@@ -136,6 +136,14 @@ export interface ProgramSuccessReport {
     tickWindowMs?: number;
     tickSinceMs?: number;
     tickInstallSlug?: string;
+    /**
+     * WI-5397: the running scout code's content hash the cycle-error-rate bar was
+     * ACTUALLY judged against (null when unresolved — the bar then fell back to the
+     * time-windowed read) + how many code-identical ticks fed it, so a verdict is
+     * auditable rather than trusted. See {@link ProgramSuccessInputs.cadenceByCodeHash}.
+     */
+    codeHash?: string | null;
+    codeHashTicks?: number;
   };
 }
 
@@ -283,23 +291,36 @@ export function evaluateProgramSuccess(
   // cycle ticks is 6.2% and correctly FAILS, but /107 total ticks (18 of them gated) reads 4.7%
   // and passed. windowCycles (status='ran') + errorTicks (genuine, post no-capacity
   // reclassification) is exactly the set of cycles this bar judges.
-  const cycleTicks = report.windowCycles + report.errorTicks;
-  const errorRate = cycleTicks > 0 ? report.errorTicks / cycleTicks : null;
-  const noCapacity = report.gatedTickBreakdown['no-capacity'] ?? 0;
+  // WI-5397: judge this bar over the CODE-HASH-scoped tick union when the caller
+  // supplied one (buildProgramSuccessReport always does) — the soak-method fix.
+  // Falls back to the time-windowed `report` (computed above from inputs.cadence)
+  // when no code-hash union is available (a pure-core fixture, or a process whose
+  // scout source files were unreadable at hash time — never silently substitute a
+  // DIFFERENT window than what was actually asked for; the fallback is the same
+  // pre-WI-5397 time-windowed read either way).
+  const codeHashFold =
+    inputs.cadenceByCodeHash?.codeHash != null ? foldScoutTickStats(inputs.cadenceByCodeHash.ticks) : null;
+  const errorBarSource = codeHashFold ?? report;
+  const cycleTicks = errorBarSource.windowCycles + errorBarSource.errorTicks;
+  const errorRate = cycleTicks > 0 ? errorBarSource.errorTicks / cycleTicks : null;
+  const noCapacity = errorBarSource.gatedTickBreakdown['no-capacity'] ?? 0;
   const capacityNote =
     noCapacity > 0 ? ` — plus ${noCapacity} cycle(s) withheld by the no-capacity gate (pool starved, not broken)` : '';
+  const soakNote = codeHashFold
+    ? ` [soak: code-identical union across restarts, hash ${inputs.cadenceByCodeHash!.codeHash}]`
+    : '';
   criteria.push({
     key: 'cycle-error-rate',
     bar: `cycle error rate < ${pct(maxErrorRate)} (was ~30%)`,
     ...(errorRate === null
       ? {
           status: 'unknown' as const,
-          observed: `no cycle ran or errored in the window (${report.totalTicks} tick(s), all gated)${capacityNote}`,
+          observed: `no cycle ran or errored in the window (${errorBarSource.totalTicks} tick(s), all gated)${capacityNote}${soakNote}`,
           unknownReason: 'empty cycle window — no cycle got a fair shot, so there is no error-rate denominator',
         }
       : {
           status: (errorRate < maxErrorRate ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${report.errorTicks} error ticks / ${cycleTicks} cycle ticks (ran + errored) = ${pct(errorRate)}${capacityNote}`,
+          observed: `${errorBarSource.errorTicks} error ticks / ${cycleTicks} cycle ticks (ran + errored) = ${pct(errorRate)}${capacityNote}${soakNote}`,
         }),
   });
 
@@ -452,6 +473,9 @@ export function evaluateProgramSuccess(
       ranCycles: ranTicks.length,
       routedIdeas: ideas.length,
       ledgerTruncated: opts.ledgerTruncated === true,
+      ...(inputs.cadenceByCodeHash
+        ? { codeHash: inputs.cadenceByCodeHash.codeHash, codeHashTicks: inputs.cadenceByCodeHash.ticks.length }
+        : {}),
     },
   };
 }
@@ -540,13 +564,32 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
 export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions = {}): Promise<ProgramSuccessReport> {
   const limit = opts.limit ?? DEFAULT_LEDGER_LIMIT;
   const scopes = programSuccessReadScopes({ ...opts, limit });
-  const [cadence, suIdeate] = await Promise.all([
+  const [cadence, suIdeate, cadenceByCodeHash] = await Promise.all([
     buildQualityReportInputs<CreativeLens>(scopes.cadence),
     buildQualityReportInputs<SuIdeationLens>(scopes.suIdeate),
+    // WI-5397 soak-method fix: best-effort, never fails the report. Lazy import keeps
+    // this module's assembly layer's PG edge deferred (the buildQualityReportInputs
+    // convention). Absent/failed ⇒ evaluateProgramSuccess falls back to the
+    // time-windowed cadence.ticks for the cycle-error-rate bar (pre-WI-5397 behavior).
+    (async () => {
+      try {
+        const { readNewestScoutCodeHash, readScoutTicksByCodeHash } = await import('./tick-ledger');
+        const readOpts = {
+          ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+          installSlug: SCOUT_TICK_INSTALL_SLUG,
+        };
+        const codeHash = await readNewestScoutCodeHash(readOpts);
+        if (!codeHash) return undefined;
+        const ticks = await readScoutTicksByCodeHash({ ...readOpts, codeHash });
+        return { ticks, codeHash };
+      } catch {
+        return undefined;
+      }
+    })(),
   ]);
   const ideas = [...cadence.routedIdeas, ...suIdeate.routedIdeas];
   const report = evaluateProgramSuccess(
-    { cadence, ideas },
+    { cadence, ideas, ...(cadenceByCodeHash ? { cadenceByCodeHash } : {}) },
     {
       ...(opts.maxErrorRate != null ? { maxErrorRate: opts.maxErrorRate } : {}),
       // A full page back on EITHER partition means the read almost certainly hit the cap and

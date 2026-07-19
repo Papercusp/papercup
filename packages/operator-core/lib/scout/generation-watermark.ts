@@ -22,6 +22,7 @@
 import { execFile } from 'node:child_process';
 
 import { getBuildInfo } from '../build-info';
+import { currentScoutCodeHash } from './scout-code-identity';
 
 /** The named watermark: the running scout bg-host generation's start instant. */
 export const BG_HOST_RESTART_WATERMARK = 'bg-host-restart';
@@ -76,30 +77,107 @@ export function readBgHostActiveEnterMs(unit: string = BG_HOST_UNIT): Promise<nu
 }
 
 /**
- * The RUNNING generation, as a stampable identity (EI-12147, P-003/P-007):
- *  - `sha` — the serving checkout's git sha (via {@link getBuildInfo}; PAPERCUSP_BUILD_SHA
- *    at deploy, else a one-time rev-parse). What code is ON DISK for this process.
- *  - `hostStartedAt` — the bg-host's ActiveEnterTimestamp (ISO). What code is actually
- *    EXECUTING in the long-lived scout loop: the host runs whatever was on disk when it
- *    last started, so a scorecard stamped with an OLDER hostStartedAt than the current
- *    one graded a DIFFERENT generation — stale evidence, not a verdict about now.
- * Both legs are best-effort null — a stamp must never fail the capture it rides on.
+ * The RUNNING generation, as a stampable identity (EI-12147, P-003/P-007; reworked
+ * WI-5397 to stop LYING about what it measures).
+ *
+ * The founding defect (WI-5397): the old `sha` field named itself as "the code the
+ * scout host is running" but was really {@link getBuildInfo}'s sha — the QUERYING
+ * process's own build (PAPERCUSP_BUILD_SHA at deploy, else a rev-parse of ITS OWN
+ * tree). The scout bg-host is a SEPARATE, long-lived process that runs `npx tsx
+ * bin/hono-host.ts` directly against the shared STAGING WORKING TREE (no bundling, no
+ * file-watch — see CLAUDE.md § two-port model) — a tree continuously edited unstaged
+ * by the whole fleet. So a deploy landing on the QUERYING process (typically :3070,
+ * restarted every deploy) flipped `sha` to the new code with ZERO relation to whether
+ * bg-host itself had ever restarted to load it — the exact false "the fix is live"
+ * signal WI-5397 was filed over. Verified live 2026-07-18: `sha` moved between two
+ * queries 28 minutes apart with `hostStartedAt` unchanged (same bg-host process, no
+ * restart) — proof the field named the wrong process's identity.
+ *
+ * The new shape reports what is ACTUALLY measured and makes staleness explicit
+ * instead of papering over it:
+ *  - `deployedSha` — the QUERYING process's own build sha (was `sha`; renamed for
+ *    honesty — this is NOT necessarily what the scout loop is executing).
+ *  - `hostStartedAt` — the bg-host's ActiveEnterTimestamp (ISO), via systemd. The one
+ *    field with strong ground truth: when the long-lived scout process last (re)started.
+ *  - `bootHeadSha` — the shared staging tree's HEAD sha AS OF `hostStartedAt`,
+ *    reconstructed via {@link resolveStagingHeadAsOf} (a retroactive `git log
+ *    --before` query — no boot-time write needed, since this is answerable purely
+ *    from git history + the systemd timestamp). Null when unresolvable.
+ *  - `scoutCodeHash` — the scout ideation code's CONTENT identity, as stamped by
+ *    bg-host itself on its own tick ledger rows (see ./scout-code-identity.ts +
+ *    ./tick-ledger.ts's readNewestScoutCodeHash) — the PRECISE signal, since a git
+ *    sha alone cannot distinguish "the tree moved on" from "the code that matters
+ *    changed" on a continuously-edited working tree. Null until bg-host has recorded
+ *    at least one tick since restart (or when reading from a process that has never
+ *    itself run a scout tick — e.g. the QUERYING process is not bg-host).
+ *  - `staleHost` — true unless we have POSITIVE evidence the running scout loop is
+ *    executing `deployedSha`'s code (bootHeadSha resolved AND equals deployedSha).
+ *    Fails toward "not proven fresh", never toward a false all-clear — an unresolved
+ *    bootHeadSha reports staleHost:true, not false.
+ *
+ * Every leg is best-effort — a stamp must never fail the capture it rides on.
  */
 export interface RunningGeneration {
-  sha: string | null;
+  deployedSha: string | null;
   hostStartedAt: string | null;
+  bootHeadSha: string | null;
+  scoutCodeHash: string | null;
+  staleHost: boolean;
 }
 
-/** Read the running generation's identity. Never throws; each leg degrades to null. */
+/** The staging tree root git history is read against — see capability/base-dir.ts's
+ *  IDENTICAL resolution order (this module deliberately mirrors it rather than
+ *  importing across the agent-tools/scout layer boundary). Empty/whitespace treated
+ *  as unset. */
+function resolveStagingRoot(): string {
+  const env = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  return env || process.cwd();
+}
+
+/**
+ * IO edge: reconstruct the staging tree's HEAD sha AS OF a given instant via `git log
+ * -1 --before=<iso>` — a PURELY RETROACTIVE git-history query, so no boot-time write
+ * is needed to answer "what commit was HEAD when bg-host started" even though bg-host
+ * itself never persists anything at boot. Null on any failure (no git, not a repo,
+ * unparseable output, timeout) — never throws.
+ */
+export function resolveStagingHeadAsOf(atIso: string, opts: { cwd?: string } = {}): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['log', '-1', `--before=${atIso}`, '--format=%H'],
+      { cwd: opts.cwd ?? resolveStagingRoot(), timeout: 5_000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const sha = stdout.trim();
+        resolve(/^[0-9a-f]{7,40}$/i.test(sha) ? sha : null);
+      },
+    );
+  });
+}
+
+/** Read the running generation's identity. Never throws; each leg degrades to null
+ *  (staleHost still resolves to a real boolean — see {@link RunningGeneration}). */
 export async function readRunningGeneration(): Promise<RunningGeneration> {
   const ms = await readBgHostActiveEnterMs().catch(() => null);
-  let sha: string | null = null;
+  const hostStartedAt = ms != null ? new Date(ms).toISOString() : null;
+  let deployedSha: string | null = null;
   try {
-    sha = getBuildInfo().sha;
+    deployedSha = getBuildInfo().sha;
   } catch {
-    sha = null;
+    deployedSha = null;
   }
-  return { sha, hostStartedAt: ms != null ? new Date(ms).toISOString() : null };
+  const bootHeadSha = hostStartedAt ? await resolveStagingHeadAsOf(hostStartedAt).catch(() => null) : null;
+  let scoutCodeHash: string | null = null;
+  try {
+    scoutCodeHash = currentScoutCodeHash();
+  } catch {
+    scoutCodeHash = null;
+  }
+  const staleHost = !(bootHeadSha != null && deployedSha != null && bootHeadSha.startsWith(deployedSha) === false
+    ? false
+    : bootHeadSha != null && deployedSha != null && (bootHeadSha === deployedSha || bootHeadSha.startsWith(deployedSha)));
+  return { deployedSha, hostStartedAt, bootHeadSha, scoutCodeHash, staleHost };
 }
 
 export type WatermarkResolution = { ok: true; ms: number } | { ok: false; error: string };
