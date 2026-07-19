@@ -39,14 +39,17 @@ import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilitie
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, activeWs: 'default' }));
 vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
-  return { ...actual, activeWorkspaceId: () => 'default' };
+  // EI-15345: mutable so a test can simulate a LOST AsyncLocalStorage request scope, where
+  // activeWorkspaceId() silently falls through to a workspace that is NOT the item's own
+  // (the WI-5261 class). Defaults to 'default' so every existing test is unchanged.
+  return { ...actual, activeWorkspaceId: () => h.activeWs };
 });
 
 const wi = await import('./work-items');
@@ -96,12 +99,16 @@ beforeEach(async () => {
   // harness_features_consolidated is a VIEW over work_items (see _work-items-schema.ts) —
   // TRUNCATE only works on real tables, and truncating work_items already clears the view.
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
+  h.activeWs = 'default';
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
     [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
   });
 });
-afterEach(() => setFlagOverridesForTest({}));
+afterEach(() => {
+  h.activeWs = 'default';
+  setFlagOverridesForTest({});
+});
 
 describe('setWorkItemClaimHold (WI-2797)', () => {
   it('sets payload._claimHold:true on an issue-family row', async () => {
