@@ -107,6 +107,10 @@ export interface PublishSpawnRequestOpts {
   planSlug: string;
   /** The requesting session's coord owner id (audit/addressing). */
   requesterOwnerId: string;
+  /** P-004: the requester's pot (harness) slug — required to accept a
+   *  POT-scoped seat-offer (fleetSlug=null, potSlug set). Ignored when the
+   *  target offer is fleet-scoped. */
+  requesterPotSlug?: string;
   /** Optional per-fleet brief text (composed under the member baseline on B). */
   launchContext?: string | null;
   /** WI-5211 multi-hive disambiguator: the shared-hive home slug to publish the
@@ -180,7 +184,19 @@ export async function publishSpawnRequest(
   if (target.localDisposition) {
     return { ok: false, error: `seat-offer ${opts.targetOfferId} is locally refused here (${target.localDisposition})` };
   }
-  if (target.record.fleetSlug !== opts.fleetSlug) {
+  const isFleetMatch = target.record.fleetSlug === opts.fleetSlug;
+  const isPotMatch =
+    target.record.fleetSlug === null &&
+    !!target.record.potSlug &&
+    !!opts.requesterPotSlug &&
+    target.record.potSlug === opts.requesterPotSlug;
+  if (!isFleetMatch && !isPotMatch) {
+    if (target.record.fleetSlug === null) {
+      return {
+        ok: false,
+        error: `seat-offer ${opts.targetOfferId} delegates to pot '${target.record.potSlug}', not requester pot '${opts.requesterPotSlug ?? '(unresolved)'}'`,
+      };
+    }
     return { ok: false, error: `seat-offer ${opts.targetOfferId} delegates to fleet '${target.record.fleetSlug}', not '${opts.fleetSlug}'` };
   }
   if (!Number.isSafeInteger(opts.count) || opts.count < 1 || opts.count > target.record.seat.count) {

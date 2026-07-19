@@ -22,8 +22,9 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
-import { listWorkOffers } from '../../p2p/offer-store';
+import { listWorkOffers, type StoredWorkOffer } from '../../p2p/offer-store';
 import { publishSpawnRequest } from '../../p2p/spawn-request-publish';
+import { resolvePlanHarnessSlug } from '../plans/source';
 import { resolveRemotePlacementHive } from './launch-on-plan';
 import { fleetRoleFor, json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
@@ -109,35 +110,70 @@ export default defineTool({
     if ((targetPublisher == null) !== (targetOffer == null)) {
       return json({ ok: false, error: 'pass BOTH publisher + offer to pick a target seat-offer, or NEITHER to auto-pick' }, true);
     }
+    // P-004: resolve "the pot" (the plan's owning harness) up front — needed both
+    // for the pot-scoped auto-pick fallback below AND to thread requesterPotSlug
+    // into publishSpawnRequest for an explicitly-named pot-scoped target.
+    const potSlug = await resolvePlanHarnessSlug(workspaceId, args.plan);
+
     const seatOffers = await listWorkOffers(workspaceId, hiveHomeSlug, {
       fleetSlug: args.fleet,
       kind: 'seat',
       status: 'open',
     });
+
+    const candidateShape = (o: StoredWorkOffer) => ({
+      publisher: o.publisherGithubUserId,
+      offer: o.offerId,
+      host: o.record?.seat?.hostLabel ?? null,
+      seats: o.record?.seat ? `${o.record.seat.count} × ${o.record.seat.model}:${o.record.seat.effort}` : null,
+    });
+    // Deterministic pick order mirrors distributeRemotePlacement's max-spread
+    // sort in launch-on-plan.ts: host label then offer id.
+    const byHostThenOffer = (a: StoredWorkOffer, b: StoredWorkOffer) =>
+      (a.record?.seat?.hostLabel ?? '').localeCompare(b.record?.seat?.hostLabel ?? '') ||
+      a.offerId.localeCompare(b.offerId);
+
+    let potOffers: StoredWorkOffer[] = [];
     if (targetPublisher == null || targetOffer == null) {
-      if (seatOffers.length === 0) {
-        return json(
-          { ok: false, error: `no open seat-offer for fleet '${args.fleet}' — the contributing machine delegates first (resource:delegate kind:'agent_slot')` },
-          true,
-        );
-      }
       if (seatOffers.length > 1) {
         return json(
           {
             ok: false,
             error: `fleet '${args.fleet}' has ${seatOffers.length} open seat-offers — pass publisher + offer to pick one`,
-            candidates: seatOffers.map((o) => ({
-              publisher: o.publisherGithubUserId,
-              offer: o.offerId,
-              host: o.record?.seat?.hostLabel ?? null,
-              seats: o.record?.seat ? `${o.record.seat.count} × ${o.record.seat.model}:${o.record.seat.effort}` : null,
-            })),
+            candidates: seatOffers.map(candidateShape),
           },
           true,
         );
       }
-      targetPublisher = seatOffers[0]!.publisherGithubUserId;
-      targetOffer = seatOffers[0]!.offerId;
+      if (seatOffers.length === 1) {
+        targetPublisher = seatOffers[0]!.publisherGithubUserId;
+        targetOffer = seatOffers[0]!.offerId;
+      } else {
+        // No fleet-scoped offer — fall back to the pot's shared seat-offers
+        // (fleetSlug=null, potSlug=this plan's harness) when the plan resolves
+        // to a known pot.
+        potOffers = potSlug
+          ? await listWorkOffers(workspaceId, hiveHomeSlug, { potSlug, kind: 'seat', status: 'open' })
+          : [];
+        const sorted = [...potOffers].sort(byHostThenOffer);
+        const picked = sorted.find((o) => (o.record?.seat?.count ?? 0) >= args.count);
+        if (!picked) {
+          return json(
+            {
+              ok: false,
+              error: potSlug
+                ? potOffers.length === 0
+                  ? `no open seat-offer for fleet '${args.fleet}' or its pot '${potSlug}' — the contributing machine delegates first (resource:delegate kind:'agent_slot', with or without a fleet)`
+                  : `pot '${potSlug}' has ${potOffers.length} open seat-offer(s) but none delegates >= ${args.count} seat(s) — pass publisher + offer to pick one, or request fewer`
+                : `no open seat-offer for fleet '${args.fleet}', and the plan '${args.plan}' does not resolve to a known pot — pass publisher + offer explicitly`,
+              candidates: potOffers.length ? potOffers.map(candidateShape) : undefined,
+            },
+            true,
+          );
+        }
+        targetPublisher = picked.publisherGithubUserId;
+        targetOffer = picked.offerId;
+      }
     }
 
     const res = await publishSpawnRequest({
@@ -148,13 +184,17 @@ export default defineTool({
       count: args.count,
       planSlug: args.plan,
       requesterOwnerId: ownerId,
+      requesterPotSlug: potSlug ?? undefined,
       launchContext: args.launchContext ?? null,
       hiveOverride: hiveHomeSlug,
     });
     if (!res.ok) {
       return json({ ok: false, error: 'skipped' in res ? `not published: ${res.skipped}` : res.error }, true);
     }
-    const seat = seatOffers.find((o) => o.offerId === targetOffer)?.record?.seat ?? null;
+    const seat =
+      seatOffers.find((o) => o.offerId === targetOffer)?.record?.seat ??
+      potOffers.find((o) => o.offerId === targetOffer)?.record?.seat ??
+      null;
     return json({
       ok: true,
       requestOfferId: res.stored.offerId,

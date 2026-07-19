@@ -676,6 +676,30 @@ export async function planSlugExistsInWorkspace(
   return rows.length > 0;
 }
 
+/**
+ * The harness (pot) slug that owns a plan slug in this workspace — a
+ * slug-only lookup for callers that have a plan slug but no reliable harness
+ * to scope it to (mirrors planSlugExistsInWorkspace; P-004, resolving "the
+ * pot" for a cross-machine spawn-request's plan). Null when the slug isn't
+ * store-backed in this workspace, or is ambiguous across harnesses (picks
+ * the most recently updated row deterministically rather than guessing).
+ */
+export async function resolvePlanHarnessSlug(
+  workspaceId: string,
+  slug: string,
+): Promise<string | null> {
+  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ harness_slug: string }[]>`
+      SELECT harness_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND plan_slug = ${slug}
+       ORDER BY updated_at DESC
+       LIMIT 1
+    `;
+  });
+  return rows[0]?.harness_slug ?? null;
+}
+
 /** All plan rows for a harness (PG), live + optionally archived. The archived
  *  filter runs in SQL — excluded rows' content blobs never leave PG (P-042). */
 export async function listPlanRows(
