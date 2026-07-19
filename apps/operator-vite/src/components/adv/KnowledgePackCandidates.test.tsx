@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 //
-// KnowledgePackCandidates render + decide coverage (consume-edges P-032 / B-11).
-// The fleet→pack review strip: pending candidates with provenance, the draft
-// expander, and the adopt/dismiss POST through /api/knowledge-packs/candidate-decide
-// (adopt surfaces the "pack updated" hint; failures surface role=alert; the
-// empty queue renders nothing). useSyncQuery + nuqs mocked, the pinned
-// sibling pattern (LearningTab.test.tsx).
+// KnowledgePackCandidates render + decide coverage (consume-edges P-032 / B-11;
+// auto-adopt reversal WI-5414). The fleet→pack strip: pending candidates with
+// provenance, the draft expander, the "adopt now"/"dismiss now" manual-override
+// buttons POSTing through /api/knowledge-packs/candidate-decide (adopt surfaces
+// the "pack updated" hint; failures surface role=alert), the recently-auto-adopted
+// strip, and the empty-everything case rendering nothing. useSyncQuery + nuqs
+// mocked, the pinned sibling pattern (LearningTab.test.tsx).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -27,9 +28,17 @@ vi.mock("nuqs", () => ({
 }));
 
 const invalidate = vi.fn();
+const recentInvalidate = vi.fn();
 let candidates: KnowledgePackCandidate[] = [];
+let recentAdopted: KnowledgePackCandidate[] = [];
+// The component fires TWO useSyncQuery calls with the same queryName but
+// different `args` (pending queue vs. the recent-auto-adoptions strip) — the
+// mock discriminates on args.status so each returns its own fixture.
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: () => ({ data: candidates, invalidate }),
+  useSyncQuery: (opts: { args?: { status?: string } }) =>
+    opts.args?.status === "adopted"
+      ? { data: recentAdopted, invalidate: recentInvalidate }
+      : { data: candidates, invalidate },
 }));
 // Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates the
 // hives→pot routed tooltip from the THE_HIVE flag hook (restore-pot-lexicon P-006).
@@ -60,6 +69,7 @@ const cand = (
 beforeEach(() => {
   nuqsState.lcand = "";
   candidates = [cand()];
+  recentAdopted = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(
@@ -75,8 +85,9 @@ afterEach(() => {
 });
 
 describe("<KnowledgePackCandidates />", () => {
-  it("renders nothing when the queue is empty", () => {
+  it("renders nothing when there is nothing pending or recently auto-adopted", () => {
     candidates = [];
+    recentAdopted = [];
     const { container } = render(<KnowledgePackCandidates />);
     expect(container.firstChild).toBeNull();
   });
@@ -97,6 +108,15 @@ describe("<KnowledgePackCandidates />", () => {
     expect(screen.getByRole("button", { name: "hide draft" })).toBeTruthy();
   });
 
+  it("copy no longer claims owner review — describes the automated sweep instead", () => {
+    render(<KnowledgePackCandidates />);
+    expect(
+      screen.getByLabelText("Fleet lesson candidates — auto-reviewed and auto-adopted"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/awaiting owner review/i)).toBeNull();
+    expect(screen.getByText(/Auto-reviewed on a schedule/)).toBeTruthy();
+  });
+
   it("shows the highest-priority candidates first and progressively discloses the rest", () => {
     candidates = Array.from({ length: 5 }, (_, i) =>
       cand({ id: `cand-${i + 1}`, title: `Candidate ${i + 1}` }),
@@ -109,7 +129,23 @@ describe("<KnowledgePackCandidates />", () => {
     expect(screen.getByText("Candidate 5")).toBeTruthy();
   });
 
-  it("adopt POSTs the decide route and surfaces the pack-updated hint", async () => {
+  it("renders the recently-auto-adopted strip even with an empty pending queue", () => {
+    candidates = [];
+    recentAdopted = [
+      cand({
+        id: "cand-auto-1",
+        title: "Lock before you edit a shared file",
+        status: "adopted",
+        decidedBy: "fleet-candidate-auto-review",
+      }),
+    ];
+    render(<KnowledgePackCandidates />);
+    expect(screen.getByText("Lock before you edit a shared file")).toBeTruthy();
+    expect(screen.getByText("Recently auto-adopted")).toBeTruthy();
+    expect(screen.getByText(/Nothing awaiting review right now/)).toBeTruthy();
+  });
+
+  it("adopt now POSTs the decide route and surfaces the pack-updated hint", async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -125,7 +161,7 @@ describe("<KnowledgePackCandidates />", () => {
       ),
     );
     render(<KnowledgePackCandidates />);
-    fireEvent.click(screen.getByRole("button", { name: "adopt" }));
+    fireEvent.click(screen.getByRole("button", { name: "adopt now" }));
     await waitFor(() =>
       expect(
         screen.getByText(/Adopted into fleet-lessons v0\.0\.3/),
@@ -139,12 +175,13 @@ describe("<KnowledgePackCandidates />", () => {
       }),
     );
     expect(invalidate).toHaveBeenCalled();
+    expect(recentInvalidate).toHaveBeenCalled();
   });
 
-  it("dismiss POSTs the decide route; a failed decide surfaces role=alert", async () => {
+  it("dismiss now POSTs the decide route; a failed decide surfaces role=alert", async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
     render(<KnowledgePackCandidates />);
-    fireEvent.click(screen.getByRole("button", { name: "dismiss" }));
+    fireEvent.click(screen.getByRole("button", { name: "dismiss now" }));
     await waitFor(() => expect(invalidate).toHaveBeenCalled());
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/knowledge-packs/candidate-decide",
@@ -158,7 +195,7 @@ describe("<KnowledgePackCandidates />", () => {
         status: 409,
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "adopt" }));
+    fireEvent.click(screen.getByRole("button", { name: "adopt now" }));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("not_pending"),
     );
