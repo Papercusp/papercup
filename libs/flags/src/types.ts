@@ -557,8 +557,19 @@ export const FLAGS = {
   // beats one without it on the source historical task (replayed via
   // lib/replay, judged by the frozen eval-battery). Repeated failures retire
   // (forget) the lesson; knowledge-pack candidate adoption inherits the bar.
-  // OFF until the plan's P-001 arming gate closes (D-001 owner-ratified
-  // dark-ship rule for frontier loops).
+  // DEFAULT ON — deliberately RATIFIED 2026-07-19 (knowledge-pack-loop-
+  // integrity P-004, EI-18106972904923204). History: this comment said "OFF
+  // until the P-001 arming gate closes" but the flag was never added to
+  // DARK_FLAGS, so the 2026-06-29 P-011 inversion silently derived it ON —
+  // the 5th instance of that bug class. Rather than another at-watermark
+  // dark-allowlist raise (13/13 as of EI-16635 the same day), ON is ratified
+  // because the flag is NOT the arming gate: the transfer loop self-registers
+  // UNBUDGETED on the learning governor and REFUSES to run until the owner
+  // budgets `frontier:transfer-harness` (verified live: 0 transfer_lessons
+  // rows after weeks of derived-ON), and the pack-bar is fail-open and can
+  // only block on a 'failed'/'retired' lesson — which requires that
+  // governor-gated battery to have run. The owner's arming act is therefore
+  // preserved with the flag ON; OFF remains a clean kill-switch.
   TRANSFER_HARNESS: "papercusp-transfer-harness",
   // self-learning-frontier-2026-06-12 (P-030 / FB-10): the Fleet EKG —
   // `system:fleet-ekg-scan` embeds agent sessions (agent_activity) into

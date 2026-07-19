@@ -766,6 +766,24 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
 
+      // MEMBER's PG: a hives row for HIVE_HOME (home resolution) + the VERIFIED
+      // directory-cache owner binding — the D-053 owner-bootstrap admission path
+      // (ownerDeviceForHive) needs this to resolve which device is the verified
+      // owner for this hive_pubkey. Without it the member cannot bootstrap-admit
+      // the owner (this was missing on the first attempt — see WI-5481 checkpoint).
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-owner-home', 'Owner Home', null, 1, 1)
+      `;
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
+        VALUES (${WORKSPACE_ID}, ${JSON.stringify({
+          hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idOwner.devicePubkey }],
+        })}::text::jsonb, 1)
+      `;
+
       await mutateHarnessRegistry(
         (r) => ({
           ...r,
@@ -877,18 +895,14 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
       const initDrained = await drainOutboxOnce(owner.handle, dbOwner.sql);
       expect(initDrained, 'owner outbox (roster + F-init) did not drain to its own log').toBeGreaterThanOrEqual(3);
 
-      let _dbgLast = '';
       const initOk = await pollUntil(
         async () => {
           const admitted = member.handle.admitted.has(ownerLogKey);
           const feat = await readFeature(orgDb.adminSql, HIVE_HOME, 'F-init');
-          _dbgLast = `admitted=${admitted} admittedKeys=${[...member.handle.admitted.keys()].join(',')} ownerLogKey=${ownerLogKey} memberOwnLogKey=${member.handle.ownLog.keyHex} ownerLogLen=${owner.handle.ownLog.length} feat=${!!feat}`;
           return admitted && feat ? true : undefined;
         },
         { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
       );
-      // eslint-disable-next-line no-console
-      console.error(`[DEBUG initOk] ${_dbgLast}`);
       expect(initOk, 'initial roster+feature federation never completed via the real poll-driven path').toBe(true);
 
       // ── The soak: N cycles, alternating restart target exactly like

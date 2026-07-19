@@ -183,4 +183,44 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
     expect(res.checked).toBe(false);
     expect(logs.some((l) => l.includes('pg down'))).toBe(true);
   });
+
+  describe('WI-5456 ask 2: hasPoolShedInWindow cross-check', () => {
+    it('dead verdict + a pool-shed event in-window ⇒ shedExplained, no capture filed', async () => {
+      const logs: string[] = [];
+      const hasPoolShedInWindow = vi.fn(async () => true);
+      const { d, capture } = deps({ hasPoolShedInWindow, log: (m) => logs.push(m) });
+      const res = await runEngineDeathSentinelPass(d, {}, NOW);
+      expect(res.checked).toBe(true);
+      expect(res.shedExplained).toBe(true);
+      expect(res.captured).toBeUndefined();
+      expect(capture).not.toHaveBeenCalled();
+      // correlation window = oldestOverdueMinutes (80) + default grace (10) = 90min
+      expect(hasPoolShedInWindow).toHaveBeenCalledWith('ws-1', 90 * 60_000);
+      expect(logs.some((l) => l.includes('paused-by-guardrail'))).toBe(true);
+    });
+
+    it('dead verdict + no pool-shed event in-window ⇒ still files the capture', async () => {
+      const hasPoolShedInWindow = vi.fn(async () => false);
+      const { d, capture } = deps({ hasPoolShedInWindow });
+      const res = await runEngineDeathSentinelPass(d, {}, NOW);
+      expect(res.captured).toBe(true);
+      expect(res.shedExplained).toBeUndefined();
+      expect(capture).toHaveBeenCalledTimes(1);
+    });
+
+    it('deps without hasPoolShedInWindow ⇒ unchanged behavior (files on dead, per the pre-existing tests above)', async () => {
+      const { d, capture } = deps();
+      expect(d.hasPoolShedInWindow).toBeUndefined();
+      const res = await runEngineDeathSentinelPass(d, {}, NOW);
+      expect(res.captured).toBe(true);
+      expect(capture).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses deps.workspaceId() when provided, else falls back to activeWorkspaceId()', async () => {
+      const hasPoolShedInWindow = vi.fn(async () => true);
+      const { d } = deps({ hasPoolShedInWindow, workspaceId: () => 'ws-custom' });
+      await runEngineDeathSentinelPass(d, {}, NOW);
+      expect(hasPoolShedInWindow).toHaveBeenCalledWith('ws-custom', expect.any(Number));
+    });
+  });
 });

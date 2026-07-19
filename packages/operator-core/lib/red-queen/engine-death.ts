@@ -199,6 +199,23 @@ export interface EngineDeathSentinelDeps {
   readRows: () => Promise<RoutineLivenessRow[]>;
   capture: typeof captureImprovement;
   log: (msg: string) => void;
+  /**
+   * WI-5456 ask (2): query whether a durable critical pool-shed event
+   * (dbos/pool-pressure.ts's recordPoolShedEvent, migration 627) explains the
+   * overdue window — a critical PG-pool-starvation shed can legitimately
+   * delay/skip a routines tick without the engine actually being dead. This
+   * is exactly the "paused by a guardrail, not dead" class
+   * hasPoolShedInWindow's own doc comment calls out; wiring it here is the
+   * specific consumer that comment was written for. Optional + defaults to
+   * "no shed known" (never consulted) when omitted, so existing callers/tests
+   * that don't pass it keep today's behavior unchanged.
+   */
+  hasPoolShedInWindow?: (workspaceId: string, windowMs: number) => Promise<boolean>;
+  /** workspaceId for the hasPoolShedInWindow correlation query above (must
+   *  match the scope readRows() used, so the shed check looks at the same
+   *  tenant as the overdue routines). Only consulted when
+   *  hasPoolShedInWindow is provided. Defaults to activeWorkspaceId(). */
+  workspaceId?: () => string;
 }
 
 /**
@@ -206,17 +223,40 @@ export interface EngineDeathSentinelDeps {
  * verdict — file ONE organic capture (this is a REAL outage signal, not a
  * drill; dedupScope 'open' keeps it to one open item per outage). Never
  * throws; flag-dark passes do zero PG reads.
+ *
+ * Before filing, a dead verdict is cross-checked against
+ * `deps.hasPoolShedInWindow` (WI-5456 ask 2): if a critical pool-shed
+ * guardrail event (pool-pressure.ts) landed within the overdue window, the
+ * "all routines overdue" signature is explained by a known, already-logged
+ * cause rather than a genuinely dead engine, and the pass returns
+ * `shedExplained: true` instead of filing — the exact "dead instrument hid
+ * because nothing distinguished shed-by-guardrail from actually-dead" failure
+ * class this wiring exists to close.
  */
 export async function runEngineDeathSentinelPass(
   deps: EngineDeathSentinelDeps,
   opts: EngineDeathOptions = {},
   nowMs?: number,
-): Promise<{ checked: boolean; verdict?: EngineDeathVerdict; captured?: boolean }> {
+): Promise<{ checked: boolean; verdict?: EngineDeathVerdict; captured?: boolean; shedExplained?: boolean }> {
   try {
     if (!(await deps.isArmed())) return { checked: false };
     const rows = await deps.readRows();
     const verdict = detectRoutineEngineDeath(rows, nowMs ?? Date.now(), opts);
     if (!verdict.dead) return { checked: true, verdict };
+    if (deps.hasPoolShedInWindow) {
+      const grace = opts.graceMinutes ?? ENGINE_DEATH_DEFAULTS.graceMinutes;
+      const windowMs = (verdict.oldestOverdueMinutes + grace) * 60_000;
+      const workspaceId = deps.workspaceId ? deps.workspaceId() : activeWorkspaceId();
+      const shedExplained = await deps.hasPoolShedInWindow(workspaceId, windowMs);
+      if (shedExplained) {
+        deps.log(
+          `engine-death signature detected (${verdict.reason}) but explained by a critical ` +
+            `pool-shed guardrail event within the last ${Math.round(windowMs / 60_000)}min — ` +
+            `treating as paused-by-guardrail, not dead; not filing.`,
+        );
+        return { checked: true, verdict, shedExplained: true };
+      }
+    }
     const signal = engineDeathSignal(verdict, { key: 'engine:live' });
     const res = await deps.capture({
       title: signal.title,
@@ -265,6 +305,11 @@ export function armEngineDeathSentinel(intervalMs: number = ENGINE_DEATH_SENTINE
     readRows: async () => readRoutineLivenessRows((await import('@papercusp/db-org')).getOrgPg().sql, activeWorkspaceId()),
     capture: captureImprovement,
     log: (m) => console.log(`[red-queen-sentinel] ${m}`),
+    hasPoolShedInWindow: async (workspaceId, windowMs) => {
+      const { hasPoolShedInWindow } = await import('../dbos/pool-pressure');
+      return hasPoolShedInWindow(workspaceId, windowMs);
+    },
+    workspaceId: () => activeWorkspaceId(),
   };
   sentinelTimer = managedSetInterval(
     'red-queen-engine-death',
