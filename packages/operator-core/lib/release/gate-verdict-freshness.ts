@@ -35,15 +35,23 @@
  * (`pinMoved` ⇒ reset the streak). It was never applied on the READ path, so any consumer reading
  * a starved cache was misled. This module applies it there.
  *
- * Both rules below are HARD EVIDENCE, not heuristics — deliberately so. The sibling lesson from
- * EI-10619 (`agent-insights/prove-it-discriminates-before-it-acts`) is that a detector built on a
- * statistic over the values you happen to have will fire on healthy states; so this one reasons
- * only from facts that PROVE the verdict was superseded:
+ * All three rules below are HARD EVIDENCE, not heuristics — deliberately so. The sibling lesson
+ * from EI-10619 (`agent-insights/prove-it-discriminates-before-it-acts`) is that a detector built
+ * on a statistic over the values you happen to have will fire on healthy states; so this one
+ * reasons only from facts that PROVE the verdict was superseded:
  *
  *   1. PIN-ADVANCE — the release pin moved past the pin this red was recorded against. The pin
  *      only ever advances on a GREEN checkpoint, so a later green demonstrably happened.
  *   2. WRITER-STARVED — the routine has FIRED since the observation without producing a new one.
  *      Its runs are being skipped; the verdict is simply unverified.
+ *   3. RETRIAGE-PROVEN (EI-13288) — the checkpoint run that PRODUCED this verdict already re-ran
+ *      its own named failing files at a newer tip (green-checkpoint.ts's stale-candidate
+ *      re-triage) and they PASSED, but the bounded auto-refire cap was reached before a full
+ *      suite could confirm that tip green. Unlike rules 1-2 (both infer staleness from
+ *      surrounding pipeline state), this is the run's own first-hand evidence about itself: it
+ *      directly disproves its own failing-test names, at record time, without needing the pin to
+ *      move or the routine to starve. See EI-13288 — a fresh, on-time, correctly-held gate can
+ *      still name files its own retriage already knows don't reproduce.
  *
  * A verdict you cannot distinguish from a STALE verdict is not a verdict.
  */

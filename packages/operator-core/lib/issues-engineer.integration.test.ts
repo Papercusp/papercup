@@ -5,7 +5,8 @@
  * fan-out (coordLog → coord_event_log), with getOrgPg pointed at a throwaway DB.
  *
  * Proves the substrate-consumption contract:
- *  • create → get round-trip; ids allocate EI-1, EI-2 (global, distinct from pipeline I-NNNN).
+ *  • create → get round-trip; ids are globally-unique EI-<n> (global, distinct from pipeline
+ *    I-NNNN; collision-resistant per EI-13285 — no assumption of sequential/small values).
  *  • tag→topic fan-out: a topic subscriber is notified; the author is NOT self-notified.
  *  • comment (Threadable) notifies subscribers + persists the thread.
  *  • claim/release (Claimable).
@@ -176,7 +177,7 @@ beforeEach(async () => {
 });
 
 describe('engineer issues surface (real PG)', () => {
-  it('create → get round-trip; ids allocate EI-1, EI-2', async () => {
+  it('create → get round-trip; ids are globally-unique EI-<n> (collision-resistant, EI-13285)', async () => {
     const a = await issues.createIssue({
       title: 'shop freezes',
       body: 'in firefox',
@@ -184,13 +185,14 @@ describe('engineer issues surface (real PG)', () => {
       source: 'su',
       createdBy: 'agA',
     });
-    expect(a.id).toBe('EI-1');
+    expect(a.id).toMatch(/^EI-[0-9]+$/);
     expect(a.severity).toBe('major');
     expect(a.source).toBe('su');
     expect(a.state).toBe('open');
     const b = await issues.createIssue({ title: 'second', createdBy: 'agA' });
-    expect(b.id).toBe('EI-2');
-    const got = await issues.getIssue('EI-1');
+    expect(b.id).toMatch(/^EI-[0-9]+$/);
+    expect(b.id).not.toBe(a.id); // distinct ids — no collision (EI-13285)
+    const got = await issues.getIssue(a.id);
     expect(got?.title).toBe('shop freezes');
   });
 
@@ -198,28 +200,28 @@ describe('engineer issues surface (real PG)', () => {
     // The bug: the local-write helpers omitted `updated_at` from the UPDATE SET clause,
     // so the INSTEAD OF trigger's COALESCE(NEW.updated_at, now()) carried the OLD view
     // value and `updated_ts` never refreshed. Every mutation helper must restamp it.
-    await issues.createIssue({ title: 'stamp me', createdBy: 'agA' }); // EI-1
+    const { id } = await issues.createIssue({ title: 'stamp me', createdBy: 'agA' });
     const STALE_MS = Date.now() - 86_400_000; // a day ago
     // Backdate via the view — the trigger HONORS an explicit updated_at (the
     // federation-preserve path the COALESCE supports), so this lands a stale updated_ts.
     const backdate = () =>
-      db.sql`UPDATE harness_shared.engineer_issues SET updated_at = to_timestamp(${STALE_MS} / 1000.0) WHERE issue_id = 'EI-1'`;
+      db.sql`UPDATE harness_shared.engineer_issues SET updated_at = to_timestamp(${STALE_MS} / 1000.0) WHERE issue_id = ${id}`;
     const expectFresh = (iso: string | undefined) =>
       expect(new Date(iso!).getTime()).toBeGreaterThan(Date.now() - 60_000);
 
     await backdate();
-    expect(new Date((await issues.getIssue('EI-1'))!.updatedAt).getTime()).toBeLessThan(Date.now() - 3_600_000); // trigger honored the explicit ts
+    expect(new Date((await issues.getIssue(id))!.updatedAt).getTime()).toBeLessThan(Date.now() - 3_600_000); // trigger honored the explicit ts
 
     await backdate();
-    expectFresh(notTripped(await issues.updateIssue('EI-1', { title: 'edited' }))?.updatedAt);
+    expectFresh(notTripped(await issues.updateIssue(id, { title: 'edited' }))?.updatedAt);
     await backdate();
-    expectFresh((await issues.setIssueState('EI-1', 'resolved', 'agA', 'test'))?.updatedAt);
+    expectFresh((await issues.setIssueState(id, 'resolved', 'agA', 'test'))?.updatedAt);
     await backdate();
-    expectFresh((await issues.claimIssue('EI-1', 'agB'))?.updatedAt);
+    expectFresh((await issues.claimIssue(id, 'agB'))?.updatedAt);
     await backdate();
-    expectFresh((await issues.releaseIssue('EI-1'))?.updatedAt);
+    expectFresh((await issues.releaseIssue(id))?.updatedAt);
     await backdate();
-    expectFresh((await issues.mergeIssuePayload('EI-1', { note: 'x' }))?.updatedAt);
+    expectFresh((await issues.mergeIssuePayload(id, { note: 'x' }))?.updatedAt);
   });
 
   // EI-8497: updateIssue rejects a drastic body-shrink (a fat-finger overwrite of a
@@ -256,17 +258,17 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('comment notifies subscribers (Threadable) + persists the thread', async () => {
-    await subs.subscribe({ subscriber_id: 'agB', target_kind: 'object', target_ref: 'issue:EI-1', created_ts: NOW });
-    await issues.createIssue({ title: 't', createdBy: 'agA' });
-    await issues.commentIssue('EI-1', 'found the root cause', 'agA');
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    await subs.subscribe({ subscriber_id: 'agB', target_kind: 'object', target_ref: `issue:${id}`, created_ts: NOW });
+    await issues.commentIssue(id, 'found the root cause', 'agA');
     expect((await inboxOf('agB')).some((m) => m.notify_kind === 'issue_commented')).toBe(true);
-    const detail = await issues.getIssueDetail('EI-1');
+    const detail = await issues.getIssueDetail(id);
     expect(detail?.posts.map((p) => p.body)).toContain('found the root cause');
   });
 
   it('claim → assignee set + auto-subscribed; release clears it', async () => {
-    await issues.createIssue({ title: 't', createdBy: 'agA' });
-    const claimed = await issues.claimIssue('EI-1', 'agB');
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const claimed = await issues.claimIssue(id, 'agB');
     expect(claimed?.assignee).toBe('agB');
     // assigned_at MUST stamp on claim: the implement lane's stale-claim reclaim
     // ages claims off it — a dateless claim reads as in-flight forever and wedged
@@ -274,22 +276,22 @@ describe('engineer issues surface (real PG)', () => {
     expect(claimed?.assignedAt).toBeTruthy();
     expect(Math.abs(Date.now() - Date.parse(claimed!.assignedAt!))).toBeLessThan(60_000);
     const mySubs = await subs.listSubscriptions('agB');
-    expect(mySubs.map((s) => s.target_ref)).toContain('issue:EI-1');
-    const released = await issues.releaseIssue('EI-1');
+    expect(mySubs.map((s) => s.target_ref)).toContain(`issue:${id}`);
+    const released = await issues.releaseIssue(id);
     expect(released?.assignee).toBeNull();
     expect(released?.assignedAt).toBeNull();
   });
 
   it('EI-7150: setIssueState to a non-terminal state (e.g. open) PRESERVES the claim — only resolved/closed clear it', async () => {
-    await issues.createIssue({ title: 't', createdBy: 'agA' });
-    const claimed = await issues.claimIssue('EI-1', 'agB');
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const claimed = await issues.claimIssue(id, 'agB');
     expect(claimed?.assignee).toBe('agB');
     // The non-terminal UPDATE branch (state !== resolved/closed) must touch ONLY
     // `state` — never assignee/assigned_at. A caller re-recording state (or an
     // agent-typo state that normalizeWorkItemState aliases onto 'open', e.g.
     // 'in_progress'/'blocked'/'wip' — the issue family has no richer
     // representation) must never silently drop the claim it's still holding.
-    const stillOpen = await issues.setIssueState('EI-1', 'open', 'agB');
+    const stillOpen = await issues.setIssueState(id, 'open', 'agB');
     expect(stillOpen?.state).toBe('open');
     expect(stillOpen?.assignee).toBe('agB');
     expect(stillOpen?.assignedAt).toBeTruthy();
@@ -304,9 +306,9 @@ describe('engineer issues surface (real PG)', () => {
       delivery_mode: 'mention',
       created_ts: NOW,
     });
-    await issues.createIssue({ title: 't', topics: ['area'], createdBy: 'agA' });
+    const { id } = await issues.createIssue({ title: 't', topics: ['area'], createdBy: 'agA' });
     expect(await inboxOf('agC')).toHaveLength(0); // mention-mode: not notified of a normal create
-    const resolved = await issues.setIssueState('EI-1', 'resolved', 'agA', 'test');
+    const resolved = await issues.setIssueState(id, 'resolved', 'agA', 'test');
     expect(resolved?.state).toBe('resolved');
     expect((await inboxOf('agC')).some((m) => m.notify_kind === 'issue_resolved')).toBe(true);
   });
@@ -322,9 +324,13 @@ describe('engineer issues surface (real PG)', () => {
   it('counts a topic through the indexed tag-edge join with the same state filters as listIssues', async () => {
     await topicStore.create({ slug: 'observations', description: 'learning signals', created_ts: NOW });
     await issues.createIssue({ title: 'open observation', topics: ['observations'], createdBy: 'agA' });
-    await issues.createIssue({ title: 'resolved observation', topics: ['observations'], createdBy: 'agA' });
+    const { id: resolvedId } = await issues.createIssue({
+      title: 'resolved observation',
+      topics: ['observations'],
+      createdBy: 'agA',
+    });
     await issues.createIssue({ title: 'not tagged', createdBy: 'agA' });
-    await issues.setIssueState('EI-2', 'resolved', 'agA', 'integration-test completion');
+    await issues.setIssueState(resolvedId, 'resolved', 'agA', 'integration-test completion');
 
     expect(await issues.countIssues({ topic: 'observations' })).toBe(2);
     expect(await issues.countIssues({ topic: 'observations', state: 'open' })).toBe(1);
@@ -332,8 +338,8 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('promote → mints + links an F-FIX feature; issue stays open', async () => {
-    await issues.createIssue({ title: 'broken thing', scope: 'harness:papercup', createdBy: 'agA' });
-    const res = await issues.promoteIssue('EI-1', { actor: 'agA' });
+    const { id } = await issues.createIssue({ title: 'broken thing', scope: 'harness:papercup', createdBy: 'agA' });
+    const res = await issues.promoteIssue(id, { actor: 'agA' });
     if ('error' in res) throw new Error(res.error);
     expect(res.feature.id).toBe('F-FIX-001');
     expect(res.issue.linkedFeatureId).toBe('F-FIX-001');
@@ -341,19 +347,19 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('promote operator-scope without a harness → error', async () => {
-    await issues.createIssue({ title: 'x', createdBy: 'agA' }); // scope defaults to operator
-    const res = await issues.promoteIssue('EI-1', {});
+    const { id } = await issues.createIssue({ title: 'x', createdBy: 'agA' }); // scope defaults to operator
+    const res = await issues.promoteIssue(id, {});
     expect('error' in res && res.error).toMatch(/needs a target harness/);
   });
 
   it('topics:feed returns cross-object items tagged a topic, enriched (Capstone P1)', async () => {
-    await issues.createIssue({ title: 'an issue', topics: ['area'], createdBy: 'agA' }); // EI-1, tagged area
+    const { id } = await issues.createIssue({ title: 'an issue', topics: ['area'], createdBy: 'agA' }); // tagged area
     await db.sql`INSERT INTO harness_shared.harness_features_consolidated (harness_slug, feature_id, title, status)
                  VALUES ('papercup', 'F-7', 'a feature', 'todo')`;
     await feed.tagObject('feature', 'F-7', 'area', 'agA');
     const items = await feed.topicFeed('area');
     const byKind = Object.fromEntries(items.map((i) => [i.kind, i]));
-    expect(byKind.issue?.ref).toBe('EI-1');
+    expect(byKind.issue?.ref).toBe(id);
     expect(byKind.issue?.title).toBe('an issue');
     expect(byKind.feature?.ref).toBe('F-7');
     expect(byKind.feature?.title).toBe('a feature');
@@ -361,42 +367,42 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('issue_blocks: an open blocking issue marks a plan item; closing it clears (Phase 2)', async () => {
-    await issues.createIssue({ title: 'blocker', createdBy: 'agA' }); // EI-1, open
+    const { id } = await issues.createIssue({ title: 'blocker', createdBy: 'agA' }); // open
     await issues.linkIssue(
-      'EI-1',
+      id,
       { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('myplan', 'P-003') },
       'blocks',
       'agA',
     );
     let info = await blocks.getBlockingIssuesForPlan('myplan');
-    expect(info.blockedItems.get('P-003')).toEqual(['EI-1']);
+    expect(info.blockedItems.get('P-003')).toEqual([id]);
     // a different plan is unaffected
     expect((await blocks.getBlockingIssuesForPlan('otherplan')).blockedItems.size).toBe(0);
     // closing the issue clears the block atomically
-    await issues.setIssueState('EI-1', 'closed', 'agA', 'test');
+    await issues.setIssueState(id, 'closed', 'agA', 'test');
     info = await blocks.getBlockingIssuesForPlan('myplan');
     expect(info.blockedItems.has('P-003')).toBe(false);
   });
 
   it('issue_blocks: getAllBlockedPlanItems batches every plan (keyed <slug>#<item>) + overlay flips status (plans:list/items path)', async () => {
-    await issues.createIssue({ title: 'blockerA', createdBy: 'agA' }); // EI-1, open
+    const { id: idA } = await issues.createIssue({ title: 'blockerA', createdBy: 'agA' }); // open
     await issues.linkIssue(
-      'EI-1',
+      idA,
       { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('planA', 'P-003') },
       'blocks',
       'agA',
     );
-    await issues.createIssue({ title: 'blockerB', createdBy: 'agA' }); // EI-2, open
+    const { id: idB } = await issues.createIssue({ title: 'blockerB', createdBy: 'agA' }); // open
     await issues.linkIssue(
-      'EI-2',
+      idB,
       { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('planB', 'P-001') },
       'blocks',
       'agA',
     );
 
     const all = await blocks.getAllBlockedPlanItems();
-    expect(all.get('planA#P-003')).toEqual(['EI-1']);
-    expect(all.get('planB#P-001')).toEqual(['EI-2']);
+    expect(all.get('planA#P-003')).toEqual([idA]);
+    expect(all.get('planB#P-001')).toEqual([idB]);
 
     // the readers feed this map (keyed by full ref) into the per-plan overlay
     const { items: out, blockingIssues } = blocks.applyPlanItemBlocks(
@@ -410,52 +416,52 @@ describe('engineer issues surface (real PG)', () => {
     expect(out.find((i) => i.id === 'P-003')!.effectiveStatus).toBe('blocked');
     expect(out.find((i) => i.id === 'P-009')!.effectiveStatus).toBe('todo');
     expect(out.find((i) => i.id === 'P-001')!.effectiveStatus).toBe('done');
-    expect(blockingIssues).toEqual({ 'P-003': ['EI-1'] });
+    expect(blockingIssues).toEqual({ 'P-003': [idA] });
 
-    // closing EI-1 drops it from the batch map
-    await issues.setIssueState('EI-1', 'closed', 'agA', 'test');
+    // closing idA drops it from the batch map
+    await issues.setIssueState(idA, 'closed', 'agA', 'test');
     expect((await blocks.getAllBlockedPlanItems()).has('planA#P-003')).toBe(false);
   });
 
   it('issue_blocks: feature-side projection — a harness-qualified feature block is projected, cleared on close (D-006 #2)', async () => {
-    await issues.createIssue({ title: 'feat blocker', createdBy: 'agA' }); // EI-1, open
+    const { id } = await issues.createIssue({ title: 'feat blocker', createdBy: 'agA' }); // open
     const ref = blocks.featureRef('sheets', 'F-42'); // '<harness>#<feature_id>'
-    await issues.linkIssue('EI-1', { kind: blocks.FEATURE_KIND, ref }, 'blocks', 'agA');
+    await issues.linkIssue(id, { kind: blocks.FEATURE_KIND, ref }, 'blocks', 'agA');
     let m = await blocks.getBlockedFeatures();
     // keyed by the harness-qualified ref — which is exactly what the reader looks up
     // via featureRef(harness, id); a bare 'F-42' (the old convention) is NOT a key.
-    expect(m.get(ref)).toEqual(['EI-1']);
+    expect(m.get(ref)).toEqual([id]);
     expect(m.has('F-42')).toBe(false);
-    await issues.setIssueState('EI-1', 'closed', 'agA', 'test');
+    await issues.setIssueState(id, 'closed', 'agA', 'test');
     m = await blocks.getBlockedFeatures();
     expect(m.has(ref)).toBe(false);
   });
 
   it('issueLinkCounts: batched link degree — outbound blocks + inbound refs, tags and upstream blocks excluded (consume-edges P-022)', async () => {
-    await issues.createIssue({ title: 'high impact blocker', topics: ['papercusp-improvement'], createdBy: 'agA' }); // EI-1 (tag edge must NOT count)
-    await issues.createIssue({ title: 'quiet item', createdBy: 'agA' }); // EI-2
-    // EI-1 blocks two downstream things (outbound) …
+    const { id: idA } = await issues.createIssue({
+      title: 'high impact blocker',
+      topics: ['papercusp-improvement'],
+      createdBy: 'agA',
+    }); // tag edge must NOT count
+    const { id: idB } = await issues.createIssue({ title: 'quiet item', createdBy: 'agA' });
+    // idA blocks two downstream things (outbound) …
     await issues.linkIssue(
-      'EI-1',
+      idA,
       { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('myplan', 'P-001') },
       'blocks',
       'agA',
     );
-    await issues.linkIssue(
-      'EI-1',
-      { kind: blocks.FEATURE_KIND, ref: blocks.featureRef('sheets', 'F-1') },
-      'blocks',
-      'agA',
-    );
+    await issues.linkIssue(idA, { kind: blocks.FEATURE_KIND, ref: blocks.featureRef('sheets', 'F-1') }, 'blocks', 'agA');
     // … is referenced by a plan (inbound, counts) and blocked by another issue
-    // (inbound `blocks` = upstream dependency, excluded).
+    // (inbound `blocks` = upstream dependency, excluded). 'EI-9' below is a bare
+    // arbitrary ref for the link edge — it never needs to be a real allocated row.
     const links = new PgLinkStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
-    await links.link({ kind: 'plan', ref: 'someplan' }, { kind: 'issue', ref: 'EI-1' }, 'relates', { created_ts: NOW });
-    await links.link({ kind: 'issue', ref: 'EI-9' }, { kind: 'issue', ref: 'EI-1' }, 'blocks', { created_ts: NOW });
+    await links.link({ kind: 'plan', ref: 'someplan' }, { kind: 'issue', ref: idA }, 'relates', { created_ts: NOW });
+    await links.link({ kind: 'issue', ref: 'EI-9' }, { kind: 'issue', ref: idA }, 'blocks', { created_ts: NOW });
 
-    const counts = await issues.issueLinkCounts(['EI-1', 'EI-2']);
-    expect(counts.get('EI-1')).toEqual({ blocksOut: 2, inboundRefs: 1 });
-    expect(counts.get('EI-2')).toEqual({ blocksOut: 0, inboundRefs: 0 }); // present with zeros
+    const counts = await issues.issueLinkCounts([idA, idB]);
+    expect(counts.get(idA)).toEqual({ blocksOut: 2, inboundRefs: 1 });
+    expect(counts.get(idB)).toEqual({ blocksOut: 0, inboundRefs: 0 }); // present with zeros
     expect((await issues.issueLinkCounts([])).size).toBe(0);
   });
 

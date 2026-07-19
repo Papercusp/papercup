@@ -472,12 +472,6 @@ export function SignalsPanel({
                         </section>
                       ),
                     )}
-                    {digest.truncated ? (
-                      <p className="pc-signals__digest-none">
-                        …capped for display — the full digest is in
-                        scout_digest_snapshots.
-                      </p>
-                    ) : null}
                   </div>
                 </LearningDisclosure>
               ) : null}

@@ -846,8 +846,9 @@ export async function readScoutSnapshot(
         weight: typeof p.weight === 'number' && Number.isFinite(p.weight) ? p.weight : null,
       });
       const byWeight = (a: ScoutDigestEntry, b: ScoutDigestEntry): number => (b.weight ?? 0) - (a.weight ?? 0);
-      const NEW_CAP = 20;
-      const STANDING_CAP = 15;
+      // Owner ask 2026-07-19 ("DONT CAP IT"): the digest is the persisted corpus
+      // a cycle was actually prompted with — the UI shows it WHOLE. No count cap
+      // on either leg; `truncated` stays false so no "capped for display" note.
       const newEntries = prevRefs.size > 0 ? flat.filter((p) => !prevRefs.has(p.ref)).map(toEntry).sort(byWeight) : [];
       const standingEntries = flat
         .filter((p) => prevRefs.size === 0 || prevRefs.has(p.ref))
@@ -864,9 +865,9 @@ export async function readScoutSnapshot(
         watermarkAt: toIso(row.watermark_at),
         totalEntries: flat.length,
         laneCounts,
-        newEntries: newEntries.slice(0, NEW_CAP),
-        standingEntries: standingEntries.slice(0, STANDING_CAP),
-        truncated: newEntries.length > NEW_CAP || standingEntries.length > STANDING_CAP,
+        newEntries,
+        standingEntries,
+        truncated: false,
       };
     }
   } catch (err) {

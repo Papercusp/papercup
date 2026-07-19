@@ -15,7 +15,12 @@
  * a live Postgres.
  */
 import { describe, it, expect } from 'vitest';
-import { auditPredicateSql, auditPredicateSqlFor, COMPLETION_AUDITS } from './completion-audit';
+import {
+  auditPredicateSql,
+  auditPredicateSqlFor,
+  COMPLETION_AUDITS,
+  looksLikeCitedProseEvidence,
+} from './completion-audit';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 
 /**
@@ -99,5 +104,51 @@ describe('completion-audit predicates (EI-10867)', () => {
       const f = frag(auditPredicateSql(recordingSql(), a));
       expect(f.text.trim().length).toBeGreaterThan(0);
     }
+  });
+});
+
+// EI-13424 — the audit's own false-positive rate: a `no-evidence` hit whose prose
+// completion.summary already cites real verification detail should not read as a bare
+// done-assertion. These are close paraphrases of the three real completions the bug
+// report cites (WI-4669 / WI-4999 / WI-5089), each of which the audit flagged despite
+// carrying rich, cited verification prose.
+describe('looksLikeCitedProseEvidence (EI-13424)', () => {
+  it('flags a ref citing a live tool observation + field-by-field spec check (WI-4669-shaped)', () => {
+    const ref =
+      'Live-verified events:status { event } in production right now, called twice this session; ' +
+      'checked every requirement in the spec against the actual returned field, including a live ' +
+      "observation (\"fired\" on event 'rig-heal-federation-green'), waiters[]/wake_outcomes[] field-by-field.";
+    expect(looksLikeCitedProseEvidence(ref)).toBe(true);
+  });
+
+  it('flags a ref citing a drill run + cross-referenced peer drillIds (WI-4999-shaped)', () => {
+    const ref =
+      "Verified via session:carry-drill{op:'report'} at 2026-07-17T03:20Z: perClass = " +
+      '[claude-interactive: drills:1, gaps:0, sufficient:true], cross-referenced against TWO ' +
+      'independent fresh drills from fleet peers (su-b7b40c9b drillId 828c3534-e29b-4716-a716-446655440000).';
+    expect(looksLikeCitedProseEvidence(ref)).toBe(true);
+  });
+
+  it('flags a ref citing a file:line, measured numbers, and a commit sha (WI-5089-shaped)', () => {
+    const ref =
+      'Verified the actual doc content is present and committed: desktop-release-upload-runbook.mdx ' +
+      "has a '## Keep cargo caches warm' section (lines 187-228) with the measured numbers " +
+      '(cold 428-crate rebuild 143s vs warm incremental 4s) and the commit sha d3ca309e076992e162b319f035fbb8624692716c.';
+    expect(looksLikeCitedProseEvidence(ref)).toBe(true);
+  });
+
+  it('does NOT flag a genuinely bare done-assertion', () => {
+    expect(looksLikeCitedProseEvidence('done')).toBe(false);
+    expect(looksLikeCitedProseEvidence('Completed all tasks, looks good.')).toBe(false);
+    expect(looksLikeCitedProseEvidence(null)).toBe(false);
+    expect(looksLikeCitedProseEvidence(undefined)).toBe(false);
+    expect(looksLikeCitedProseEvidence('')).toBe(false);
+  });
+
+  it('does NOT flag a short ref even if it happens to contain a number (length floor)', () => {
+    // Under the length floor — a short ref shouldn't earn "evidenced" status just
+    // because it contains digits; that would recreate the over-detection failure mode
+    // this exists to avoid, just shifted to short refs instead of long ones.
+    expect(looksLikeCitedProseEvidence('Fixed bug #123, done.')).toBe(false);
   });
 });

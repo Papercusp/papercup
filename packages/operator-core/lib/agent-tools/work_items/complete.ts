@@ -599,11 +599,11 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded / migrations / tests / deferred) — the system renders + broadcasts it, so you never narrate in prose. A terminal `state` converges the whole finish: work-item state + linked plan-item + claim release + checkpoint cleanup. The `finish` receipt is idempotent; ok:false means a leg did not converge — re-call the SAME completion to resume it.",
+    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded / migrations / tests / deferred) — the system renders + broadcasts it, so you never narrate in prose. A terminal `state` converges the whole finish: work-item state + linked plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning`. The `finish` receipt is idempotent; ok:false means a leg did not converge — re-call the SAME completion to resume it.",
   guidance: {
     when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue-family `status:\'resolved\'|\'closed\'` alone DOES infer + close, EI-12027). `completion.verifiedHow` is a CLOSED ENUM — \'unit\'|\'integration\'|\'live-drove-ui\'|\'manual\'|\'already-passing\' — not free text; prose → testsRun/testResult. Duplicate? Set `completion.duplicateOf` to the surviving id (auto-links + notifies the prior assignee).',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
-    chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On terminal success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox (no release/checkpoint-clear/coord:send calls needed). Read the returned `reflect` step and file an improvements:capture if friction bit you.',
+    chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On terminal success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox (no release/checkpoint-clear/coord:send calls needed).',
     seeAlso: [
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',

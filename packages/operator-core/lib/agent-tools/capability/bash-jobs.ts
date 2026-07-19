@@ -85,9 +85,24 @@ export function scratchDir(stateDir: string | undefined): string {
   return dir;
 }
 
-/** Spawn `bash -c <command>` with an augmented PATH (the operator sidecar's PATH
- *  often omits node/npx/git locations — same fix as pluginSpawnImpl). stdin is
- *  closed; combined stdout+stderr are piped.
+/** Spawn `bash -o pipefail -c <command>` with an augmented PATH (the operator
+ *  sidecar's PATH often omits node/npx/git locations — same fix as
+ *  pluginSpawnImpl). stdin is closed; combined stdout+stderr are piped.
+ *
+ *  `-o pipefail` (EI-13414): without it, bash's reported exit code for a
+ *  piped command (`cmd | tail -N`, `| head`, `| grep`, …) is the LAST
+ *  command's exit code, not the pipeline's — so `real-test-runner | tail -60`
+ *  reports the tool's own exit 0 even when the runner FAILED, silently
+ *  masking a real failure as a clean pass to whichever agent is trusting
+ *  `exitCode`/`isError` as completion evidence (the exact near-miss that
+ *  filed this bug: a real `1 non-quarantined task(s) failed` was reported as
+ *  exit 0). `pipefail` makes the reported exit code the right-most non-zero
+ *  status in the pipeline (or zero if all succeed) — the same fix a diligent
+ *  caller is told to apply by hand (`set -o pipefail`); applying it at the
+ *  spawn layer protects every agent using this shared shell tool, not just
+ *  ones who remembered to opt in. A caller that truly wants "ignore this
+ *  stage's exit code" still has the standard escape hatch (`cmd || true`,
+ *  `cmd; true`) — same as any pipefail-enabled shell.
  *
  *  When `sandboxEnabled` (the resolved papercusp-capability-exec-sandbox flag,
  *  P-022/D-008), the `bash -c` runs inside a bwrap OS sandbox (fs + credential
@@ -109,7 +124,7 @@ function spawnShell(
   // host-X isolation still holds.
   const inheritedEnv = normalizeInheritedOperatorUrl(scrubExecEnv(process.env));
   const decision = buildCapabilitySandboxCommand(
-    { cmd: [resolveBin('bash', spawnPath), '-c', command], cwd },
+    { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', command], cwd },
     { enabled: sandboxEnabled },
   );
   if (sandboxEnabled && !decision.sandboxed) {

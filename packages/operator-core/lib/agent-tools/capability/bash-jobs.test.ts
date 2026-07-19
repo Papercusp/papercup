@@ -58,6 +58,31 @@ describe('runForeground', () => {
     expect(r.output).toContain('oops');
   });
 
+  it('a failing command piped through a truncating filter (tail) reports the PIPELINE exit code, not the filter\'s (EI-13414)', async () => {
+    // Without `-o pipefail`, bash reports the LAST command's exit status for a
+    // pipe — `exit 1 | tail -60` would report 0 (tail always succeeds), silently
+    // masking the real failure. This is the exact near-miss that filed EI-13414:
+    // `npm run test:affected 2>&1 | tail -60` reported exit 0 while the runner
+    // had actually failed.
+    const r = await runForeground(
+      { command: 'echo "1 non-quarantined task(s) failed" >&2; exit 1 | tail -60', cwd: STATE, stateDir: STATE },
+      never,
+      10_000,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.status).toBe('failed');
+  });
+
+  it('a successful pipeline still reports exit 0 (pipefail does not false-positive on a clean pipe)', async () => {
+    const r = await runForeground(
+      { command: 'echo hello | tail -1', cwd: STATE, stateDir: STATE },
+      never,
+      10_000,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.status).toBe('completed');
+  });
+
   it('spills large output to a log file and trims the inline result', async () => {
     const r = await runForeground(
       { command: 'for i in $(seq 1 4000); do echo "line-$i padding padding padding padding"; done', cwd: STATE, stateDir: STATE },

@@ -73,3 +73,62 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
     ? sql`${ref} IS NULL`
     : sql`NOT (COALESCE(${col}, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY})`;
 }
+
+/**
+ * EI-13424 — `no-evidence`'s OWN false-positive rate.
+ *
+ * The predicate above is exact and cheap (it must stay that way — see the module
+ * doc), but it answers a narrower question than its name implies: "does this row
+ * carry the STRUCTURED `_completionEvidence` key", not "was this work actually
+ * verified". `work_items:complete`'s free-text `completion.summary` is exactly where
+ * an agent naturally writes real verification detail instead of the structured
+ * fields — a cited commit sha, a specific file:line, an observed tool call + its
+ * result, a measured test-count ratio, a drillId/session id. Three such completions
+ * were nearly RE-OPENED by a DRAIN leader mechanically following the "re-open bare
+ * assertions" mandate on every `no-evidence` hit, because the audit has no way to
+ * tell "never said how" apart from "said how, in prose".
+ *
+ * This is a SEPARATE, best-effort SIGNAL — not a replacement for the SQL predicate,
+ * and not itself proof of verification. A caller (the DRAIN leader's spot-audit, or
+ * any consumer of `work_items:list { audit }`) checks it on each returned row BEFORE
+ * acting: `looksLikeCitedProseEvidence(row.terminalCompletionRef)` true means the
+ * ref itself cites something a fabricated one-line "done" would not contain, and the
+ * row deserves a read before a reopen, not a mechanical one.
+ *
+ * Deliberately biased toward NOT flagging a ref as evidenced: the harm this exists to
+ * prevent is over-detecting BARENESS on well-evidenced prose (the false positive that
+ * burns fleet time re-doing verified work and erodes trust in the audit) — so both the
+ * length floor and the citation-pattern requirement lean toward the direction that is
+ * safe to get wrong here (an under-flagged genuinely-bare close stays correctly
+ * flagged with no evidence signal; it is not silently waved through by this function —
+ * it is still a `no-evidence` audit hit either way, just without the extra signal).
+ */
+export const PROSE_EVIDENCE_MIN_LENGTH = 100;
+
+const PROSE_EVIDENCE_PATTERNS: readonly RegExp[] = [
+  // A file:line / file(line — a specific source location, e.g. "run.ts:204" or "foo.tsx(12,".
+  /[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|rs|go|sql|md|mdx|json|yml|yaml)[:(]\d+/i,
+  // A tool call, colon-form, e.g. "session:carry-drill(" or "events:status { event }".
+  /\b[a-z][a-z_]*(?::[a-z][a-z_-]*)+\s*[({]/i,
+  // A measured test-count ratio, e.g. "9/9 green" or "26/26 passed".
+  /\b\d{1,4}\s*\/\s*\d{1,4}\b/,
+  // A uuid / drillId.
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
+  // A commit sha (7+ hex chars) — long enough that a plain word collision is very rare.
+  /\b[0-9a-f]{7,40}\b/i,
+  // An ISO timestamp, e.g. "2026-07-17T03:2".
+  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/,
+];
+
+/**
+ * Does this completion ref look like it cites verifiable evidence, despite carrying
+ * no structured `_completionEvidence`? Pure, synchronous, no I/O — see the doc above
+ * for what this is (a caller-facing signal) and is NOT (proof, or a replacement for
+ * the SQL predicate).
+ */
+export function looksLikeCitedProseEvidence(ref: string | null | undefined): boolean {
+  if (!ref) return false;
+  const text = ref.trim();
+  if (text.length < PROSE_EVIDENCE_MIN_LENGTH) return false;
+  return PROSE_EVIDENCE_PATTERNS.some((re) => re.test(text));
+}

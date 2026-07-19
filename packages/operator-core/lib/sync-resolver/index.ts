@@ -2182,8 +2182,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const t = generated.harnessFeaturesConsolidatedInHarnessShared;
       const { db } = getOrgPg();
       const slugFilter = inArray(t.harnessSlug, memberSlugs);
+      // Slim wire projection (whole-app-sync-payload-audit-2026-07-19 P-002).
+      // WI-5412 slimmed the sibling `.bySlug` but MISSED this cross-member `.byHive`,
+      // which kept a bare `.select()` (SELECT *) and shipped all ~70 view columns —
+      // including `embedding` (a 384-dim pgvector) and `_search` (tsvector). Measured
+      // on papercusp: 14,688 rows ≈ 10.2MB parsed into the webview per HiveContentPanel
+      // load, of which the embedding alone was 6.1MB and _search 0.95MB — search-index
+      // internals NO component renders. This mirrors `.bySlug`'s projection EXACTLY
+      // (same HarnessFeature-shaped consumers), so behavior is unchanged: row count is
+      // preserved, only the unrendered heavy columns leave the wire.
       return (await db
-        .select()
+        .select({
+          harnessSlug: t.harnessSlug,
+          featureId: t.featureId,
+          title: t.title,
+          summary: t.summary,
+          status: t.status,
+          attempts: t.attempts,
+          claims: t.claims,
+          tags: t.tags,
+          needsHumanReview: t.needsHumanReview,
+          sourcePlanSlug: t.sourcePlanSlug,
+          workingUsers: t.workingUsers,
+          updatedTs: t.updatedTs,
+        })
         .from(t)
         .where(workspaceId != null ? and(slugFilter, eq(t.workspaceId, workspaceId)) : slugFilter)
         .orderBy(desc(t.updatedTs))) as unknown[];

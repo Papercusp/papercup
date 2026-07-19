@@ -57,11 +57,16 @@ describe('signal_origin column (migration 241)', () => {
     // CHECK moved with the data to the base table (mig-403 work_items_signal_origin_chk, over
     // the payload->'_ei'->>'signal_origin' JSON path). The INSTEAD OF UPDATE trigger writes
     // 'mystery' into work_items.payload, where the CHECK rejects it.
+    // Self-contained (EI-13285): must NOT lean on a previous test's issue existing under a
+    // hardcoded id — ids are collision-resistant / non-sequential now, and an UPDATE that
+    // matches zero rows silently no-ops (never trips the CHECK), which would make this
+    // assertion pass for the wrong reason. Create the row this test needs directly.
+    const target = await createIssue({ title: 'a row for the CHECK to reject an update on', createdBy: 'su-test' });
     await expect(
       db.adminSql`
         UPDATE harness_shared.engineer_issues
            SET signal_origin = 'mystery'
-         WHERE issue_id = 'EI-1'`,
+         WHERE issue_id = ${target.id}`,
     ).rejects.toThrow(/work_items_signal_origin_chk/);
   });
 

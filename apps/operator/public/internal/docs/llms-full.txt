@@ -4481,6 +4481,39 @@ The `PROMPT_ABLATION` rail ablates SU-playbook **prose** rules — it does **not
 
 The opportunity definition lives **once**: `isBatchableSpawn` imports `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` from the nudge module, and `CODE_RUN_ADOPTION_SQL` mirrors the same `normalize()` + excluded-batch-tool set inline. If you change a threshold, the excluded-batch-tool set, or the poller-exclusion set (`POLLER_TOOL_NORMS`) in the TS, update the SQL’s literal `IN (...)` lists to match (the unit test pins the at-threshold boundary, but the SQL’s literal lists are not type-checked against the TS sets). The SQL also inlines `TURN_GAP_MS` (P-012) as a literal in the `turned` CTE’s `CASE` — the same duplication risk: if you retune `TURN_GAP_MS` in `code-run-batch-nudge.ts`, update `adoptionQueryBody`’s inlined literal too (there is no way to import a TS constant into raw SQL). The SQL also carries the `transport='mcp' AND spawn_id IS NOT NULL` filters — keep them if you fork the query, or the denominator re-poisons.
 
+# code:run resolving a different claim-spec than a direct call is a RACE, not an identity bug
+
+> scheduler:get_next/get_claim_spec via code:run vs a direct MCP call can show a different fleetScope/specId back-to-back — verified this is NOT code:run carrying a different identity (ctx/ownerId is provably identical, regression-tested), it is the fleet leader's concurrent claim-spec write landing between the two reads.
+
+## Symptom (EI-13324)
+
+[Section titled “Symptom (EI-13324)”](#symptom-ei-13324)
+
+A fleet member called `scheduler:get_next { harness: 'papercusp' }` twice, back-to-back, with identical args — once via `code:run` (`tools.scheduler.getNext(...)`), once as a direct tool call. Both missed, but the `fleetScope` in the two miss payloads named a **different** claim spec: the `code:run` call showed a per-bee spec (`source:'cup'`), the direct call showed the inherited fleet-level spec (`source:'fleet'`). The natural (and wrong) conclusion: “`code:run`’s execution context carries a different scheduling identity than my own session.”
+
+## What it actually is: NOT an identity divergence
+
+[Section titled “What it actually is: NOT an identity divergence”](#what-it-actually-is-not-an-identity-divergence)
+
+Verified live (2026-07-19), two ways:
+
+1. **Empirical**: called both `coord:whoami` (identity resolved purely from `ctx`, no explicit id arg — the same shape `scheduler:get_next` uses internally) and `scheduler:get_claim_spec` directly *and* via `code:run`, back-to-back, same session. `ownerId` / `fleetSlug` / `specId`/`revision` were byte-identical both times.
+2. **Code + regression test**: `code:run`’s inner-call rebinding (`bindInnerDispatch`, WI-1411) only rebuilds `ctx` when the call’s *effective workspace* differs from the outer ctx’s (the EI-30 per-call `{ workspace }` hop for an unscoped superuser) or the tool is `crossWorkspace`. In the common case — no `workspace` arg override, which is exactly this bug’s repro (`{ harness: 'papercusp' }`, no `workspace` key) — it dispatches under the **exact same `ctx` object reference**, not a rebuilt one: `code/run.test.ts` pins this with `expect(result).toBe(outerCtx)` for both a concrete-workspace ctx and an unscoped-superuser-with-no-override ctx. `resolveAgentIdentity` (identity.ts) reads only plain fields off that same object (`uiClientId`, `isSuperuser`, `sigVerifiedSpawn`, `principal`), so `ownerId` cannot differ between the two dispatch paths when no workspace hop fires. `getClaimSpecRecord`/`getNextForBee` (claim-spec-store.ts) always query a **fresh** `getOrgPg().sql` connection — no `ctx.tx` read, no cache/memo layer keyed on tool+args — so there is no snapshot-staleness or cross-caller-cache mechanism either.
+
+## What actually explains the divergence
+
+[Section titled “What actually explains the divergence”](#what-actually-explains-the-divergence)
+
+The two “back-to-back” reads are still two separate round-trips with a real (if small) gap between them. The reporter’s own follow-up confirms it: “a direct call succeeded and `claimedUnder` showed `backlog-drain-bee`@1 (**the leader had since pushed a per-bee spec fix**).” The fleet leader concurrently wrote a per-bee claim spec (`scheduler:set_claim_spec`) for this same `cupId` in the same window — an ordinary TOCTOU race between a live write and two close reads, not a per-transport identity fork. Two consecutive reads of a row that is being concurrently written can legitimately observe different states; that is expected, not a defect.
+
+## The runbook
+
+[Section titled “The runbook”](#the-runbook)
+
+* Before suspecting `code:run` of resolving a different agent identity, cross-check with `coord:whoami` (or `scheduler:get_claim_spec { cupId: <your ownerId> }`) called BOTH ways — if they match (they will, per the regression test above), the divergence you saw was a race, not an identity fork.
+* A `fleetScope`/`claimedUnder` mismatch between two near-simultaneous reads is best explained by a **concurrent claim-spec write** (the leader re-steering via `scheduler:set_claim_spec`) landing between them — check `updated_at`/`revision` on the two reads; if the later one has a higher revision or a fresher `updatedAt`, that is the whole explanation.
+* `code:run` inner calls only rebind `ctx` (workspace/tx/principal) when the call’s *effective workspace differs from the outer ctx’s* — see `bindInnerDispatch` in `packages/operator-core/lib/agent-tools/code/run.ts`. Absent an explicit per-call `{ workspace }` override (or a `crossWorkspace`-flagged tool), the exact same `ctx` — and therefore the exact same resolved `ownerId` — is used for every inner call in a batch.
+
 # code:run — when to reach for it, worked exemplars, and the measured payoff
 
 > The code-mode rollout (B-CX-3) — collapse a multi-step tool flow into ONE code:run instead of paying an inference round-trip per call. Two before/after exemplars + a real measured token/cost saving from agent_usage_samples.
@@ -17272,7 +17305,7 @@ Third instance, same session. Claim: a sha named in a green broadcast “exists 
 The supporting evidence looked thorough — `git cat-file` against the superproject, every submodule, the release checkout, and then:
 
 ```bash
-for r in $(find /home/marsh-office -maxdepth 5 -name .git | head -60); do ...
+for r in $(find "$HOME" -maxdepth 5 -name .git | head -60); do ...
 ```
 
 There are **357** `.git` directories at that depth. `head -60` reduced it to a **17% sample**; the repo holding the sha was **#325**, never examined. The report said “deep scan of \~60 git repos → found nowhere.”
@@ -31838,6 +31871,72 @@ if (type === 'stream_event') {
 
 **Scope.** This is about **per-turn** attribution. For a run’s **total** usage, keep using the terminal `result` event (`total_cost_usd`, `usage`) — that is what `harness-agent-runs.ts extractRunUsage` already does, and it is correct. The gap only bites code that needs the burn **timeline** (fleet EKG embeddings, regret-mining inflection turns, any per-turn pacing feature).
 
+# _meta.structured opt-in silently dropped when the chosen format is already JSON
+
+> Why an MCP tool with an object-rooted result schema could throw "has an output schema but did not return structured content" even after the caller explicitly opted in via `_meta.structured` — the opt-in was gated on the wrong condition in the one shared serializer.
+
+## What (EI-13245)
+
+[Section titled “What (EI-13245)”](#what-ei-13245)
+
+`ptool work_items:burn_down --json='{"harness":"papercusp","ids":[...]}'` threw:
+
+```plaintext
+MCP error -32600: Tool work_items:burn_down has an output schema but did not return structured content
+```
+
+This is a **client-side** check inside the official `@modelcontextprotocol/sdk`’s `Client.callTool()`: if the tool’s cached `tools/list` entry carries an `outputSchema`, the response **must** include a `structuredContent` field (unless `isError`) — checked purely from field presence, never by inspecting `content[]`.
+
+## The two-layer bug
+
+[Section titled “The two-layer bug”](#the-two-layer-bug)
+
+1. **`ptool.mjs` never requested it.** `Client.callTool()`’s validator fires whenever the tool has `outputSchema`, *regardless* of whether the caller opted in — but the operator’s MCP host only *fills* `structuredContent` when `_meta.structured` (or `?structured=1`) is set (P-010, to avoid paying for both the compact text AND the full JSON on every call). Fixed by making `buildCallToolParams` in `ptool.mjs` always send `_meta: { structured: true }` — ptool is a human/scripting CLI, not a token-metered LLM session, so it can always afford it.
+
+2. **The opt-in itself was broken — this was the actual root cause.** Even after (1), the bug still reproduced live. `serializeToolResponse` (`libs/generic/tooldef/src/serialize-result.ts`) only attached `structuredContent` when `chosen.format !== 'json'`:
+
+   ```ts
+   if (opts.includeStructured && hasData && chosen.format !== 'json') {
+     result.structuredContent = data;
+   }
+   ```
+
+   The reasoning (“the text body already IS the lossless JSON, so `structuredContent` would just duplicate it”) conflates two different things: `content[0].text` (what the model reads) and `structuredContent` (a distinct MCP response field the SDK validates independently). For any tool whose result is an **object-rooted, non-tabular shape** (like `work_items:burn_down`’s nested census), TOON/CSV never beat plain JSON, so `chosen.format` resolves to `'json'` — which silently defeated the opt-in on *every* call, no matter what the caller asked for.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+Drop the `chosen.format !== 'json'` condition entirely — `structuredContent` is attached whenever the caller opted in (`opts.includeStructured`) and there is data, full stop:
+
+```ts
+if (opts.includeStructured && hasData) {
+  result.structuredContent = data;
+  _meta.structured = true;
+}
+```
+
+This is the **single shared serializer** — both the HTTP operator MCP transport (`_mcp-handler.ts`, used by `?superuser=1` sessions incl. ptool) and the stdio `agent-mcp` server import the exact same function, so this one fix covers every transport. No per-tool patch was needed or wanted.
+
+## Why this only bites object-rooted tools
+
+[Section titled “Why this only bites object-rooted tools”](#why-this-only-bites-object-rooted-tools)
+
+`outputSchema` is advertised in `tools/list` (`tool-projection.ts`) **only** when `tool.outputJsonSchema.type === 'object'` — array/scalar-rooted results (most `*:list` tools) never advertise it, so the SDK never installs a validator for them and this class of bug can’t manifest there. Any tool declaring `result: z.object({...})` is a candidate; `work_items:burn_down` is the one that got caught because its census payload is deeply nested and never wins against JSON on size.
+
+## What’s still NOT covered (by design, not a live bug today)
+
+[Section titled “What’s still NOT covered (by design, not a live bug today)”](#whats-still-not-covered-by-design-not-a-live-bug-today)
+
+* A caller that does **not** opt in (`_meta.structured` unset) still never gets `structuredContent`, and the SDK will still throw for them if the tool has `outputSchema`. This is the accepted P-010 trade-off (most agent callers never want the extra JSON), not something this fix changes. If a new caller class needs this and can’t opt in per-call, the durable fix is a connection-level flag (`?structured=1` on the MCP URL) consulted when computing `tools/list`, so `outputSchema` is only advertised to connections that will always receive `structuredContent`.
+* The `delta`/`not_modified` early-return branches in `serializeToolResponse` never attach `structuredContent` either. No registered tool today combines an object-rooted `result` with a `delta` capability, so this is dormant — but it would need the same treatment if one ever does.
+
+## Symptom to recognize
+
+[Section titled “Symptom to recognize”](#symptom-to-recognize)
+
+Any MCP client using the reference TypeScript/Python SDK’s `Client` class, calling a tool with an **object-rooted `result` schema**, gets `"Tool X has an output schema but did not return structured content"` even though the call otherwise “worked” server-side. Check: did the caller set `_meta.structured: true`? If yes and it still throws, check whether `chosen.format` resolved to `'json'` for that payload shape — that was this bug’s exact trigger.
+
 # Rubric method: su-agent-behavior (per-run agent scorecard — and how to run the exam)
 
 > The method behind the `su-agent-behavior` rubric — how to RUN a grading exercise (provoked probe fleet or observational GRADE-mode run), the per-mode batteries M0–M4, adversarial probes, the templating and compaction probes, where the deterministic evidence lives, how to file scorecards (with agent|system attribution), and how to read the trend. This MDX is the rubric's `method_ref`; the structured part (23 criteria, rating scale, drift markers) lives in the `rubrics` store.
@@ -45100,7 +45199,7 @@ Both spend paths are **fleet-leader-only**: being a trusted (or whole-pot) membe
 
 [Section titled “Prose-first UX + the allocated-fleet model (D-004 / D-005)”](#prose-first-ux--the-allocated-fleet-model-d-004--d-005)
 
-\[owner:Avi 2026-07-18] End users never call endpoints directly — they describe intent in prose (*“offer two sonnet seats to the design pot”*, *“launch this plan on remote seats”*, *“why hasn’t the remote member arrived”*) and their chat agent owns the verbs. Concretely: the operator chat surface exposes `fleet:create`, `fleet:request_remote_spawn`, `p2p:trace` (plus the already-exposed `resource:delegate`) with per-tool `guidance` mapping each prose pattern to a call; the plan-launch routing gate (`plans/launch-prompt.ts`) presents the remote-fleet route, naming the exact verb, whenever the plan’s pot is shared **and** seat-offers exist.
+\[owner 2026-07-18] End users never call endpoints directly — they describe intent in prose (*“offer two sonnet seats to the design pot”*, *“launch this plan on remote seats”*, *“why hasn’t the remote member arrived”*) and their chat agent owns the verbs. Concretely: the operator chat surface exposes `fleet:create`, `fleet:request_remote_spawn`, `p2p:trace` (plus the already-exposed `resource:delegate`) with per-tool `guidance` mapping each prose pattern to a call; the plan-launch routing gate (`plans/launch-prompt.ts`) presents the remote-fleet route, naming the exact verb, whenever the plan’s pot is shared **and** seat-offers exist.
 
 The precise mental model for a “remote fleet” is an **allocated fleet** — a fleet that runs only on explicitly allocated agent seats. The seat *source* (the user’s own machine via local delegation, or a peer’s via a federated pot/fleet offer) is orthogonal to that, and the code must never assume all seats in an allocated fleet are remote:
 

@@ -450,7 +450,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // WI-4494: skipped when the run recorded its own verdict — see `recordedByRun` above. A second
   // trackGateStall for ONE verdict would count the same red twice.
   if (!recordedByRun) {
-    await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null).catch((e) =>
+    // EI-13288: thread the parsed run's own retriage verdict through this fallback recorder too
+    // (version-skew / crash path) — same as the WI-4494 producer-side path above.
+    await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null, parsed?.retriage).catch((e) =>
       console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
     );
   }

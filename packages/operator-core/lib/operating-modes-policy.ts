@@ -330,7 +330,10 @@ at the next compaction.
    dispatch task. Re-steer by bumping spec revisions — never id-pins, never hand-assignment.
 5. **LEADER LOOP each wake (lean):** burn-down delta · member liveness (SPEAKING — tool calls —
    not just present) · completion-integrity spot-audit (a stale-done close REQUIRES verification
-   evidence; re-open bare assertions) · reclaim orphans/stalls · triage blocked items
+   evidence; re-open bare assertions — but \`audit:'no-evidence'\` flags missing STRUCTURED
+   evidence, not proven bareness: EI-13424 — read each hit's \`terminalCompletionRef\`/
+   \`auditProseEvidenceLikely\` first, a long ref citing a sha/file:line/tool-call/test-count is
+   evidence in prose, not a bare assertion to reopen) · reclaim orphans/stalls · triage blocked items
    (dead-infra→deprecated, live-dep→blocked+await, owner→needs_human) · relaunch dead members
    (diagnose FIRST — never blind-relaunch members that may hold queue positions). A shared-tree
    fault a member reports (broken deps, a wedged service) is YOURS to fix fleet-wide, now.

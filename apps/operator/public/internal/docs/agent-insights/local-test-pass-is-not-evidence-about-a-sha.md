@@ -95,7 +95,7 @@ The supporting evidence looked thorough — `git cat-file` against the
 superproject, every submodule, the release checkout, and then:
 
 ```bash
-for r in $(find /home/marsh-office -maxdepth 5 -name .git | head -60); do ...
+for r in $(find "$HOME" -maxdepth 5 -name .git | head -60); do ...
 ```
 
 There are **357** `.git` directories at that depth. `head -60` reduced it to a
