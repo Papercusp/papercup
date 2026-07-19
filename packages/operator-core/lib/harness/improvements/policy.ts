@@ -368,6 +368,8 @@ export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' 
  *        regardless of kind — an explicit routing decision this classifier must respect.
  *   0.5. filed by the replication-liveness detector (EI-8455) → HUMAN, regardless
  *        of kind — a "wrong tool" bar like infra-environment, not a safety bar.
+ *   0.6. remote-authored / federated row (EI-15659) → HUMAN, regardless of kind —
+ *        this node cannot terminal-complete a peer's work-item.
  *   1. kind gate — not an auto kind → HUMAN immediately (the common case).
  *   2. infra-environment (D-002/D-005) → HUMAN (a worker cannot fix a port mapping).
  *   3. protected paths (when known) → HUMAN (the safety surfaces).
@@ -414,6 +416,24 @@ export function classifyImprovement(
       `filed by the replication-liveness detector (createdBy=${REPLICATION_LIVENESS_DETECTOR_OWNER}) — gated to the p2p-release-readiness fleet, a generic worker cannot resolve it → human`,
     );
     return { tier: 'human', reasons, protectedHit: REPLICATION_LIVENESS_DETECTOR_OWNER };
+  }
+
+  // EI-15659: a remote-authored (federated) row can never be terminal-completed on
+  // THIS node — `work_items:complete` structurally refuses it (only the authoring
+  // peer can resolve it; the terminal state arrives here via federation). Gate it
+  // BEFORE the kind check, the same "wrong tool, not a safety call" bar as the
+  // replication-liveness detector above: auto-eligibility here would place a cup on
+  // an un-completable item that re-surfaces every Mug wake and burns a re-probe.
+  // NOT lifted by the owner full-autonomy grant — full-autonomy is about permission
+  // to touch protected surfaces, not about giving this node the ability to complete
+  // a peer's work-item.
+  if (c.workItemOrigin === 'remote') {
+    reasons.push(
+      'remote-authored (federated from the authoring peer) — this node cannot terminal-complete it; ' +
+        'the authoring peer must claim/resolve it, and this node receives the terminal state through ' +
+        'federation → human (never auto-placed here)',
+    );
+    return { tier: 'human', reasons, protectedHit: 'workItemOrigin:remote' };
   }
 
   if (!policy.autoKinds.includes(c.kind)) {

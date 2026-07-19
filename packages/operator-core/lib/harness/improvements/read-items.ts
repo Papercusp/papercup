@@ -114,6 +114,11 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(typeof p.watchdogKey === 'string' && p.watchdogKey ? { watchdogKey: p.watchdogKey } : {}),
     ...(typeof p.findingClass === 'string' && p.findingClass ? { findingClass: p.findingClass } : {}),
     ...(isSignalOrigin(issue.signalOrigin) ? { origin: issue.signalOrigin } : {}),
+    // EI-15659: federation provenance (DISTINCT from the SignalOrigin `origin`
+    // field above) — surfaced only when 'remote' so the risk-tier policy can
+    // exclude a remote-authored row from this node's auto-eligible lane (it can
+    // never be terminal-completed here; see policy.ts's workItemOrigin gate).
+    ...(issue.origin === 'remote' ? { workItemOrigin: 'remote' as const } : {}),
     ...(observation ? { observation } : {}),
     ...(ideation ? { ideation } : {}),
     ...(dispatchHoldUntil ? { dispatchHoldUntil } : {}),

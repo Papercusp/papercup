@@ -21,6 +21,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { setCompactionLimit, getPresence } from '../coordination/presence';
 import { resolveModelSpecForOwner } from '../../compaction-usage';
 import { clampCompactionLimit, defaultCompactionLimitForSpec } from '../../agent-config-constants';
+import { setCompactionLimitForOwner } from './set-compaction-limit-core';
 
 /** Soft limit applied when a session has set none. Read-time default (P-007).
  *  Superseded by the model-aware `defaultCompactionLimitForSpec` (context-
@@ -31,12 +32,12 @@ export const DEFAULT_COMPACTION_LIMIT_TOKENS = 160_000;
 export default defineTool({
   name: 'config:set-compaction-limit',
   description:
-    "Set THIS session's soft compaction limit (tokens) — a target below your model window; near it, reach a stopping point and call session:request_compaction. Persisted per session; visible in coord:presence.",
+    "Set a soft compaction limit (tokens) — a target below the model window; near it, reach a stopping point and call session:request_compaction. Defaults to THIS session; pass `ownerId` to set a MEMBER's limit as its fleet leader (or queen/owner) — no more dispatching \"set your own limit\". Persisted per session; visible in coord:presence.",
   capability: 'coord:write',
   guidance: {
-    when: 'Tune how large your context grows before you self-compact — raise it for wide-context work, lower it to stay sharp on a tight task.',
+    when: 'Tune how large a session\'s context grows before it self-compacts — raise it for wide-context work, lower it to stay sharp on a tight task. As a fleet leader, pass ownerId to set a member\'s limit directly.',
     notWhen:
-      'To compact right now — use session:request_compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`.',
+      'To compact right now — use session:request_compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`. To set a member you do NOT lead — you cannot (leader/queen/owner only).',
     seeAlso: ['session:request_compaction (compact now, at a stopping point)'],
   },
   requirePrincipal: false,
@@ -49,11 +50,23 @@ export default defineTool({
       .min(20_000)
       .max(900_000)
       .describe(
-        'Soft compaction limit in tokens. Clamped so limit × 1.2 stays under your model window minus margin (the ~20% overshoot allowance); overshooting the SOFT limit is safe but wasteful.',
+        'Soft compaction limit in tokens. Clamped so limit × 1.2 stays under the target session\'s model window minus margin (the ~20% overshoot allowance); overshooting the SOFT limit is safe but wasteful.',
+      ),
+    ownerId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "P-006: the TARGET session to set (default: yourself). Setting ANOTHER session requires you to be the recorded leader of ITS fleet (or the queen / owner) — the limit is clamped to THAT session's model + fleet-role ceiling, not yours. Use to set a member's limit directly instead of asking it to.",
       ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // P-006: cross-session set — a leader/queen/owner sets a MEMBER's limit directly.
+    if (args.ownerId && args.ownerId !== identity.ownerId) {
+      const result = await setCompactionLimitForOwner(ctx, args.ownerId, args.limit);
+      return { data: result };
+    }
     // Clamp to the caller's model-derived ceiling (context-trimming-tiers D-001):
     // `limit × 1.2 ≤ window − margin`, i.e. limit ≤ defaultCompactionLimitForSpec(spec).
     // The spec resolves best-effort (session settings.json → launch argv); an

@@ -7,6 +7,7 @@
  * tool self-registers via defineTool on import).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/spec-pool-preview';
 
 const spawnConsoleMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
@@ -89,13 +90,17 @@ vi.mock('../../../scheduler/claim-spec-store', () => ({
 // COUNT (previewSpecPoolEffect) hits PG, so it is stubbed; the WIRING is what we test here
 // (the real evaluateCollapseGuard thresholds have their own unit suite). Default: a healthy
 // lane (matches part of a nonempty pool) that does NOT refuse.
-const previewSpecPoolEffectMock = vi.fn(async () => ({
-  matched: 5,
-  pool: 10,
-  states: ['open'],
-  harness: 'papercusp',
-}));
-const evaluateCollapseGuardMock = vi.fn(() => ({ refuse: false, errors: [] as string[] }));
+const previewSpecPoolEffectMock = vi.fn(
+  async (..._args: unknown[]): Promise<SpecPoolEffect> => ({
+    matched: 5,
+    pool: 10,
+    states: ['open'],
+    harness: 'papercusp',
+  }),
+);
+const evaluateCollapseGuardMock = vi.fn(
+  (..._args: unknown[]): CollapseGuardVerdict => ({ refuse: false, errors: [] }),
+);
 vi.mock('../../../scheduler/spec-pool-preview', () => ({
   previewSpecPoolEffect: (...args: unknown[]) => previewSpecPoolEffectMock(...args),
   evaluateCollapseGuard: (...args: unknown[]) => evaluateCollapseGuardMock(...args),
@@ -105,7 +110,7 @@ vi.mock('../../../scheduler/spec-pool-preview', () => ({
 // promotes the plan's items → claimable work-items before opening any terminal. Default: the healthy
 // case (items already promoted upstream by plans:start → skipped>0, promoted:0 → no warning line).
 // Individual tests override with mockResolvedValueOnce.
-const promotePlanItemsMock = vi.fn(async () => ({ promoted: 0, skipped: 3 }));
+const promotePlanItemsMock = vi.fn(async (..._args: unknown[]) => ({ promoted: 0, skipped: 3 }));
 vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: (...args: unknown[]) => promotePlanItemsMock(...args),
 }));

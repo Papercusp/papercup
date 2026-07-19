@@ -229,6 +229,56 @@ describe('deriveMemberVerdict (EI-8995)', () => {
     ).toBe('booted');
     expect(deriveMemberVerdict(verdictInput({ present: false, sessionState: null }), NOW)).toBe('booted');
   });
+
+  // EI-15655: a healthy between-items member (0 held claims, deliberately parked
+  // on an events:await key) must never misread as stalled/first-turn-done, even
+  // when it has no active monitorState (loop ended/never armed).
+  describe('parkedOn priority (EI-15655 — healthy between-items member)', () => {
+    it('0 claims + parkedOn + quiet-past-stall-window → parked-awaiting-capability, not stalled', () => {
+      const last = NOW - VERDICT_STALL_MS - 60_000;
+      expect(
+        deriveMemberVerdict(
+          verdictInput({ load: 0, lastToolCallAtMs: last, parkedOn: ['work-item:claimable'] }),
+          NOW,
+        ),
+      ).toBe('parked-awaiting-capability');
+    });
+
+    it('0 claims + parkedOn + never spoken → parked-awaiting-capability, not joined', () => {
+      expect(
+        deriveMemberVerdict(verdictInput({ load: 0, lastToolCallAtMs: null, parkedOn: ['fleet:bar:gate'] }), NOW),
+      ).toBe('parked-awaiting-capability');
+    });
+
+    it('a genuinely stalled HELD claim is never masked by an unrelated park (load > 0)', () => {
+      const last = NOW - VERDICT_STALL_MS - 60_000;
+      expect(
+        deriveMemberVerdict(
+          verdictInput({ load: 1, lastToolCallAtMs: last, parkedOn: ['some:other:event'] }),
+          NOW,
+        ),
+      ).toBe('stalled');
+    });
+
+    it('an active healthy loop (monitorState) still outranks parkedOn — no double-decision', () => {
+      expect(
+        deriveMemberVerdict(
+          verdictInput({ load: 0, monitorState: 'waiting', parkedOn: ['work-item:claimable'] }),
+          NOW,
+        ),
+      ).toBe('waiting');
+    });
+
+    it('empty/absent parkedOn is a no-op — falls through to the pre-existing logic unchanged', () => {
+      const last = NOW - VERDICT_STALL_MS - 60_000;
+      expect(deriveMemberVerdict(verdictInput({ load: 0, lastToolCallAtMs: last, parkedOn: [] }), NOW)).toBe(
+        'first-turn-done',
+      );
+      expect(
+        deriveMemberVerdict(verdictInput({ load: 0, lastToolCallAtMs: last, parkedOn: undefined }), NOW),
+      ).toBe('first-turn-done');
+    });
+  });
 });
 
 describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () => {

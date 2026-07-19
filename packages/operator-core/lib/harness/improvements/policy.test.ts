@@ -256,6 +256,28 @@ describe('replication-liveness detector EIs never reach the auto lane (EI-8455)'
   });
 });
 
+describe('remote-authored (federated) rows never reach the auto lane (EI-15659)', () => {
+  it('workItemOrigin=remote forces human even for an auto-eligible kind=bug', () => {
+    const d = classifyImprovement(cand({ id: 'ro1', kind: 'bug', workItemOrigin: 'remote' }));
+    expect(d.tier).toBe('human');
+    expect(d.reasons.join(' ')).toMatch(/remote-authored/);
+    expect(d.protectedHit).toBe('workItemOrigin:remote');
+  });
+
+  it('is NOT lifted by the owner full-autonomy grant (this node structurally cannot complete a peer\'s item)', () => {
+    const d = classifyImprovement(
+      cand({ id: 'ro2', kind: 'bug', workItemOrigin: 'remote' }),
+      DEFAULT_RISK_TIER_POLICY,
+      { ownerFullAutonomy: true },
+    );
+    expect(d.tier).toBe('human');
+  });
+
+  it('a local (undefined workItemOrigin) bug is unaffected — still auto', () => {
+    expect(classifyImprovement(cand({ id: 'ro3', kind: 'bug' })).tier).toBe('auto');
+  });
+});
+
 describe('Phase 4 graduation is a CONFIG change', () => {
   it('adding change to autoKinds graduates change items to auto', () => {
     const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change'] };

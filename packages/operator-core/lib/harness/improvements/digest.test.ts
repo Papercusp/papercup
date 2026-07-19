@@ -151,6 +151,21 @@ describe('buildDigest', () => {
     expect(k2?.watchdogKey).toBeUndefined();
   });
 
+  it('excludes a remote-authored (federated) bug from the auto lane — routes to humanQueue instead (EI-15659)', () => {
+    const d = buildDigest(
+      [
+        cand({ id: 'RM1', kind: 'bug', createdAt: daysAgo(1), workItemOrigin: 'remote' }),
+        cand({ id: 'RM2', kind: 'bug', createdAt: daysAgo(1) }), // local — control, stays auto
+      ],
+      { nowMs: NOW },
+    );
+    expect(d.autoEligible.map((i) => i.id)).toEqual(['RM2']);
+    const remote = d.humanQueue.find((i) => i.id === 'RM1');
+    expect(remote).toBeDefined();
+    expect(remote?.tierReason).toMatch(/remote-authored/);
+    expect(remote?.workItemOrigin).toBe('remote');
+  });
+
   it('is deterministic given nowMs', () => {
     expect(buildDigest(items, { nowMs: NOW })).toEqual(buildDigest(items, { nowMs: NOW }));
   });

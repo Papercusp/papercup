@@ -76,6 +76,10 @@ export interface ScoredItem {
    *  `attempts === 0` alone must further gate on `watchdogKey` presence before
    *  treating the count as a genuine dispatcher-stuck signal). */
   watchdogKey?: string;
+  /** EI-15659: federation provenance — 'remote' when this row is federated in from
+   *  its authoring peer (this node cannot terminal-complete it locally; see
+   *  policy.ts's ImprovementCandidate.workItemOrigin doc). Undefined = local. */
+  workItemOrigin?: 'remote';
 }
 
 export interface DupCluster {
@@ -414,6 +418,7 @@ export function buildDigest(
       ...(c.sourceRole ? { source: c.sourceRole } : {}),
       ...(c.dispatchHoldUntil ? { dispatchHoldUntil: c.dispatchHoldUntil } : {}),
       ...(c.watchdogKey ? { watchdogKey: c.watchdogKey } : {}),
+      ...(c.workItemOrigin === 'remote' ? { workItemOrigin: 'remote' } : {}),
     };
     // Only OPEN items go into the actionable queues.
     if (!isOpen) continue;

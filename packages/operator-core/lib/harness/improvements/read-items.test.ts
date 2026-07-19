@@ -277,6 +277,23 @@ describe('readImprovementItems — signal provenance gate (frontier P-002 / D-00
   });
 });
 
+describe('issueToCandidate — federation workItemOrigin, DISTINCT from signalOrigin (EI-15659)', () => {
+  it('a remote-authored (federated) row surfaces workItemOrigin:remote', () => {
+    const c = issueToCandidate(issue({ id: 'EI-10524', title: 'federated in', kind: 'bug', origin: 'remote' }));
+    expect(c.workItemOrigin).toBe('remote');
+  });
+
+  it('a local row omits workItemOrigin (byte-identical candidate for the common case)', () => {
+    const c = issueToCandidate(issue({ id: 'EI-1', title: 'local', kind: 'bug', origin: 'local' }));
+    expect(c.workItemOrigin).toBeUndefined();
+  });
+
+  it('a null-origin (legacy pre-federation) row also omits workItemOrigin', () => {
+    const c = issueToCandidate(issue({ id: 'EI-0', title: 'legacy', kind: 'bug', origin: null }));
+    expect(c.workItemOrigin).toBeUndefined();
+  });
+});
+
 describe('issueToCandidate — payload.ideation surfacing (su-ideate-learning-substrate P-007)', () => {
   const stored = {
     lens: 'risk-first',

@@ -270,11 +270,26 @@ export function deriveMemberVerdict(
     lastToolCallAtMs: number | null;
     /** Healthy loop-owned monitor lifecycle, derived from the loop engine. */
     monitorState?: MonitorState | null;
+    /** Active non-inbox-wake events:await registrations (decorateParkedOn).
+     *  EI-15655: a member that ended/never armed its engine loop (so
+     *  `monitorState` is null) but deliberately parked on a real event key
+     *  — the "lane drained → park on an event" fleet-member pattern — has
+     *  NO monitorState to short-circuit through, so without this field it
+     *  fell through to the stale/quiet checks below and misread as
+     *  stalled/first-turn-done. */
+    parkedOn?: readonly string[] | null;
   },
   nowMs: number = Date.now(),
 ): MemberVerdict {
   if (a.sessionState === 'ended' || a.sessionState === 'suspect' || a.sessionState === 'draining' || !a.alive) return 'dead';
   if (a.monitorState) return a.monitorState;
+  // EI-15655 (fleet:leader-brief false-positive stalls): a member holding NO
+  // claims that is deliberately parked on an events:await key is healthily
+  // waiting for a pushed event, not "stuck between items" — this is the exact
+  // "0 held claims is normal for a drain member mid-cycle" snapshot the leader
+  // misread as dead-ended. Gated on `load === 0` so a member that ALSO holds a
+  // genuinely stalled claim is never masked by an unrelated park.
+  if (a.load === 0 && (a.parkedOn?.length ?? 0) > 0) return 'parked-awaiting-capability';
   const last = a.lastToolCallAtMs;
   if (last != null && nowMs - last <= VERDICT_SPEAKING_FRESH_MS) return 'speaking';
   // Member-level stall: not speaking AND (an item isn't advancing, or it holds work
@@ -302,6 +317,7 @@ export async function decorateMemberVerdicts<
     wakeMode?: WakeMode;
     lastToolCallAt?: string | null;
     monitorState?: MonitorState | null;
+    parkedOn?: string[];
   },
 >(
   agents: T[],
@@ -329,6 +345,7 @@ export async function decorateMemberVerdicts<
         load: a.load,
         lastToolCallAtMs: Number.isFinite(lastMs as number) ? lastMs : null,
         monitorState: a.monitorState,
+        parkedOn: a.parkedOn,
       },
       nowMs,
     );
@@ -610,6 +627,7 @@ export default defineTool({
       parkedOn?: string[];
       monitorState?: MonitorState | null;
       nextFireAt?: string | null;
+      loopMode?: 'work' | 'monitor' | null;
     })[] = groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
     // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
     // (see reconcileWakeability above) — best-effort, a query failure just leaves

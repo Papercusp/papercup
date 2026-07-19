@@ -136,6 +136,7 @@ describe('projectMember (pure)', () => {
     expect(m.monitorState).toBeNull();
     expect(m.nextFireAt).toBeNull();
     expect(m.contextPressure).toBeNull();
+    expect(m.loopMode).toBeNull();
   });
 
   it('carries healthy loop lifecycle and next fire through verbatim', () => {
@@ -145,6 +146,27 @@ describe('projectMember (pure)', () => {
     );
     expect(m.monitorState).toBe('waiting');
     expect(m.nextFireAt).toBe('2026-07-10T12:01:00.000Z');
+  });
+
+  it("WI-5345: surfaces the member's armed loop mode inline (work vs monitor), independent of monitorState", () => {
+    const wedgedMonitor = projectMember(
+      baseAgent({ monitorState: 'monitoring', doing: null, loopMode: 'monitor' }),
+      NOW,
+    );
+    expect(wedgedMonitor.monitorState).toBe('monitoring');
+    expect(wedgedMonitor.doing).toBeNull();
+    expect(wedgedMonitor.loopMode).toBe('monitor');
+
+    const healthyBetweenItems = projectMember(
+      baseAgent({ monitorState: 'monitoring', doing: null, loopMode: 'work' }),
+      NOW,
+    );
+    // Same monitorState:'monitoring' + doing:null shape as the wedged case above — the
+    // exact ambiguity WI-5345 reports — but loopMode now distinguishes them without a
+    // separate loop:status{ownerId} call.
+    expect(healthyBetweenItems.monitorState).toBe('monitoring');
+    expect(healthyBetweenItems.doing).toBeNull();
+    expect(healthyBetweenItems.loopMode).toBe('work');
   });
 });
 
