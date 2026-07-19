@@ -135,6 +135,13 @@ async function getIssue(id: string) {
   return rows[0] ?? null;
 }
 
+async function getIssueTerminal(id: string) {
+  const rows = await db.sql<{ terminal_owner: string | null; terminal_completion_ref: string | null }[]>`
+    SELECT terminal_owner, terminal_completion_ref FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+  return rows[0] ?? null;
+}
+
 async function getIssueBaseRows(id: string) {
   return db.sql<{ feature_id: string; harness_slug: string; status: string; origin: string }[]>`
     SELECT feature_id, harness_slug, status, origin
@@ -221,6 +228,48 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       authorPubkey: 'peer',
     });
     expect((await getIssue('EI-9'))?.title).toBe('v300');
+  });
+
+  // EI-16756: two peers race a completion of the SAME issue within the same
+  // federation order key (equal fed_hlc, unknown/matching writer — the tie branch
+  // of fed_apply_wins). Both ops converge to IDENTICAL business content (status
+  // 'resolved', assignee cleared) but carry DIFFERENT terminal_owner/
+  // terminal_completion_ref — the completion-integrity attribution pair. The
+  // apply-guard's content digest MUST include those two columns: excluding them
+  // (the pre-fix shape) makes the two ops hash to the SAME digest even though
+  // they are not identical, which breaks the tie-break's "equal digest ⇒
+  // identical content ⇒ applying is a no-op" invariant and makes the winner
+  // depend on APPLY ORDER (last-applied-wins) instead of content — a genuine
+  // peer sees the two ops in the OPPOSITE order the origin sees them (normal in
+  // a gossip network) and diverges permanently (composition-chaos P-002 class).
+  it('EI-16756: racing completions with an equal order key converge on the SAME terminal_owner regardless of apply order', async () => {
+    const base = issueRow({ issue_id: 'EI-16756', state: 'open', title: 'race me' });
+    // Same fedHlc on both ops ⇒ EQUAL fed_order_key; authorPubkey null on both ⇒
+    // the "unknown writer" branch, which falls through to the content digest —
+    // exactly the vulnerable branch.
+    const provenance = { ts: 700, fedHlc: '700:00042:tie', origin: 'remote' as const, authorPubkey: null };
+    const opA = { ...base, state: 'resolved', terminal_owner: 'agent-a', terminal_completion_ref: 'fixed by agent-a' };
+    const opB = { ...base, state: 'resolved', terminal_owner: 'agent-b', terminal_completion_ref: 'fixed by agent-b' };
+
+    await proj().writeToPg(opA, provenance);
+    await proj().writeToPg(opB, provenance);
+    const abOrder = await getIssueTerminal('EI-16756');
+
+    await db.sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'EI-16756'`;
+
+    await proj().writeToPg(opB, provenance);
+    await proj().writeToPg(opA, provenance);
+    const baOrder = await getIssueTerminal('EI-16756');
+
+    // Whichever op "wins" the tie, BOTH apply orders must agree on who — a peer
+    // that received the two ops in the opposite order from the origin must not
+    // end up attributing the completion to a different agent.
+    expect(abOrder?.terminal_owner).toBe(baOrder?.terminal_owner);
+    expect(abOrder?.terminal_completion_ref).toBe(baOrder?.terminal_completion_ref);
+    // And the stored ref must actually belong to the stored owner (never a
+    // mix-and-match of one op's owner with the other op's completion text).
+    const expectedRef = abOrder?.terminal_owner === 'agent-a' ? 'fixed by agent-a' : 'fixed by agent-b';
+    expect(abOrder?.terminal_completion_ref).toBe(expectedRef);
   });
 
   // EI-13285: two INDEPENDENT writers (this device's local capture + a Hive peer's

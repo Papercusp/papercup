@@ -188,7 +188,7 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
     it('dead verdict + a pool-shed event in-window ⇒ shedExplained, no capture filed', async () => {
       const logs: string[] = [];
       const hasPoolShedInWindow = vi.fn(async () => true);
-      const { d, capture } = deps({ hasPoolShedInWindow, log: (m) => logs.push(m) });
+      const { d, capture } = deps({ hasPoolShedInWindow, workspaceId: () => 'ws-1', log: (m) => logs.push(m) });
       const res = await runEngineDeathSentinelPass(d, {}, NOW);
       expect(res.checked).toBe(true);
       expect(res.shedExplained).toBe(true);

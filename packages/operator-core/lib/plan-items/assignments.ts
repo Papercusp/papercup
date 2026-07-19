@@ -111,22 +111,30 @@ export async function assignItem(opts: AssignOpts): Promise<PlanItemAssignment> 
     }
   }
   const { sql } = getOrgPg();
+  // EI-7642/WI-5458: do NOT hardcode `origin`/touch `author_pubkey` here — this is
+  // an ordinary LOCAL app-level write, and `harness_shared.stamp_local_federated_write_trg`
+  // (mig 214/517) is the ONE authoritative choke point that stamps `origin='local'` +
+  // the LWW clock (`fed_ts`/`fed_hlc`) for every genuinely content-changing local write
+  // across all federated tables — a per-call-site hardcode here just duplicated it
+  // inconsistently (this was the ONLY CDC-captured-table writer in the codebase that did).
+  // `assigned_ts = now()` always changes on every call, so the trigger's content-diff
+  // always fires and origin is stamped 'local' regardless. On a fresh INSERT the
+  // `origin text DEFAULT 'local' NOT NULL` column default covers the same case.
   const rows = await sql<AssignmentDbRow[]>`
     INSERT INTO harness_shared.plan_item_assignments
       (workspace_id, harness_slug, plan_slug, item_id, assignee_name, assigned_by_user,
-       assigned_ts, released_ts, strategy, note, origin)
+       assigned_ts, released_ts, strategy, note)
     VALUES
       (${opts.workspaceId}, ${opts.harnessSlug}, ${opts.planSlug}, ${opts.itemId},
        ${opts.assigneeName}, ${opts.assignedByUser}, now(), NULL,
-       ${opts.strategy ?? null}, ${opts.note ?? null}, 'local')
+       ${opts.strategy ?? null}, ${opts.note ?? null})
     ON CONFLICT (workspace_id, harness_slug, plan_slug, item_id) DO UPDATE SET
       assignee_name    = EXCLUDED.assignee_name,
       assigned_by_user = EXCLUDED.assigned_by_user,
       assigned_ts      = now(),
       released_ts      = NULL,
       strategy         = EXCLUDED.strategy,
-      note             = EXCLUDED.note,
-      origin           = 'local'
+      note             = EXCLUDED.note
     RETURNING workspace_id, harness_slug, plan_slug, item_id, assignee_name,
               assigned_by_user, assigned_ts, released_ts, strategy, note, updated_at
   `;
@@ -145,9 +153,14 @@ export async function unassignItem(
   itemId: string,
 ): Promise<PlanItemAssignment | null> {
   const { sql } = getOrgPg();
+  // EI-7642/WI-5458: see the matching comment in assignItem() — leave `origin`
+  // stamping to the authoritative stamp_local_federated_write_trg trigger rather
+  // than hardcoding it here; `released_ts` always flips NULL → now() on every
+  // call (guarded by the WHERE clause below), so the trigger's content-diff
+  // always fires and origin is stamped 'local' regardless.
   const rows = await sql<AssignmentDbRow[]>`
     UPDATE harness_shared.plan_item_assignments
-       SET released_ts = now(), origin = 'local'
+       SET released_ts = now()
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
        AND plan_slug = ${planSlug} AND item_id = ${itemId}
        AND released_ts IS NULL

@@ -247,6 +247,22 @@ staging→main gate applies to the superproject; `main` only advances to staging
 commits whose pinned submodule SHAs passed the suite, so green `main` always
 resolves to a tested combination.)
 
+**A long-running interpreted script executing directly out of this tree is at risk
+from concurrent edits, not just concurrent readers of its *output*.** The file-lock
+hook only serializes edits to the same file against each other — it does not stop a
+`bash`/`node`/`python` process from being mid-*execution* of a file another agent
+edits in place. bash in particular re-reads a plain script by byte offset as
+execution proceeds rather than slurping it up front, so an in-place edit (not an
+atomic rename-swap) to a script a multi-hour `Type=oneshot` job has open can shift
+those offsets under the running interpreter and crash it with a spurious syntax
+error partway through — even though the file was, and remains, syntactically valid
+on disk (observed live 2026-07-19, EI-16828, on `bin/live-federation-gate.sh`).
+Any script expected to run for more than a few minutes over this tree should
+**snapshot itself into a private tmp copy and `exec` from that copy** at the very
+top of its own execution (see `bin/live-federation-gate.sh`'s `GATE_SELF_SNAPSHOT`
+guard for the pattern) rather than relying on the live tree path staying byte-stable
+for its whole run.
+
 ## The two-port model — where a server-side edit goes live
 
 **Server-side code has no hot-reload.** The **Hono host** (`bin/hono-host.ts` —

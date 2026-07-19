@@ -721,13 +721,12 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
     async () => {
       const HIVE_HOME = 'soak-owner-hive';
       const MEMBER_SLUG = 'soak-joined-hive';
-      // Small, production-realistic poll cadence (boot.ts MERGE_POLL_MS default is much
-      // larger in prod) — the point is NONZERO, so the poll-timer + onAnnounce path
-      // actually drive every merge, never a manual mergeNow() call from this test.
-      const MERGE_POLL_MS = 250;
-      // b8's default is 5 cycles (odd=MEMBER, even=OWNER); 4 covers both restart
-      // parities twice within a CI-safe budget for an in-process testnet.
-      const CYCLES = 4;
+      // The ACTUAL production default (boot.ts MERGE_POLL_MS) — nonzero, so the
+      // poll-timer + onAnnounce path actually drive every merge, never a manual
+      // mergeNow() call from this test.
+      const MERGE_POLL_MS = 1000;
+      // b8's default is 5 cycles (odd=MEMBER, even=OWNER); match it exactly.
+      const CYCLES = 5;
       const LEG_TIMEOUT_MS = 25_000;
 
       // ── env-route getOrgPg (identical pattern to the sibling repro above) ──

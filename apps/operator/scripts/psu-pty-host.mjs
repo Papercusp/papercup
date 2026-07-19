@@ -739,8 +739,22 @@ export function makeAgentBusyGate({
  *     'carry-drill-carry-dropped' { rearmed:true } when the retry also defers
  *     or throws.
  *
+ * WI-5368/WI-5530: this ALSO covers the PRODUCTION (non-drill) carry-respawn —
+ * the session:request-compaction path every real agent uses, which carries no
+ * drillId. It re-queues/retries identically, under a shared non-drill sentinel
+ * key, and emits 'respawn-rearm-queued' / 'respawn-carry-dropped' rows (the
+ * mode-keyed analogs of the drill rows). Previously schedule()'s `!drillId`
+ * early-return made every production respawn report 'duplicate' and silently
+ * drop — the busy-gate-deferred real compaction left ZERO durable trace and no
+ * retry, even though op:report had already told the caller `respawn:true`.
+ *
  * Pure factory (injected deps) in the makeAgentBusyGate style; exported for tests.
  */
+// Shared dedupe key for non-drill (production) carry-respawns — they have no
+// drillId, so concurrent production respawns collapse to ONE pending retry
+// under this sentinel instead of colliding with the old `!drillId` early-return.
+export const NON_DRILL_REARM_KEY = '__non-drill__';
+
 export function makeCarryRearmController({
   acquireInject, // () => Promise<release()>  — the host's gated-inject mutex
   waitIdle = null, // optional human-keystroke gate (bridged tty only)
@@ -762,15 +776,21 @@ export function makeCarryRearmController({
      */
     schedule(msg) {
       const drillId = String(msg?.drillId || '');
-      if (!drillId || pending.has(drillId)) return 'duplicate';
-      pending.add(drillId);
-      const extra = {
-        drillId,
-        sessionClass: msg.sessionClass ?? '',
-        reason: 'busy-gate-expired',
-        capMs,
-      };
-      emitEvent('carry-drill-rearm-queued', extra);
+      const isDrill = !!drillId;
+      // Drills dedupe per-drillId; a production respawn (no drillId) dedupes
+      // under the shared sentinel — so a drill and a production respawn can be
+      // pending independently, but two production respawns collapse to one.
+      const key = isDrill ? drillId : NON_DRILL_REARM_KEY;
+      if (pending.has(key)) return 'duplicate';
+      pending.add(key);
+      const queuedKind = isDrill ? 'carry-drill-rearm-queued' : 'respawn-rearm-queued';
+      const droppedKind = isDrill ? 'carry-drill-carry-dropped' : 'respawn-carry-dropped';
+      // Drill rows carry drillId + sessionClass (P-020 correlation); a production
+      // respawn row is keyed by `mode` instead — never a fabricated/empty drillId.
+      const extra = isDrill
+        ? { drillId, sessionClass: msg.sessionClass ?? '', reason: 'busy-gate-expired', capMs }
+        : { mode: 'carry-respawn', reason: 'busy-gate-expired', capMs };
+      emitEvent(queuedKind, extra);
       void (async () => {
         const release = await acquireInject();
         try {
@@ -779,7 +799,7 @@ export function makeCarryRearmController({
           if (atPrompt.deferred) {
             // The re-armed attempt ALSO found the agent mid-turn past the cap —
             // terminal, loud, never a second re-arm.
-            emitEvent('carry-drill-carry-dropped', { ...extra, rearmed: true });
+            emitEvent(droppedKind, { ...extra, rearmed: true });
             return;
           }
           await recycle(msg.data, {
@@ -788,7 +808,7 @@ export function makeCarryRearmController({
             sessionClass: msg.sessionClass ?? '',
           });
         } catch (error) {
-          emitEvent('carry-drill-carry-dropped', {
+          emitEvent(droppedKind, {
             ...extra,
             rearmed: true,
             reason: 'rearm-error',
@@ -796,7 +816,7 @@ export function makeCarryRearmController({
           });
         } finally {
           release();
-          pending.delete(drillId);
+          pending.delete(key);
         }
       })();
       return 'queued';
@@ -2230,27 +2250,39 @@ export function hostThroughPty(o) {
               /* never let a diagnostic write break the session */
             }
             // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD")
-            // + EI-12754 (the re-arm leg deferred out of that diff): a
-            // carry-respawn DRILL refused here previously vanished with ZERO
-            // durable trace, then (post-EI-12655) terminally dropped on the
-            // FIRST refusal. Now it re-queues exactly ONE deferred retry at the
-            // next settled turn via makeCarryRearmController (which emits the
-            // durable 'carry-drill-rearm-queued' row and, on a second refusal
-            // or an error, the terminal drop) — so op:'report' / op:'verify'
-            // always see a durable outcome, and a busy-but-recovering session
-            // no longer loses its drill to one long turn. A duplicate schedule
-            // (a retry already pending for this drillId) drops terminally.
-            if (msg.mode === 'carry-respawn' && msg.drillId) {
+            // + EI-12754 (the re-arm leg deferred out of that diff) + WI-5368/
+            // WI-5530: a carry-respawn refused here previously vanished with ZERO
+            // durable trace, then (post-EI-12655) terminally dropped on the FIRST
+            // refusal — and, worse, a PRODUCTION (non-drill) respawn was never
+            // even scheduled (this branch gated on `msg.drillId`), so every
+            // busy-gate-deferred session:request-compaction was silently lost.
+            // Now BOTH drill and production respawns re-queue exactly ONE deferred
+            // retry at the next settled turn via makeCarryRearmController (which
+            // emits the durable rearm-queued row and, on a second refusal or an
+            // error, the terminal drop) — so op:'report' / op:'verify' always see
+            // a durable outcome, and a busy-but-recovering session no longer loses
+            // its respawn to one long turn. A duplicate schedule (a retry already
+            // pending for this key) drops terminally here.
+            if (msg.mode === 'carry-respawn') {
               if (carryRearm.schedule(msg) === 'duplicate') {
-                const dropExtra = {
-                  drillId: msg.drillId,
-                  sessionClass: msg.sessionClass ?? '',
-                  reason: 'busy-gate-expired',
-                  capMs: turnInjectBusyCapMs,
-                  rearmed: true,
-                };
-                appendHostEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
-                appendSharedDrillLedgerEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
+                const isDrill = !!msg.drillId;
+                const dropKind = isDrill ? 'carry-drill-carry-dropped' : 'respawn-carry-dropped';
+                const dropExtra = isDrill
+                  ? {
+                      drillId: msg.drillId,
+                      sessionClass: msg.sessionClass ?? '',
+                      reason: 'busy-gate-expired',
+                      capMs: turnInjectBusyCapMs,
+                      rearmed: true,
+                    }
+                  : {
+                      mode: 'carry-respawn',
+                      reason: 'busy-gate-expired',
+                      capMs: turnInjectBusyCapMs,
+                      rearmed: true,
+                    };
+                appendHostEvent(ownerId, dropKind, dropExtra);
+                appendSharedDrillLedgerEvent(ownerId, dropKind, dropExtra);
               }
             }
             // P-001a: clear the coalesce slot on defer — wakes folded into this
