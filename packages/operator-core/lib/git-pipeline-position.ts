@@ -98,7 +98,47 @@ export interface RuntimeOwnership {
   activation: string;
 }
 
-const RUNTIME_OWNERS: { match: RegExp; own: RuntimeOwnership }[] = [
+interface RuntimeOwnerEntry {
+  match: RegExp;
+  /**
+   * A path can be executed by MORE than one long-lived process (EI-16183's
+   * sibling bug, WI-5440): `own` is normally a single `RuntimeOwnership`, but
+   * for a file with genuinely distinct consumers on DIFFERENT activation
+   * routes, list all of them — `classifyRuntimeOwners` returns the full set,
+   * so a caller who collapses to one (the legacy `classifyRuntimeOwner`)
+   * never silently hides the other route.
+   */
+  own: RuntimeOwnership | RuntimeOwnership[];
+}
+
+const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
+  // WI-5440: success-metrics.ts has TWO real consumers on DIFFERENT activation
+  // routes — the scout ideation cycle (bg-host, routinesTick) AND
+  // buildProgramSuccessReport, called by the `blender:success-metrics` MCP tool
+  // which is served by the RELEASE-CHECKOUT operator (the ordinary
+  // staging→green-gate→deploy path). Collapsing to bg-host-only (the broader
+  // `lib/scout/` rule below) sent a live activation decision the wrong way
+  // during the 0.0.11-alpha release watch. Must be listed BEFORE the broader
+  // `lib/scout/` rule so this specific, dual-owner file wins.
+  {
+    match: /^packages\/operator-core\/lib\/scout\/success-metrics\.ts$/,
+    own: [
+      {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation:
+          "Scout's ideation cycle reads this via the `scout` deterministic blueprint's `blender:cycle` step, dispatched by routinesTick — which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). For THAT consumer it loads on RESTART: dev:restart { target: \"bg-host\", confirm: true } — a deploy never carries it (EI-11120).",
+      },
+      {
+        host: 'operator-release',
+        releasePipelineApplies: true,
+        restartTarget: 'staging',
+        activation:
+          'buildProgramSuccessReport, called by the `blender:success-metrics` MCP tool, is served by the RELEASE-CHECKOUT operator (:3070) — for THAT consumer the ordinary staging→green-gate→deploy pipeline is the activation path (or dev:restart { target: "staging", confirm: true } to exercise it now on :3170).',
+      },
+    ],
+  },
   // WI-4996: these three `*-sidecar-spawn.ts` supervisor modules live under a
   // directory that (correctly, for most of its files) maps to the sidecar they
   // supervise — but the SUPERVISOR itself runs in the SUPERVISING process, not

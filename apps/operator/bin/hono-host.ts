@@ -445,6 +445,9 @@ function startRequestServers(): void {
         // WI-3849: lag-recycle is another full process exit. Avoid the same
         // Node native env teardown that aborts on SIGTERM/memory recycle.
         hardExitOnRecycle: true,
+        // EI-16447: distinct from the memory-watchdog reason above — see its
+        // comment for why this matters.
+        reason: 'an event-loop lag-self-restart recycle',
       });
     },
   });

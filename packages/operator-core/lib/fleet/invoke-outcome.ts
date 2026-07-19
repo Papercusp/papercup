@@ -1,3 +1,5 @@
+import { OUTER_ACTIVITY_ECHO_MARKER } from '@papercusp/orchestrator';
+
 /**
  * invoke-outcome — the ONE rule for "did a spawned agent actually run a turn?"
  *
@@ -65,9 +67,30 @@ export interface InvokeOutcome {
 
 const RAW_STDOUT_DETAIL_LIMIT = 1000;
 
+/**
+ * EI-16502: strip the outer-process activity-heartbeat marker (invoke.ts
+ * `echoActivityToOuterProcess`) out of a captured stderr/rawStdoutTail before
+ * it is judged or persisted. That marker is echoed to the OUTER process's own
+ * stderr purely to keep `last_output_at` fresh (WI-3302) — it carries no
+ * diagnostic content. Left in, a burst-failed spawn whose child produced no
+ * *other* output ends up with `stderr`/`rawStdoutTail` consisting ENTIRELY of
+ * repeated marker lines: `classifyDiagnosticFailure` sees only noise (no real
+ * cause is ever visible — the persisted error_message and the failed-spawn
+ * watchdog signal fall through to a meaningless generic bucket), and — worse —
+ * the capacity_shed fingerprint's `stderr === ''` check silently never fires
+ * (a genuine mid-turn gateway-throttle shed misclassifies as the terminal
+ * `infra_loss` instead of the retryable `capacity_shed`). Stripping restores
+ * both: a real diagnostic elsewhere in the text is no longer crowded out, and
+ * a truly-silent death reads as truly empty again.
+ */
+function stripActivityHeartbeat(text: string): string {
+  if (!text || !text.includes(OUTER_ACTIVITY_ECHO_MARKER)) return text;
+  return text.split(OUTER_ACTIVITY_ECHO_MARKER).join('').trim();
+}
+
 function rawStdoutDetail(value: unknown): string {
   if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
+  const trimmed = stripActivityHeartbeat(value.trim());
   if (!trimmed) return '';
   const compact = trimmed.replace(/\s+/g, ' ');
   const tail =
@@ -85,6 +108,8 @@ function diagnosticText(b: {
 }): string {
   return [b.stderr, b.rawStdoutTail, b.agentOutput, b.stdout]
     .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    .map((v) => stripActivityHeartbeat(v))
+    .filter((v) => v.length > 0)
     .join('\n');
 }
 

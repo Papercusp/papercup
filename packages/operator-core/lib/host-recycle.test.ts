@@ -342,6 +342,59 @@ describe('gracefulHostRecycle', () => {
       expect(exit).toHaveBeenCalledExactlyOnceWith(75);
       expect(killSelf).not.toHaveBeenCalled();
     });
+
+    // EI-16447: the hard-exit log line used to hardcode "a memory-watchdog
+    // recycle" for EVERY hardExitOnRecycle caller (memory-watchdog trip,
+    // SIGTERM/SIGINT drain, lag-self-restart alike) — a false attribution that
+    // sent a real investigation (WI-5434) chasing a phantom RSS leak for hours
+    // when the actual restart storm was an intentional SIGTERM-triggered timer
+    // (papercup-staging-sync). `reason` must be caller-controlled and must NOT
+    // default to anything memory-watchdog-specific.
+    it('folds an explicit reason into the hard-exit log line instead of a hardcoded memory-watchdog attribution', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const killSelf = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit: vi.fn(),
+        killSelf,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+        reason: 'an event-loop lag-self-restart recycle',
+      });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+
+      const hardExitLine = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('[host-recycle] hard-exit'));
+      expect(hardExitLine).toContain('an event-loop lag-self-restart recycle');
+      expect(hardExitLine).not.toContain('memory-watchdog');
+      warnSpy.mockRestore();
+    });
+
+    it('defaults the hard-exit reason to a generic, non-memory-watchdog-specific phrase when no reason is passed', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const killSelf = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit: vi.fn(),
+        killSelf,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+      });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+
+      const hardExitLine = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('[host-recycle] hard-exit'));
+      expect(hardExitLine).not.toContain('memory-watchdog');
+      warnSpy.mockRestore();
+    });
   });
 });
 
@@ -491,6 +544,35 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     await vi.advanceTimersByTimeAsync(7999);
     expect(killSelf).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  // EI-16447: installGracefulShutdown must attribute its own hard-exit to the
+  // SIGNAL that triggered it, never to "memory-watchdog" — see the
+  // gracefulHostRecycle reason tests above for the WI-5434 misdiagnosis this
+  // guards against.
+  it('attributes its hard-exit log line to the triggering signal, not the memory watchdog', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const killSelf = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    const { server, drain } = makeServer();
+    const { on, fire } = fakeSignals();
+
+    installGracefulShutdown({
+      server,
+      on,
+      exit: vi.fn(),
+      killSelf,
+      closeSubstrate,
+      hardExitOnRecycle: true,
+    });
+    fire('SIGTERM');
+    drain();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const hardExitLine = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('[host-recycle] hard-exit'));
+    expect(hardExitLine).toContain('SIGTERM');
+    expect(hardExitLine).not.toContain('memory-watchdog');
 
     // At the deadline: force-terminate via the no-cleanup path, once, bounded
     // (8s ≪ systemd TimeoutStopSec), so the host can never sit in do_exit.
