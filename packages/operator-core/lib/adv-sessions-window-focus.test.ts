@@ -39,7 +39,7 @@ describe('resolveWindowIdForTitleFragment — Windows-desktop-host branch', () =
       { hwnd: '0x1', pid: 111, title: 'Untitled - Notepad' },
       { hwnd: '0x2', pid: 222, title: 'Papercup — abc-123' },
     ]);
-    const { resolveWindowIdForTitleFragment } = await import('./adv-sessions');
+    const { resolveWindowIdForTitleFragment } = await import('./adv-session-windows');
     const wid = await resolveWindowIdForTitleFragment('abc-123');
     expect(wid).toBe('Papercup — abc-123');
   });
@@ -47,20 +47,20 @@ describe('resolveWindowIdForTitleFragment — Windows-desktop-host branch', () =
   it('returns null when no window title contains the fragment', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
     listWindowsByTitleMock.mockResolvedValueOnce([{ hwnd: '0x1', pid: 111, title: 'Untitled - Notepad' }]);
-    const { resolveWindowIdForTitleFragment } = await import('./adv-sessions');
+    const { resolveWindowIdForTitleFragment } = await import('./adv-session-windows');
     expect(await resolveWindowIdForTitleFragment('abc-123')).toBeNull();
   });
 
   it('fails soft to null if the helper throws', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
     listWindowsByTitleMock.mockRejectedValueOnce(new Error('powershell exploded'));
-    const { resolveWindowIdForTitleFragment } = await import('./adv-sessions');
+    const { resolveWindowIdForTitleFragment } = await import('./adv-session-windows');
     expect(await resolveWindowIdForTitleFragment('abc-123')).toBeNull();
   });
 
   it('never calls the Windows helper off a Windows-desktop host (wmctrl path taken instead)', async () => {
     isWindowsDesktopHostMock.mockReturnValue(false);
-    const { resolveWindowIdForTitleFragment } = await import('./adv-sessions');
+    const { resolveWindowIdForTitleFragment } = await import('./adv-session-windows');
     await resolveWindowIdForTitleFragment('some-fragment-unlikely-to-be-a-real-window');
     expect(listWindowsByTitleMock).not.toHaveBeenCalled();
   });
@@ -70,7 +70,7 @@ describe('focusWindowId — Windows-desktop-host branch', () => {
   it('treats windowId as a TITLE and delegates to focusWindowByTitle', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
     focusWindowByTitleMock.mockResolvedValueOnce(true);
-    const { focusWindowId } = await import('./adv-sessions');
+    const { focusWindowId } = await import('./adv-session-windows');
     const ok = await focusWindowId('Papercup — abc-123');
     expect(ok).toBe(true);
     expect(focusWindowByTitleMock).toHaveBeenCalledWith('Papercup — abc-123');
@@ -79,13 +79,13 @@ describe('focusWindowId — Windows-desktop-host branch', () => {
   it('fails soft to false if the helper throws', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
     focusWindowByTitleMock.mockRejectedValueOnce(new Error('powershell exploded'));
-    const { focusWindowId } = await import('./adv-sessions');
+    const { focusWindowId } = await import('./adv-session-windows');
     expect(await focusWindowId('Papercup — abc-123')).toBe(false);
   });
 
   it('never calls the Windows helper off a Windows-desktop host (wmctrl path taken instead)', async () => {
     isWindowsDesktopHostMock.mockReturnValue(false);
-    const { focusWindowId } = await import('./adv-sessions');
+    const { focusWindowId } = await import('./adv-session-windows');
     await focusWindowId('0x123');
     expect(focusWindowByTitleMock).not.toHaveBeenCalled();
   });
@@ -94,7 +94,7 @@ describe('focusWindowId — Windows-desktop-host branch', () => {
 describe('closeWindowId — the "Kill agent" window close (owner ask 2026-07-11)', () => {
   it('returns false (un-actionable) on a Windows-desktop host — no safe title-based close yet', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
-    const { closeWindowId } = await import('./adv-sessions');
+    const { closeWindowId } = await import('./adv-session-windows');
     // Must NOT fall through to focusing/closing the wrong window by title.
     expect(await closeWindowId('Papercup — abc-123')).toBe(false);
     expect(focusWindowByTitleMock).not.toHaveBeenCalled();
@@ -102,7 +102,7 @@ describe('closeWindowId — the "Kill agent" window close (owner ask 2026-07-11)
 
   it('off a Windows-desktop host takes the wmctrl path (never the Windows title helper)', async () => {
     isWindowsDesktopHostMock.mockReturnValue(false);
-    const { closeWindowId } = await import('./adv-sessions');
+    const { closeWindowId } = await import('./adv-session-windows');
     // Shells to `wmctrl -ic <wid>`; returns a boolean from the exit status. On a
     // host without wmctrl/DISPLAY it fails soft to false — never throws, and
     // never touches the Windows helper.
@@ -123,22 +123,22 @@ describe('matchWindowIdInWmctrlOutput — full-title match (owner-hit 2026-07-11
   ].join('\n');
 
   it('matches a psu short owner-id that sits DEEP in the title (the fix)', async () => {
-    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-session-windows');
     expect(matchWindowIdInWmctrlOutput(SAMPLE, 'su-78d15')).toBe('0x01a0000a');
   });
 
   it('still matches a leading "[adv:<id>]" console-spawn tag (no regression)', async () => {
-    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-session-windows');
     expect(matchWindowIdInWmctrlOutput(SAMPLE, '[adv:11569]')).toBe('0x01b00002');
   });
 
   it('returns null when no title contains the fragment', async () => {
-    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-session-windows');
     expect(matchWindowIdInWmctrlOutput(SAMPLE, 'su-99999')).toBeNull();
   });
 
   it('does NOT match the host/pid columns — only the title (no wrong-window kill)', async () => {
-    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-session-windows');
     // "Precision-7865" lives in the host column, which is skipped.
     expect(matchWindowIdInWmctrlOutput(SAMPLE, 'Precision-7865')).toBeNull();
     // The pid "12345" is likewise a skipped column.
@@ -146,7 +146,7 @@ describe('matchWindowIdInWmctrlOutput — full-title match (owner-hit 2026-07-11
   });
 
   it('returns null on empty / whitespace-only fragment', async () => {
-    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-session-windows');
     expect(matchWindowIdInWmctrlOutput(SAMPLE, '')).toBeNull();
     expect(matchWindowIdInWmctrlOutput(SAMPLE, '   ')).toBeNull();
   });

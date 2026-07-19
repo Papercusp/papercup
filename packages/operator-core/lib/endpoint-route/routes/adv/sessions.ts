@@ -16,6 +16,10 @@ import type { SearchFilters, RecencyRank } from '@papercusp/search';
 import {
   closeWindowId,
   focusWindowId,
+  resolveWindowIdForPid,
+  resolveWindowIdForTitleFragment,
+} from '../../../adv-session-windows';
+import {
   getAdvSession,
   getAdvSessionInWorkspace,
   listAdvSessions,
@@ -23,8 +27,6 @@ import {
   listPendingWorkbenchLaunches,
   listResumableSessions,
   markAdvSessionLaunched,
-  resolveWindowIdForPid,
-  resolveWindowIdForTitleFragment,
   setAdvSessionOmpThreadId,
   setAdvSessionWindowId,
   updateAdvSessionPortStatus,

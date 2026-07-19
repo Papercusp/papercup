@@ -18,7 +18,8 @@ import { buildConsoleEnvelope } from '../../../console-launcher';
 import { advSessionTitleTag, spawnConsole } from '../../../console-spawn';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
-import { recordAdvSession, markAdvSessionEnded, resolveWindowIdForTitleFragment, setAdvSessionPid, setAdvSessionWindowId } from '../../../adv-sessions';
+import { recordAdvSession, markAdvSessionEnded, setAdvSessionPid, setAdvSessionWindowId } from '../../../adv-sessions';
+import { resolveWindowIdForTitleFragment } from '../../../adv-session-windows';
 
 // Fire-and-forget child-exit listener that ends the adv_sessions row
 // when the spawned terminal closes. detached+unref'd children still
