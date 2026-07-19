@@ -136,6 +136,32 @@ describe('member baseline carry directive (P-004 — warm/cold auto-mode)', () =
   });
 });
 
+// P-003: `plan` is optional — a pure claim-spec fleet launches with no plan. The member
+// baseline then points members at the fleet claim-lane instead of a named plan.
+describe('member baseline without a plan (P-003 — pure claim-spec fleet)', () => {
+  it('renderMemberBaseline points at the fleet claim-lane, not a named plan, when plan is omitted', () => {
+    const withPlan = renderMemberBaseline({ fleetSlug: 'atlas-fleet', plan: 'p-plan', count: 3 });
+    expect(withPlan).toContain('working plan `p-plan`');
+
+    const noPlan = renderMemberBaseline({ fleetSlug: 'atlas-fleet', count: 3 });
+    expect(noPlan).not.toContain('working plan');
+    expect(noPlan).toContain('draining your fleet claim-lane backlog');
+    // the rest of the baseline (fleet id, the pull loop) is unchanged
+    expect(noPlan).toContain('fleet `atlas-fleet`');
+    expect(noPlan).toContain('scheduler:get_next');
+  });
+
+  it('composeMemberLaunchContext composes cleanly with no plan (+ a leader brief still layers below)', () => {
+    const composed = composeMemberLaunchContext({
+      fleetSlug: 'atlas-fleet',
+      count: 2,
+      customBriefText: 'DRAIN THE BUGS',
+    });
+    expect(composed).toContain('draining your fleet claim-lane backlog');
+    expect(composed).toContain('DRAIN THE BUGS');
+  });
+});
+
 // P-003/P-004 arg-schema round-trip: both knobs parse, default undefined (→ visible + warm
 // downstream), reject bad values, and are optional.
 describe('headless + carry args (P-003/P-004)', () => {
@@ -484,6 +510,25 @@ describe('claimKinds arg (EI-7671)', () => {
     expect(() =>
       (launchOnPlan.args as { parse: (x: unknown) => unknown }).parse({ name: 'atlas', plan: 'p-plan' }),
     ).not.toThrow();
+  });
+});
+
+// P-003: `plan` is optional at the schema boundary — a pure claim-spec fleet omits it
+// (the handler then requires `claimKinds` as the lane). The schema must accept both shapes.
+describe('plan arg is optional (P-003 — pure claim-spec fleet)', () => {
+  const parse = (x: Record<string, unknown>) =>
+    (launchOnPlan.args as { parse: (x: unknown) => unknown }).parse(x);
+
+  it('accepts a plan-less launch (claim-spec fleet)', () => {
+    expect(() => parse({ name: 'bug-drain', claimKinds: ['bug'] })).not.toThrow();
+  });
+
+  it('still accepts the plan-scoped launch', () => {
+    expect(() => parse({ name: 'atlas', plan: 'p-plan' })).not.toThrow();
+  });
+
+  it('rejects an empty-string plan (min 1 still applies when present)', () => {
+    expect(() => parse({ name: 'atlas', plan: '' })).toThrow();
   });
 });
 

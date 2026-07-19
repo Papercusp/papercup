@@ -36,6 +36,7 @@ import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
 import { isSessionClosedError } from './own-log-fork-guard';
 import { redactContentOpValueForEgress } from './content-op-egress-guard';
 import { logIfStageStalls, STAGE_STALL_LOG_MS } from './stage-stall-log';
+import { extractPgErrorInfo } from '../../pg-read-query';
 
 /**
  * The projection tableTag for federated plans (harness-plans.ts:199 — the value
@@ -50,6 +51,35 @@ const PLAN_TABLE_TAG = 'plans-by-slug';
 /** Unmapped outbox table_names already logged (dedupe the forward-compat skip
  *  warning so an undrained unknown row doesn't spam the log every drain pass). */
 const loggedUnknownTables = new Set<string>();
+
+/**
+ * EI-13920: fan-out schema-mismatch signatures (`${table_name}:${pgCode}:${message}`)
+ * already logged loudly. A fan-out query referencing a column/table the live DB
+ * schema doesn't have (a migration that hasn't run, or code shipped ahead of its
+ * migration) fails IDENTICALLY for every row of that table on every drain tick —
+ * observed live as the same "column ... does not exist" line repeating per-key,
+ * indefinitely, drowning the log with a fault that only a schema fix (not a retry)
+ * resolves. Dedupe by signature so it is surfaced ONCE per drain-process lifetime,
+ * loudly, instead of spamming. Non-schema-mismatch fan-out failures are NOT deduped
+ * here — they may be transient/data-specific and are worth seeing on each occurrence. */
+const loggedFanoutSchemaMismatches = new Set<string>();
+
+/** Postgres SQLSTATE codes that mean the DB schema doesn't match what the query
+ *  expects (a missing/renamed column or table) — structural, not transient, so
+ *  retrying every tick cannot fix it; only a migration or a code fix can. */
+const SCHEMA_MISMATCH_PG_CODES = new Set<string>([
+  '42703', // undefined_column
+  '42P01', // undefined_table
+]);
+
+/** Returns a stable dedupe signature when `e` is a schema-mismatch Postgres error
+ *  (see SCHEMA_MISMATCH_PG_CODES), else null (not a schema-mismatch — caller should
+ *  fall back to its normal per-occurrence logging). */
+function fanoutSchemaMismatchSignature(tableName: string, e: unknown): string | null {
+  const info = extractPgErrorInfo(e);
+  if (!info.code || !SCHEMA_MISMATCH_PG_CODES.has(info.code)) return null;
+  return `${tableName}:${info.code}:${info.message}`;
+}
 
 /** Drain batch size per `drainOutboxOnce` pass. Bounds memory + append latency;
  *  the LISTEN/poll loop re-drains until the table is empty. */
@@ -653,11 +683,25 @@ export async function drainOutboxOnce(
           fanoutTimeoutMs,
         );
       } catch (e) {
-
-        console.error(
-          `[outbox-drain] fan-out failed for ${r.table_name} key=${r.key} (federation unaffected):`,
-          e instanceof Error ? e.message : String(e),
-        );
+        const schemaSig = fanoutSchemaMismatchSignature(r.table_name, e);
+        if (schemaSig) {
+          if (!loggedFanoutSchemaMismatches.has(schemaSig)) {
+            loggedFanoutSchemaMismatches.add(schemaSig);
+            console.error(
+              `[outbox-drain] FAN-OUT SCHEMA MISMATCH for table '${r.table_name}': ${schemaSig} — ` +
+                `the fan-out query references a column/table this DB doesn't have (a migration is ` +
+                `missing or hasn't run here, or code shipped ahead of its migration). This will recur ` +
+                `for EVERY row of this table on EVERY drain tick until fixed — logged ONCE per ` +
+                `signature to avoid log-flood; federation is unaffected (fan-out is local-only ` +
+                `best-effort). Root-cause via the migration allocator / schema drift check, not a retry.`,
+            );
+          }
+        } else {
+          console.error(
+            `[outbox-drain] fan-out failed for ${r.table_name} key=${r.key} (federation unaffected):`,
+            e instanceof Error ? e.message : String(e),
+          );
+        }
       }
     }
 

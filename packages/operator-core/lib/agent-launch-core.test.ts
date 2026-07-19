@@ -287,6 +287,14 @@ describe('memberLaunchCommand', () => {
     const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'h', plan: 'p' });
     expect(cmd).not.toContain('--compaction-limit');
   });
+
+  // P-003: `plan` is optional — a pure claim-spec fleet launches with no plan, so the
+  // member command omits --plan entirely (members self-pull via the fleet claim spec).
+  it('omits --plan when no plan is given (pure claim-spec fleet)', () => {
+    const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp' });
+    expect(cmd).not.toContain('--plan');
+    expect(cmd).toBe('psu --no-picker --fleet=ops --agent=claude --harness=papercusp');
+  });
 });
 
 describe('composeModelSpec (D-001: effort rides the model spec)', () => {

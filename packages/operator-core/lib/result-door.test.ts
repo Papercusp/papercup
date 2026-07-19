@@ -138,4 +138,60 @@ describe('applyResultDoor', () => {
     const result = { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] };
     expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
   });
+
+  // EI-13918: `result.data` may have ALREADY been replaced upstream by a lossy
+  // payload-tier projection (payload-tier.ts) before this door ever ran — in
+  // which case the "FULL result is at <path>" footer is FALSE: the spilled
+  // file holds only that already-partial projection, and the genuinely
+  // omitted content was never serialized, so paging can never recover it.
+  // `_meta.payloadProjection` (serialize-result.ts) is how the door learns
+  // this without parsing the body.
+  describe('upstream payload-tier truncation (_meta.payloadProjection)', () => {
+    const payloadProjection = {
+      truncated: true as const,
+      tier: 'trimmed',
+      forced: true,
+      originalChars: 37343,
+      returnedChars: 7058,
+      omittedCount: 39,
+    };
+
+    it('does NOT claim the spill is the "FULL" result — footer + spill header say it is already-projected and unrecoverable-by-paging', () => {
+      const doored = applyResultDoor(
+        {
+          content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }],
+          _meta: { payloadProjection },
+        },
+        { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const pointer = (doored.content.at(-1) as { text: string }).text;
+      expect(pointer).not.toContain('The FULL result is at');
+      expect(pointer).toContain('NOT the tool');
+      expect(pointer).toContain('omittedCount=39');
+      expect(pointer).toContain("payloadTier:'full'");
+
+      const spill = readSpill('ws-1', 'coord:orient', RUN_ID);
+      expect(spill).not.toContain('FULL tool result');
+      expect(spill).toContain('ALREADY-PROJECTED');
+      expect(spill).toContain('originalChars=37343');
+      expect(spill).toContain('returnedChars=7058');
+      expect(spill).toContain('NOT recoverable from this file');
+    });
+
+    it('a result WITHOUT the marker keeps the original truthful "FULL result" wording (no false positives)', () => {
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
+        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const pointer = (doored.content.at(-1) as { text: string }).text;
+      expect(pointer).toContain('The FULL result is at');
+      const spill = readSpill('ws-1', 'plans:get', RUN_ID);
+      expect(spill).toContain('# result-door spill — FULL tool result');
+    });
+
+    it('a projected result that ALSO fits under the door budget is untouched (no false-positive spill)', () => {
+      const result = { content: [{ type: 'text' as const, text: 'small already-projected result' }], _meta: { payloadProjection } };
+      expect(applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+  });
 });

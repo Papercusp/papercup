@@ -121,10 +121,35 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const uri = buildScratchUri({ ...parts, basename });
     const fsPath = safeScratchFilesystemPath(uri);
     mkdirSync(dirname(fsPath), { recursive: true });
-    const header =
-      `# result-door spill — FULL tool result (the in-context copy was truncated at the door)\n` +
-      `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
-      `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
+    // EI-13918: `result.data` may ALREADY have been replaced upstream by a
+    // lossy payload-tier projection (payload-tier.ts) BEFORE this door ever
+    // saw it — in which case `fullText` below is not the tool's true full
+    // output; the genuinely-omitted content was never serialized at all, so
+    // paging this spill file can never recover it. Detect that via the
+    // `_meta.payloadProjection` marker (serialize-result.ts) rather than
+    // sniffing the serialized JSON text, and pick truthful header/footer
+    // wording for each case instead of unconditionally claiming "FULL".
+    const upstreamProjection = (
+      result._meta as { payloadProjection?: {
+        truncated: true; tier: string; forced: boolean;
+        originalChars: number; returnedChars: number; omittedCount: number;
+      } } | undefined
+    )?.payloadProjection;
+    const header = upstreamProjection
+      ? `# result-door spill — an ALREADY-PROJECTED (partial) tool result\n` +
+        `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
+        `# upstream payload-tier shaping already replaced the tool's full output with a ` +
+        `bounded projection BEFORE this door ran: tier=${upstreamProjection.tier} ` +
+        `forced=${upstreamProjection.forced} originalChars=${upstreamProjection.originalChars} ` +
+        `returnedChars=${upstreamProjection.returnedChars} omittedCount=${upstreamProjection.omittedCount}.\n` +
+        `# The ${upstreamProjection.omittedCount} omitted field(s)/row(s) were NEVER serialized and are ` +
+        `NOT recoverable from this file — re-call ${opts.toolName} with payloadTier:'full' ` +
+        `(or narrower args) for the missing detail.\n` +
+        `# What follows is only that already-partial projection, further capped at the ` +
+        `per-result door (${doorTokens} tokens) below.\n\n`
+      : `# result-door spill — FULL tool result (the in-context copy was truncated at the door)\n` +
+        `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
+        `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
     writeFileSync(fsPath, header + fullText, { mode: 0o600 });
 
     // Rebuild content: text items consume the budget in order (the boundary item
@@ -148,11 +173,19 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     }
     doored.push({
       type: 'text',
-      text:
-        `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
-        `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
-        `The FULL result is at ${fsPath} (scratch URI: ${uri}) — page it with a bounded read ` +
-        `(offset/limit) instead of re-running the tool.]`,
+      text: upstreamProjection
+        ? `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
+          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
+          `⚠ this is NOT the tool's full output — it was ALREADY tier-projected upstream ` +
+          `(payloadProjection: tier=${upstreamProjection.tier} forced=${upstreamProjection.forced} ` +
+          `omittedCount=${upstreamProjection.omittedCount}) before reaching this door. The spilled ` +
+          `file at ${fsPath} (scratch URI: ${uri}) contains only that already-partial projection, NOT ` +
+          `the omitted content — paging it will never recover what was omitted upstream. For full ` +
+          `detail, re-call ${opts.toolName} with payloadTier:'full'.]`
+        : `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
+          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
+          `The FULL result is at ${fsPath} (scratch URI: ${uri}) — page it with a bounded read ` +
+          `(offset/limit) instead of re-running the tool.]`,
     });
     return { ...result, content: doored };
   } catch {

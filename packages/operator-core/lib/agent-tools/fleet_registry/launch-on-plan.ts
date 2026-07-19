@@ -1259,14 +1259,16 @@ export default defineTool({
       const lines = [
         `Fleet \`${fleetSlug}\` already has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'} — you asked for ${count}, so NO new terminals were opened.`,
         'Your fleet is running: monitor it, do not relaunch. Re-call this tool only after members have actually drained (their presence goes stale), or with a HIGHER count to top up.',
-        `Until the plan \`${args.plan}\` is drained, your standing job each cycle:`,
+        planSlug
+          ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
+          : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
       ];
       LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       return json({
         ok: true,
         fleet: fleetSlug,
         leaderRole,
-        plan: args.plan,
+        plan: planSlug,
         harness,
         agent,
         account: args.account?.trim() || null,
@@ -1337,7 +1339,7 @@ export default defineTool({
       // side just pools candidates and threads potSlug through so that gate has
       // what it needs; it never filters by audience itself (fail-closed lives
       // on the host, not the requester).
-      const potSlug = await resolvePlanHarnessSlug(workspaceId, args.plan);
+      const potSlug = await resolvePlanHarnessSlug(workspaceId, planSlug!);
       let potSeatOffers: typeof seatOffers = [];
       if (potSlug) {
         try {
@@ -1399,7 +1401,7 @@ export default defineTool({
           ok: true,
           fleet: fleetSlug,
           leaderRole,
-          plan: args.plan,
+          plan: planSlug,
           harness,
           placement: 'remote',
           requested: count,
@@ -1435,7 +1437,7 @@ export default defineTool({
           targetPublisherGithubUserId: alloc.publisher,
           targetOfferId: alloc.offerId,
           count: alloc.count,
-          planSlug: args.plan,
+          planSlug: planSlug!,
           requesterOwnerId: ownerId,
           // P-005: only set for allocations drawn from a pot-scoped offer — the
           // honoring host's audience gate (delegated-spawn-honor.ts) consults
@@ -1480,7 +1482,7 @@ export default defineTool({
       }
       lines.push(
         remotePlacements.length
-          ? `Published ${placedTotal} REMOTE member placement${placedTotal === 1 ? '' : 's'} for fleet \`${fleetSlug}\` on plan \`${args.plan}\` across ${remotePlacements.length} machine${remotePlacements.length === 1 ? '' : 's'}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}:`
+          ? `Published ${placedTotal} REMOTE member placement${placedTotal === 1 ? '' : 's'} for fleet \`${fleetSlug}\` on plan \`${planSlug}\` across ${remotePlacements.length} machine${remotePlacements.length === 1 ? '' : 's'}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}:`
           : `No remote placements were published for fleet \`${fleetSlug}\`.`,
       );
       for (const p of remotePlacements) {
@@ -1511,7 +1513,7 @@ export default defineTool({
           fleet: fleetSlug,
           leaderRole,
           autoModeEntered: remotePlacements.length > 0,
-          plan: args.plan,
+          plan: planSlug,
           harness,
           placement: 'remote',
           requested: count,
@@ -1558,14 +1560,16 @@ export default defineTool({
         `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${requestedOpenCount}, but capacity allows 0 new member terminals now.`,
         capacityClamp?.reason ?? 'capacity report unavailable',
         'NO new terminals were opened. Re-call this tool after capacity recovers; the live-member deficit guard will still open only the remaining deficit.',
-        `Until the plan \`${args.plan}\` is drained, your standing job each cycle:`,
+        planSlug
+          ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
+          : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
       ];
       LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       return json({
         ok: true,
         fleet: fleetSlug,
         leaderRole,
-        plan: args.plan,
+        plan: planSlug,
         harness,
         agent,
         account: args.account?.trim() || null,
@@ -1654,7 +1658,9 @@ export default defineTool({
       const lines = [
         `Fleet \`${fleetSlug}\` was already launched — ${slot.priorCount} member${slot.priorCount === 1 ? '' : 's'} opened ${agoS}s ago (possibly by this very session).`,
         'You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — re-call only to add another wave once the current members have drained.',
-        `Until the plan \`${args.plan}\` is drained, your standing job each cycle:`,
+        planSlug
+          ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
+          : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
       ];
       LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       lines.push(
@@ -1665,7 +1671,7 @@ export default defineTool({
         ok: true,
         fleet: fleetSlug,
         leaderRole,
-        plan: args.plan,
+        plan: planSlug,
         harness,
         agent: effAgent,
         account: effAccount ?? null,
@@ -1706,7 +1712,7 @@ export default defineTool({
       }
       const composed = composeMemberLaunchContext({
         fleetSlug,
-        plan: args.plan,
+        plan: planSlug,
         count,
         carry: args.carry,
         customBriefText: sharedBriefText,
@@ -1767,7 +1773,7 @@ export default defineTool({
         try {
           const composed = composeMemberLaunchContext({
             fleetSlug,
-            plan: args.plan,
+            plan: planSlug,
             count,
             carry: args.carry,
             customBriefText: briefText,
@@ -1853,7 +1859,7 @@ export default defineTool({
         ...folded,
         fleetSlug,
         harness,
-        plan: args.plan,
+        plan: planSlug ?? undefined,
         // The member's own brief file wins over the shared/per-member-path fallback;
         // `carry` and `claimKinds` are NOT psu flags (they shape the member baseline
         // and the claim spec respectively), so memberLaunchCommand ignores them.
@@ -1885,12 +1891,12 @@ export default defineTool({
         args.headless
           ? spawnHeadless({
               envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-              label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
+              label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
               logDir: headlessLogDir,
             })
           : spawnConsole({
               envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-              label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
+              label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
               writeMcpJson: false,
               scheme,
               // WI-3289: on a Windows desktop host, relay each member window to the
@@ -1939,18 +1945,18 @@ export default defineTool({
         );
       } else if (promotionFailsafe.flagOff) {
         lines.push(
-          `⚠ plan→work-item promotion is dark (flag off) so the launch failsafe promoted nothing. If plans:start was not run, members' scheduler:get_next will find nothing and idle — ensure claimable work-items exist for plan \`${args.plan}\`.`,
+          `⚠ plan→work-item promotion is dark (flag off) so the launch failsafe promoted nothing. If plans:start was not run, members' scheduler:get_next will find nothing and idle — ensure claimable work-items exist for plan \`${planSlug}\`.`,
         );
       } else if (promotionFailsafe.skipped === 0) {
         lines.push(
-          `⚠ plan \`${args.plan}\` has no open items to promote — members may find nothing to claim. Confirm the plan has items (plans:items) and was started.`,
+          `⚠ plan \`${planSlug}\` has no open items to promote — members may find nothing to claim. Confirm the plan has items (plans:items) and was started.`,
         );
       }
     }
     const carryMode: 'warm' | 'cold' = args.carry ?? 'warm';
     lines.push(
       opened.length
-        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} ${args.headless ? 'HEADLESS ' : ''}member${openCount > 1 ? 's' : ''} opened${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
+        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${opened.length}/${openCount} ${args.headless ? 'HEADLESS ' : ''}member${openCount > 1 ? 's' : ''} opened${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
         : `No ${args.headless ? 'headless ' : ''}member${args.headless ? 's were' : ' terminals were'} started for fleet \`${fleetSlug}\`.`,
     );
     for (const o of opened) {
@@ -2027,7 +2033,7 @@ export default defineTool({
         // auto-enters AUTO mode (persona rule; see the message text). Structured so
         // non-prose consumers (hooks, scorers) can key on it.
         autoModeEntered: opened.length > 0,
-        plan: args.plan,
+        plan: planSlug,
         harness,
         agent: effAgent,
         account: effAccount ?? null,
