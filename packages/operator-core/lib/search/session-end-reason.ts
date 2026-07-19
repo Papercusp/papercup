@@ -124,3 +124,32 @@ export function classifySessionEnd(input: ClassifySessionEndInput): SessionEndCl
 
   return { reason: 'settled', evidence: null, wedged: false };
 }
+
+/**
+ * EI-13818: a NARROW, high-precision subset of the classification above, safe to run
+ * blind against an OPAQUE output tail (not a live session's known-last text) — e.g. a
+ * just-exited subprocess whose exit code alone can't tell you whether it died wedged.
+ * Deliberately excludes `model_error` (its pattern's `rate.?limit(?:ed)?\b` clause is
+ * intentionally broad for classifying a session ALREADY KNOWN to be dead, but far too
+ * loose to scan blind — "discussed the rate limit fix" would trip it) and `context_limit`
+ * (phrases like "context window exceeded" are plausible in ordinary dev conversation
+ * about the very bug being fixed). `auth_wall` and `usage_limit` are the two used here:
+ * both are precise, imperative-mood phrases ("hit your session limit", "organization has
+ * disabled…") a normal turn discussing the topic essentially never produces verbatim.
+ * See resume-turn-outcome.ts's `classifyResumeTurnExit`, the caller this exists for.
+ */
+export function classifyWedgeText(
+  text: string | null | undefined,
+): { reason: 'auth_wall' | 'usage_limit'; evidence: string } | null {
+  const t = (text ?? '').trim();
+  if (!t) return null;
+  for (const p of PATTERNS) {
+    if (p.reason !== 'auth_wall' && p.reason !== 'usage_limit') continue;
+    const m = p.re.exec(t);
+    if (m) {
+      const at = Math.max(0, m.index - 20);
+      return { reason: p.reason, evidence: t.slice(at, at + EVIDENCE_MAX) };
+    }
+  }
+  return null;
+}

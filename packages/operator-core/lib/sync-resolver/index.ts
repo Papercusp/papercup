@@ -4777,14 +4777,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
   'coord.inbox': {
     resolve: async () => {
-      const { loadCoordInbox } = await import('../endpoint-route/routes/coord');
-      return loadCoordInbox();
+      // UI-only slim (P-006): CoordDashboard's InboxItem renders `summary`, not
+      // the full CoordEnvelope `payload` (88% of a 1.75MB feed). Project it out
+      // at the sync boundary; the /api/coord/inbox HTTP loader (pui TUI) keeps it.
+      const [{ loadCoordInbox }, { projectCoordInboxForUi }] = await Promise.all([
+        import('../endpoint-route/routes/coord'),
+        import('./coord-ui-projection'),
+      ]);
+      return projectCoordInboxForUi(await loadCoordInbox()) as unknown[];
     },
   },
   'coord.plans': {
     resolve: async () => {
-      const { loadCoordPlans } = await import('../endpoint-route/routes/coord');
-      return loadCoordPlans();
+      // UI-only slim (P-006): drop `now_state` (rendered nowhere; 60% of a 1.09MB
+      // feed — full body loads on-demand via /api/coord/plans/:slug) + clip the
+      // truncated-preview `now_next`. HTTP loader (pui TUI) is untouched.
+      const [{ loadCoordPlans }, { projectCoordPlansForUi }] = await Promise.all([
+        import('../endpoint-route/routes/coord'),
+        import('./coord-ui-projection'),
+      ]);
+      return projectCoordPlansForUi(await loadCoordPlans()) as unknown[];
     },
   },
 

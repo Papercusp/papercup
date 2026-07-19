@@ -20,7 +20,8 @@
  *    re-arm (P0b/P1a).
  */
 
-import { classifySubprocessResult, type TurnError } from '@papercusp/papercusp-shared/agent';
+import { classifySubprocessResult, parseUsageResetMs, type TurnError } from '@papercusp/papercusp-shared/agent';
+import { classifyWedgeText } from '../../search/session-end-reason';
 
 /**
  * The raw exit observation of a detached `resume-headless` turn — the exit code +
@@ -44,12 +45,26 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
 /**
  * Classify a detached resume turn's exit into survived-vs-died (P0a).
  *
- * A clean exit (code 0, no signal) IS success — the `claude --resume … -p` turn ran
- * its one turn and exited, leaving the session updated for the next wake. We do NOT
+ * A clean exit (code 0, no signal) is USUALLY success — the `claude --resume … -p` turn
+ * ran its one turn and exited, leaving the session updated for the next wake. We do NOT
  * route a clean exit through `classifySubprocessResult`: that helper reads
- * exit-0-with-no-captured-stdout as `empty_output` (a failure), but here we capture
- * only a bounded tail (not the transcript), so a clean exit must be read as success
- * regardless of what the tail holds.
+ * exit-0-with-no-captured-stdout as `empty_output` (a failure), but here we capture only
+ * a bounded tail (not the transcript), so an EMPTY tail on a clean exit must be read as
+ * success regardless.
+ *
+ * EI-13818: but a clean exit is NOT ALWAYS success. The claude-code CLI prints a provider
+ * WEDGE — "You've hit your session limit · resets 5:40am", "…organization has disabled
+ * Claude subscription access…" — as an ordinary ASSISTANT TURN and exits 0 once it has
+ * displayed it: from the process's own perspective it ran cleanly. That is indistinguishable
+ * from a normal turn to every exit-code-based check (the exact blind spot
+ * `session-end-reason.ts` exists to close for LIVE-session classification: "the only way to
+ * learn a session is WEDGED is to read its transcript"). Left unguarded this masked FOUR
+ * consecutive dead loop wakes as `ok:true` (2 turns / 1 prompt / 0 tool calls each) — the
+ * failure-streak circuit never opened, the 429-aware re-arm (P1a, below) never engaged, and a
+ * 12-member fleet ran leaderless. So a clean exit is FIRST scanned for the same narrow,
+ * high-precision wedge signature via `classifyWedgeText` (deliberately NOT the full
+ * `classifySessionEnd` set — see its doc for why `model_error`/`context_limit` are excluded
+ * from a BLIND scan) before being trusted as success.
  *
  * A non-zero / signalled exit is a DEATH — classify it with the shared subprocess
  * taxonomy. The claude/codex CLIs print API errors (rate limit / usage limit / overload
@@ -58,7 +73,22 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
  * `anthropic` (a resume turn is always a claude-code session).
  */
 export function classifyResumeTurnExit(raw: ResumeTurnExitRaw, now: number = Date.now()): ResumeTurnOutcome {
-  if (raw.exitCode === 0 && !raw.signal) return { ok: true };
+  if (raw.exitCode === 0 && !raw.signal) {
+    const wedge = classifyWedgeText(raw.stdoutTail);
+    if (wedge) {
+      const resetAt = wedge.reason === 'usage_limit' ? parseUsageResetMs(wedge.evidence, now) : undefined;
+      const error: TurnError = {
+        class: wedge.reason === 'auth_wall' ? 'auth' : 'usage_limit',
+        message: wedge.evidence,
+        provider: 'anthropic',
+        retryable: false,
+        surfaceToUser: true,
+        ...(resetAt !== undefined ? { resetAt } : {}),
+      };
+      return { ok: false, error };
+    }
+    return { ok: true };
+  }
   const error = classifySubprocessResult(
     {
       exitCode: raw.exitCode,
