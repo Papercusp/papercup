@@ -14,6 +14,7 @@ import {
   writePty,
   findPtyByPid,
   deriveMaxConcurrentPtys,
+  getXtermExportShape,
 } from './pty-bridge';
 import { getResourceProfile } from './resource-profile';
 
@@ -49,6 +50,23 @@ async function waitForOutput(id: string, predicate: (s: string) => boolean, time
   }
   return getHistory(id)?.toString('utf8') ?? '';
 }
+
+describe('xterm import shape (EI-13212)', () => {
+  it('resolves Terminal/SerializeAddon off the namespace directly, with no default to fall back to', () => {
+    // Regression for the Rolldown IMPORT_IS_UNDEFINED production-build warning:
+    // getHeadlessTerminal/getSerializeAddon used to fall back to
+    // `(ns as any).default?.X`, which these packages never provide in ANY
+    // shipped build — the primary namespace property is the only real path.
+    // If a future dependency bump ever moves the export behind `default`,
+    // this fails LOUDLY here instead of silently reintroducing dead code (or
+    // worse, an actually-broken fallback) into pty-bridge.ts.
+    const shape = getXtermExportShape();
+    expect(shape.headlessHasTerminal).toBe(true);
+    expect(shape.serializeHasAddon).toBe(true);
+    expect(shape.headlessHasDefault).toBe(false);
+    expect(shape.serializeHasDefault).toBe(false);
+  });
+});
 
 describe('pty-bridge', () => {
   it('spawns a process and accumulates byte history', async () => {

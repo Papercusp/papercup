@@ -34,8 +34,59 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 // find module" in the shipped sidecar).
 // Lazy-resolve at call time (not module load) to work around CJS interop timing
 // race on first spawnPty call in wake-resume flow.
-const getHeadlessTerminal = () => xtermHeadless.Terminal ?? (xtermHeadless as any).default?.Terminal;
-const getSerializeAddon = () => xtermAddonSerialize.SerializeAddon ?? (xtermAddonSerialize as any).default?.SerializeAddon;
+//
+// EI-13212: neither package declares a package.json "exports" map, only
+// "main" (CJS) + "module" (an ESM build, the bundler-only convention). The
+// two build targets disagree on `.default`:
+//   - Node/tsx has no "exports" map to honor, so it always resolves "main"
+//     (CJS) — and Node's CJS→ESM interop then SYNTHESIZES `ns.default =
+//     module.exports` for a namespace import, so `.default.Terminal` happens
+//     to also work here (redundant with the direct property, never needed).
+//   - Rolldown/Vite (the operator-vite / desktop-sidecar production build)
+//     instead prefers the "module" field for a browser target — a REAL ESM
+//     file (`export{Jr as Terminal}` / `export{...,D as SerializeAddon}`,
+//     verified against the installed build) that ships no default at all. The
+//     bundler can PROVE that statically and flags the dead `.default` access
+//     as an IMPORT_IS_UNDEFINED warning.
+// So `(ns as any).default?.X` was never anything but dead weight: redundant
+// under Node, and provably-undefined under the bundler that actually warned.
+// The namespace's own named property is the only path either target needs —
+// keep it that way; do not reintroduce a `.default` fallback without first
+// re-checking the shipped "module" build (getXtermEsmExportShape below checks
+// it directly, sidestepping Node's interop so a regression test isn't fooled
+// by a synthesized default that only Node ever sees).
+const getHeadlessTerminal = () => xtermHeadless.Terminal;
+const getSerializeAddon = () => xtermAddonSerialize.SerializeAddon;
+
+/** Test/diagnostic seam (EI-13212): reads each package's shipped ESM
+ *  (`module` field) build directly off disk and confirms it exports the
+ *  named binding the getters above rely on, with NO `default` export —
+ *  i.e. exactly what Rolldown/Vite bundles for production, unaffected by
+ *  Node's CJS-interop synthesized default (which would otherwise mask a
+ *  regression: Node always sees a `.default`, the bundler never does). */
+export function getXtermEsmExportShape(): {
+  headlessHasNamedTerminal: boolean;
+  headlessHasDefault: boolean;
+  serializeHasNamedAddon: boolean;
+  serializeHasDefault: boolean;
+} {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const requireResolve = (specifier: string): string => require.resolve(specifier);
+  const readEsmBuild = (pkgJsonSpecifier: string, moduleRelPath: string): string => {
+    const pkgJsonPath = requireResolve(pkgJsonSpecifier);
+    const dir = pkgJsonPath.replace(/package\.json$/, '');
+    return readFileSync(dir + moduleRelPath, 'utf8');
+  };
+  const headlessSrc = readEsmBuild('@xterm/headless/package.json', 'lib-headless/xterm-headless.mjs');
+  const serializeSrc = readEsmBuild('@xterm/addon-serialize/package.json', 'lib/addon-serialize.mjs');
+  return {
+    headlessHasNamedTerminal: /\bas Terminal\b/.test(headlessSrc),
+    headlessHasDefault: /\bexport\s+default\b|\bas default\b/.test(headlessSrc),
+    serializeHasNamedAddon: /\bas SerializeAddon\b/.test(serializeSrc),
+    serializeHasDefault: /\bexport\s+default\b|\bas default\b/.test(serializeSrc),
+  };
+}
 
 export interface SpawnPtyOpts {
   /** Binary to launch (e.g. 'omp', 'bash', '/usr/local/bin/omp'). */

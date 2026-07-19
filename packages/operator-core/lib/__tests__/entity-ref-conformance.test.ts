@@ -114,7 +114,7 @@ function scanCatalog(): { unconverted: Unconverted[]; converted: number; walkabl
  * do not "fix" a failing build by bumping it, that is the one move that makes
  * this test worthless.
  */
-const UNCONVERTED_BASELINE = 33; // measured 2026-07-19: workspace 21, pot 7, harness 6
+const UNCONVERTED_BASELINE = 34; // measured 2026-07-19: workspace 21, pot 7, harness 6
 
 describe('entityRef conformance ratchet (tool-arg-referential-integrity P-003)', () => {
   it('the real tool catalog loaded (guard against a vacuous pass)', () => {
