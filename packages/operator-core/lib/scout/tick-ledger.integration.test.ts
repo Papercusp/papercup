@@ -267,5 +267,52 @@ describe('scout_ticks ledger (real PG)', () => {
         await readScoutTicksByCodeHash({ workspaceId: 'ws-scout-codehash-iso-a', codeHash: 'hash-shared-2' }),
       ).toHaveLength(1);
     });
+
+    // WI-5451: the union must INTERSECT with a caller-requested `sinceMs` floor, never let
+    // the code-hash predicate alone re-admit a tick from before it — the live defect: a
+    // watermarkRef floor was silently ignored because the union answered "same code?" without
+    // also asking "at/after the floor?", letting a pre-restart, code-identical tick (contaminated
+    // per WI-5442) count as evidence for the running generation.
+    describe('sinceMs floor intersects with the code-hash predicate (WI-5451)', () => {
+      it('readScoutTicksByCodeHash EXCLUDES a pre-floor tick sharing the same hash as a post-floor tick', async () => {
+        const ws = 'ws-scout-codehash-floor';
+        await recordScoutTick({
+          workspaceId: ws,
+          status: 'ran',
+          detail: { cycleId: 'pre-floor', scoutCodeHash: 'hash-x' },
+        });
+        await new Promise((r) => setTimeout(r, 25));
+        const floorMs = Date.now();
+        await new Promise((r) => setTimeout(r, 25));
+        await recordScoutTick({
+          workspaceId: ws,
+          status: 'ran',
+          detail: { cycleId: 'post-floor', scoutCodeHash: 'hash-x' },
+        });
+        // Un-floored (the pre-WI-5451 / default rolling-window path): both ticks union in.
+        const unfloored = await readScoutTicksByCodeHash({ workspaceId: ws, codeHash: 'hash-x' });
+        expect(unfloored).toHaveLength(2);
+        // Floored: ONLY the post-floor tick counts — the pre-floor tick is excluded even
+        // though it shares the exact same code hash.
+        const floored = await readScoutTicksByCodeHash({ workspaceId: ws, codeHash: 'hash-x', sinceMs: floorMs });
+        expect(floored).toHaveLength(1);
+        expect((floored[0].detail as { cycleId?: string } | undefined)?.cycleId).toBe('post-floor');
+      });
+
+      it('readNewestScoutCodeHash floored to a point with NO tick since it returns null — never the previous generation\'s hash', async () => {
+        const ws = 'ws-scout-codehash-floor-newest';
+        await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { cycleId: 'old', scoutCodeHash: 'hash-old-gen' } });
+        await new Promise((r) => setTimeout(r, 25));
+        const floorMs = Date.now();
+        // Un-floored still resolves the (stale) previous generation's hash.
+        expect(await readNewestScoutCodeHash({ workspaceId: ws })).toBe('hash-old-gen');
+        // Floored at a point after the only tick: no evidence yet for "the running generation" —
+        // UNKNOWN is correct here, never silently naming the prior generation as current.
+        expect(await readNewestScoutCodeHash({ workspaceId: ws, sinceMs: floorMs })).toBeNull();
+        // Once a post-floor tick lands, the floored read picks it up correctly.
+        await recordScoutTick({ workspaceId: ws, status: 'ran', detail: { cycleId: 'new', scoutCodeHash: 'hash-new-gen' } });
+        expect(await readNewestScoutCodeHash({ workspaceId: ws, sinceMs: floorMs })).toBe('hash-new-gen');
+      });
+    });
   });
 });
