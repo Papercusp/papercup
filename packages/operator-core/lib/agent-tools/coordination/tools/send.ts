@@ -1093,6 +1093,7 @@ export default defineTool({
           ctxHarness,
           identity.workspaceId,
           msg.to,
+          msg.hive,
         );
         if ('error' in scoped) return scoped.error;
         return sendOne(

@@ -29,8 +29,9 @@
  *            verdict 'error': the candidate STAYS PENDING for the next tick
  *            (plan D-004 — never adopt-by-default).
  *   decide   adopt or dismiss. Adoption materializes the item into the
- *            `fleet-lessons` pack under the installed packs root and bumps the
- *            pack's patch version — it NEVER touches a hive pool directly.
+ *            `fleet-lessons` pack under the SHARED workspace-independent packs
+ *            root (P-005) and bumps the pack's patch version — it NEVER
+ *            touches a hive pool directly.
  *            {@link autoAdoptPendingCandidates} runs the review then calls this
  *            with a MACHINE `by` identity ({@link AUTO_ADOPT_REVIEWER}) on the
  *            improvement-triage cadence — a passing review auto-adopts, a
@@ -53,7 +54,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
-import { installedKnowledgePacksRoot } from './load-packs';
+import { sharedKnowledgePacksRoot } from './load-packs';
 import {
   APPLIES_TO_SHAPES,
   LEARNING_KINDS,
@@ -382,7 +383,9 @@ export async function materializeCandidateIntoPack(
   },
   io: { packsRoot?: string } = {},
 ): Promise<{ packId: string; packItemId: string; packVersion: string }> {
-  const dir = join(io.packsRoot ?? installedKnowledgePacksRoot(), FLEET_LESSONS_PACK_ID);
+  // P-005 (plan D-005): the SHARED workspace-independent root — candidates are
+  // fleet-global, so their pack must not fragment across per-workspace roots.
+  const dir = join(io.packsRoot ?? sharedKnowledgePacksRoot(), FLEET_LESSONS_PACK_ID);
   await fs.mkdir(dir, { recursive: true });
 
   let manifest: KnowledgePackManifest = FLEET_LESSONS_MANIFEST;

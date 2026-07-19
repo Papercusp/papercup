@@ -580,7 +580,7 @@ afterEach(() => cleanup());
 describe("LearningTab — Improvements view (default)", () => {
   it("renders the scoreboard from the digest rollups", () => {
     render(<LearningTab />);
-    expect(screen.getByRole("tab", { name: /Improvements/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Backlog/ })).toBeTruthy();
     expect(screen.getByText("135")).toBeTruthy(); // captured (stat line)
     // open now rides the quiet header signal ("117 open") rather than a standalone
     // hero number (owner ask 2026-07-19: header pill + metric tiles → one stat line).
@@ -625,7 +625,7 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(screen.getByRole("tab", { name: "Retain" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Ideas" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Gym" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: /Improvements/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Backlog/ })).toBeTruthy();
     expect(
       screen
         .getByRole("tab", { name: "Improve" })
@@ -754,7 +754,11 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    // Loop diagnostics always visible (owner ask 2026-07-19) — no disclosure to open.
+    // Loop diagnostics live behind the "How the capture loop is doing"
+    // disclosure (owner ask 2026-07-19b) — open it first.
+    fireEvent.click(
+      screen.getByRole("button", { name: /How the capture loop is doing/ }),
+    );
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip.textContent).toMatch(/dispatch\s*6\s*fired \/\s*3\s*fixed/);
     expect(strip.textContent).toContain("3 dead"); // overdue + fire-failed + orphaned

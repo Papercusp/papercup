@@ -186,7 +186,7 @@ export async function publishSeatOfferForDelegation(
   }
 
   const scope = await resolveScope(opts.workspaceId);
-  // Resolve WHICH hive to advertise the seat in. Default: the sole shared hive.
+  // Resolve WHICH hive(s) to touch. Default: the sole shared hive.
   // A pot-scoped delegation names its target hive/pot DIRECTLY via potSlug (P-001
   // — "the pot's hive topic" IS a shared-hive home slug); a fleet-scoped one on a
   // multi-hive workspace disambiguates via `hiveOverride` (WI-5211). Either way
@@ -195,17 +195,39 @@ export async function publishSeatOfferForDelegation(
   const sharedHomeSlugs =
     scope.kind === 'one' ? [scope.homeSlug] : scope.kind === 'many' ? scope.candidates : [];
   const disambiguator = potSlug ?? opts.hiveOverride;
-  let homeSlug: string;
+
+  // WI-5447: a SET must land in exactly ONE home — a multi-hive workspace can't
+  // be guessed, so an ambiguous SET stays a loud `no_single_shared_hive` skip
+  // (resource:delegate's `hive_required` refusal catches this earlier for the
+  // fleet-scoped case). A CANCEL (`opts.removed`) is different: the caller is
+  // revoking a LOCAL allotment and has no reason to remember which hive this
+  // machine happened to advertise into at set-time, so cancel tries EVERY
+  // shared-hive candidate the offer could be sitting in instead of refusing to
+  // disambiguate — a hive with no matching record is a harmless no-op. Without
+  // this, a revoke on a multi-hive workspace silently left the seat-offer
+  // 'open' forever (the bug this closes: resource:delegate remove:true revoked
+  // the local allotment but the published offer kept shadowing the fleet's
+  // offer picker).
+  let homeSlugCandidates: string[];
   if (disambiguator) {
     if (!sharedHomeSlugs.includes(disambiguator)) {
       return { ok: false, skipped: `hive_not_shared:${disambiguator}` };
     }
-    homeSlug = disambiguator;
+    homeSlugCandidates = [disambiguator];
+  } else if (opts.removed) {
+    homeSlugCandidates = sharedHomeSlugs;
   } else if (scope.kind === 'one') {
-    homeSlug = scope.homeSlug;
+    homeSlugCandidates = [scope.homeSlug];
   } else {
     return { ok: false, skipped: `no_single_shared_hive:${scope.kind}` };
   }
+  if (homeSlugCandidates.length === 0) {
+    return {
+      ok: false,
+      skipped: opts.removed ? 'no_shared_hive_to_cancel_in' : `no_single_shared_hive:${scope.kind}`,
+    };
+  }
+
   const actor = await resolveActor();
   if (!actor) return { ok: false, skipped: 'no_github_identity' };
 
@@ -227,75 +249,92 @@ export async function publishSeatOfferForDelegation(
     account: opts.account || AUTO_ACCOUNT,
     devicePubkey: signer.pubkey,
   });
-  const existing = await getRecord(
-    opts.workspaceId,
-    homeSlug,
-    actor.githubUserId,
-    offerId,
-    opts.sql,
-  );
-
-  if (opts.removed && !existing) {
-    // Revoked a delegation that never had a federated offer — nothing to cancel.
-    return { ok: false, skipped: 'no_offer_to_cancel' };
-  }
-
   const audience = potSlug ? (opts.audience as 'trusted-members' | 'whole-pot') : null;
-  const record: WorkOfferStoreRecord = {
-    offerId,
-    publisherGithubUserId: actor.githubUserId,
-    fleetSlug: fleetSlug ?? null,
-    potSlug: potSlug ?? null,
-    kind: 'seat',
-    status: opts.removed ? 'cancelled' : opts.paused ? 'paused' : 'open',
-    cancelReason: opts.removed ? 'delegation-removed' : null,
-    workOffer: null,
-    authorship: null,
-    seat: opts.removed
-      ? // Carry the last-published payload on cancel (the count no longer
-        // matters; a junk existing record falls back to the caller's trio).
-        (existing?.record?.seat ?? {
-          model: opts.model,
-          effort: opts.effort,
-          count: Math.max(1, Math.min(1000, Math.trunc(opts.count) || 1)),
-          accountScope: (opts.account || AUTO_ACCOUNT).toUpperCase() === AUTO_ACCOUNT ? 'auto' : 'pinned',
-          hostLabel: resolveHostLabel(),
-          audience,
-        })
-      : {
-          model: opts.model,
-          effort: opts.effort,
-          count: opts.count,
-          accountScope: (opts.account || AUTO_ACCOUNT).toUpperCase() === AUTO_ACCOUNT ? 'auto' : 'pinned',
-          hostLabel: resolveHostLabel(),
-          audience,
-        },
-    // Key position matters: the no-churn gate below compares JSON.stringify of
-    // THIS literal against a coerce-parsed record — keep coerce's field order.
-    spawnRequest: null,
-    recordVersion: (existing?.recordVersion ?? 0) + 1,
-  };
 
-  // No-churn gate: identical record (all signed fields except the version bump)
-  // ⇒ keep the stored row. Re-delegating the same trio+count is idempotent at
-  // the allotment layer and must not re-federate a byte-identical offer.
-  if (existing?.record) {
-    const prev = { ...existing.record, recordVersion: record.recordVersion };
-    if (JSON.stringify(prev) === JSON.stringify(record)) {
-      return { ok: true, stored: existing, changed: false };
+  let anyFound = false;
+  let anyChanged = false;
+  let lastStored: StoredWorkOffer | undefined;
+  let lastError: string | undefined;
+
+  for (const homeSlug of homeSlugCandidates) {
+    const existing = await getRecord(opts.workspaceId, homeSlug, actor.githubUserId, offerId, opts.sql);
+
+    if (opts.removed && !existing) continue; // nothing to cancel in this hive — try the next candidate
+    if (existing) anyFound = true;
+
+    const record: WorkOfferStoreRecord = {
+      offerId,
+      publisherGithubUserId: actor.githubUserId,
+      fleetSlug: fleetSlug ?? null,
+      potSlug: potSlug ?? null,
+      kind: 'seat',
+      status: opts.removed ? 'cancelled' : opts.paused ? 'paused' : 'open',
+      cancelReason: opts.removed ? 'delegation-removed' : null,
+      workOffer: null,
+      authorship: null,
+      seat: opts.removed
+        ? // Carry the last-published payload on cancel (the count no longer
+          // matters; a junk existing record falls back to the caller's trio).
+          (existing?.record?.seat ?? {
+            model: opts.model,
+            effort: opts.effort,
+            count: Math.max(1, Math.min(1000, Math.trunc(opts.count) || 1)),
+            accountScope: (opts.account || AUTO_ACCOUNT).toUpperCase() === AUTO_ACCOUNT ? 'auto' : 'pinned',
+            hostLabel: resolveHostLabel(),
+            audience,
+          })
+        : {
+            model: opts.model,
+            effort: opts.effort,
+            count: opts.count,
+            accountScope: (opts.account || AUTO_ACCOUNT).toUpperCase() === AUTO_ACCOUNT ? 'auto' : 'pinned',
+            hostLabel: resolveHostLabel(),
+            audience,
+          },
+      // Key position matters: the no-churn gate below compares JSON.stringify of
+      // THIS literal against a coerce-parsed record — keep coerce's field order.
+      spawnRequest: null,
+      recordVersion: (existing?.recordVersion ?? 0) + 1,
+    };
+
+    // No-churn gate: identical record (all signed fields except the version bump)
+    // ⇒ keep the stored row. Re-delegating the same trio+count is idempotent at
+    // the allotment layer and must not re-federate a byte-identical offer.
+    if (existing?.record) {
+      const prev = { ...existing.record, recordVersion: record.recordVersion };
+      if (JSON.stringify(prev) === JSON.stringify(record)) {
+        lastStored = existing;
+        if (!opts.removed) break; // SET touches exactly one home
+        continue;
+      }
     }
+
+    const res = await putRecord({
+      workspaceId: opts.workspaceId,
+      potHomeSlug: homeSlug,
+      selfGithubUserId: actor.githubUserId,
+      record,
+      signer,
+      sql: opts.sql,
+    });
+    if (!res.ok) {
+      lastError = res.error;
+      if (!opts.removed) break; // SET touches exactly one home — surface the failure
+      continue;
+    }
+    lastStored = res.stored;
+    anyChanged = true;
+    if (!opts.removed) break; // SET touches exactly one home
   }
 
-  const res = await putRecord({
-    workspaceId: opts.workspaceId,
-    potHomeSlug: homeSlug,
-    selfGithubUserId: actor.githubUserId,
-    record,
-    signer,
-    sql: opts.sql,
-  });
-  if (!res.ok) return { ok: false, error: res.error };
-  return { ok: true, stored: res.stored, changed: true };
+  if (opts.removed) {
+    if (!anyFound) return { ok: false, skipped: 'no_offer_to_cancel' };
+    if (!lastStored) return { ok: false, error: lastError ?? 'cancel_failed' };
+    return { ok: true, stored: lastStored, changed: anyChanged };
+  }
+
+  if (!lastStored) return { ok: false, error: lastError ?? 'publish_failed' };
+  return { ok: true, stored: lastStored, changed: anyChanged };
 }
 
 /**

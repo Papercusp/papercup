@@ -19,6 +19,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { harnessPath } from '../harness-paths';
 import { papercuspRoot } from '../papercusp-root';
+import { workspacesRoot } from '../workspace-registry';
 import {
   parseLearningFile,
   parseManifest,
@@ -39,6 +40,20 @@ export function builtinKnowledgePacksRoot(): string {
 
 export function installedKnowledgePacksRoot(): string {
   return join(papercuspRoot(), 'knowledge-packs');
+}
+
+/**
+ * The workspace-INDEPENDENT shared root (knowledge-pack-loop-integrity-2026-07-19
+ * P-005 / plan D-005): GLOBAL packs — today the `fleet-lessons` pack the
+ * candidate loop materializes adoptions into — live here, NOT under a
+ * per-workspace `papercuspRoot()`. Candidates are fleet-global (migration 377,
+ * data-scoping P-002), so materializing into whichever workspace happened to
+ * be ACTIVE fragmented the pack across workspace roots with independent
+ * versions (EI-18106997081327607). Resolves under `workspacesRoot()` so every
+ * workspace sees ONE copy.
+ */
+export function sharedKnowledgePacksRoot(): string {
+  return join(workspacesRoot(), 'shared', 'knowledge-packs');
 }
 
 /**
@@ -74,14 +89,44 @@ export async function migrateInstalledRoot(): Promise<
   return { moved: true, from: legacy, to: next };
 }
 
+/**
+ * Boot-time move of a fleet-lessons pack materialized under a PER-WORKSPACE
+ * installed root into the shared root (P-005). Same posture as
+ * migrateInstalledRoot: idempotent, fail-soft, and when BOTH exist the shared
+ * copy wins and the per-workspace dir is left for the owner to inspect rather
+ * than silently merged (resolution order already shadows it).
+ */
+export async function migrateFleetLessonsToSharedRoot(io: {
+  /** Test overrides; default = the real per-workspace installed / shared roots. */
+  fromRoot?: string;
+  toRoot?: string;
+} = {}): Promise<
+  { moved: false; reason: 'no-legacy' | 'already-migrated' } | { moved: true; from: string; to: string }
+> {
+  const from = join(io.fromRoot ?? installedKnowledgePacksRoot(), 'fleet-lessons');
+  const to = join(io.toRoot ?? sharedKnowledgePacksRoot(), 'fleet-lessons');
+  const exists = async (d: string) => !!(await fs.stat(d).catch(() => null));
+
+  if (!(await exists(from))) return { moved: false, reason: 'no-legacy' };
+  if (await exists(to)) return { moved: false, reason: 'already-migrated' };
+
+  await fs.mkdir(join(to, '..'), { recursive: true });
+  await fs.rename(from, to);
+  return { moved: true, from, to };
+}
+
 export interface PackRoots {
-  /** Resolution order; earlier roots win on id clash. Default builtin → installed. */
+  /** Resolution order; earlier roots win on id clash. Default builtin → shared → installed. */
   roots?: Array<{ dir: string; source: KnowledgePackSource }>;
 }
 
 function defaultRoots(): Array<{ dir: string; source: KnowledgePackSource }> {
+  // builtin → shared → installed (earlier wins on id clash): a first-party
+  // pack can never be shadowed, and the ONE shared fleet-lessons copy wins
+  // over any stale per-workspace copy left behind pre-migration (P-005).
   return [
     { dir: builtinKnowledgePacksRoot(), source: 'builtin' },
+    { dir: sharedKnowledgePacksRoot(), source: 'installed' },
     { dir: installedKnowledgePacksRoot(), source: 'installed' },
   ];
 }

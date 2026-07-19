@@ -290,12 +290,19 @@ export function runBootstrap(): void {
   // where they are and the NEXT boot retries.
   void (async () => {
     try {
-      const { migrateInstalledRoot } = await import(
+      const { migrateInstalledRoot, migrateFleetLessonsToSharedRoot } = await import(
         '@papercusp/operator-core/lib/knowledge-packs/load-packs'
       );
       const r = await migrateInstalledRoot();
       if (r.moved) {
         console.log(`[knowledge-packs] migrated installed-packs root: ${r.from} → ${r.to}`);
+      }
+      // knowledge-pack-loop-integrity P-005: the GLOBAL fleet-lessons pack
+      // moves out of the per-workspace installed root into the shared root
+      // (same idempotent/fail-soft posture as the rename migration above).
+      const fl = await migrateFleetLessonsToSharedRoot();
+      if (fl.moved) {
+        console.log(`[knowledge-packs] migrated fleet-lessons to the shared root: ${fl.from} → ${fl.to}`);
       }
     } catch (e) {
       console.warn('[knowledge-packs] installed-root migration skipped (non-fatal):', (e as Error)?.message ?? e);
