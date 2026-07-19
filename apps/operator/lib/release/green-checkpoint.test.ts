@@ -1586,6 +1586,76 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
     expect(out.absorbedToGreen).toBe(false);
     expect(called).toBe(false); // a broad red is never load-flake absorption
   });
+
+  // isolation-retry-resilience-2026-07-19 (EI-15849): a single isolated re-run can ITSELF
+  // be starved by AMBIENT host-wide load (other pots' suites, federation, concurrent SU
+  // builds) — not just the checkpoint's own 8-fork contention, which single-concurrency
+  // already neutralizes. The reproduced incident: an operator-core/endpoint-route cluster
+  // failed the gate AND its first isolation attempt while loadavg sat at 99+/128 cores, but
+  // reproduced clean once load had dropped. A bounded per-file retry is the recurrence
+  // guard: it must absorb a file that fails once then passes on retry, and it must NEVER
+  // absorb a file that keeps failing across every retry (no weakening of the fail-safe).
+  describe('isolation retry hardening (ambient-load resilience, never weakens fail-safe)', () => {
+    it('a file that FAILS on attempt 1 but PASSES on retry is absorbed to green (transient ambient-load blip)', async () => {
+      const attempts: Record<string, number> = {};
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        const key = `${workspace}::${file}`;
+        attempts[key] = (attempts[key] ?? 0) + 1;
+        // fails on the first attempt only, for EVERY originally-failing file
+        return { workspace, file, passed: attempts[key] > 1 };
+      };
+      const sleeps: number[] = [];
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      });
+      expect(out.absorbedToGreen).toBe(true);
+      expect(out.flakeSuspects).toEqual([
+        '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
+        '@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts',
+      ]);
+      // exactly one retry per originally-failing file (2 files ⇒ 2 delays)
+      expect(sleeps).toHaveLength(2);
+      expect(Object.values(attempts)).toEqual([2, 2]);
+    });
+
+    it('a file that STILL fails on every retry stays a real break — retries never manufacture a false green', async () => {
+      const attempts: Record<string, number> = {};
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        const key = `${workspace}::${file}`;
+        attempts[key] = (attempts[key] ?? 0) + 1;
+        // 'runner-aggregate' is a genuine, deterministic break — fails on EVERY attempt
+        return { workspace, file, passed: !file.includes('runner-aggregate') || attempts[key] > 1 ? !file.includes('runner-aggregate') : false };
+      };
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
+        sleep: async () => {},
+      });
+      expect(out.absorbedToGreen).toBe(false);
+      // retried up to (1 + ISOLATION_RETRY_MAX) times before giving up
+      expect(attempts['@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts']).toBe(1 + ISOLATION_RETRY_MAX);
+    });
+
+    it('respects the overall retry time budget — once exhausted, no further retries are attempted (bounded worst-case)', async () => {
+      let calls = 0;
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        calls++;
+        return { workspace, file, passed: false }; // always fails
+      };
+      let elapsed = 0;
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
+        sleep: async () => {},
+        now: () => {
+          elapsed += 1000;
+          return elapsed;
+        },
+        retryBudgetMs: 500, // exhausted immediately — the very first budget check fails
+      });
+      expect(out.absorbedToGreen).toBe(false);
+      // exactly one attempt per file — no retry once the budget is already spent
+      expect(calls).toBe(2);
+    });
+  });
 });
 
 // worker-pool-crash-absorption-2026-06-25 (WI-806): the SAFE worker-pool-crash absorber.

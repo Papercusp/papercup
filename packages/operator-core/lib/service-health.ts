@@ -544,7 +544,10 @@ export interface SupervisionEntry {
   /** Stable identifier — matches a ProbeResult.name when a probe already exists. */
   name: string;
   layer: SupervisionLayer;
-  /** systemd-user layer only: the unit name, without the `.service` suffix. */
+  /** systemd-user layer only: the unit name. Omit the `.service` suffix for a service unit
+   *  (systemctl defaults to that type); a non-default unit type (e.g. a `.timer`) MUST carry
+   *  its explicit suffix — the reconciler only strips `.service` when matching `list-units`
+   *  output (WI-5376), so an unsuffixed name never matches a `.timer` entry. */
   unit?: string;
   criticality: SupervisionCriticality;
   /** false = report-only for this entry — never auto-restarted even when the
