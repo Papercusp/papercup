@@ -157,6 +157,7 @@ export function schemaToText(inputSchema: unknown): string | null {
       maxLength?: unknown;
       minItems?: unknown;
       maxItems?: unknown;
+      pattern?: unknown;
     };
     // EI-13164: an `enum` property's JSON-schema output ALSO carries `type:"string"`
     // (zod's own toJSONSchema emits both for `z.enum([...])`, confirmed for
@@ -192,12 +193,23 @@ export function schemaToText(inputSchema: unknown): string | null {
     const lo = numOrNull(p.minimum) ?? numOrNull(p.exclusiveMinimum) ?? numOrNull(p.minLength) ?? numOrNull(p.minItems);
     const hi = numOrNull(p.maximum) ?? numOrNull(p.exclusiveMaximum) ?? numOrNull(p.maxLength) ?? numOrNull(p.maxItems);
     const bound = lo != null && hi != null ? `${lo}-${hi}` : hi != null ? `≤${hi}` : lo != null ? `≥${lo}` : '';
+    // EI-13183: same lossy-discovery bug class as EI-13181/13164, but for a
+    // `.regex()` constraint — `z.string().regex(/^[0-9a-f]{40,64}$/)` (e.g.
+    // locks:release's published_sha) emits JSON-schema `pattern` right next to
+    // `type`, invisible to schemaToText until now. A caller passed a plausible
+    // abbreviated git SHA and only learned the real 40–64 hex-char requirement
+    // from the rejection. Render the pattern inline whenever present — strictly
+    // additive; never fires for a property with no `.regex()`.
+    const pattern = typeof p.pattern === 'string' && p.pattern.length > 0 ? p.pattern : '';
     const nested = nestedObjectFieldsText(p);
     const desc = typeof p.description === 'string' ? p.description.trim() : '';
     // Never double up with the enum text (already shows its own values) — a
-    // bound is meaningless for an enum anyway (zod never emits both).
-    const boundText = bound && !(enumValues && enumValues.length > 0) ? `(${bound})` : '';
-    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${boundText}${nested}` : ''}`;
+    // bound/pattern is meaningless for an enum anyway (zod never emits either
+    // alongside one).
+    const isEnum = !!(enumValues && enumValues.length > 0);
+    const boundText = bound && !isEnum ? `(${bound})` : '';
+    const patternText = pattern && !isEnum ? `~/${pattern}/` : '';
+    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${boundText}${patternText}${nested}` : ''}`;
     parts.push(desc ? `${head} ${desc}` : head);
   }
   return parts.length > 0 ? parts.join('; ') : null;

@@ -298,6 +298,37 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     });
   });
 
+  describe('EI-13183: `.regex()` pattern constraints (same lossy-discovery class as EI-13181/13164 — a pattern is dropped just like a bound was)', () => {
+    it("locks:release's real z.string().regex(/^[0-9a-f]{40,64}$/) renders the pattern inline", () => {
+      // zod's toJSONSchema for `z.string().regex(/^[0-9a-f]{40,64}$/).optional()` emits
+      // `{ type:"string", pattern:"^[0-9a-f]{40,64}$" }` (verified live) — the exact shape
+      // that used to render as a bare `published_sha?:string`, hiding the 40-64 hex-char
+      // requirement until a call with an abbreviated SHA was rejected at runtime.
+      const txt = schemaToText({
+        properties: { published_sha: { type: 'string', pattern: '^[0-9a-f]{40,64}$' } },
+      });
+      expect(txt).toBe('published_sha?:string~/^[0-9a-f]{40,64}$/');
+    });
+
+    it('no pattern declared → no suffix (unchanged from before)', () => {
+      expect(schemaToText({ properties: { key: { type: 'string' } } })).toBe('key?:string');
+    });
+
+    it('a bound AND a pattern can compose (both suffixes render, bound first)', () => {
+      const txt = schemaToText({
+        properties: { code: { type: 'string', maxLength: 10, pattern: '^[A-Z]+$' } },
+      });
+      expect(txt).toBe('code?:string(≤10)~/^[A-Z]+$/');
+    });
+
+    it('an enum never gets a pattern suffix even if pattern were also present (zod never emits both, but stay defensive)', () => {
+      const txt = schemaToText({
+        properties: { mode: { type: 'string', enum: ['a', 'b'], pattern: '^[ab]$' } },
+      });
+      expect(txt).toBe('mode?:enum(a|b)');
+    });
+  });
+
   it('EI-13190: names a nested object property\'s own fields, marking its required ones', () => {
     // Mirrors locks:acquire's `wait: z.object({ max_sec }).optional()` — the
     // exact shape that used to render as bare `wait?:object`, hiding that
