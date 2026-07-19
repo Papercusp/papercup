@@ -12,6 +12,7 @@ import {
   estimateContextTokens,
   fallbackTranscriptFresh,
   newestTranscriptUnderOwner,
+  parseLaunchCompactionLimitArgv,
   tokensFromFileSize,
 } from './compaction-usage';
 
@@ -201,5 +202,43 @@ describe('fallbackTranscriptFresh (the P-016 fallback freshness gate)', () => {
 
   it('fail-soft false on a missing path (never throws)', () => {
     expect(fallbackTranscriptFresh(join(dir, 'nope.jsonl'))).toBe(false);
+  });
+});
+
+// per-member-declarative-launch-specs P-005: the explicit per-member compaction
+// limit rides the recorded launch argv (a psu session has no spawned_agents row,
+// and adv_sessions.launch_argv is already this seeding path's per-session truth).
+// The DB read is integration-covered; this pins the PARSING contract.
+describe('parseLaunchCompactionLimitArgv (psu --compaction-limit off the recorded argv)', () => {
+  it('reads the = form psu emits', () => {
+    expect(parseLaunchCompactionLimitArgv(['psu', '--no-picker', '--compaction-limit=200000'])).toBe(200_000);
+  });
+
+  it('reads the space form a hand-composed argv may use', () => {
+    expect(parseLaunchCompactionLimitArgv(['psu', '--compaction-limit', '150000'])).toBe(150_000);
+  });
+
+  it('returns null when the launch named no limit (the common case)', () => {
+    expect(parseLaunchCompactionLimitArgv(['psu', '--no-picker', '--model=opus[1m]'])).toBeNull();
+  });
+
+  it('degrades to null on a non-array / absent argv rather than throwing', () => {
+    expect(parseLaunchCompactionLimitArgv(null)).toBeNull();
+    expect(parseLaunchCompactionLimitArgv(undefined)).toBeNull();
+    expect(parseLaunchCompactionLimitArgv('--compaction-limit=200000')).toBeNull();
+  });
+
+  it('DROPS a malformed value instead of coercing it — the model default is the safe read', () => {
+    expect(parseLaunchCompactionLimitArgv(['psu', '--compaction-limit=lots'])).toBeNull();
+    expect(parseLaunchCompactionLimitArgv(['psu', '--compaction-limit=-5'])).toBeNull();
+    expect(parseLaunchCompactionLimitArgv(['psu', '--compaction-limit='])).toBeNull();
+  });
+
+  it('does not treat a --compaction-limit with no following token as a match', () => {
+    expect(parseLaunchCompactionLimitArgv(['psu', '--compaction-limit'])).toBeNull();
+  });
+
+  it('ignores non-string argv entries (launch_argv is JSON — it can hold anything)', () => {
+    expect(parseLaunchCompactionLimitArgv([1, null, { a: 1 }, '--compaction-limit=90000'])).toBe(90_000);
   });
 });

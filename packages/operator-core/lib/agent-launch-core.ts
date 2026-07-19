@@ -341,7 +341,10 @@ export function foldMemberSpec(
     memberVal !== undefined ? memberVal : baseVal;
   return {
     ...base,
-    agent: pick(spec.agent, base.agent),
+    // `agent` is the one REQUIRED field on the base — `pick` widens to
+    // `string | undefined`, so narrow it back: an unset member agent inherits the
+    // fleet's, it never clears it.
+    agent: spec.agent ?? base.agent,
     model: pick(spec.model, base.model),
     effort: pick(spec.effort, base.effort),
     account: pick(spec.account, base.account),

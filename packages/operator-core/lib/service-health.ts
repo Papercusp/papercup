@@ -90,6 +90,18 @@ export interface ProbeResult {
   note?: string;
   /** Desktop only: count of recent ERROR toasts (toastLog signal). */
   recentErrors?: number;
+  /**
+   * EI-13163: the exact address that was probed for this entry (e.g.
+   * `http://127.0.0.1:3070/api/desktop/version`) — set for every HTTP-probed
+   * endpoint (`probeEndpoint`, so `operator`/`vite`/`scout`/`embed-sidecar` all
+   * carry it). Portless processes (desktop, bg-host-ticker, bg-host-code,
+   * substrate-sidecar) have no HTTP address and leave this undefined. Before
+   * this field existed, `dev:service_health` told you a service NAME was
+   * up/down without ever exposing the URL that proved it, forcing an agent to
+   * guess a port (or fall back to a raw datastore read) instead of reading the
+   * canonical address straight off the probe result.
+   */
+  url?: string;
 }
 
 /**
@@ -149,6 +161,9 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
   // is the expected/normal state, not an outage — mark it present:false so
   // diffHealth/collectServiceDownSignals never alert or escalate it, while the
   // raw up:false result still flows through to dev:service_health for visibility.
+  // EI-13163: stamp the probed URL on every branch so a `dev:service_health`
+  // reader gets the canonical address alongside the up/down verdict, instead
+  // of having to already know (or guess) which port a service name maps to.
   const markIfOnDemand = (r: ProbeResult): ProbeResult =>
     !r.up && spec.onDemand
       ? { ...r, present: false, note: r.note ? `${r.note} (on-demand dev layer, not currently running)` : 'on-demand dev layer, not currently running' }
@@ -162,6 +177,7 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
       up: false,
       status: null,
       latencyMs: Date.now() - start,
+      url: spec.url,
       note: `connect refused or did not complete within ${CONNECT_PREFLIGHT_MS}ms preflight (not a slow-response case)`,
     });
   }
@@ -170,9 +186,9 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
   try {
     const res = await fetch(spec.url, { method: 'GET', signal: ctl.signal });
     // < 500 = "up" (a 401/404 still means the server is answering); 5xx = down.
-    return markIfOnDemand({ name: spec.name, up: res.status < 500, status: res.status, latencyMs: Date.now() - start });
+    return markIfOnDemand({ name: spec.name, up: res.status < 500, status: res.status, latencyMs: Date.now() - start, url: spec.url });
   } catch {
-    return markIfOnDemand({ name: spec.name, up: false, status: null, latencyMs: Date.now() - start });
+    return markIfOnDemand({ name: spec.name, up: false, status: null, latencyMs: Date.now() - start, url: spec.url });
   } finally {
     clearTimeout(timer);
   }

@@ -773,6 +773,59 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
     expect(composed2).not.toContain('auth migration');
   });
 
+  // per-member-declarative-launch-specs P-002: `members[]` generalizes the
+  // brief-only per-member path above to EVERY setting.
+  it('gives each members[i] its own model/account, falling back to the fleet arg when unset', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Per-Member Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 3,
+        model: 'sonnet',
+        members: [
+          { model: 'opus[1m]', effort: 'high' },
+          { account: 'auto' },
+          // member 3 omitted entirely -> pure fleet-wide fallthrough
+        ],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    const cmd = (i: number) => spawnConsoleMock.mock.calls[i][0].envelope.greetingCmd as string;
+    // Member 1: its own model, with effort folded ONTO the spec (psu has no --effort).
+    expect(cmd(0)).toContain("--model='opus[1m]:high'");
+    expect(cmd(0)).not.toContain('--effort');
+    // Member 2: inherits the fleet model, overrides only the account.
+    expect(cmd(1)).toContain('--model=sonnet');
+    expect(cmd(1)).toContain('--account=auto');
+    // Member 3: no spec at all -> the flat fleet-wide args, unchanged.
+    expect(cmd(2)).toContain('--model=sonnet');
+  });
+
+  it('composes members[i].brief inline text into that member OWN context file', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Per-Member Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        members: [{ brief: 'You own the flaky-test triage lane.' }, {}],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    const fs = require('node:fs');
+    const composed = fs.readFileSync(payload.perMemberLaunchContextPaths[0], 'utf8');
+    expect(composed).toContain('You own the flaky-test triage lane.');
+  });
+
   it('falls back to the shared baseline for members BEYOND the perMemberLaunchContext array — never errors', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));

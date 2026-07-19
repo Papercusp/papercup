@@ -139,6 +139,26 @@ describe('clampCompactionLimit (the default is also the CEILING)', () => {
   it('floors any request at MIN_COMPACTION_LIMIT_TOKENS', () => {
     expect(clampCompactionLimit(1_000, 'opus[1m]')).toBe(MIN_COMPACTION_LIMIT_TOKENS);
   });
+
+  // per-member-declarative-launch-specs P-005: a fleet MEMBER is governed by the
+  // leaner member ceiling, so an explicit request (psu --compaction-limit, or its
+  // own config:set-compaction-limit) must not buy it a leader's headroom.
+  it('applies the fleet-member ceiling when the requester is known to be a member', () => {
+    expect(clampCompactionLimit(400_000, 'opus[1m]', { fleetMember: true })).toBe(
+      COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    );
+    expect(clampCompactionLimit(900_000, null, { fleetMember: true })).toBe(
+      COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    );
+  });
+
+  it('lets a member lower its limit freely — the cap is a ceiling, not a target', () => {
+    expect(clampCompactionLimit(120_000, 'opus[1m]', { fleetMember: true })).toBe(120_000);
+  });
+
+  it('omitting opts keeps the pre-existing leader/solo ceiling (no caller behavior change)', () => {
+    expect(clampCompactionLimit(400_000, 'opus[1m]')).toBe(COMPACTION_LIMIT_DEFAULT_1M_CAP);
+  });
 });
 
 // The TS twin of psu-launcher `validateModelSpec` (WI-1979 / WI-1993). Same vector

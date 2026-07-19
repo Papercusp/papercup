@@ -41,7 +41,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
-import { validateCloudModelSpec } from '../../agent-config-constants';
+import { MIN_COMPACTION_LIMIT_TOKENS, validateCloudModelSpec } from '../../agent-config-constants';
 import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
@@ -72,7 +72,12 @@ import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
-import { memberLaunchCommand as sharedMemberLaunchCommand } from '../../agent-launch-core';
+import {
+  foldMemberSpec,
+  memberLaunchCommand as sharedMemberLaunchCommand,
+  type FleetMemberDefaults,
+  type MemberSpec,
+} from '../../agent-launch-core';
 export type { MemberLaunchOpts } from '../../agent-launch-core';
 // type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
@@ -81,6 +86,62 @@ import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 /** Opening more than this many desktop windows in one call is heavy + almost always
  *  a mistake — mirrors capability:terminal's MAX_TERMINALS. */
 const MAX_MEMBERS = 12;
+
+/**
+ * The DECLARATIVE per-member launch spec (per-member-declarative-launch-specs
+ * P-001/P-002) — the wire shape of `MemberSpec` from agent-launch-core.
+ *
+ * Every field is optional and OVERRIDES the fleet-wide arg of the same name for
+ * that member only; an unset field falls through (member > fleet > system, D-001).
+ * `brief` is the inline-text twin of `perMemberLaunchContext`'s file path — it is
+ * composed to a launch-context file for that member, so a leader can differentiate
+ * members without writing N files first.
+ */
+const memberSpecSchema = z
+  .object({
+    model: z.string().optional().describe("psu --model: this member's model spec, overriding the fleet `model`."),
+    effort: z
+      .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+      .optional()
+      .describe(
+        "Reasoning effort for this member. Composed onto the model spec (`<model>:<effort>`) — psu has no separate --effort flag — so it REQUIRES a model (this member's or the fleet's).",
+      ),
+    account: z.string().optional().describe("psu --account: this member's account routing (<pool-id>|auto|default)."),
+    carry: z.enum(['warm', 'cold']).optional().describe("This member's warm/cold auto-mode carry."),
+    contextSize: z.enum(['full', 'trimmed']).optional().describe("psu --context-size for this member."),
+    compactionLimit: z
+      .number()
+      .int()
+      .min(MIN_COMPACTION_LIMIT_TOKENS)
+      .optional()
+      .describe(
+        `psu --compaction-limit: this member's soft compaction limit in TOKENS (>= ${MIN_COMPACTION_LIMIT_TOKENS}). Clamped down to the fleet-role ceiling at seed time — it can lower a member's limit, never raise it past its cap.`,
+      ),
+    role: z.string().optional().describe("psu --role for this member."),
+    agent: z.string().optional().describe("psu --agent (claude|omp|codex) for this member."),
+    launchContext: z.string().optional().describe("psu --launch-context: this member's own brief FILE path."),
+    brief: z
+      .string()
+      .optional()
+      .describe(
+        "Inline brief TEXT for this member — composed to its own launch-context file. Use instead of `launchContext` when you have the text, not a file. Takes precedence over this member's `perMemberLaunchContext` entry.",
+      ),
+    claimKinds: z
+      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
+      .min(1)
+      .max(5)
+      .optional()
+      .describe("Per-member claim lane — seeds THIS member's claim spec, overriding the fleet-level `claimKinds`."),
+    headless: z.boolean().optional().describe('Launch this member headless (no window).'),
+    addDir: z.array(z.string()).optional().describe("psu --add-dir entries for this member."),
+    allowSubagents: z.boolean().optional().describe('psu --allow-subagents for this member.'),
+    brain: z.boolean().optional().describe('psu --brain for this member.'),
+    feature: z.string().optional().describe('psu --feature for this member.'),
+    profile: z.string().optional().describe('psu --profile for this member.'),
+    display: z.string().optional().describe("Open this member's terminal on this X display."),
+    extraArgs: z.array(z.string()).optional().describe("Extra verbatim psu args for this member."),
+  })
+  .strict();
 
 /** The operator's own base URL for the spawned terminal's API-callback env. Mirrors
  *  capability:terminal's resolver (strip a trailing /api/mcp back to the origin). */
@@ -921,6 +982,13 @@ export default defineTool({
       .describe(
         'Per-member brief paths, index-aligned to member number (entry 0 → member 1, …) — each member gets its OWN composed context. Fewer entries than members opened ⇒ the rest fall back to `launchContext`/baseline, never an error.',
       ),
+    members: z
+      .array(memberSpecSchema)
+      .max(MAX_MEMBERS)
+      .optional()
+      .describe(
+        'DECLARATIVE per-member config, index-aligned to member number (entry 0 → member 1, …). Each set field OVERRIDES the fleet-wide arg for THAT member only; an unset field falls through to the fleet arg, then the system default. Fewer entries than members opened ⇒ the rest use the flat fleet-wide args, never an error. This generalizes `perMemberLaunchContext` (brief-only) to every setting — use it to run one fleet where members differ in model/effort/account/limit/lane.',
+      ),
     profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
     contextSize: z
       .enum(['full', 'trimmed'])
@@ -1681,10 +1749,17 @@ export default defineTool({
     // for ONE member falls that member back to the shared `effectiveLaunchContext`
     // (never blocks the whole launch); every failure is collected + surfaced.
     const perMemberBriefsRaw = args.perMemberLaunchContext;
-    const perMemberLaunchContextPaths: (string | null)[] | null = perMemberBriefsRaw?.length ? [] : null;
+    // P-002: `members[i].brief` (inline TEXT) and `members[i].launchContext` (a path)
+    // are the declarative twins of perMemberLaunchContext, so any of the three arms
+    // the per-member compose path below. Inline brief text wins over a path entry —
+    // the caller supplied the actual words, not a pointer to them.
+    const memberBriefText = (i: number): string | null => args.members?.[i]?.brief?.trim() || null;
+    const anyMemberBrief = (args.members ?? []).some((m) => m?.brief?.trim());
+    const perMemberBriefsActive = Boolean(perMemberBriefsRaw?.length) || anyMemberBrief;
+    const perMemberLaunchContextPaths: (string | null)[] | null = perMemberBriefsActive ? [] : null;
     const perMemberReadErrors: string[] = [];
     let memberLaunchContextPathForIndex: (i: number) => string | undefined = () => effectiveLaunchContext;
-    if (perMemberBriefsRaw?.length) {
+    if (perMemberBriefsActive) {
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       try {
         mkdirSync(ctxDir, { recursive: true });
@@ -1693,9 +1768,10 @@ export default defineTool({
       }
       const resolved: (string | undefined)[] = [];
       for (let i = 0; i < openCount; i++) {
-        const ownPath = perMemberBriefsRaw[i]?.trim();
-        let ownBriefText: string | null = null;
-        if (ownPath) {
+        const ownPath = perMemberBriefsRaw?.[i]?.trim();
+        // Inline `members[i].brief` short-circuits the file read entirely.
+        let ownBriefText: string | null = memberBriefText(i);
+        if (!ownBriefText && ownPath) {
           try {
             ownBriefText = readFileSync(ownPath, 'utf8');
           } catch (e: any) {
@@ -1762,28 +1838,45 @@ export default defineTool({
     // EI-8985: build each member's OWN command — identical for every member unless
     // perMemberLaunchContext gave member i its own composed context file, in which
     // case only its `--launch-context` differs.
-    const memberCommands = Array.from({ length: openCount }, (_v, i) =>
-      memberLaunchCommand({
+    // per-member-declarative-launch-specs P-002: the fleet-wide launch defaults each
+    // member's OWN spec folds over (D-001 precedence: member > fleet > system). Before
+    // this, every member necessarily shared one command apart from --launch-context;
+    // now `members[i]` can differ in model/effort/account/limit/role/lane/anything.
+    const fleetDefaults: FleetMemberDefaults = {
+      agent: effAgent,
+      headless: args.headless || undefined,
+      account: effAccount,
+      workspace: args.workspace?.trim() || undefined,
+      role: args.role?.trim() || undefined,
+      model: effModel,
+      seat: seatPin?.ref,
+      feature: args.feature?.trim() || undefined,
+      profile: args.profile?.trim() || undefined,
+      contextSize: args.contextSize,
+      carry: args.carry,
+      claimKinds: args.claimKinds,
+      brain: args.brain || undefined,
+      addDir: args.addDir,
+      allowSubagents: args.allowSubagents || undefined,
+      extraArgs: args.extraArgs,
+    };
+    const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
+    /** The folded, fully-resolved config for member `i` (0-indexed). */
+    const resolvedMemberConfig = (i: number): FleetMemberDefaults =>
+      foldMemberSpec(fleetDefaults, memberSpecs[i]);
+    const memberCommands = Array.from({ length: openCount }, (_v, i) => {
+      const folded = resolvedMemberConfig(i);
+      return memberLaunchCommand({
+        ...folded,
         fleetSlug,
-        agent: effAgent,
         harness,
         plan: args.plan,
-        headless: args.headless || undefined,
-        account: effAccount,
-        workspace: args.workspace?.trim() || undefined,
-        role: args.role?.trim() || undefined,
-        model: effModel,
-        seat: seatPin?.ref,
-        feature: args.feature?.trim() || undefined,
-        launchContext: memberLaunchContextPathForIndex(i),
-        profile: args.profile?.trim() || undefined,
-        contextSize: args.contextSize,
-        brain: args.brain || undefined,
-        addDir: args.addDir,
-        allowSubagents: args.allowSubagents || undefined,
-        extraArgs: args.extraArgs,
-      }),
-    );
+        // The member's own brief file wins over the shared/per-member-path fallback;
+        // `carry` and `claimKinds` are NOT psu flags (they shape the member baseline
+        // and the claim spec respectively), so memberLaunchCommand ignores them.
+        launchContext: folded.launchContext ?? memberLaunchContextPathForIndex(i),
+      });
+    });
     // Back-compat: `command` (singular) is reported/reused where every member is
     // identical (the common case — no perMemberLaunchContext).
     const command = memberCommands[0] ?? '';

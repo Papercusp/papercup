@@ -94,9 +94,9 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe dev services now (:3070, :3055, :3350, Tauri desktop, bg-host ticker) and return the standard runtime fields { configured, effective, evidence, rootCause, nextVerb } alongside per-service latency/status and supervisor flap state. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. First read for connection-refused or process-running-with-no-window symptoms.',
+    'Probe dev services now (:3070, :3055, :3350, Tauri desktop, bg-host ticker) and return the standard runtime fields { configured, effective, evidence, rootCause, nextVerb } alongside per-service latency/status/URL and supervisor flap state. Each HTTP-probed entry in `services` carries the exact `url` it hit (e.g. operator → http://127.0.0.1:3070/...) — read that instead of guessing a port. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. First read for connection-refused, process-running-with-no-window, or "which port is the operator on" symptoms.',
   guidance: {
-    when: 'Confirm which dev services are up before testing against one; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
+    when: 'Confirm which dev services are up before testing against one; find the canonical local URL/port for the operator or vite instead of guessing; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
     returns: "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }",

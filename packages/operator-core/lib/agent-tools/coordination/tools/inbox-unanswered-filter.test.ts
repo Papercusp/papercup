@@ -1,0 +1,47 @@
+/**
+ * inbox-unanswered-filter.test.ts — filterInboxByUnanswered, the coord:inbox
+ * `unanswered_only` filter (EI-13159: coord:inbox had no way to directly
+ * fetch/filter to the directed messages fleet:assignments'
+ * `unanswered_directed` counter flags — an operator had to fetch + classify a
+ * broad inbox to find the flagged message). Pins the pure filtering
+ * behaviour; the IO wiring (fetchUnansweredDirected) is exercised by the
+ * existing unanswered-directed.test.ts + fleet/assignments' own tests, which
+ * this filter deliberately reuses rather than re-deriving.
+ */
+import { describe, it, expect } from 'vitest';
+import { filterInboxByUnanswered } from './inbox';
+
+type E = { msg_id: string; from?: unknown };
+const rows: E[] = [
+  { msg_id: 'a', from: 'leader' },
+  { msg_id: 'b', from: 'system:doc-freshness' },
+  { msg_id: 'c', from: 'leader' },
+  { msg_id: 'd', from: 'peer' },
+  { msg_id: 'e' }, // no from at all
+];
+
+describe('filterInboxByUnanswered (EI-13159)', () => {
+  it('keeps only entries whose msg_id is in the unanswered set', () => {
+    const unanswered = new Set(['a', 'd']);
+    expect(filterInboxByUnanswered(rows, unanswered).map((r) => r.msg_id)).toEqual(['a', 'd']);
+  });
+
+  it('an empty unanswered set (the fail-safe lookup-failure case) filters to nothing', () => {
+    expect(filterInboxByUnanswered(rows, new Set())).toEqual([]);
+  });
+
+  it('undefined/null unansweredMsgIds is a NO-OP — returns the input unchanged (same reference)', () => {
+    expect(filterInboxByUnanswered(rows, undefined)).toBe(rows);
+    expect(filterInboxByUnanswered(rows, null)).toBe(rows);
+  });
+
+  it('preserves ascending order (no re-sort)', () => {
+    const unanswered = new Set(['c', 'a']);
+    expect(filterInboxByUnanswered(rows, unanswered).map((r) => r.msg_id)).toEqual(['a', 'c']);
+  });
+
+  it('a msg_id in the set that no longer exists in the inbox window is simply absent from the result', () => {
+    const unanswered = new Set(['ghost-id']);
+    expect(filterInboxByUnanswered(rows, unanswered)).toEqual([]);
+  });
+});

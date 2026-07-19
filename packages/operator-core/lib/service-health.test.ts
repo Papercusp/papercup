@@ -264,6 +264,55 @@ describe('probeEndpoint — onDemand endpoints report present:false when down (E
   });
 });
 
+describe('probeEndpoint — stamps the probed url on every branch (EI-13163)', () => {
+  it('an UP endpoint carries the exact url that was probed', async () => {
+    const server = net.createServer((socket) => socket.on('data', () => {}));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const fetchSpy = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+      vi.stubGlobal('fetch', fetchSpy);
+      const url = `http://127.0.0.1:${port}/`;
+      const result = await probeEndpoint({ name: 'operator', url, timeoutMs: 200 });
+      expect(result.url).toBe(url);
+    } finally {
+      server.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a TCP-preflight-refused endpoint still carries the url (fast-fail branch)', async () => {
+    const url = 'http://127.0.0.1:1/';
+    const result = await probeEndpoint({ name: 'operator', url, timeoutMs: 50 });
+    expect(result.up).toBe(false);
+    expect(result.url).toBe(url);
+  });
+
+  it('an HTTP-fetch-throw endpoint still carries the url (catch branch)', async () => {
+    const server = net.createServer((socket) => socket.on('data', () => {}));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const fetchSpy = vi.fn(() => Promise.reject(new Error('boom')));
+      vi.stubGlobal('fetch', fetchSpy);
+      const url = `http://127.0.0.1:${port}/`;
+      const result = await probeEndpoint({ name: 'operator', url, timeoutMs: 200 });
+      expect(result.up).toBe(false);
+      expect(result.url).toBe(url);
+    } finally {
+      server.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an onDemand endpoint marked present:false still carries the url', async () => {
+    const url = 'http://127.0.0.1:1/';
+    const result = await probeEndpoint({ name: 'vite', url, onDemand: true, timeoutMs: 50 });
+    expect(result.present).toBe(false);
+    expect(result.url).toBe(url);
+  });
+});
+
 describe('tcpPreflight — fast connect budget, separate from the HTTP response budget (EI-7462)', () => {
   it('a refused connection (nothing listening) reports unreachable well under the response timeout', async () => {
     const server = net.createServer();

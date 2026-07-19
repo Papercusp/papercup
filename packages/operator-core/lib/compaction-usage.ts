@@ -749,27 +749,36 @@ export async function resolveLaunchCompactionLimitForOwner(ownerId: string): Pro
        ORDER BY started_at DESC
        LIMIT 1
     `;
-    const argv = rows[0]?.launch_argv;
-    if (!Array.isArray(argv)) return null;
-    // Both wire forms, mirroring the --model scan above: psu emits the `=` form,
-    // but a hand-run launch may use the space form.
-    for (let i = 0; i < argv.length; i++) {
-      const a = argv[i];
-      if (typeof a !== 'string') continue;
-      let raw: string | null = null;
-      if (a.startsWith('--compaction-limit=')) raw = a.slice('--compaction-limit='.length).trim();
-      else if (a === '--compaction-limit' && typeof argv[i + 1] === 'string') raw = (argv[i + 1] as string).trim();
-      if (!raw) continue;
-      const n = Number(raw);
-      // A malformed value is DROPPED, not defaulted to something arbitrary — psu
-      // already rejects it at parse time, so anything unparseable here is a
-      // hand-edited argv, and falling through to the model default is the safe read.
-      if (Number.isFinite(n) && n > 0) return Math.floor(n);
-    }
-    return null;
+    return parseLaunchCompactionLimitArgv(rows[0]?.launch_argv);
   } catch {
     return null;
   }
+}
+
+/**
+ * The pure argv scan behind {@link resolveLaunchCompactionLimitForOwner} — split
+ * out so the parsing contract is unit-testable without a database.
+ *
+ * Accepts both wire forms (mirroring the `--model` scan below): psu emits
+ * `--compaction-limit=N`, but a hand-composed argv may use the space form. A
+ * malformed value is DROPPED rather than coerced — psu rejects bad input at parse
+ * time, so anything unparseable here came from a hand-edited argv, and falling
+ * through to the model-derived default is the safe read. Returns null when the
+ * launch named no limit.
+ */
+export function parseLaunchCompactionLimitArgv(argv: unknown): number | null {
+  if (!Array.isArray(argv)) return null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (typeof a !== 'string') continue;
+    let raw: string | null = null;
+    if (a.startsWith('--compaction-limit=')) raw = a.slice('--compaction-limit='.length).trim();
+    else if (a === '--compaction-limit' && typeof argv[i + 1] === 'string') raw = (argv[i + 1] as string).trim();
+    if (!raw) continue;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return null;
 }
 
 /**
