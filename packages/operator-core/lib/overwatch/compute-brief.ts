@@ -364,6 +364,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       detail: `Observation lane flat (0 this window) while ${bees.running} bee(s) run — the fleet has stopped recording sensor readings.`,
       suggestedAction: {
         type: 'observe',
+        conditionKey: anomalyConditionKey('observation-dark'),
         message: `Observation lane flat while ${bees.running} bee(s) active — the turn-end reflection step may be getting skipped fleet-wide.`,
       },
     });

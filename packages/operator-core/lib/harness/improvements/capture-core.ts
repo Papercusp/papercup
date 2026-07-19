@@ -77,12 +77,23 @@ export interface CaptureImprovementInput {
    */
   dedupScope?: 'all' | 'open';
   /**
-   * Stable watchdog signal identity (`'<source>:<key>'` — watchdog-audit
-   * P-004 / D-001). Stamped into `payload.watchdogKey` so cross-tick dedup is an
-   * exact indexed lookup instead of a fuzzy title match. Also sharpens the title
-   * net here: a candidate carrying a DIFFERENT watchdogKey is a different signal
-   * and never declines this capture (kills the subset-title false-dedup edge —
-   * a nested-path red-test title token-subsetting another).
+   * Stable signal identity (`'<source>:<key>'`, or `overwatch:<anomalyKind>` from
+   * the Kettle brief — watchdog-audit P-004 / D-001; EI-15448). Stamped into
+   * `payload.watchdogKey` so cross-tick dedup is an exact indexed lookup instead
+   * of a fuzzy title match. For a NON-observation capture this sharpens the title
+   * net: a candidate carrying a DIFFERENT watchdogKey is a different signal and
+   * never declines this capture (kills the subset-title false-dedup edge — a
+   * nested-path red-test title token-subsetting another).
+   *
+   * For an `lane:'observation'` capture (EI-15448), this field does something
+   * stronger: observations otherwise skip dedup entirely by design (recurrence
+   * IS the signal Scout clusters — see `isObservation` below), so a repeat
+   * reading of an unresolved condition minted a fresh open row every call,
+   * unbounded. Passing `watchdogKey` on an observation capture COALESCES: a
+   * still-OPEN prior observation carrying the SAME key is updated in place
+   * (`payload.repeatCount` bumped, `lastSeenAt` refreshed, title/body replaced
+   * with this call's latest reading) instead of creating a new row. Omit it for
+   * a genuinely novel/one-off observation, which still always re-files.
    */
   watchdogKey?: string;
   /**
@@ -166,7 +177,7 @@ export interface PossibleDuplicate {
 export interface CaptureImprovementResult {
   ok: true;
   created: boolean;
-  reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence';
+  reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence' | 'coalesced';
   /** Native engineer_issues storage kind. Always agrees with issue.kind. */
   kind?: 'bug' | 'change';
   /** Caller-facing capture classification; `feature` is stored as kind=`change`. */

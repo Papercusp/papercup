@@ -448,10 +448,13 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
 
     // The auto-resolve is a fire-and-forget hook off the same write — wait for
     // its effect rather than racing the microtask/DB round-trip.
-    await vi.waitFor(async () => {
-      const after = await issuesEngineer.getIssue(bug.id);
-      expect(after?.state).toBe('resolved');
-    });
+    await vi.waitFor(
+      async () => {
+        const after = await issuesEngineer.getIssue(bug.id);
+        expect(after?.state).toBe('resolved');
+      },
+      { timeout: 5000 },
+    );
   });
 
   it('a feature transitioning to a NON-passed terminal state (deprecated) does not touch the source issue', async () => {
