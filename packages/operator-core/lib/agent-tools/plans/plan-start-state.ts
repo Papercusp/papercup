@@ -24,7 +24,7 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 export type StartStatus = 'started' | 'paused' | 'done' | null;
 
@@ -64,11 +64,19 @@ export async function clearStartedForTerminalPlan(
   planSlug: string,
 ): Promise<{ cleared: boolean }> {
   const now = new Date().toISOString();
-  const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
+  // harness_slug, plan_slug) — workspace_id is only knowable in-process via
+  // activeWorkspaceId(). The old literal DEFAULT_WORKSPACE_ID matched ZERO
+  // rows for any non-default tenant, so a plan going terminal never cleared
+  // its started/paused row (best-effort by design, but silently so — a
+  // terminal plan could keep reporting started/paused until the next
+  // plans:list self-heal).
+  const workspaceId = activeWorkspaceId();
+  const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<{ plan_slug: string }[]>`
       UPDATE harness_shared.harness_plans
          SET op_status = 'done', op_updated_at = ${now}
-       WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+       WHERE workspace_id = ${workspaceId}
          AND harness_slug  = ${harnessSlug}
          AND plan_slug     = ${planSlug}
          AND op_status IN ('started', 'paused')

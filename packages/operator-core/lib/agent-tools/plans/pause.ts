@@ -16,7 +16,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -52,6 +52,13 @@ export default defineTool({
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
+    // harness_slug, plan_slug). workspace_id is only knowable in-process via
+    // activeWorkspaceId() — the old literal DEFAULT_WORKSPACE_ID matched ZERO
+    // rows for any non-default tenant, so every real pause fell into the
+    // notStarted:true branch below and silently no-opped while reporting
+    // ok:true.
+    const workspaceId = activeWorkspaceId();
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,
@@ -60,11 +67,11 @@ export default defineTool({
         // op_status is null until a plan has been started — so a pause that matches
         // no started/paused/done op_status means "never started" (the row exists as
         // the plan itself, but it was never operationally started).
-        const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+        const rows = await withWorkspace(workspaceId, async (tx) => {
           return tx<{ op_status: string; op_updated_at: string }[]>`
             UPDATE harness_shared.harness_plans
                SET op_status = 'paused', op_updated_at = ${now}
-             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+             WHERE workspace_id = ${workspaceId}
                AND harness_slug  = ${harnessSlug}
                AND plan_slug     = ${slug}
                AND op_status IS NOT NULL

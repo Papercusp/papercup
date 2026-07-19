@@ -20,6 +20,7 @@ import {
   listPlanRows,
   getPlanRow,
   planItemsForRow,
+  TERMINAL_ITEM_STATUSES,
   type PlanRow,
 } from "./source";
 import { ctxToPlanSourceOpts } from "./_ctx-opts";
@@ -51,10 +52,6 @@ import { cachedRead, type CachedReadCtx } from "../../cache";
  * soft TTL only bounds staleness for the un-triggered issue-block overlay (coord_links).
  */
 const PLANS_ITEMS_SOFT_TTL_MS = 45_000;
-
-/** Item statuses that are themselves terminal — the only item statuses worth
- *  surfacing from a terminal (shipped/superseded) plan in a cross-plan query. */
-const TERMINAL_ITEM_STATUSES = new Set<string>(["done", "dropped"]);
 
 /**
  * Cross-plan exclusion guard. A terminal-status plan (shipped/superseded) has no

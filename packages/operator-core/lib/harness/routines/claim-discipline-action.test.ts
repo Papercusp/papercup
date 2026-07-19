@@ -7,6 +7,7 @@ import {
   NUDGE_PREFIX,
   filterRecentlyCompletedTargets,
   filterStoreBackedTargets,
+  filterTerminalPlanTargets,
   filterParkedTargets,
   filterHealthyLoopTargets,
   filterDrainedTargets,
@@ -167,6 +168,61 @@ describe('filterStoreBackedTargets — EI-7402', () => {
     const { keep, skippedStoreAbsent } = filterStoreBackedTargets(targets, workspaceByAgent, existsByKey);
     expect(keep.map((t) => t.agentId)).toEqual(['a']);
     expect(skippedStoreAbsent).toBe(1);
+  });
+});
+
+describe('filterTerminalPlanTargets — EI-16176', () => {
+  const t = (agentId: string, declaredPlanSlug = 'plan-a') => ({ agentId, declaredPlanSlug });
+
+  it('drops a target whose declared plan has SHIPPED', () => {
+    const targets = [t('a')];
+    const workspaceByAgent = new Map([['a', 'ws1']]);
+    const terminalityByKey = new Map([
+      [storeExistsKey('ws1', 'plan-a'), { status: 'shipped', hasOpenItems: false }],
+    ]);
+    const { keep, skippedTerminalPlan } = filterTerminalPlanTargets(targets, workspaceByAgent, terminalityByKey);
+    expect(keep).toEqual([]);
+    expect(skippedTerminalPlan).toBe(1);
+  });
+
+  it('drops a target whose declared plan has been SUPERSEDED', () => {
+    const targets = [t('a')];
+    const workspaceByAgent = new Map([['a', 'ws1']]);
+    const terminalityByKey = new Map([
+      [storeExistsKey('ws1', 'plan-a'), { status: 'superseded', hasOpenItems: false }],
+    ]);
+    const { keep, skippedTerminalPlan } = filterTerminalPlanTargets(targets, workspaceByAgent, terminalityByKey);
+    expect(keep).toEqual([]);
+    expect(skippedTerminalPlan).toBe(1);
+  });
+
+  it('drops a target whose plan is still active-status but has zero OPEN items', () => {
+    const targets = [t('a')];
+    const workspaceByAgent = new Map([['a', 'ws1']]);
+    const terminalityByKey = new Map([
+      [storeExistsKey('ws1', 'plan-a'), { status: 'active', hasOpenItems: false }],
+    ]);
+    const { keep, skippedTerminalPlan } = filterTerminalPlanTargets(targets, workspaceByAgent, terminalityByKey);
+    expect(keep).toEqual([]);
+    expect(skippedTerminalPlan).toBe(1);
+  });
+
+  it('keeps a target whose plan is active with at least one open item — unchanged behavior', () => {
+    const targets = [t('a')];
+    const workspaceByAgent = new Map([['a', 'ws1']]);
+    const terminalityByKey = new Map([
+      [storeExistsKey('ws1', 'plan-a'), { status: 'active', hasOpenItems: true }],
+    ]);
+    const { keep, skippedTerminalPlan } = filterTerminalPlanTargets(targets, workspaceByAgent, terminalityByKey);
+    expect(keep.map((x) => x.agentId)).toEqual(['a']);
+    expect(skippedTerminalPlan).toBe(0);
+  });
+
+  it('fails OPEN (keeps, nudges) when the terminality lookup is missing/null — a lookup failure', () => {
+    const targets = [t('a')];
+    const { keep, skippedTerminalPlan } = filterTerminalPlanTargets(targets, new Map([['a', 'ws1']]), new Map());
+    expect(keep.map((x) => x.agentId)).toEqual(['a']);
+    expect(skippedTerminalPlan).toBe(0);
   });
 });
 

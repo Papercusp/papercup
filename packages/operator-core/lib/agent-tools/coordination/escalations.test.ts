@@ -97,6 +97,27 @@ describe('listEscalationsPaginated — bounded read (EI-1548)', () => {
     expect(r.truncated).toBe(false);
   });
 
+  it('EI-16170: status:open + a small maxRecords still reports the TRUE unbounded open count via trueOpenTotal, distinct from the bounded page total', async () => {
+    await seedOpen(5);
+    const r = await listEscalationsPaginated({ status: 'open', maxRecords: 2 });
+    // The bounded page itself still only holds 2 (matches `total`/`escalations.length`) —
+    // this is the exact "total:2" reading that got misread as ground truth (EI-16170).
+    expect(r.escalations).toHaveLength(2);
+    expect(r.total).toBe(2);
+    expect(r.truncated).toBe(true);
+    // But trueOpenTotal is the REAL unbounded backlog size (all 5 seeded opens) —
+    // the honest ground truth a caller should compare against, not `total`.
+    expect(r.trueOpenTotal).toBe(5);
+  });
+
+  it('EI-16170: trueOpenTotal is omitted when status is not "open" (resolved / unfiltered reads have no single "true open" figure to report)', async () => {
+    await seedOpen(3);
+    const resolved = await listEscalationsPaginated({ status: 'resolved', maxRecords: 50 });
+    expect(resolved.trueOpenTotal).toBeUndefined();
+    const unfiltered = await listEscalationsPaginated({ maxRecords: 50 });
+    expect(unfiltered.trueOpenTotal).toBeUndefined();
+  });
+
   it('EI-1548 (#3): a fat body is truncated in list mode and flagged, short bodies are untouched', async () => {
     configureCoordLog(new InMemoryCoordLog());
     const fatBody = 'x'.repeat(2_000);

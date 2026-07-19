@@ -18,7 +18,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID, activeWorkspaceId } from '../../workspace-registry';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveEffectiveHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -103,7 +103,14 @@ export default defineTool({
           };
         }
 
-        const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+        // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
+        // harness_slug, plan_slug) — workspace_id is only knowable in-process
+        // via activeWorkspaceId() (already imported below for promotion). The
+        // old literal DEFAULT_WORKSPACE_ID matched ZERO rows for any
+        // non-default tenant, so plans:start silently no-opped (0-row UPDATE)
+        // while still reporting ok:true/status:'started'.
+        const startWorkspaceId = activeWorkspaceId();
+        const rows = await withWorkspace(startWorkspaceId, async (tx) => {
           return tx<{ op_status: string; op_updated_at: string; prev_op_status: string | null }[]>`
             UPDATE harness_shared.harness_plans AS p
                SET op_status     = 'started',
@@ -112,12 +119,12 @@ export default defineTool({
               FROM (
                 SELECT plan_slug, op_status AS prev_op_status
                   FROM harness_shared.harness_plans
-                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+                 WHERE workspace_id = ${startWorkspaceId}
                    AND harness_slug = ${harnessSlug}
                    AND plan_slug    = ${slug}
                    FOR UPDATE
               ) prev
-             WHERE p.workspace_id = ${DEFAULT_WORKSPACE_ID}
+             WHERE p.workspace_id = ${startWorkspaceId}
                AND p.harness_slug = ${harnessSlug}
                AND p.plan_slug    = prev.plan_slug
             RETURNING p.op_status, p.op_updated_at, prev.prev_op_status
@@ -167,7 +174,7 @@ export default defineTool({
 
         ctxAny.metadata?.({ slug, harnessSlug, status: row?.op_status, autoApproved, transitioned });
 
-        const promoWorkspaceId = activeWorkspaceId();
+        const promoWorkspaceId = startWorkspaceId;
         void import('../../plan-workitem-promotion-run')
           .then(async (m) => {
             const { resolveAgentIdentity } = await import('../coordination/identity');

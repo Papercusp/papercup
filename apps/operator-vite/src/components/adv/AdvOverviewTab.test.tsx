@@ -3,7 +3,7 @@
 // AdvOverviewTab mount coverage — Brief 23's Overview dashboard (the /adv
 // default landing surface, overview-dashboard-2026-06-05). The pure selectors
 // (planProgress / selectActivePlans / selectDecisions / countAlerts /
-// selectLiveAgents / OVERVIEW_TILE_TARGETS) are pinned in
+// selectAgentRows / OVERVIEW_TILE_TARGETS) are pinned in
 // __tests__/adv-overview-logic.test.ts; THIS file mounts the tab against
 // mocked usePlanList/usePlanAttention + a per-query useSyncQuery dispatcher
 // (roster → dev.coordPresence, activity → userActions.byHarness; LIVE sync,

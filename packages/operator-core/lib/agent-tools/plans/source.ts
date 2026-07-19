@@ -31,7 +31,6 @@ import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { potHomeSlugForHarness } from '../../hive-federation';
-import { isTerminalItemStatus } from '../../fleet-drained-events';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -677,34 +676,38 @@ export async function planSlugExistsInWorkspace(
   return rows.length > 0;
 }
 
+/** Item statuses that are themselves terminal — the only item statuses worth
+ *  surfacing from a terminal (shipped/superseded) plan in a cross-plan query
+ *  (items.ts's isTerminalPlanHiddenFromCrossPlan), and the canonical "is this
+ *  item still open" check for claim-discipline-action.ts's terminal-plan
+ *  filter (EI-16176). Defined here (not items.ts) because items.ts imports
+ *  from this module — the reverse import would cycle. */
+export const TERMINAL_ITEM_STATUSES = new Set<string>(['done', 'dropped']);
+
 /**
- * EI-16176: is this plan slug TERMINAL (shipped/superseded) or already has
- * zero OPEN (non-terminal) items? Either means there is genuinely nothing
- * left to claim on it — used by claim-discipline-watch to stop nagging a
- * leader whose declared plan has since shipped (nudging "claim your lane" on
- * a plan with no claimable lane left is undischargeable noise, the same
- * family as `planSlugExistsInWorkspace`/EI-7402). A slug-only lookup
- * (mirrors planSlugExistsInWorkspace — presence rows carry no harnessSlug).
- * Null when the slug isn't store-backed in this workspace (a distinct signal
- * from "found but has open items" — callers fail OPEN on null).
+ * EI-16176: is this declared plan TERMINAL (shipped/superseded) or does it
+ * have zero non-terminal items? Both mean "there is genuinely nothing left to
+ * claim" — the claim-discipline-watch nudge's own remedy (claim a plan-item
+ * lane) can never be discharged against either shape, so nagging an agent
+ * that declared one forever is pure noise. Slug-only lookup mirroring
+ * `planSlugExistsInWorkspace` (a presence row carries no reliable harnessSlug);
+ * resolves the owning harness the same deterministic way
+ * (`resolvePlanHarnessSlug` — most-recently-updated row on ambiguity) then
+ * reuses `getPlanRow` + `planItemsForRow` rather than re-deriving item-status
+ * parsing here. Null when the slug isn't store-backed in this workspace —
+ * callers should treat that as "unknown" (fail open), not "terminal".
  */
 export async function planTerminalityInWorkspace(
   workspaceId: string,
   slug: string,
 ): Promise<{ status: string | null; hasOpenItems: boolean } | null> {
-  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<{ status: string | null; items: unknown }[]>`
-      SELECT status, items FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND plan_slug = ${slug}
-       ORDER BY updated_at DESC
-       LIMIT 1
-    `;
-  });
-  const row = rows[0];
+  const harnessSlug = await resolvePlanHarnessSlug(workspaceId, slug);
+  if (!harnessSlug) return null;
+  const row = await getPlanRow(slug, { workspaceId, harnessSlug });
   if (!row) return null;
-  const items = Array.isArray(row.items) ? (row.items as PlanIndexItem[]) : [];
-  const hasOpenItems = items.some((i) => !isTerminalItemStatus(i.status));
+  const hasOpenItems = planItemsForRow(row).some(
+    (item) => !TERMINAL_ITEM_STATUSES.has(item.storedStatus),
+  );
   return { status: row.status, hasOpenItems };
 }
 

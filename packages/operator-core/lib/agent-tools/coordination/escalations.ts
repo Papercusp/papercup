@@ -500,7 +500,12 @@ export async function listEscalationsPaginated(
   // that either bounded kind-window maxed out, so older matches may exist
   // beyond it (NOT the full backlog size — that would need an unbounded count).
   const truncated = opens.length >= maxRecords || resolveRows.length >= maxRecords;
-  return { escalations, truncated, total: escalations.length };
+  return {
+    escalations,
+    truncated,
+    total: escalations.length,
+    ...(trueOpenTotal !== undefined ? { trueOpenTotal } : {}),
+  };
 }
 
 /**

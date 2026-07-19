@@ -13,7 +13,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, runBulk } from '../_bulk';
@@ -52,21 +52,42 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
+    // harness_slug, plan_slug). workspace_id is only knowable in-process via
+    // activeWorkspaceId() — it honors the WINDOW's request-scoped workspace
+    // (x-papercusp-workspace → ALS), which is what a UI-initiated write needs.
+    // The old literal DEFAULT_WORKSPACE_ID matched ZERO rows for any
+    // non-default tenant (every real plan lives in 'papercusp-workspace', not
+    // 'default') while still reporting ok:true — silently no-opping every
+    // drag-to-reorder.
+    const workspaceId = activeWorkspaceId();
     const items = args.items ?? [{ slug: args.slug, priority: args.priority }];
     const env = await runBulk(
       items,
       async (item) => {
         const now = new Date().toISOString();
-        await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-          return tx`
+        const rows = await withWorkspace(workspaceId, async (tx) => {
+          return tx<{ plan_slug: string }[]>`
             UPDATE harness_shared.harness_plans
                SET op_priority  = ${item.priority},
                    op_updated_at = ${now}
-             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+             WHERE workspace_id = ${workspaceId}
                AND harness_slug = ${harnessSlug}
                AND plan_slug    = ${item.slug}
+            RETURNING plan_slug
           `;
         });
+        // A slug that matches nothing is a caller error worth surfacing per-item
+        // (runBulk keeps the rest of the batch going) rather than a silent no-op
+        // masquerading as ok:true (the bug this fixes).
+        if (!rows || rows.length === 0) {
+          return {
+            ok: false as const,
+            slug: item.slug,
+            harnessSlug,
+            error: 'plan_not_found',
+          };
+        }
         return { ok: true as const, slug: item.slug, harnessSlug, priority: item.priority };
       },
       { keyOf: (item) => ({ slug: item.slug }) },

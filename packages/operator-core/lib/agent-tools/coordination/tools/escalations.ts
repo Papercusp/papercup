@@ -10,7 +10,7 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:escalations',
   description:
-    'List escalations addressed to the human — NEWEST-FIRST and bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. `truncated:true` means older escalations exist beyond the window — raise maxRecords or narrow by status. A record whose `body` exceeds 500 chars is truncated in list mode (`bodyTruncated:true` + the original `bodyLength`) so a page of fat bodies cannot reproduce the original ~9MB dump.',
+    'List escalations addressed to the human — NEWEST-FIRST and bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. ⚠ `total`/`count` are JUST the size of THIS page (== `escalations.length`) — they are NOT the backlog size, and a small maxRecords silently produces a small `total` that looks like ground truth (EI-16170: a maxRecords:10 open-scan read `total:2` as "only 2 escalations open" when 279+ were actually open). `truncated:true` means older escalations exist beyond the window — raise maxRecords or narrow by status. For status=open, use `trueOpenTotal` (an unbounded exact count) as the real backlog size — never `total`/`count` for that purpose. A record whose `body` exceeds 500 chars is truncated in list mode (`bodyTruncated:true` + the original `bodyLength`) so a page of fat bodies cannot reproduce the original ~9MB dump.',
   guidance: {
     when: 'Showing the human inbox; diagnostics; checking your own past escalations.',
     notWhen: 'A specific msg_id you already have — there is no escalation read-by-id tool yet; coord:escalations + filter is enough at current volumes.',
@@ -32,12 +32,13 @@ export default defineTool({
       content: [
         { 
           type: 'text' as const, 
-          text: JSON.stringify({ 
+          text: JSON.stringify({
             escalations: result.escalations,
             count: result.escalations.length,
             total: result.total,
+            trueOpenTotal: result.trueOpenTotal,
             truncated: result.truncated,
-            note: result.truncated ? `Bounded to the ${result.total} most-recent escalation events (older exist beyond this window). Raise maxRecords (max 500) or filter by status to page further.` : undefined,
+            note: result.truncated ? `Bounded to the ${result.total} most-recent escalation events (older exist beyond this window). Raise maxRecords (max 500) or filter by status to page further.${result.trueOpenTotal !== undefined ? ` The TRUE open backlog size is trueOpenTotal:${result.trueOpenTotal} — use that, not total/count, as ground truth.` : ''}` : undefined,
           }),
         },
       ],

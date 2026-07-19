@@ -282,7 +282,12 @@ async function maybeRunWithDeltaProxy(input: {
   if (input.explicitDelta || !input.itemKeyField) return input.runRaw(undefined, false);
   const viewKey = `${input.toolName}:${input.requestedFormat ?? ''}:${stableJson(input.args ?? null)}`;
   const session = deltaProxySession(input.sessionKey);
-  let last: McpCallResult | null = null;
+  // A mutable box, not a bare `let` — `last` is reassigned inside the nested
+  // `dispatchWithConveyedDelta` callback below, and TS's control-flow narrowing
+  // does not track a `let` reassignment that happens inside a separate function
+  // expression, so a later read of a bare `let` here mis-narrows to `never`.
+  // Object-property reads aren't subject to that narrowing, so this sidesteps it.
+  const lastBox: { value: McpCallResult | null } = { value: null };
   try {
     const out = await dispatchWithConveyedDelta(
       session.client,
@@ -291,15 +296,11 @@ async function maybeRunWithDeltaProxy(input: {
       async (requestedDelta) => {
         // DeltaToolClient stores the opaque server cursor only; the tool protocol
         // expects the request mode plus cursor on the wire.
-        last = await input.runRaw(requestedDelta ? `not_modified~${requestedDelta}` : undefined, true);
-        return adaptDeltaResponse(last);
+        lastBox.value = await input.runRaw(requestedDelta ? `not_modified~${requestedDelta}` : undefined, true);
+        return adaptDeltaResponse(lastBox.value);
       },
     );
-    // Captured into a fresh const: `last` is a `let` reassigned inside the nested
-    // `dispatchWithConveyedDelta` callback above, and TS's control-flow narrowing
-    // does not carry that reassignment's type back out to this point — it was
-    // (mis)narrowing `last` to `never` here. A const doesn't have that ambiguity.
-    const finalResult: McpCallResult | null = last;
+    const finalResult = lastBox.value;
     if (!finalResult || finalResult.isError || out.mode === 'full') {
       return finalResult ?? input.runRaw(undefined, true);
     }

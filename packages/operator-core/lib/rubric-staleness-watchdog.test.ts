@@ -146,7 +146,7 @@ describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => 
       async (
         _ws: string,
         _slug: string,
-        _windowHours: number,
+        _windowHours?: number,
         source?: string,
         scopeKey?: string,
       ) =>

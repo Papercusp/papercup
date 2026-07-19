@@ -20,7 +20,7 @@ import {
   selectActivePlans,
   selectDecisions,
   countAlerts,
-  selectLiveAgents,
+  selectAgentRows,
   OVERVIEW_TILE_TARGETS,
   type OverviewRosterEntry,
 } from '../adv/AdvOverviewTab';
@@ -91,7 +91,6 @@ function agent(over: Partial<OverviewRosterEntry> = {}): OverviewRosterEntry {
     ownerId: Math.random().toString(36).slice(2),
     label: 'su-x',
     intent: 'working',
-    currentFiles: [],
     liveness: 'live',
     currentPlanSlug: null,
     role: null,
@@ -189,15 +188,15 @@ describe('countAlerts', () => {
   });
 });
 
-// ─── selectLiveAgents ──────────────────────────────────────────────────────
-describe('selectLiveAgents', () => {
-  it('excludes stale agents', () => {
+// ─── selectAgentRows ───────────────────────────────────────────────────────
+describe('selectAgentRows', () => {
+  it('does NOT re-filter by liveness — membership is isRunningAgent, applied upstream (WI-5517)', () => {
     const roster = [agent({ liveness: 'live' }), agent({ liveness: 'idle' }), agent({ liveness: 'stale' })];
-    expect(selectLiveAgents(roster)).toHaveLength(2);
+    expect(selectAgentRows(roster)).toHaveLength(3);
   });
   it('respects the limit', () => {
     const roster = Array.from({ length: 9 }, () => agent({ liveness: 'live' }));
-    expect(selectLiveAgents(roster, 4)).toHaveLength(4);
+    expect(selectAgentRows(roster, 4)).toHaveLength(4);
   });
 });
 

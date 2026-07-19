@@ -157,12 +157,17 @@ export function countAlerts(items: readonly AttentionItem[]): number {
   }).length;
 }
 
-/** Live (non-stale) agents, top-N. Pure. */
-export function selectLiveAgents(
+/**
+ * Top-N roster rows for the Agents tile. Membership ("who is running") is
+ * decided ONCE upstream by the pill's shared `isRunningAgent` predicate
+ * (present OR loop-armed) — this selector must NOT re-filter by liveness,
+ * or the rows would drop loop-armed stale agents the count includes. Pure.
+ */
+export function selectAgentRows(
   roster: readonly OverviewRosterEntry[],
   limit = TILE_LIMIT,
 ): OverviewRosterEntry[] {
-  return roster.filter((a) => a.liveness !== 'stale').slice(0, limit);
+  return roster.slice(0, limit);
 }
 
 export default function AdvOverviewTab() {
@@ -256,7 +261,7 @@ export default function AdvOverviewTab() {
       })),
     [rosterQ.data],
   );
-  const liveAgents = useMemo(() => selectLiveAgents(roster), [roster]);
+  const agentRows = useMemo(() => selectAgentRows(roster), [roster]);
 
   // Map coord-feed rows → the Activity tile's render shape: agent-authored rows
   // only (system telemetry belongs to Conversations → Raw events), actor =
@@ -365,11 +370,11 @@ export default function AdvOverviewTab() {
           accent="#a78bfa"
           loading={rosterQ.loading && !rosterQ.data}
           error={rosterQ.error}
-          empty={liveAgents.length === 0}
+          empty={agentRows.length === 0}
           emptyLabel="No live agents"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.agents)}
         >
-          {liveAgents.map((a) => {
+          {agentRows.map((a) => {
             const label = agentDisplayLabel(a.label, lex);
             return (
               <button
