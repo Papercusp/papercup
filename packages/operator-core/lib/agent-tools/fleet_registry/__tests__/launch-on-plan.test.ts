@@ -98,6 +98,7 @@ import tool, {
   renderMemberBaseline,
   clampFleetTopUpToCapacity,
   buildFleetPlanClaimSpec,
+  remotePlacementUnsupportedArgs,
   MEMBER_BASELINE_RULES,
   LEADER_STANDING_JOB,
   LEADER_AUTO_MODE_DIRECTIVE,
@@ -873,6 +874,133 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
     const fs = require('node:fs');
     const composed2 = fs.readFileSync(payload.perMemberLaunchContextPaths[1], 'utf8');
     expect(composed2).toContain('UI polish pass');
+  });
+});
+
+// per-member-declarative-launch-specs P-004: reject an incoherent MemberSpec, and
+// echo the resolved per-member config so the leader confirms what each member got.
+describe('fleet:launch-on-plan handler — P-004 validation + per-member disclosure', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('rejects launch-from-seats + a per-member model/effort/account (contradicts the delegated slot)', async () => {
+    for (const bad of [{ model: 'opus' }, { effort: 'high' }, { account: 'auto' }]) {
+      const res = await tool.handler(
+        {
+          name: 'Seat Fleet',
+          plan: 'my-plan',
+          harness: 'papercusp',
+          count: 1,
+          fromSeats: true,
+          members: [bad],
+        } as never,
+        {} as never,
+      );
+      // A rejection is the plain-text `err()` shape (isError:true), not a JSON payload.
+      expect((res as any).isError).toBe(true);
+      const text = (res as any).content[0].text as string;
+      expect(text).toMatch(/launch-from-seats derives model\+effort\+account/);
+      expect(text).toContain('members[0]');
+      // No terminals were opened — the launch failed clean, before any spawn.
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("REMOTE_PLACEMENT_UNSUPPORTED_ARGS refuses `members` (the host owns each member's model/account/window)", () => {
+    expect(remotePlacementUnsupportedArgs({ members: [{}] })).toContain('members');
+    // A launch with no per-member spec is unaffected.
+    expect(remotePlacementUnsupportedArgs({ plan: 'p', count: 2 })).not.toContain('members');
+  });
+
+  it('HONORS a per-member carry override — member 1 gets a COLD baseline, member 2 the fleet-wide WARM', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Carry Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        carry: 'warm',
+        members: [{ carry: 'cold' }, {}],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    // Each member wrote its OWN composed context (the carry override forces the per-member path).
+    expect(payload.perMemberLaunchContextPaths).toHaveLength(2);
+    const fs = require('node:fs');
+    const composed1 = fs.readFileSync(payload.perMemberLaunchContextPaths[0], 'utf8');
+    const composed2 = fs.readFileSync(payload.perMemberLaunchContextPaths[1], 'utf8');
+    // Member 1's baseline arms a COLD loop; member 2 falls through to the fleet-wide WARM.
+    expect(composed1).toContain("carry: 'cold'");
+    expect(composed2).not.toContain("carry: 'cold'");
+  });
+
+  it('echoes resolvedMembers (model/account/carry/compactionLimit/claimKinds) so the leader confirms each member', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Echo Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        model: 'sonnet',
+        carry: 'warm',
+        members: [{ model: 'opus[1m]', effort: 'high', carry: 'cold', compactionLimit: 300000 }, {}],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.resolvedMembers).toHaveLength(2);
+    // Member 1: its own model (effort folded), carry, and limit.
+    expect(payload.resolvedMembers[0]).toMatchObject({
+      member: 1,
+      model: 'opus[1m]:high',
+      carry: 'cold',
+      compactionLimit: 300000,
+    });
+    // Member 2: pure fleet-wide fallthrough.
+    expect(payload.resolvedMembers[1]).toMatchObject({ member: 2, model: 'sonnet', carry: 'warm' });
+    // The human-facing message carries the per-member table too.
+    expect(payload.message).toContain('per-member resolved config');
+    expect(payload.message).toMatch(/carry=cold/);
+  });
+
+  it('resolvedMembers is null for a homogeneous (no-`members`) launch — no needless breakdown', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    const res = await tool.handler(
+      { name: 'Plain Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.resolvedMembers).toBeNull();
+  });
+
+  it('WARNS that a per-member claimKinds is not applied at launch (only the fleet claim spec is)', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Lane Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        members: [{ claimKinds: ['bug'] }, {}],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.message).toMatch(/per-member `claimKinds` is NOT applied at launch/);
+    expect(payload.message).toContain('scheduler:set_claim_spec');
   });
 });
 

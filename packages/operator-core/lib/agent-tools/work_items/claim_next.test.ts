@@ -111,7 +111,7 @@ beforeEach(() => {
     claimedUnder: { specId: 'fleet-bugs', revision: 3 },
   });
   claimNextM.mockResolvedValue({ id: 'WI-raw', assignee: 'su-me' } as never);
-  diagnoseM.mockResolvedValue({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0 });
+  diagnoseM.mockResolvedValue({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0, flagReadError: null });
 });
 
 describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {

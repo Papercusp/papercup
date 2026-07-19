@@ -49,7 +49,8 @@ import {
   getFleetScheme,
   releaseFleetLaunchSlot,
 } from '../../agent-fleets-store';
-import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
+import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
 import {
   fleetSpecBeeKey,
   resolveClaimSpecWorkspace,
@@ -534,7 +535,26 @@ export function resolveMemberBriefText(
  * DEFAULT_CLAIM_SPEC unchanged: only the view.filter narrows (D-002 — a spec can
  * only narrow + reorder within the global floors, never widen past them).
  */
+/**
+ * P-010 (the bug-drain-200k trap): issue-family claim kinds (bug/change/task) live at
+ * status `open`, NEVER `todo` — feature/chunk are feature-family, status `todo`. A
+ * kind-scoped fleet claim spec left at the default `states:['todo']` therefore matches
+ * ZERO open bugs, the exact silent starvation EI-11300 names. Derive the claimable
+ * `states` from the kinds instead: include `open` whenever any issue-family kind is
+ * present (and `todo` too when a feature-family kind is also present). Returns undefined
+ * for a pure feature-family set — the default `['todo']` floor already fits, so there is
+ * nothing to pin. Exported for a unit test.
+ */
+const ISSUE_FAMILY_CLAIM_KINDS = new Set(['bug', 'change', 'task']);
+export function claimableStatesForKinds(kinds: readonly string[]): string[] | undefined {
+  const hasIssue = kinds.some((k) => ISSUE_FAMILY_CLAIM_KINDS.has(k));
+  if (!hasIssue) return undefined;
+  const hasFeature = kinds.some((k) => !ISSUE_FAMILY_CLAIM_KINDS.has(k));
+  return hasFeature ? ['todo', 'open'] : ['open'];
+}
+
 export function buildFleetKindClaimSpec(fleetSlug: string, kinds: readonly string[]): Record<string, unknown> {
+  const states = claimableStatesForKinds(kinds);
   return {
     specVersion: '1.0',
     specId: `fleet-launch-${fleetSlug}-kinds`,
@@ -542,6 +562,8 @@ export function buildFleetKindClaimSpec(fleetSlug: string, kinds: readonly strin
     view: { filter: { field: 'kind', op: 'in', value: [...kinds] } },
     rank: DEFAULT_CLAIM_SPEC.rank,
     limits: DEFAULT_CLAIM_SPEC.limits,
+    // P-010: auto-include `open` for an issue-family drain so the lane doesn't starve.
+    ...(states ? { states } : {}),
   };
 }
 
@@ -563,6 +585,9 @@ export function buildFleetPlanClaimSpec(
 ): Record<string, unknown> {
   const planLeaf = { field: 'plan', op: '=', value: planSlug };
   const filter = kinds && kinds.length ? { all: [planLeaf, { field: 'kind', op: 'in', value: [...kinds] }] } : planLeaf;
+  // P-010: only a kind-scoped plan spec derives states (a pure plan lane keeps the default
+  // ['todo'] floor — plan-promoted items vary in status, so don't presume `open` there).
+  const states = kinds && kinds.length ? claimableStatesForKinds(kinds) : undefined;
   return {
     specVersion: '1.0',
     specId: `fleet-launch-${fleetSlug}-plan`,
@@ -570,6 +595,7 @@ export function buildFleetPlanClaimSpec(
     view: { filter },
     rank: DEFAULT_CLAIM_SPEC.rank,
     limits: DEFAULT_CLAIM_SPEC.limits,
+    ...(states ? { states } : {}),
   };
 }
 
@@ -614,10 +640,15 @@ export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly stri
     existingFilter && Object.keys(existingFilter).length > 0
       ? { all: [...flattenAll(existingFilter), kindLeaf] }
       : kindLeaf;
+  // P-010: if the leader-authored spec never pinned `states`, derive it from the merged-in
+  // issue-family kinds so the merge doesn't leave the lane at the starving ['todo'] default.
+  // A leader-set `states` (spread via `...existing`) is preserved untouched.
+  const derivedStates = existing.states ? undefined : claimableStatesForKinds(kinds);
   return {
     ...existing,
     view: { filter },
     revision: existing.revision + 1,
+    ...(derivedStates ? { states: derivedStates } : {}),
   };
 }
 
@@ -1002,6 +1033,12 @@ export default defineTool({
           'empty-filter DEFAULT_CLAIM_SPEC (which admits every kind, including feature/chunk) before the ' +
           "leader gets around to calling scheduler:set_claim_spec by hand. A member's own later per-bee " +
           'spec still overrides this fleet default. Omit to leave scheduling exactly as before (no spec set).',
+      ),
+    confirmClaimCollapse: z
+      .boolean()
+      .optional()
+      .describe(
+        "P-010 pool-collapse override: a `claimKinds` fleet is REFUSED at launch (BEFORE any terminal opens) when its kind-scoped claim spec matches 0 rows of a nonempty claimable pool — the silent bug-drain starvation shape (WI-5212/EI-11300). Pass true ONLY after reading the refusal's reported counts and confirming the empty lane is intended (e.g. a pre-staged fleet whose items are not promoted yet). Ignored when no `claimKinds` is given.",
       ),
   }),
   async handler(args, ctx) {

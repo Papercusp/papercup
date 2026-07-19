@@ -111,7 +111,7 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
   it('DRAINED: empty queue ⇒ drained:true, pendingUnclaimed:0', async () => {
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
     const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(diag).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0 });
+    expect(diag).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0, flagReadError: null });
   });
 
   it('PRESENT-but-BLOCKED: claim_next misses, but the item exists and is DIRECTLY claimable — the EI-5919 divergence', async () => {
@@ -140,7 +140,7 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
 
     // Before any claim: it is both pending and ready.
     const before = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(before).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1 });
+    expect(before).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1, flagReadError: null });
 
     // A peer self-selects it (claim_next succeeds — control that the happy path still works).
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'peer' });
@@ -149,7 +149,7 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
     // Now the queue is genuinely drained: the only item is claimed.
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
     const after = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(after).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0 });
+    expect(after).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0, flagReadError: null });
   });
 
   it('BLOCKER GOES TERMINAL: the pending item becomes ready ⇒ readyUnclaimed rises and claim_next then serves it', async () => {
@@ -159,12 +159,12 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
 
     // Blocked: present but not ready.
     let diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 0 });
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 0, flagReadError: null });
 
     // Flip the blocker terminal ⇒ readiness satisfied.
     await db.sql`UPDATE harness_shared.harness_features_consolidated SET status = 'passed' WHERE feature_id = 'F-blocker'`;
     diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1 });
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1, flagReadError: null });
 
     // claim_next now serves the newly-ready item.
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'w1' });
@@ -195,7 +195,7 @@ describe('claim_next miss diagnosis — issue-family backlog (EI-6062)', () => {
     const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
     // The regression: before the fix readyUnclaimed read only the feature pool ⇒ 0 here,
     // misreporting a claimable issue as "genuinely blocked/gated". It must be 1.
-    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1 });
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1, flagReadError: null });
   });
 
   it('ISSUE-ONLY BLOCKED backlog: pending counts it, ready does NOT until the blocker goes terminal', async () => {
@@ -206,12 +206,12 @@ describe('claim_next miss diagnosis — issue-family backlog (EI-6062)', () => {
 
     // Present in the pool, but the non-terminal feature blocker keeps it out of the ready set.
     let diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 0 });
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 0, flagReadError: null });
 
     // Flip the blocker terminal ⇒ the issue's readiness is satisfied and it joins readyUnclaimed.
     await db.sql`UPDATE harness_shared.work_items SET status = 'passed' WHERE feature_id = 'F-blocker'`;
     diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1 });
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1, flagReadError: null });
   });
 
   it('gate OFF ⇒ issue backlog is invisible to the diagnosis (byte-identical feature-only behavior)', async () => {
@@ -222,6 +222,6 @@ describe('claim_next miss diagnosis — issue-family backlog (EI-6062)', () => {
     });
     await seedIssue('EI-ready', { status: 'open', createdTs: 100 });
     const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
-    expect(diag).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0 });
+    expect(diag).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0, flagReadError: null });
   });
 });
