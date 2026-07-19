@@ -1791,54 +1791,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     });
   }
-
-  // EI-13317 / WI-5481: FAST-PATH for the connected_never_replicated
-  // (zombie-socket) class. After a peer restart, hyperswarm can keep counting a
-  // DEAD socket as "connected" (_handlePeer no-ops against a stale
-  // _allConnections entry — WI-5355), so this log's replicator never
-  // (re)attaches. A per-log Corestore session re-attach CANNOT heal a dead
-  // socket — it only heals a broken session over a GOOD socket
-  // (wi3893-repair-real-wire). The ordinary ladder only reaches the one heal
-  // that DOES work here — forceRejoin: evict the zombie socket + fresh join, so
-  // corestore.replicate re-attaches every log on the new connection — AFTER
-  // REPAIR_MAX_ATTEMPTS_PER_LOG session re-attaches, EACH judged only after
-  // REPLICATION_STALL_GRACE_MS (180s): ~540s, far past the 90s replication_soak
-  // SLA (WI-5481). So for THIS kind, fire the forced rejoin PROMPTLY on the
-  // first episode. It carries its OWN short cooldown (NOT the 300s severed-link
-  // cooldown escalateToForcedRejoin uses) so each successive post-restart soak
-  // cycle recovers, while still bounding a flapping log to one rejoin per
-  // window. The session-re-attach ladder still runs (via enqueueRepairAttempt)
-  // as the fallback for the broken-session-over-good-socket sub-case.
-  const ZOMBIE_FAST_REJOIN_COOLDOWN_MS = 30_000;
-  let lastZombieFastRejoinMs = 0;
-  function fastRejoinForZombieClass(logKeyHex: string): void {
-    const now = Date.now();
-    if (now - lastZombieFastRejoinMs < ZOMBIE_FAST_REJOIN_COOLDOWN_MS) return;
-    lastZombieFastRejoinMs = now;
-    recordBootEvent(
-      opts.workspaceId,
-      opts.harnessSlug,
-      'replication_repair_fast_rejoin',
-      `${peerLabel(logKeyHex)} connected_never_replicated (zombie-socket class) — ` +
-        `forcing a prompt topic rejoin (bypassing the session-re-attach ladder, which ` +
-        `cannot heal a dead socket within the soak SLA; EI-13317/WI-5481)`,
-    );
-    // console.info (not .warn/.error) — same rationale as escalateToForcedRejoin's
-    // log below: always-on/grep-able in production, and this file's vitest suite
-    // runs under vitest-fail-on-console.
-    console.info(
-      `[replication-liveness] fast-rejoin (connected_never_replicated zombie class): ` +
-        `log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug}`,
-    );
-    void swarmHandle?.forceRejoin().catch((e) => {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'replication_repair_rejoin_failed',
-        `${e instanceof Error ? e.message : String(e)}`,
-      );
-    });
-  }
   /**
    * WI-5340: the shared "enqueue a session-repair attempt for this log" path —
    * extracted from the replication-liveness episode handler so
@@ -1957,15 +1909,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
     if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
-    // EI-13317/WI-5481: the zombie-socket class (connected_never_replicated)
-    // needs the forced rejoin, not a per-log session re-attach — fire it
-    // promptly so a post-restart stall recovers within the 90s replication_soak
-    // SLA instead of ~540s through the re-attach ladder. The enqueue below still
-    // runs as the fallback (and is the primary path for the `frozen` kind, which
-    // a session re-attach DOES heal — WI-4241).
-    if (episode.kind === 'connected_never_replicated') {
-      fastRejoinForZombieClass(episode.logKeyHex);
-    }
     enqueueRepairAttempt(episode.logKeyHex, episode.kind);
   });
 

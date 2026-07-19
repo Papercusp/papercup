@@ -438,6 +438,72 @@ describe('deriveDatabaseTuning — non-finite signals never poison the knobs', (
   });
 });
 
+describe('deriveDatabaseTuning — physicalCores overrides cgroup-quota-scoped cores (WI-5456)', () => {
+  it('uses physicalCores for maxConnections when supplied, ignoring the quota-scoped cores', () => {
+    // The exact bg-host shape: a systemd unit with CPUQuota=1600% (~16-core quota)
+    // on the real 128-core box. `cores` (availableParallelism, quota-aware) sees 16;
+    // `physicalCores` (os.cpus().length) sees the real 128.
+    const t = deriveDatabaseTuning(
+      signals({ cores: 16, physicalCores: 128, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes: 256 * GIB }),
+    );
+    expect(t.maxConnections).toBe(512); // 128 * 4, NOT clamp(16*4, 100, 1000)=100
+  });
+
+  it('falls back to cores when physicalCores is not supplied (no behavior change for existing callers)', () => {
+    const withoutPhysical = deriveDatabaseTuning(
+      signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes: 256 * GIB }),
+    );
+    const withPhysicalEqual = deriveDatabaseTuning(
+      signals({ cores: 128, physicalCores: 128, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes: 256 * GIB }),
+    );
+    expect(withoutPhysical.maxConnections).toBe(512);
+    expect(withoutPhysical).toEqual(withPhysicalEqual);
+  });
+
+  it('reproduces the WI-5456 pool-collapse math end to end: quota-scoped cores starve boundedOrgPoolMax to 1, physicalCores fixes it', () => {
+    // bg-host's real config: PAPERCUSP_DB_POOL_MAX=24, PAPERCUSP_EXPECTED_OPERATOR_PROCS=6,
+    // CPUQuota=1600% (cores=16) on a 128-core / 512-max_connections box.
+    const quotaScoped = deriveDatabaseTuning(signals({ cores: 16, embeddedPg: false, totalMemBytes: 256 * GIB }));
+    expect(quotaScoped.maxConnections).toBe(100); // the bug: floor-clamped estimate, not the live 512
+
+    const brokenPoolMax = boundedOrgPoolMax({
+      desired: 24,
+      maxConnections: quotaScoped.maxConnections,
+      superuserReserved: quotaScoped.superuserReservedConnections,
+      expectedProcesses: 6,
+    });
+    expect(brokenPoolMax).toBe(1); // reproduces the observed live `poolMax 1`
+
+    const fixed = deriveDatabaseTuning(
+      signals({ cores: 16, physicalCores: 128, embeddedPg: false, totalMemBytes: 256 * GIB }),
+    );
+    expect(fixed.maxConnections).toBe(512);
+
+    const fixedPoolMax = boundedOrgPoolMax({
+      desired: 24,
+      maxConnections: fixed.maxConnections,
+      superuserReserved: fixed.superuserReservedConnections,
+      expectedProcesses: 6,
+    });
+    expect(fixedPoolMax).toBe(24); // the intended desired size is honored once maxConnections is real
+  });
+});
+
+describe('detectResourceSignals — auto-fills physicalCores from os.cpus().length', () => {
+  it('returns a physicalCores signal alongside cores', async () => {
+    const { detectResourceSignals } = await import('./index');
+    const s = detectResourceSignals();
+    expect(typeof s.physicalCores).toBe('number');
+    expect(s.physicalCores).toBeGreaterThan(0);
+  });
+
+  it('an explicit override still wins (existing override semantics preserved)', async () => {
+    const { detectResourceSignals } = await import('./index');
+    const s = detectResourceSignals({ physicalCores: 999 });
+    expect(s.physicalCores).toBe(999);
+  });
+});
+
 describe('databaseTuningToSettings — renders GUC strings with units', () => {
   it('counts are plain, sizes carry MB', () => {
     const t = deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB }));

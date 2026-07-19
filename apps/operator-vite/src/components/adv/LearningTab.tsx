@@ -4908,11 +4908,13 @@ export function LearningStyles() {
       .pc-learning__tracedot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
       .pc-learning__tracechip b { font-weight: 680; color: var(--fg, #e7eef5); overflow: hidden; text-overflow: ellipsis; }
       .pc-learning__tracechip {
-        display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+        display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 8px;
         font-size: 10.5px; font-weight: 600; border-radius: 6px; font-family: inherit;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         background: var(--bg-2, rgba(255, 255, 255, 0.04)); color: var(--fg-dim, #b9d4e8);
-        max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        /* WRAP long refs — clipping cut fact/plan slugs unreadably mid-token
+           (owner screenshot 2026-07-19 19:31). */
+        max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left;
         transition: border-color 130ms ease, color 130ms ease, background 130ms ease;
       }
       .pc-learning__tracechip i {

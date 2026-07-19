@@ -22,6 +22,7 @@
  */
 import { inject } from 'vitest';
 import postgres from 'postgres';
+import { assertPgReachable } from '@papercusp/test-config/pg';
 import { _resetForTests } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
@@ -48,6 +49,15 @@ function withUser(dsn: string, user: string, password: string): string {
  */
 export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
   const dsn = inject('baselineSchemaDsn');
+
+  // EI-2627: globalSetup's own health check (EI-2433) ran once, potentially
+  // minutes before this beforeAll — long enough on a heavily-loaded fleet box
+  // for a transient startup blip, or (rarer) real reaping/recycling of the
+  // shared baseline container. Confirm reachability with a bounded retry
+  // before repointing env vars, so a genuine failure surfaces as an actionable
+  // "this is known local-environment churn" error instead of a cryptic raw
+  // "no such database: papercusp_it" deep inside a later query.
+  await assertPgReachable(dsn, 'setupPlanPgFixture');
 
   // Re-point the tools' app + admin connections (resolved from env) at the
   // baseline DB, then drop any cached pool + memoized URL so the next

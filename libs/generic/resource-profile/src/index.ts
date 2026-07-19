@@ -225,6 +225,10 @@ function clamp(n: number, lo: number, hi: number): number {
  * every knob a `clamp(formula, FLOOR, CEILING)`. Exported + memo-free for unit
  * tests. See {@link DatabaseTuning} for what each knob is.
  *
+ * `cores` in the table below is {@link ResourceSignals.physicalCores} (falling
+ * back to {@link ResourceSignals.cores} when not supplied) — the real machine,
+ * not this process's cgroup CPU-quota allowance. See `physicalCores`' doc comment.
+ *
  * | knob                          | formula                                            | floor |  ceiling |
  * |-------------------------------|----------------------------------------------------|-------|----------|
  * | maxConnections                | cores * 4                                          |  100  |   1000   |
