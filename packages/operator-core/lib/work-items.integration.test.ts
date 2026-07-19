@@ -1128,7 +1128,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     });
     const real = await wi.createWorkItem({ kind: 'feature', title: 'free feature', harness: 'papercup', createdBy: 'agA' });
 
+    const rawRow = await db.sql`SELECT feature_id, item_kind, payload, payload ->> '_claimHold' AS hold_txt FROM harness_shared.harness_features_consolidated WHERE feature_id = ${held.id}`;
+    console.log('WI5343-DEBUG raw held row:', JSON.stringify(rawRow));
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    console.log('WI5343-DEBUG list ids:', JSON.stringify(list.map((w) => w.id)));
     expect(list.some((w) => w.id === held.id)).toBe(false);
     expect(list.some((w) => w.id === real.id)).toBe(true);
     // Without admissibleOnly the held row is still visible (never hidden from a plain read).

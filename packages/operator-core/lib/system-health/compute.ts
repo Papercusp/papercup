@@ -30,6 +30,9 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { notifySyncInvalidate } from '../sync-sse';
 import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
+import type { ClaudeAccount } from '../deployment/account-pool';
+import { accountFull } from '../deployment/account-pool';
+import { projectLiveEdgeThrottle } from '../deployment/account-pool-store';
 import type {
   SystemHealth,
   SystemHealthPanels,
@@ -672,27 +675,10 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
     }
     let accountsTotal = 0, accountsAvailable = 0, accountsPaused = 0;
     try {
-      const { loadAccountPool, projectLiveEdgeThrottle } = await import('../deployment/account-pool-store');
-      const { accountFull } = await import('../deployment/account-pool');
+      const { loadAccountPool } = await import('../deployment/account-pool-store');
       const pool = await loadAccountPool(ctx.ws);
-      accountsTotal = pool.accounts.length;
-      // EI-15875 (WI-3565 starvation false-positive): "available" here means CAN ACTUALLY SERVE
-      // NOW — mirroring accountStatus()'s `available` (WI-3310), NOT the old pause-only check. A
-      // weekly-usage-walled account (effectiveDrainUtil at/over cap) can read pause-CLEAR — its
-      // bounded pause lapsed, or a pause was never set — while still being unable to serve a single
-      // request until its window resets. Counting such accounts as "idle healthy unused" is exactly
-      // what fabricated a false "artificial ceiling" escalation to the owner on 2026-07-18 (5
-      // accounts sitting at util7d 0.97-0.99 read as spare capacity, while the queue was actually
-      // starved by a genuine weekly usage wall). `accountFull` folds in BOTH the pause and the 5h/7d
-      // usage-wall; a live Cloudflare/per-IP edge-throttle cooldown is a THIRD, separate
-      // non-servable state the gateway reports out-of-band (never persisted on `a.rate`), so it is
-      // excluded here too via the same live snapshot the wedge detector above already fetched.
-      accountsAvailable = pool.accounts.filter((a) => {
-        if (accountFull(a, ctx.now)) return false;
-        if (projectLiveEdgeThrottle(a.id, gatewayStatsRaw).edgeThrottled) return false;
-        return true;
-      }).length;
-      accountsPaused = accountsTotal - accountsAvailable;
+      ({ accountsTotal, accountsAvailable, accountsPaused } =
+        computeAccountsAvailable(pool.accounts, gatewayStatsRaw, ctx.now));
     } catch { /* no account pool configured — single bound credential */ }
     const data: TokensHealth = {
       gatewayEnabled: ctx.gatewayEnabled,

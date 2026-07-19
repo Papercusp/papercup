@@ -1786,7 +1786,12 @@ export async function runGreenCheckpoint(
         maxRefires: autoRefireCapFromEnv(),
       });
       retriage = { ...verdict, tip };
-      deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}`);
+      // WI-5366: tipRun.summary carries the verified-head note (+ per-workspace
+      // pass/FAIL) from runTestsAtRef but was previously computed and discarded —
+      // log it alongside the classification so a future "REPRODUCE at tip <sha>"
+      // verdict always shows the sha the tree was ACTUALLY verified at, not just
+      // the sha that was requested.
+      deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}${tipRun ? ` (${tipRun.summary})` : ''}`);
 
       // A stale red is not a red. Re-fire the whole gate on the newer tip rather than
       // holding the pin on a failure that no longer exists — bounded by the refire cap
@@ -2377,12 +2382,22 @@ export function realCheckpointDeps(
       // No redundant re-check needed here; kept unduplicated on purpose (the single
       // source of truth is the script, not this call site).
       await this.setupTree(ref);
+      // WI-5366: assert_checkout_landed proves the GIT state (HEAD == ref) but says
+      // nothing about stale WORKING-TREE ARTIFACTS the script's clean step doesn't
+      // touch (fixed alongside this: `git clean` now runs `-x`, but re-verifying the
+      // sha HERE too — and threading it into the summary every caller logs — makes
+      // any FUTURE staleness class in this tree (a different one, not yet found)
+      // self-announcing instead of silently trusted the way the bare "REPRODUCE at
+      // tip <sha>" verdict was before. Best-effort: a failure to resolve HEAD must
+      // never block the real test run below.
+      const verifiedHead = await revParse(cfg.checkpointRoot, 'HEAD').catch(() => 'unresolved');
+      const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
       const byWorkspace = new Map<string, string[]>();
       for (const f of files) byWorkspace.set(f.workspace, [...(byWorkspace.get(f.workspace) ?? []), f.file]);
       const env = buildGreenCheckpointEnv(null);
       env.VITEST_MAX_FORKS = '1';
       env.VITEST_MAX_THREADS = '1';
-      const summaries: string[] = [];
+      const summaries: string[] = [headNote];
       for (const [workspace, wsFiles] of byWorkspace) {
         const r = await exec(
           'npm',

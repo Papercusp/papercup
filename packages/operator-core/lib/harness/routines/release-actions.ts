@@ -263,6 +263,16 @@ export interface CheckpointVerdict {
     tip: string | null;
     detail: string;
   };
+  /** isolation-retry-resilience-2026-07-19 (EI-15849): the load-flake / worker-crash
+   *  absorption attempt's own human-readable verdict note, persisted REGARDLESS of
+   *  whether it flipped the gate green — before this, a not-absorbed attempt's reasoning
+   *  (which files still failed, whether isolation ran at all) existed only as a
+   *  console.log inside the detached checkpoint child process, truncated to its last
+   *  ~200-500 chars by the routine's own logging and never durably recorded. A held-gate
+   *  incident was previously undiagnosable after the fact without grepping raw checkpoint
+   *  logs (which don't even contain the isolation re-run's own output). Present whenever
+   *  the isolation/worker-crash absorber actually ran. */
+  isolationNote?: string;
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
