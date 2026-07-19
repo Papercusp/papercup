@@ -6620,6 +6620,53 @@ Handlers that are *already* PG-bound (e.g. `system:gym-cycle` calls `getOrgPg()`
 
 **Check before you ship** (later frontier loops, FB-05..FB-15, wire glue the same way): grep the factory’s existing `.test.ts` — if its tests invoke the handler without PG, your new default must not reach a pool. `enabled()`-first ordering is not enough once the flag defaults ON.
 
+# deploy:await{sha} / a raw events:await sha filter silently strands on a batched deploy
+
+> The deploy-landed event only ever carried payload.sha = the deployed tip. A busy tree batches N commits into one fast-forward deploy, so an agent awaiting the EXACT sha of an earlier commit in that batch timed out forever even though its fix had actually shipped. Fixed by firing the per-sha awaitable key for every commit the deploy included, not just the tip — but the batching behavior itself is worth knowing.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+An agent finishes a fix, waits for it to go live with the documented idiom — `deploy:await { sha: '<my commit>' }` (or the raw `events:await({ event: 'release:deployed', payload_filter: { sha } })`) — and the wait **times out** despite the fix genuinely shipping: `git merge-base --is-ancestor <mySha> HEAD` on the release checkout confirms it, the operator’s `/api/health` reports the expected build, origin/main is fast-forwarded past it. The deploy landed; the wait just never woke.
+
+## The root cause: exact-sha match against a BATCHED fast-forward
+
+[Section titled “The root cause: exact-sha match against a BATCHED fast-forward”](#the-root-cause-exact-sha-match-against-a-batched-fast-forward)
+
+The auto-serve pipeline (`system:release-trigger`) doesn’t deploy “the next commit” — it deploys **whatever green `main` currently points to**, which by the time the 15-minute tick fires (or the previous deploy’s lock releases) is very often several commits AHEAD of any one agent’s fix, because a shared tree under a busy fleet keeps advancing. The deploy-landed emitter (`apps/operator/lib/release/deploy.ts`) fired:
+
+```ts
+const payload = { sha: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations };
+await deps.emitEvent({ key: 'release:deployed', summary, payload, source: 'release-gate' });
+await deps.emitEvent({ key: `release:deployed:${plan.targetSha}`, summary, payload, source: 'release-gate' });
+```
+
+`plan.targetSha` is **only the tip** of the fast-forward range. If your fix landed at commit `009fa1d` but three more commits landed on `main` before the next deploy tick, the deploy ships sha `2a7c61a` — an exact-match wait on `009fa1d` (via either the per-sha key `release:deployed:009fa1d…` that `deploy:await{sha}` builds, or a raw payload\_filter `{ sha: '009fa1d…' }` against the global key) **never fires**, because `payload.sha` is always the tip, never an intermediate commit — even though your commit unquestionably shipped (it’s an ancestor of what deployed).
+
+This is a systemic strand risk for the *officially recommended* idiom (`deploy:await`’s own description says “Pass sha to target a specific commit”) — it silently fails in exactly the situation (a busy, multi-agent tree) where an agent is most likely to need it.
+
+## The fix (EI-14601)
+
+[Section titled “The fix (EI-14601)”](#the-fix-ei-14601)
+
+`deploy.ts`/`git-ops.ts` now compute the **full-length sha of every commit** in the deployed range (`commitShasBetween`, a `git rev-list from..to` — distinct from the existing `commitsBetween`, which returns `--oneline` ABBREVIATED one-liners not safe for exact-sha keying), and the deploy-landed emit fires the per-sha key `release:deployed:<sha>` for **every commit the batch included**, not only the tip:
+
+```ts
+for (const sha of plan.commitShas) {
+  if (sha === plan.targetSha) continue; // already emitted above
+  await deps.emitEvent({ key: `release:deployed:${sha}`, ... });
+}
+```
+
+So `deploy:await { sha: '009fa1d…' }` now wakes correctly even when the deploy that actually ships it is several commits ahead. The raw `events:await({ payload_filter: { sha } })` idiom against the **global** key is *not* fixed by this (the global emit’s payload still carries only the tip sha) — prefer the per-sha key (`deploy:await{sha}` or `events:await({ event: 'release:deployed:<sha>' })`) over a payload\_filter on the global key for an exact-commit wait.
+
+## The lesson: an auto-serve/batching pipeline breaks exact-identity waits
+
+[Section titled “The lesson: an auto-serve/batching pipeline breaks exact-identity waits”](#the-lesson-an-auto-servebatching-pipeline-breaks-exact-identity-waits)
+
+Any “wait until X is live” primitive that key/filters on an **exact identifier** is suspect the moment the thing doing the shipping can **batch multiple X’s into one delivery** and only reports the batch’s tip/summary identifier. Before trusting an exact-match wait against a batching pipeline, check: does the emit carry identifiers for the whole batch, or just the outcome’s tip? If just the tip, either widen the emit (as here) or fall back to an ancestry check (`git merge-base --is-ancestor`) instead of exact equality — never assume “my item’s own id will show up in the payload.”
+
 # Your change reaches :3070 through an async, self-healing pipeline — don't babysit it
 
 > Agents repeatedly get confused getting changes live: they edit, re-check :3070 (which serves GREEN main, not their staging edit), conclude 'my change didn't ship', then either thrash trying to 'submit' it (git-sync owns commit/push) or self-diagnose a red gate and grind the WRONG target. The pipeline is automatic + self-healing: git-sync commits→staging, green-checkpoint runs test:affected and FFs main, release-trigger deploys main→:3070 with auto-rollback; a red gate auto-dispatches a release-fixer and git-sync conflicts go to merge-resolver/content-fixer (the 'deployer' role already exists as this fixer family — no new role). The reflex is dev:pipeline_position (NOT a browser) to locate your change, and a non-blocking coord:escalate on a genuine stall. Every spawned role already carries this as the shared DEPLOY_PIPELINE_NOTE.
@@ -9713,6 +9760,14 @@ The staging unit runs `PAPERCUSP_BACKGROUND_WORKERS=0`, which skips `applyPendin
 The `console.warn('[dbos] boot failed (non-fatal): …')` line from step 2 of the diagnosis runbook no longer lives inside `routines-workflow.ts`; it’s now the call site in `apps/operator/bin/host-bootstrap.ts` that dynamic-imports `@papercusp/operator-core/lib/dbos/bootstrap` (`startDbos()`) and swallows its throw — `routines-workflow.ts` is still the module that chain-imports `register-system-actions.ts` (so a poisoned action module still poisons the whole registry the same way), it’s just no longer where the boot catch itself is written. That whole block is gated behind `PAPERCUSP_DBOS_ENABLE=1` (default OFF, see `dbos-flags.ts`) — same env-gate shape as the other opt-in boot workers — so grep `host-bootstrap.ts`, not `routines-workflow.ts`, for the literal log line.
 
 More importantly, this incident is no longer undetectable: `host-bootstrap.ts` now arms a **Red Mug engine-death papercup** (`packages/operator-core/lib/0/engine-death.ts`, `armEngineDeathSentinel()`) as a **plain `setInterval`, deliberately outside DBOS/routines** — its own comment names this exact incident (“the swallowed `[dbos] boot failed` above left every routine dead for 80+ min on 2026-06-12 with nothing detecting it”) as the reason it must survive the failure it watches for. It’s inert while the `papercusp-red-queen` flag is OFF (checked every pass). Step 1 of the diagnosis runbook above (`next_fire_at` all in the past) is still the fastest manual confirmation, but a live host should now self-report this class of stall via the papercup instead of silently sitting dead for 80+ minutes.
+
+## Coda 2 — the live sentinel’s first real firing was a false alarm from an unscoped query (EI-14375, 2026-07-19)
+
+[Section titled “Coda 2 — the live sentinel’s first real firing was a false alarm from an unscoped query (EI-14375, 2026-07-19)”](#coda-2--the-live-sentinels-first-real-firing-was-a-false-alarm-from-an-unscoped-query-ei-14375-2026-07-19)
+
+`harness_shared.routines` is multi-tenant (`workspace_id`): this one Postgres instance carries routines for `papercusp-workspace`, `default` (global/ cross-hive routines like `cross-hive-outbox-drain`), and ad-hoc test workspaces. The live sentinel’s `readRoutineLivenessRows()` originally read `WHERE active = true` with **no `workspace_id` filter** — so it silently aggregated every tenant’s routines together. EI-14375 fired “the routines engine is dead” with papercusp’s own runbook + remediation paths, while `papercup-bg-host-watchdog.service`’s independent ticker-freshness log showed continuous healthy routine fires for papercusp-workspace the entire time — the alarm was real for *some* tenant, but not papercusp, and papercusp’s own runbook (this doc) is not the fix for another tenant’s idle routines.
+
+Fix: `readRoutineLivenessRows(sql, workspaceId)` now takes an explicit workspace and `armEngineDeathSentinel()` binds it to `activeWorkspaceId()` — the live sentinel now only ever reports on the workspace it actually runs in. Diagnosing this class going forward: if `next_fire_at` looks stale, also check `papercup-bg-host-watchdog`’s own journal for “ticker healthy” lines covering the same window — if the watchdog saw healthy fires the whole time, distrust the sentinel’s verdict and look for a scoping bug like this one before running the manual recovery chain.
 
 # Stop polling — await the event (events:catalog + sugar verbs)
 
@@ -77170,6 +77225,8 @@ Some code is **retired but deliberately kept** in the tree for reference — not
 A growing set of our libraries carry **zero Papercusp domain coupling** — any project can borrow them. Where a host-specific value is needed it’s injected through a small seam (a `configure*()` call or a prop); Papercusp maps its own domain onto that seam in the operator, so the lib itself names no consuming app.
 
 **The catalog is `BORROWABLE.md` at the repo root** (generated — `npm run gen:borrowable`; source of truth `scripts/gen-borrowable-catalog.mjs`). It lists each borrowable lib with its description + repo, grouped by domain, plus a “reusable with host wiring” section for libs that keep a Papercusp tie-in by design (`locks`, `coordination`, `backup`, `docs-engine`, `host-platform`). As of 2026-05-31, **every borrowable lib is its own standalone (private) submodule under `libs/generic/*` → `github.com/Papercusp/<name>`** — the borrowable submodules were physically regrouped there, and the borrowable in-repo `packages/*` libs (rrf, search, memory, ipc-framing, ipc-endpoint-server, desktop-ipc, rate-limit, plan-parser, embedded-pg-discovery) were promoted to their own private repos. Only the kept-tie-in libs stay in `packages/` / `libs/`. Consumers import by package name (`@papercusp/<name>`), so the location is transparent. When you make a lib generic — or notice domain coupling leaking into one — add/adjust it in the generator and re-run. See `papercusp-systems-abstraction-2026-05-29`.
+
+**Creating a brand-new borrowable submodule? Add its `.gitignore` in the SAME breath as the initial commit/push — before running `npm install`, a test, or a build inside it.** git-sync auto-commits the superproject *and every submodule* on a schedule with no per-repo opt-out and no grace period, so a fresh submodule with no `.gitignore` yet is one stray `npx vitest run` away from leaking `node_modules/`/build artifacts into its own history within minutes (EI-14414, live 2026-07-17 extracting `@papercusp/model-pricing`). Copy the standard template from an existing lib (e.g. `libs/generic/rate-limit/.gitignore` — `node_modules/`, `dist/`, `*.tsbuildinfo`, `coverage/`, `junit.xml`, `.DS_Store`, plus the WI-4419 `.papercusp/` scratch-dir guards) rather than writing one from scratch. Enforced going forward by `packages/operator-core/lib/harness/gitmodules-invariants.test.ts`’s “submodule .gitignore invariants” check, which fails the build if any npm-managed submodule lacks a `node_modules/`-ignoring `.gitignore`.
 
 **Generic-first — write it in `libs/generic` from the start, don’t migrate it later.** A genuinely domain-free algorithm (a textbook concurrency / distributed-systems / data-structure core: a supervision tree, fencing tokens, a topological sort, a token-bucket rate limiter, φ-accrual, a saga…) **must START as `libs/generic/<name>` behind a `configure*()`/port seam** — not written inside `packages/operator-core/lib` to be extracted in a later pass. The 2026-06-05 audit (`generalize-libs-to-generic-2026-06-05`) found a large batch of exactly that debt and had to migrate \~12 cores out of the app; the discipline below stops it re-accruing:
 

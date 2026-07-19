@@ -512,17 +512,49 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
   // dispatch ledger, with a tighter window than the capture side so the lane probes recovery
   // as soon as env deaths age out. Only when armed; a ledger-read failure ⇒ treat as no outage.
   let laneEnvOutage = false;
+  // EI-14812 class fix: `payload.implementAttempts` (issueToCandidate's `attempts`)
+  // is supposed to be the anti-ping-pong counter, bumped by `defaultMarkDispatched`
+  // on every fire and rolled back/escalated by the worker-exit + orphan-collector
+  // back-edges — but ALL of those are best-effort `mergeIssuePayload` writes that
+  // can silently no-op (0 rows touched, no throw) or throw-and-get-swallowed with
+  // no recurrence guard of their own. When that happens for a given item, its
+  // payload counter freezes while the dispatch ledger keeps growing — root-caused
+  // live: EI-10524's payload never left `implementAttempts: undefined` (frozen
+  // since 2026-07-16 21:47:32) while the SAME item was re-dispatched 81 times over
+  // ~50h, tripping the EI-1689 host-restart-thrash breaker's "routed to human, NOT
+  // re-dispatched" branch more than a dozen times WITHOUT the needsHuman flip ever
+  // actually landing — because that flip is just another `mergeIssuePayload` write
+  // into the same frozen row. `readRecentDispatches` is the one write in this whole
+  // lane that has NEVER been observed to desync (it is the unconditional fire-time
+  // record dispatch-ledger.ts's own module doc describes as the accounting source
+  // of truth) — so it is used here as a FLOOR under the payload-stamped counter:
+  // an item's effective `attempts` can only read HIGHER than the ledger's actual
+  // dispatch count, never lower. This can only make the loop MORE conservative
+  // (a no-op for the vast majority of items whose payload counter tracks fine) and
+  // durably closes the entire class of "stuck counter ⇒ infinite re-dispatch",
+  // independent of whatever future cause freezes a payload write again.
+  let ledgerDispatchCounts: Map<string, number> | null = null;
   if (flagEnabled) {
     try {
       const windowMs = intFromEnv('PAPERCUSP_IMPROVEMENT_ENV_PAUSE_WINDOW_MS', 90 * 60_000, { min: 60_000 });
-      const recent = await readRecentDispatches(ctx.workspaceId, { limit: 50 });
+      const recent = await readRecentDispatches(ctx.workspaceId, { limit: 500 });
       laneEnvOutage = laneInEnvOutage(recent, { nowMs: Date.now(), windowMs });
+      ledgerDispatchCounts = new Map();
+      for (const row of recent) {
+        ledgerDispatchCounts.set(row.itemId, (ledgerDispatchCounts.get(row.itemId) ?? 0) + 1);
+      }
     } catch (e) {
       console.warn('[improvement-implement] env-outage pause check skipped (ledger read failed):', e instanceof Error ? e.message : e);
     }
   }
+  const itemsForPlan = ledgerDispatchCounts
+    ? items.map((it) => {
+        const ledgerCount = ledgerDispatchCounts!.get(it.id) ?? 0;
+        return ledgerCount > (it.attempts ?? 0) ? { ...it, attempts: ledgerCount } : it;
+      })
+    : items;
 
-  const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts, laneEnvOutage, ownerFullAutonomy, policy: storedAutoPolicy.riskTier });
+  const plan = planImplementRun({ items: itemsForPlan, flagEnabled, runnerHarness, maxPerRun, maxAttempts, laneEnvOutage, ownerFullAutonomy, policy: storedAutoPolicy.riskTier });
 
   // Exhausted-without-resolve ⇒ needs-human (consume-edges P-012): an item whose
   // dispatch attempts exhausted with no improvements:resolve ever recorded (silent

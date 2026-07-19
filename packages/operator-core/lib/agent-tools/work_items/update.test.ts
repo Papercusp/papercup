@@ -63,6 +63,20 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', error: expect.stringContaining('feature-family') });
   });
 
+  // EI-14948: a remote-authored (origin='remote') issue-family row resolves fine via
+  // work_items:get / work_items:comment but the engineer_issues view's INSTEAD OF
+  // trigger deliberately no-ops a local field-edit — updateWorkItem now surfaces that
+  // as its own typed reason instead of the generic (misleading) 'not_found', and the
+  // handler must map it to an honest, specific error naming the actual cause.
+  it('a remote_origin_not_editable item maps to a specific remote-authored error, not a misleading "not found"', async () => {
+    updM.mockResolvedValue({ ok: false, reason: 'remote_origin_not_editable' } as never);
+    const b = await body({ id: 'EI-14660', title: 'corrected title' });
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-14660' });
+    expect(b.results[0].error).toMatch(/remote-authored/);
+    expect(b.results[0].error).not.toMatch(/not found/);
+  });
+
   // EI-8497: a body edit the underlying updateWorkItem rejected as a fat-finger
   // shrink maps to a clear, actionable error (not a bare "not found").
   describe('body-shrink guard mapping (EI-8497)', () => {

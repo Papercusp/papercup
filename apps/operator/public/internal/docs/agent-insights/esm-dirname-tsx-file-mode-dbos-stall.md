@@ -99,3 +99,26 @@ every pass). Step 1 of the diagnosis runbook above (`next_fire_at` all in the
 past) is still the fastest manual confirmation, but a live host should now
 self-report this class of stall via the papercup instead of silently sitting
 dead for 80+ minutes.
+
+## Coda 2 — the live sentinel's first real firing was a false alarm from an unscoped query (EI-14375, 2026-07-19)
+
+`harness_shared.routines` is multi-tenant (`workspace_id`): this one Postgres
+instance carries routines for `papercusp-workspace`, `default` (global/
+cross-hive routines like `cross-hive-outbox-drain`), and ad-hoc test
+workspaces. The live sentinel's `readRoutineLivenessRows()` originally read
+`WHERE active = true` with **no `workspace_id` filter** — so it silently
+aggregated every tenant's routines together. EI-14375 fired "the routines
+engine is dead" with papercusp's own runbook + remediation paths, while
+`papercup-bg-host-watchdog.service`'s independent ticker-freshness log showed
+continuous healthy routine fires for papercusp-workspace the entire time — the
+alarm was real for *some* tenant, but not papercusp, and papercusp's own
+runbook (this doc) is not the fix for another tenant's idle routines.
+
+Fix: `readRoutineLivenessRows(sql, workspaceId)` now takes an explicit
+workspace and `armEngineDeathSentinel()` binds it to `activeWorkspaceId()` —
+the live sentinel now only ever reports on the workspace it actually runs in.
+Diagnosing this class going forward: if `next_fire_at` looks stale, also
+check `papercup-bg-host-watchdog`'s own journal for "ticker healthy" lines
+covering the same window — if the watchdog saw healthy fires the whole time,
+distrust the sentinel's verdict and look for a scoping bug like this one
+before running the manual recovery chain.

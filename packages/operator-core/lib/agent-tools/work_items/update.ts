@@ -201,6 +201,16 @@ export default defineTool({
             error: `work_item '${it.id}' body edit REJECTED (EI-8497 fat-finger guard): the existing body is ${res.existingLength} chars and the new one is only ${res.newLength} — a >85% shrink. If this is genuinely intended, resend with confirmShrink:true.`,
           };
         }
+        if (res.reason === 'remote_origin_not_editable') {
+          return {
+            ok: false as const,
+            id: it.id,
+            error:
+              `work_item '${it.id}' is remote-authored (origin=remote) and cannot be field-edited locally; ` +
+              `its authoring peer owns the row and this node receives updates through federation. ` +
+              `(work_items:get / work_items:comment still work on it — only field-edit is blocked.)`,
+          };
+        }
         return {
           ok: false as const,
           id: it.id,

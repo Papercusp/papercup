@@ -145,6 +145,21 @@ transparent. When you make a lib generic — or notice domain coupling leaking i
 one — add/adjust it in the generator and re-run. See
 `papercusp-systems-abstraction-2026-05-29`.
 
+**Creating a brand-new borrowable submodule? Add its `.gitignore` in the SAME
+breath as the initial commit/push — before running `npm install`, a test, or a
+build inside it.** git-sync auto-commits the superproject *and every submodule*
+on a schedule with no per-repo opt-out and no grace period, so a fresh submodule
+with no `.gitignore` yet is one stray `npx vitest run` away from leaking
+`node_modules/`/build artifacts into its own history within minutes (EI-14414,
+live 2026-07-17 extracting `@papercusp/model-pricing`). Copy the standard
+template from an existing lib (e.g. `libs/generic/rate-limit/.gitignore` —
+`node_modules/`, `dist/`, `*.tsbuildinfo`, `coverage/`, `junit.xml`, `.DS_Store`,
+plus the WI-4419 `.papercusp/` scratch-dir guards) rather than writing one from
+scratch. Enforced going forward by
+`packages/operator-core/lib/harness/gitmodules-invariants.test.ts`'s "submodule
+.gitignore invariants" check, which fails the build if any npm-managed
+submodule lacks a `node_modules/`-ignoring `.gitignore`.
+
 **Generic-first — write it in `libs/generic` from the start, don't migrate it
 later.** A genuinely domain-free algorithm (a textbook concurrency /
 distributed-systems / data-structure core: a supervision tree, fencing tokens, a

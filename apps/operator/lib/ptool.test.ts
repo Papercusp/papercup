@@ -12,6 +12,7 @@ import {
   resultToText,
   buildMcpUrl,
   buildCallToolParams,
+  jsonSourceKind,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -19,6 +20,7 @@ describe('ptool parseArgs', () => {
     expect(parseArgs([])).toEqual({
       tool: null,
       json: null,
+      jsonFile: null,
       list: false,
       listFilter: null,
       workspace: null,
@@ -71,6 +73,45 @@ describe('ptool parseArgs', () => {
   it('recognizes help flags', () => {
     expect(parseArgs(['-h']).help).toBe(true);
     expect(parseArgs(['--help']).help).toBe(true);
+  });
+
+  it('parses --json-file (EI-14958: quoting-free JSON source)', () => {
+    expect(parseArgs(['x:y', '--json-file=payload.json']).jsonFile).toBe('payload.json');
+    expect(parseArgs(['x:y', '--json-file', 'payload.json']).jsonFile).toBe('payload.json');
+  });
+
+  it('parses --json - as the stdin sentinel, not a positional', () => {
+    const a = parseArgs(['x:y', '--json', '-']);
+    expect(a.json).toBe('-');
+    expect(a.tool).toBe('x:y');
+  });
+});
+
+describe('ptool jsonSourceKind (EI-14958)', () => {
+  const base = { tool: 'x:y', json: null, jsonFile: null };
+
+  it('returns null when no JSON source was given (prompt interactively)', () => {
+    expect(jsonSourceKind(base)).toBeNull();
+  });
+
+  it('returns "inline" for a normal --json value', () => {
+    expect(jsonSourceKind({ ...base, json: '{"a":1}' })).toBe('inline');
+  });
+
+  it('returns "inline" even for a payload containing an apostrophe — the caller decided how to carry it, ptool itself is fine either way', () => {
+    expect(jsonSourceKind({ ...base, json: '{"copy":"it\'s fine"}' })).toBe('inline');
+  });
+
+  it('returns "stdin" for the --json - sentinel', () => {
+    expect(jsonSourceKind({ ...base, json: '-' })).toBe('stdin');
+  });
+
+  it('returns "file" when --json-file is set', () => {
+    expect(jsonSourceKind({ ...base, jsonFile: 'payload.json' })).toBe('file');
+  });
+
+  it('prefers --json-file over --json when (incorrectly) both are given', () => {
+    expect(jsonSourceKind({ ...base, json: '{"a":1}', jsonFile: 'payload.json' })).toBe('file');
   });
 });
 

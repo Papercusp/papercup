@@ -23,8 +23,19 @@
  * Interactive:  ptool
  *               ptool <group:verb>                 # skip the pickers, prompt args
  * Scripting:    ptool <group:verb> --json '{...}'  # call directly
+ *               ptool <group:verb> --json-file payload.json   # read JSON from a file
+ *               ptool <group:verb> --json - <<'EOF'            # read JSON from stdin
+ *               {"copy": "it's fine now"}
+ *               EOF
  *               ptool --list [filter]              # print the catalog
  *               ptool <group:verb> --workspace=<ws> --harness=<slug>
+ *
+ * `--json '<inline>'` asks the SHELL to carry the JSON through a single-quoted
+ * argument — any apostrophe in the payload (a normal English string like
+ * "it's") terminates that shell quoting early and the tool never sees valid
+ * JSON (EI-14958). `--json -` (read stdin) or `--json-file <path>` sidestep
+ * shell quoting entirely — prefer them for any payload that isn't a trivial
+ * literal.
  *
  * When launched inside a tracked psu session, ptool carries PAPERCUSP_SID as
  * the MCP `client=` identity. That makes it a safe transport fallback when a
@@ -52,6 +63,7 @@ export function parseArgs(argv) {
   const out = {
     tool: null,
     json: null,
+    jsonFile: null,
     list: false,
     listFilter: null,
     workspace: null,
@@ -62,7 +74,14 @@ export function parseArgs(argv) {
   };
   // Value-bearing flags accept BOTH `--flag=value` and `--flag value`. Map a
   // flag name to the out-key it sets (`--args` is an alias for `--json`).
-  const valueFlags = { '--json': 'json', '--args': 'json', '--workspace': 'workspace', '--harness': 'harness', '--url': 'url' };
+  const valueFlags = {
+    '--json': 'json',
+    '--args': 'json',
+    '--json-file': 'jsonFile',
+    '--workspace': 'workspace',
+    '--harness': 'harness',
+    '--url': 'url',
+  };
   let sawList = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -89,6 +108,25 @@ export function parseArgs(argv) {
     }
   }
   return out;
+}
+
+/**
+ * Decide where a ptool invocation's JSON args payload comes from, given
+ * parsed args. Pure — the actual file/stdin read is impure and lives in
+ * `main()`; this just picks the source so the branching is testable without
+ * a real filesystem/stdin (EI-14958: a shell-quoted `--json '<inline>'`
+ * cannot safely carry an apostrophe, so `file`/`stdin` exist as quoting-free
+ * alternatives).
+ *   'file'   — `--json-file <path>` was given (takes priority over --json).
+ *   'stdin'  — `--json -` (the literal dash sentinel).
+ *   'inline' — a normal `--json '<...>'` / `--args '<...>'` value.
+ *   null     — no JSON source given; caller should prompt interactively.
+ */
+export function jsonSourceKind(args) {
+  if (args.jsonFile) return 'file';
+  if (args.json === '-') return 'stdin';
+  if (args.json != null) return 'inline';
+  return null;
 }
 
 /* ─── catalog grouping (pure — exported for tests) ────────────────────── */
@@ -426,10 +464,20 @@ const USAGE = `ptool — call any Papercusp defineTool endpoint from the termina
   ptool                         interactive: pick service → endpoint → args
   ptool <group:verb>            skip the pickers, prompt for that tool's args
   ptool <group:verb> --json '<args>'   call directly with a JSON args object
+  ptool <group:verb> --json-file payload.json   read the JSON args from a file
+  ptool <group:verb> --json - <<'EOF'  read the JSON args from stdin
+  {"copy": "it's fine now"}
+  EOF
   ptool --list [filter]         print the catalog (optionally name-filtered)
 
+A shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote
+terminates early) — prefer --json-file or --json - for any payload that isn't
+a trivial literal.
+
 Flags:
-  --json <json> / --args <json>   args object for a direct (non-interactive) call
+  --json <json> / --args <json>   args object for a direct (non-interactive) call;
+                                   '-' reads the JSON from stdin instead
+  --json-file <path>              read the args JSON from a file (quoting-free)
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
   --harness <slug>                scope the session to a harness
   --raw                           print the raw result text (no JSON pretty-print)
@@ -497,13 +545,26 @@ async function main() {
       process.exit(1);
     }
 
-    // Assemble args: explicit --json, else interactive prompting.
+    // Assemble args: explicit --json/--json-file/stdin, else interactive
+    // prompting. The source is decided by the pure jsonSourceKind() so a
+    // shell-quoting-hostile inline payload always has a quoting-free escape
+    // hatch (EI-14958).
     let callArgs;
-    if (args.json != null) {
+    const jsonKind = jsonSourceKind(args);
+    if (jsonKind != null) {
+      let jsonText;
       try {
-        callArgs = JSON.parse(args.json);
+        if (jsonKind === 'file') jsonText = readFileSync(args.jsonFile, 'utf8');
+        else if (jsonKind === 'stdin') jsonText = readFileSync(0, 'utf8');
+        else jsonText = args.json;
       } catch (e) {
-        console.error(`ptool: --json is not valid JSON: ${e.message}`);
+        console.error(`ptool: could not read JSON from ${jsonKind === 'file' ? `--json-file ${args.jsonFile}` : 'stdin'}: ${e.message}`);
+        process.exit(1);
+      }
+      try {
+        callArgs = JSON.parse(jsonText);
+      } catch (e) {
+        console.error(`ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${e.message}`);
         process.exit(1);
       }
     } else {
@@ -511,9 +572,9 @@ async function main() {
     }
     callArgs = mergeConvenienceArgs(callArgs, { workspace: args.workspace, harness: args.harness }, tool.inputSchema);
 
-    // Interactive confirmation (only when we prompted — a scripted --json
-    // call is non-interactive by intent).
-    if (args.json == null && !args.tool) {
+    // Interactive confirmation (only when we prompted — a scripted --json/
+    // --json-file/stdin call is non-interactive by intent).
+    if (jsonKind == null && !args.tool) {
       const { confirm } = await import('@inquirer/prompts');
       console.error(`\n→ ${toolName}  ${JSON.stringify(callArgs)}`);
       const go = await confirm({ message: 'Call it?', default: true });

@@ -4192,12 +4192,22 @@ export async function updateWorkItem(
   opts: { harness?: string } = {},
 ): Promise<
   | { ok: true; item: WorkItem }
-  | { ok: false; reason: 'not_found' | 'unsupported_family' }
+  | { ok: false; reason: 'not_found' | 'unsupported_family' | 'remote_origin_not_editable' }
   | { ok: false; reason: 'body_shrink_guard'; existingLength: number; newLength: number }
 > {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { ok: false, reason: 'not_found' };
   if (wi.family !== 'issue') return { ok: false, reason: 'unsupported_family' };
+  // EI-14948: a federated (origin='remote') issue-family row is owned by its authoring
+  // peer's core — the engineer_issues view's INSTEAD OF trigger (516/521) deliberately
+  // no-ops a local UPDATE against it and reports 0 rows affected (RETURN NULL) so the
+  // caller doesn't get a false-success. Left unhandled, that NULL propagated all the way
+  // out as the generic 'not_found' reason below — even though getWorkItem (called one
+  // line above, and by work_items:get / work_items:comment) resolves the SAME id fine —
+  // a misleading "not found" for a row that plainly exists. Detect it BEFORE attempting
+  // the write (mirrors the identical guard in setWorkItemState / work_items:complete) so
+  // the caller gets an honest, specific reason instead.
+  if (wi.origin === 'remote') return { ok: false, reason: 'remote_origin_not_editable' };
   const issue = await updateIssue(id, { ...patch, by });
   if (issue === null) return { ok: false, reason: 'not_found' };
   if ('shrinkGuardTripped' in issue) {
