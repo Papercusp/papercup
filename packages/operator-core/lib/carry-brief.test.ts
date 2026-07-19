@@ -57,6 +57,10 @@ function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBrief
     ],
     getFleetFn: async () => ({ slug: 'bug-drain', role: 'leader' }),
     listOpenDirectivesFn: async () => ({ rows: [], totalOpen: 0 }),
+    // P-002/P-003 seams (cold-carry-system-hardening-2026-07-19): hermetic defaults so
+    // unit tests never reach the real coordination/inbox readers.
+    hydrateNoteRefsFn: async () => [],
+    readPostNoteInboxFn: async () => ({ count: 0, lines: [] }),
     ...overrides,
   };
 }
@@ -188,6 +192,84 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
   it('no loop routine ⇒ loop null', async () => {
     const brief = await buildCarryBrief('su-abc', fullOpts({ getLoopStatusFn: async () => null }));
     expect(brief.loop).toBeNull();
+  });
+});
+
+describe('note-citation hydration + post-note delta (cold-carry-system-hardening-2026-07-19 P-002/P-003)', () => {
+  it('P-002: hydrates the ids the note cites via the injected seam and renders them under the note', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note: '## Next action\nBuild WI-5391 item 3; sha lies (WI-5397)',
+          updatedAtMs: Date.now() - 60_000,
+        }),
+        hydrateNoteRefsFn: async (noteText) => {
+          expect(noteText).toContain('WI-5391');
+          return ['WI-5391 [bug/open @b37b0]: "failover…"', 'WI-5397 [bug/resolved]: "sha defect…"'];
+        },
+      }),
+    );
+    expect(brief.citedRefs).toHaveLength(2);
+    const text = renderCarryBriefText(brief);
+    expect(text).toContain('LIVE status (trust these over');
+    expect(text).toContain('↪ WI-5391 [bug/open');
+    expect(text).toContain('WI-5397 [bug/resolved]');
+  });
+
+  it('P-003: folds the post-note inbox delta with the PREDATES warning; quiet delta renders nothing', async () => {
+    const withMail = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        readPostNoteInboxFn: async (_owner, sinceIso) => {
+          expect(Date.parse(sinceIso)).not.toBeNaN();
+          return { count: 3, lines: ['- su-7c298e1b (2026-07-19T02:25:40Z): STOP — do not anchor…'] };
+        },
+      }),
+    );
+    expect(withMail.postNoteInbox?.count).toBe(3);
+    const text = renderCarryBriefText(withMail);
+    expect(text).toContain('3 directed message(s) landed AFTER this carry-note');
+    expect(text).toContain('the note PREDATES them');
+    expect(text).toContain('STOP — do not anchor');
+
+    const quiet = await buildCarryBrief('su-abc', fullOpts());
+    expect(renderCarryBriefText(quiet)).not.toContain('landed AFTER this carry-note');
+  });
+
+  it('both legs fail soft: a throwing seam leaves the brief usable', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        hydrateNoteRefsFn: async () => {
+          throw new Error('resolver down');
+        },
+        readPostNoteInboxFn: async () => {
+          throw new Error('inbox down');
+        },
+      }),
+    );
+    expect(brief.loop?.carryNote).toBeTruthy();
+    expect(brief.citedRefs ?? []).toEqual([]);
+    expect(brief.postNoteInbox ?? null).toBeNull();
+    expect(() => renderCarryBriefText(brief)).not.toThrow();
+  });
+
+  it('no note ⇒ neither leg runs', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({ note: null, updatedAtMs: null }),
+        hydrateNoteRefsFn: async () => {
+          throw new Error('must not be called');
+        },
+        readPostNoteInboxFn: async () => {
+          throw new Error('must not be called');
+        },
+      }),
+    );
+    expect(brief.citedRefs).toBeUndefined();
+    expect(brief.postNoteInbox).toBeUndefined();
   });
 });
 

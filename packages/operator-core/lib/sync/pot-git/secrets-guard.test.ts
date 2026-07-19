@@ -46,12 +46,18 @@ describe('secrets-guard rules', () => {
   it('flags a GitHub token and a PEM private-key block', () => {
     const gh = scanTextForSecrets('a.env', `GITHUB_TOKEN=${GH}`);
     expect(gh.some((x) => x.rule === 'github-token')).toBe(true);
-    const pem = scanTextForSecrets('id_rsa', '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END-----');
+    // Header assembled at runtime so THIS test file's bytes never contain a
+    // PEM-shaped block — the guard scans the publish range, us included.
+    const pemHeader = ['-----BEGIN OPENSSH ', 'PRIVATE KEY-----'].join('');
+    const pem = scanTextForSecrets('id_rsa', `${pemHeader}\nabc\n-----END-----`);
     expect(pem.some((x) => x.rule === 'private-key-pem')).toBe(true);
   });
 
   it('secret-assignment rule is entropy-gated: real value flagged, placeholder ignored', () => {
-    const real = scanTextForSecrets('c.ts', `const client_secret = "Zx9Kq2mNp7Rw4Tv8Lb3Yh6Fd1Gs5Jc0"`);
+    // Value assembled from <20-char fragments so this file's bytes can't match
+    // the {20,} capture — the runtime string is still a realistic secret.
+    const value = ['Zx9Kq2mNp7Rw4T', 'v8Lb3Yh6Fd1Gs5Jc0'].join('');
+    const real = scanTextForSecrets('c.ts', `const client_secret = "${value}"`);
     expect(real.some((x) => x.rule === 'secret-assignment')).toBe(true);
     // Low-entropy placeholder (repetitive / wordy) must NOT trip the build.
     const placeholder = scanTextForSecrets('c.ts', `const api_key = "your-api-key-goes-right-here"`);

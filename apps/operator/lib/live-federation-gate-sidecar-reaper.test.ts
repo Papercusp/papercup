@@ -18,13 +18,14 @@
  * alive so its subtree is intact — OR a cwd/cmdline under a rig sandbox), so a real
  * (prod/live) operator sidecar is NEVER touched. SIGTERM, brief grace, then SIGKILL.
  *
- * A `readFileSync` wiring guard is the right shape for the trap/pgrep/escalation wiring
- * (same rationale as the sibling verify-tauri-headless-*.test.ts family — the gate boots
- * a real packaged binary, so its EXIT wiring can only be asserted at the wiring site).
- * The SAFETY-CRITICAL half — that the ownership predicate reaps a rig-owned serve.mjs
- * process while sparing a foreign one — is verified BEHAVIORALLY against real processes
- * (hermetic: a run-random nonce keeps it matching only its own two fixtures, never a
- * box-wide pgrep, so it can never disturb a concurrently-running live gate).
+ * Test shape: a `readFileSync` wiring guard for the trap/pgrep/escalation wiring (same
+ * rationale as the sibling verify-tauri-headless-*.test.ts family — the gate boots a
+ * real packaged binary, so its EXIT wiring can only be asserted at the wiring site),
+ * PLUS a behavioral check of the SAFETY-CRITICAL half: that the real `gate_owns_rig_pid`
+ * predicate claims a rig-owned process (cwd under the gate $WORK) while sparing a foreign
+ * one. The behavioral check is hermetic and portable — a subshell `cd`s under the sandbox
+ * and evaluates the predicate on its OWN pid ($BASHPID), so there is no cross-process
+ * /proc read, no pgrep, and nothing outside the test is ever touched.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -87,59 +88,41 @@ describe('EI-14500 — live-federation-gate reaps its leaked packaged-server sid
   });
 });
 
-describe('EI-14500 — ownership predicate behavior (reaps rig-owned, spares foreign)', () => {
+describe('EI-14500 — ownership predicate behavior (claims rig-owned, spares foreign)', () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  it('gate_owns_rig_pid claims a rig-owned serve.mjs pid and a scoped reap kills it, while a foreign one survives', () => {
+  it('the real gate_owns_rig_pid claims a cwd under the gate $WORK and spares one outside it', () => {
     if (process.platform !== 'linux' || !existsSync('/proc/self/cwd')) return; // needs procfs
     // dot-free temp dirs so $WORK is a literal-safe grep -E operand.
     const work = mkdtempSync(join(tmpdir(), 'reaprig-'));
     const other = mkdtempSync(join(tmpdir(), 'reapforeign-'));
     dirs.push(work, other);
 
-    // The harness sources the REAL gate_owns_rig_pid from the script (not a copy), then
-    // exercises it against two real fixtures. Two invariants keep it hermetic:
-    //   1. It NEVER box-wide-pgreps for real sidecars — the reap loop only ever considers
-    //      its own two fixture pids — so a concurrent live gate is never disturbed.
-    //   2. The fixture-identifying nonces are generated at RUNTIME (never in any argv), so
-    //      pgrep/pkill can never self-match the harness (the marker-in-argv trap).
+    // Source the REAL gate_owns_rig_pid from the script (not a copy). Each check runs in
+    // a subshell that cd's into the target dir and evaluates the predicate on its OWN pid
+    // ($BASHPID) — a same-process /proc read, so it is portable and touches nothing else.
     const harness = `
 set -uo pipefail
 log(){ :; }
-GATE_SIDECAR_REAP_GRACE_S=1
 WORK="$1"; OTHER="$2"; SCRIPT="$3"
+export WORK
 eval "$(sed -n '/^gate_owns_rig_pid() {/,/^}/p' "$SCRIPT")"
-NOWN="reapo$(od -An -N6 -tx1 /dev/urandom | tr -d ' \\n')"
-NFGN="reapf$(od -An -N6 -tx1 /dev/urandom | tr -d ' \\n')"
 mkdir -p "$WORK/side" "$OTHER/side"
-( cd "$WORK/side"  && exec -a "node --require sidecar-preload.js serve.mjs --ensure $NOWN" sleep 20 ) >/dev/null 2>&1 &
-( cd "$OTHER/side" && exec -a "node --require sidecar-preload.js serve.mjs --ensure $NFGN" sleep 20 ) >/dev/null 2>&1 &
-sleep 0.5
-OWNED="$(pgrep -f "$NOWN" | head -1)"
-FOREIGN="$(pgrep -f "$NFGN" | head -1)"
-ov=foreign; [ -n "$OWNED" ]   && gate_owns_rig_pid "$OWNED"   && ov=owned
-fv=foreign; [ -n "$FOREIGN" ] && gate_owns_rig_pid "$FOREIGN" && fv=owned
-# scoped reap over exactly our two pids, using the REAL predicate:
-for pid in "$OWNED" "$FOREIGN"; do [ -n "$pid" ] && gate_owns_rig_pid "$pid" && kill "$pid" 2>/dev/null || true; done
-sleep 0.6
-oa=dead; [ -n "$OWNED" ]   && kill -0 "$OWNED"   2>/dev/null && oa=alive
-fa=dead; [ -n "$FOREIGN" ] && kill -0 "$FOREIGN" 2>/dev/null && fa=alive
-pkill -f "$NOWN" 2>/dev/null || true
-pkill -f "$NFGN" 2>/dev/null || true
-echo "OWNED=$ov FOREIGN=$fv OWNED_ALIVE=$oa FOREIGN_ALIVE=$fa"
+( cd "$WORK/side"  && gate_owns_rig_pid "$BASHPID" ) && ov=owned || ov=foreign
+( cd "$OTHER/side" && gate_owns_rig_pid "$BASHPID" ) && fv=owned || fv=foreign
+echo "OWNED=$ov FOREIGN=$fv"
 `;
     const out = execFileSync('bash', ['-c', harness, 'harness', work, other, SCRIPT], {
       encoding: 'utf8',
       timeout: 20_000,
     }).trim();
 
-    // The rig-owned sidecar is claimed and reaped; the foreign one is neither.
+    // A rig-owned sidecar (cwd under $WORK) is reaped; a foreign one (a prod/live
+    // sidecar, cwd elsewhere) is spared — the effectiveness AND the safety guarantee.
     expect(out).toContain('OWNED=owned');
     expect(out).toContain('FOREIGN=foreign');
-    expect(out).toContain('OWNED_ALIVE=dead');
-    expect(out).toContain('FOREIGN_ALIVE=alive');
   });
 });

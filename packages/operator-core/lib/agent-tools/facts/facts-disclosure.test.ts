@@ -25,6 +25,63 @@ const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   ...extra,
 });
 
+describe('clampFactBody — boundary-aware clip (cold-carry-system-hardening-2026-07-19 P-004)', () => {
+  it('clips at the last sentence boundary and marks the elision, never mid-sentence', () => {
+    const sentences = `${'Front-loaded operative clause stays intact. '.repeat(10)}${'x'.repeat(200)}`;
+    const out = clampFactBody(sentences);
+    expect(out.length).toBeLessThanOrEqual(500);
+    expect(out.endsWith(' […]')).toBe(true);
+    // The kept text ends exactly at a sentence end — no half-word, no half-clause.
+    expect(out.slice(0, -' […]'.length).endsWith('.')).toBe(true);
+  });
+
+  it('falls back to a word boundary when no sentence boundary is late enough', () => {
+    const words = Array.from({ length: 120 }, (_, i) => `word${i}`).join(' ');
+    const out = clampFactBody(words);
+    expect(out.length).toBeLessThanOrEqual(500);
+    expect(out.endsWith(' […]')).toBe(true);
+    expect(out.slice(0, -' […]'.length)).not.toMatch(/\s$/);
+    // No clipped half-word: the char before the marker is a word end from the input.
+    const kept = out.slice(0, -' […]'.length);
+    expect(words.startsWith(kept)).toBe(true);
+    expect(words[kept.length]).toBe(' ');
+  });
+
+  it('degrades to the old hard cut for a boundary-free body (nothing to anchor on)', () => {
+    const out = clampFactBody('z'.repeat(700));
+    expect(out).toBe(`${'z'.repeat(499)}…`);
+  });
+
+  it('leaves an under-cap body untouched', () => {
+    expect(clampFactBody('short and complete.')).toBe('short and complete.');
+  });
+});
+
+describe('truncationField — droppedTail echo (P-004)', () => {
+  it('echoes the dropped tail verbatim so the caller can re-assert without reconstructing', () => {
+    const raw = `${'Keep this sentence. '.repeat(30)}THE OPERATIVE TAIL THAT GOT CUT.`;
+    const stored = clampFactBody(raw);
+    const t = truncationField(raw, stored);
+    expect(t?.droppedTail).toBeDefined();
+    expect(t?.droppedTail).toContain('THE OPERATIVE TAIL');
+  });
+
+  it('clips a huge dropped tail to the echo cap', () => {
+    const raw = `${'a sentence here. '.repeat(28)}${'t'.repeat(1000)}`;
+    const stored = clampFactBody(raw);
+    const t = truncationField(raw, stored);
+    expect(t?.droppedTail?.length).toBeLessThanOrEqual(240);
+  });
+
+  it('hard-cut fallback still yields a tail (prefix ends with …)', () => {
+    const raw = 'q'.repeat(700);
+    const stored = clampFactBody(raw); // 499 q's + …
+    const t = truncationField(raw, stored);
+    expect(t?.droppedTail).toBeDefined();
+    expect(t?.droppedTail?.startsWith('q')).toBe(true);
+  });
+});
+
 describe('truncationField — facts:assert must not report a lossy write as clean (EI-10952)', () => {
   it('returns undefined when the body was stored intact (no field on the clean path)', () => {
     expect(truncationField('a short conclusion', 'a short conclusion')).toBeUndefined();

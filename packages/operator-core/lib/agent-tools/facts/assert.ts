@@ -25,22 +25,37 @@ import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
  * store actually PERSISTED, so it reports the real stored/dropped counts rather
  * than re-deriving the clamp and hoping the two agree.
  */
+/** Cap on the verbatim dropped-tail echoed back in the disclosure (P-004). */
+const TRUNCATION_TAIL_ECHO_CHARS = 240;
+
 export function truncationField(
   rawBody: string,
   storedBody: string,
-): { storedChars: number; droppedChars: number; note: string } | undefined {
+): { storedChars: number; droppedChars: number; droppedTail?: string; note: string } | undefined {
   const raw = rawBody.trim();
   if (raw.length <= storedBody.length) return undefined;
+  // P-004 (cold-carry-system-hardening-2026-07-19): recover the dropped TAIL and echo
+  // it verbatim, so the caller can immediately re-assert a tighter body without
+  // reconstructing what was lost. The stored body is always <marker-stripped prefix
+  // of raw> + a clip marker (' […]' at a boundary, or '…' on the hard-cut fallback).
+  const prefix = storedBody.endsWith(' […]')
+    ? storedBody.slice(0, -' […]'.length)
+    : storedBody.endsWith('…')
+      ? storedBody.slice(0, -1)
+      : storedBody;
+  const tail = raw.startsWith(prefix) ? raw.slice(prefix.length).trim() : '';
+  const clippedTail =
+    tail.length > TRUNCATION_TAIL_ECHO_CHARS ? `${tail.slice(0, TRUNCATION_TAIL_ECHO_CHARS - 1)}…` : tail;
   return {
     storedChars: storedBody.length,
     droppedChars: raw.length - storedBody.length,
+    ...(clippedTail ? { droppedTail: clippedTail } : {}),
     note:
-      `TRUNCATED to the ${FACT_BODY_MAX_CHARS}-char cap — the write was KEPT (a fact is never lost to a length ` +
-      `error), but ${raw.length - storedBody.length} chars were dropped and the stored body now ends mid-sentence ` +
-      `with '…'. This matters more than a normal clip: facts fold VERBATIM into every future orient as BINDING ` +
-      `context, so a truncated fact reads as a complete instruction that stops halfway. Re-assert the SAME key with ` +
-      `a tighter conclusion (facts are conclusions, not documents) and put the detail on the work-item / insight ` +
-      `the fact points at.`,
+      `CLIPPED to the ${FACT_BODY_MAX_CHARS}-char cap — the write was KEPT (a fact is never lost to a length ` +
+      `error). The clip lands on a sentence/word boundary when one exists (marker ' […]'); droppedTail echoes ` +
+      `what was cut, verbatim. Facts fold VERBATIM into every future orient as BINDING context, so verify the ` +
+      `stored body still says what you mean — front-load the operative clause — and re-assert the SAME key ` +
+      `tighter if not (facts are conclusions, not documents; detail belongs on the work-item / insight).`,
   };
 }
 

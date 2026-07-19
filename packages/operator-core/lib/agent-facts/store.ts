@@ -258,6 +258,27 @@ export function resolveFederationWorkspace(ws: string | null | undefined): strin
 export function clampFactBody(raw: string): string {
   const body = raw.trim();
   if (body.length <= FACT_BODY_MAX_CHARS) return body;
+  // P-004 (cold-carry-system-hardening-2026-07-19): clip at a SENTENCE (else word)
+  // boundary instead of mid-sentence. A fact folds VERBATIM as BINDING context, and
+  // the observed failure mode (2026-07-19, 5× in one night) was a mid-sentence cut
+  // eating exactly the operative clause — the fact then reads as a complete
+  // instruction that stops halfway. The ' […]' marker keeps the elision visible
+  // (EI-10952); the boundary is only taken when it preserves ≥60% of the cap, so a
+  // pathological one-sentence body still degrades to the old hard cut.
+  const MARKER = ' […]';
+  const head = body.slice(0, FACT_BODY_MAX_CHARS - MARKER.length);
+  const minKeep = Math.floor(FACT_BODY_MAX_CHARS * 0.6);
+  let sentenceEnd = -1;
+  for (let i = head.length - 1; i > 0; i -= 1) {
+    const ch = head[i];
+    if ((ch === '.' || ch === '!' || ch === '?' || ch === ';') && /\s/.test(head[i + 1] ?? body[head.length] ?? ' ')) {
+      sentenceEnd = i;
+      break;
+    }
+  }
+  if (sentenceEnd + 1 >= minKeep) return `${head.slice(0, sentenceEnd + 1)}${MARKER}`;
+  const lastSpace = head.lastIndexOf(' ');
+  if (lastSpace >= minKeep) return `${head.slice(0, lastSpace)}${MARKER}`;
   return `${body.slice(0, FACT_BODY_MAX_CHARS - 1)}…`;
 }
 

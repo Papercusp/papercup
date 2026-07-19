@@ -72,6 +72,16 @@ export interface CarryBrief {
     carryNote: string | null;
     carryNoteUpdatedAtMs: number | null;
   } | null;
+  /** P-002 (cold-carry-system-hardening-2026-07-19): LIVE one-line hydrations of the
+   *  WI-/EI- ids the carry-note cites (P-008 reuse) — a cited item that changed state
+   *  after the note was written is the #1 stale-conclusion tell. Optional: absent on
+   *  briefs built before this leg / when the note cites nothing. */
+  citedRefs?: string[];
+  /** P-003: directed inbox mail that landed AFTER the carry-note was written — the
+   *  note PREDATES these; a cold successor must not treat the note as current past
+   *  them. Null when unknown (no note timestamp / read failed); count 0 = verified
+   *  quiet. */
+  postNoteInbox?: { count: number; lines: string[] } | null;
   /** Held (assigned, non-terminal) work-items + their checkpoints. */
   heldItems: CarryBriefHeldItem[];
   /** Open OWNER DIRECTIVES (EI-11484): explicit owner orders recorded verbatim
@@ -251,6 +261,56 @@ export interface BuildCarryBriefOpts {
   listOpenDirectivesFn?: (
     workspaceId: string,
   ) => Promise<{ rows: OwnerDirectiveRow[]; totalOpen: number }>;
+  /** P-002 seam: hydrate WI-/EI- ids cited in the carry note into live one-liners.
+   *  Defaults to the P-008 detect→hydrate→render pipeline. */
+  hydrateNoteRefsFn?: (noteText: string) => Promise<string[]>;
+  /** P-003 seam: read directed inbox mail strictly after `sinceIso` (bounded).
+   *  Defaults to the coordination inbox reader. */
+  readPostNoteInboxFn?: (
+    ownerId: string,
+    sinceIso: string,
+  ) => Promise<{ count: number; lines: string[] }>;
+}
+
+/** P-003 render bounds: at most this many post-note message lines, each clipped. */
+const POST_NOTE_INBOX_MAX_LINES = 3;
+const POST_NOTE_INBOX_LINE_CHARS = 150;
+
+/** Default P-002 hydrator: P-008 reuse end-to-end (detect → hydrate → render one-liners).
+ *  Lazy imports keep the coordination edge off the brief's cold path; any failure ⇒ []. */
+async function defaultHydrateNoteRefs(noteText: string): Promise<string[]> {
+  try {
+    const [{ detectBodyRefs, renderHydratedRef }, { hydrateRefs }] = await Promise.all([
+      import('./agent-tools/coordination/ref-hydrate'),
+      import('./agent-tools/coordination/ref-hydrate-resolve'),
+    ]);
+    const refs = detectBodyRefs(noteText);
+    if (refs.length === 0) return [];
+    const hydrated = await hydrateRefs(refs);
+    return hydrated.filter((h) => h.ok).map((h) => renderHydratedRef(h));
+  } catch {
+    return [];
+  }
+}
+
+/** Default P-003 reader: directed non-own mail strictly after `sinceIso`, bounded. */
+async function defaultReadPostNoteInbox(
+  ownerId: string,
+  sinceIso: string,
+): Promise<{ count: number; lines: string[] }> {
+  const { readInbox } = await import('./agent-tools/coordination/messages');
+  const entries = await readInbox(ownerId, { since_ts: sinceIso, excludeOwn: true });
+  const rows = Array.isArray(entries) ? entries : [];
+  const lines = rows.slice(-POST_NOTE_INBOX_MAX_LINES).map((e: Record<string, unknown>) => {
+    const from = typeof e.from === 'string' ? e.from.slice(0, 12) : '?';
+    const ts = typeof e.ts === 'string' ? e.ts : '';
+    const text =
+      (typeof e.summary === 'string' && e.summary) || (typeof e.body === 'string' && e.body) || '';
+    const clipped = text.replace(/\s+/g, ' ').trim();
+    const line = `- ${from} (${ts}): ${clipped}`;
+    return line.length > POST_NOTE_INBOX_LINE_CHARS ? `${line.slice(0, POST_NOTE_INBOX_LINE_CHARS - 1)}…` : line;
+  });
+  return { count: rows.length, lines };
 }
 
 /** Awaits the engine arms for itself (the always-on inbox wake) — infrastructure,
@@ -327,6 +387,19 @@ export async function buildCarryBrief(
       };
       // P-006: walls ride the note's `## Walls` section — surface them structured.
       brief.walls = splitCarryNoteWalls(meta.note).walls;
+      // P-002 (cold-carry-system-hardening-2026-07-19): hydrate the note's cited
+      // WI-/EI- ids into LIVE one-liners. Best-effort; empty on any failure.
+      if (meta.note) {
+        const hydrate = opts.hydrateNoteRefsFn ?? defaultHydrateNoteRefs;
+        brief.citedRefs = await hydrate(meta.note).catch(() => [] as string[]);
+      }
+      // P-003: what landed AFTER the note was written — the note predates it.
+      if (meta.note && meta.updatedAtMs != null && Number.isFinite(meta.updatedAtMs)) {
+        const readDelta = opts.readPostNoteInboxFn ?? defaultReadPostNoteInbox;
+        brief.postNoteInbox = await readDelta(ownerId, new Date(meta.updatedAtMs).toISOString()).catch(
+          () => null,
+        );
+      }
     }
   } catch {
     /* section stays null */
@@ -657,6 +730,23 @@ export function renderCarryBriefText(brief: CarryBrief, now: number = Date.now()
       } else {
         const age = ageMs != null ? ` (written ${humanAge(ageMs)} ago)` : '';
         sections.push(`${head} Its carry-note${age}:\n${brief.loop.carryNote}`);
+        // P-002: LIVE hydrations of the ids the note cites — a successor trusts
+        // these over the note's phrasing (the note is a snapshot; these are now).
+        if (brief.citedRefs && brief.citedRefs.length > 0) {
+          sections.push(
+            `Cited in the note — LIVE status (trust these over the note's phrasing):\n` +
+              brief.citedRefs.map((l) => `  ↪ ${l}`).join('\n'),
+          );
+        }
+        // P-003: the note PREDATES this mail — a cold successor must reconcile
+        // before executing the note's imperatives.
+        if (brief.postNoteInbox && brief.postNoteInbox.count > 0) {
+          sections.push(
+            `⚠ ${brief.postNoteInbox.count} directed message(s) landed AFTER this carry-note was written — ` +
+              `the note PREDATES them; read before acting on its imperatives:\n` +
+              brief.postNoteInbox.lines.join('\n'),
+          );
+        }
       }
     } else {
       sections.push(`${head} No carry-note written.`);
