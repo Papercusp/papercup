@@ -160,18 +160,32 @@ export default defineTool({
             'current set to change it; [] clears.',
         ),
       checks: z
-        .array(
-          z.object({
-            claim: z.string().min(1).max(500).describe('The external-state claim, stated concretely.'),
-            recheck: z.string().max(300).optional().describe('Concrete probe to run before relying on the claim.'),
-            verified: z
-              .string()
-              .max(300)
-              .optional()
-              .describe('Evidence pointer (what was observed, where). Absent ⇒ renders as PREDICTED.'),
-          }),
+        .preprocess(
+          // EI-302-class wire coercion (proven live the night this shipped): a session
+          // whose manifest-pinned schema predates this field sends the array as a JSON
+          // STRING — parse it instead of rejecting the write. Malformed ⇒ leave as-is
+          // so zod reports the real shape error.
+          (v) => {
+            if (typeof v !== 'string') return v;
+            try {
+              const parsed = JSON.parse(v);
+              return Array.isArray(parsed) ? parsed : v;
+            } catch {
+              return v;
+            }
+          },
+          z.array(
+            z.object({
+              claim: z.string().min(1).max(500).describe('The external-state claim, stated concretely.'),
+              recheck: z.string().max(300).optional().describe('Concrete probe to run before relying on the claim.'),
+              verified: z
+                .string()
+                .max(300)
+                .optional()
+                .describe('Evidence pointer (what was observed, where). Absent ⇒ renders as PREDICTED.'),
+            }),
+          ).max(CARRY_NOTE_MAX_CHECKS),
         )
-        .max(CARRY_NOTE_MAX_CHECKS)
         .optional()
         .describe(
           'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?} rows (the non-owner analog ' +

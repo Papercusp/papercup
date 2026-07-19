@@ -33,8 +33,22 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
 import { IMPLEMENTS_REL } from './convert';
-import { getWorkItem, setWorkItemState, isSettledWorkItemState, type WorkItem } from '../work-items';
-import { getPlanRow } from '../agent-tools/plans/source';
+import {
+  getWorkItem,
+  setWorkItemState,
+  setWorkItemStateWithAliasInfo,
+  setWorkItemClaimHold,
+  mergeWorkItemPayload,
+  isSettledWorkItemState,
+  type WorkItem,
+} from '../work-items';
+import { getPlanRow, planItemsForRow } from '../agent-tools/plans/source';
+import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
+import {
+  activeExternalBlockers,
+  updateExternalBlockerHistory,
+  type ExternalBlockerCapability,
+} from '../external-blockers';
 
 /** The two TERMINAL plan-item statuses this reconciler heals (mirrors
  *  `isTerminalStatus` in agent-tools/plans/set-status.ts) and the settled

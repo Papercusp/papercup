@@ -70,6 +70,19 @@ describe('applyOwnerTurnAutoVerify (cold-carry-system-hardening-2026-07-19 P-005
     expect(applyOwnerTurnAutoVerify(lint, null)).toEqual({ lint, ownerTagsAutoVerified: 0 });
   });
 
+  it('an OLD-dated tag is NOT auto-verified by today\'s owner turn (fold #3 — no manufactured provenance)', () => {
+    const lint = lintOf('[owner:Avi 2026-07-16 "ship it dark"] standing order');
+    const out = applyOwnerTurnAutoVerify(lint, OWNER_TURN); // turn date 2026-07-19
+    expect(out.ownerTagsAutoVerified).toBe(0);
+    expect(out.lint?.matches[0].kind).toBe('manual-owner-tag');
+  });
+
+  it('a turn ref with no parseable date verifies nothing (conservative)', () => {
+    const lint = lintOf('[owner:Avi 2026-07-19] the ruling');
+    const noDate: CurrentTurnStamp = { ref: '[turn:abc]', verdict: 'owner-typed', origin: null };
+    expect(applyOwnerTurnAutoVerify(lint, noDate)).toEqual({ lint, ownerTagsAutoVerified: 0 });
+  });
+
   it('clean lint passes through untouched', () => {
     expect(applyOwnerTurnAutoVerify(undefined, OWNER_TURN)).toEqual({ lint: undefined, ownerTagsAutoVerified: 0 });
   });

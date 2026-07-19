@@ -8,6 +8,7 @@ import {
   releaseTerminalGrips,
   releaseTodoClaim,
   terminalFlipConflict,
+  planSyncWorkItemState,
   type HolderInfo,
 } from './set-status';
 
@@ -57,6 +58,48 @@ describe('shouldPushNeedsHuman', () => {
   it('does NOT fire for non-needs-human target statuses', () => {
     expect(shouldPushNeedsHuman('todo', 'done', 'urgent')).toBe(false);
     expect(shouldPushNeedsHuman('wip', 'blocked', 'high')).toBe(false);
+  });
+});
+
+// EI-14699: a plan-item flipped to blocked/needs-human must reflect onto its
+// linked work_item's state, or scheduler:get_next keeps serving the (still-
+// claimable) work_item → perpetual claim/release ping-pong. This is the pure
+// decider; the PG lookup + setWorkItemState wiring rides on top of it.
+describe('planSyncWorkItemState (EI-14699)', () => {
+  it('blocks a claimable work_item when the plan item flips to blocked/needs-human', () => {
+    // both families' claimable states
+    expect(planSyncWorkItemState('todo', 'blocked', 'todo')).toBe('blocked');
+    expect(planSyncWorkItemState('todo', 'needs-human', 'todo')).toBe('blocked');
+    expect(planSyncWorkItemState('wip', 'blocked', 'open')).toBe('blocked'); // issue-family claimable
+  });
+
+  it('does NOT re-block a work_item that is not claimable (wip/validating/already-blocked)', () => {
+    expect(planSyncWorkItemState('todo', 'blocked', 'wip')).toBeNull();
+    expect(planSyncWorkItemState('todo', 'blocked', 'validating')).toBeNull();
+    expect(planSyncWorkItemState('todo', 'blocked', 'blocked')).toBeNull();
+  });
+
+  it('returns a blocked work_item to todo when the plan item is REOPENED from blocked/needs-human', () => {
+    expect(planSyncWorkItemState('blocked', 'todo', 'blocked')).toBe('todo');
+    expect(planSyncWorkItemState('needs-human', 'todo', 'blocked')).toBe('todo');
+  });
+
+  it('does NOT reopen a work_item that is not blocked, nor on a reopen from a non-blocked status', () => {
+    expect(planSyncWorkItemState('blocked', 'todo', 'wip')).toBeNull(); // someone re-picked it up
+    expect(planSyncWorkItemState('wip', 'todo', 'blocked')).toBeNull(); // plan wasn't blocked before
+    expect(planSyncWorkItemState('done', 'todo', 'blocked')).toBeNull();
+  });
+
+  it('is a no-op for a re-set of the same status (transition-gated)', () => {
+    expect(planSyncWorkItemState('blocked', 'blocked', 'todo')).toBeNull();
+    expect(planSyncWorkItemState('todo', 'todo', 'blocked')).toBeNull();
+    expect(planSyncWorkItemState(null, 'todo', 'todo')).toBeNull();
+  });
+
+  it('never touches the work_item on wip/done/dropped flips (owned by claim + terminal-grip paths)', () => {
+    expect(planSyncWorkItemState('todo', 'wip', 'todo')).toBeNull();
+    expect(planSyncWorkItemState('wip', 'done', 'wip')).toBeNull();
+    expect(planSyncWorkItemState('blocked', 'dropped', 'blocked')).toBeNull();
   });
 });
 

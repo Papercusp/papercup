@@ -34,7 +34,8 @@ import { resolveAgentIdentity, isEphemeralMcpCallIdentity, type AgentIdentity } 
 import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
 import { getClaim } from '../../plan-items/claims';
-import { convertPlanItem } from '../../plan-items/convert';
+import { convertPlanItem, findConvertedWorkItemByStamp, TERMINAL_WORK_ITEM_STATES } from '../../plan-items/convert';
+import { setWorkItemState } from '../../work-items';
 import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
 import { getFlag } from '@papercusp/flags/server';
@@ -156,6 +157,59 @@ export function shouldPushNeedsHuman(
     oldStatus !== 'needs-human' &&
     (importance === 'urgent' || importance === 'high')
   );
+}
+
+/**
+ * EI-14699 — plan-item status → linked work_item state SYNC (the reverse of
+ * reflect-rules.ts's work_item → plan-item direction).
+ *
+ * A plan item converted/promoted to a work_item stamps `payload.plan_item`; the
+ * reflect rules mirror the WORK_ITEM's lifecycle onto the plan item. The reverse
+ * had no path: flipping the PLAN ITEM to `blocked`/`needs-human` independently
+ * (e.g. an owner-gated blocker recorded via plans:set-status) left the linked
+ * work_item's own `state` untouched — so `scheduler:get_next` / the
+ * `work-item:claimable` gate (which read work_item.state, not the plan item's
+ * status) kept serving the item as claimable. Each fleet member then claimed it,
+ * re-discovered the owner-gated blocker, released it, and the cycle repeated —
+ * perpetual claim/release ping-pong that burned real fleet cycles (WI-3475,
+ * WI-3467 each cycled 8+ times).
+ *
+ * This pure decider says which work_item state (if any) a plan-status flip must
+ * reflect, given the work_item's CURRENT state so we never disturb work that is
+ * already correctly placed:
+ *   - plan → blocked/needs-human, while the work_item still sits CLAIMABLE
+ *     (todo/open) ⇒ set the work_item `blocked` (for a feature-family item this
+ *     populates the scheduler's `work_item_blocked` sidecar, ending the ping-pong).
+ *   - plan reopened → todo FROM a blocked/needs-human status, while the work_item
+ *     is still `blocked` (i.e. blocked by THIS sync) ⇒ return it to `todo`.
+ * Every other flip maps to null — done/dropped (terminal-grip release), wip
+ * (auto-claim), a re-set of the same status, or a work_item already elsewhere in
+ * its lifecycle are all left to their existing owners. Transition-gated so a
+ * routine re-set never yanks a work_item. Pure/injectable like shouldPushNeedsHuman
+ * / reflectedStatus so the rule is unit-tested without the lock/PG path.
+ */
+export const PLAN_BLOCKED_STATUSES = new Set(['blocked', 'needs-human']);
+/** The work_item states a claimable item can be in before we block it — the
+ *  canonical claimable states across both families (feature: `todo`, issue: `open`). */
+export const CLAIMABLE_WORK_ITEM_STATES = new Set(['todo', 'open']);
+export function planSyncWorkItemState(
+  oldPlanStatus: string | null,
+  newPlanStatus: string,
+  currentWorkItemState: string,
+): 'blocked' | 'todo' | null {
+  if (newPlanStatus === oldPlanStatus) return null;
+  if (PLAN_BLOCKED_STATUSES.has(newPlanStatus)) {
+    return CLAIMABLE_WORK_ITEM_STATES.has(currentWorkItemState) ? 'blocked' : null;
+  }
+  if (
+    newPlanStatus === 'todo' &&
+    oldPlanStatus !== null &&
+    PLAN_BLOCKED_STATUSES.has(oldPlanStatus) &&
+    currentWorkItemState === 'blocked'
+  ) {
+    return 'todo';
+  }
+  return null;
 }
 
 /** Caller-DX (watchdog P-006): the inline note is spliced into a single plan
@@ -596,6 +650,48 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
   }
 
+  // EI-14699: reflect a plan-item block/unblock onto its linked work_item so the
+  // two tracking surfaces can't drift apart. Without this, flipping the plan item
+  // to blocked/needs-human left the converted work_item's own `state` claimable,
+  // so scheduler:get_next / work-item:claimable kept re-serving it → perpetual
+  // claim/release ping-pong (WI-3475/WI-3467 each cycled 8+ times). Transition- and
+  // current-state-gated by planSyncWorkItemState so a routine re-set never disturbs
+  // a work_item already placed correctly (wip/terminal/etc). Awaited but fully
+  // fail-safe: a lookup/write hiccup NEVER fails the plan-status flip.
+  let workItemSynced: { id: string; state: 'blocked' | 'todo' } | undefined;
+  {
+    const syncTarget = planSyncWorkItemState(result.value.oldStatus, it.status, '');
+    // Cheap pre-gate: only a block/unblock edge can ever sync; skip the PG lookup for
+    // every other flip (done/wip/re-set) — the vast majority. `planSyncWorkItemState`
+    // is re-run below with the work_item's REAL state, which is the authoritative gate.
+    const isBlockEdge = PLAN_BLOCKED_STATUSES.has(it.status) && result.value.oldStatus !== it.status;
+    const isUnblockEdge =
+      it.status === 'todo' &&
+      result.value.oldStatus !== null &&
+      PLAN_BLOCKED_STATUSES.has(result.value.oldStatus);
+    if (syncTarget !== null || isBlockEdge || isUnblockEdge) {
+      try {
+        const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+        const linked = await findConvertedWorkItemByStamp(it.slug, it.itemId, scope.harnessSlug);
+        if (linked && !TERMINAL_WORK_ITEM_STATES.has(linked.state)) {
+          const target = planSyncWorkItemState(result.value.oldStatus, it.status, linked.state);
+          if (target && target !== linked.state) {
+            const updated = await setWorkItemState(linked.id, target, {
+              harness: linked.harness ?? undefined,
+              by: 'plan-item-status-sync',
+            });
+            if (updated) workItemSynced = { id: linked.id, state: target };
+          }
+        }
+      } catch (e) {
+        console.warn(
+          `[plans:set-status] work_item block-sync ${it.slug}#${it.itemId} → ${it.status} failed:`,
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
+  }
+
   // Push the new item state to any live `useSyncQuery('planItems.byPlan')`
   // subscriber (the Create-tab kanban). The `items` jsonb was already
   // re-projected synchronously inside the lock above, so a re-pull is fresh.
@@ -694,6 +790,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     ...(claim ? { claim } : {}),
     ...(claimReleased ? { claimReleased } : {}),
     ...(assignmentReleased ? { assignmentReleased } : {}),
+    ...(workItemSynced ? { workItemSynced } : {}),
     ...(memory ? { memory } : {}),
     ...(noteTruncated
       ? {

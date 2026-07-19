@@ -205,8 +205,34 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
   it('parseCheckLine rejects non-row lines including the legend', () => {
     expect(parseCheckLine('')).toBeNull();
     expect(parseCheckLine(CARRY_NOTE_CHECKS_LEGEND)).toBeNull();
-    expect(parseCheckLine('- plain wall-style row without a marker')).toBeNull();
     expect(parseCheckLine('prose')).toBeNull();
+  });
+
+  it('a marker-less (walls-syntax) row parses as PREDICTED instead of being dropped (fold #6)', () => {
+    expect(parseCheckLine('- hand-written claim — re-check: run the probe')).toEqual({
+      claim: 'hand-written claim',
+      recheck: 'run the probe',
+    });
+  });
+
+  it('newly-supplied verified evidence gets an instant stamped; inherited evidence keeps its own (fold #5)', () => {
+    const now = Date.parse('2026-07-19T05:00:00.000Z');
+    const fresh = normalizeCheckEntries(
+      [{ claim: 'c', verified: 'observed live in pg' }],
+      [],
+      now,
+    );
+    expect(fresh[0].verified).toBe('observed live in pg @2026-07-19T05:00:00.000Z');
+    // Evidence that already embeds an ISO instant is not double-stamped.
+    const stamped = normalizeCheckEntries(
+      [{ claim: 'c', verified: 'tick 1944 @ 2026-07-19T02:38:36Z' }],
+      [],
+      now,
+    );
+    expect(stamped[0].verified).toBe('tick 1944 @ 2026-07-19T02:38:36Z');
+    // Inheritance carries the original stamp unchanged.
+    const inherited = normalizeCheckEntries([{ claim: 'c' }], fresh, now + 3_600_000);
+    expect(inherited[0].verified).toBe(fresh[0].verified);
   });
 
   it('renderCarryNote places ## Checks after the narrative and BEFORE ## Walls; parseCarryNote structures both back', () => {
@@ -260,11 +286,26 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
 });
 
 describe('lintUncheckedExternalClaims — carried claims must carry their probe (P-009)', () => {
+  it('catches its own ROOT INCIDENT: an assertion with an external-state noun but no concrete token', () => {
+    // The exact line that caused the 2026-07-19 phantom re-anchor — verb, noun, NO token.
+    const prose = 'expect the hash to ROLL, start counting only under the new hash';
+    expect(lintUncheckedExternalClaims(prose, '')).toHaveLength(1);
+    // Covered once a check row names the same noun.
+    const probe = renderCheckLine({ claim: 'the hash rolls at the first post-restart tick', recheck: 'tick_at vs ExecMainStartTimestamp' });
+    expect(lintUncheckedExternalClaims(prose, probe)).toHaveLength(0);
+  });
+
   it('flags an assertion line whose distinctive token appears in no probe row', () => {
     const prose = 'Next wake: hostStartedAt MUST equal 2026-07-19T02:19:19Z or alarm.';
     const flags = lintUncheckedExternalClaims(prose, '');
     expect(flags).toHaveLength(1);
     expect(flags[0]).toContain('MUST');
+  });
+
+  it('sees 10-char short-shas (the form this fleet habitually quotes)', () => {
+    expect(lintUncheckedExternalClaims('deploy 8655a22cf1 MUST land first', '')).toHaveLength(1);
+    // …but a plain number is not a hash.
+    expect(lintUncheckedExternalClaims('build 12345678 MUST finish', '')).toHaveLength(0);
   });
 
   it('does not flag when a check/wall row covers the token', () => {
@@ -273,9 +314,13 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
     expect(lintUncheckedExternalClaims(prose, probes)).toHaveLength(0);
   });
 
-  it('ignores prose without assertion verbs or without distinctive tokens, and caps at 3', () => {
+  it('ignores prose without assertion verbs or external-state content, and caps at 3', () => {
     expect(lintUncheckedExternalClaims('read the inbox, then build the patch', '')).toHaveLength(0);
-    expect(lintUncheckedExternalClaims('the hash MUST be correct', '')).toHaveLength(0); // verb, no token
+    // Verb but neither a concrete token NOR an external-state noun — clean.
+    expect(lintUncheckedExternalClaims('the answer MUST be correct', '')).toHaveLength(0);
+    // Verb + external-state NOUN (no token) — flagged since the fold-#1 noun class
+    // (this exact shape was the un-catchable root incident before it).
+    expect(lintUncheckedExternalClaims('the hash MUST be correct', '')).toHaveLength(1);
     const many = Array.from({ length: 5 }, (_, i) => `line ${i}: WI-${1000 + i} MUST stay open`).join('\n');
     expect(lintUncheckedExternalClaims(many, '')).toHaveLength(3);
   });
