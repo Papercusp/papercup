@@ -616,6 +616,39 @@ POLL_SCRIPT
 chmod +x "$POLL"
 export VERIFY_TAURI_POLL="$POLL"
 
+# EI-13218: "dev bridge listening" + a live PID (checked above) only prove the
+# Tauri BRIDGE is reachable — they say nothing about whether the webview's
+# owned Hono+SPA origin is actually serving. Confirmed live: a bridge can stay
+# reachable (probe succeeds, PID alive) while in-webview fetches of /api/health
+# and / both fail, with the ALREADY-RENDERED DOM staying visible — a
+# stale-capable false-positive that a DOM/selector-only assertion (the
+# VERIFY_TAURI_POLL / `check` helper above) cannot catch, since it never
+# re-fetches the origin. Assert the origin split BEFORE declaring ready, with a
+# short retry: right after the bridge log line, the SPA's first health fetch
+# may not have resolved yet.
+HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-15}"
+HEALTH_DEADLINE=$((SECONDS + HEALTH_TIMEOUT))
+HEALTH_JSON=""
+while :; do
+  HEALTH_JSON="$(tauri-agent-tools eval --pid "$BRIDGE_PID" "
+    Promise.all([
+      fetch('/api/health').then(r => r.status).catch(e => 'ERR:' + e.message),
+      fetch('/').then(r => r.status).catch(e => 'ERR:' + e.message)
+    ]).then(v => JSON.stringify({ apiHealth: v[0], rootHtml: v[1] }))
+  " 2>&1)" \
+    && echo "$HEALTH_JSON" | grep -Eq '"apiHealth"[[:space:]]*:[[:space:]]*200' \
+    && echo "$HEALTH_JSON" | grep -Eq '"rootHtml"[[:space:]]*:[[:space:]]*200' && break
+  if [ "$SECONDS" -ge "$HEALTH_DEADLINE" ]; then
+    echo "FATAL: owned origin unreachable from the webview after ${HEALTH_TIMEOUT}s (pid=$BRIDGE_PID)." >&2
+    echo "       The bridge/PID is alive but /api/health and/or / did not return 200 — refusing to" >&2
+    echo "       hand back a shell whose DOM may be a stale false-positive (EI-13218). Last result:" >&2
+    echo "       ${HEALTH_JSON}" >&2
+    exit 1
+  fi
+  sleep 1
+done
+log "origin health confirmed: apiHealth=200 rootHtml=200 (pid=$BRIDGE_PID)"
+
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
 
 # EI-10387: the DB/workspace warning is now CONDITIONAL — VERIFY_TAURI_ISOLATED_DB=1

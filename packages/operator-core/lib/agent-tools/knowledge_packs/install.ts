@@ -9,7 +9,7 @@
  *   2. re-call with `resolutions` (or `acceptDefaults: true`) → applies.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
@@ -34,7 +34,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    pot: z.string().min(1).max(120).describe('Pot home slug.'),
+    pot: entityRef('pot', { soft: true, max: 120, describe: 'Pot home slug.' }),
     pack: z.string().min(1).max(120).describe('Pack id (knowledge_packs:list enumerates).'),
     resolutions: z
       .array(z.object({ itemId: z.string().min(1), action: z.enum(['install', 'skip', 'replace', 'keep-both']) }))

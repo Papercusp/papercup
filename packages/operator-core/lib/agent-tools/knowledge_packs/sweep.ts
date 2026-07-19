@@ -5,7 +5,7 @@
  * deliberate follow-up act.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
 export default defineTool({
@@ -25,7 +25,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    pot: z.string().min(1).max(120),
+    pot: entityRef('pot', { soft: true, max: 120 }),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args) {

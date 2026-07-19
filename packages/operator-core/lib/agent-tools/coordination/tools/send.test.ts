@@ -285,6 +285,40 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(b.results[0].replyWake).toBeUndefined();
   });
 
+  it('EI-14760: a wake:true reply whose recipient IS the original sender does NOT double-wake — reply-wake folds into the directed wake', async () => {
+    // The A→B, then B replies-to-A-with-wake back-and-forth: `to:[peer]` (the directed
+    // wake target) is ALSO the original sender of the message being replied to (the
+    // wake-on-reply target). BOTH fans used to fire peer's inbox-wake key → two wake
+    // deliveries → two wasted wake-pump turns for ONE message (EI-14760: deliveries
+    // #22831/#22832 on the same await, ~31ms apart, for one send). Now the redundant
+    // reply-wake folds into the authoritative deliver-and-wake fan (env.to).
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    wakeM.mockResolvedValue({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig', wake: 'required' });
+    // Exactly ONE inbox-wake fan — the deliver-and-wake fan for env.to. The reply-wake
+    // did NOT fire a second emit for the same recipient.
+    expect(wakeM).toHaveBeenCalledTimes(1);
+    expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
+    // Reported as folded (observable dedup), not fired.
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 0, foldedIntoDirectedWake: true });
+    expect(b.results[0].wake).toMatchObject({ woken: 1 });
+  });
+
+  it('EI-14760: a wake:true reply whose original sender is a THIRD party still fires the reply-wake (two distinct fans)', async () => {
+    // reply directed to `peer`, but the ORIGINAL message came from a third party `asker`
+    // who is NOT in `to` — the reply-wake to `asker` is genuinely needed and must still
+    // fire alongside the directed wake to `peer` (the fold must not over-apply).
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true } as never);
+    wakeM.mockResolvedValue({ targets: ['x'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig', wake: 'required' });
+    expect(wakeM).toHaveBeenCalledTimes(2);
+    const fannedSets = wakeM.mock.calls.map((c) => c[0]);
+    expect(fannedSets).toContainEqual(['asker']); // reply-wake
+    expect(fannedSets).toContainEqual(['peer']); // directed deliver-and-wake
+    expect(b.results[0].replyWake).toMatchObject({ target: 'asker' });
+    expect(b.results[0].replyWake?.foldedIntoDirectedWake).toBeUndefined();
+  });
+
   it('flag OFF → no wakeOnReply persisted and no reply-wake (behaves as today)', async () => {
     flagM.mockResolvedValue(false as never);
     // directed send: no opt-in persisted

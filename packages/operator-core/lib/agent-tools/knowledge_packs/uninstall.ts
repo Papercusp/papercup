@@ -4,7 +4,7 @@
  * kept by default (they're the user's words now).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
 export default defineTool({
@@ -24,7 +24,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    pot: z.string().min(1).max(120),
+    pot: entityRef('pot', { soft: true, max: 120 }),
     pack: z.string().min(1).max(120),
     keepEdited: z.boolean().optional().describe('Default true — edited rows survive the uninstall.'),
     workspace: z.string().max(120).optional(),

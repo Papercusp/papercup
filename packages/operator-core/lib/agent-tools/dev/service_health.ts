@@ -7,12 +7,13 @@
 
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
-import { probeAll, type ProbeResult } from "../../service-health";
+import { probeAll, supervisedProcesses, type ProbeResult } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot, type SupervisionStatusEntry, type SupervisionFlapState } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
+import { probeServiceStart, type ServiceStartInfo } from "./systemd-service-probe";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
   return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
@@ -41,6 +42,66 @@ export function overlayNodeChildSupervision(
       flapState: sidecarFlapState(status),
     };
   });
+}
+
+/**
+ * EI-13221: how recently a systemd-user unit's MainPID came up, before this
+ * probe was seen as "down for real". A unit like `staging-api` (:3170) can be
+ * cycled by automation the reconciler's own flap-count never observes — the
+ * papercup-staging-sync.timer restarts it independently (~every 5min, whenever
+ * `staging` has advanced) via a raw `systemctl --user restart`, outside the
+ * HEALTH_ENDPOINTS HTTP-probe rotation this file drives, so `flapState` stays
+ * 'ok' throughout even though the unit hard-cycles (SIGKILL, ~10-13s down)
+ * every few minutes. A caller who hits a connection-refused against :3170 and
+ * then reaches for `dev:service_health` deserves a real answer, not a blind
+ * spot — so surface it directly from the OS (`probeServiceStart`, the same
+ * ground-truth primitive `dev:restart`'s coalesce check already trusts),
+ * independent of the reconciler's own bookkeeping.
+ */
+export const RECENT_RESTART_WINDOW_SEC = 20;
+
+export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
+  /** Seconds since the unit's current MainPID started (systemd ground truth).
+   *  Omitted when not a systemd-user unit, or the probe couldn't determine it. */
+  secondsSinceStart?: number;
+  /** Present only when secondsSinceStart < RECENT_RESTART_WINDOW_SEC — a plain-
+   *  English pointer so "connection refused right now" reads as "known restart
+   *  window, retry" instead of "the service is down / under load". */
+  recentRestartNote?: string;
+};
+
+/**
+ * Overlay live systemd restart-recency onto supervision entries (EI-13221).
+ * Additive + best-effort: a probe failure (no systemd, unit never started,
+ * non-linux) leaves the entry untouched — this must never turn a healthy
+ * snapshot into a failure. `probeFn` is injectable for tests.
+ */
+export async function overlaySystemdRestartRecency(
+  entries: SupervisionStatusEntry[],
+  probeFn: (unit: string) => Promise<ServiceStartInfo> = probeServiceStart,
+  // Injectable for tests; defaults to the real registry. `SupervisionStatusEntry`
+  // (the snapshot shape) drops `unit` — only the source `SupervisionEntry`
+  // registry carries it — so we look it up by name rather than widening the
+  // reconciler's own snapshot type.
+  registry: { name: string; unit?: string }[] = supervisedProcesses(),
+): Promise<SupervisionStatusEntryWithRecency[]> {
+  const unitByName = new Map(registry.map((r) => [r.name, r.unit]));
+  return Promise.all(
+    entries.map(async (entry) => {
+      const unit = entry.layer === "systemd-user" ? unitByName.get(entry.name) : undefined;
+      if (!unit) return entry;
+      const info = await probeFn(unit).catch(() => ({ ok: false }) as ServiceStartInfo);
+      if (!info.ok || info.secondsSinceStart === undefined) return entry;
+      const withRecency: SupervisionStatusEntryWithRecency = { ...entry, secondsSinceStart: info.secondsSinceStart };
+      if (info.secondsSinceStart < RECENT_RESTART_WINDOW_SEC) {
+        withRecency.recentRestartNote =
+          `${entry.name} restarted ${info.secondsSinceStart}s ago — a connection-refused seen ` +
+          `in roughly that window is most likely this restart cycling the listener (e.g. ` +
+          `papercup-staging-sync's auto-track for staging-api), not an outage or load signal. Retry.`;
+      }
+      return withRecency;
+    }),
+  );
 }
 
 type ServiceRootCause = { component: string; reason: string };
@@ -123,10 +184,12 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const services = await probeAll();
-    const supervision = overlayNodeChildSupervision(
-      supervisionSnapshot(),
-      substrateSidecarSupervisionStatus(),
-      spawnerSidecarSupervisionStatus(),
+    const supervision = await overlaySystemdRestartRecency(
+      overlayNodeChildSupervision(
+        supervisionSnapshot(),
+        substrateSidecarSupervisionStatus(),
+        spawnerSidecarSupervisionStatus(),
+      ),
     );
     return {
       content: [

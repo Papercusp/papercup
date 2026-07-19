@@ -163,6 +163,7 @@
     "lint:no-self-referential-export": "node scripts/check-no-self-referential-export.mjs",
     "lint:vitest-mock-paths": "node apps/operator/scripts/check-vitest-mock-paths.mjs",
     "lint:host-bundle-builds": "node scripts/check-host-bundle-builds.mjs",
+    "lint:bundle-budget": "node scripts/check-bundle-budget.mjs",
     "lint:rubric-method-ref-parity": "node scripts/check-rubric-method-ref-parity.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",

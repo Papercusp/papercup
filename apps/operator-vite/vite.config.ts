@@ -159,6 +159,22 @@ export default defineConfig({
       // Shim the two native packages; the pure-JS layers above them externalize
       // cleanly. The SPA never runs Docker/SSH test-container code.
       { find: /^(ssh2|cpu-features)(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/testcontainers-native-browser.ts') },
+      // EI-13213: `commands/defs/delegation.ts`'s `delegates.*` handlers only
+      // reach `../../delegated-tasks` behind `if (typeof window !== 'undefined')
+      // { ...fetch...; return; }` — a RUNTIME guard Rolldown can't see, so it
+      // still traces the dynamic import() target statically. delegated-tasks.ts
+      // in turn statically imports work-items.ts, which fans out into dbos/*,
+      // sync/hyperbee/*, and the whole ~550-tool agent-tools/index.ts catalog —
+      // all reachable-but-dead server code no browser code path ever executes,
+      // and that competing static edge is exactly what Rollup flags as
+      // INEFFECTIVE_DYNAMIC_IMPORT for work-items.ts/boot-all.ts/
+      // account-pool-store.ts. Shim just this one entry point; the real module
+      // is untouched for server/test consumers (this alias only applies inside
+      // the operator-vite Vite build).
+      {
+        find: /^\.\.\/\.\.\/delegated-tasks$/,
+        replacement: resolve(import.meta.dirname, 'src/shims/delegated-tasks-browser.ts'),
+      },
       { find: '@', replacement: operatorRoot },
     ],
     // Operator components and the Vite shell must share ONE React

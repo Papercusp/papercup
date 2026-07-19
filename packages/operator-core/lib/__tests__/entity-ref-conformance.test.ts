@@ -114,7 +114,7 @@ function scanCatalog(): { unconverted: Unconverted[]; converted: number; walkabl
  * do not "fix" a failing build by bumping it, that is the one move that makes
  * this test worthless.
  */
-const UNCONVERTED_BASELINE = 34; // measured 2026-07-19: workspace 21, pot 7, harness 6
+const UNCONVERTED_BASELINE = 27; // 2026-07-19: was 34; the 7 knowledge_packs pot args converted. Remaining: workspace 21, harness 6.
 
 describe('entityRef conformance ratchet (tool-arg-referential-integrity P-003)', () => {
   it('the real tool catalog loaded (guard against a vacuous pass)', () => {
@@ -148,13 +148,22 @@ describe('entityRef conformance ratchet (tool-arg-referential-integrity P-003)',
     for (const u of unconverted) byKind.set(u.kind, (byKind.get(u.kind) ?? 0) + 1);
     // Not an assertion on the numbers — a durable, greppable record of where the
     // surface stands, printed on every run so the gap cannot go quietly stale.
+    // Name the actual tool+arg pairs, not just per-kind counts. Counts alone
+    // sent a conversion pass at the wrong seven tools — the walkable catalog is
+    // a small subset of the surface, so "pot: 7" says nothing about WHICH.
+    const listing = [...byKind.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([kind, n]) => {
+        const args = unconverted
+          .filter((u) => u.kind === kind)
+          .map((u) => `${u.tool}.${u.arg}`)
+          .sort();
+        return `  ${kind} (${n}): ${args.join(', ')}`;
+      })
+      .join('\n');
     console.log(
       `[entityRef conformance] walkable tools=${walkable} converted=${converted} ` +
-        `unconverted=${unconverted.length} baseline=${UNCONVERTED_BASELINE}\n` +
-        [...byKind.entries()]
-          .sort((a, b) => b[1] - a[1])
-          .map(([k, n]) => `  ${k}: ${n}`)
-          .join('\n'),
+        `unconverted=${unconverted.length} baseline=${UNCONVERTED_BASELINE}\n${listing}`,
     );
     expect(Array.isArray(unconverted)).toBe(true);
   });

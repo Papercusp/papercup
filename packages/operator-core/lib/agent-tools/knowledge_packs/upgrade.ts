@@ -5,7 +5,7 @@
  * never-clobber-user-edits is the D-003 line.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
@@ -26,7 +26,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    pot: z.string().min(1).max(120),
+    pot: entityRef('pot', { soft: true, max: 120 }),
     pack: z.string().min(1).max(120),
     resolutions: z
       .array(z.object({ itemId: z.string().min(1), action: z.enum(['install', 'skip', 'replace', 'keep-both']) }))

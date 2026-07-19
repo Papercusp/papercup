@@ -8,7 +8,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../service-health", () => ({ probeAll: vi.fn() }));
+vi.mock("../../service-health", () => ({ probeAll: vi.fn(), supervisedProcesses: vi.fn(() => []) }));
+// EI-13221: probeServiceStart shells out to `systemctl`/`ps` — stub it so the
+// handler tests never touch the real OS; default "not determinable" (ok:false)
+// means the new restart-recency overlay is a no-op unless a test opts in.
+vi.mock("./systemd-service-probe", () => ({ probeServiceStart: vi.fn(async () => ({ ok: false })) }));
 vi.mock("../../projected-tool-deps", () => ({
   getTelemetryHealth: vi.fn(() => ({
     droppedRows: 2,
@@ -35,7 +39,7 @@ import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
-import { buildServiceHealthDiagnostic, overlayNodeChildSupervision } from "./service_health";
+import { buildServiceHealthDiagnostic, overlayNodeChildSupervision, overlaySystemdRestartRecency } from "./service_health";
 const probeM = vi.mocked(probeAll);
 const supervisionM = vi.mocked(supervisionSnapshot);
 const substrateM = vi.mocked(substrateSidecarSupervisionStatus);
@@ -155,5 +159,57 @@ describe("overlayNodeChildSupervision (P-006, pure)", () => {
       { running: true, respawnAttemptsInWindow: 0, gaveUp: false, lastRespawnScheduledAt: null },
     );
     expect(out[0].flapState).toBe("gave-up");
+  });
+});
+
+describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/registry)", () => {
+  const stagingEntry = {
+    name: "staging-api",
+    layer: "systemd-user" as const,
+    autoRestart: true,
+    criticality: "important" as const,
+    consecutiveProbeFailures: 0,
+    lastRestartAt: null,
+    restartsLast10m: 0,
+    flapState: "ok" as const,
+  };
+  const registry = [{ name: "staging-api", unit: "papercup-staging-api" }];
+
+  it("attaches secondsSinceStart + a recentRestartNote when the unit came up inside the window", async () => {
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 5 }));
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(probeFn).toHaveBeenCalledWith("papercup-staging-api");
+    expect(out[0]?.secondsSinceStart).toBe(5);
+    expect(out[0]?.recentRestartNote).toMatch(/restarted 5s ago/);
+  });
+
+  it("attaches secondsSinceStart WITHOUT a note once outside the recent-restart window", async () => {
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 600 }));
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(out[0]?.secondsSinceStart).toBe(600);
+    expect(out[0]?.recentRestartNote).toBeUndefined();
+  });
+
+  it("leaves the entry untouched when the probe can't determine a start time (fail-soft)", async () => {
+    const probeFn = vi.fn(async () => ({ ok: false }));
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(out[0]).toEqual(stagingEntry);
+  });
+
+  it("leaves the entry untouched when the probe throws", async () => {
+    const probeFn = vi.fn(async () => {
+      throw new Error("systemctl not found");
+    });
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(out[0]).toEqual(stagingEntry);
+  });
+
+  it("skips non-systemd-user entries and units missing from the registry", async () => {
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 1, secondsSinceStart: 1 }));
+    const nodeChild = { ...stagingEntry, name: "substrate-sidecar", layer: "node-child" as const };
+    const unregistered = { ...stagingEntry, name: "not-in-registry" };
+    const out = await overlaySystemdRestartRecency([nodeChild, unregistered], probeFn, registry);
+    expect(probeFn).not.toHaveBeenCalled();
+    expect(out).toEqual([nodeChild, unregistered]);
   });
 });

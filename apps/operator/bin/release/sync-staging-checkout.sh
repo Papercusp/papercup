@@ -58,6 +58,27 @@ PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_
   bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
     --ref "$BRANCH" --release "$STAGING_ROOT" --node-modules auto --build-spa
 
+# EI-13221: skip a REDUNDANT restart when $UNIT's current MainPID already came
+# up within the last RECENT_RESTART_GRACE_SEC — most likely a peer's `dev:restart`
+# (or a previous sync tick) cycled it moments ago, already serving fresh-enough
+# code. Restarting again here would just double the ~10-13s connection-refused
+# outage window for zero freshness benefit (the checkout we just fast-forwarded
+# stays on disk and is picked up by whichever restart — ours next tick, or
+# anyone else's dev:restart — actually fires next). Best-effort: any probe
+# failure (no systemd, no live MainPID, etc.) falls through to the normal
+# restart, matching probeServiceStart's own fail-soft contract
+# (systemd-service-probe.ts) that this mirrors for a bash caller.
+RECENT_RESTART_GRACE_SEC="${PAPERCUSP_STAGING_SYNC_RESTART_GRACE_SEC:-45}"
+main_pid="$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)"
+seconds_since_start=""
+if [ -n "$main_pid" ] && [ "$main_pid" -gt 0 ] 2>/dev/null; then
+  seconds_since_start="$(ps -o etimes= -p "$main_pid" 2>/dev/null | tr -d ' ')"
+fi
+if [ -n "$seconds_since_start" ] && [ "$seconds_since_start" -lt "$RECENT_RESTART_GRACE_SEC" ] 2>/dev/null; then
+  log "skipping restart — $UNIT's MainPID ($main_pid) already started ${seconds_since_start}s ago (< ${RECENT_RESTART_GRACE_SEC}s grace) — a peer restart likely already landed; the fast-forwarded checkout will be picked up by that or the next tick"
+  exit 0
+fi
+
 log "restarting $UNIT"
 systemctl --user restart "$UNIT"
 

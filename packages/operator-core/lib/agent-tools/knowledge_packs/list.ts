@@ -3,7 +3,7 @@
  * state (learning-packs-2026-06-11 P-009).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
@@ -27,7 +27,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    pot: z.string().max(120).optional().describe("Pot home slug — include this pot's installed state."),
+    pot: entityRef('pot', { soft: true, max: 120, describe: "Pot home slug — include this pot's installed state." }).optional(),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {

@@ -12,7 +12,7 @@
  *             the response says so.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
@@ -39,7 +39,7 @@ export const exportTool = defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    pot: z.string().min(1).max(120),
+    pot: entityRef('pot', { soft: true, max: 120 }),
     packId: z.string().min(1).max(120).describe('Kebab-case pack id (becomes the Comb listing_ref).'),
     title: hardText(LIMITS.SHORT_TITLE),
     description: hardText(LIMITS.ANNOTATION),

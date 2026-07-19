@@ -11,13 +11,13 @@
  * self-describes its hive+pack; one failure never fails the rest.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 import { runBulk, bulkContent } from '../_bulk';
 
 const itemSpec = z.object({
-  pot: z.string().min(1).max(120),
+  pot: entityRef('pot', { soft: true, max: 120 }),
   pack: z.string().min(1).max(120),
   enabled: z.boolean(),
 });
@@ -45,7 +45,7 @@ export default defineTool({
   crossWorkspace: true,
   args: z
     .object({
-      pot: z.string().min(1).max(120).optional().describe('the pot — for the inline pack / every pack in `packs`'),
+      pot: entityRef('pot', { soft: true, max: 120, describe: 'the pot — for the inline pack / every pack in `packs`' }).optional(),
       pack: z.string().min(1).max(120).optional().describe('single-flip shorthand: the pack id (use with `pot`, `enabled`)'),
       enabled: z.boolean().optional().describe('enabled state for the inline pack / every pack in `packs`'),
       packs: z.array(z.string().min(1).max(120)).min(1).max(200).optional().describe('flip MANY packs for the same `pot` + `enabled` (homogeneous)'),
