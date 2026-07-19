@@ -379,20 +379,101 @@ describe('runScoutTick — tick observability (P-034)', () => {
       expect(throwingCalls.ticks[0].status).toBe('gated');
     });
 
-    it('does NOT consult the snapshot for a governor-attested wall (different pool authority)', async () => {
+    it('does NOT cross-check a governor-attested wall against gateway stats (different pool authority)', async () => {
+      // WI-5436 note: this test used to assert the pool was never probed at all for a
+      // governor denial. The probe now happens at CYCLE-TOP for a different question
+      // (see the poolSnapshotAtFire suite below). The invariant it exists to protect is
+      // unchanged and asserted directly: a governor denial is never CONTRADICTED, and
+      // the record-time `poolSnapshot` evidence key stays absent.
       const denial = Object.assign(new Error('pool exhausted'), {
         admissionDenial: { reason: 'all-accounts-paused' as const, via: 'governor' as const },
       });
-      let probed = 0;
       const { deps, calls } = makeDeps({ runCycle: async () => { throw denial; } });
-      deps.readPoolSnapshot = async () => {
-        probed += 1;
-        return { probedAtMs: 1, healthyAccounts: 5, codexConfigured: false };
-      };
+      deps.readPoolSnapshot = async () => ({ probedAtMs: 1, healthyAccounts: 5, codexConfigured: false });
       const r = await runScoutTick(deps);
       expect(r.reason).toBe('no-capacity');
+      expect(calls.ticks[0].status).toBe('gated');
+      expect(calls.ticks[0].detail).not.toHaveProperty('capacityContradicted');
+      expect(calls.ticks[0].detail).not.toHaveProperty('poolSnapshot');
+    });
+  });
+
+  describe('cycle-top pool snapshot — the failover-vs-exhaustion discriminator (WI-5436)', () => {
+    const governorDenial = () =>
+      Object.assign(new Error('rate-limit pause exceeds maxWait'), {
+        admissionDenial: {
+          reason: 'all-accounts-paused' as const,
+          via: 'governor' as const,
+          totalAccounts: 2,
+          pausedAccounts: 1,
+        },
+      });
+
+    it('stamps healthyAccounts on a GOVERNOR-denied gated tick — the case the record-time read never saw', async () => {
+      // The live repro: 2026-07-19T01:09:56Z recorded via:'governor' with pausedAccounts:1
+      // of totalAccounts:2 and NO pool key at all, leaving "failover skipped a healthy
+      // account" and "the pool was genuinely empty" indistinguishable.
+      const atFire = { probedAtMs: 1, healthyAccounts: 1, codexConfigured: false };
+      const { deps, calls } = makeDeps({ runCycle: async () => { throw governorDenial(); } });
+      deps.readPoolSnapshot = async () => atFire;
+      const r = await runScoutTick(deps);
+      expect(r.reason).toBe('no-capacity');
+      expect(calls.ticks[0]).toMatchObject({
+        status: 'gated',
+        gate: 'no-capacity',
+        detail: { poolSnapshotAtFire: atFire },
+      });
+      // Widening WHEN the pool is read must not widen WHAT counts as contradicted.
+      expect(calls.ticks[0].detail).not.toHaveProperty('capacityContradicted');
+    });
+
+    it('stamps the pool baseline on a SUCCESSFUL cycle, so a gated tick has something to compare against', async () => {
+      const atFire = { probedAtMs: 1, healthyAccounts: 2, codexConfigured: false };
+      const { deps, calls } = makeDeps({});
+      deps.readPoolSnapshot = async () => atFire;
+      const r = await runScoutTick(deps);
+      expect(r.fired).toBe(true);
+      expect(calls.ticks[0]).toMatchObject({ status: 'ran', detail: { poolSnapshotAtFire: atFire } });
+    });
+
+    it('stamps a NON-capacity error tick too (a genuine failure still reports the pool it ran against)', async () => {
+      const { deps, calls } = makeDeps({
+        runCycle: async () => {
+          throw new Error('transport died');
+        },
+      });
+      deps.readPoolSnapshot = async () => ({ probedAtMs: 1, healthyAccounts: 4, codexConfigured: false });
+      const r = await runScoutTick(deps);
+      expect(r.reason).toBe('cycle-error');
+      expect(calls.ticks[0]).toMatchObject({
+        status: 'error',
+        detail: { poolSnapshotAtFire: { healthyAccounts: 4 } },
+      });
+    });
+
+    it('is best-effort — a probe that throws omits the key and never fails the tick', async () => {
+      const { deps, calls } = makeDeps({});
+      deps.readPoolSnapshot = async () => {
+        throw new Error('gateway probe down');
+      };
+      const r = await runScoutTick(deps);
+      expect(r.fired).toBe(true);
+      expect(calls.ticks[0].status).toBe('ran');
+      expect(calls.ticks[0].detail).not.toHaveProperty('poolSnapshotAtFire');
+    });
+
+    it('does NOT probe on a tick the cadence gate withheld (no cycle fired, nothing to describe)', async () => {
+      let probed = 0;
+      const { deps, calls } = makeDeps({ state: { idleRatio: 0, frictionSignals: 0, lastRunAtMs: NOW - 60_000 } });
+      deps.readPoolSnapshot = async () => {
+        probed += 1;
+        return { probedAtMs: 1, healthyAccounts: 1, codexConfigured: false };
+      };
+      const r = await runScoutTick(deps, { cadence: { minIntervalSec: 3600 } });
+      expect(r.fired).toBe(false);
       expect(probed).toBe(0);
       expect(calls.ticks[0].status).toBe('gated');
+      expect(calls.ticks[0].detail ?? {}).not.toHaveProperty('poolSnapshotAtFire');
     });
   });
 

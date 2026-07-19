@@ -163,9 +163,52 @@ export interface ProgramSuccessOptions {
    * history, e.g. to re-measure the scale of the pre-fix damage.
    */
   reconcileEpochMs?: number;
+  /**
+   * Minimum cycle denominator before the error-rate bar may report 'pass'
+   * (default {@link MIN_ERROR_RATE_DENOMINATOR}). Below it the bar is 'unknown' —
+   * see that constant for why a thin clean window is not evidence.
+   */
+  minErrorRateDenominator?: number;
+  /**
+   * Denominator at which the bar's LITERAL "<5%" claim is statistically supported
+   * (default {@link STRICT_ERROR_RATE_DENOMINATOR}). Between the minimum and this,
+   * a pass is reported but explicitly labelled as the weaker claim.
+   */
+  strictErrorRateDenominator?: number;
 }
 
 const DEFAULT_MAX_ERROR_RATE = 0.05;
+
+/**
+ * MINIMUM DENOMINATOR for a 'pass' on the cycle-error-rate bar (WI-5397, design ask
+ * from su-b37b0389 2026-07-19 after the bar emitted status:'pass' on 0 errors / 1 cycle).
+ *
+ * THE DEFECT THIS CLOSES: `0 errors / 1 cycle = 0.0% < 5%` is arithmetically correct and
+ * nearly meaningless. By the rule of three, zero errors in n bounds the true rate below 5%
+ * (95% confidence) only near n≈60; at n=1 the data is consistent with a true rate up to
+ * ~95%, at n=2 up to ~78%. So the bar was MANUFACTURING a green its own data could not
+ * support — and doing it at the worst moment, right after a bg-host restart zeroes the
+ * window, exactly when a reader is primed to see the flip. Every consumer would otherwise
+ * have to independently remember "check the denominator before trusting pass", which is a
+ * verification layer bolted over a value that is simply wrong; the durable fix is to make
+ * the primary value correct by construction.
+ *
+ * WHY 9: 0.7^9 ≈ 4% — nine consecutive clean cycles reject the historical ~30% error rate
+ * at p<0.05. That is the claim the 0.0.11-alpha release actually needs ("the ~30% regression
+ * is gone"), and at the ~30min cadence it is reachable in ~4.5h. The literal "<5%" claim
+ * needs ~60 (~30h) and is reported separately rather than asserted implicitly — a bar whose
+ * LABEL and EVIDENCE disagree is the failure this whole hold exists to prevent.
+ *
+ * ASYMMETRY (deliberate, and the same rule the release watch has run on all along): the
+ * denominator guard gates 'pass' ONLY. A 'fail' still fires at any n, because an observed
+ * error is positive evidence of breakage while an absence of errors in a thin window is no
+ * evidence of health — and the cost of investigating a fluke red is far below the cost of
+ * shipping on a manufactured green.
+ */
+export const MIN_ERROR_RATE_DENOMINATOR = 9;
+
+/** Denominator supporting the literal "<5%" bound at 95% (rule of three: 3/0.05 = 60). */
+export const STRICT_ERROR_RATE_DENOMINATOR = 60;
 
 /**
  * ENABLEMENT EPOCH for the reconciliation bar (the D-013 pattern already used by

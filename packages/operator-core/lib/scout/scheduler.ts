@@ -184,13 +184,20 @@ export interface ScoutTickDeps {
   /** Mint a cycle id; default `scout-<nowMs>`. */
   newCycleId?: (nowMs: number) => string;
   /**
-   * Read the gateway pool snapshot at failure-record time (WI-5391 Part B). Consulted
-   * ONLY when a gateway-attested capacity denial (`via:'http-429'`) is about to be
-   * excluded from the error rate: a 429 recorded while the gateway's OWN `/stats`
-   * reports healthy accounts is the WI-4541 admission-defect signature and stays a
-   * LOUD error (`capacityContradicted:true`). Best-effort by contract — a probe
-   * failure or an unwired dep (the hermetic unit-test default) means no contradiction
-   * evidence: the attestation is trusted and the snapshot simply absent from detail.
+   * Read the gateway pool snapshot. Called at TWO distinct instants for two distinct
+   * questions — see WI-5436 for why conflating them would be a regression:
+   *
+   * 1. CYCLE-TOP (every fired tick) → `poolSnapshotAtFire` in detail. "What did the
+   *    pool look like when this cycle was allowed to start?" — the failover-vs-exhaustion
+   *    discriminator (WI-4475). Recorded on ran/gated/error alike.
+   * 2. FAILURE-RECORD TIME (gateway-attested `via:'http-429'` denials only, WI-5391
+   *    Part B) → `poolSnapshot` in detail. A 429 recorded while the gateway's OWN
+   *    `/stats` reports healthy accounts is the WI-4541 admission-defect signature and
+   *    stays a LOUD error (`capacityContradicted:true`).
+   *
+   * Best-effort by contract at both instants — a probe failure or an unwired dep (the
+   * hermetic unit-test default) simply omits that key from detail; it never fails the
+   * tick and never manufactures contradiction evidence.
    */
   readPoolSnapshot?: () => Promise<ScoutPoolSnapshot | undefined>;
 }
@@ -317,6 +324,28 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   const budget = resolveScoutBudget(opts.budget);
   const cycleId = (deps.newCycleId ?? ((n) => `scout-${n}`))(state.nowMs);
   let activePhase: ScoutCyclePhase | undefined;
+  // WI-5436: snapshot the pool HERE — cycle-top, before the cycle can consume or
+  // exhaust it — and stamp it on whichever tick this becomes (ran/gated/error alike).
+  // A caller-applied stamp is structurally ABSENT on every path that denies or throws
+  // before reaching the caller, which is exactly the set of ticks the failover question
+  // needs: the observed governor denial (2026-07-19T01:09:56Z, via:'governor',
+  // reason:'all-accounts-paused' with pausedAccounts:1 of totalAccounts:2) carried NO
+  // pool key at all, so healthyAccounts — the one field that separates "failover didn't
+  // use a healthy account" from "the pool really was empty" — was unobservable on the
+  // ticks the 0.0.11-alpha error-rate bar is judging.
+  //
+  // Deliberately NOT reused for `capacityContradicted` below: that check (WI-5391 Part B)
+  // compares a gateway 429 against the gateway's stats AT RECORD TIME, and a cycle-top
+  // reading can be up to a full cycle stale (600s) — healthy at fire, legitimately
+  // exhausted by failure. Feeding this snapshot into that comparison would manufacture
+  // false contradictions and corrupt the exclusion audit. Two instants, two questions,
+  // two keys.
+  let poolSnapshotAtFire: ScoutPoolSnapshot | undefined;
+  try {
+    poolSnapshotAtFire = await deps.readPoolSnapshot?.();
+  } catch {
+    /* best-effort — the discriminator is evidence, never a precondition for the cycle */
+  }
   await deps.recordFire?.('attempt');
   try {
     // WI-4475: resolve the cycle budget ONCE and hand the runner the absolute DEADLINE it will
@@ -401,6 +430,9 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         ...(cycle.capacityFallbacks && cycle.capacityFallbacks.length > 0
           ? { capacityFallbacks: cycle.capacityFallbacks }
           : {}),
+        // WI-5436: the pool baseline for a SUCCESSFUL cycle — without it a gated tick's
+        // healthyAccounts has nothing to be compared against.
+        ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
       },
     });
     return {
@@ -474,6 +506,10 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
             capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
             ...(admissionDenial ? { admissionDenial } : {}),
             ...(poolSnapshot ? { poolSnapshot } : {}),
+            // WI-5436: THE discriminator tick. via:'governor' never reaches the
+            // record-time read above, so this cycle-top snapshot is the only place
+            // healthyAccounts is observable for a governor-attested denial.
+            ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
             ...(capacityFallbacks ? { capacityFallbacks } : {}),
             ...timeoutDetail,
           },
@@ -489,6 +525,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
           ...(admissionDenial ? { admissionDenial } : {}),
           capacityContradicted: true,
           ...(poolSnapshot ? { poolSnapshot } : {}),
+          ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
           ...(capacityFallbacks ? { capacityFallbacks } : {}),
           ...timeoutDetail,
         },
@@ -502,6 +539,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         error,
         capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
         ...(admissionDenial ? { admissionDenial } : {}),
+        ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
         ...(capacityFallbacks ? { capacityFallbacks } : {}),
         ...timeoutDetail,
       },
