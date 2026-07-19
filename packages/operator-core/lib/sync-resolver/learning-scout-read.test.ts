@@ -32,6 +32,8 @@ function fakeSql(opts: {
   lensSample?: Handler;
   /** The P-004 wi:-ref title lookup over engineer_issues (query tagged grounding-titles). */
   groundingTitles?: Handler;
+  /** The WI-5417 browseable digest-history read over scout_digest_snapshots. */
+  digestSnapshots?: Handler;
 }): Sql {
   const fn = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
     const text = strings.join(' ');
@@ -48,6 +50,7 @@ function fakeSql(opts: {
     if (text.includes('newest-lens-sample')) return (opts.lensSample ?? (async () => []))();
     if (text.includes('grounding-titles')) return (opts.groundingTitles ?? (async () => []))();
     if (text.includes('scout_lens_weights')) return (opts.weights ?? (async () => []))();
+    if (text.includes('scout_digest_snapshots')) return (opts.digestSnapshots ?? (async () => []))();
     if (text.includes('idea_id')) return (opts.items ?? (async () => []))();
     if (text.includes('scout_ticks')) return (opts.ticks ?? (async () => []))();
     return Promise.resolve([]);
@@ -563,6 +566,110 @@ describe('evaluateIdeasDriftMarkers (P-003 — the rubric driftMarkers as the he
     const snap = await readScoutSnapshot(sql, 'ws-1');
     expect(snap.health.status).toBe('bad');
     expect(snap.health.markers[0]).toMatchObject({ key: 'single-lens-collapse' });
+  });
+});
+
+// ── WI-5417: browseable digest history (newest ~10 snapshots, one selected) ──
+
+/** A minimal valid CorpusDigest row shape as the raw jsonb the PG read returns. */
+const mkDigestRow = (opts: {
+  cycleId: string;
+  createdAt: Date;
+  refs: string[];
+  previousCycleRefs?: string[];
+}): Record<string, unknown> => ({
+  cycle_id: opts.cycleId,
+  watermark_at: opts.createdAt,
+  created_at: opts.createdAt,
+  digest: {
+    recurringFriction: opts.refs.map((ref, i) => ({ summary: `pattern ${ref}`, ref, weight: 1 - i * 0.05 })),
+    timeTokenSinks: [],
+    chronicDeferrals: [],
+    capabilityGaps: [],
+    previousCycleRefs: opts.previousCycleRefs ?? [],
+  },
+});
+
+describe('digest history (WI-5417 browseable per-cycle digest)', () => {
+  // Newest-first, as the read's ORDER BY created_at DESC delivers them.
+  const row3 = mkDigestRow({
+    cycleId: 'scout-3',
+    createdAt: new Date('2026-07-18T03:00:00Z'),
+    refs: ['wi:EI-3', 'wi:EI-4'],
+    previousCycleRefs: ['wi:EI-1', 'wi:EI-2'], // both refs are new vs previous
+  });
+  const row2 = mkDigestRow({
+    cycleId: 'scout-2',
+    createdAt: new Date('2026-07-18T02:00:00Z'),
+    refs: ['wi:EI-1', 'wi:EI-2'],
+    previousCycleRefs: ['wi:EI-1'], // EI-2 new, EI-1 standing
+  });
+  const row1 = mkDigestRow({
+    cycleId: 'scout-1',
+    createdAt: new Date('2026-07-18T01:00:00Z'),
+    refs: ['wi:EI-1'],
+    previousCycleRefs: [], // first-ever snapshot: nothing is provably new
+  });
+
+  it('summarizes the newest rows into digestHistory (newest first) and defaults `digest` to the newest row', async () => {
+    const sql = fakeSql({ digestSnapshots: async () => [row3, row2, row1] });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.digestHistory).toEqual([
+      { cycleId: 'scout-3', at: '2026-07-18T03:00:00.000Z', totalEntries: 2, newCount: 2, standingCount: 0 },
+      { cycleId: 'scout-2', at: '2026-07-18T02:00:00.000Z', totalEntries: 2, newCount: 1, standingCount: 1 },
+      { cycleId: 'scout-1', at: '2026-07-18T01:00:00.000Z', totalEntries: 1, newCount: 0, standingCount: 1 },
+    ]);
+    expect(snap.digest?.cycleId).toBe('scout-3');
+    expect(snap.digest?.newEntries.map((e) => e.ref)).toEqual(['wi:EI-3', 'wi:EI-4']);
+    expect(snap.digest?.standingEntries).toEqual([]);
+  });
+
+  it("selects the caller-requested cycle's full entries while digestHistory still lists every row read", async () => {
+    const sql = fakeSql({ digestSnapshots: async () => [row3, row2, row1] });
+    const snap = await readScoutSnapshot(sql, 'ws-1', { selectedCycleId: 'scout-2' });
+    expect(snap.digest?.cycleId).toBe('scout-2');
+    expect(snap.digest?.newEntries.map((e) => e.ref)).toEqual(['wi:EI-2']);
+    expect(snap.digest?.standingEntries.map((e) => e.ref)).toEqual(['wi:EI-1']);
+    // The selection only narrows `digest` — digestHistory is the full read set,
+    // unaffected, so the UI's history strip never loses entries on selection.
+    expect(snap.digestHistory.map((h) => h.cycleId)).toEqual(['scout-3', 'scout-2', 'scout-1']);
+  });
+
+  it('falls back to the newest cycle when the requested cycleId is not among the rows read (stale/expired selection)', async () => {
+    const sql = fakeSql({ digestSnapshots: async () => [row3, row2, row1] });
+    const snap = await readScoutSnapshot(sql, 'ws-1', { selectedCycleId: 'scout-does-not-exist' });
+    expect(snap.digest?.cycleId).toBe('scout-3');
+  });
+
+  it('the first-ever snapshot (no previousCycleRefs) reads entirely as standing, never mislabeled new', async () => {
+    const sql = fakeSql({ digestSnapshots: async () => [row1] });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.digest?.newEntries).toEqual([]);
+    expect(snap.digest?.standingEntries.map((e) => e.ref)).toEqual(['wi:EI-1']);
+    expect(snap.digestHistory).toEqual([
+      { cycleId: 'scout-1', at: '2026-07-18T01:00:00.000Z', totalEntries: 1, newCount: 0, standingCount: 1 },
+    ]);
+  });
+
+  it('digest and digestHistory both stay empty/null when no snapshot rows exist', async () => {
+    const snap = await readScoutSnapshot(fakeSql({}), 'ws-1');
+    expect(snap.digest).toBeNull();
+    expect(snap.digestHistory).toEqual([]);
+  });
+
+  it('digest/digestHistory degrade to null/[] (warn, never a crash) when the snapshot read fails — other legs survive', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({
+      rails: async () => [{ rail: 'plan', count: 1 }],
+      digestSnapshots: async () => {
+        throw Object.assign(new Error('column drift'), { code: '42703' });
+      },
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.digest).toBeNull();
+    expect(snap.digestHistory).toEqual([]);
+    expect(snap.totalRouted).toBe(1);
+    expect(warn).toHaveBeenCalled();
   });
 });
 

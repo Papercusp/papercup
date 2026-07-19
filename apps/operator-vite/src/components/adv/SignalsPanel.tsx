@@ -4,23 +4,29 @@
  * section P-006 layout that interleaved trigger and feed concepts):
  *
  *   1. **Will it fire?** — the weighted score vs the volume gate's threshold,
- *      plus the 6 TRIGGER lanes as compact chips (docs in tooltips).
- *   2. **What will it read?** — the persisted digest the next/last cycle was
- *      prompted with: NEW-since-last-cycle entries first, each carrying its
- *      lane chip + drill-back source ref; the standing corpus behind a
- *      disclosure.
+ *      plus the 6 TRIGGER lanes as colored vertical cards (WI-5417 — each
+ *      lane keeps a unique, stable CATEGORICAL hue so the row reads at a
+ *      glance instead of as a wall of identical chips; docs stay in tooltips).
+ *   2. **What will it read?** — the persisted digest a cycle was/will be
+ *      prompted with: a BROWSEABLE per-cycle history (WI-5417 — the newest
+ *      ~10 fired cycles, nuqs-selected via `?sdig=`), each showing NEW-since-
+ *      last-cycle entries first (lane chip + drill-back source ref) with the
+ *      standing corpus behind a disclosure.
  *
- * Recent-cycle composition collapses into one disclosure; the standalone lane
- * taxonomy dissolved into tooltips + an "all lanes" disclosure. All data still
- * derives from the `learning.scout` snapshot (the gate's own readers — never a
- * UI-side re-derivation).
+ * The standalone lane taxonomy lives behind an "All input lanes" disclosure,
+ * grouped trigger-vs-fed as a two-column definition grid with each lane's
+ * chip carrying its categorical color (WI-5417 item 4). All data still
+ * derives from the `learning.scout` snapshot (the gate's own readers — never
+ * a UI-side re-derivation).
  */
+import type { CSSProperties } from "react";
 import { useEffect } from "react";
 import { parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import { Rss, RefreshCw } from "lucide-react";
 import type { ScoutSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import { Tooltip } from "@/app/harness/Tooltip";
+import { CATEGORICAL } from "@/app/harness/theme";
 import {
   LearningDisclosure,
   LearningPageHeader,
@@ -63,8 +69,61 @@ const FED_LANE_DOCS: Record<string, string> = {
   "recent-commit": "Recent-commit churn hotspots — where the tree is actively morphing right now.",
 };
 
+// Every hue used below comes from the theme's fixed CATEGORICAL swatch set
+// (never a hand-rolled color) — stable per-lane assignment so a lane keeps
+// its color across renders/themes. 23 lanes over 19 swatches means a few
+// hues repeat ACROSS the trigger/fed groups (never WITHIN one), which is
+// fine — the two groups are never compared side-by-side in one glance.
+const TRIGGER_LANE_COLOR: Record<string, string> = {
+  "scorecard-rating-changes": CATEGORICAL.violet400.hex,
+  observations: CATEGORICAL.blue400.hex,
+  captures: CATEGORICAL.teal500.hex,
+  reverts: CATEGORICAL.rose500.hex,
+  deferrals: CATEGORICAL.amber500.hex,
+  completions: CATEGORICAL.emerald400.hex,
+};
+
+const FED_LANE_COLOR: Record<string, string> = {
+  corpus: CATEGORICAL.slate400.hex,
+  "recurring-friction": CATEGORICAL.red400.hex,
+  "time-token-sink": CATEGORICAL.orange500.hex,
+  "chronic-deferral": CATEGORICAL.yellow500.hex,
+  "capability-gap": CATEGORICAL.pink500.hex,
+  "rubric-rating": CATEGORICAL.violet300.hex,
+  "spend-anomaly": CATEGORICAL.lime500.hex,
+  "niche-map": CATEGORICAL.teal300.hex,
+  "standing-fact": CATEGORICAL.teal400.hex,
+  "watchdog-health": CATEGORICAL.indigo400.hex,
+  "gate-pipeline-health": CATEGORICAL.pink400.hex,
+  "coord-health": CATEGORICAL.slate500.hex,
+  "tool-telemetry": CATEGORICAL.green500.hex,
+  "knowledge-reuse-gap": CATEGORICAL.violet400.hex,
+  "plan-health": CATEGORICAL.blue400.hex,
+  "owner-correction": CATEGORICAL.teal500.hex,
+  "recent-commit": CATEGORICAL.rose500.hex,
+};
+
+const CATEGORICAL_HEXES = Object.values(CATEGORICAL).map((c) => c.hex);
+
+/** Stable hash-derived fallback so a lane missing from the explicit maps
+ *  above (a future addition to the open FED_LANE_DOCS set) still gets a
+ *  consistent categorical color rather than crashing or reading grey. */
+function hashLaneColor(lane: string): string {
+  let h = 0;
+  for (let i = 0; i < lane.length; i++) h = (h * 31 + lane.charCodeAt(i)) | 0;
+  return CATEGORICAL_HEXES[Math.abs(h) % CATEGORICAL_HEXES.length];
+}
+
 function laneLabel(lane: string): string {
   return lane.replace(/-/g, " ");
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return "—";
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms)
+    ? "—"
+    : new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 export function SignalsPanel({
@@ -72,16 +131,22 @@ export function SignalsPanel({
 }: {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
 } = {}) {
+  // WI-5417: the browseable digest-history selection — which fired cycle's
+  // full digest entries to show. null = newest (the server's default).
+  const [sdig, setSdig] = useQueryState("sdig", parseAsString);
+
   const sync = useSyncQuery<ScoutSnapshot>({
     queryName: "learning.scout",
-    args: {},
+    args: sdig ? { cycleId: sdig } : {},
     staleTime: 30_000,
   });
   const snap = sync.data?.[0];
   const cadence = snap?.cadence ?? null;
   const ranTicks = (snap?.ticks ?? []).filter((t) => t.status === "ran");
-  // P-008: the newest fired cycle's persisted digest (delta + standing corpus).
+  // P-008/WI-5417: the SELECTED fired cycle's persisted digest (delta +
+  // standing corpus) + the compact history of the newest ~10 cycles.
   const digest = snap?.digest ?? null;
+  const digestHistory = snap?.digestHistory ?? [];
 
   // Digest source refs deep-link like the Ideas view's grounding chips: wi:
   // refs open the improvements backlog with that row selected.
@@ -200,40 +265,73 @@ export function SignalsPanel({
                 </strong>
               </div>
               <div
-                className="pc-signals__triggerchips"
+                className="pc-signals__triggergrid"
                 aria-label="Trigger lanes — new signal since the last cycle"
               >
-                {cadence.lanes.map((l) => (
-                  <Tooltip
-                    key={l.lane}
-                    label={`${TRIGGER_LANE_DOCS[l.lane] ?? l.lane} Weight ×${l.weight} → contributes ${Math.round(l.count * l.weight * 10) / 10}.`}
-                  >
-                    <span
-                      className={`pc-signals__triggerchip${l.count > 0 ? " is-live" : ""}`}
+                {cadence.lanes.map((l) => {
+                  const color = TRIGGER_LANE_COLOR[l.lane] ?? hashLaneColor(l.lane);
+                  return (
+                    <Tooltip
+                      key={l.lane}
+                      label={`${TRIGGER_LANE_DOCS[l.lane] ?? l.lane} Weight ×${l.weight} → contributes ${Math.round(l.count * l.weight * 10) / 10}.`}
                     >
-                      <strong>{l.count}</strong> {laneLabel(l.lane)}
-                    </span>
-                  </Tooltip>
-                ))}
+                      <div
+                        className={`pc-signals__triggercard${l.count > 0 ? " is-live" : ""}`}
+                        style={{ "--lane-color": color } as CSSProperties}
+                      >
+                        <strong>{l.count}</strong>
+                        <span>{laneLabel(l.lane)}</span>
+                      </div>
+                    </Tooltip>
+                  );
+                })}
               </div>
             </>
           ) : null}
 
-          {/* ── Half 2: What will it read? ────────────────────────────── */}
-          {digest ? (
+          {/* ── Half 2: What will it read? — browseable per-cycle history ── */}
+          {digestHistory.length > 0 && digest ? (
             <>
               <div className="pc-signals__sectionhead">
                 <h3>What will it read?</h3>
                 <span
-                  title="The persisted corpus digest the fired cycle's ideators were prompted with — the delta leg ('NEW since your last cycle') leads the prompt, exactly as shown here."
+                  title="The persisted corpus digest a fired cycle's ideators were prompted with — browse the newest cycles below; the delta leg ('NEW since your last cycle') leads the prompt, exactly as shown here."
                 >
-                  {digest.totalEntries} entries
-                  {digest.cycleId ? ` · ${digest.cycleId}` : ""}
-                  {digest.at
-                    ? ` · ${new Date(Date.parse(digest.at)).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`
-                    : ""}
+                  {digestHistory.length} recent cycle
+                  {digestHistory.length === 1 ? "" : "s"}
                 </span>
               </div>
+              <div
+                className="pc-signals__historystrip"
+                role="tablist"
+                aria-label="Digest history — browse recent cycles"
+              >
+                {digestHistory.map((h, i) => {
+                  const isNewest = i === 0;
+                  const isSelected = h.cycleId === digest.cycleId;
+                  return (
+                    <button
+                      key={h.cycleId ?? h.at ?? `history-${i}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={isSelected}
+                      className={`pc-signals__historytab${isSelected ? " is-selected" : ""}`}
+                      onClick={() => void setSdig(isNewest ? null : h.cycleId)}
+                    >
+                      <span>{formatTime(h.at)}</span>
+                      <em>
+                        {h.totalEntries}
+                        {h.newCount > 0 ? ` · ${h.newCount} new` : ""}
+                      </em>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="pc-signals__digest-meta">
+                {digest.totalEntries} entries
+                {digest.cycleId ? ` · ${digest.cycleId}` : ""}
+                {digest.at ? ` · ${formatTime(digest.at)}` : ""}
+              </p>
               {digest.newEntries.length > 0 ? (
                 <ul
                   className="pc-signals__digest"
@@ -295,72 +393,52 @@ export function SignalsPanel({
             </>
           ) : null}
 
-          {/* Recent-cycle composition — one disclosure, not a standing section. */}
-          {ranTicks.length > 0 ? (
-            <LearningDisclosure
-              label="What recent cycles were fed"
-              count={Math.min(ranTicks.length, 6)}
-            >
-              <ul
-                className="pc-signals__fed"
-                aria-label="Recent cycle digest composition"
-              >
-                {ranTicks.slice(0, 6).map((t, i) => {
-                  const lanes = Object.entries(t.groundingLanes ?? {}).sort(
-                    (a, b) => b[1] - a[1],
-                  );
-                  const atMs = t.at ? Date.parse(t.at) : NaN;
+          {/* The full lane taxonomy — reference material, behind a disclosure,
+              grouped trigger-vs-fed as a two-column definition grid (WI-5417). */}
+          <LearningDisclosure
+            label="All input lanes"
+            count={Object.keys(TRIGGER_LANE_DOCS).length + Object.keys(FED_LANE_DOCS).length}
+          >
+            <div className="pc-signals__taxonomygroup">
+              <h4>Trigger lanes — what fires a cycle</h4>
+              <ul className="pc-signals__taxonomy" aria-label="Trigger lanes explained">
+                {Object.entries(TRIGGER_LANE_DOCS).map(([lane, doc]) => {
+                  const color = TRIGGER_LANE_COLOR[lane] ?? hashLaneColor(lane);
                   return (
-                    <li key={t.cycleId ?? `${t.at ?? "tick"}-${i}`}>
-                      <span className="pc-signals__fedwhen">
-                        {Number.isNaN(atMs)
-                          ? "—"
-                          : new Date(atMs).toLocaleTimeString(undefined, {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
+                    <li key={lane}>
+                      <span
+                        className="pc-signals__lane"
+                        style={{ "--lane-color": color } as CSSProperties}
+                      >
+                        <i aria-hidden />
+                        {laneLabel(lane)}
                       </span>
-                      {lanes.length === 0 ? (
-                        <em title="This tick's recorder predates the groundingLanes field, or the cycle was fed no lane-tagged entries.">
-                          composition not recorded
-                        </em>
-                      ) : (
-                        lanes.map(([lane, n]) => (
-                          <span
-                            key={lane}
-                            className="pc-signals__fedchip"
-                            title={FED_LANE_DOCS[lane] ?? lane}
-                          >
-                            {laneLabel(lane)} <strong>{n}</strong>
-                          </span>
-                        ))
-                      )}
-                      <em className="pc-signals__fedout">
-                        → {t.generated} ideas, {t.routed} routed
-                      </em>
+                      <p>{doc}</p>
                     </li>
                   );
                 })}
               </ul>
-            </LearningDisclosure>
-          ) : null}
-
-          {/* The full lane taxonomy — reference material, behind a disclosure. */}
-          <LearningDisclosure
-            label="All input lanes"
-            count={Object.keys(FED_LANE_DOCS).length}
-          >
-            <ul
-              className="pc-signals__taxonomy"
-              aria-label="All signal lanes explained"
-            >
-              {Object.entries(FED_LANE_DOCS).map(([lane, doc]) => (
-                <li key={lane}>
-                  <span className="pc-signals__lane">{laneLabel(lane)}</span>
-                  <p>{doc}</p>
-                </li>
-              ))}
-            </ul>
+            </div>
+            <div className="pc-signals__taxonomygroup">
+              <h4>Fed lanes — what the digest reads</h4>
+              <ul className="pc-signals__taxonomy" aria-label="Fed lanes explained">
+                {Object.entries(FED_LANE_DOCS).map(([lane, doc]) => {
+                  const color = FED_LANE_COLOR[lane] ?? hashLaneColor(lane);
+                  return (
+                    <li key={lane}>
+                      <span
+                        className="pc-signals__lane"
+                        style={{ "--lane-color": color } as CSSProperties}
+                      >
+                        <i aria-hidden />
+                        {laneLabel(lane)}
+                      </span>
+                      <p>{doc}</p>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           </LearningDisclosure>
         </>
       )}
@@ -389,49 +467,72 @@ export function SignalsPanel({
         position: relative; padding: 0 9px; font-size: 11px; font-weight: 700;
         color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums;
       }
-      .pc-signals__triggerchips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-      .pc-signals__triggerchip {
-        display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 9px;
-        border-radius: 999px; font-size: 10.5px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+      .pc-signals__triggergrid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+        gap: 6px; margin-top: 6px;
+      }
+      .pc-signals__triggercard {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 3px; min-height: 52px; padding: 7px 5px; border-radius: 8px; text-align: center;
+        border: 1px solid color-mix(in srgb, var(--lane-color) 28%, var(--border));
+        background: color-mix(in srgb, var(--lane-color) 6%, var(--bg-2));
+        color: var(--fg-mute, #7f9bb4); cursor: default;
+      }
+      .pc-signals__triggercard.is-live {
+        border-color: color-mix(in srgb, var(--lane-color) 55%, transparent);
+        background: color-mix(in srgb, var(--lane-color) 13%, var(--bg-2));
+        color: var(--fg-dim, #b9d4e8);
+      }
+      .pc-signals__triggercard strong {
+        font-size: 15px; font-weight: 760; line-height: 1; font-variant-numeric: tabular-nums;
+        color: var(--lane-color);
+      }
+      .pc-signals__triggercard span { font-size: 9.5px; line-height: 1.2; }
+      .pc-signals__historystrip {
+        display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px;
+      }
+      .pc-signals__historytab {
+        display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px;
+        padding: 3px 8px; border-radius: 7px; cursor: pointer; font: inherit;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-signals__historytab:hover { color: var(--fg-dim, #b9d4e8); border-color: color-mix(in srgb, var(--accent, #7dd3fc) 35%, var(--border)); }
+      .pc-signals__historytab.is-selected {
+        color: var(--fg, #e7eef5); border-color: color-mix(in srgb, var(--accent, #7dd3fc) 55%, transparent);
+        background: color-mix(in srgb, var(--accent, #7dd3fc) 10%, var(--bg-2));
+      }
+      .pc-signals__historytab span { font-size: 10px; font-variant-numeric: tabular-nums; }
+      .pc-signals__historytab em { font-style: normal; font-size: 9px; opacity: .82; }
+      .pc-signals__digest-meta { margin: 6px 2px 4px; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+      .pc-signals__taxonomygroup { margin-bottom: 8px; }
+      .pc-signals__taxonomygroup:last-child { margin-bottom: 0; }
+      .pc-signals__taxonomygroup h4 {
+        margin: 4px 2px 4px; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
         color: var(--fg-mute, #7f9bb4);
       }
-      .pc-signals__triggerchip.is-live {
-        color: var(--fg-dim, #b9d4e8);
-        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 35%, transparent);
-      }
-      .pc-signals__triggerchip strong { font-weight: 740; font-variant-numeric: tabular-nums; }
       .pc-signals__taxonomy {
         list-style: none; margin: 0; padding: 0;
-        display: flex; flex-direction: column; gap: 4px;
+        display: grid; grid-template-columns: repeat(2, minmax(230px, 1fr)); gap: 4px 10px;
       }
       .pc-signals__taxonomy li {
-        display: grid; grid-template-columns: 170px 1fr; align-items: baseline; gap: 8px;
+        display: grid; grid-template-columns: 150px 1fr; align-items: baseline; gap: 8px;
         padding: 4px 8px; border-radius: 6px; font-size: 11.5px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-signals__taxonomy li p { margin: 0; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
-      @media (max-width: 900px) { .pc-signals__taxonomy li { grid-template-columns: 1fr; } }
-      .pc-signals__lane { font-weight: 650; }
-      .pc-signals__fed {
-        list-style: none; margin: 0; padding: 0;
-        display: flex; flex-direction: column; gap: 4px;
+      @media (max-width: 900px) {
+        .pc-signals__taxonomy { grid-template-columns: 1fr; }
+        .pc-signals__taxonomy li { grid-template-columns: 1fr; }
       }
-      .pc-signals__fed li {
-        display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
-        padding: 4px 8px; border-radius: 6px; font-size: 11px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
-        color: var(--fg-dim, #b9d4e8);
-      }
-      .pc-signals__fedwhen { font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; min-width: 42px; }
+      .pc-signals__lane { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; color: var(--lane-color, var(--fg-mute)); }
+      .pc-signals__lane i { width: 7px; height: 7px; border-radius: 50%; background: var(--lane-color); flex: none; }
       .pc-signals__fedchip {
         display: inline-flex; gap: 4px; padding: 1px 7px; border-radius: 999px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); font-size: 10px;
         white-space: nowrap;
       }
-      .pc-signals__fedchip strong { font-weight: 740; font-variant-numeric: tabular-nums; }
-      .pc-signals__fedout { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); margin-left: auto; white-space: nowrap; }
       .pc-signals__digest { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
       .pc-signals__digest li {
         display: flex; align-items: baseline; gap: 7px; padding: 3px 8px;

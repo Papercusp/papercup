@@ -122,14 +122,21 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
     cadence: null,
     drafts: [],
     digest: null,
+    digestHistory: [],
   };
 
-  it('returns the reader snapshot as a 1-element array, scoped to the active workspace', async () => {
+  it('returns the reader snapshot as a 1-element array, scoped to the active workspace (no cycle selected)', async () => {
     readScoutSnapshot.mockResolvedValue(snapshot);
     const rows = (await resolveNamedQueryV2('learning.scout', {})) as ScoutSnapshot[];
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual(snapshot);
-    expect(readScoutSnapshot).toHaveBeenCalledWith(TX, 'ws-test');
+    expect(readScoutSnapshot).toHaveBeenCalledWith(TX, 'ws-test', { selectedCycleId: null });
+  });
+
+  it('threads a `cycleId` arg through as selectedCycleId (WI-5417 browseable digest history)', async () => {
+    readScoutSnapshot.mockResolvedValue(snapshot);
+    await resolveNamedQueryV2('learning.scout', { cycleId: 'scout-42' });
+    expect(readScoutSnapshot).toHaveBeenCalledWith(TX, 'ws-test', { selectedCycleId: 'scout-42' });
   });
 
   it('degrades to the empty snapshot when the read fails (no 500 for the tab)', async () => {
@@ -137,7 +144,8 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
     const rows = (await resolveNamedQueryV2('learning.scout', {})) as ScoutSnapshot[];
     // The degraded fallback must be a COMPLETE ScoutSnapshot — the tab renders straight off it,
     // so a partial object here is a crash/misrender on the one path that is already failing.
-    // Every field the type gained (ticks/health/groundingTitles/cadence/drafts) must be present and empty.
+    // Every field the type gained (ticks/health/groundingTitles/cadence/drafts/digestHistory)
+    // must be present and empty.
     expect(rows).toEqual([
       {
         totalRouted: 0,
@@ -151,6 +159,7 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
         cadence: null,
         drafts: [],
         digest: null,
+        digestHistory: [],
       },
     ]);
     expect(warn).toHaveBeenCalled();
