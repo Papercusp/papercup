@@ -889,6 +889,7 @@ export default defineTool({
       'coord:inbox (read replies to what you sent)',
       'coord:roster { view:"live" } (confirm a recipient is awake before wake:required)',
       'EI-9940: self-resolved a failure you already reported? reply via related_msg_id, not a fresh send',
+      'WI-5341: replying to an expectsReply ping? set related_msg_id to it — a broadcast or unthreaded reply keeps you reading as "unanswered" in leader-brief/fleet:assignments even though you replied.',
     ],
   },
   capability: 'coord:write',

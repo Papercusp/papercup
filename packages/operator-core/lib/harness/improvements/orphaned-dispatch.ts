@@ -492,6 +492,13 @@ export function isMissingLedgerTable(e: unknown): boolean {
 /**
  * Recovery seam (EI-403 Option B) — injectable so the glue is unit-testable. Default
  * wires the real issue back-edges: release the stale claim + roll the attempt back.
+ *
+ * EI-15486: each fn's Promise resolves to `null` on a genuine no-op (the underlying
+ * conditional UPDATE matched zero rows — e.g. a wrong-workspace scope, WI-5261 class,
+ * or the issue no longer exists) — the collector checks for `=== null` and counts it
+ * as `recoveryNoOps`, NOT a success. A custom implementation should preserve this: a
+ * failed/no-op recovery must be distinguishable from a real one, or a tripped breaker
+ * (escalateThrash) can silently fail to stick while the collector reports it did.
  */
 export interface OrphanRecoverDeps {
   releaseClaim: (id: string) => Promise<unknown>;
@@ -658,13 +665,24 @@ export async function collectOrphanedDispatchSignals(
         // Always release the dead worker's claim (cleanup). Then EITHER re-dispatch
         // (roll the attempt back) OR — if the breaker tripped — route to a human so
         // the item drops out of the auto-eligible pool instead of thrashing forever.
-        await recover.releaseClaim(row.itemId);
+        //
+        // EI-15486: each of these is a conditional UPDATE (`WHERE ... issue_id = id`)
+        // that returns null on a ZERO-ROW match instead of throwing — the WI-5261
+        // class silent no-op (a wrong-workspace write matches nothing). A caller that
+        // ignores the return value can't tell "recovered" from "the write quietly did
+        // nothing", which is exactly how EI-10524 thrashed for 11h past two tripped
+        // breakers (escalateThrash no-op'd both times, never observed) and blew the
+        // dispatch-orphan-rate SLO. Check every result; a null is NOT success.
+        const releaseResult = await recover.releaseClaim(row.itemId);
+        if (releaseResult === null) recoveryNoOps += 1;
         if (thrashTripped) {
-          await recover.escalateThrash(row.itemId);
-          thrashEscalated += 1;
+          const escalateResult = await recover.escalateThrash(row.itemId);
+          if (escalateResult === null) recoveryNoOps += 1;
+          else thrashEscalated += 1;
         } else {
-          await recover.rollbackAttempt(row.itemId, Math.max(0, (row.attempt ?? 1) - 1));
-          recovered += 1;
+          const rollbackResult = await recover.rollbackAttempt(row.itemId, Math.max(0, (row.attempt ?? 1) - 1));
+          if (rollbackResult === null) recoveryNoOps += 1;
+          else recovered += 1;
         }
       } catch (e) {
         console.warn(
@@ -694,5 +712,10 @@ export async function collectOrphanedDispatchSignals(
     );
   if (envOutage) notes.push('lane env-outage detected — cause-unknown orphans suppressed (EI-536 noise-loop guard)');
   if (closedSuperseded) notes.push(`auto-resolved ${closedSuperseded} superseded orphan bug(s) (item recovered on a later attempt)`);
+  if (recoveryNoOps)
+    notes.push(
+      `⚠ ${recoveryNoOps} host-restart-recovery write(s) matched ZERO rows (silent no-op — WI-5261 class; ` +
+        `an issue whose claim/attempt/thrash-escalation was reported recovered may NOT actually be)`,
+    );
   return { signals, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }
