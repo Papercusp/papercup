@@ -94,11 +94,46 @@ function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Matches the `## Decisions` heading (optionally numbered, "## 5. Decisions")
+// but NOT a suffixed variant like "## Decisions (settled)" — a different
+// section that must never be scanned/absorbed. Kept in sync with
+// `appendDecisionToBody`'s heading match via `findDecisionsSectionBody`.
+const DECISIONS_HEADING_RE = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Decisions\s*$/m;
+
 /**
- * Allocate the next D-NNN considering ONLY real parsed decisions.
+ * Locate the `## Decisions` section's body text (fence-masked, so a
+ * `D-NNN`-looking token inside a worked-example fence is excluded) — the
+ * text between the heading and the next `## ` heading, or EOF. Returns
+ * null when the doc has no (unsuffixed) Decisions section.
+ */
+function findDecisionsSectionBody(maskedBody: string): string | null {
+  const headingMatch = DECISIONS_HEADING_RE.exec(maskedBody);
+  if (!headingMatch) return null;
+  const after = headingMatch.index + headingMatch[0].length;
+  const restAfter = maskedBody.slice(after);
+  const nextHeadingMatch = /^##\s/m.exec(restAfter);
+  return nextHeadingMatch ? restAfter.slice(0, nextHeadingMatch.index) : restAfter;
+}
+
+/**
+ * Allocate the next D-NNN.
  *
- * Same rationale as allocateNextItemId — references to D-NNN inside
- * prose or example fences must not bump the allocator.
+ * Considers BOTH real parsed (structured `### D-NNN`) decisions AND any
+ * bare `D-NNN` token appearing anywhere else in the `## Decisions`
+ * section body — e.g. an informal legacy-style `- **D-001** ...` prose
+ * bullet, which the structured parser does not recognise as a decision
+ * at all (EI-15651). Without the latter, a plan hand-authored with
+ * informal decision bullets makes the allocator start counting from 1
+ * again, minting a `### D-001` that collides VISUALLY with the
+ * pre-existing informal `**D-001**` bullet in the rendered document,
+ * even though the store treats them as unrelated. Taking the max over
+ * every D-NNN token in the section (not just structured ones) keeps
+ * newly-allocated ids past anything already visible there, structured or
+ * not.
+ *
+ * References to D-NNN inside prose/example fences OUTSIDE the Decisions
+ * section still must not bump the allocator — hence scoping the token
+ * scan to the section body (fence-masked within it too).
  */
 export function allocateNextDecisionId(body: string): string {
   const parsed = parsePlan(body);
@@ -107,6 +142,13 @@ export function allocateNextDecisionId(body: string): string {
     const m = /^D-(\d+)$/.exec(d.id);
     if (m) {
       const n = parseInt(m[1] ?? '0', 10);
+      if (n > max) max = n;
+    }
+  }
+  const sectionBody = findDecisionsSectionBody(maskFences(body));
+  if (sectionBody) {
+    for (const token of sectionBody.match(/\bD-(\d{3,})\b/g) ?? []) {
+      const n = parseInt(token.slice(2), 10);
       if (n > max) max = n;
     }
   }
@@ -148,8 +190,7 @@ export function appendDecisionToBody(
   // inside a worked-example fence is skipped; splice the real body by
   // index (maskFences preserves length, so indices are interchangeable).
   const masked = maskFences(body);
-  const headingRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Decisions\s*$/m;
-  const headingMatch = headingRe.exec(masked);
+  const headingMatch = DECISIONS_HEADING_RE.exec(masked);
   // Collapse any run of trailing newlines to exactly one before gluing
   // the block on (whose leading \n supplies the single separating blank
   // line) — a splice point that already sat on a blank line otherwise

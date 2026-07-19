@@ -272,6 +272,12 @@ export interface MaterializeLoopInput {
    *  runtime expects MULTIPLE units per turn, each gated by the continuation gate (P-005 spec
    *  rule 2). Rides payload_template (no new column); a settle loop leaves it byte-identical. */
   continuation?: 'settle' | 'gated';
+  /** Loop mode (WI-5345 — was previously threaded ONLY into buildLoopWakePrompt's template
+   *  choice and never persisted anywhere, so no tool could recover it after arming). 'work'
+   *  (default, absent) = today's behaviour. 'monitor' = the lean check/steer/checkpoint
+   *  contract (P-001c). Rides payload_template (no new column); a 'work' loop leaves
+   *  payload_template byte-identical to today. */
+  mode?: 'work' | 'monitor';
   /** Seed active (armed). Default true. */
   active?: boolean;
   /**
@@ -315,6 +321,9 @@ export async function materializeLoop(
   // Same convention for the continuation policy (P-005): only stamp 'gated'; a settle loop
   // leaves payload_template unchanged.
   if (input.continuation === 'gated') payloadTemplate.continuation = 'gated';
+  // WI-5345: same convention for mode — only stamp 'monitor'; a default 'work' loop's
+  // payload_template stays byte-identical to today.
+  if (input.mode === 'monitor') payloadTemplate.mode = 'monitor';
 
   const name = loopRoutineName(input.ownerId);
   const desiredId = loopRoutineId(input.harnessSlug, input.ownerId);
@@ -498,6 +507,12 @@ export interface LoopStatus {
    *  unit; 'gated' runs multiple units per turn behind the continuation gate. Observability so an
    *  operator can see whether a loop is in gated mode. */
   continuation: 'settle' | 'gated';
+  /** Loop mode (WI-5345): 'work' (default) = the create+self-assign work-item contract; 'monitor'
+   *  = the lean check/steer/checkpoint contract with no work-item boilerplate (P-001c). Previously
+   *  only used at arm-time to pick a wake-prompt template and never persisted/observable anywhere
+   *  — a leader had no way to tell "wedged in a pure-monitor loop" from "healthy work loop,
+   *  between items" without this. */
+  mode: 'work' | 'monitor';
   /** Total delivered fires so far (metadata.fire_count) — for a cold loop this is the wakeCount
    *  cadence counter (a RECYCLE lands every Nth). 0 when never fired / not tracked. */
   fireCount: number;
@@ -573,6 +588,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     intervalSec,
     carry: pt?.carry === 'cold' ? 'cold' : 'warm',
     continuation: pt?.continuation === 'gated' ? 'gated' : 'settle',
+    mode: pt?.mode === 'monitor' ? 'monitor' : 'work',
     fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     parked,
     nextFireAt: r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null,

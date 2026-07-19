@@ -287,6 +287,7 @@ export default defineTool({
       maxDurationSec: args.maxDurationSec ?? null,
       carry: args.carry ?? 'warm',
       continuation: args.continuation ?? 'settle',
+      mode: args.mode ?? 'work',
     });
     const control = await refreshControlAnchorAfterMutation({
       ownerId,
@@ -355,6 +356,7 @@ export default defineTool({
               goal,
               carry: args.carry ?? 'warm',
               continuation: args.continuation ?? 'settle',
+              mode: args.mode ?? 'work',
               costCapCents: args.costCapCents ?? null,
               // EI-6878: a re-arm of an ALREADY-armed loop called from WITHIN its own
               // in-flight turn returns the loop's row PARKED at the 'infinity' sentinel
