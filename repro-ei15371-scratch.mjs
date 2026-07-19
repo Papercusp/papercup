@@ -41,7 +41,6 @@ async function main() {
   // directly: after both replicate() calls, inspect whether A1's own ondiscoverykey
   // pairing is still the live handler on the shared muxer, or A2's has replaced it.
   const muxer = a.userData;
-  const key = require('node:util').inspect;
 
   await new Promise((resolve) => setTimeout(resolve, 400));
 

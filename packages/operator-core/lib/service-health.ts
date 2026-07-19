@@ -583,6 +583,15 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // A test gate, not a service — restarting it in a loop would re-run smokes.
   // Alert-only, mirrors the papercup-live-federation-gate HEALTH_ENDPOINTS-adjacent note.
   { name: 'live-federation-gate', layer: 'systemd-user', unit: 'papercup-live-federation-gate', criticality: 'important', autoRestart: false },
+  // WI-5376: the gate's *timer* has been externally stopped twice (Jul 17 + Jul 18) with no
+  // systemd-logged stop client and NO supervision watching it — the reconciler above only ever
+  // tracked the `.service` (deliberately report-only, per the comment on it), so a stopped timer
+  // silently meant "the gate never runs again" until a human happened to notice. Restarting a
+  // *timer* unit is safe to automate (unlike the service): it only re-arms the schedule, it never
+  // touches an in-flight gate run. autoRestart:true so this heals itself within the reconciler's
+  // normal backoff ladder, and — if something keeps killing it — the existing give-up escalation
+  // pages loudly instead of the timer just staying dark.
+  { name: 'live-federation-gate-timer', layer: 'systemd-user', unit: 'papercup-live-federation-gate.timer', criticality: 'important', autoRestart: true },
 ];
 
 /**

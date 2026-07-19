@@ -151,8 +151,31 @@ describe('plan_items:* tool handlers (real PG, through dispatch glue)', () => {
     expect(env.results[0].result.status).toBe('refused');
   });
 
-  it('my_items without an adopted name (and no explicit) errors clearly', async () => {
-    await expect(call(myItems, {}, ctxB)).rejects.toThrow(/no agent-name/);
+  it('my_items without an adopted name (and no explicit) returns empty, never throws (EI-15910)', async () => {
+    const env = await call(myItems, {}, ctxB);
+    expect(env.ok).toBe(true);
+    expect(env.agent_name).toBe('sess-B');
+    expect(env.items).toEqual([]);
+  });
+
+  it('my_items finds an item push-assigned straight to the caller’s raw ownerId, with no adoption (EI-15910/EI-2299 — the coord:dispatch shape)', async () => {
+    // coord:dispatch calls plan_items:assign with the target's raw ownerId as the
+    // `assignee` when it has no adopted-name handle on it — sess-B's own session
+    // never calls adopt_name for 'sess-B'. my_items must still surface it.
+    await call(assign, { plan: 'demo-plan', item: 'P-002', assignee: 'sess-B' }, ctxA);
+    const env = await call(myItems, {}, ctxB);
+    expect(env.ok).toBe(true);
+    expect(env.agent_name).toBe('sess-B');
+    expect(env.items.map((m: { assignment: { itemId: string } }) => m.assignment.itemId)).toEqual(['P-002']);
+  });
+
+  it('my_items merges items under BOTH an adopted name and the raw ownerId for the same session', async () => {
+    await call(adoptName, { name: 'builder-9' }, ctxB);
+    await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-9' }, ctxA);
+    await call(assign, { plan: 'demo-plan', item: 'P-002', assignee: 'sess-B' }, ctxA);
+    const env = await call(myItems, {}, ctxB);
+    expect(env.ok).toBe(true);
+    expect(new Set(env.items.map((m: { assignment: { itemId: string } }) => m.assignment.itemId))).toEqual(new Set(['P-001', 'P-002']));
   });
 
   it('cross-user assign to another user’s name is refused (D-005 pull-only)', async () => {

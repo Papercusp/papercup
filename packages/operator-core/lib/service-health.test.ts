@@ -138,6 +138,7 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
         'embed-sidecar',
         'desktop-shell',
         'live-federation-gate',
+        'live-federation-gate-timer',
       ].sort(),
     );
   });
@@ -155,6 +156,12 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
     const byName = Object.fromEntries(SUPERVISED_PROCESSES.map((e) => [e.name, e]));
     expect(byName['bg-host']?.autoRestart).toBe(false);
     expect(byName['live-federation-gate']?.autoRestart).toBe(false);
+  });
+
+  it('WI-5376: the federation gate TIMER (unlike its report-only service) is auto-restartable and carries an explicit .timer unit suffix', () => {
+    const byName = Object.fromEntries(SUPERVISED_PROCESSES.map((e) => [e.name, e]));
+    expect(byName['live-federation-gate-timer']?.autoRestart).toBe(true);
+    expect(byName['live-federation-gate-timer']?.unit).toBe('papercup-live-federation-gate.timer');
   });
 
   it('filters by layer', () => {

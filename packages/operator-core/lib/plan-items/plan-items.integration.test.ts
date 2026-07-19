@@ -336,6 +336,25 @@ describe('merged view (assignment/claim drift coherence)', () => {
     expect(byId.get('P-001')).toBe('active');
     expect(byId.get('P-002')).toBe('assigned-idle');
   });
+
+  it('myItemsWithStateForIdentities (EI-15910): finds an item assigned straight to a raw ownerId with no adopted name', async () => {
+    // coord:dispatch push-assigns using the target's raw ownerId as `assignee` when
+    // it has no other handle — the assignee's own session never adopts that ownerId
+    // as a "name". myItemsWithStateForIdentities must still find it when the caller
+    // passes its adopted name (none, here) PLUS its raw ownerId.
+    await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-003', assigneeName: 'sess-raw-owner', assignedByUser: 'user-x' });
+    const mine = await liveness.myItemsWithStateForIdentities(WS, ['sess-raw-owner']);
+    expect(mine.map((m) => m.assignment.itemId)).toEqual(['P-003']);
+  });
+
+  it('myItemsWithStateForIdentities merges items under an adopted name AND the raw ownerId, deduped, with no throw for an unadopted caller', async () => {
+    await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-004', assigneeName: 'builder-2', assignedByUser: 'user-x' });
+    await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-005', assigneeName: 'sess-C', assignedByUser: 'user-x' });
+    const mine = await liveness.myItemsWithStateForIdentities(WS, ['builder-2', 'sess-C']);
+    expect(new Set(mine.map((m) => m.assignment.itemId))).toEqual(new Set(['P-004', 'P-005']));
+    // No identities (never adopted, no explicit override) → empty, never throws.
+    await expect(liveness.myItemsWithStateForIdentities(WS, [])).resolves.toEqual([]);
+  });
 });
 
 describe('work-group membership (D-005)', () => {

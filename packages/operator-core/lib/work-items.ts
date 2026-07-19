@@ -1139,7 +1139,27 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     `'todo'`,
     '0',
     '$5',
-    '$6::jsonb',
+    // WI-5343: `::text::jsonb`, NOT a bare `::jsonb` cast — params[5] is already a
+    // JSON-encoded STRING (JSON.stringify(input.payload) below), and postgres.js's
+    // parameter serializer infers the bind param's OID from this cast (jsonb) and
+    // JSON.stringifies whatever JS value it's given for that OID REGARDLESS of the
+    // value's own JS type — so a bare `::jsonb` here double-encodes an
+    // already-stringified payload into a jsonb SCALAR STRING (e.g. `"{\"a\":1}"`)
+    // instead of the jsonb OBJECT `{"a":1}`. Every other jsonb write in this file
+    // that binds a pre-stringified JSON string via a placeholder already routes
+    // through this exact `::text::jsonb` double-cast (see e.g. the `${patch}::text::jsonb`
+    // / `${history}::text::jsonb` sites below) — casting the bind param to `text` first
+    // defeats postgres.js's jsonb auto-serialization (the inferred OID becomes `text`,
+    // sent as plain text, and Postgres itself performs the text→jsonb parse via the
+    // explicit `::jsonb` cast). This path was the one write site missing it: because
+    // pre-WI-5343 no caller ever created a feature-family item WITH a payload (the
+    // original P-020 migration comment assumed payload was "NULL for features"), the
+    // corruption was never observed — every feature's `payload._claimHold` /
+    // `payload.plan_item` tag silently round-tripped as an opaque scalar string, so
+    // every `payload ->> 'x'` / `payload ? 'x'` read (incl. claimFloorsWhereSql's
+    // pre-existing _claimHold floor) against a feature created with a payload here
+    // ALWAYS evaluated as if the payload were empty.
+    '$6::text::jsonb',
     '$7',
     'FALSE',
     'FALSE',
