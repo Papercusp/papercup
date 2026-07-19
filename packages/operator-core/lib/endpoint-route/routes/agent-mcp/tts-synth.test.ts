@@ -145,6 +145,103 @@ describe('synthesize() — single server-side TTS registry', () => {
 });
 
 /**
+ * EI-14136: kokoro-fastapi's ffmpeg writer streams the WAV encode and never
+ * seeks back to patch the RIFF/data chunk sizes, so both arrive as the
+ * 0xFFFFFFFF "unknown length" placeholder even though the response we
+ * buffer is complete. Assert `synthesize()` patches them to the real
+ * lengths before returning.
+ */
+describe('synthesize() — WAV streaming-placeholder size patch (EI-14136)', () => {
+  /** Build a minimal RIFF/WAVE buffer, optionally with a LIST chunk before
+   *  `data` (mirrors kokoro-fastapi's real ffmpeg output) and optionally with
+   *  the RIFF/data sizes set to the 0xFFFFFFFF streaming placeholder. */
+  function buildWav(opts: { placeholderSizes: boolean; withListChunk?: boolean }): ArrayBuffer {
+    const pcmBytes = 16; // arbitrary small payload
+    const listPayload = opts.withListChunk ? new Uint8Array([0x49, 0x53, 0x46, 0x54, 0x00, 0x00, 0x00, 0x00]) : null; // "ISFT" + 4 pad bytes
+    const listChunkLen = listPayload ? 8 + listPayload.byteLength : 0;
+    const fmtChunkLen = 8 + 16;
+    const totalLen = 12 + fmtChunkLen + listChunkLen + 8 + pcmBytes;
+    const buf = new ArrayBuffer(totalLen);
+    const view = new DataView(buf);
+    const bytes = new Uint8Array(buf);
+    const writeTag = (off: number, tag: string) => {
+      for (let i = 0; i < 4; i++) bytes[off + i] = tag.charCodeAt(i);
+    };
+    let o = 0;
+    writeTag(o, 'RIFF');
+    view.setUint32(4, opts.placeholderSizes ? 0xffffffff : totalLen - 8, true);
+    writeTag(8, 'WAVE');
+    o = 12;
+    // fmt chunk (contents irrelevant to the patcher — only chunk-walking matters)
+    writeTag(o, 'fmt ');
+    view.setUint32(o + 4, 16, true);
+    o += 8 + 16;
+    if (listPayload) {
+      writeTag(o, 'LIST');
+      view.setUint32(o + 4, listPayload.byteLength, true);
+      bytes.set(listPayload, o + 8);
+      o += 8 + listPayload.byteLength;
+    }
+    // data chunk
+    writeTag(o, 'data');
+    view.setUint32(o + 4, opts.placeholderSizes ? 0xffffffff : pcmBytes, true);
+    o += 8;
+    for (let i = 0; i < pcmBytes; i++) bytes[o + i] = i; // arbitrary payload bytes
+    return buf;
+  }
+
+  function stubFetchWav(buf: ArrayBuffer) {
+    const mock = vi.fn(async () => new Response(buf, { status: 200 }));
+    vi.stubGlobal('fetch', mock);
+    return mock;
+  }
+
+  it('patches RIFF + data chunk sizes when the upstream sent the streaming placeholder', async () => {
+    const wav = buildWav({ placeholderSizes: true });
+    stubFetchWav(wav);
+    const r = await synthesize('kokoro', 'hi', undefined, PREFS);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const view = new DataView(r.audio);
+    expect(view.getUint32(4, true)).toBe(r.audio.byteLength - 8); // RIFF size
+    // data chunk starts after RIFF(12)+fmt(24) = 36
+    expect(view.getUint32(36 + 4, true)).toBe(16); // data size (16 PCM bytes)
+  });
+
+  it('walks past a LIST/INFO chunk before "data" (kokoro-fastapi real layout) when patching', async () => {
+    const wav = buildWav({ placeholderSizes: true, withListChunk: true });
+    stubFetchWav(wav);
+    const r = await synthesize('kokoro', 'hi', undefined, PREFS);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const view = new DataView(r.audio);
+    expect(view.getUint32(4, true)).toBe(r.audio.byteLength - 8); // RIFF size
+    // data chunk starts after RIFF(12)+fmt(24)+LIST(8+8=16) = 52
+    expect(view.getUint32(52 + 4, true)).toBe(16); // data size
+  });
+
+  it('leaves an already-correct WAV byte-for-byte unchanged', async () => {
+    const wav = buildWav({ placeholderSizes: false });
+    const original = new Uint8Array(wav.slice(0));
+    stubFetchWav(wav);
+    const r = await synthesize('kokoro', 'hi', undefined, PREFS);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(new Uint8Array(r.audio)).toEqual(original);
+  });
+
+  it('leaves a non-WAV audio/mpeg response untouched (no accidental RIFF parsing)', async () => {
+    const mp3Bytes = new TextEncoder().encode('not-a-wav-file').buffer;
+    const mock = vi.fn(async () => new Response(mp3Bytes, { status: 200 }));
+    vi.stubGlobal('fetch', mock);
+    const r = await synthesize('elevenlabs', 'hi', undefined, PREFS); // mp3 branch, not wav
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(new Uint8Array(r.audio)).toEqual(new Uint8Array(mp3Bytes));
+  });
+});
+
+/**
  * Upstream status classification (voice-thorough-test-2026-07-09, WI-3527).
  *
  * Every upstream failure used to collapse to 502, so "your ElevenLabs key was

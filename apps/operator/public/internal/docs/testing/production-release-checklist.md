@@ -135,15 +135,25 @@ suite:
   **Re-run 2026-07-17**: `papercusp-workspace` pre-deploy snapshot / kopia
   `ac6b94a7e151bf36ca0a5b7d87e9f156`; restore-to-clone (`backup:restore`)
   passed non-destructively. The temp-DB **import** step hit two real gaps —
-  tracked as [EI-13868](#): (1) PG18's `\restrict`/`\unrestrict` dump wrapper
-  desyncs psql's COPY parser partway through and eventually OOMs — strip
-  those two lines (`sed -i '/^\restrict /d; /^\unrestrict /d'`) before
-  importing a self-generated trusted dump; (2) `harness_admin` lacks
+  tracked as EI-13868 and **fixed 2026-07-19**: (1) PG18's
+  `\restrict`/`\unrestrict` dump wrapper desyncs psql's COPY parser
+  partway through and eventually OOMs; (2) `harness_admin` lacks
   `CREATE EXTENSION` so every `vector`-typed table (work\_items, plans,
-  features, escalations, …) fails to create — import as the PG superuser
-  instead. With both applied, row counts for work\_items/harness\_plans/
-  engineer\_issues/harness\_features\_consolidated/backup\_snapshots matched
-  live within normal \~20min drift under active fleet load.
+  features, escalations, …) fails to create; (3) the dump only requested
+  the `vector` extension (`-e vector`), so the trigram GIN index
+  (`594-memory-canonical-trgm-lexical.sql`) failed to create post-restore
+  (`gin_trgm_ops does not exist`) since `pg_trgm` was never in the dump.
+  **Fix**: `packages/backup/src/hook.ts` now dumps `pg_trgm` and
+  `pgcrypto` alongside `vector` (fixes #3 at the source); a new helper,
+  `packages/backup/scripts/restore-pg-dump.sh <dump> <target-db> [target-url]`, automates the import side — strips the `\restrict`/
+  `\unrestrict` markers (safe for our own self-generated, trusted dump)
+  and runs the import as a superuser (fixes #1/#2), creating a fresh
+  scratch DB rather than touching anything live. Verified 2026-07-19: a
+  restore of a freshly-generated dump (with the `pg_trgm`/`pgcrypto` fix)
+  via the new script imported with **zero** `gin_trgm_ops` errors, and
+  row counts for work\_items/harness\_plans/engineer\_issues matched live
+  within normal drift under active fleet load. Use the script for every
+  future restore drill instead of hand-rolled `sed`/`sudo` steps.
 * **Perf/stability soak (P-010, WI-3209 — in progress as of this
   checklist)**: a bounded (>=2h) soak under agent load asserting on
   `loop_lag_p95_ms` / `rss_mb` ledger columns for RSS growth + event-loop-lag

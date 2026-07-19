@@ -188,6 +188,12 @@ async function buildMissDiagnosis(args: {
       ? 'the backlog is genuinely DRAINED (0 unclaimed items in the pool) — idling is correct'
       : `the backlog is NOT drained: ${diag.pendingUnclaimed} unclaimed item(s) in the pool, but ${diag.readyUnclaimed} pass the floors` +
         (diag.readyUnclaimed === 0 ? ' — every one of them is GATED (blocked / held / needs-human / not-work), so idling is correct but the backlog is not empty' : '');
+    // EI-14108: a flag-READ failure (fail-closed) reads identically to "the issue-claimable
+    // flag is off" otherwise — say so explicitly so this never presents as a drained/out-of-
+    // scope pool when it's actually an unreadable flag store.
+    const flagReadErrorNote = diag.flagReadError
+      ? ` NOTE: issue-claim flag UNREADABLE this call (SCHEDULER_ISSUES_CLAIMABLE: ${diag.flagReadError}) — fail-closed, so the counts above EXCLUDE the whole issue family (bug/change/task) rather than reflecting it being off/empty.`
+      : '';
 
     // EI-13965: a BROAD spec (no named ids for explainIssueClaimFloors to attribute) that
     // is genuinely stranded (pool non-empty, nothing ready) gets the same self-explaining
@@ -225,8 +231,13 @@ async function buildMissDiagnosis(args: {
     }
 
     return {
-      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}${breakdownSummary}`,
-      diagnosis: { drained: diag.drained, pendingUnclaimed: diag.pendingUnclaimed, readyUnclaimed: diag.readyUnclaimed },
+      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}${breakdownSummary}${flagReadErrorNote}`,
+      diagnosis: {
+        drained: diag.drained,
+        pendingUnclaimed: diag.pendingUnclaimed,
+        readyUnclaimed: diag.readyUnclaimed,
+        ...(diag.flagReadError ? { flagReadError: diag.flagReadError } : {}),
+      },
       floors,
       ...(excludedBreakdown ? { excludedBreakdown } : {}),
     };

@@ -73,6 +73,7 @@ import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 import {
+  composeModelSpec,
   foldMemberSpec,
   memberLaunchCommand as sharedMemberLaunchCommand,
   memberSpecSchema,
@@ -636,6 +637,10 @@ export const REMOTE_PLACEMENT_UNSUPPORTED_ARGS = [
   'carry',
   'display',
   'perMemberLaunchContext',
+  // P-004: the declarative per-member spec pins model/account/carry/window shape per member,
+  // all of which the honoring host owns on a remote placement — refuse it loudly (like its
+  // brief-only twin `perMemberLaunchContext`) rather than silently dropping every member spec.
+  'members',
   'profile',
   'contextSize',
   'brain',
@@ -1039,10 +1044,24 @@ export default defineTool({
     // D-003) — an explicit model/account alongside it would silently contradict the
     // delegation, so refuse the combination outright.
     const seatsRequested = Boolean(args.fromSeats || args.seat?.trim());
-    if (seatsRequested && (args.model || args.account)) {
-      return err(
-        'launch-from-seats derives model+effort+account FROM the delegated slot (D-002/D-003) — drop the explicit `model`/`account` args; pass `seat` to pick a template when several are delegated.',
-      );
+    if (seatsRequested) {
+      if (args.model || args.account) {
+        return err(
+          'launch-from-seats derives model+effort+account FROM the delegated slot (D-002/D-003) — drop the explicit `model`/`account` args; pass `seat` to pick a template when several are delegated.',
+        );
+      }
+      // P-004: a per-member MemberSpec that pins model/effort/account contradicts the slot
+      // just as loudly as the flat args do — the seat, not the member, decides those under
+      // launch-from-seats (a seat-launched fleet is homogeneous in model/account by design).
+      // Reject it here rather than silently letting foldMemberSpec override the seat pin.
+      const badMemberIdx = (args.members ?? []).findIndex((m) => m?.model || m?.effort || m?.account);
+      if (badMemberIdx >= 0) {
+        return err(
+          `launch-from-seats derives model+effort+account FROM the delegated slot (D-002/D-003), so members[${badMemberIdx}]'s ` +
+            '`model`/`effort`/`account` would silently contradict the seat pin — drop them (a seat-launched fleet is homogeneous ' +
+            'in model/account; use `seat` to pick a template when several are delegated).',
+        );
+      }
     }
 
     // WI-5211 cross-machine placement: the honoring hosts own the spawn shape, so
@@ -1744,11 +1763,16 @@ export default defineTool({
     // the caller supplied the actual words, not a pointer to them.
     const memberBriefText = (i: number): string | null => args.members?.[i]?.brief?.trim() || null;
     const anyMemberBrief = (args.members ?? []).some((m) => m?.brief?.trim());
-    const perMemberBriefsActive = Boolean(perMemberBriefsRaw?.length) || anyMemberBrief;
-    const perMemberLaunchContextPaths: (string | null)[] | null = perMemberBriefsActive ? [] : null;
+    // P-004: a per-member `carry` override also forces a DISTINCT composed baseline for that
+    // member — the warm/cold loop:arm instruction is baked into the baseline TEXT, so it arms
+    // the per-member compose path exactly as a distinct brief does. Without this, `members[i].carry`
+    // is folded but never reaches the member: the fleet-wide `args.carry` baseline is all it sees.
+    const anyMemberCarry = (args.members ?? []).some((m) => m?.carry);
+    const perMemberComposeActive = Boolean(perMemberBriefsRaw?.length) || anyMemberBrief || anyMemberCarry;
+    const perMemberLaunchContextPaths: (string | null)[] | null = perMemberComposeActive ? [] : null;
     const perMemberReadErrors: string[] = [];
     let memberLaunchContextPathForIndex: (i: number) => string | undefined = () => effectiveLaunchContext;
-    if (perMemberBriefsActive) {
+    if (perMemberComposeActive) {
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       try {
         mkdirSync(ctxDir, { recursive: true });
@@ -1775,7 +1799,9 @@ export default defineTool({
             fleetSlug,
             plan: planSlug,
             count,
-            carry: args.carry,
+            // P-004: member > fleet precedence for carry (foldMemberSpec's rule) — this member's
+            // OWN warm/cold choice shapes ITS baseline, not the fleet-wide default.
+            carry: args.members?.[i]?.carry ?? args.carry,
             customBriefText: briefText,
           });
           const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${i + 1}.md`);
@@ -1869,6 +1895,26 @@ export default defineTool({
     // Back-compat: `command` (singular) is reported/reused where every member is
     // identical (the common case — no perMemberLaunchContext).
     const command = memberCommands[0] ?? '';
+    // P-004 per-member disclosure: the fully-resolved config each member actually got
+    // (precedence member > fleet > system), so the leader confirms it WITHOUT diffing raw
+    // command strings. Only built when a declarative `members` spec was passed (a homogeneous
+    // launch needs no breakdown). model/account/compactionLimit also ride the psu command;
+    // `carry` does NOT (it shapes the baseline text), so this is the ONLY surface a per-member
+    // carry override is visible on. composeModelSpec here can't throw: the identical (model,
+    // effort) pair already succeeded inside memberLaunchCommand when memberCommands was built.
+    const resolvedMembers = memberSpecs.length
+      ? Array.from({ length: openCount }, (_v, i) => {
+          const f = resolvedMemberConfig(i);
+          return {
+            member: i + 1,
+            model: composeModelSpec(f.model, f.effort) ?? null,
+            account: f.account ?? null,
+            carry: (memberSpecs[i]?.carry ?? args.carry ?? 'warm') as 'warm' | 'cold',
+            compactionLimit: f.compactionLimit ?? null,
+            claimKinds: f.claimKinds ?? null,
+          };
+        })
+      : null;
     const opened: Array<{
       terminal: string;
       pid: number | null;
@@ -1965,8 +2011,25 @@ export default defineTool({
     }
     if (perMemberLaunchContextPaths) {
       lines.push(
-        `  ↳ per-member launch contexts (EI-8985): ${perMemberLaunchContextPaths.filter(Boolean).length}/${openCount} members got a DISTINCT brief; the rest fell back to the shared launch context.`,
+        `  ↳ per-member launch contexts (EI-8985): ${perMemberLaunchContextPaths.filter(Boolean).length}/${openCount} members got a DISTINCT composed context (own brief and/or warm/cold carry); the rest fell back to the shared launch context.`,
       );
+    }
+    // P-004: echo the resolved per-member config so the leader confirms what each member got.
+    if (resolvedMembers) {
+      lines.push('  ↳ per-member resolved config (P-004 — what each member got; precedence member > fleet > system):');
+      for (const m of resolvedMembers) {
+        lines.push(
+          `     ${m.member}. model=${m.model ?? '(fleet default)'} · account=${m.account ?? 'default'} · carry=${m.carry}` +
+            ` · compactionLimit=${m.compactionLimit ?? '(role default)'}${m.claimKinds ? ` · claimKinds=[${m.claimKinds.join(',')}]` : ''}`,
+        );
+      }
+      // Per-member claimKinds is folded but NOT applied at launch (no member cup exists yet to
+      // pin) — only the FLEET claim spec is set here. Disclose it rather than imply it took.
+      if (resolvedMembers.some((_m, i) => memberSpecs[i]?.claimKinds?.length)) {
+        lines.push(
+          '  ⚠ per-member `claimKinds` is NOT applied at launch: no member cup exists yet to pin, so launch set only the FLEET claim spec (above). To give a member its own lane, scheduler:set_claim_spec { cupId } once it registers (find the cup via coord:presence / fleet:status).',
+        );
+      }
     }
     // EI-8289: a socket-scan placement means no real logged-in seat was found —
     // these windows MAY have landed on a virtual/sandbox display (a leased
@@ -2041,6 +2104,10 @@ export default defineTool({
         // consumers (hooks, scorers, the persona disclosure) can key on them.
         headless: !!args.headless,
         carry: carryMode,
+        // P-004: the resolved per-member config (model/account/carry/compactionLimit/claimKinds),
+        // null for a homogeneous (no-`members`) launch. `carry` here is honored per member; the
+        // fleet-wide `carry` field above is the default the unspecified members fell through to.
+        resolvedMembers,
         // P-005: the seat pin this wave launched from (null = a plain, non-seat launch).
         seats: seatPin ? { ...seatPin, requested: count, launched: opened.length } : null,
         requested: count,

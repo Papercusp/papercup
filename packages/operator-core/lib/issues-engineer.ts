@@ -176,11 +176,29 @@ let issuesFlagReadAtMs = 0;
 // honoured within a few seconds anywhere; long enough that the PG-backed getFlag
 // (itself 5s-TTL-cached) is hit at most ~once per window per process.
 const ISSUES_FLAG_TTL_MS = 3_000;
+// EI-14108: the catch below is the same fail-CLOSED-but-fail-SILENT pattern as
+// schedulerIssuesClaimableEnabled() in work-items.ts — a getFlag failure (flag store
+// unreachable, PG pool poisoned) must not vanish silently into "flag is off". This TTL
+// cache re-attempts every ISSUES_FLAG_TTL_MS regardless (unlike the other site, there's no
+// separate consumer to hand the error to — this cache is read via issuesScopeWorkspace()'s
+// boolean projection only), so throttle the log to avoid spamming once per 3s during a
+// sustained outage while still surfacing it periodically.
+let _lastIssuesPerWorkspaceErrorLoggedAtMs = 0;
+const ISSUES_PER_WORKSPACE_FLAG_ERROR_LOG_THROTTLE_MS = 5 * 60_000; // 5 min
 async function refreshIssuesPerWorkspace(): Promise<void> {
   try {
     issuesPerWorkspaceOn = await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId());
-  } catch {
+  } catch (err) {
     issuesPerWorkspaceOn = false;
+    const now = Date.now();
+    if (now - _lastIssuesPerWorkspaceErrorLoggedAtMs >= ISSUES_PER_WORKSPACE_FLAG_ERROR_LOG_THROTTLE_MS) {
+      _lastIssuesPerWorkspaceErrorLoggedAtMs = now;
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[issues-engineer] ISSUES_PER_WORKSPACE read FAILED — falling back to the legacy shared ` +
+          `'default' coord workspace this call (fail-closed): ${message}`,
+      );
+    }
   } finally {
     issuesFlagReadAtMs = Date.now();
   }

@@ -2372,12 +2372,44 @@ export async function schedulerMaintainedReadyEnabled(): Promise<boolean> {
  * path + set_priority / co_locate stay BYTE-IDENTICAL to feature-only behavior. Fail-CLOSED
  * to OFF (false) on any flag-store error — the proven feature-only path is the safe default.
  */
+// EI-14108: fail-CLOSED (return false) is the right posture for a flag-read error, but
+// fail-SILENT is not — a getFlag failure (flag store unreachable, PG pool poisoned; cf. the
+// 2026-07-17 embedded-pg.json hijack) must not present identically to "the flag is genuinely
+// off" / "the pool is genuinely empty". Track the most recent read's outcome so a caller that
+// cares (diagnoseClaimNextMiss) can tell the two apart, and log the failure itself — throttled,
+// so a sustained outage doesn't spam — rather than swallowing it entirely.
+let _lastIssuesClaimableFlagError: { atMs: number; message: string } | null = null;
+let _lastIssuesClaimableFlagErrorLoggedAtMs = 0;
+const ISSUES_CLAIMABLE_FLAG_ERROR_LOG_THROTTLE_MS = 5 * 60_000; // 5 min
+
 export async function schedulerIssuesClaimableEnabled(): Promise<boolean> {
   try {
-    return await getFlag(FLAGS.SCHEDULER_ISSUES_CLAIMABLE, systemDistinctId());
-  } catch {
+    const enabled = await getFlag(FLAGS.SCHEDULER_ISSUES_CLAIMABLE, systemDistinctId());
+    _lastIssuesClaimableFlagError = null;
+    return enabled;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const now = Date.now();
+    _lastIssuesClaimableFlagError = { atMs: now, message };
+    if (now - _lastIssuesClaimableFlagErrorLoggedAtMs >= ISSUES_CLAIMABLE_FLAG_ERROR_LOG_THROTTLE_MS) {
+      _lastIssuesClaimableFlagErrorLoggedAtMs = now;
+      console.error(
+        `[scheduler] SCHEDULER_ISSUES_CLAIMABLE read FAILED — tier-3 issue claims disabled this call: ${message}`,
+      );
+    }
     return false;
   }
+}
+
+/** EI-14108: was the MOST RECENT {@link schedulerIssuesClaimableEnabled} call (within the last
+ *  few seconds — a fresh call, not a stale one from a since-recovered outage) a flag-READ
+ *  failure rather than a genuine off/empty state? `diagnoseClaimNextMiss` calls this
+ *  immediately after its own `schedulerIssuesClaimableEnabled()` call, so "fresh" here just
+ *  guards against reading a leftover error from an unrelated, older call in the same process. */
+export function lastIssuesClaimableFlagReadError(): string | null {
+  if (!_lastIssuesClaimableFlagError) return null;
+  if (Date.now() - _lastIssuesClaimableFlagError.atMs > 30_000) return null;
+  return _lastIssuesClaimableFlagError.message;
 }
 
 /**
@@ -2919,6 +2951,11 @@ export interface ClaimMissDiagnosis {
   drained: boolean;
   pendingUnclaimed: number;
   readyUnclaimed: number;
+  /** EI-14108: non-null iff the `SCHEDULER_ISSUES_CLAIMABLE` flag read FAILED (fail-closed,
+   *  tier-3 issue-family counts below were skipped this call) rather than the flag genuinely
+   *  being off — so a caller can say "issue-claim flag UNREADABLE" instead of implying the
+   *  issue-family pool is empty/out-of-scope. */
+  flagReadError: string | null;
 }
 
 export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<ClaimMissDiagnosis> {
@@ -2967,7 +3004,11 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
   // issue tier would have served it (a lost-lease/race that SHOULD retry). Count the ready
   // issue pool with the SAME floors claimNextIssueWorkItem enforces (affinity + redundancy +
   // the inline blocker-terminality readiness) so readyUnclaimed reflects the whole ladder.
-  if (await schedulerIssuesClaimableEnabled()) {
+  const issuesClaimableEnabled = await schedulerIssuesClaimableEnabled();
+  // EI-14108: capture whether THAT call failed (fail-closed) vs. genuinely returned false, so
+  // the diagnosis below never silently presents an unreadable flag as an empty issue pool.
+  const flagReadError = lastIssuesClaimableFlagReadError();
+  if (issuesClaimableEnabled) {
     const issueWs = issuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;
     const issueCooldown = releaseCooldownSec();
@@ -3072,7 +3113,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
-  return { drained: pendingUnclaimed === 0, pendingUnclaimed, readyUnclaimed };
+  return { drained: pendingUnclaimed === 0, pendingUnclaimed, readyUnclaimed, flagReadError };
 }
 
 /** Why ONE named id is not claim-path admissible (WI-4413). `null` reason ⇒ it IS admissible. */

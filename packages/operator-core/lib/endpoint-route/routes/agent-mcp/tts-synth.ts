@@ -80,6 +80,52 @@ function pcm16ToWav(raw: ArrayBuffer, sampleRate: number): ArrayBuffer {
 }
 
 /**
+ * Patch a RIFF/WAVE buffer's RIFF-size and data-chunk-size fields when they
+ * carry ffmpeg libavformat's streaming "unknown length" placeholder
+ * (0xFFFFFFFF) — EI-14136. Some upstream WAV encoders (notably kokoro-
+ * fastapi's ffmpeg writer) stream the encode and never seek back to patch
+ * the real lengths once the file is complete, even though by the time we
+ * see the bytes here we already hold the ENTIRE buffer (`r.arrayBuffer()`
+ * awaits the full body) and so know the true lengths. A seekable decoder
+ * (GStreamer/WebKitGTK) tolerates the placeholder by clamping to the actual
+ * byte length, but a stricter parser, a streaming consumer, or another
+ * platform can legitimately reject it or compute an unknown/infinite
+ * duration. Since we always hold the complete buffer here, no WAV this
+ * server returns should ever declare an unknown length.
+ *
+ * A no-op (returns `buf` unchanged) for anything that isn't a RIFF/WAVE
+ * container, or whose sizes are already correct — safe to call
+ * unconditionally on every `audio/wav` response.
+ */
+function patchWavStreamingSizes(buf: ArrayBuffer): ArrayBuffer {
+  if (buf.byteLength < 12) return buf; // too short to hold a RIFF/WAVE header
+  const view = new DataView(buf);
+  const tag4 = (off: number) =>
+    String.fromCharCode(view.getUint8(off), view.getUint8(off + 1), view.getUint8(off + 2), view.getUint8(off + 3));
+  if (tag4(0) !== 'RIFF' || tag4(8) !== 'WAVE') return buf; // not a RIFF/WAVE container
+  if (view.getUint32(4, true) === 0xffffffff) {
+    view.setUint32(4, buf.byteLength - 8, true);
+  }
+  // Walk the sub-chunks to find "data" — kokoro-fastapi's ffmpeg writer emits
+  // a LIST/INFO chunk before it, so it is not necessarily the first chunk.
+  let offset = 12;
+  while (offset + 8 <= buf.byteLength) {
+    const chunkId = tag4(offset);
+    const sizeOffset = offset + 4;
+    const declaredSize = view.getUint32(sizeOffset, true);
+    if (chunkId === 'data') {
+      if (declaredSize === 0xffffffff) {
+        view.setUint32(sizeOffset, buf.byteLength - (offset + 8), true);
+      }
+      return buf;
+    }
+    if (declaredSize === 0xffffffff) return buf; // can't safely skip an unknown-length non-data chunk
+    offset += 8 + declaredSize + (declaredSize % 2); // chunks are word-aligned (padded to even)
+  }
+  return buf;
+}
+
+/**
  * Synthesize `text` on `engine`, reading per-provider model/voice defaults
  * from `prefs` (so a single settings change re-tunes every route). `engine`
  * must already be a resolved server engine (kokoro|elevenlabs|openai|cartesia).
@@ -106,7 +152,8 @@ export async function synthesize(
   const upstream = async (r: Response, contentType: string): Promise<Synth> => {
     const bad = guard(r);
     if (bad) return bad;
-    return { ok: true, audio: await r.arrayBuffer(), contentType };
+    const audio = await r.arrayBuffer();
+    return { ok: true, audio: contentType === 'audio/wav' ? patchWavStreamingSizes(audio) : audio, contentType };
   };
   try {
     switch (engine) {

@@ -243,9 +243,16 @@ export default defineTool({
           leaseArbitrationLoss: true as const,
         };
       }
+      // EI-14108: a flag-READ failure (fail-closed) must not present as "the flag is off /
+      // the issue pool is empty" — say plainly that the read itself failed, distinct from a
+      // genuine drained/gated verdict (which the feature-family-only counts below may still
+      // legitimately be reporting).
+      const flagReadErrorSuffix = diag.flagReadError
+        ? ` NOTE: the SCHEDULER_ISSUES_CLAIMABLE flag read FAILED this call (${diag.flagReadError}) — issue-family (bug/change/task) counts above are UNDERCOUNTED (fail-closed, excluded entirely), not necessarily empty.`
+        : '';
       const error = diag.drained
-        ? 'no claimable work-item: queue DRAINED (no unclaimed work in a claimable state for this harness) — idling is correct'
-        : `no claimable work-item RIGHT NOW: ${diag.pendingUnclaimed} unclaimed item(s) exist but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-claimed)${diag.readyUnclaimed > 0 ? ` — ${diag.readyUnclaimed} are ready but a peer likely raced you (retry)` : ''}. The queue is NOT drained — do NOT idle; re-check shortly or unblock the backlog.`;
+        ? 'no claimable work-item: queue DRAINED (no unclaimed work in a claimable state for this harness) — idling is correct' + flagReadErrorSuffix
+        : `no claimable work-item RIGHT NOW: ${diag.pendingUnclaimed} unclaimed item(s) exist but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-claimed)${diag.readyUnclaimed > 0 ? ` — ${diag.readyUnclaimed} are ready but a peer likely raced you (retry)` : ''}. The queue is NOT drained — do NOT idle; re-check shortly or unblock the backlog.${flagReadErrorSuffix}`;
       return { ok: false as const, error, drained: diag.drained, pendingUnclaimed: diag.pendingUnclaimed, readyUnclaimed: diag.readyUnclaimed };
     };
 
