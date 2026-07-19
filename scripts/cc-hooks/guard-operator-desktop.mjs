@@ -3,17 +3,25 @@
  * PreToolUse guard — keep agents on the Tauri DESKTOP app, not the retired
  * browser webapp.
  *
- * The papercusp operator's Next/Vite/Hono layer on :3055 / :3070 is the
- * DESKTOP's internal content source, not a standalone site. Agents repeatedly
- * try to "see the app" by browsing those ports (verdict / playwright / chrome /
- * a browser-open in bash) instead of launching the Tauri desktop shell. This
- * hook blocks that and redirects. It does NOT block `curl`/API checks (those are
- * allowed while the desktop is up) or any non-operator port.
+ * The papercusp operator's Next/Vite/Hono layer on :3055 / :3070 / :3170 is
+ * the DESKTOP's internal content source, not a standalone site. Agents
+ * repeatedly try to "see the app" by browsing those ports (verdict /
+ * playwright / chrome / a browser-open in bash) instead of launching the
+ * Tauri desktop shell. This hook blocks that and redirects. It does NOT block
+ * `curl`/API checks (those are allowed while the desktop is up) or any
+ * non-operator port.
  *
  * Registered in ~/.claude/settings.json PreToolUse with matcher:
  *   Bash|mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp
  *
  * Exit 0 = allow; exit 2 = block (stderr is shown to the agent).
+ *
+ * EI-13177: :3170 (the STAGING operator — same Hono/SPA host as :3070, per
+ * the repo's two-port model) was missing from the port list, so an agent
+ * pointing verdict/playwright at it got NO redirect and hit the exact
+ * silent-hang symptom this guard exists to prevent (curl 200, but browser
+ * navigation never reaches DOMContentLoaded — the SPA expects the Tauri
+ * IPC bridge this raw browser view never provides). Added.
  *
  * Source of truth: papercup repo CLAUDE.md → "Running / testing this app".
  */
@@ -45,10 +53,11 @@ const BLOCK_MSG = [
   `    ${DESKTOP_CMD}`,
   '  …then drive the Tauri window it opens.',
   '',
-  "  Do NOT open :3055 / :3070 in a browser — they are the desktop's internal",
-  '  content source (the retired standalone-webapp path), so a browser view is',
-  '  broken/misleading. A `curl` to a :3070 API endpoint is fine while the desktop',
-  '  is running. See the papercup CLAUDE.md → "Running / testing this app".',
+  "  Do NOT open :3055 / :3070 / :3170 in a browser — they are the desktop's",
+  "  internal content source (the retired standalone-webapp path), so a browser",
+  '  view is broken/misleading. A `curl` to a :3070/:3170 API endpoint is fine',
+  '  while the desktop is running. See the papercup CLAUDE.md → "Running / testing',
+  '  this app".',
   '',
 ].join('\n');
 
@@ -68,8 +77,10 @@ try {
 const tool = String(payload.tool_name || '');
 const input = payload.tool_input || {};
 
-// A localhost/loopback URL on an operator dev port.
-const URL_PORTS = /(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(?:3055|3070)\b/i;
+// A localhost/loopback URL on an operator dev port. EI-13177: 3170 (staging
+// operator) added — same desktop-internal content source as 3070, just the
+// staging checkout; it was silently missing from this list.
+const URL_PORTS = /(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(?:3055|3070|3170)\b/i;
 
 // 1) Browser-navigation MCP tools → block when the target is an operator port.
 if (/^mcp__/.test(tool) && /(browser_navigate|navigate|tabs_create_mcp)/i.test(tool)) {

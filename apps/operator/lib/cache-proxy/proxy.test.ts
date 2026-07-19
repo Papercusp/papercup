@@ -117,6 +117,35 @@ describe('cache-proxy — body policy', () => {
     expect(Number(up.seen[0].headers['content-length'])).toBe(Buffer.byteLength(up.seen[0].body));
   });
 
+  it('NEVER forwards defer_loading + cache_control on one tool (live 400 regression)', async () => {
+    // The exact fleet shape that broke a session on 2026-07-19: ENABLE_TOOL_SEARCH=true makes
+    // Claude Code defer the whole MCP catalog, and the API rejects any tool carrying both
+    // defer_loading and cache_control. Asserted at the PROXY boundary (not just the pure
+    // module) because this is the surface that actually reaches Anthropic.
+    const up = upstreamEcho();
+    await listen(up.server);
+    const proxy = track(createCacheProxy({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: port(up.server), upstreamInsecure: true, log: () => {} }));
+    await listen(proxy);
+
+    await request(port(proxy), {
+      body: JSON.stringify({
+        model: 'claude-opus-4-8',
+        tools: [
+          { name: 'tool_search_tool_bm25' },
+          { name: 'mcp__papercusp-su__work_items_get', defer_loading: true },
+          { name: 'mcp__papercusp-su__coord_orient', defer_loading: true },
+        ],
+        messages: [],
+      }),
+    });
+
+    const fwd = JSON.parse(up.seen[0].body);
+    for (const t of fwd.tools) {
+      expect(Boolean(t.defer_loading) && Boolean(t.cache_control), `illegal pair on ${t.name}`).toBe(false);
+    }
+    expect(fwd.tools[0].cache_control).toBeDefined(); // anchored on the only legal tool
+  });
+
   it('leaves non-cacheable paths untouched (count_tokens, batches, models)', async () => {
     expect(isCacheableAnthropicPath('/v1/messages')).toBe(true);
     expect(isCacheableAnthropicPath('/v1/messages?beta=true')).toBe(true);

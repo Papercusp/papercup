@@ -159,7 +159,11 @@ describe("SignalsPanel", () => {
     syncResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<SignalsPanel />);
     expect(screen.getByText("agents keep re-deriving the same fix")).toBeTruthy();
-    expect(screen.getByText(/new · recurring friction/)).toBeTruthy();
+    // CARDS (owner ask 2026-07-19) split the old combined "new · <lane>" chip
+    // into a lane chip plus a separate NEW flag — assert both parts rather than
+    // the concatenated string the row layout used to produce.
+    expect(screen.getAllByText("recurring friction").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("new").length).toBeGreaterThan(0);
     // Standing corpus lives behind its own disclosure trigger.
     expect(screen.getByText("Standing corpus")).toBeTruthy();
   });
@@ -172,14 +176,17 @@ describe("SignalsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /All input lanes/ }));
     expect(screen.getByText("Trigger lanes — what fires a cycle")).toBeTruthy();
     expect(screen.getByText("Fed lanes — what the digest reads")).toBeTruthy();
-    // "captures" appears both as a trigger card label and a taxonomy lane —
-    // the taxonomy chip (inside .pc-signals__lane) carries the categorical color.
-    const laneChip = screen
+    // "captures" appears both as a trigger card label and a taxonomy lane. The
+    // lane's categorical color is still carried inline — but as of the card
+    // layout (owner ask 2026-07-19) the CARD declares `--lane-color` (it paints
+    // the left edge) and the chip inherits it, so assert on whichever ancestor
+    // actually declares the var rather than pinning one element.
+    const colored = screen
       .getAllByText("captures")
-      .map((el) => el.closest(".pc-signals__lane"))
+      .map((el) => el.closest<HTMLElement>("[style*='--lane-color']"))
       .find((el): el is HTMLElement => el !== null);
-    expect(laneChip).toBeTruthy();
-    expect(laneChip!.style.getPropertyValue("--lane-color")).toBeTruthy();
+    expect(colored).toBeTruthy();
+    expect(colored!.style.getPropertyValue("--lane-color")).toBeTruthy();
   });
 
   it("renders the empty state when no signal data has ever been recorded", () => {
