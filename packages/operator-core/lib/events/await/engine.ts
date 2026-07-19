@@ -60,7 +60,7 @@ import {
   voidTreeDescendants,
 } from './compose-store';
 import { composedWakeSummary } from './compose-spec';
-import { executeWake, type ExecuteWakeDeps } from './wake-executor';
+import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { AwaitRow, DeliveryWork } from './types';
 import {
@@ -764,6 +764,38 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         }
         log(`wake #${headline.id} DROPPED (dead waiter) → ${subscriberId}: ${outcome.reason} (${headline.eventKey})`);
         continue;
+      }
+      // EI-16559: about to exhaust retries — before letting the delivery finalize as
+      // silently 'dead', try the SAME inbox fallback the 'drop' outcome already gets
+      // (degradeToInboxOrDrop, P-001). Pre-existing gap: a delivery that kept ERRORing
+      // (a transient channel/spawn failure, not a definitively-resolved dead waiter)
+      // burned through MAX_ATTEMPTS and went 'dead' with ZERO trace ever reaching the
+      // subscriber — the events:await registration contract's "you always have an
+      // inbox to fall back to" was never honored for THIS failure class, only for the
+      // 'drop' class. `headline.attempts` already reflects this claim (incremented by
+      // claimDueDeliveries before executeWake ran), so `>= MAX_ATTEMPTS` here means
+      // markDeliveryFailed below would otherwise mark it dead.
+      if (headline.attempts >= MAX_ATTEMPTS) {
+        const degraded = await degradeToInboxOrDrop(
+          coalesced,
+          `delivery kept failing and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.error}`,
+          deps.sendCoordMessage ?? sendMessage,
+        );
+        if (degraded.kind === 'delivered') {
+          await markDeliveryDelivered(headline.id, degraded.channel, group.length);
+          stats.delivered++;
+          if (siblings.length > 0) {
+            await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+            stats.coalesced += siblings.length;
+          }
+          log(
+            `wake #${headline.id} exhausted ${MAX_ATTEMPTS} attempts → degraded to inbox for ${subscriberId} ` +
+              `(last error: ${outcome.error})`,
+          );
+          continue;
+        }
+        // The inbox write itself failed too — genuinely no resolvable owner; fall
+        // through to the normal dead-finalize path below (folds `degraded.reason` in).
       }
       const verdict = await markDeliveryFailed({
         id: headline.id,

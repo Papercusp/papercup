@@ -84,6 +84,13 @@ describe('previewNextDecisionId', () => {
   it('keeps 3-digit padding past 99', () => {
     expect(previewNextDecisionId([decision('D-099')])).toBe('D-100');
   });
+  // WI-5520: a decision with a null/missing id (a trimmed/partial payload) must
+  // be SKIPPED, never crash the whole PlanDetail view via `id.match(...)`.
+  it('skips decisions with a null/undefined id instead of throwing', () => {
+    const bad = [decision('D-003'), { id: null } as unknown as PlanDecision, {} as PlanDecision];
+    expect(() => previewNextDecisionId(bad)).not.toThrow();
+    expect(previewNextDecisionId(bad)).toBe('D-004');
+  });
 });
 
 describe('previewNextItemId', () => {
@@ -92,5 +99,14 @@ describe('previewNextItemId', () => {
   });
   it('returns max(existing) + 1, zero-padded', () => {
     expect(previewNextItemId([item('P-004'), item('P-011'), item('P-002')])).toBe('P-012');
+  });
+  // WI-5520 root symptom: a >30KB full read force-trimmed by the payload-tier
+  // ceiling emptied every item past the first to `{}` (id undefined). PlanActions
+  // renders `previewNextItemId(items)` on EVERY render, so a null id crashed the
+  // entire plan popup ("This view hit an error"). Guard it defensively.
+  it('skips items with a null/undefined id instead of throwing', () => {
+    const bad = [item('P-001'), { id: null } as unknown as PlanItem, {} as PlanItem];
+    expect(() => previewNextItemId(bad)).not.toThrow();
+    expect(previewNextItemId(bad)).toBe('P-002');
   });
 });

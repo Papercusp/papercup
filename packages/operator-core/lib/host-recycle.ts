@@ -124,6 +124,20 @@ export interface GracefulRecycleOpts {
    * runner.
    */
   killSelf?: () => void;
+  /**
+   * Human-readable cause of THIS recycle, folded into the `[host-recycle]
+   * hard-exit` log line below. EI-16447: every `hardExitOnRecycle` caller used
+   * to share one hardcoded "a memory-watchdog recycle" string regardless of
+   * actual trigger — so a SIGTERM drain (`installGracefulShutdown`) or a
+   * lag-self-restart recycle logged as if the memory watchdog had tripped.
+   * That false attribution sent a real investigation (WI-5434) hours down the
+   * wrong path (RSS-leak theories) chasing a restart storm that was actually
+   * `papercup-staging-sync.timer`'s by-design 5-minute freshness restart
+   * (SIGTERM → `installGracefulShutdown`) tracking git-sync's near-continuous
+   * commit cadence. Callers should pass the real cause; default is generic
+   * (never assume "memory-watchdog" — that was precisely the bug).
+   */
+  reason?: string;
 }
 
 /**
@@ -142,6 +156,12 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const hardExitOnRecycle = opts.hardExitOnRecycle ?? false;
   const killSelf =
     opts.killSelf ?? (() => process.kill(process.pid, 'SIGKILL'));
+  // EI-16447: identify the ACTUAL trigger in the hard-exit log line — never
+  // hardcode "memory-watchdog" here, every hardExitOnRecycle caller shares this
+  // path (memory-watchdog trip, SIGTERM/SIGINT drain, lag-self-restart) and a
+  // wrong/generic attribution misdirects the next debugging pass (see the
+  // `reason` doc above).
+  const reason = opts.reason ?? 'a recycle';
 
   let exited = false;
   const exitOnce = (code: number) => {
@@ -155,7 +175,7 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
     // itself throws (never for a self-SIGKILL).
     if (hardExitOnRecycle) {
       console.warn(
-        '[host-recycle] hard-exit (SIGKILL self, no native teardown) — a memory-watchdog recycle exits WITHOUT running the Node env teardown that fires the onnxruntime/node-pty/sharp Napi::Error → SIGABRT (EI-10702); the process is fully exiting so the OS reclaims every socket/fd/thread on exit',
+        `[host-recycle] hard-exit (SIGKILL self, no native teardown) — ${reason} exits WITHOUT running the Node env teardown that fires the onnxruntime/node-pty/sharp Napi::Error → SIGABRT (EI-10702); the process is fully exiting so the OS reclaims every socket/fd/thread on exit`,
       );
       try {
         killSelf();
@@ -241,6 +261,12 @@ export interface GracefulShutdownOpts {
   killSelf?: () => void;
   /** Test seam — defaults to console.log. */
   log?: (msg: string) => void;
+  /**
+   * Override the hard-exit log `reason` (see `GracefulRecycleOpts.reason`).
+   * Default: `a <sig> drain (an external stop/restart request — …)`, derived
+   * from the actual signal that triggered this drain.
+   */
+  reason?: string;
 }
 
 /**
@@ -277,6 +303,13 @@ export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
       isSaturated: opts.isSaturated,
       hardExitMs: opts.hardExitMs,
       hardExitOnRecycle: opts.hardExitOnRecycle,
+      // EI-16447: a ${sig} here is an EXTERNAL stop request (a deploy,
+      // `systemctl restart`, or a timer like papercup-staging-sync's 5-min
+      // freshness restart) — NOT the memory watchdog. Say so explicitly; the
+      // shared hard-exit log line used to hardcode "memory-watchdog" for every
+      // caller and sent a real investigation (WI-5434) chasing a phantom RSS
+      // leak for hours when the actual cause was this intentional SIGTERM path.
+      reason: opts.reason ?? `a ${sig} drain (an external stop/restart request — deploy, systemctl, or a sync timer — not the memory watchdog)`,
       killSelf: opts.killSelf,
     });
   };

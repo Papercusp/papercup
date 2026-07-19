@@ -1,0 +1,82 @@
+/**
+ * Admin `/api/admin/plans/:verb` READ-dispatch payload-tier contract (WI-5520).
+ *
+ * This Hono admin route is the NON-live REST path the operator UI's
+ * `usePlan`/`fetchPlan` uses (the PlanDetail popup, the /admin/plans editor).
+ * Like its sync-path sibling `callPlansReadRaw` (read-dispatch.test.ts), it has
+ * no model-context budget and MUST take the EXPLICIT `payloadTier:'full'`
+ * escape hatch out of the payload-tier HARD CEILING (WI-5078 / WI-2859).
+ *
+ * The regression it pins: without `payloadTier:'full'`, a >30KB `mode:'full'`
+ * plan read was force-shaped down to fit the transport cap — the prose body was
+ * DROPPED and every item past the first was emptied to `{}`. That produced BOTH
+ * reported symptoms of the popup bug: a blank Vditor body (no prose to render)
+ * AND a whole-view crash ("This view hit an error") on plans whose items lost
+ * their `id` (PlanActions' `previewNextItemId` threw on `id.match(...)`).
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const H = vi.hoisted(() => ({
+  calls: [] as Array<{ pathname: string; body: Record<string, unknown> }>,
+}));
+
+vi.mock('@papercusp/agent-mcp', async (importActual) => {
+  const actual = await importActual<typeof import('@papercusp/agent-mcp')>();
+  return {
+    ...actual,
+    handleHttpToolRequest: vi.fn(
+      async (req: { pathname: string; body: Record<string, unknown> }) => {
+        H.calls.push({ pathname: req.pathname, body: req.body });
+        // A minimal single-plan bulk envelope so unwrapBulkGet has something to unwrap.
+        return {
+          status: 200,
+          body: {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ok: true,
+                  results: [{ ok: true, slug: 'demo', prose: '# Demo', items: [] }],
+                  counts: { ok: 1, failed: 0 },
+                }),
+              },
+            ],
+          },
+        };
+      },
+    ),
+  };
+});
+
+import { dispatchRead } from './plans';
+
+const reqFor = (verb: string, extraQs = ''): Request =>
+  new Request(`http://localhost/api/admin/plans/${verb}?slug=demo&mode=full${extraQs}`);
+// The route only reads ctx.params.verb.
+const ctxFor = (verb: string) => ({ params: { verb } }) as unknown as Parameters<typeof dispatchRead>[1];
+
+beforeEach(() => {
+  H.calls = [];
+});
+
+describe('admin plans read dispatch — payload-tier contract (WI-5520 / WI-5078)', () => {
+  it('get requests the EXPLICIT full tier so the hard ceiling cannot trim the UI read', async () => {
+    await dispatchRead(reqFor('get'), ctxFor('get'));
+    expect(H.calls).toHaveLength(1);
+    expect(H.calls[0].pathname).toBe('/api/agent-tools/plans/get');
+    expect(H.calls[0].body.payloadTier).toBe('full');
+    // The editor still opts into raw bytes for the set-content CAS round-trip.
+    expect(H.calls[0].body.includeRaw).toBe(true);
+  });
+
+  it('applies the full tier to every read verb, not just get', async () => {
+    await dispatchRead(reqFor('items'), ctxFor('items'));
+    await dispatchRead(reqFor('list'), ctxFor('list'));
+    expect(H.calls.every((c) => c.body.payloadTier === 'full')).toBe(true);
+  });
+
+  it('respects an explicit lower payloadTier from the query (opt-in shaped reads stay possible)', async () => {
+    await dispatchRead(reqFor('get', '&payloadTier=trimmed'), ctxFor('get'));
+    expect(H.calls[0].body.payloadTier).toBe('trimmed');
+  });
+});

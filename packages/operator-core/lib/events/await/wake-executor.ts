@@ -579,8 +579,13 @@ function inboxNotifierIdentity(workspaceId: string): AgentIdentity {
  * the same as "no resolvable owner". Only when the inbox write itself fails
  * (the one case where delivery is genuinely impossible) does this still drop,
  * visibly, folding the inbox failure into the reason.
+ *
+ * Exported (EI-16559) so the pump's exhausted-retries path (engine.ts) can
+ * reuse the SAME fallback for a delivery that keeps ERRORing until it burns
+ * through MAX_ATTEMPTS — see that call site for why this was previously drop
+ * -only and left `error`-exhausted deliveries silently 'dead'.
  */
-async function degradeToInboxOrDrop(
+export async function degradeToInboxOrDrop(
   d: DeliveryWork,
   reason: string,
   send: typeof sendMessage,

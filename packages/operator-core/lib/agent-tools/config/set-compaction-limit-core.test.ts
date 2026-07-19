@@ -3,9 +3,10 @@
  * setter (per-member-declarative-launch-specs). Presence / fleet-store / model-spec seams are
  * mocked; the REAL `classifyFleetControlInvoker` (pure) and REAL `agent-config-constants`
  * (clamp / role-cap) run, so leader/queen/owner authorization AND the target-role-derived
- * ceiling (300k member vs 400k leader on [1m]) are exercised for real.
+ * ceiling (the fleet-member cap vs the 400k leader cap on [1m]) are exercised for real.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } from '../../agent-config-constants';
 
 const getFleet = vi.fn();
 const setCompactionLimit = vi.fn();
@@ -54,20 +55,20 @@ beforeEach(() => {
 });
 
 describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => {
-  it('a fleet leader sets a MEMBER limit, clamped to the 300k member ceiling', async () => {
+  it('a fleet leader sets a MEMBER limit, clamped to the member ceiling', async () => {
     fetchPresenceFleet.mockResolvedValue(fleetMap('su-mem', 'rocket', 'member'));
     getFleet.mockResolvedValue({ leaderOwnerId: CALLER }); // caller IS this fleet's leader
     getPresence.mockImplementation(async (id: string) =>
-      id === 'su-mem' ? { compactionLimit: 300_000 } : { agentRole: 'su' },
+      id === 'su-mem' ? { compactionLimit: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } : { agentRole: 'su' },
     );
     const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', 500_000);
-    expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', 300_000); // clamped down to member cap
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP); // clamped to member cap
     expect(out).toMatchObject({
       ok: true,
       invokedAs: 'leader',
       targetOwnerId: 'su-mem',
-      compactionLimit: 300_000,
-      cap: 300_000,
+      compactionLimit: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+      cap: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
       clamped: true,
       requested: 500_000,
       fleet: 'rocket',
@@ -80,11 +81,12 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
     getFleet.mockResolvedValue({ leaderOwnerId: 'su-someone-else' });
     classifyAgentPane.mockReturnValue({ kind: 'mug' }); // queen
     getPresence.mockImplementation(async (id: string) =>
-      id === 'su-mem' ? { compactionLimit: 250_000 } : { agentRole: 'mug' },
+      id === 'su-mem' ? { compactionLimit: 150_000 } : { agentRole: 'mug' },
     );
-    const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', 250_000);
-    expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', 250_000); // within cap → verbatim
-    expect(out).toMatchObject({ ok: true, invokedAs: 'queen', compactionLimit: 250_000 });
+    // 150k is below the fleet-member cap (200k) → applied verbatim, not clamped.
+    const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', 150_000);
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', 150_000); // within cap → verbatim
+    expect(out).toMatchObject({ ok: true, invokedAs: 'queen', compactionLimit: 150_000 });
     expect(out.clamped).toBeUndefined();
   });
 
@@ -104,7 +106,7 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
       id === 'su-lead2' ? { compactionLimit: 400_000 } : { agentRole: 'su' },
     );
     const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-lead2', 500_000);
-    expect(setCompactionLimit).toHaveBeenCalledWith('su-lead2', 400_000); // leader cap, not 300k
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-lead2', 400_000); // leader cap, not the member cap
     expect(out).toMatchObject({ ok: true, invokedAs: 'owner', cap: 400_000, targetRole: 'leader' });
   });
 

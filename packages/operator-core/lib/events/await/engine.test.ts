@@ -33,6 +33,15 @@ const h = vi.hoisted(() => ({
       _deps: { onResumeTurnExit?: (delivery: DeliveryWork, exit: unknown) => void },
     ): Promise<unknown> => ({ kind: 'delivered', channel: 'resume' }),
   ),
+  // EI-16559: the REAL degradeToInboxOrDrop calls sendMessage under the hood; the
+  // hoisted mock mirrors that shape (delivered/inbox on success, drop on failure) so
+  // engine.ts's exhausted-retries fallback exercises against a faithful double
+  // without engine.test.ts depending on wake-executor's internals.
+  degradeToInboxOrDrop: vi.fn(async (_d: DeliveryWork, reason: string) => ({
+    kind: 'delivered' as const,
+    channel: 'inbox' as const,
+    reason,
+  })),
   sendMessage: vi.fn(async () => ({ msg_id: 'm-1' })),
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.
@@ -40,7 +49,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('./store', () => h.store);
-vi.mock('./wake-executor', () => ({ executeWake: h.executeWake }));
+vi.mock('./wake-executor', () => ({ executeWake: h.executeWake, degradeToInboxOrDrop: h.degradeToInboxOrDrop }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage }));
 vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({ listEventKeySubscribers: h.listEventKeySubscribers }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
@@ -558,6 +567,50 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
       expect.objectContaining({ id: 11, error: 'spawn failed' }),
     );
     expect(stats.dropped).toBe(1);
+    expect(stats.failed).toBe(1);
+  });
+
+  it('EI-16559: an error that is about to exhaust MAX_ATTEMPTS degrades to inbox instead of dying silently', async () => {
+    // attempts=8 === MAX_ATTEMPTS: markDeliveryFailed would otherwise finalize this
+    // as 'dead' with no trace ever reaching the subscriber (the exact stranding the
+    // bug report hit) — the fallback must intercept BEFORE that happens.
+    h.executeWake.mockResolvedValueOnce({ kind: 'error', error: 'spawn failed again' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({ id: 12, subscriberId: 'su-c', attempts: 8 })]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.degradeToInboxOrDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 12 }),
+      expect.stringContaining('exhausted 8 attempts'),
+      expect.any(Function),
+    );
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(12, 'inbox', 1);
+    expect(h.store.markDeliveryFailed).not.toHaveBeenCalled();
+    expect(stats.delivered).toBe(1);
+    expect(stats.failed).toBe(0);
+  });
+
+  it('EI-16559: still under MAX_ATTEMPTS, an error keeps the normal retry-with-backoff path (no inbox fallback)', async () => {
+    h.executeWake.mockResolvedValueOnce({ kind: 'error', error: 'transient' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({ id: 13, subscriberId: 'su-d', attempts: 3 })]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 13, error: 'transient' }),
+    );
+    expect(stats.failed).toBe(1);
+  });
+
+  it('EI-16559: exhausted-attempts fallback itself failing (no resolvable owner) still finalizes dead, visibly', async () => {
+    h.degradeToInboxOrDrop.mockResolvedValueOnce({
+      kind: 'drop',
+      reason: 'exhausted attempts — inbox delivery also failed (no resolvable owner): boom',
+    });
+    h.executeWake.mockResolvedValueOnce({ kind: 'error', error: 'spawn failed again' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({ id: 14, subscriberId: 'su-e', attempts: 8 })]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.store.markDeliveryFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 14, error: 'spawn failed again' }),
+    );
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
     expect(stats.failed).toBe(1);
   });
 });

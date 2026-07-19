@@ -1580,6 +1580,20 @@ function GymView({
         }
       />
 
+      {/* How things reach the gym — the succinct two-path explanation, in the
+          header-desc idiom (owner ask 2026-07-19); the fuller mechanics ride
+          the tooltip. */}
+      <p
+        className="pc-learning__sectionsub pc-learning__gymhow"
+        title={`Path 1 — ${t("scout")} routing: every fused idea carries a routeHint from the recombine step; small, cheaply testable (prompt-shaped) ideas route to the gym rail as challenger candidates + QD-archive niche seeds. Unhinted ideas default to the improvement rail; plans/benchmarks have their own rails. Path 2 — the autoloop: a per-${t("pot", { lower: true })} config (enabled + an explicit budget cap — no cap, no unattended runs); a 30-min routine round-robins enabled ${t("pot", { plural: true, lower: true })} and runs one budget-bounded challenger-vs-champion cycle, accumulating spend until the budget floor stops it. Proposals never auto-promote — accept/reject is yours.`}
+      >
+        Two ways in: {t("scout")} routes small, cheaply testable ideas here
+        (challengers + archive niche seeds), and each enabled, budgeted{" "}
+        {t("pot", { lower: true })} autoloop runs challenger-vs-champion cycles
+        (~every 30 min) until its budget is spent. Nothing promotes itself —
+        you accept or reject every challenger.
+      </p>
+
       {scopeFallback ? (
         <p
           className="pc-learning__muted pc-learning__scopenote"
@@ -4975,6 +4989,7 @@ export function LearningStyles() {
         flex: 1 1 auto; min-width: 0;
         font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8);
       }
+      .pc-learning__gymhow { margin: -2px 2px 6px; }
       .pc-learning__lensstacks {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
         gap: 16px; margin-top: 8px;
