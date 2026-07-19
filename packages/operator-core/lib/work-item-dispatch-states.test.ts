@@ -16,9 +16,11 @@ describe('feature-state constant invariants', () => {
     for (const t of FEATURE_TERMINAL_STATES) expect(FEATURE_FAMILY_STATES).toContain(t);
   });
 
-  it('non-requeue states = dispatchable + terminal + blocked, with no duplicates', () => {
+  it('non-requeue states = dispatchable + terminal + blocked + needs-human + open, with no duplicates', () => {
+    // work-item-status-full-unify: `open` (the unified claimable token) is non-requeue for the
+    // same reason as `todo` — already claimable, nothing to do.
     expect(new Set(FEATURE_NON_REQUEUE_STATES)).toEqual(
-      new Set([FEATURE_DISPATCHABLE_STATE, ...FEATURE_TERMINAL_STATES, 'blocked', 'needs-human']),
+      new Set([FEATURE_DISPATCHABLE_STATE, ...FEATURE_TERMINAL_STATES, 'blocked', 'needs-human', 'open']),
     );
     expect(FEATURE_NON_REQUEUE_STATES.length).toBe(new Set(FEATURE_NON_REQUEUE_STATES).size);
   });

@@ -20,8 +20,13 @@ export const FEATURE_DISPATCHABLE_STATE = 'todo';
 
 /** Settled feature states — a terminal outcome, never re-dispatched and never
  *  requeued by the reaper. (Mirrors the settled set in setWorkItemState that
- *  fires `work-item:done`.) */
-export const FEATURE_TERMINAL_STATES: readonly string[] = ['passed', 'deprecated'];
+ *  fires `work-item:done`.)
+ *
+ *  work-item-status-full-unify (2026-07-19): carries the legacy terminals AND the
+ *  unified ones (`done`/`dropped`) as a TRANSITIONAL SUPERSET — without this, the
+ *  reaper would read a post-migration `done` row as "stranded mid-flight" and
+ *  requeue settled work en masse. Narrow to ['done','dropped'] after cleanup. */
+export const FEATURE_TERMINAL_STATES: readonly string[] = ['passed', 'deprecated', 'done', 'dropped'];
 
 /**
  * Feature states the reaper / release path must NOT requeue to `todo`:
@@ -45,6 +50,11 @@ export const FEATURE_NON_REQUEUE_STATES: readonly string[] = [
   ...FEATURE_TERMINAL_STATES,
   'blocked',
   'needs-human',
+  // work-item-status-full-unify: `open` is the unified claimable token (todo→open in the
+  // backfill) — an `open` row is ALREADY claimable, so a freed one needs no requeue (same
+  // rationale as `todo`). Covers both today's drifted `open` features and the post-migration
+  // vocabulary. FEATURE_DISPATCHABLE_STATE itself flips 'todo'→'open' at the coordinated cutover.
+  'open',
 ];
 
 /** Pure predicate: is this freed feature row stranded mid-flight (should the
@@ -63,6 +73,11 @@ export function isRequeueableFeatureState(status: string | null | undefined): bo
  */
 export const FEATURE_FAMILY_STATES: readonly string[] = [
   'todo', 'in_progress', 'validating', 'passed', 'failing', 'deprecated', 'blocked', 'wip', 'needs-human',
+  // work-item-status-full-unify: the unified vocabulary joins the recognized set. NOTE these are
+  // NOT writer-reachable yet — FEATURE_STATE_ALIASES intercepts done/dropped/open BEFORE this
+  // allowlist (writers keep storing the legacy tokens until the coordinated cutover); listing them
+  // here keeps the terminals⊆vocabulary invariant true for the transitional FEATURE_TERMINAL_STATES.
+  'open', 'done', 'dropped',
 ];
 
 /**

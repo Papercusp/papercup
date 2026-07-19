@@ -172,6 +172,42 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.active).toBe(true); // a parked loop is still armed
   });
 
+  it('EI-16202: armedAt advances on every re-arm even while fireCount/lastFiredAt/parked legitimately stay unchanged (distinguishes a real re-arm from a no-op)', async () => {
+    const t0 = new Date('2026-06-20T00:00:00.000Z');
+    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k', now: t0, sql });
+
+    const first = await getLoopStatus(OWNER, { sql });
+    expect(first!.armedAt).not.toBeNull();
+    expect(first!.fireCount).toBe(0);
+    expect(first!.lastFiredAt).toBeNull();
+
+    // Simulate the exact repro: the loop's turn is in flight (parked at 'infinity',
+    // the claim.ts sentinel) — e.g. a re-arm called from WITHIN the loop's own
+    // in-flight turn, or a re-arm racing a stuck/never-completion-rebased park.
+    await sql`
+      UPDATE harness_shared.routines
+         SET next_fire_at = 'infinity'::timestamptz
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    const parked = await getLoopStatus(OWNER, { sql });
+    expect(parked!.parked).toBe(true);
+
+    // Re-arm while parked (materializeLoop's CASE deliberately preserves 'infinity'
+    // here — EI-6878 — so parked/fireCount/lastFiredAt are UNCHANGED, which is the
+    // exact observation the bug report couldn't distinguish from "the arm no-op'd").
+    const t1 = new Date(t0.getTime() + 5 * 60_000);
+    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k2', now: t1, sql });
+
+    const second = await getLoopStatus(OWNER, { sql });
+    expect(second!.parked).toBe(true); // legitimately unchanged (EI-6878)
+    expect(second!.fireCount).toBe(0); // legitimately unchanged — no fire happened
+    expect(second!.lastFiredAt).toBeNull(); // legitimately unchanged
+    // ...but armedAt DOES move — proof the re-arm actually touched the row.
+    expect(second!.armedAt).not.toBeNull();
+    expect(new Date(second!.armedAt!).getTime()).toBeGreaterThan(new Date(first!.armedAt!).getTime());
+    expect(new Date(second!.armedAt!).getTime()).toBe(t1.getTime());
+  });
+
   it('deactivateLoop stops the loop (idempotent on the active guard)', async () => {
     await materializeLoop({
       workspaceId: WS,
