@@ -522,8 +522,8 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
       'the observation you record for this anomaly — whether that observation IS the suggested action ' +
       '(OBSERVE) or is the companion observation D-003 has you drop alongside a NUDGE/ESCALATE: pass it and a ' +
       'still-open prior observation of the SAME condition is updated in place (repeatCount bumped) instead of ' +
-      'minting a fresh open work-item every wake (EI-15448 — this is exactly how the escalation-aging drift ' +
-      'flooded the backlog with 7,000+ near-identical open items even though its ESCALATE side coalesced fine).',
+      'minting a fresh open work-item every wake (EI-15448 — a persisting drift whose ESCALATE side coalesced ' +
+      'fine but whose companion observation did not once flooded the backlog with 7,000+ near-identical open items).',
   );
 
   if (brief.wokeBy && brief.wokeBy.trim()) {

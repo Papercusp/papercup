@@ -248,14 +248,20 @@ export async function fetchUnansweredDirected(
               -- strictly after the ask — evidence the recipient is actively
               -- corresponding with them, even though this fleet's agents
               -- routinely don't re-thread every reply onto the exact msg_id
-              -- that set expectsReply. Scoped tight: still requires (a) a
-              -- reply-shaped message (not just any message at all — a fresh
-              -- unrelated FYI to the same sender does not count), (b)
-              -- addressed back to the original sender specifically, (c)
-              -- chronologically after the ask.
+              -- that set expectsReply.
+              -- (3) WI-5345: OR ANY directed message at all (threaded or a
+              -- bare unthreaded status update) the recipient sent back to
+              -- the SAME original sender strictly after the ask. EI-13819's
+              -- fix still required the reply to carry SOME related_msg_id,
+              -- which misses the common case a leader actually hits: a
+              -- fresh, wholly un-threaded "status update" reply addressed
+              -- back to the asker. Scoped tight: still requires (a)
+              -- addressed back to the original sender specifically, (b)
+              -- chronologically after the ask — a fresh unrelated FYI to
+              -- some OTHER recipient, or one predating the ask, still does
+              -- not count.
               OR (
-                e2.body ? 'related_msg_id'
-                AND jsonb_typeof(e2.body->'to') = 'array'
+                jsonb_typeof(e2.body->'to') = 'array'
                 AND e2.body->'to' @> to_jsonb(ARRAY[d.from_id])
                 AND (e2.body->>'ts')::timestamptz >= to_timestamp(d.ts_ms::double precision / 1000)
               )

@@ -1749,18 +1749,15 @@ export async function autoResolveSourceIssueOnFeaturePassed(
      WHERE harness_slug = ${harness} AND feature_id = ${featureId}
      LIMIT 1`;
   const sourceIssueId = rows[0]?.source_issue_id;
-  console.error('DEBUG autoResolve rows:', JSON.stringify(rows), 'sourceIssueId:', sourceIssueId);
   if (!sourceIssueId) return;
   const issue = await getIssue(sourceIssueId);
-  console.error('DEBUG autoResolve issue:', JSON.stringify(issue));
   if (!issue || ISSUE_TERMINAL_STATUSES.has(issue.state)) return;
-  const setResult = await setIssueState(
+  await setIssueState(
     sourceIssueId,
     'resolved',
     'system:auto-issue-resolve',
     `Auto-resolved: source feature ${featureId} passed (EI-15461).`,
   );
-  console.error('DEBUG autoResolve setResult:', JSON.stringify(setResult));
 }
 
 /** The alias/no-op discriminator every lifecycle verb's result row should carry (EI-7712). */

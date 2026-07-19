@@ -430,11 +430,17 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
   // its real production INSERT (metadata.sourceIssueId) directly so the row
   // exists for setWorkItemState to transition.
   async function insertPromotedFeatureRow(featureId: string, sourceIssueId: string): Promise<void> {
+    // NB: cast via `::text::jsonb`, NOT a direct `::jsonb` — postgres.js applies its
+    // own jsonb serializer to a parameter bound with an explicit jsonb type, so a
+    // manually-pre-stringified value cast directly to `::jsonb` gets DOUBLE-encoded
+    // (ends up a jsonb *scalar string* instead of an object, silently breaking
+    // `metadata ->> 'key'` reads). Same workaround already used in
+    // work-items-audit-no-evidence.integration.test.ts.
     await db.sql`
       INSERT INTO harness_shared.harness_features_consolidated
         (harness_slug, feature_id, title, status, item_kind, metadata, workspace_id, created_ts, updated_ts)
       VALUES ('papercup', ${featureId}, 'promoted feature', 'todo', 'feature',
-              ${JSON.stringify({ sourceIssueId })}::jsonb, 'default', ${Date.now()}, ${Date.now()})`;
+              ${JSON.stringify({ sourceIssueId })}::text::jsonb, 'default', ${Date.now()}, ${Date.now()})`;
   }
 
   it('promote → mint feature row → feature passes → source issue auto-resolves', async () => {
@@ -445,15 +451,6 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
     await insertPromotedFeatureRow(featureId, bug.id);
 
     await wi.setWorkItemState(featureId, 'passed', { by: 'agB', completionRef: 'shipped the fix' });
-    // DEBUG
-    try {
-      await wi.autoResolveSourceIssueOnFeaturePassed(featureId, 'papercup');
-    } catch (e) {
-      console.error('DEBUG autoResolveSourceIssueOnFeaturePassed threw:', e);
-    }
-    const dbgRows = await db.sql`SELECT feature_id, harness_slug, status, metadata FROM harness_shared.harness_features_consolidated WHERE feature_id = ${featureId}`;
-    console.error('DEBUG feature rows:', JSON.stringify(dbgRows));
-    console.error('DEBUG bug.id:', bug.id);
 
     // The auto-resolve is a fire-and-forget hook off the same write — wait for
     // its effect rather than racing the microtask/DB round-trip.

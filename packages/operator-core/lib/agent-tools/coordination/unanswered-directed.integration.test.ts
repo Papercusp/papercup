@@ -85,14 +85,28 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)?.count).toBe(1);
   });
 
-  it('a bare unthreaded status update back to the sender (no related_msg_id) does NOT clear it', async () => {
+  it('WI-5345: a bare unthreaded status update back to the sender (no related_msg_id) DOES clear it', async () => {
     await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'please claim P-012', expectsReply: true });
-    // A fresh, un-threaded message back to the sender is not "reply-shaped" —
-    // still requires SOME related_msg_id to count as active correspondence.
+    // A fresh, un-threaded message back to the sender is not "reply-shaped"
+    // in the EI-13819 sense (no related_msg_id at all) but IS still a real,
+    // directed reply from the recipient to the original asker — the common
+    // case this fleet's agents actually produce, per WI-5345.
     await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'still working on other things' });
 
     const map = await fetchUnansweredDirected([MEMBER.ownerId]);
-    expect(map.get(MEMBER.ownerId)?.count).toBe(1);
+    expect(map.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
+  it('WI-5345: several standalone genuine-status replies (no related_msg_id) after multiple separate asks all clear the count', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'liveness check 1', expectsReply: true });
+    await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'status: still on P-012, tests green so far' });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'liveness check 2', expectsReply: true });
+    await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'status: P-012 done, moving to P-013' });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'liveness check 3', expectsReply: true });
+    await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'status: P-013 claimed, investigating repro' });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)).toBeUndefined();
   });
 
   it('a reply-shaped message sent BEFORE the ask does not clear it (chronology enforced)', async () => {

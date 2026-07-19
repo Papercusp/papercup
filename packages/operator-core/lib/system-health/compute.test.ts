@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, type EscalationAgingInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
 
@@ -173,6 +173,40 @@ describe('countLeadingZeroTokenWakes / queenPlacementStalled — Queen placement
   });
   it('treats an absent frontierStuck as 0 (fresh=frontier — prior behaviour preserved)', () => {
     expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 3, frontier: 7, paused: false })).toBe(true);
+  });
+});
+
+describe('isLiveRigOnlyFrontierTitle / countStuckFrontier — live-rig/federation false-escalation guard (EI-15329)', () => {
+  it('recognizes the actual live-incident titles as live-rig/federation-only', () => {
+    expect(isLiveRigOnlyFrontierTitle('Federation peer loses gh auth across VM restart → stays local-only')).toBe(true);
+    expect(isLiveRigOnlyFrontierTitle('Federation: late-admitted owner core stalls — replication/fold catches up only on next append')).toBe(true);
+    expect(isLiveRigOnlyFrontierTitle('Epoch-key wraps rejected during identity divergence are permanently stranded — silent REV fed_event outage class')).toBe(true);
+  });
+  it('does NOT flag an ordinary, non-federation title', () => {
+    expect(isLiveRigOnlyFrontierTitle('Fix off-by-one in pagination for the plan-items list')).toBe(false);
+    expect(isLiveRigOnlyFrontierTitle(undefined)).toBe(false);
+  });
+  it('countStuckFrontier counts a FRESH (ageDays=0) live-rig-titled row as stuck', () => {
+    expect(countStuckFrontier([{ ageDays: 0, title: 'Federation peer loses gh auth across VM restart' }])).toBe(1);
+  });
+  it('countStuckFrontier still counts age-based stuck rows with no title (prior behaviour preserved)', () => {
+    expect(countStuckFrontier([{ ageDays: 1 }, { ageDays: 0 }])).toBe(1);
+  });
+  // EI-15329 GUARD: the exact false-escalation shape — a "fresh" (recently-touched)
+  // ready frontier that is ENTIRELY live-rig/federation-owned SU-lane work must read
+  // as correct idle (fresh=0), never a Mug placement stall / owner escalation, no
+  // matter how many consecutive 0-token wakes accompany it.
+  it('GUARD: an all-live-rig, age-fresh frontier does NOT read as a placement stall', () => {
+    const frontier = [
+      { ageDays: 0, title: 'Federation peer loses gh auth across VM restart → stays local-only' },
+      { ageDays: 0.01, title: 'Federation: late-admitted owner core stalls on quiescent hives' },
+      { ageDays: 0, title: 'Epoch-key wraps rejected during identity divergence — silent REV fed_event outage' },
+    ];
+    const frontierStuck = countStuckFrontier(frontier);
+    expect(frontierStuck).toBe(frontier.length); // every row excluded — none is genuinely fresh
+    expect(
+      queenPlacementStalled({ consecutiveZeroTokenWakes: 9, frontier: frontier.length, frontierStuck, paused: false }),
+    ).toBe(false);
   });
 });
 

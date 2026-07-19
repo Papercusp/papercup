@@ -444,13 +444,48 @@ function frontierStuckHours(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 3;
 }
 
-/** Count ranked frontier candidates whose age exceeds the stuck window. `ageDays`
- *  is pre-computed on every candidate by the survey (frontierRowToCandidate), so
- *  this needs no extra query. */
-function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number }>): number {
+/**
+ * EI-15329: a frontier item requiring LIVE multi-machine / federation-rig
+ * verification (real VMs, cross-device GH auth, a live P2P swarm) is not
+ * Mug-placeable no matter how fresh it looks — no cup has a route to that
+ * infra (the "cup-verification-wall", EI-13215). The AGE-based stuck window
+ * above (WI-3597) misses this: an item the live SU fleet is actively working
+ * reads as "touched recently" (ageDays low), so it never crosses the stuck
+ * threshold and keeps counting as fresh placeable work — which is exactly
+ * the false "0 placements = mechanism defect" reading EI-15329 diagnosed
+ * (5 federation/live-rig bugs — WI-757/1534/2003/3501/5136 — read as a fresh
+ * ready frontier while genuinely un-Mug-placeable).
+ *
+ * `payload.needs_2_machine_rig` ({@link crossMachineRigExclusionSql}) already
+ * excludes a TAGGED rig-only item before it ever reaches the frontier — this
+ * regex is the fallback for the common case an item was filed without that
+ * tag (as WI-757/1534/2003 were): a title-level heuristic in the same spirit
+ * as {@link EPHEMERAL_BENCHMARK_SLUG_SQL_RE} (a stable identifying string,
+ * not a payload field, is the only signal available). Intentionally narrow —
+ * false negatives (an untagged, unusually-worded rig item) just fall back to
+ * the age-based window; false positives (a non-rig item that happens to
+ * mention one of these terms) are the accepted cost of closing a live,
+ * observed false-escalation class. Prefer tagging `needs_2_machine_rig`
+ * at filing time when it's known.
+ */
+const LIVE_RIG_ONLY_TITLE_RE =
+  /federat|fed_event|swarm-?join|hive[-_ ]?epoch|epoch-?key|cross-?machine|multi-?machine|\blive[- ]rig\b|hyperbee/i;
+
+/** Pure (unit-tested): does this frontier candidate's title identify it as
+ *  live-multi-machine/federation-rig-only work (see {@link LIVE_RIG_ONLY_TITLE_RE})? */
+export function isLiveRigOnlyFrontierTitle(title?: string): boolean {
+  return !!title && LIVE_RIG_ONLY_TITLE_RE.test(title);
+}
+
+/** Count ranked frontier candidates that are correctly excluded from "fresh
+ *  placeable work": either aged past the stuck window (`ageDays`, pre-computed
+ *  on every candidate by the survey — frontierRowToCandidate, WI-3597), OR
+ *  identified as live-rig/federation-only by title (EI-15329, see
+ *  {@link isLiveRigOnlyFrontierTitle}) regardless of age. Needs no extra query. */
+export function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number; title?: string }>): number {
   const stuckDays = frontierStuckHours() / 24;
   let n = 0;
-  for (const r of rows) if ((r.ageDays ?? 0) >= stuckDays) n += 1;
+  for (const r of rows) if ((r.ageDays ?? 0) >= stuckDays || isLiveRigOnlyFrontierTitle(r.title)) n += 1;
   return n;
 }
 
