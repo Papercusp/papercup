@@ -1314,6 +1314,14 @@ interface GymSnapshot {
   autoloops: GymAutoloop[];
   /** Scout-seeded MAP-Elites niches (WI-5412 item 4) — absent on older server snapshots. */
   archiveSeeds?: GymArchiveSeed[];
+  /**
+   * WI-5420: true when the requested Hive's own gym-scoped read came back
+   * empty and the server fell back to the workspace-wide rollup below (real
+   * data recorded under a harness not scoped to this Hive — e.g. a manual
+   * `gym-loop-run.ts` run — would otherwise render as "No gym experiments").
+   * Absent/false ⇒ the data below is genuinely scoped to the requested Hive.
+   */
+  scopeFallback?: boolean;
 }
 
 function whenLabel(ms: number): string {
@@ -1362,6 +1370,10 @@ function GymView({
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
+  // WI-5420: the server fell back to the workspace-wide rollup because this
+  // Hive's own gym-scoped read was empty — say so, don't silently reattribute
+  // another harness's experiments to this Hive.
+  const scopeFallback = Boolean(hive) && Boolean(snap?.scopeFallback);
   const activeAutoloops = autoloops.filter(
     (autoloop) => autoloop.enabled || autoloop.status === "running",
   );
@@ -1403,6 +1415,15 @@ function GymView({
           </button>
         }
       />
+
+      {scopeFallback ? (
+        <p
+          className="pc-learning__muted pc-learning__scopenote"
+          title="This Hive's own gym harness has no recorded experiments; showing the workspace-wide rollup instead so real data is never hidden."
+        >
+          Showing gym experiments from all pots — none are scoped to this Hive yet.
+        </p>
+      ) : null}
 
       {snap && proposals.length >= 4 ? (
         <div className="pc-learning-visual__layout pc-learning-visual__layout--gym">
@@ -4523,6 +4544,11 @@ export function LearningStyles() {
       .pc-learning__loop--running { border-color: rgba(52, 211, 153, 0.5); }
       .pc-learning__loop--running em { color: #86efac; }
       .pc-learning__loopspend { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+
+      .pc-learning__scopenote {
+        margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; font-size: 11px;
+        border: 1px dashed var(--border, rgba(125, 211, 252, 0.25)); background: var(--bg-2, rgba(255, 255, 255, 0.03));
+      }
 
       .pc-learning__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
       .pc-learning__row {

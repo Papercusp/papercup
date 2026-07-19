@@ -446,6 +446,86 @@ describe('honorSpawnRequestFromProjection', () => {
   });
 });
 
+// ── P-003: the audience gate ─────────────────────────────────────────────────
+
+describe('honorSpawnRequestFromProjection — the P-003 audience gate', () => {
+  it("a pot-scoped offer with audience 'trusted-members': requester on the trust list ⇒ honored, checked via isTrustedUser (not isPotMember)", async () => {
+    const { d, isTrustedUser, isPotMember, spawnMembers } = deps({
+      listAllotments: potAwareListAllotments('trusted-members'),
+      availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any,
+    });
+    const res = await honorSpawnRequestFromProjection({ ...ARGS, row: potRow }, d);
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(isTrustedUser).toHaveBeenCalledWith(WS, UID_A); // UID_A = the requester (spawn_request publisher)
+    expect(isPotMember).not.toHaveBeenCalled();
+    expect(spawnMembers).toHaveBeenCalledWith(expect.objectContaining({ seatRef: 'sonnet:high:AUTO' }));
+  });
+
+  it("a pot-scoped offer with audience 'whole-pot': requester is a pot member ⇒ honored, checked via isPotMember (not isTrustedUser)", async () => {
+    const { d, isTrustedUser, isPotMember } = deps({
+      listAllotments: potAwareListAllotments('whole-pot'),
+      availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any,
+    });
+    const res = await honorSpawnRequestFromProjection({ ...ARGS, row: potRow }, d);
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(isPotMember).toHaveBeenCalledWith(WS, POT_SLUG, UID_A);
+    expect(isTrustedUser).not.toHaveBeenCalled();
+  });
+
+  it("'trusted-members' refused ⇒ audience_refused, LOUD receipt, no claim/spawn (D-002/D-003 fail-closed)", async () => {
+    const { d, setDisposition, spawnMembers, emitReceipt } = deps({
+      listAllotments: potAwareListAllotments('trusted-members'),
+      availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any,
+      isTrustedUser: vi.fn(async () => false),
+    });
+    const res = await honorSpawnRequestFromProjection({ ...ARGS, row: potRow }, d);
+    expect(res).toEqual({ outcome: 'refused', code: 'audience_refused' });
+    // Refused straight from the null disposition — no 'honoring' claim, no phantom spawn.
+    expect(spawnMembers).not.toHaveBeenCalled();
+    expect(setDisposition).toHaveBeenCalledTimes(1);
+    expect(setDisposition).toHaveBeenCalledWith(
+      WS,
+      HOME,
+      UID_A,
+      'spawnreq-0123456789abcdef',
+      'refused:audience_refused',
+      undefined,
+      undefined,
+    );
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'refusal',
+        action: 'delegated-seat:spawn',
+        offerId: 'spawnreq-0123456789abcdef',
+        refusal: expect.objectContaining({ code: 'audience_refused' }),
+      }),
+    );
+  });
+
+  it("'whole-pot' refused (not a pot member) ⇒ audience_refused, LOUD receipt, no claim/spawn", async () => {
+    const { d, spawnMembers, emitReceipt } = deps({
+      listAllotments: potAwareListAllotments('whole-pot'),
+      availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any,
+      isPotMember: vi.fn(async () => false),
+    });
+    const res = await honorSpawnRequestFromProjection({ ...ARGS, row: potRow }, d);
+    expect(res).toEqual({ outcome: 'refused', code: 'audience_refused' });
+    expect(spawnMembers).not.toHaveBeenCalled();
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ refusal: expect.objectContaining({ code: 'audience_refused' }) }),
+    );
+  });
+
+  it('a FLEET-scoped request never calls the audience gate (potMatch null ⇒ skipped entirely)', async () => {
+    const { d, isTrustedUser, isPotMember, spawnMembers } = deps();
+    const res = await honorSpawnRequestFromProjection(ARGS, d); // ARGS.row is the fleet-scoped fixture
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(isTrustedUser).not.toHaveBeenCalled();
+    expect(isPotMember).not.toHaveBeenCalled();
+    expect(spawnMembers).toHaveBeenCalled();
+  });
+});
+
 // ── WI-5316: honor-time account resolution (pure) ────────────────────────────
 
 describe('honorAccountRoutingMode (WI-5316, pure — mirrors psu accountRoutingMode)', () => {
