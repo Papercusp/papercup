@@ -287,6 +287,48 @@ describe("<ObservationsPanel />", () => {
     ).toBeTruthy();
   });
 
+  // WI-5419: owner reported the expanded body still reads as "cut off" even
+  // after the 2026-07-18 measureVariableHeight fix (which only verified a
+  // short synthetic 212px row). VirtualGrid is mocked out in this file, so
+  // this test can't exercise the virtualizer's slot-height measurement (see
+  // the companion Playwright spec, observations-panel-long-body-clipping.spec.ts,
+  // for that) — but it DOES pin that the component never truncates the body
+  // in JS/React for a REAL long-body shape (750+ chars, including a 178-char
+  // unbroken token with no spaces — pulled 2026-07-19 from
+  // harness_shared.engineer_issues, topic=papercusp-observation). If this
+  // regresses to a JS-level slice/truncate of `body`, this test catches it
+  // even though it can't see a pure-CSS overflow clip.
+  it("shows the FULL real long-body text (incl. a long unbroken token) when expanded — no JS truncation", () => {
+    const longToken =
+      "'_components/chat|chat-cards|OperatorChat|OperatorConversation|ask_choice|ask-choice|voice|turn-answer|operator-converse|VoiceApp|brain-session|operator-mcp-tools|libs/flags/src'";
+    const tail =
+      " — zero hits means carry verdicts and bump the baseline; any hit means re-ground via a fresh self-drive before trusting the prior verdict.";
+    const body = `Deploy-diff triage: git -C ~/papercupai-workspace/papercup-release diff --name-only OLD NEW | grep -iE ${longToken}${tail}`;
+    sync.data = [
+      mkRow({
+        id: "long-token",
+        title: "Deploy-diff triage recipe (long-token real shape)",
+        body,
+      }),
+    ];
+    render(<ObservationsPanel />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand observation Deploy-diff triage recipe (long-token real shape)",
+      }),
+    );
+    // The rendered body node's own textContent must contain the FULL string,
+    // including the long token and everything after it — not merely a
+    // truncated head.
+    const bodyNode = screen
+      .getByRole("button", {
+        name: "Collapse observation Deploy-diff triage recipe (long-token real shape)",
+      })
+      .querySelector(".pc-observations__body");
+    expect(bodyNode?.textContent ?? "").toContain(longToken);
+    expect(bodyNode?.textContent ?? "").toContain(tail.trim());
+  });
+
   it("grows the server window at the virtualized scroll edge and shows the authoritative total", async () => {
     sync.data = [
       { ...mkRow({ id: "a", title: "First" }), _meta: { total: 450 } },
