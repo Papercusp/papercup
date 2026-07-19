@@ -43,8 +43,33 @@ export type HostRole = 'full' | 'request-only' | 'utility';
 export interface ResourceSignals {
   /** EFFECTIVE core count (cgroup-quota-aware). Defaults to
    *  `os.availableParallelism()` — NOT `os.cpus().length`, which ignores a
-   *  container CPU quota and over-reports on a big shared node. */
+   *  container CPU quota and over-reports on a big shared node. Drives every cap
+   *  that scales with THIS PROCESS's own usable concurrency (agent slots, DBOS
+   *  queue depth, the org pool's `desired` size, serialization threads, …) — i.e.
+   *  "how much work can I, this process, actually do at once". */
   cores: number;
+  /** The MACHINE's real logical core count (`os.cpus().length`), ignoring any
+   *  cgroup CPU quota placed on this one process. Optional; when omitted every
+   *  consumer falls back to {@link cores} (unchanged behavior for any caller that
+   *  only knows one number).
+   *
+   *  Used ONLY by {@link deriveDatabaseTuning}: `max_connections` and the other
+   *  PG-server knobs describe the CAPACITY OF THE DATABASE SERVER, not of the one
+   *  cgroup-limited client process asking for a pool — a `CPUQuota=` on a
+   *  dedicated background-worker systemd unit has nothing to do with how many
+   *  backends the (unthrottled) Postgres server can actually hold. Using the
+   *  quota-scoped {@link cores} for that formula silently manufactures a fictional,
+   *  far-too-low `max_connections` ESTIMATE that then feeds {@link
+   *  boundedOrgPoolMax}'s connection-budget math as if it were the DB's real
+   *  ceiling — collapsing that process's pool to the size-1 floor even though the
+   *  live server has hundreds of free slots (confirmed root cause of WI-5456: a
+   *  16-core-quota bg-host on a 128-core/512-`max_connections` box derived
+   *  `maxConnections=100` from `clamp(16*4,100,1000)`, not the live 512, and its
+   *  org pool collapsed to `poolMax=1` — every routines-tick query then serialized
+   *  through one connection). `detectResourceSignals()` auto-fills this from
+   *  `os.cpus().length`, which is NOT cgroup-quota-aware and so reads the real
+   *  machine regardless of this process's own CPU allowance. */
+  physicalCores?: number;
   /** Total physical RAM in bytes (`os.totalmem()`). */
   totalMemBytes: number;
   /** Free RAM in bytes at detection time (`os.freemem()`). A second clamp on the
@@ -218,9 +243,16 @@ function clamp(n: number, lo: number, hi: number): number {
  * shares the box with the operator + agents, so it takes a gentler slice of RAM
  * (it must not starve the very process it serves); a dedicated/native DB gets the
  * textbook PGTune fractions.
+ *
+ * Deliberately keys off {@link ResourceSignals.physicalCores} (the real machine,
+ * falling back to {@link ResourceSignals.cores} when not supplied) rather than the
+ * cgroup-quota-scoped `cores` every OTHER derived cap uses — these are PG-SERVER
+ * knobs, a property of the machine Postgres runs on, not of whichever one
+ * CPU-quota-limited client process happens to be deriving them. See the
+ * `physicalCores` doc comment for the WI-5456 incident this fixes.
  */
 export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
-  const rawCores = Math.floor(signals.cores);
+  const rawCores = Math.floor(signals.physicalCores ?? signals.cores);
   const cores = Number.isFinite(rawCores) ? Math.max(1, rawCores) : 1;
   // Floor RAM at 0.5 GiB so a bogus/zero signal still yields finite, sane caps
   // (the clamps below would otherwise key off 0).
@@ -496,8 +528,11 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
 
 /**
  * Read the raw host signals from Node's `os`. Uses cgroup-quota-aware
- * `os.availableParallelism()` for cores (NOT `os.cpus().length`). The two domain
- * bits we can't sniff generically default conservatively: `embeddedPg: false`
+ * `os.availableParallelism()` for `cores` (NOT `os.cpus().length`), and separately
+ * captures `os.cpus().length` (NOT cgroup-quota-aware) as `physicalCores` — see
+ * {@link ResourceSignals.physicalCores} for why `deriveDatabaseTuning` needs the
+ * real machine's core count, not this process's quota-scoped view of it. The two
+ * domain bits we can't sniff generically default conservatively: `embeddedPg: false`
  * (assume a dedicated DB unless told otherwise) and `hostRole: 'full'`.
  */
 export function detectResourceSignals(overrides?: ResourceProfileConfig): ResourceSignals {
@@ -510,6 +545,7 @@ export function detectResourceSignals(overrides?: ResourceProfileConfig): Resour
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
   return {
     cores,
+    physicalCores: os.cpus().length,
     totalMemBytes: os.totalmem(),
     freeMemBytes: os.freemem(),
     embeddedPg: false,
