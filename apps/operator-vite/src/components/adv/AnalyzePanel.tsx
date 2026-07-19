@@ -150,6 +150,9 @@ export function AnalyzePanel({
         gap: 16px; margin-top: 6px;
       }
       .pc-analyze__lensgroup { display: flex; flex-direction: column; min-width: 0; }
+      /* The fusions deck spans the full row — fusion cards carry experiments
+         and source chains, so they want the width. */
+      .pc-analyze__lensstacks--fusions { grid-template-columns: 1fr; }
       .pc-analyze__ideacard {
         display: flex; flex-direction: column; gap: 6px; padding: 11px 13px;
         font-size: 12px; color: var(--fg, #e7eef5);
@@ -507,57 +510,85 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
         </span>
       </div>
       {cycle.proposals.length > 0 ? (
-        <ul className="pc-analyze__list" aria-label="Recombined proposals">
-          {cycle.proposals.map((p, i) => {
-            const routed = cycle.routed.find((r) => r.ideaId === p?.id);
-            return (
-              <li key={p?.id ?? i}>
-                <div className="pc-analyze__row">
-                  <strong>{p?.framing ?? p?.id ?? "(proposal)"}</strong>
-                  {routed ? (
-                    <span
-                      className="pc-analyze__chip pc-analyze__routedref"
-                      title={routed.title ?? undefined}
-                    >
-                      routed → {routed.rail}: {routed.routedRef}
-                    </span>
-                  ) : (
-                    <span className="pc-analyze__chip">not routed</span>
-                  )}
-                </div>
-                {p?.mechanism ? (
-                  <p className="pc-analyze__body">{p.mechanism}</p>
-                ) : null}
-                {p?.whyNew ? (
-                  <p className="pc-analyze__mech">Why new: {p.whyNew}</p>
-                ) : null}
-                {p?.bet ? (
-                  <p className="pc-analyze__mech">The bet: {p.bet}</p>
-                ) : null}
-                {p?.cheapExperiment ? (
-                  <div className="pc-analyze__exp">
-                    <b>Cheap experiment:</b> {p.cheapExperiment.hypothesis}{" "}
-                    <b>Method:</b> {p.cheapExperiment.method}{" "}
-                    <b>Falsified by:</b> {p.cheapExperiment.falsifiableSignal}
+        // Fusions as their own deck too — everything in Analyze is a card
+        // (owner ask 2026-07-19b).
+        <div className="pc-analyze__lensstacks pc-analyze__lensstacks--fusions">
+          <section
+            className="pc-analyze__lensgroup"
+            aria-label="Recombined proposals"
+          >
+            <CardStack
+              items={cycle.proposals}
+              getKey={(p, i) => p?.id ?? `fusion-${i}`}
+              ariaLabel="Recombined proposals"
+              header={
+                <>
+                  <span className="pc-cardstack__header-label">fusions</span>
+                  <span className="pc-cardstack__header-count">
+                    {cycle.proposals.length}
+                  </span>
+                </>
+              }
+              renderCard={(p) => {
+                const routed = cycle.routed.find((r) => r.ideaId === p?.id);
+                return (
+                  <div className="pc-analyze__ideacard">
+                    <div className="pc-analyze__row">
+                      {routed ? (
+                        <span
+                          className="pc-analyze__chip pc-analyze__routedref"
+                          title={routed.title ?? routed.routedRef}
+                        >
+                          routed → {routed.rail} ·{" "}
+                          {routed.routedRef.replace(/^[a-z]+:/i, "")}
+                        </span>
+                      ) : (
+                        <span className="pc-analyze__chip">not routed</span>
+                      )}
+                    </div>
+                    <strong className="pc-analyze__ideatitle">
+                      {p?.framing ?? p?.id ?? "(proposal)"}
+                    </strong>
+                    {p?.mechanism ? (
+                      <p className="pc-analyze__body">{p.mechanism}</p>
+                    ) : null}
+                    {p?.whyNew ? (
+                      <p className="pc-analyze__mech">Why new: {p.whyNew}</p>
+                    ) : null}
+                    {p?.bet ? (
+                      <p className="pc-analyze__mech">The bet: {p.bet}</p>
+                    ) : null}
+                    {p?.cheapExperiment ? (
+                      <div className="pc-analyze__exp">
+                        <b>Cheap experiment:</b> {p.cheapExperiment.hypothesis}{" "}
+                        <b>Method:</b> {p.cheapExperiment.method}{" "}
+                        <b>Falsified by:</b>{" "}
+                        {p.cheapExperiment.falsifiableSignal}
+                      </div>
+                    ) : null}
+                    {Array.isArray(p?.sourceIdeaIds) &&
+                    p.sourceIdeaIds.length > 0 ? (
+                      <div
+                        className="pc-analyze__sources"
+                        aria-label="Fused source ideas"
+                      >
+                        {p.sourceIdeaIds.map((id) => (
+                          <span
+                            key={id}
+                            className="pc-analyze__chip"
+                            title={id}
+                          >
+                            ⤷ {ideaTitle(id)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
-                {Array.isArray(p?.sourceIdeaIds) &&
-                p.sourceIdeaIds.length > 0 ? (
-                  <div
-                    className="pc-analyze__sources"
-                    aria-label="Fused source ideas"
-                  >
-                    {p.sourceIdeaIds.map((id) => (
-                      <span key={id} className="pc-analyze__chip" title={id}>
-                        ⤷ {ideaTitle(id)}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+                );
+              }}
+            />
+          </section>
+        </div>
       ) : (
         <p className="pc-learning__quietempty">
           No proposals persisted for this cycle

@@ -22,6 +22,11 @@ import { listRecordedLiveSessions, recordedLiveOwnerIds } from '../../adv-sessio
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources } from './recorded-sessions';
+import {
+  listRunningNurseryAliasRows,
+  synthesizeNurseryAliasRosterRows,
+  type NurseryAliasRow,
+} from './nursery-alias-liveness';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
 import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
 import { createHash } from 'node:crypto';
@@ -256,13 +261,18 @@ export async function assemblePresenceSnapshot(
     targeted ? Promise.resolve(0) : sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
     // EI-16639: the alias-aware nursery-liveness leg (nursery-alias-liveness.ts)
     // — closes the same identity-alias gap migration 225/EI-311 already closed
-    // for fleet_assignment. A targeted read scopes the query to just the
-    // requested owner (EI-9454 point-lookup-cost discipline); a full-roster read
-    // takes the bounded (500-row) default. Best-effort ([] on any DB error).
-    listRunningNurseryAliasRows({
-      workspaceId: wsId,
-      ...(targeted ? { ownerIds: [opts.owner as string] } : {}),
-    }).catch(() => [] as NurseryAliasRow[]),
+    // for fleet_assignment. Gated the SAME way as the recordedLive leg above
+    // (potId == null): harness_shared.spawned_agents carries no hive attribution
+    // either, so including it in an explicit hive-scoped read could leak a
+    // cross-hive bee. A targeted read scopes the query to just the requested
+    // owner (EI-9454 point-lookup-cost discipline); a full-roster read takes the
+    // bounded (500-row) default. Best-effort ([] on any DB error).
+    potId == null
+      ? listRunningNurseryAliasRows({
+          workspaceId: wsId,
+          ...(targeted ? { ownerIds: [opts.owner as string] } : {}),
+        }).catch(() => [] as NurseryAliasRow[])
+      : Promise.resolve([] as NurseryAliasRow[]),
   ]);
   // Reconcile the two liveness sources: a fresh presence row wins; a live
   // session-log record supersedes a STALE presence row (so a resumed-but-idle
@@ -273,7 +283,18 @@ export async function assemblePresenceSnapshot(
   // federated echo, and a remote peer claiming a local ownerId is dropped.
   const localOwnerIds = new Set(records.map((r) => r.ownerId));
   const fedDeduped = federated.filter((f) => !localOwnerIds.has(f.ownerId));
-  const all: RosterRow[] = reconcileRosterSources([...records, ...fedDeduped], recordedLive);
+  const reconciled: RosterRow[] = reconcileRosterSources([...records, ...fedDeduped], recordedLive);
+  // EI-16639: a THIRD leg — a running nursery bee addressable ONLY by an alias
+  // (spawn_id/session_owner/run_id) that never wrote its own coord_presence row
+  // (or an adv_sessions record). Synthesize a row for any alias not already
+  // covered by the reconciled roster above, mirroring `synthesizeRecordedRosterRows`
+  // (recorded-sessions.ts) — so a targeted `coord:presence { owner: '<alias>' }`
+  // lookup returns the bee instead of an empty roster, closing the exact gap that
+  // let `fleet:assignments` (alias-aware since migration 225/EI-311) and
+  // `coord:presence` (alias-BLIND until now) disagree on the same holder's liveness.
+  const reconciledOwnerIds = new Set(reconciled.map((r) => r.ownerId));
+  const nurserySynth = synthesizeNurseryAliasRosterRows(nurseryAliasRows, reconciledOwnerIds);
+  const all: RosterRow[] = nurserySynth.length ? [...reconciled, ...nurserySynth] : reconciled;
   // EI-9454 (targeted-lookup cost): when `owner` is set, filter EARLY — the base
   // rows already carry ownerId+ownerLabel (all matchesOwner needs), so the matched
   // row(s) are known BEFORE the enrichment fan-out. Everything downstream (the 5
@@ -324,7 +345,14 @@ export async function assemblePresenceSnapshot(
     // uniform here via the oracle's deriveVerdict. Best-effort like every join.
     recordedLiveOwnerIds(localAllIds)
       .then((s) => {
-        recordedLiveOwners = s;
+        // EI-16639: fold the alive nursery-alias ids in too, so deriveVerdict's
+        // `recordedLiveOnly` (liveness-oracle.ts) classifies an alias-only bee as
+        // `recorded` the SAME way it does a live adv_sessions record — one oracle,
+        // no special-casing of the new leg's source marker.
+        recordedLiveOwners =
+          nurseryAliasRows.length === 0
+            ? s
+            : new Set([...s, ...nurseryAliasRows.map((r) => r.alias)]);
       })
       .catch(() => {}),
     // On-desktop (live OS window) owners — best-effort, box-local (empty on a

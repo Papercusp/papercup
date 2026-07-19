@@ -256,11 +256,15 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
     createdAt: new Date(0).toISOString(),
   });
 
-  it('adopts a passing candidate and dismisses a failing one, stamping the machine identity + verdict note', async () => {
+  it('adopts a passing candidate WITH the distilled overrides and dismisses a failing one, stamping the machine identity + verdict note', async () => {
     const list = vi.fn(async () => [pendingOf('a'), pendingOf('b')]);
     const review = vi.fn(async (c: KnowledgePackCandidate) =>
       c.id === 'a'
-        ? { verdict: 'pass' as const, reason: 'no conflict (knowledge-pack sweep scoring)' }
+        ? {
+            verdict: 'pass' as const,
+            reason: 'transferable; no conflict (knowledge-pack sweep scoring)',
+            distilled: { title: 'Distilled title', text: 'Distilled transferable lesson.' },
+          }
         : { verdict: 'fail' as const, reason: 'conflicts with X (knowledge-pack sweep scoring)' },
     );
     const decide = vi.fn(async (input: { id: string; action: string }) => ({
@@ -274,12 +278,59 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
     expect(result).toEqual({ reviewed: 2, adopted: 1, dismissed: 1, failed: 0 });
     expect(decide).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ id: 'a', action: 'adopt', by: AUTO_ADOPT_REVIEWER, note: expect.stringContaining('no conflict') }),
+      expect.objectContaining({
+        id: 'a',
+        action: 'adopt',
+        by: AUTO_ADOPT_REVIEWER,
+        note: expect.stringContaining('no conflict'),
+        // P-001/D-003: the pack materializes the DISTILLED lesson, not the raw draft
+        title: 'Distilled title',
+        text: 'Distilled transferable lesson.',
+      }),
     );
     expect(decide).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ id: 'b', action: 'dismiss', by: AUTO_ADOPT_REVIEWER, note: expect.stringContaining('conflicts with X') }),
     );
+  });
+
+  it('an ERRORED review (D-004) counts as failed and never calls decide — the candidate stays pending', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const list = vi.fn(async () => [pendingOf('e1'), pendingOf('e2')]);
+    const review = vi.fn(async (c: KnowledgePackCandidate) =>
+      c.id === 'e1'
+        ? { verdict: 'error' as const, reason: 'transferability judge returned no usable verdict' }
+        : { verdict: 'pass' as const, reason: 'ok', distilled: { title: 'T', text: 'L.' } },
+    );
+    const decide = vi.fn(async (input: { id: string; action: string }) => ({
+      ok: true as const,
+      action: input.action as 'adopt' | 'dismiss',
+      id: input.id,
+      packId: 'fleet-lessons',
+      packItemId: input.id,
+      packVersion: '0.0.1',
+    }));
+
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    expect(result).toEqual({ reviewed: 2, adopted: 1, dismissed: 0, failed: 1 });
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({ id: 'e2', action: 'adopt' }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('stays pending'));
+    warn.mockRestore();
+  });
+
+  it('a review that THROWS is treated as errored (stays pending), never adopt-by-default', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const list = vi.fn(async () => [pendingOf('t')]);
+    const review = vi.fn(async () => {
+      throw new Error('pack fs I/O');
+    });
+    const decide = vi.fn();
+
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 0, failed: 1 });
+    expect(decide).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('counts a decide() failure (e.g. the transfer bar) as `failed`, leaving the candidate for the next tick', async () => {

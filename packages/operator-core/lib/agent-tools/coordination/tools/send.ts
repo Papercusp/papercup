@@ -187,6 +187,14 @@ const scopeArg = z
     "Federation scope of THIS message (cross-machine-coord-parity P-001). Omitted = auto: a harness-scoped sender stamps its harness; an un-scoped (SU/operator) sender in a workspace with EXACTLY ONE shared Hive stamps that Hive's home (the message federates to the Hive's other machines); otherwise the message stays machine-local. 'hive' FORCES the shared-Hive scope — errors loudly (no_hive_scope / ambiguous_hive_scope + candidates) instead of silently staying local. 'local' keeps the message on this machine only. Every result reports `federated:` so a local-only send is never mistaken for cross-machine delivery.",
   );
 
+const hiveArg = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    "WI-5445: which shared Hive `scope:'hive'` means, when this workspace hosts MORE THAN ONE shared Hive (mirrors resource:offers'/fleet:request_remote_spawn's own `hive` disambiguator — see the candidates list a bare scope:'hive' returns on ambiguous_hive_scope). Validated against the workspace's actual shared-hive set — an unknown name refuses loudly. No effect on a zero/single-shared-hive workspace or a harness-scoped (ctx) sender.",
+  );
+
 const allHiveArg = z
   .boolean()
   .optional()
@@ -276,6 +284,7 @@ const itemSpec = z.object({
   endTurn: endTurnArg,
   backstop: backstopArg,
   scope: scopeArg,
+  hive: hiveArg,
   allHive: allHiveArg,
   report: reportArg,
 });
@@ -837,9 +846,14 @@ async function sendOne(
  * federation scope for one message. Precedence:
  *   scope:'local'  → none (explicit machine-local, wins over everything);
  *   ctx harness    → the sender's own harness (pipeline roles — unchanged);
- *   scope:'hive'   → the workspace's single shared Hive, LOUD error when
- *                    none/ambiguous (never a silent local fallback);
- *   omitted        → auto: the single shared Hive when exactly one, else none.
+ *   scope:'hive'   → the workspace's shared Hive — `hive` picks WHICH one on a
+ *                    multi-hive workspace (WI-5445; mirrors resource:offers' /
+ *                    fleet:request_remote_spawn's own disambiguator), else the
+ *                    single shared Hive; LOUD error when none, or ambiguous
+ *                    with no `hive` given (never a silent local fallback);
+ *   omitted        → auto: the single shared Hive when exactly one, else none
+ *                    (an explicit `hive` with no scope:'hive' has no effect —
+ *                    auto never guesses).
  * Returns either the slug to stamp (undefined = stay local) or the per-message
  * error result.
  */
@@ -848,6 +862,7 @@ async function effectiveFederationScope(
   ctxHarness: string | undefined,
   workspaceId: string | null | undefined,
   to: string[],
+  explicitHive?: string,
 ): Promise<{ harnessSlug: string | null } | { error: BulkItemResult }> {
   // WI-3653: every "stay local" DECISION returns null (sendMessage's explicit
   // machine-local opt-out) — this layer has already resolved the scope, so the
@@ -869,22 +884,31 @@ async function effectiveFederationScope(
     return { harnessSlug: null };
   }
   const resolved = await resolveWorkspaceHiveScope(workspaceId);
-  if (resolved.kind === 'one') return { harnessSlug: resolved.homeSlug };
-  if (msgScope === 'hive') {
-    return {
-      error: {
-        ok: false,
-        to,
-        error: resolved.kind === 'many' ? 'ambiguous_hive_scope' : 'no_hive_scope',
-        message:
-          resolved.kind === 'many'
-            ? `scope:'hive' is ambiguous — this workspace has ${resolved.candidates.length} shared Hives; nothing was sent. There is no per-message hive picker yet: pick the right hive's home and re-send from a session scoped to it.`
-            : "scope:'hive' found no shared Hive in this workspace (a hive federates only when published public/invite or joined) — nothing was sent. Publish the hive (discovery:set_pot) or drop scope:'hive' to send machine-local.",
-        ...(resolved.kind === 'many' ? { candidates: resolved.candidates } : {}),
-      },
-    };
+  if (msgScope !== 'hive') {
+    // auto: the single shared Hive when exactly one, else stay local — an
+    // explicit `hive` with no scope:'hive' is a no-op here by design (auto
+    // never guesses which hive the caller meant).
+    return { harnessSlug: resolved.kind === 'one' ? resolved.homeSlug : null };
   }
-  return { harnessSlug: null }; // auto: none/ambiguous → machine-local, decided HERE
+  // WI-5445: scope:'hive' — `hive` (when given) picks which shared Hive on a
+  // multi-hive workspace; the same pure disambiguator resource:offers and
+  // fleet:request_remote_spawn already use, so the three surfaces can't drift.
+  const picked = resolveSharedHiveDisambiguation(resolved, explicitHive, null);
+  if (picked.ok) return { harnessSlug: picked.homeSlug };
+  return {
+    error: {
+      ok: false,
+      to,
+      error:
+        resolved.kind === 'none'
+          ? 'no_hive_scope'
+          : explicitHive
+            ? 'unknown_hive'
+            : 'ambiguous_hive_scope',
+      message: `scope:'hive': ${picked.error}`,
+      ...(picked.candidates.length ? { candidates: picked.candidates } : {}),
+    },
+  };
 }
 
 export default defineTool({
@@ -956,6 +980,7 @@ export default defineTool({
     endTurn: endTurnArg,
     backstop: backstopArg,
     scope: scopeArg,
+    hive: hiveArg,
     allHive: allHiveArg,
     report: reportArg,
     items: z
@@ -999,6 +1024,7 @@ export default defineTool({
             endTurn: args.endTurn,
             backstop: args.backstop,
             scope: args.scope,
+            hive: args.hive,
             allHive: args.allHive,
             report: args.report,
           },

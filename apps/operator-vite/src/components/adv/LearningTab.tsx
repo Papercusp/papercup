@@ -161,7 +161,7 @@ function viewDescriptions(t: ReturnType<typeof useLexicon>): Record<LView, strin
       "The generator's ledger — every routed idea with its trace; your grades here teach the generator which lenses win.",
     gym: `Prompt-optimization experiments — challengers vs champions — plus ${t("scout")}-seeded archive niches.`,
     improvements:
-      "The work backlog: every captured bug/improvement, split auto-fixable vs needs-your-review.",
+      "The WORK queue: every captured bug/improvement agents burn down (routed ideas land here as work items). Grading the ideas that produced them lives in Ideas.",
     benchmark:
       "Whole-system benchmark runs (the IQ battery) — is a new instance measurably better?",
     orchestration: `${t("pot")}-eval scoring trends — is orchestration quality improving over time?`,
@@ -241,7 +241,11 @@ const STAGES: ReadonlyArray<{
     views: [
       { id: "ideas", label: "Ideas", icon: Lightbulb },
       { id: "gym", label: "Gym", icon: Dumbbell },
-      { id: "improvements", label: "Improvements", icon: Sparkles },
+      // "Backlog", not "Improvements" (owner confusion 2026-07-19): next to
+      // "Ideas" the old name read as a second suggestion list. Ideas = grade
+      // the GENERATOR's output; Backlog = the WORK queue agents burn down.
+      // The lview id stays `improvements` — deep-links depend on it.
+      { id: "improvements", label: "Backlog", icon: Sparkles },
     ],
   },
   {
@@ -943,8 +947,8 @@ function ImprovementsView({
     <section className="pc-learning__section">
       <LearningPageHeader
         icon={Sparkles}
-        title="Improvements"
-        question="The work backlog itself — every capture, not just the ones an idea produced."
+        title="Backlog"
+        question="The work queue agents burn down — every capture, not just the ones an idea produced (grade ideas in Ideas)."
         signal={digest ? `${digest.open} open` : undefined}
         tone={digest && digest.open === 0 ? "good" : "accent"}
         action={
@@ -959,14 +963,16 @@ function ImprovementsView({
           </button>
         }
       />
-      {/* Loop diagnostics — always visible under a standard header (owner ask
-          2026-07-19): it never takes much space, so it no longer hides behind a
-          collapsible + the showDashboard (≥4 open) gate. */}
-      <div className="pc-learning__sectionhead">
-        <h2>Loop diagnostics</h2>
-      </div>
-      {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
-      <LearningEfficacyPanel />
+      {/* Loop diagnostics behind ONE labelled disclosure (owner ask
+          2026-07-19b: the instrument clusters at the top of every learning
+          page were confusing — plain summary up top, gauges on demand). */}
+      <LearningDisclosure
+        label="How the capture loop is doing"
+        subtitle="capture/resolve flow over 7 days, and whether adopted lessons hold"
+      >
+        {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
+        <LearningEfficacyPanel />
+      </LearningDisclosure>
 
       {digest && showDashboard ? (
         // The header signal already carries the headline "N open"; this line is the

@@ -88,7 +88,7 @@ export default defineTool({
   guidance: {
     when: 'Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
     notWhen:
-      'For a foreground command — its output is in the capability:bash result directly. Note: on a shared dev box, ANY agent restarting the operator (:3070/:3170) kills every other agent\'s in-flight background jobs — a miss reporting `reason: "stranded_by_operator_restart"` (with a log tail) means that happened, not a wrong id; re-run capability:bash rather than treating it as a tool bug.',
+      'For a foreground command — its output is in the capability:bash result directly. Note: a miss reporting `reason: "stranded_by_operator_restart"` (with a log tail) means the job\'s in-memory tracking is gone while its log survived — usually because an agent restarted the operator (:3070/:3170), which kills every OTHER agent\'s in-flight background jobs too, but occasionally because the job\'s own process died independently (EI-16635). It is not a wrong id; check `dev:service_health` to tell the two apart, then re-run capability:bash rather than treating it as a tool bug.',
     chaining: 'capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early.',
     seeAlso: [
       'capability:bash (start the command)',
@@ -121,7 +121,15 @@ export default defineTool({
                 ok: false,
                 reason: 'stranded_by_operator_restart',
                 advice:
-                  'This job STARTED (its log file exists on disk) but its in-memory tracking is gone — almost always because the operator process that ran it restarted or was killed mid-job (a routine, common event on a shared dev box: any agent restarting :3070/:3170 kills every OTHER agent\'s in-flight background jobs too, per repo-conventions § two-port model). It is NOT a wrong bash_id and not necessarily a code bug in your command. The job\'s process is gone — re-run capability:bash if you still need the result; for a long job, expect it may not survive a shared restart.',
+                  // EI-16635: this reason key previously ASSERTED "the operator restarted"
+                  // as fact with no evidence check — misleading when the true cause was a
+                  // sandboxed background job's process dying independently (confirmed:
+                  // dev:service_health showed 0 restarts across two repro runs whose
+                  // truncation point still matched exactly). Keep the diagnosis honest:
+                  // this signature (log survives, registry entry gone) has more than one
+                  // possible cause — state them, tell the caller how to tell them apart,
+                  // don't assert the common one as confirmed.
+                  'This job STARTED (its log file exists on disk) but its in-memory tracking is gone. The two known causes: (1) the operator process that ran it restarted or was killed mid-job — a routine, common event on a shared dev box: any agent restarting :3070/:3170 kills every OTHER agent\'s in-flight background jobs too (repo-conventions § two-port model); (2) the job\'s OWN process died independently of any operator restart (e.g. an OS-sandbox lifetime constraint — EI-16635). It is NOT a wrong bash_id and not necessarily a code bug in your command. Before assuming (1), check `dev:service_health` / the operator\'s uptime for a restart around this job\'s start time — if it shows zero restarts, it was (2). Either way the job\'s process is gone — re-run capability:bash if you still need the result; check the output_tail below for how far it got before dying.',
                 log_path: stranded.logPath,
                 total_bytes_written: stranded.sizeBytes,
                 output_tail: stranded.tail,

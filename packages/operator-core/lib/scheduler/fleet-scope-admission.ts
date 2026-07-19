@@ -9,7 +9,6 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { activeWorkspaceId } from '../workspace-registry';
 import type { WorkItem } from '../work-items';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
@@ -25,6 +24,12 @@ export interface FleetScopeContext {
   fleetSlug: string;
   fleetRole: 'member';
   record: ClaimSpecRecord;
+  /** EI-16710: the CONCRETE workspace this scope was resolved under (the same
+   *  one `resolveFleetScopeContext` validated via `resolveClaimSpecWorkspace`
+   *  before it would even return a non-null scope). Every scope-matching check
+   *  must key off THIS value, never the ambient `activeWorkspaceId()` — see
+   *  `featureMatchesRecord` for why. */
+  workspaceId: string;
 }
 
 export type FleetScopeAdmission =
@@ -68,10 +73,29 @@ export async function resolveFleetScopeContext(
   if (!membership?.fleetSlug || membership.fleetRole !== 'member') return null;
   const { getClaimSpecRecord } = await import('./claim-spec-store');
   const record = await getClaimSpecRecord({ cupId: ownerId, workspaceId: ws });
-  return { ownerId, fleetSlug: membership.fleetSlug, fleetRole: 'member', record };
+  return { ownerId, fleetSlug: membership.fleetSlug, fleetRole: 'member', record, workspaceId: ws };
 }
 
-async function featureMatchesRecord(item: WorkItem, record: ClaimSpecRecord): Promise<boolean> {
+/**
+ * EI-16710: takes `workspaceId` EXPLICITLY — never resolve it ambiently via
+ * `activeWorkspaceId()` here. This function is reached through
+ * `reconcileFleetScopeClaims`/`admitWorkItemForFleetTarget`, both of which
+ * already threaded a caller-supplied, request-scoped workspaceId all the way
+ * down to build `scope` — falling back to the process-ambient resolver at the
+ * very last SQL call silently re-introduces the "wrong workspace" class
+ * per-window-workspace-context (P-021) exists to kill: a caller whose request
+ * carried the RIGHT workspace still gets evaluated against whatever
+ * `activeWorkspaceId()` happens to resolve to (a different ALS layer, the
+ * process-global default, ...), so a genuinely in-scope item spuriously
+ * fails the match and reconcileFleetScopeClaims wrongly releases (and
+ * re-arms the release-cooldown floor on) a fleet member's own valid claim —
+ * every single call, since nothing about the mismatch ever self-corrects.
+ */
+async function featureMatchesRecord(
+  item: WorkItem,
+  record: ClaimSpecRecord,
+  workspaceId: string,
+): Promise<boolean> {
   const { sql } = getOrgPg();
   const { compileFilter } = await import('./get-next');
   const filter = compileFilter(sql, record.spec.view.filter);
@@ -79,7 +103,7 @@ async function featureMatchesRecord(item: WorkItem, record: ClaimSpecRecord): Pr
     SELECT EXISTS (
       SELECT 1
         FROM harness_shared.harness_features_consolidated
-       WHERE workspace_id = ${activeWorkspaceId()}
+       WHERE workspace_id = ${workspaceId}
          AND feature_id = ${item.id}
          AND ${item.harness ? sql`harness_slug = ${item.harness}` : sql`TRUE`}
          AND ${filter}
@@ -88,7 +112,7 @@ async function featureMatchesRecord(item: WorkItem, record: ClaimSpecRecord): Pr
 }
 
 async function itemMatchesScope(item: WorkItem, scope: FleetScopeContext): Promise<boolean> {
-  if (item.family === 'feature') return featureMatchesRecord(item, scope.record);
+  if (item.family === 'feature') return featureMatchesRecord(item, scope.record, scope.workspaceId);
   return matchesWorkItemClaimSpec(item, scope.record.spec);
 }
 

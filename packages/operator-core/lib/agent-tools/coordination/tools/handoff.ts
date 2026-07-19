@@ -244,7 +244,9 @@ export default defineTool({
         }
         if (dead.length > 0) wake.recipient_dead = dead;
         try {
-          const liveness = await describeMissedRecipients(fan.targets);
+          const liveness = await describeMissedRecipients(fan.targets, {
+            workspaceId: identity.workspaceId,
+          });
           if (liveness.length > 0) wake.recipient_liveness = liveness;
         } catch {
           /* fail-soft */
