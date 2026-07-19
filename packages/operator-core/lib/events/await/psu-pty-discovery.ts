@@ -140,12 +140,21 @@ const RESPAWN_SCAN_TAIL_BYTES = 64 * 1024;
  * reconcile can, and the `respawned` host event carrying `nativeId` is written
  * by old and new hosts alike. Same-box, same-dir, bounded-tail read: the same
  * trust boundary and cost class as {@link findLiveHost}.
+ *
+ * The event log is append-only PER OWNER and outlives any one host, so a
+ * respawn recorded by a PREVIOUS host is history, not the live child: a fresh
+ * host that has not respawned yet would otherwise have its correct DB ref
+ * overridden by a dead predecessor's id — the very bug this fixes, inverted.
+ * Events older than the CURRENT host's `startedAt` are therefore ignored. No
+ * discovery file (no live host) ⇒ null: nothing to reconcile against.
  */
 export function latestRespawnNativeId(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
 ): string | null {
   try {
+    const startedAt = hostStartedAt(ownerId, dir);
+    if (startedAt == null) return null;
     const path = join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
     const { size } = statSync(path);
     const start = Math.max(0, size - RESPAWN_SCAN_TAIL_BYTES);
@@ -172,9 +181,30 @@ export function latestRespawnNativeId(
       }
       // Drill respawns rotate the native id exactly like a real one.
       if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
+      // A respawn from a PREVIOUS host (and everything before it) is history.
+      const ts = typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
+      if (!Number.isFinite(ts) || ts < startedAt) return null;
       return typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/** The CURRENT psu host's start time (epoch ms) from its discovery file, or null
+ *  when the owner has no host record. Deliberately NOT liveness-gated: a host
+ *  mid-restart must not silently re-enable a stale predecessor id. */
+function hostStartedAt(ownerId: string, dir: string): number | null {
+  try {
+    const meta = JSON.parse(
+      readFileSync(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'),
+    ) as { ownerId?: unknown; startedAt?: unknown };
+    // EI-151: the same cross-owner misroute guard findLiveHost applies.
+    if (typeof meta.ownerId === 'string' && meta.ownerId !== ownerId) return null;
+    return typeof meta.startedAt === 'number' && Number.isFinite(meta.startedAt)
+      ? meta.startedAt
+      : null;
   } catch {
     return null;
   }

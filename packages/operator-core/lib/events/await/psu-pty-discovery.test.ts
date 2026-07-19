@@ -536,18 +536,23 @@ describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /m
 
 describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions ref)', () => {
   const owner = 'su-71c6993d-5825-4697-994d-2f9922b889b6';
-  const write = (dir: string, lines: unknown[]): void =>
+  const HOST_START = Date.parse('2026-07-18T20:00:00Z');
+  const at = (min: number): string => new Date(HOST_START + min * 60_000).toISOString();
+  /** Writes the event log AND the discovery file the startedAt gate reads. */
+  const write = (dir: string, lines: unknown[], startedAt: number | null = HOST_START): void => {
     writeFileSync(
       join(dir, `${sanitizeKey(owner)}.events.jsonl`),
       lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
     );
+    if (startedAt !== null) writeMeta(dir, owner, { startedAt });
+  };
 
   it('returns the NEWEST respawn nativeId, not the first', () => {
     const dir = tmpDir();
     write(dir, [
-      { ts: 't1', kind: 'respawned', mode: 'carry-respawn', nativeId: 'old-1' },
-      { ts: 't2', kind: 'respawn-carry-delivered', nativeId: 'old-1' },
-      { ts: 't3', kind: 'respawned', mode: 'carry-respawn', nativeId: 'newest-2' },
+      { ts: at(1), kind: 'respawned', mode: 'carry-respawn', nativeId: 'old-1' },
+      { ts: at(2), kind: 'respawn-carry-delivered', nativeId: 'old-1' },
+      { ts: at(3), kind: 'respawned', mode: 'carry-respawn', nativeId: 'newest-2' },
     ]);
     expect(latestRespawnNativeId(owner, dir)).toBe('newest-2');
   });
@@ -555,9 +560,9 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
   it('ignores non-respawn lifecycle events between respawns', () => {
     const dir = tmpDir();
     write(dir, [
-      { ts: 't1', kind: 'respawned', nativeId: 'live-1' },
-      { ts: 't2', kind: 'compact-submitted', carry: true },
-      { ts: 't3', kind: 'respawn-failed', reason: 'argv-build-failed' },
+      { ts: at(1), kind: 'respawned', nativeId: 'live-1' },
+      { ts: at(2), kind: 'compact-submitted', carry: true },
+      { ts: at(3), kind: 'respawn-failed', reason: 'argv-build-failed' },
     ]);
     // A FAILED respawn minted no successor — the last LANDED one still stands.
     expect(latestRespawnNativeId(owner, dir)).toBe('live-1');
@@ -565,13 +570,13 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
 
   it('counts a carry-drill respawn (it rotates the native id identically)', () => {
     const dir = tmpDir();
-    write(dir, [{ ts: 't1', kind: 'carry-drill-respawned', nativeId: 'drill-1' }]);
+    write(dir, [{ ts: at(1), kind: 'carry-drill-respawned', nativeId: 'drill-1' }]);
     expect(latestRespawnNativeId(owner, dir)).toBe('drill-1');
   });
 
   it('returns null when the owner has never respawned — the DB ref stands', () => {
     const dir = tmpDir();
-    write(dir, [{ ts: 't1', kind: 'compact-submitted', carry: true }]);
+    write(dir, [{ ts: at(1), kind: 'compact-submitted', carry: true }]);
     expect(latestRespawnNativeId(owner, dir)).toBeNull();
   });
 
@@ -585,17 +590,55 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
     writeFileSync(
       p,
       'ativeId":"truncated-garbage"}\n' +
-        JSON.stringify({ ts: 't2', kind: 'respawned', nativeId: 'good-2' }) +
+        JSON.stringify({ ts: at(2), kind: 'respawned', nativeId: 'good-2' }) +
         '\n',
     );
+    writeMeta(dir, owner, { startedAt: HOST_START });
     expect(latestRespawnNativeId(owner, dir)).toBe('good-2');
+  });
+
+  it('IGNORES a respawn from a PREVIOUS host — the append-only log outlives one host', () => {
+    const dir = tmpDir();
+    // The log records a respawn, then the host restarted (fresh startedAt) and has
+    // NOT respawned since. That old id names a dead child; trusting it would pin
+    // the estimate to a predecessor — the WI-5075 bug, inverted.
+    write(dir, [{ ts: at(-30), kind: 'respawned', nativeId: 'previous-host-1' }], HOST_START);
+    expect(latestRespawnNativeId(owner, dir)).toBeNull();
+  });
+
+  it('accepts a respawn from the CURRENT host (at/after its startedAt)', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: at(5), kind: 'respawned', nativeId: 'this-host-1' }], HOST_START);
+    expect(latestRespawnNativeId(owner, dir)).toBe('this-host-1');
+  });
+
+  it('returns null with no discovery file — nothing to reconcile against', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: at(1), kind: 'respawned', nativeId: 'orphan-1' }], null);
+    expect(latestRespawnNativeId(owner, dir)).toBeNull();
+  });
+
+  it('EI-151: a discovery file recorded for ANOTHER owner never reconciles this one', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: at(1), kind: 'respawned', nativeId: 'x-1' }], null);
+    writeFileSync(
+      join(dir, `${sanitizeKey(owner)}.json`),
+      JSON.stringify({ ownerId: 'su-someone-else', startedAt: HOST_START }),
+    );
+    expect(latestRespawnNativeId(owner, dir)).toBeNull();
+  });
+
+  it('a respawn with an unparseable ts is not trusted (cannot prove it is current)', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: 'not-a-date', kind: 'respawned', nativeId: 'unknown-age' }], HOST_START);
+    expect(latestRespawnNativeId(owner, dir)).toBeNull();
   });
 
   it('a respawn recorded WITHOUT a nativeId (recycle) reports null, not a stale id', () => {
     const dir = tmpDir();
     write(dir, [
-      { ts: 't1', kind: 'respawned', nativeId: 'old-1' },
-      { ts: 't2', kind: 'respawned', mode: 'recycle', nativeId: null },
+      { ts: at(1), kind: 'respawned', nativeId: 'old-1' },
+      { ts: at(2), kind: 'respawned', mode: 'recycle', nativeId: null },
     ]);
     // The newest respawn rotated to an id the host did not record; claiming the
     // superseded 'old-1' would re-pin the estimate to a dead predecessor.
