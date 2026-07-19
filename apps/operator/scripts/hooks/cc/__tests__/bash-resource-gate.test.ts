@@ -780,3 +780,92 @@ describe('long-foreground-exec advisory (coord-delivery-residual-gaps P-003)', (
     expectAllow(runGate(bashWithInput({ command: 'npm ci', timeout: 'lots' })));
   });
 });
+
+describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
+  // A backgrounded `cmd | tail/head/grep` reports the PIPE's last-stage exit
+  // code in the completion notification, not the real command's — soft nudge
+  // only, never a deny.
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectPipeAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('background-pipe exit-code advisory');
+    expect(hso.additionalContext).toContain('tail/head/grep');
+  };
+
+  it('fires on a backgrounded `cmd | tail -N`', () => {
+    expectPipeAdvisory(
+      runGate(bashWithInput({ command: 'npm run test:affected 2>&1 | tail -100', run_in_background: true })),
+    );
+  });
+
+  it('fires on a backgrounded `cmd | head`', () => {
+    expectPipeAdvisory(runGate(bashWithInput({ command: 'rsync -av a b 2>&1 | head -50', run_in_background: true })));
+  });
+
+  it('fires on a backgrounded `cmd | grep`', () => {
+    expectPipeAdvisory(runGate(bashWithInput({ command: 'ssh host cmd | grep error', run_in_background: true })));
+  });
+
+  it('silent when NOT backgrounded (foreground pipe reads the output directly)', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm run test:affected 2>&1 | tail -100' })));
+  });
+
+  it('silent for a plain backgrounded command with no pipe', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm run test:affected > /tmp/x.log 2>&1', run_in_background: true })));
+  });
+
+  it('does NOT confuse `||` with a real pipe', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm test || echo failed', run_in_background: true })));
+  });
+
+  it('silent when the caller already applies `set -o pipefail`', () => {
+    expectAllow(
+      runGate(
+        bashWithInput({
+          command: 'set -o pipefail; npm run test:affected 2>&1 | tail -100',
+          run_in_background: true,
+        }),
+      ),
+    );
+  });
+
+  it('silent when the caller already captures PIPESTATUS', () => {
+    expectAllow(
+      runGate(
+        bashWithInput({
+          command: 'npm test 2>&1 | tail -20; echo "EXIT=${PIPESTATUS[0]}"',
+          run_in_background: true,
+        }),
+      ),
+    );
+  });
+
+  it('does not false-positive on a pipe-to-tail token INSIDE quotes', () => {
+    expectAllow(
+      runGate(
+        bashWithInput({ command: 'grep -E "a|tail" some-file.ts', run_in_background: true }),
+      ),
+    );
+  });
+
+  it('does NOT nudge codex shells — no native background primitive there', () => {
+    for (const tool of ['exec_command', 'local_shell', 'shell']) {
+      expectAllow(runGate(bashWithInput({ command: 'npm test 2>&1 | tail -20', run_in_background: true }, tool)));
+    }
+  });
+
+  it('a deny gate still WINS over the pipe advisory', () => {
+    const out = runGate(
+      { tool_name: 'Bash', tool_input: { command: 'crontab -e | tail', run_in_background: true }, session_id: 's-test' },
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});

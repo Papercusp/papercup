@@ -54,6 +54,8 @@ import {
   evaluateReleaseTriggerFreeze,
   checkReleaseTriggerFreeze,
   lastReleaseTriggerPauseOwner,
+  evaluateReleaseTriggerFireStale,
+  checkReleaseTriggerFireStale,
 } from './green-stall-watchdog';
 
 const H = 60 * 60 * 1000;
@@ -802,6 +804,188 @@ describe('checkReleaseTriggerFreeze DB wiring (WI-4322)', () => {
       routineRow: { active: false, updated_at_ms: NOW - 45 * 60_000, workspace_id: 'papercusp-workspace' },
     });
     await expect(checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' })).resolves.toEqual({
+      alarmed: false,
+      recovered: false,
+    });
+  });
+});
+
+describe('evaluateReleaseTriggerFireStale (EI-14003)', () => {
+  it('active + firing within cadence never alarms, however much green code is stranded', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 5 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    expect(v.stale).toBe(false);
+    expect(v.reason).toBeNull();
+  });
+
+  it('no routine row (active: null) never alarms', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: null, lastFiredMs: null, deployedBehindGreenPin: 44 }, NOW);
+    expect(v.stale).toBe(false);
+  });
+
+  it('PAUSED (active:false) never alarms here — checkReleaseTriggerFreeze owns that case', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: false, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: 44 }, NOW);
+    expect(v.stale).toBe(false);
+  });
+
+  it('stale-fired but nothing green is stranded — harmless, never alarms', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: 0 }, NOW);
+    expect(v.stale).toBe(false);
+  });
+
+  it('stale-fired with null deployedBehindGreenPin never alarms (unknown ≠ pending)', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: null }, NOW);
+    expect(v.stale).toBe(false);
+  });
+
+  it('not fired long enough yet (< 30m threshold) — normal cadence jitter, not a stall', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 20 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    expect(v.stale).toBe(false);
+  });
+
+  it('THE EI-14003 SIGNATURE: active, not fired in 65m (the real repro gap), green stranded ⇒ stale', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 65 * 60_000, deployedBehindGreenPin: 8 }, NOW);
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('ACTIVE');
+    expect(v.reason).toContain('not FIRED');
+    expect(v.reason).toContain('8 green commit');
+    expect(v.reason).toContain('release-trigger');
+  });
+
+  it('boundary: exactly at the threshold does not alarm (strict >)', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 30 * 60_000, deployedBehindGreenPin: 5 }, NOW);
+    expect(v.stale).toBe(false);
+  });
+
+  it('an unresolvable last_fired_at (null) while active + green-ahead is treated as maximally stale', () => {
+    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: null, deployedBehindGreenPin: 3 }, NOW);
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('never fired');
+  });
+
+  it('kill switch: thresholdMs <= 0 never alarms', () => {
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 99 * H, deployedBehindGreenPin: 44 },
+      NOW,
+      { thresholdMs: 0 },
+    );
+    expect(v.stale).toBe(false);
+  });
+
+  it('honors a custom (tighter) threshold', () => {
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 6 * 60_000, deployedBehindGreenPin: 1 },
+      NOW,
+      { thresholdMs: 5 * 60_000 },
+    );
+    expect(v.stale).toBe(true);
+  });
+});
+
+describe('checkReleaseTriggerFireStale DB wiring (EI-14003)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    broadcastSevereEventResolvedMock.mockClear();
+    gitPipelineSnapshotMock.mockClear();
+    computeDeployStatusMock.mockReset();
+    warnSpy.mockRestore();
+  });
+
+  function makeFireStaleFakeSql(opts: {
+    routineRow?: { active: boolean; last_fired_ms: number | null; workspace_id: string } | null;
+    existingEscalation?: { escalation: unknown }[];
+  }) {
+    const calls: unknown[][] = [];
+    const routineRows = opts.routineRow ? [opts.routineRow] : [];
+    const existing = opts.existingEscalation ?? [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push([text, ...values]);
+      if (text.includes('FROM harness_shared.routines')) return Promise.resolve(routineRows);
+      if (text.includes('SELECT escalation')) return Promise.resolve(existing);
+      return Promise.resolve(Object.assign([], { count: 1 }));
+    }) as unknown as import('postgres').Sql;
+    return { sql, calls };
+  }
+
+  function findFSInsertCall(calls: unknown[][]) {
+    return calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'));
+  }
+
+  it('no routine row (no deploy target for this hive) is a complete no-op', async () => {
+    const { sql, calls } = makeFireStaleFakeSql({ routineRow: null });
+    const result = await checkReleaseTriggerFireStale(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+    expect(result.recovered).toBe(false);
+    expect(gitPipelineSnapshotMock).not.toHaveBeenCalled();
+    expect(findFSInsertCall(calls)).toBeUndefined();
+  });
+
+  it('ALARMS on the exact EI-14003 signature: active:true, stale last_fired_at, green ahead', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindGreenPin: 8 } });
+    const { sql, calls } = makeFireStaleFakeSql({
+      routineRow: { active: true, last_fired_ms: NOW - 65 * 60_000, workspace_id: 'papercusp-workspace' },
+    });
+    const result = await checkReleaseTriggerFireStale(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(true);
+    expect(gitPipelineSnapshotMock).toHaveBeenCalledWith('papercusp');
+    expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEventMock).toHaveBeenCalledTimes(1);
+    const insertCall = findFSInsertCall(calls);
+    expect(insertCall).toBeDefined();
+    // template values are [installSlug, phase, escalationJson, mtimeMs, workspaceId]
+    expect(insertCall![1]).toBe('papercusp');
+    expect(insertCall![5]).toBe('papercusp-workspace');
+  });
+
+  it('does NOT re-alarm when already alarmed (one-shot until recovery)', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindGreenPin: 8 } });
+    const { sql, calls } = makeFireStaleFakeSql({
+      routineRow: { active: true, last_fired_ms: NOW - 65 * 60_000, workspace_id: 'papercusp-workspace' },
+      existingEscalation: [{ escalation: { kind: 'release-trigger-fire-stale-watchdog' } }],
+    });
+    const result = await checkReleaseTriggerFireStale(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(broadcastSevereEventMock).not.toHaveBeenCalled();
+    expect(findFSInsertCall(calls)).toBeUndefined();
+  });
+
+  it('clears + broadcasts recovery once firing on cadence again (or nothing is stranded)', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindGreenPin: 0 } });
+    const { sql } = makeFireStaleFakeSql({
+      routineRow: { active: true, last_fired_ms: NOW, workspace_id: 'papercusp-workspace' },
+      existingEscalation: [{ escalation: { kind: 'release-trigger-fire-stale-watchdog' } }],
+    });
+    const result = await checkReleaseTriggerFireStale(sql, { installSlug: 'papercusp' });
+    expect(result.recovered).toBe(true);
+    expect(broadcastSevereEventResolvedMock).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEventResolvedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conditionKey: 'release-trigger-fire-stale:papercusp' }),
+    );
+  });
+
+  it('does NOT alarm when PAUSED (active:false) — that failure mode belongs to checkReleaseTriggerFreeze', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindGreenPin: 44 } });
+    const { sql } = makeFireStaleFakeSql({
+      routineRow: { active: false, last_fired_ms: NOW - 3 * H, workspace_id: 'papercusp-workspace' },
+    });
+    const result = await checkReleaseTriggerFireStale(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+  });
+
+  it('a thrown gitPipelineSnapshot never propagates — fail-soft', async () => {
+    gitPipelineSnapshotMock.mockRejectedValueOnce(new Error('git blew up'));
+    const { sql } = makeFireStaleFakeSql({
+      routineRow: { active: true, last_fired_ms: NOW - 65 * 60_000, workspace_id: 'papercusp-workspace' },
+    });
+    await expect(checkReleaseTriggerFireStale(sql, { installSlug: 'papercusp' })).resolves.toEqual({
       alarmed: false,
       recovered: false,
     });

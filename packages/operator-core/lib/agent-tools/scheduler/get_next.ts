@@ -25,6 +25,7 @@ import {
 } from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { cancelClaimableAwaits } from '../../events/await/store';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
 type ClaimNextStates = ('todo' | 'open' | 'failing')[] | undefined;
@@ -188,10 +189,46 @@ async function buildMissDiagnosis(args: {
       : `the backlog is NOT drained: ${diag.pendingUnclaimed} unclaimed item(s) in the pool, but ${diag.readyUnclaimed} pass the floors` +
         (diag.readyUnclaimed === 0 ? ' — every one of them is GATED (blocked / held / needs-human / not-work), so idling is correct but the backlog is not empty' : '');
 
+    // EI-13965: a BROAD spec (no named ids for explainIssueClaimFloors to attribute) that
+    // is genuinely stranded (pool non-empty, nothing ready) gets the same self-explaining
+    // treatment via an AGGREGATE per-floor breakdown instead of per-id — "pool empty" vs
+    // "pool stranded, and by WHICH floor" for the common member-scoped-miss shape.
+    let excludedBreakdown: unknown;
+    let breakdownSummary = '';
+    if (ids.length === 0 && !diag.drained && diag.readyUnclaimed === 0) {
+      const { aggregateIssueClaimExclusions } = await import('../../scheduler/get-next');
+      const agg = await withBoundedTimeout(
+        aggregateIssueClaimExclusions((rec?.spec as { view?: { filter?: unknown } } | undefined)?.view?.filter as never, {
+          harness: args.harness,
+          states: effectiveStates,
+          assignee: args.ownerId,
+          rigAvailable: args.rigAvailable,
+        }),
+        { fallback: null, timeoutMs: 1_500, label: 'get_next:missBreakdown' },
+      );
+      if (agg.value) {
+        excludedBreakdown = agg.value;
+        const top = Object.entries(agg.value.excluded)
+          .filter(([, n]) => (n as number) > 0)
+          .sort((a, b) => (b[1] as number) - (a[1] as number));
+        breakdownSummary =
+          top.length > 0
+            ? ` Your spec's filter matches ${agg.value.matchedByFilter} issue-family row(s); stranded by: ` +
+              top.map(([k, n]) => `${k}=${n}`).join(', ') +
+              ' (buckets are independent, a row can count under more than one). Not covered here: the ' +
+              'plan-item-lane-guard\'s per-item blocked/cycle check (post-claim, JS-side) — zero above does ' +
+              'not rule that out.'
+            : agg.value.matchedByFilter === 0
+              ? " Your spec's filter matches 0 issue-family rows at all — the SPEC itself is the problem, not a floor."
+              : '';
+      }
+    }
+
     return {
-      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}`,
+      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}${breakdownSummary}`,
       diagnosis: { drained: diag.drained, pendingUnclaimed: diag.pendingUnclaimed, readyUnclaimed: diag.readyUnclaimed },
       floors,
+      ...(excludedBreakdown ? { excludedBreakdown } : {}),
     };
   } catch {
     return { error: STATIC };

@@ -51,6 +51,7 @@ import {
   GEMMA_MODEL,
   HARRIER_MODEL,
   LOCAL_EMBEDDER_MODEL,
+  SIDECAR_MAX_TEXT_CHARS,
   type GemmaEmbedKind,
 } from '@papercusp/memory';
 
@@ -67,7 +68,12 @@ export const EMBED_SIDECAR_READY_LINE = 'PAPERCUSP_EMBED_SIDECAR_READY';
 
 /** Batch/size guards: a runaway caller must not OOM the shared sidecar. */
 export const MAX_TEXTS_PER_CALL = 256;
-export const MAX_TEXT_CHARS = 32_000;
+/** Single source of truth is the CLIENT (@papercusp/memory sidecar-embedder,
+ *  EI-14101): the client truncates every text to this cap before it is ever
+ *  sent, so this server-side check should only ever fire for a caller that
+ *  bypasses the shared client seam — kept as defense in depth, not the
+ *  primary enforcement point. */
+export const MAX_TEXT_CHARS = SIDECAR_MAX_TEXT_CHARS;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
 /** WI-4196: default cap for the text→vector LRU. A 1024-dim vector is ~8KB of

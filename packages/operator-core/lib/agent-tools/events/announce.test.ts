@@ -30,6 +30,12 @@ vi.mock('../coordination/federation-scope', () => ({
 }));
 vi.mock('../coordination/presence', () => ({
   getPresence: vi.fn(async () => ({ fleetSlug: 'p2p-git', currentPlanSlug: 'plan-x' })),
+  // presence-wakeability.ts (pulled in transitively via fleet/assignments.ts,
+  // which await.ts's import chain reaches) reads this constant at module
+  // load time — an incomplete manual mock throws "No PRESENCE_STALE_MS
+  // export" the instant that chain is evaluated (EI-17276). Real value:
+  // libs/generic/pubsub-substrate/src/presence/types.ts.
+  PRESENCE_STALE_MS: 10 * 60 * 1000,
 }));
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: null, note: 'no-handle' })),

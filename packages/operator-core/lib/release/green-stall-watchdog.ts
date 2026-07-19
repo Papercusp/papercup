@@ -819,6 +819,178 @@ export async function checkReleaseTriggerFreeze(
   }
 }
 
+// ── release-trigger fire-staleness guard (EI-14003) ────────────────────────────
+
+/** release-trigger's documented cadence is <=15 min (cron fires every 15 minutes,
+ *  seed-release-routines.ts). An ACTIVE routine that hasn't FIRED (`last_fired_at`)
+ *  in this long, while green code is deployable-but-not-live, means the tick
+ *  engine silently stopped driving it — a DIFFERENT failure mode than
+ *  `checkReleaseTriggerFreeze` above, which only catches an EXPLICITLY PAUSED
+ *  routine (active:false). This is the fire-staleness half of the same class
+ *  `checkGreenStall` already covers for green-checkpoint — release-trigger never
+ *  had the equivalent. EI-14003 (2026-07-17, reproduced via journalctl): a real
+ *  65-min silent gap (03:34->05:35, cron is 15-min) went completely undetected
+ *  because `active` stayed true the whole time (no pause, so
+ *  checkReleaseTriggerFreeze never looked at it) and nothing else watches
+ *  `last_fired_at` for this specific routine. 30 min = 2x the documented cadence
+ *  + jitter headroom, well under the 65-min real gap. Independent of the 60-min
+ *  `DEPLOY_BACKOFF_MS` (release-actions.ts): a routine correctly backing off
+ *  still TICKS / updates `last_fired_at` every cron fire (`claim.ts` stamps it
+ *  unconditionally at claim time, before the target action's own business logic
+ *  runs), so a legitimate backoff never trips this false. `<=0` disables the
+ *  check. */
+const DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS = 30 * 60 * 1000; // 30 min
+const RELEASE_TRIGGER_FIRE_STALE_PHASE = 'release-trigger-fire-stale-watchdog';
+
+export interface ReleaseTriggerFireStaleSnapshot {
+  /** the release-trigger routine's `active` flag, or null when the row doesn't
+   *  exist (never alarm — mirrors ReleaseTriggerFreezeSnapshot). */
+  active: boolean | null;
+  /** epoch ms of the routine row's `last_fired_at` (claim.ts stamps this
+   *  unconditionally on every claimed tick, regardless of whether the action
+   *  found work to do) — null if never fired. */
+  lastFiredMs: number | null;
+  /** green commits deployable but not live right now. */
+  deployedBehindGreenPin: number | null;
+}
+
+export interface ReleaseTriggerFireStaleVerdict {
+  stale: boolean;
+  reason: string | null;
+}
+
+/**
+ * Pure: is release-trigger ACTIVE but silently not firing on its documented
+ * cadence, while green code is stranded? Exported for unit testing.
+ */
+export function evaluateReleaseTriggerFireStale(
+  s: ReleaseTriggerFireStaleSnapshot,
+  now: number,
+  opts: { thresholdMs?: number } = {},
+): ReleaseTriggerFireStaleVerdict {
+  const thresholdMs = opts.thresholdMs ?? DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS;
+  if (thresholdMs <= 0) return { stale: false, reason: null };
+  // No row, or explicitly paused — checkReleaseTriggerFreeze owns the paused case.
+  if (s.active !== true) return { stale: false, reason: null };
+  if (s.deployedBehindGreenPin == null || s.deployedBehindGreenPin <= 0) {
+    return { stale: false, reason: null }; // nothing green waiting — a quiet tick is healthy, not stale
+  }
+  // An unresolvable last_fired_at while green code is waiting is treated as
+  // maximally stale — mirrors the sibling checks' "unknown ⇒ never assumed fresh".
+  const ageMs = s.lastFiredMs != null ? now - s.lastFiredMs : Number.POSITIVE_INFINITY;
+  if (ageMs <= thresholdMs) return { stale: false, reason: null };
+  const mins = Number.isFinite(ageMs) ? Math.round(ageMs / 60_000) : null;
+  return {
+    stale: true,
+    reason:
+      `release-trigger is ACTIVE but has not FIRED${mins != null ? ` in ~${mins}m` : ' (never fired)'} while ` +
+      `${s.deployedBehindGreenPin} green commit(s) are deployable but not live — the documented cadence is ` +
+      `<=15min, so the scheduler/tick engine appears to have silently stopped driving this routine (a DIFFERENT ` +
+      `failure than a PAUSED routine — active is still true). Check schedule:inventory / routines:list for ` +
+      `release-trigger's health; release:deploy { op:'trigger', confirm:true } expedites once it's ticking again.`,
+  };
+}
+
+/**
+ * One watchdog pass for the release-trigger fire-staleness guard. Mirrors
+ * `checkReleaseTriggerFreeze`'s shape (own routine-row read, own alarm plumbing,
+ * own escalation phase/conditionKey so it never clobbers the paused-freeze
+ * check's dedup state) but keys off `last_fired_at` instead of `updated_at`, and
+ * fires on `active:true` instead of `active:false` — the two are deliberately
+ * independent checks, not a shared branch, so each debounces on its own
+ * transition. Never throws — rides the same interval as the other checks.
+ */
+export async function checkReleaseTriggerFireStale(
+  sql: Sql,
+  opts: { installSlug?: string; workspaceId?: string; thresholdMs?: number } = {},
+): Promise<{ alarmed: boolean; recovered: boolean }> {
+  const out = { alarmed: false, recovered: false };
+  try {
+    const installSlug = opts.installSlug ?? 'papercusp';
+    const rows = await sql<{ active: boolean; last_fired_ms: string | number | null; workspace_id: string }[]>`
+      SELECT active, extract(epoch from last_fired_at) * 1000 AS last_fired_ms, workspace_id
+        FROM harness_shared.routines
+       WHERE install_slug = ${installSlug} AND name = 'release-trigger'
+       LIMIT 1`;
+    if (rows.length === 0) return out; // no deploy target declared for this hive — nothing to guard
+
+    const workspaceId = opts.workspaceId ?? rows[0].workspace_id;
+    const { gitPipelineSnapshot } = await import('../git-pipeline-stats');
+    const { computeDeployStatus } = await import('../release-deploy-launch');
+    const snap = await gitPipelineSnapshot(installSlug);
+    const status = computeDeployStatus(snap);
+    const now = Date.now();
+    const verdict = evaluateReleaseTriggerFireStale(
+      {
+        active: rows[0].active,
+        lastFiredMs: rows[0].last_fired_ms != null ? Number(rows[0].last_fired_ms) : null,
+        deployedBehindGreenPin: status.deploy.deployedBehindGreenPin,
+      },
+      now,
+      opts,
+    );
+
+    const existing = await sql<{ escalation: unknown }[]>`
+      SELECT escalation FROM harness_shared.harness_escalations
+       WHERE harness_slug = ${installSlug} AND phase = ${RELEASE_TRIGGER_FIRE_STALE_PHASE}`;
+    const alreadyAlarmed = existing.length > 0 && existing[0].escalation != null;
+
+    if (verdict.stale) {
+      if (alreadyAlarmed) return out; // one-shot until recovery
+      try {
+        const { notifyAttention } = await import('../attention-notify');
+        await notifyAttention({
+          kind: 'intervention',
+          title: 'Release pipeline STALLED — release-trigger has stopped firing on cadence',
+          body: verdict.reason ?? '',
+          importance: 'urgent',
+          workspaceId,
+          data: { deployedBehindGreenPin: status.deploy.deployedBehindGreenPin },
+        });
+      } catch (e) {
+        console.warn(`[release-trigger-fire-stale-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
+      }
+      await broadcastSevereEvent({
+        summary: `release-trigger has gone silent on ${installSlug} — ${status.deploy.deployedBehindGreenPin} green commit(s) stranded.`,
+        body: verdict.reason ?? '',
+        category: 'severe-event',
+        conditionKey: `release-trigger-fire-stale:${installSlug}`,
+      });
+      try {
+        await sql`
+          INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+          VALUES (${installSlug}, ${RELEASE_TRIGGER_FIRE_STALE_PHASE}, ${JSON.stringify({
+            kind: RELEASE_TRIGGER_FIRE_STALE_PHASE,
+            harness_slug: installSlug,
+            deployedBehindGreenPin: status.deploy.deployedBehindGreenPin,
+            detail: verdict.reason,
+            emitted_at: now,
+          })}, ${now}, ${workspaceId})
+          ON CONFLICT (harness_slug, phase)
+          DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+      } catch (e) {
+        console.warn(`[release-trigger-fire-stale-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
+      }
+      out.alarmed = true;
+      console.warn(`[release-trigger-fire-stale-watchdog] ALARM ${installSlug}: ${verdict.reason}`);
+    } else if (alreadyAlarmed) {
+      await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = NULL, mtime_ms = ${now}
+         WHERE harness_slug = ${installSlug} AND phase = ${RELEASE_TRIGGER_FIRE_STALE_PHASE} AND escalation IS NOT NULL`;
+      await broadcastSevereEventResolved({
+        conditionKey: `release-trigger-fire-stale:${installSlug}`,
+        summary: `release-trigger RECOVERED on ${installSlug} — firing on cadence again (or nothing green is stranded); the earlier stall alarm is stale.`,
+      });
+      out.recovered = true;
+    }
+    return out;
+  } catch (e) {
+    console.warn(`[release-trigger-fire-stale-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return out;
+  }
+}
+
 let watchdogTimer: ManagedHandle | null = null;
 
 /**
@@ -850,6 +1022,11 @@ export function startGreenStallWatchdog(
     // as the two checks above (this is a process-level watcher, not a DBOS
     // routine, specifically so it can catch a routine going silently dark).
     void checkReleaseTriggerFreeze(sql);
+    // EI-14003: release-trigger can go silent (stop firing on its <=15min cadence)
+    // WITHOUT ever being paused (active stays true) — checkReleaseTriggerFreeze
+    // above cannot see that case at all (it only looks at active:false). Same
+    // independent-of-the-routine-engine rationale as the checks above.
+    void checkReleaseTriggerFireStale(sql);
   };
 
   run(); // boot check

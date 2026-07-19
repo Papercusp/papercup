@@ -166,6 +166,50 @@ def _strip_shell_quotes(s):
             i += 1
     return ''.join(out)
 
+# ── Piped background exit-code trap advisory (EI-8871/EI-14065) ────────────
+# `cmd | tail -N` (or `| head` / `| grep`) run in the background reports the
+# harness's completion notification with the PIPE's LAST STAGE exit code, not
+# the real command's — tail/head/grep almost always exit 0 regardless of
+# whether the upstream command failed, so a failing test/build/rsync/ssh
+# silently reads as "completed (exit code 0)". Documented + recurring (first
+# EI-8871 2026-07-09, hit again 2026-07-12 on rsync/ssh, filed a THIRD time as
+# EI-14065 2026-07-17) — see agent-insights/background-test-pipe-exit-code-trap.
+# SOFT by design (never denies): only Claude's `Bash` tool has
+# `run_in_background` + a completion notification that summarizes an exit
+# code this way, so only tool_name 'bash' is checked. Skipped when the caller
+# already handles it (mentions pipefail/PIPESTATUS/an explicit EXIT capture
+# anywhere in the command).
+try:
+    if tool_name.lower() == 'bash' and tool_input.get('run_in_background'):
+        _pipe_cmd = _strip_shell_quotes(command)
+        # Safety-escape check against the RAW command (not quote-stripped): a
+        # real-world safe pattern is often itself inside quotes (e.g.
+        # `echo "EXIT=${PIPESTATUS[0]}"`), which quote-stripping would erase.
+        if not re.search(r'pipefail|PIPESTATUS|EXIT\s*=\s*\$\?', command):
+            # A top-level `|` (not `||`) immediately followed by tail/head/grep
+            # (optionally via a path, with flags/args) running to the end of its
+            # `;`/`&&`/`||`/newline-delimited segment.
+            _PIPE_TAIL_RE = re.compile(
+                r'(?<!\|)\|(?!\|)\s*(?:\S*/)?(?:tail|head|grep|egrep|fgrep)\b[^|;&\n]*$'
+            )
+            for _pseg in re.split(r'&&|\|\||;|\n', _pipe_cmd):
+                if _PIPE_TAIL_RE.search(_pseg.strip()):
+                    ADVISORY = (
+                        'background-pipe exit-code advisory (EI-8871/EI-14065): this '
+                        'backgrounded command pipes into tail/head/grep — the completion '
+                        "notification will report THAT stage's exit code, not the real "
+                        'command\'s (tail/head/grep exit 0 almost regardless of upstream '
+                        'failure), so a failing test/build/rsync/ssh can read as "completed '
+                        '(exit code 0)". Redirect to a log file instead (`cmd > '
+                        '/tmp/x.log 2>&1`) and read the log/grep it separately, or add `set '
+                        '-o pipefail` (and read `${PIPESTATUS[0]}`) if you need the pipe. '
+                        'Never trust the notification\'s exit code alone here. Advisory '
+                        'only; this command is proceeding as issued.'
+                    )
+                    break
+except Exception:
+    pass  # advisory must never wedge a command
+
 # EI-10940: the refusal must answer the INTENT, not the token. `systemd-run` is
 # BOTH the scheduler (`--on-calendar=…`) and the only stock way to ask for cgroup
 # resource control (`-p CPUQuota=…`, `--scope`). An agent reaching for the SECOND

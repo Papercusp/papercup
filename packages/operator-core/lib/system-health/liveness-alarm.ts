@@ -828,11 +828,22 @@ export async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
     // fleet-wide broadcast below is unchanged either way; a resolved owner just
     // ALSO gets a directed, woken, full-fidelity notice.
     const route = resolveSevereEventOwner(s.key);
+    // EI-14091: the panel:bees signal ("no bees running") measures ONLY
+    // Mug-placed cups — a human reading a bare blocker escalation for it can
+    // misread "no bees" as "the whole fleet is idle". Fold the scope caveat
+    // into the escalation BODY itself (not just the summary text, which can
+    // be re-worded independently) so every reader gets it, not only readers
+    // who separately consult the Kettle brief.
+    const beesScopeCaveat =
+      s.key === 'panel:bees'
+        ? ` NOTE: this measures only Mug-placed cup agents, not the broader SU/agent fleet — ` +
+          `cross-check fleet:assignments / coord:presence before treating this as a whole-fleet outage.`
+        : '';
     await broadcastSevereEvent({
       summary: `${SUMMARY_PREFIX}${s.summary}`,
       body:
         `Detected by the request-path infra-liveness alarm (R4-3/R4-8), independent of the background ` +
-        `routine engine. Signal: ${s.key}. Workspace: ${ws}. See harness_escalations for the durable record.`,
+        `routine engine. Signal: ${s.key}. Workspace: ${ws}. See harness_escalations for the durable record.${beesScopeCaveat}`,
       category: 'severe-event',
       conditionKey: `infra-liveness:${s.key}`,
       ...(route ? { route: { ownerSelector: route.ownerSelector, reason: route.reason } } : {}),

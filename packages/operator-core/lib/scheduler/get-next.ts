@@ -63,10 +63,22 @@ import {
   familyOf,
   FEATURE_COLS,
   ISSUE_FAMILY_KINDS,
+  ISSUE_FAMILY_CLAIMABLE_STATES,
+  releaseCooldownSec,
+  claimHoldExclusionSql,
+  needsHumanExclusionSql,
+  observationLaneExclusionSql,
+  externalBlockersExclusionSql,
+  reservedPlanLaneExclusionSql,
+  federationDetectorExclusionSql,
+  loopIterationNoiseExclusionSql,
+  alreadyTerminallyCompletedExclusionSql,
+  crossMachineRigExclusionSql,
   type FeatureRowDb,
   type OrgSql,
   type WorkItem,
 } from '../work-items';
+import { issuesScopeWorkspace } from '../issues-engineer';
 
 /** A composed `sql` WHERE/ORDER-BY fragment (porsager pending-query — the type a bare
  *  `sql`...`` tagged template returns, so fragments compose by `${}` interpolation). */
@@ -506,6 +518,177 @@ export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
     return sql`NOT COALESCE((${walk(node.not)}), false)`;
   }
   return sql`(${walk(filter)})`;
+}
+
+/**
+ * EI-13965 — the scoped-miss AGGREGATE floor breakdown for the common case
+ * `explainIssueClaimFloors` cannot cover: a BROAD spec (a fleet member's plan/kind-scoped
+ * view, no `id in [...]` clause to attribute per-id). Live incident (2026-07-17,
+ * curation-signals fleet): a member drained its lane and reported "items visible in both
+ * bound plans but none match the spec" — the leader took ~6 queries to discover the pool
+ * was NOT empty, just stranded behind three DIFFERENT floors (claim-hold, taken-by-
+ * outside-agents, plan-item-lane-guard release). A member with a broad spec has no named
+ * ids for `explainIssueClaimFloors` to attribute, so it got nothing.
+ *
+ * ONE aggregate query: how many issue-family rows the caller's OWN `view.filter` selects
+ * (`matchedByFilter`, via {@link compileFilter} — the SAME compiled fragment `get_next`'s
+ * narrowing applies, so this can never disagree with what the spec would actually admit),
+ * then — of the UNTAKEN subset — how many EACH floor independently would exclude (a row
+ * can land in more than one bucket; this is "why is the pool stranded", not a partition).
+ * Reuses the SAME exported floor predicates `diagnoseClaimNextMiss` /
+ * `explainIssueClaimFloors` already evaluate — drift-proof by construction, never a
+ * re-implementation that could disagree with the real claim.
+ *
+ * NOT covered: the plan-item-lane-guard's FINE-grained per-item check (a linked plan
+ * item's own resolved status — blocked / cycle / terminal-residue) is deliberately a
+ * POST-CLAIM, JS-side check over the plan's JSONB items index (see
+ * scheduler/plan-item-lane-guard.ts's module doc) — not a cheap SQL predicate, so it
+ * cannot be folded into this aggregate without either re-implementing it in SQL (a new
+ * way to drift/lie) or paying a per-row plan-parse cost this "cheap, one aggregate query"
+ * diagnosis is not meant to carry. `planLaneReserved` below only reflects the COARSER
+ * floor (the linked plan is currently `active` at all) — a caller seeing zero excluded
+ * here can still miss via that guard; the advice text says so.
+ */
+export interface IssueClaimExclusionBreakdown {
+  /** Issue-family rows (claimable status, this harness/workspace) the spec's OWN
+   *  view.filter matches — BEFORE taken/floors. 0 here means the spec itself is the
+   *  problem (a kind/plan/tag scoping that matches nothing), not a floor. */
+  matchedByFilter: number;
+  /** Of matchedByFilter, counts of why each is NOT self-selectable right now. Every
+   *  floor after `taken` is counted only among the UNTAKEN subset (a taken row is
+   *  trivially excluded for that reason alone — counting it again under e.g. claimHold
+   *  would double up and mislead). Buckets are INDEPENDENT, not a partition: a row can
+   *  be counted under more than one floor. */
+  excluded: {
+    taken: number;
+    claimHold: number;
+    needsHuman: number;
+    observationLane: number;
+    externalBlocker: number;
+    planLaneReserved: number;
+    federationDetector: number;
+    loopNoise: number;
+    alreadyCompleted: number;
+    crossMachineRig: number;
+    blockedDep: number;
+    cooldown: number;
+  };
+}
+
+export async function aggregateIssueClaimExclusions(
+  filter: FilterNode | undefined,
+  opts: {
+    harness: string;
+    states?: readonly string[];
+    assignee?: string;
+    rigAvailable?: boolean;
+  },
+): Promise<IssueClaimExclusionBreakdown> {
+  const sql = getOrgPg().sql;
+  const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
+  // Mirror diagnoseClaimNextMiss's own resolution — the issue-family scope workspace,
+  // never the caller's harness-scoped workspaceId (they can legitimately differ).
+  const issueWs = issuesScopeWorkspace();
+  const operatorScopeSlug = `operator:${issueWs}`;
+  const assignee = opts.assignee ?? '';
+  const compiled = compileFilter(sql, filter);
+  const cooldown = releaseCooldownSec();
+
+  const rows = (await sql`
+    SELECT
+      count(*) FILTER (WHERE spec_match)::int                                         AS matched,
+      count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_human)::int     AS needs_human,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int     AS observation_lane,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_external_blocker)::int AS external_blocker,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_plan_lane)::int       AS plan_lane_reserved,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_federation)::int      AS federation_detector,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_loop_noise)::int      AS loop_noise,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_completed)::int       AS already_completed,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_rig)::int             AS cross_machine_rig,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_no_blocker)::int      AS blocked_dep,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown
+    FROM (
+      SELECT
+        wi.feature_id,
+        (${compiled})                                                     AS spec_match,
+        (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
+        (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
+        (${needsHumanExclusionSql(sql)})                                  AS ok_needs_human,
+        (${observationLaneExclusionSql(sql)})                             AS ok_observation,
+        (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
+        (${reservedPlanLaneExclusionSql(sql, assignee)})                  AS ok_plan_lane,
+        (${federationDetectorExclusionSql(sql)})                          AS ok_federation,
+        (${loopIterationNoiseExclusionSql(sql)})                          AS ok_loop_noise,
+        (${alreadyTerminallyCompletedExclusionSql(sql)})                  AS ok_completed,
+        (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})          AS ok_rig,
+        (NOT EXISTS (
+            SELECT 1 FROM harness_shared.work_item_deps d
+             WHERE d.workspace_id = 'default'
+               AND d.dep_type = 'blocks'
+               AND d.blocked_ref = wi.feature_id
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM harness_shared.harness_features_consolidated bf
+                    WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                      AND bf.status NOT IN ('passed', 'deprecated')
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM harness_shared.engineer_issues bi
+                    WHERE bi.workspace_id = 'default'
+                      AND bi.issue_id = d.blocker_ref
+                      AND bi.state NOT IN ('resolved', 'closed')
+                 )
+               )
+        ))                                                                AS ok_no_blocker,
+        (${
+          cooldown > 0
+            ? sql`(wi.last_released_by IS NULL
+                OR wi.last_released_by <> ${assignee}
+                OR wi.last_released_at IS NULL
+                OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
+            : sql`TRUE`
+        })                                                                AS ok_cooldown
+      FROM harness_shared.work_items wi
+      WHERE wi.item_kind IN ('bug', 'change', 'task')
+        AND wi.workspace_id = ${issuesScopeWorkspace()}
+        AND (wi.harness_slug = ${opts.harness} OR wi.harness_slug = ${operatorScopeSlug})
+        AND wi.status = ANY(${states}::text[])
+    ) sub
+  `) as Array<{
+    matched: number;
+    taken: number;
+    claim_hold: number;
+    needs_human: number;
+    observation_lane: number;
+    external_blocker: number;
+    plan_lane_reserved: number;
+    federation_detector: number;
+    loop_noise: number;
+    already_completed: number;
+    cross_machine_rig: number;
+    blocked_dep: number;
+    cooldown: number;
+  }>;
+  const r = rows[0];
+  return {
+    matchedByFilter: r?.matched ?? 0,
+    excluded: {
+      taken: r?.taken ?? 0,
+      claimHold: r?.claim_hold ?? 0,
+      needsHuman: r?.needs_human ?? 0,
+      observationLane: r?.observation_lane ?? 0,
+      externalBlocker: r?.external_blocker ?? 0,
+      planLaneReserved: r?.plan_lane_reserved ?? 0,
+      federationDetector: r?.federation_detector ?? 0,
+      loopNoise: r?.loop_noise ?? 0,
+      alreadyCompleted: r?.already_completed ?? 0,
+      crossMachineRig: r?.cross_machine_rig ?? 0,
+      blockedDep: r?.blocked_dep ?? 0,
+      cooldown: r?.cooldown ?? 0,
+    },
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

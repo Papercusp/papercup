@@ -1,11 +1,13 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+
 /**
  * sanitize-baseline.ts — transform a raw `pg_dump --schema-only` into an
  * IDEMPOTENT `000-baseline.sql`.
  *
  * Plan: self-contained-migration-baseline-2026-06-02, Phase 0 (P-003).
  *
- * The reference build (build-reference-schema.ts) emits a plain pg_dump. The
- * migration runner applies a file exactly once (tracked in schema_migrations),
+ * The reference build (libs/papercusp/libs/db/scripts/build-reference-schema.ts)
+ * emits a plain pg_dump. The migration runner applies a file exactly once (tracked in schema_migrations),
  * BUT two requirements force strict statement-level idempotency anyway:
  *   1. P-003 acceptance — applying the output twice against an empty DB is a
  *      clean no-op on the second run.
@@ -35,10 +37,22 @@
  * this file — they're created in the embedded-pg BOOT pre-migration step (Phase 1
  * P-004), cluster-level, before any schema-only baseline runs.
  *
- *   Run:  cd apps/operator && npx tsx lib/db-tools/sanitize-baseline.ts [rawIn] [out]
+ *   Run (standalone):  npx tsx packages/operator-core/lib/db-tools/sanitize-baseline.ts [rawIn] [out]
+ *   Run (full pipeline, from repo root): npm run gen:baseline
+ *     — chains build-reference-schema.ts (scratch DB, applies every migration,
+ *       pg_dump --schema-only) into this file's CLI, writing to /tmp only.
  *   In:   default /tmp/papercusp-reference-schema.raw.sql
- *   Out:  default /tmp/000-baseline.sql  (landing it in libs/papercusp/libs/db/sql/
- *         is the Phase-1 squash — deliberately NOT done here while sql/ churns)
+ *   Out:  default /tmp/000-baseline.sql  — this is NOT the committed
+ *         libs/papercusp/libs/db/sql/000-baseline.sql: that file is FROZEN at
+ *         its pre-107 squash by design (self-contained-migration-baseline-
+ *         2026-06-02, D-004) and migrations 107+ layer on top forever, so a
+ *         fresh regen (which includes every migration's schema) will legitimately
+ *         differ from it — `npm run gen:baseline:diff` shows that diff, it is
+ *         NOT a drift bug. The ongoing correctness guard for the frozen baseline
+ *         + all later migrations together is
+ *         apps/operator/test/fresh-migrate.integration.test.ts (applies
+ *         000-baseline.sql then every migration against a real DB), not a
+ *         regen-equality check against this file's output. (EI-13913)
  */
 
 /**
@@ -488,8 +502,13 @@ export function sanitizeBaseline(raw: string): string {
 
 // --- CLI (only when run directly, not when imported by the test) ---
 if (process.argv[1]?.endsWith('sanitize-baseline.ts')) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { readFileSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+  // EI-13913: this used to `require('node:fs')`, which throws "require is not
+  // defined in ES module scope" when run via `tsx` / `node --experimental-strip-types`
+  // (both treat this file as ESM) — the CLI half of the regen pipeline
+  // (`npm run gen:baseline`) was silently unusable. A static top-level import
+  // works in both the ESM-CLI case and the CJS-vitest-import case (the guard
+  // above already keeps this block from running when the module is merely
+  // imported by a test).
   const inPath = process.argv[2] ?? '/tmp/papercusp-reference-schema.raw.sql';
   const outPath = process.argv[3] ?? '/tmp/000-baseline.sql';
   const { sql, unknown } = sanitizeBaselineVerbose(readFileSync(inPath, 'utf8'));

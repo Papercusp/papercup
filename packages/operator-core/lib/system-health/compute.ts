@@ -358,7 +358,12 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
     return {
       status,
       summary: running === 0
-        ? 'no bees running'
+        // EI-14091: this measures ONLY Mug-placed cups, not the whole SU/agent
+        // fleet — a plain "no bees running" reads as whole-fleet-idle to a human
+        // (it doesn't, e.g., an SU fleet can be busy while this panel is 0/crit).
+        // Say so inline so the escalation carries its own scope, not just this
+        // panel's tooltip / the Kettle brief's separate caveat.
+        ? 'no Mug-placed cups running (does not measure the broader SU/agent fleet, which may still be busy)'
         : `${running} bee(s), ${alive} alive${stale > 0 ? `, ${stale} stale` : ''}${op.cursed > 0 ? `, ${op.cursed} cursed` : ''}${invalidModelFailures > 0 ? `, ${invalidModelFailures} invalid-model failure(s)` : ''}`,
       data,
       link: { label: 'Working', href: '/adv?tab=harnesses' },
