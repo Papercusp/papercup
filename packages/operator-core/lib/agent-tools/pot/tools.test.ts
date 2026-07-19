@@ -290,8 +290,20 @@ describe('pot:declare-wake', () => {
     }
   });
 
-  it('ignores ctx.harnessSlug and requires an explicit harness or PAPERCUSP_POT_HOME_SLUG', async () => {
+  it('falls back to ctx.harnessSlug when no explicit harness/env is given (EI-2470)', async () => {
+    // Bug fix: resolvePotHomeSlug(args.harness, undefined) used to hardcode away
+    // ctx.harnessSlug entirely, so a session correctly scoped to its own pot home
+    // (e.g. a Queen's hive-scoped session) silently fell through to
+    // PAPERCUSP_POT_HOME_SLUG / no_home_harness instead of resolving its own scope —
+    // contradicting the tool's own documented default ("ctx harness or
+    // PAPERCUSP_POT_HOME_SLUG"). Fixed: ctx.harnessSlug is now threaded through.
     const res = parse(await tool.handler({ at: '2026-07-01T00:00:00.000Z' }, ctx({ harnessSlug: 'ctx-slug' })));
+    expect(res.ok).toBe(true);
+    expect(res.harness).toBe('ctx-slug');
+  });
+
+  it('still requires an explicit harness or PAPERCUSP_POT_HOME_SLUG when ctx carries none either', async () => {
+    const res = parse(await tool.handler({ at: '2026-07-01T00:00:00.000Z' }, ctx()));
     expect(res.ok).toBe(false);
     expect(res.error).toBe('no_home_harness');
   });
