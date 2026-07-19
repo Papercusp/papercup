@@ -786,20 +786,24 @@ export async function readScoutSnapshot(
        LIMIT ${DIGEST_HISTORY_LIMIT}
     `) as Array<Record<string, unknown>>;
     const { flattenDigest } = await import('../scout/lenses');
+    type ParsedSnapshotRow = {
+      row: Record<string, unknown>;
+      flat: ReturnType<typeof flattenDigest>;
+      prevRefs: Set<string>;
+    };
 
-    const parsed = snapRows
-      .map((row) => {
-        if (!row.digest || typeof row.digest !== 'object') return null;
-        const raw = row.digest as Record<string, unknown>;
-        const flat = flattenDigest(raw as never) ?? [];
-        const prevRefs = new Set(
-          Array.isArray(raw.previousCycleRefs)
-            ? (raw.previousCycleRefs as unknown[]).filter((r): r is string => typeof r === 'string')
-            : [],
-        );
-        return { row, flat, prevRefs };
-      })
-      .filter((x): x is { row: Record<string, unknown>; flat: Array<{ category?: string; summary: string; ref: string; weight?: number }>; prevRefs: Set<string> } => x !== null);
+    const parsed: ParsedSnapshotRow[] = [];
+    for (const row of snapRows) {
+      if (!row.digest || typeof row.digest !== 'object') continue;
+      const raw = row.digest as Record<string, unknown>;
+      const flat = flattenDigest(raw as never) ?? [];
+      const prevRefs = new Set(
+        Array.isArray(raw.previousCycleRefs)
+          ? (raw.previousCycleRefs as unknown[]).filter((r): r is string => typeof r === 'string')
+          : [],
+      );
+      parsed.push({ row, flat, prevRefs });
+    }
 
     digestHistory = parsed.map(({ row, flat, prevRefs }) => {
       // No previousCycleRefs (first-ever snapshot) ⇒ nothing is provably
