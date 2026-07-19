@@ -1,22 +1,31 @@
 /**
- * KnowledgePackCandidates — the fleet→pack candidate review strip in the
- * Learnings view (self-improvement-consume-edges-2026-06-12 P-032 / B-11).
+ * KnowledgePackCandidates — the fleet→pack candidate strip in the Learnings
+ * view (self-improvement-consume-edges-2026-06-12 P-032 / B-11; auto-adopt
+ * reversal owner-auto-adopt-fleet-lessons-2026-07-19 / WI-5414).
  *
- * Pending candidates are cross-hive recurring lessons staged by the
- * recurrence-escalation loop (`knowledgePacks.candidates` sync query) — each
- * carries provenance (signature, scopes, recurrence count, source items) and
- * waits for the OWNER: adopt writes it into the fleet-lessons pack (the pack
- * version bumps, so every hive carrying the pack lights `updateAvailable`
- * and adopts through the normal install/upgrade conflict review), dismiss is
- * terminal. Nothing here ever touches a hive's memory pool directly.
+ * Candidates are cross-hive recurring lessons staged by the
+ * recurrence-escalation loop (`knowledgePacks.candidates` sync query), each
+ * carrying provenance (signature, scopes, recurrence count, source items).
+ * They do NOT wait for a human anymore: a scheduled automated-review sweep
+ * (the improvement-triage cadence) judges every pending candidate against
+ * the fleet-lessons pack's existing content and auto-adopts (writes it into
+ * the pack — the version bumps, so every hive carrying the pack lights
+ * `updateAvailable` and adopts through its normal install/upgrade conflict
+ * review) or auto-dismisses (terminal) with the verdict recorded as the
+ * decision note. The buttons here are the OWNER's manual override — adopt or
+ * dismiss a still-pending candidate now, ahead of the sweep.
  *
- * Renders nothing when the queue is empty — the parent owns the layout.
+ * Renders nothing when there is nothing to show (no pending candidates AND no
+ * recent auto-adoptions) — the parent owns the layout.
  */
 import { useState } from "react";
 import { parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
-import { Inbox } from "lucide-react";
-import type { KnowledgePackCandidate } from "@papercusp/operator-core/lib/knowledge-packs/candidates";
+import { Inbox, Sparkles } from "lucide-react";
+import {
+  AUTO_ADOPT_REVIEWER,
+  type KnowledgePackCandidate,
+} from "@papercusp/operator-core/lib/knowledge-packs/candidates";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { useLexicon } from "@/lib/useLexicon";
 import { LearningDisclosure } from "./LearningVisuals";
@@ -39,6 +48,15 @@ export default function KnowledgePackCandidates() {
     staleTime: 30_000,
   });
   const pending = sync.data ?? [];
+
+  // Recently auto-adopted — the automated review sweep's own track record, so
+  // "no human review step" doesn't read as "nothing is visible" (WI-5414 c).
+  const recentAuto = useSyncQuery<KnowledgePackCandidate>({
+    queryName: "knowledgePacks.candidates",
+    args: { status: "adopted", decidedBy: AUTO_ADOPT_REVIEWER, limit: 5 },
+    staleTime: 30_000,
+  });
+  const recentAdopted = recentAuto.data ?? [];
 
   // Which candidate's draft is expanded — URL state (agents drive review via
   // ui:dispatch; deep-linkable).
@@ -82,6 +100,7 @@ export default function KnowledgePackCandidates() {
     } finally {
       setBusy("");
       sync.invalidate();
+      recentAuto.invalidate();
     }
   };
 
@@ -106,7 +125,7 @@ export default function KnowledgePackCandidates() {
           {lcand === c.id ? "hide draft" : "view draft"}
         </button>
         <Tooltip
-          label={`Write this lesson into the fleet-lessons pack (${t("pot", { plural: true, lower: true })} adopt it through the pack update review)`}
+          label="Adopt now, ahead of the automated review sweep — written straight into the fleet-lessons pack"
         >
           <button
             type="button"
@@ -118,17 +137,17 @@ export default function KnowledgePackCandidates() {
             disabled={busy === c.id}
             onClick={() => void decide(c, "adopt")}
           >
-            adopt
+            adopt now
           </button>
         </Tooltip>
-        <Tooltip label="Dismiss permanently — this lesson's signature never re-files">
+        <Tooltip label="Dismiss now, ahead of the automated review sweep — permanent; this lesson's signature never re-files">
           <button
             type="button"
             style={actionBtn}
             disabled={busy === c.id}
             onClick={() => void decide(c, "dismiss")}
           >
-            dismiss
+            dismiss now
           </button>
         </Tooltip>
       </div>
@@ -138,23 +157,58 @@ export default function KnowledgePackCandidates() {
     </div>
   );
 
-  if (pending.length === 0 && !error && !adoptedNote) return null;
+  if (
+    pending.length === 0 &&
+    recentAdopted.length === 0 &&
+    !error &&
+    !adoptedNote
+  ) {
+    return null;
+  }
 
   return (
     <div
       className="pc-pack-candidates"
       data-testid="pack-candidates"
-      aria-label="Fleet lesson candidates awaiting owner review"
+      aria-label="Fleet lesson candidates — auto-reviewed and auto-adopted"
     >
       <p className="pc-pack-candidates__head">
         <Inbox size={13} aria-hidden /> Fleet lesson candidates
-        <span>{pending.length}</span>
+        {pending.length > 0 ? <span>{pending.length}</span> : null}
       </p>
+      {pending.length > 0 ? (
+        <p className="pc-pack-candidates__sub">
+          Auto-reviewed on a schedule and adopted into fleet-lessons unless
+          the review finds a conflict. The buttons below decide now, ahead of
+          that sweep.
+        </p>
+      ) : null}
       {visible.map(renderCandidate)}
       {remaining.length > 0 ? (
         <LearningDisclosure label="More candidates" count={remaining.length}>
           {remaining.map(renderCandidate)}
         </LearningDisclosure>
+      ) : null}
+      {pending.length === 0 && recentAdopted.length > 0 ? (
+        <p className="pc-pack-candidates__sub">
+          Nothing awaiting review right now — candidates are auto-adopted as
+          they recur.
+        </p>
+      ) : null}
+      {recentAdopted.length > 0 ? (
+        <div className="pc-pack-candidates__auto">
+          <p className="pc-pack-candidates__autohead">
+            <Sparkles size={12} aria-hidden /> Recently auto-adopted
+          </p>
+          <ul>
+            {recentAdopted.map((c) => (
+              <li key={c.id}>
+                <strong>{c.title}</strong>
+                <span>{c.recurrenceCount}× · {c.scopes.length} scope{c.scopes.length === 1 ? "" : "s"}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       {adoptedNote ? (
         <p
@@ -180,11 +234,18 @@ export default function KnowledgePackCandidates() {
         .pc-pack-candidates { border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); border-radius: 9px; padding: 8px 11px; background: color-mix(in srgb, var(--accent) 4%, var(--bg-2)); }
         .pc-pack-candidates__head { min-height: 24px; display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 680; }
         .pc-pack-candidates__head > span { margin-left: auto; border-radius: 999px; padding: 1px 7px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); font-size: 10px; font-variant-numeric: tabular-nums; }
+        .pc-pack-candidates__sub { margin: 3px 0 0; font-size: 10.5px; color: var(--fg-mute); }
         .pc-pack-candidates__row { border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); padding: 5px 0; font-size: 11.5px; }
         .pc-pack-candidates__main { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto auto auto; align-items: center; gap: 7px; }
         .pc-pack-candidates__main > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 620; }
         .pc-pack-candidates__main > span { color: var(--fg-mute); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
         .pc-pack-candidates__draft { margin-top: 5px; padding: 6px 8px; border-radius: 5px; background: var(--bg-1); white-space: pre-wrap; }
+        .pc-pack-candidates__auto { margin-top: 7px; padding-top: 6px; border-top: 1px dashed color-mix(in srgb, var(--border) 72%, transparent); }
+        .pc-pack-candidates__autohead { display: flex; align-items: center; gap: 5px; margin: 0 0 3px; font-size: 10.5px; font-weight: 620; color: var(--fg-dim); }
+        .pc-pack-candidates__auto ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+        .pc-pack-candidates__auto li { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+        .pc-pack-candidates__auto li > strong { font-weight: 560; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pc-pack-candidates__auto li > span { color: var(--fg-mute); font-size: 10px; white-space: nowrap; }
         @media (max-width: 720px) { .pc-pack-candidates__main { grid-template-columns: minmax(160px, 1fr) auto auto auto; } .pc-pack-candidates__main > span { grid-column: 1 / -1; grid-row: 2; } }
       `}</style>
     </div>

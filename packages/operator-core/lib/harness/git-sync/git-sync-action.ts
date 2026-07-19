@@ -2195,6 +2195,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
          AND surface = 'messages'
          AND id > ${lastEventId}
          AND body->'fed_event'->>'key' = ${STAGING_ADVANCE_EVENT_KEY}
+         AND body->'fed_event'->>'repo_key' = ${slug}
        ORDER BY id ASC
        LIMIT 200
     `;

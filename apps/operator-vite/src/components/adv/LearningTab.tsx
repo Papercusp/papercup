@@ -134,6 +134,51 @@ function statusDescription(status: LearningViewStatus): string {
   return "";
 }
 
+/** One-line "what is this view FOR" per tab (owner ask 2026-07-19: a tooltip
+ *  that repeats the tab's name is not a tooltip). Rendered as the tab's
+ *  title/tooltip; the label stays the aria name. Record<LView,…> so a new
+ *  view cannot ship without one. */
+const VIEW_DESCRIPTIONS: Record<LView, string> = {
+  signals:
+    "What the learning pipeline is being fed, and what will make it fire next.",
+  observations:
+    "Pre-idea sensor readings agents file at turn end — browse-only; only recurring ones get promoted to work.",
+  rubrics:
+    "The quality rubrics live behavior is judged against, with their grade history.",
+  pipeline:
+    "Inside each idea-generation cycle: ideator roster, raw ideas, critique verdicts, fusions, and where they routed.",
+  ideas:
+    "The generator's ledger — every routed idea with its trace; your grades here teach the generator which lenses win.",
+  gym: "Prompt-optimization experiments — challengers vs champions — plus Scout-seeded archive niches.",
+  improvements:
+    "The work backlog: every captured bug/improvement, split auto-fixable vs needs-your-review.",
+  benchmark:
+    "Whole-system benchmark runs (the IQ battery) — is a new instance measurably better?",
+  orchestration:
+    "Hive-eval scoring trends — is orchestration quality improving over time?",
+  bakeoff:
+    "Comparative scoring across competing framework setups on the same tasks.",
+  "wake-efficiency":
+    "Are agent wakes doing useful work — wake cost versus yield.",
+  ekg: "The learning loop's vital signs over time, at a glance.",
+  "red-queen":
+    "Adversarial-pressure tracking — is quality keeping pace as the environment hardens?",
+  experiments: "A/B experiments the loop has run, and how they came out.",
+  frontier: "Mined improvement territory the loop has not explored yet.",
+  throughput: "Per-hive learning throughput — how much each hive banks.",
+  learnings:
+    "The hive's shared memory — what the colony keeps and recalls while it works.",
+};
+
+/** One line per stage of the loop, same rule. */
+const STAGE_DESCRIPTIONS: Record<LearningStage, string> = {
+  observe: "What the system sees: raw signals, observations, rubric grades.",
+  analyze: "What idea generation does with it, cycle by cycle.",
+  improve: "What the loop produced: ideas, experiments, and the work backlog.",
+  verify: "Did it actually get better — benchmarks, scoring trends, the release gate.",
+  retain: "What the colony keeps: shared memory and adopted lessons.",
+};
+
 const STAGES: ReadonlyArray<{
   id: LearningStage;
   label: string;
@@ -395,6 +440,7 @@ export default function LearningTab() {
                 value={stage.id}
                 className="pc-learning__stage"
                 aria-label={stage.label}
+                title={STAGE_DESCRIPTIONS[stage.id]}
                 aria-describedby={
                   status ? `learning-stage-status-${stage.id}` : undefined
                 }
@@ -450,7 +496,7 @@ export default function LearningTab() {
                     value={candidate.id}
                     className={`pc-learning__view-tab${semantic ? ` has-${semantic}` : ""}`}
                     aria-label={candidate.label}
-                    title={candidate.label}
+                    title={VIEW_DESCRIPTIONS[candidate.id]}
                     aria-describedby={
                       status
                         ? `learning-view-status-${candidate.id}`
