@@ -11,7 +11,7 @@
  * section) — it is intentionally NOT here, because runBootstrap() starts
  * background tickers that must never touch the shared/native DB.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import {
   mkdtempSync,
   mkdirSync,
@@ -978,5 +978,56 @@ describe("resolveHonoPortHint env-sidecar prod-port-squat guard (EI-11342)", () 
   it("is wired into main() (the resolved hint feeds the ENV_OPERATOR_ID port branch)", () => {
     const src = readFileSync(new URL("./serve.ts", import.meta.url), "utf8");
     expect(src).toContain("resolveHonoPortHint(process.env, ENV_OPERATOR_ID)");
+  });
+});
+
+// WI-5654 recurrence guard: a detached (fire-and-forget) boot-time
+// background task inside runBootstrap() (memory embedder warm-up,
+// hyperbee-substrate boot, OMP integration, spawner/embed-sidecar
+// warm-ups, …) that misses its own `.catch()` used to become a bare Node
+// unhandledRejection with ZERO process-level listeners — serve.ts (the
+// packaged desktop entrypoint) never imports hono-host.ts's guard — which
+// (per Node's default `--unhandled-rejections=throw`) killed the ENTIRE
+// desktop app before it ever bound its HTTP port, with nothing but a raw
+// V8 stack dump as evidence. Live repro: the live-federation-gate crashed
+// 3/3 attempts (2026-07-20) when WI-5638 stripped harrier's HF model cache
+// from the bundle and the boot-time embedder warm-up's first-use model
+// fetch rejected with zero listeners downstream. This guard asserts the
+// module registers its own top-level safety net so that class of fault is
+// logged and SURVIVED instead of taking the whole app down.
+describe("boot-time background-task safety net (WI-5654)", () => {
+  it("registers process-level unhandledRejection + uncaughtException handlers on import", () => {
+    // `serve` was imported once in beforeAll — its top-level process.on(...)
+    // calls have already run against the REAL process object.
+    expect(process.listenerCount("unhandledRejection")).toBeGreaterThan(0);
+    expect(process.listenerCount("uncaughtException")).toBeGreaterThan(0);
+  });
+
+  it("logs (never throws/exits) a detached rejection shaped like the WI-5654 fault, instead of crashing", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fault = new Error("Unable to get model file path or buffer.");
+      // Directly exercise the registered listeners the way Node's own
+      // unhandled-rejection dispatch would — without actually leaving an
+      // unhandled promise around for the REAL runtime to also act on.
+      expect(() => {
+        process.emit("unhandledRejection", fault, Promise.reject(fault).catch(() => {}));
+      }).not.toThrow();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("non-fatal unhandledRejection"),
+        expect.anything(),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("is registered BEFORE runBootstrap() is invoked in main() (ordering is load-bearing)", () => {
+    const src = readFileSync(new URL("./serve.ts", import.meta.url), "utf8");
+    const handlerIdx = src.indexOf("process.on('unhandledRejection'");
+    const runBootstrapCallIdx = src.indexOf("runBootstrap();");
+    expect(handlerIdx).toBeGreaterThan(-1);
+    expect(runBootstrapCallIdx).toBeGreaterThan(-1);
+    expect(handlerIdx).toBeLessThan(runBootstrapCallIdx);
   });
 });

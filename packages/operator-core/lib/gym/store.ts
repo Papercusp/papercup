@@ -160,6 +160,17 @@ export interface DurableCopyCounts {
 }
 
 /**
+ * Normalize a jsonb column value read back from postgres-js into a text payload for
+ * re-insert via `::text::jsonb`. On this stack postgres-js returns jsonb as a raw JSON
+ * STRING (store.integration.test.ts) — pass it straight through; if a caller/config returns
+ * a parsed object instead, stringify it. `fallback` covers a null read on a NOT NULL column.
+ */
+function jsonbPassthrough(v: unknown, fallback: string | null): string | null {
+  if (v == null) return fallback;
+  return typeof v === 'string' ? v : JSON.stringify(v);
+}
+
+/**
  * Copy this cycle's run analytics from the ephemeral gym PG (`src`) into the durable
  * live-DB harness_gym tables (`dst`), stamping every row with (workspace_id, harness_slug)
  * so multiple gym harnesses share the tables without id collisions ('baseline',
@@ -203,7 +214,7 @@ export async function copyRunAnalyticsToDurable(
       await tx`
         INSERT INTO harness_gym.gym_variants (workspace_id, harness_slug, variant_id, parent_id, label, prompt_overrides, diff_from_parent, proposer_rationale, status, created_at)
         VALUES (${ws}, ${hs}, ${r.variant_id as string}, ${(r.parent_id ?? null) as string | null}, ${r.label as string},
-                ${JSON.stringify(r.prompt_overrides ?? {})}::text::jsonb, ${(r.diff_from_parent ?? null) as string | null},
+                ${jsonbPassthrough(r.prompt_overrides, '{}')}::text::jsonb, ${(r.diff_from_parent ?? null) as string | null},
                 ${(r.proposer_rationale ?? null) as string | null}, ${(r.status ?? 'candidate') as string}, ${(r.created_at ?? new Date()) as Date})
         ON CONFLICT (workspace_id, harness_slug, variant_id) DO UPDATE
           SET parent_id = EXCLUDED.parent_id, label = EXCLUDED.label, prompt_overrides = EXCLUDED.prompt_overrides,
@@ -223,7 +234,7 @@ export async function copyRunAnalyticsToDurable(
       await tx`
         INSERT INTO harness_gym.gym_scores (workspace_id, harness_slug, run_id, judge_model, rubric_hash, judge_temp, weights, d1, d2, d3, composite, rationale, scored_at)
         VALUES (${ws}, ${hs}, ${r.run_id as string}, ${r.judge_model as string}, ${r.rubric_hash as string}, ${r.judge_temp == null ? null : Number(r.judge_temp)},
-                ${JSON.stringify(r.weights ?? {})}::text::jsonb, ${Number(r.d1 ?? 0)}, ${Number(r.d2 ?? 0)}, ${Number(r.d3 ?? 0)}, ${Number(r.composite ?? 0)},
+                ${jsonbPassthrough(r.weights, '{}')}::text::jsonb, ${Number(r.d1 ?? 0)}, ${Number(r.d2 ?? 0)}, ${Number(r.d3 ?? 0)}, ${Number(r.composite ?? 0)},
                 ${(r.rationale ?? null) as string | null}, ${(r.scored_at ?? new Date()) as Date})
         ON CONFLICT (workspace_id, harness_slug, run_id, rubric_hash) DO UPDATE
           SET d1 = EXCLUDED.d1, d2 = EXCLUDED.d2, d3 = EXCLUDED.d3, composite = EXCLUDED.composite, rationale = EXCLUDED.rationale`;
@@ -232,7 +243,7 @@ export async function copyRunAnalyticsToDurable(
       await tx`
         INSERT INTO harness_gym.gym_cycles (workspace_id, harness_slug, cycle_id, cycle, parent_id, candidate_id, decision, gate_results, budget_spent_usd, created_at)
         VALUES (${ws}, ${hs}, ${r.cycle_id as string}, ${Number(r.cycle ?? 0)}, ${(r.parent_id ?? null) as string | null}, ${(r.candidate_id ?? null) as string | null},
-                ${(r.decision ?? null) as string | null}, ${JSON.stringify(r.gate_results ?? {})}::text::jsonb, ${r.budget_spent_usd == null ? null : Number(r.budget_spent_usd)},
+                ${(r.decision ?? null) as string | null}, ${jsonbPassthrough(r.gate_results, null)}::text::jsonb, ${r.budget_spent_usd == null ? null : Number(r.budget_spent_usd)},
                 ${(r.created_at ?? new Date()) as Date})
         ON CONFLICT (workspace_id, harness_slug, cycle_id) DO UPDATE
           SET cycle = EXCLUDED.cycle, parent_id = EXCLUDED.parent_id, candidate_id = EXCLUDED.candidate_id,
