@@ -136,6 +136,12 @@ const CONFLICT_EVENT = 'git-sync:conflict';
  * on the single (harness_slug, phase) row. The content-fixer reads its files from
  * the `--git-sync-content-error` extra (below), not this row, so the phase-loose
  * `getEscalation` (mtime-ordered) reader can never feed it the wrong escalation.
+ *
+ * EI-17 rides this SAME pipeline: `outcome.contentErrors` also carries any dirty
+ * deletion a surviving file still (relatively) imports (detectorKey
+ * 'unsafe-deletion', see deletion-import-guard.ts) — this layer treats it exactly
+ * like a broken .mdx (same quarantine/escalation/content-fixer dispatch/5-tick
+ * human-escalation), no separate code path.
  */
 const CONTENT_ESCALATION_PHASE = 'git-sync-content';
 const CONTENT_ERROR_KIND = 'git-sync-content-error';
