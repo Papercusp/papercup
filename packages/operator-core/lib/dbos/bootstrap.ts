@@ -411,6 +411,16 @@ export async function startDbos(): Promise<void> {
       '../system-health/carry-drill-drop-watchdog'
     );
     startCarryDrillDropWatchdog();
+    // cold-with-carry-activation-2026-07-20 (A2): the BOOTSTRAP for P-021 cold-by-default.
+    // Grades prior respawned drills + starts ONE cold-boot drill per pass on an eligible
+    // HEADLESS host until 'claude-headless' is drill-proven, so classDefaultColdForWake
+    // finally engages for the headless fleet (EI-18133456688790756). Runtime gate:
+    // FLAGS.COLD_BOOT_DRILL_AUTORUNNER (default ON); hard kill-switch:
+    // PAPERCUSP_COLD_BOOT_DRILL_AUTORUNNER='0'.
+    const { startColdBootDrillAutorunner } = await import(
+      '../system-health/cold-boot-drill-autorunner'
+    );
+    startColdBootDrillAutorunner();
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }

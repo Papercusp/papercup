@@ -159,6 +159,13 @@ export default defineConfig({
       // Shim the two native packages; the pure-JS layers above them externalize
       // cleanly. The SPA never runs Docker/SSH test-container code.
       { find: /^(ssh2|cpu-features)(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/testcontainers-native-browser.ts') },
+      // undici is server-only; reachable via inference-gateway/*'s lazy
+      // `await import('undici')` egress-dispatcher plumbing. Rolldown still
+      // resolves the dynamic-import target to emit a chunk even though the SPA
+      // never calls it, dragging ~20 transitive node:* modules into the
+      // externalized-warnings count (WI-4518). Shim it out; server/test
+      // consumers import the real package untouched.
+      { find: /^undici(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/undici-browser.ts') },
       // EI-13213: `commands/defs/delegation.ts`'s `delegates.*` handlers only
       // reach `../../delegated-tasks` behind `if (typeof window !== 'undefined')
       // { ...fetch...; return; }` — a RUNTIME guard Rolldown can't see, so it

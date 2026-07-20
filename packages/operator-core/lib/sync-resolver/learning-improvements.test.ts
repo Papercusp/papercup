@@ -2,13 +2,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
  * The Learning tab's improvements feed reads the `learning.improvements` named
- * query (operator-learning-tab-2026-06-09 P-002). The resolver itself is thin glue
- * over the separately-tested readImprovementItems + buildDigest path (D-003), so
- * here we assert (1) it's registered in the v2 resolver — a missing registration
- * is the failure mode that would silently 404 the tab — and (2) the P-041 flow
- * extension: the resolved row is the digest PLUS a `flow` block whose recurrence
+ * query (operator-learning-tab-2026-06-09 P-002). Since phase2 P-003 the digest +
+ * flow computation lives in the SHARED `computeLearningImprovementsSnapshot`
+ * (harness/improvements/learning-digest-snapshot) — the precomputed default
+ * variant and the resolver's live inline non-default path both call it, so the
+ * compute logic is pinned HERE against that function directly (mirroring how the
+ * rubrics.list precompute migration moved its rollup test to producers.test.ts).
+ * The resolver's OWN default→snapshot / non-default→inline / recordQueueExposure
+ * gate is pinned separately in sync-resolver/learning-improvements-queries.test.ts.
+ *
+ * Here we assert (1) the query is still registered in the v2 resolver — a missing
+ * registration is the failure mode that would silently 404 the tab — and (2) the
+ * P-041 flow extension: the row is the digest PLUS a `flow` block whose recurrence
  * count is REUSED from the digest's recurringSignatures (never re-derived) and
- * whose watchdog half degrades gracefully when the tick read fails.
+ * whose watchdog half degrades gracefully when the tick read fails, plus the P-040
+ * per-Hive scope resolution.
  */
 
 const readImprovementItems = vi.fn();
@@ -33,7 +41,8 @@ vi.mock('../harness-registry', async (importOriginal) => {
   return { ...real, loadHarnessRegistry: (...a: unknown[]) => loadHarnessRegistry(...a) };
 });
 
-import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
+import { knownQueryNamesV2 } from './index';
+import { computeLearningImprovementsSnapshot } from '../harness/improvements/learning-digest-snapshot';
 import type { ImprovementDigest } from '../harness/improvements/digest';
 import type { ImprovementFlow } from '../harness/improvements/flow-metrics';
 
@@ -65,7 +74,7 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     readImprovementItems.mockResolvedValue(items);
     readWatchdogFlowTicks.mockResolvedValue([{ tickAtMs: Date.now() - 10 * 60_000, capturedCount: 2 }]);
 
-    const rows = (await resolveNamedQueryV2('learning.improvements', {})) as Array<ImprovementDigest & { flow: ImprovementFlow }>;
+    const rows = (await computeLearningImprovementsSnapshot({})) as Array<ImprovementDigest & { flow: ImprovementFlow }>;
     expect(Array.isArray(rows)).toBe(true);
     expect(rows).toHaveLength(1);
     const row = rows[0];
@@ -95,7 +104,7 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
       { id: 'EI-9', kind: 'bug', scope: 'operator', title: 'needs a human', state: 'open', createdAt: recentIso(1), needsHuman: true },
     ]);
     readWatchdogFlowTicks.mockResolvedValue([]);
-    const rows = (await resolveNamedQueryV2('learning.improvements', {})) as Array<ImprovementDigest>;
+    const rows = (await computeLearningImprovementsSnapshot({})) as Array<ImprovementDigest>;
     expect(rows[0].humanQueue.length).toBeGreaterThan(0);
     for (const item of rows[0].humanQueue) {
       expect(item).not.toHaveProperty('rank');
@@ -108,7 +117,7 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     readWatchdogFlowTicks.mockRejectedValue(new Error('pg down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const rows = (await resolveNamedQueryV2('learning.improvements', {})) as Array<ImprovementDigest & { flow: ImprovementFlow }>;
+      const rows = (await computeLearningImprovementsSnapshot({})) as Array<ImprovementDigest & { flow: ImprovementFlow }>;
       expect(rows[0].flow.watchdog).toEqual({ lastTickAt: null, ticks24h: 0, captured24h: 0 });
       expect(rows[0].flow.captured7d).toBe(1); // the item half still computed
     } finally {
@@ -131,14 +140,14 @@ describe('learning.improvements — per-Hive lens (P-040)', () => {
         { slug: 'elsewhere', hive_slug: 'other-hive' },
       ],
     });
-    await resolveNamedQueryV2('learning.improvements', { hive: 'my-hive' });
+    await computeLearningImprovementsSnapshot({ hive: 'my-hive' });
     expect(loadHarnessRegistry).toHaveBeenCalled();
     const passed = readImprovementItems.mock.calls[0][0] as { harnessScopes?: string[] };
     expect(passed.harnessScopes?.sort()).toEqual(['harness:member-a', 'harness:my-hive']);
   });
 
   it('omits harnessScopes entirely when no hive is given (workspace-wide feed)', async () => {
-    await resolveNamedQueryV2('learning.improvements', {});
+    await computeLearningImprovementsSnapshot({});
     const passed = readImprovementItems.mock.calls[0][0] as { harnessScopes?: string[] };
     expect(passed.harnessScopes).toBeUndefined();
     expect(loadHarnessRegistry).not.toHaveBeenCalled();
@@ -148,7 +157,7 @@ describe('learning.improvements — per-Hive lens (P-040)', () => {
     loadHarnessRegistry.mockRejectedValue(new Error('registry down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const rows = await resolveNamedQueryV2('learning.improvements', { hive: 'my-hive' });
+      const rows = await computeLearningImprovementsSnapshot({ hive: 'my-hive' });
       expect(Array.isArray(rows)).toBe(true);
       const passed = readImprovementItems.mock.calls[0][0] as { harnessScopes?: string[] };
       expect(passed.harnessScopes).toBeUndefined(); // fell back to workspace-wide

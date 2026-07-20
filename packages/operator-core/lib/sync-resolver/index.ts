@@ -2737,16 +2737,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // state filter, a custom limit, or the per-Hive lens) cannot be served from
       // the snapshot and falls through to the live inline compute.
       const isDefaultVariant = a.state === undefined && a.limit === undefined && a.hive === undefined;
-      let rows: Array<{ humanQueue?: Array<{ id: string }> } & Record<string, unknown>>;
+      let rows: Array<Record<string, unknown>>;
       if (isDefaultVariant) {
         const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
         await import('../derived-reads/producers');
-        rows = await readDerivedSnapshotRows('learning.improvements');
+        rows = await readDerivedSnapshotRows<Record<string, unknown>>('learning.improvements');
       } else {
         const { computeLearningImprovementsSnapshot } = await import(
           '../harness/improvements/learning-digest-snapshot'
         );
-        rows = (await computeLearningImprovementsSnapshot(a)) as typeof rows;
+        rows = (await computeLearningImprovementsSnapshot(a)) as unknown as Array<Record<string, unknown>>;
       }
       // FB-15 (P-043): this resolver IS the owner's view of the queue, so a hit
       // here = the queue was rendered to the owner. Record a throttled queue-view
@@ -2755,7 +2755,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // precompute routine), so it lives here in BOTH branches, keyed off whatever
       // humanQueue the read actually returned. Fire-and-forget: capture must never
       // affect the read.
-      const exposedIds = (rows[0]?.humanQueue ?? []).map((i) => i.id);
+      const humanQueue0 = rows[0]?.humanQueue;
+      const exposedIds = Array.isArray(humanQueue0)
+        ? humanQueue0.map((i) => (i as { id: string }).id).filter((id): id is string => typeof id === 'string')
+        : [];
       if (exposedIds.length > 0) {
         void import('../owner-preference/interactions')
           .then((m) => m.recordQueueExposure(exposedIds))

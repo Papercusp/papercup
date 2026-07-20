@@ -232,3 +232,41 @@ describe('derived-reads producers: insights.coordTokens', () => {
     expect(pollArgs.windowMs).toBeUndefined();
   });
 });
+
+// learning.improvements producer (phase2 P-003 / WI-5460 follow-up). The producer
+// delegates to the SHARED compute (computeLearningImprovementsSnapshot) so the
+// precomputed default and the resolver's inline non-default path can never drift;
+// the only invariant to pin here is that it precomputes the DEFAULT variant (no
+// state/limit/hive) and returns the shared compute's shape unchanged.
+async function loadLearningImprovementsProducer() {
+  vi.resetModules();
+  const registry = await import('./registry');
+  registry.__clearDerivedReadRegistryForTest();
+  await import('./producers');
+  const producer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.improvements');
+  if (!producer) throw new Error('learning.improvements producer not registered');
+  return producer;
+}
+
+describe('derived-reads producers: learning.improvements', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => {
+    vi.doUnmock('../harness/improvements/learning-digest-snapshot');
+    vi.resetModules();
+  });
+
+  it('computes the DEFAULT variant: shared compute called with {} (no state/limit/hive), shape passed through', async () => {
+    const snapshotRow = { humanQueue: [{ id: 'EI-1' }], flow: {}, recurringSignatures: [] };
+    const computeLearningImprovementsSnapshot = vi.fn(async (_a: Record<string, unknown>) => [snapshotRow]);
+    vi.doMock('../harness/improvements/learning-digest-snapshot', () => ({ computeLearningImprovementsSnapshot }));
+
+    const producer = await loadLearningImprovementsProducer();
+    expect(producer.scope).toBe('workspace');
+    expect(producer.ttlMs).toBe(90_000); // liveness-sensitive tier
+    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as unknown[];
+
+    expect(out).toEqual([snapshotRow]);
+    expect(computeLearningImprovementsSnapshot).toHaveBeenCalledTimes(1);
+    expect(computeLearningImprovementsSnapshot).toHaveBeenCalledWith({});
+  });
+});

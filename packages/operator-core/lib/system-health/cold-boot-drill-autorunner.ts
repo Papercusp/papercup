@@ -264,9 +264,7 @@ export async function runColdBootDrillAutorunOnce(
       skippedClasses.push({ sessionClass, reason: 'gave-up-carry-insufficient' });
       continue;
     }
-    const host = deps.listHosts().find((h) => pickEligibleHost([h], sessionClass) != null)
-      ? pickEligibleHost(deps.listHosts(), sessionClass)
-      : null;
+    const host = pickEligibleHost(deps.listHosts(), sessionClass);
     if (!host) {
       skippedClasses.push({ sessionClass, reason: 'no-eligible-headless-host' });
       continue;
