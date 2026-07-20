@@ -422,7 +422,8 @@ export type WindDownCause =
   | 'budget_exhausted'
   | 'cancelled'
   | 'liveness_unconfirmable'
-  | 'offer_expired';
+  | 'offer_expired'
+  | 'quota_exceeded';
 
 export interface WindDownDecision {
   readonly cause: WindDownCause;
@@ -448,6 +449,7 @@ export function decideWindDown(
     cancelled: 'offer wound down: cancelled by the publisher (preemption-class, excused breach)',
     liveness_unconfirmable: 'offer wound down: liveness could not be confirmed within the TTL (partition — failing safe)',
     offer_expired: 'offer wound down: unclaimed-offer TTL elapsed (H16)',
+    quota_exceeded: 'offer wound down: foreign workspace exceeded its disk quota (P-105 §1)',
   };
   return { cause, axis, detail: opts?.detail ?? defaultDetail[cause], receiptKind };
 }

@@ -380,6 +380,18 @@ export const FLAGS = {
   // per-call. DEFAULT ON (not in DARK_FLAGS). OFF = the kill-switch if the guard
   // ever false-positives.
   WORK_ITEM_MIRROR_GUARD: "papercusp-work-item-mirror-guard",
+  // pot-membership-enforcement-2026-07-20 (P-005/P-006, owner directive Avi
+  // 2026-07-20 "AUDIT ALL WORK ITEMS THEY SHOULD ALL BE PART OF A REAL POT ...
+  // WE ADDED SOMETHING TO ENFORCE WORK ITEMS TO BE PART OF A REAL POT, RIGHT?"):
+  // when ON, createWorkItem resolves every new item's harness_slug to a REAL pot
+  // (harness_shared.pots) — an operator/workspace-global scope homes to the
+  // workspace platform pot, and an explicit made-up pot slug is REJECTED
+  // (pot_not_found) instead of silently drifting (the `operator:<ws>` /
+  // `papercusp-workspace` non-pot rows the backfill had to clean up). Fails OPEN
+  // for a workspace with no platform pot (test fixtures). DEFAULT ON (derived
+  // FLAG_DEFAULTS — not in DARK_FLAGS). OFF = the kill-switch if it ever wrongly
+  // blocks a create; the DB backstop trigger (P-006) is the un-flagged safety net.
+  POT_MEMBERSHIP_ENFORCEMENT: "papercusp-pot-membership-enforcement",
   // EI-309 (Queen frontier-blind wake wedge): when ON, pot:declare-wake refuses
   // an event-only/none declaration (no time component) while the home harness has
   // unplaced todo work items — forcing the Queen to place them or arm a time-wake

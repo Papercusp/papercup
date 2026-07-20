@@ -558,6 +558,20 @@ const staleClaimSweepCheck: PeriodicCheck = {
                   `— these items were excluded from claim_next/scheduler and could not be closed by anyone but a ` +
                   `dead agent (WI-4531). Normal lifecycle resumes: ` +
                   starved.map((h) => `${h.feature_id} (was held by ${h.former_holder})`).join(', '),
+                // EI-18183171615661851: this fires on EVERY 60s stale-claim-sweep tick that
+                // finds a newly-expired hold, so on a busy fleet where holds trickle in one at
+                // a time it produced a run of near-identical "lifted 1 EXPIRED hold(s)"
+                // broadcasts (5 in a single wake's digest was the reported case) — each with a
+                // DIFFERENT feature_id in its summary, so coalesceRepeatedBroadcasts' exact-text
+                // match (coord:inbox's ×N-row fold) can never merge them. `category` was simply
+                // never stamped on this call, unlike every sibling system-routine broadcast
+                // (service-health, doc-drift, agent-governor, resource-locks — see
+                // coord:inbox's AMBIENT_CATEGORIES). Tagging it 'service-health' (the same
+                // category service-health.ts / db-boot-migrate.ts / inference-gateway use for
+                // routine status housekeeping) makes coord:inbox default-EXCLUDE it as ambient
+                // — nobody but the sweep itself needs to see every single lift in real time —
+                // while `include_ambient` still surfaces it for anyone auditing WI-4531.
+                category: 'service-health',
                 extra: { auto: true, lifecycle: 'hold_open_expired' },
               },
             );
