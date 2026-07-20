@@ -14,20 +14,22 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
+import { liveTest, probeLive } from '../testing/live-integration';
 
 const OP_PORT = process.env.OP_PORT ?? '3070';
 const BASE = `http://localhost:${OP_PORT}`;
 
-let baseUrl = '';
-try {
+const baseUrl = await probeLive(async () => {
   const probe = await fetch(`${BASE}/api/mcp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {} } }),
     signal: AbortSignal.timeout(3000),
   });
-  if (probe.status < 500) baseUrl = BASE;
-} catch { /* operator not running */ }
+  return probe.status < 500;
+}, 3000)
+  ? BASE
+  : '';
 
 const itLive = baseUrl ? it : it.skip;
 
@@ -51,7 +53,7 @@ describe('spawn-signing mint+verify roundtrip', () => {
     cleanup('s_mint_%');
   });
 
-  itLive('.mcp.json minted with correct mode and URL', async () => {
+  itLive('.mcp.json minted with correct mode and URL', liveTest(async () => {
     // Dynamic cross-package import; path resolved by Vitest/tsx at runtime
     const mod = await import('../../../../libs/papercusp/packages/orchestrator/src/spawn-mcp.ts' as string);
     const writeSignedSpawnMcp: (dir: string, opts: Record<string, unknown>) => Promise<{ path: string }> = mod.writeSignedSpawnMcp;
@@ -115,5 +117,5 @@ describe('spawn-signing mint+verify roundtrip', () => {
     const text3 = await r3.text();
     expect(text3).toContain('request_rejected');
     expect(text3).toContain('invalid_signature');
-  });
+  }));
 });

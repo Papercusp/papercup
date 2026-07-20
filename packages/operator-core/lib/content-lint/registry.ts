@@ -43,8 +43,10 @@ export interface ContentDetector {
   autoFix?: (text: string) => { fixed: string; changed: boolean };
 }
 
-/** Shared exclusions — retired trees, vendored code, build output (mirror the lint scripts). */
-const isExcludedPath = (f: string): boolean =>
+/** Shared exclusions — retired trees, vendored code, build output (mirror the lint scripts).
+ *  Exported so sibling git-sync checks (e.g. the deletion-import guard, EI-17) can reuse the
+ *  SAME exclusion set instead of a drifting duplicate. */
+export const isExcludedPath = (f: string): boolean =>
   f.startsWith('_retired/') ||
   f.includes('/_retired/') ||
   f.includes('/node_modules/') ||

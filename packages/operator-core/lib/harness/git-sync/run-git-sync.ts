@@ -32,6 +32,7 @@ import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { isSidecarEnabledFromEnv } from '../../process-supervision/sidecar-spawn-shared';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
+import { detectUnsafeDeletions } from './deletion-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import {
   groupFilesForAttribution,
@@ -338,6 +339,11 @@ export interface RunGitSyncOpts {
   /** Override the content-guard detector registry (tests / future extension).
    *  Defaults to DEFAULT_CONTENT_DETECTORS (mdx + smart-quotes). Pass [] to disable. */
   contentDetectors?: ContentDetector[];
+  /** EI-17: the deletion-import guard (kill-switch: FLAGS.GIT_SYNC_DELETION_GUARD).
+   *  Default true. When false, a dirty deletion is never checked against surviving
+   *  imports — byte-identical to pre-EI-17 behavior (the instant off-switch on this
+   *  shared commit path, no deploy needed, mirroring GIT_SYNC_CONTENT_GUARD). */
+  deletionGuard?: boolean;
   /** Read a repo-relative file's working-tree text for the content guard (tests).
    *  Defaults to fs read; null on any error. */
   readText?: (repoPath: string, relPath: string) => Promise<string | null>;
@@ -719,6 +725,7 @@ interface CommitRepoOpts {
   message: string;
   maxBlobBytes: number;
   contentDetectors: ContentDetector[];
+  deletionGuard: boolean;
   readText: (repoPath: string, relPath: string) => Promise<string | null>;
   log: (m: string) => void;
   /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
@@ -766,8 +773,22 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       detectors: o.contentDetectors,
       log: o.log,
     });
-    // Exclude BOTH oversized + content offenders from the auto-commit (deduped — a
-    // file can be both). Everything clean still syncs this tick.
+    // EI-17: a dirty DELETION whose module a surviving file still (relatively)
+    // imports is excluded exactly like a content offender — see
+    // deletion-import-guard.ts for why this can't be folded into the per-file
+    // content-detector registry above (it's a cross-file check on the deletion
+    // SET, not a single file's own text).
+    if (o.deletionGuard) {
+      const deletionErrors = await detectUnsafeDeletions({
+        runGit,
+        repoPath,
+        readText: (rel) => o.readText(repoPath, rel),
+        log: o.log,
+      });
+      if (deletionErrors.length > 0) contentErrors = [...contentErrors, ...deletionErrors];
+    }
+    // Exclude BOTH oversized + content offenders (incl. unsafe deletions) from the
+    // auto-commit (deduped — a file can be both). Everything clean still syncs this tick.
     const excludePaths = [...new Set([...oversized.map((f) => f.path), ...contentErrors.map((c) => c.file)])];
     let committedAny = false;
     // P-004: when an attribution map is supplied (flag GIT_SYNC_DERIVED_ATTRIBUTION on), peel
@@ -1025,8 +1046,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const step: GitSyncStepRunner = opts.step ?? (async (_name, fn) => fn());
   // EI-438 content guard seams (default registry + fs reader; injectable for tests).
   const contentDetectors = opts.contentDetectors ?? DEFAULT_CONTENT_DETECTORS;
+  const deletionGuard = opts.deletionGuard ?? true;
   const readText = opts.readText ?? defaultReadText;
-  const repoO = { remote, message, doPush, maxBlobBytes, contentDetectors, readText, log };
+  const repoO = { remote, message, doPush, maxBlobBytes, contentDetectors, deletionGuard, readText, log };
 
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));
   if (!repo) {

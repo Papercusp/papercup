@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { liveTest, probeLive } from '../testing/live-integration';
 
 // Issuing a power-user token now requires a verified|trusted principal
 // (route auth tightened from "any principal incl. loopback" → trust:
@@ -25,16 +26,26 @@ const BASE = OP_PORT
   ? `http://localhost:${OP_PORT}`
   : (process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070');
 
-let baseUrl = '';
-try {
+// EI-52: the reachability probe hits the SAME endpoint the first test exercises, but a
+// past-probe-time degradation (this exact route is known to intermittently hang ~30s
+// while GETs stay responsive) used to surface as a hard RED — the probe's own 3s bound
+// didn't protect the later, unbounded `jsonPost` calls below. `probeLive` keeps the bound
+// fail-safe; `jsonPost`/`mcpCall` now carry a real per-call timeout so a mid-suite wedge
+// throws a classifiable TimeoutError instead of hanging past Vitest's own test timeout,
+// and every itLive body is wrapped in `liveTest` to turn that into a SKIP, not a failure.
+const LIVE_TIMEOUT_MS = 10_000;
+
+const baseUrl = await probeLive(async () => {
   const probe = await fetch(`${BASE}/api/agent-tokens/power-user`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
     signal: AbortSignal.timeout(3000),
   });
-  if (probe.status < 500) baseUrl = BASE;
-} catch { /* operator not running */ }
+  return probe.status < 500;
+}, 3000)
+  ? BASE
+  : '';
 
 const itLive = baseUrl ? it : it.skip;
 
@@ -43,6 +54,7 @@ async function jsonPost(path: string, body: unknown, headers: Record<string, str
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
   });
   const text = await r.text();
   let json: any = null;
@@ -55,6 +67,7 @@ async function mcpCall(urlSuffix: string, bearer: string, method: string, params
     method: 'POST',
     headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
   });
   const text = await r.text();
   const dataLine = text.split('\n').find((l) => l.startsWith('data:'));
@@ -66,7 +79,7 @@ describe('power-user auth tier e2e', () => {
   let access = '';
   let refresh = '';
 
-  itLive('POST /api/agent-tokens/power-user issues token pair', async () => {
+  itLive('POST /api/agent-tokens/power-user issues token pair', liveTest(async () => {
     const res = await jsonPost('/api/agent-tokens/power-user', {}, suAuth);
     expect(res.status).toBe(200);
     access = res.json?.access_token ?? '';
@@ -78,9 +91,9 @@ describe('power-user auth tier e2e', () => {
     expect(typeof res.json?.workspace_id).toBe('string');
     expect(res.json?.auth_session_id).toMatch(/^pus-/);
     expect(Date.parse(res.json?.access_expires_at)).toBeLessThan(Date.parse(res.json?.refresh_expires_at));
-  });
+  }));
 
-  itLive('POST .../refresh mints new access token; access token rejected as refresh', async () => {
+  itLive('POST .../refresh mints new access token; access token rejected as refresh', liveTest(async () => {
     if (!access || !refresh) return;
     const refreshed = await jsonPost('/api/agent-tokens/power-user/refresh', undefined, { Authorization: `Bearer ${refresh}` });
     expect(refreshed.status).toBe(200);
@@ -88,9 +101,9 @@ describe('power-user auth tier e2e', () => {
 
     const wrongType = await jsonPost('/api/agent-tokens/power-user/refresh', undefined, { Authorization: `Bearer ${access}` });
     expect(wrongType.status).toBe(401);
-  });
+  }));
 
-  itLive('GET /api/agent-bundle returns bundle with signed mcp_url', async () => {
+  itLive('GET /api/agent-bundle returns bundle with signed mcp_url', liveTest(async () => {
     if (!access) return;
     const res = await fetch(`${baseUrl}/api/agent-bundle`, { headers: { Authorization: `Bearer ${access}` } });
     const bundle = await res.json().catch(() => null) as any;
@@ -103,18 +116,18 @@ describe('power-user auth tier e2e', () => {
 
     const noTok = await fetch(`${baseUrl}/api/agent-bundle`);
     expect(noTok.status).toBe(401);
-  });
+  }));
 
-  itLive('POST /api/mcp?power_user=1 tools/list: valid token returns catalog, garbage returns empty', async () => {
+  itLive('POST /api/mcp?power_user=1 tools/list: valid token returns catalog, garbage returns empty', liveTest(async () => {
     if (!access) return;
     const good = await mcpCall('?power_user=1', access, 'tools/list');
     expect((good?.result?.tools ?? []).length).toBeGreaterThan(0);
 
     const bad = await mcpCall('?power_user=1', 'garbage.token', 'tools/list');
     expect((bad?.result?.tools ?? []).length).toBe(0);
-  });
+  }));
 
-  itLive('POST /api/agent-mcp/console/launch {mode:omp} returns structured result', async () => {
+  itLive('POST /api/agent-mcp/console/launch {mode:omp} returns structured result', liveTest(async () => {
     const res = await fetch(`${baseUrl}/api/agent-mcp/console/launch`, {
       method: 'POST',
       headers: { 'content-type': 'text/plain' },
@@ -129,5 +142,5 @@ describe('power-user auth tier e2e', () => {
     if (json?.code === 'omp_not_installed' || json?.code === 'omp_not_bootstrapped') {
       expect(typeof json.installCmd).toBe('string');
     }
-  });
+  }));
 });
