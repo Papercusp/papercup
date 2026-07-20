@@ -77,7 +77,7 @@ import { Popover } from "@/app/harness/Popover";
 import { CardStack } from "@papercusp/card-stack";
 import { useColumnFilters, ColumnFilterBar } from "@/app/harness/filters";
 import type { FilterableColumn } from "@papercusp/grid-core";
-import { statusToneColor, CATEGORICAL } from "@/app/harness/theme";
+import { statusToneColor } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
 import { hiveHomeLabel } from "@/lib/hive-label";
@@ -3697,7 +3697,7 @@ export function ScoutView({
           feedback={eff?.feedback ?? null}
           noteOpenInit={isOpen}
           onGrade={(grade, feedback) => {
-            void submitGrade(item, grade, feedback).then(
+            void submitGrade(item, grade, feedback ?? null).then(
               () => void setGradeOpen(null),
             );
           }}
@@ -4527,6 +4527,44 @@ function LearningsView({
                 other things the loop has learned
               </span>
             </div>
+            {/* Idea-derived outcomes (owner ask 2026-07-19): the idea → plan/
+                work-item → DONE chain, visibly banked here — the loop's wins
+                are retained knowledge, not just lens-weight nudges. */}
+            {(extrasSnap.shippedFromIdeas?.length ?? 0) > 0 ? (
+              <LearningDisclosure
+                label="Shipped from ideas"
+                subtitle="ideas whose routed plan / work item reached an outcome"
+                count={extrasSnap.shippedFromIdeas.length}
+              >
+                <ul
+                  className="pc-learning__draftlist"
+                  aria-label="Idea-derived shipped outcomes"
+                >
+                  {extrasSnap.shippedFromIdeas.map((d) => {
+                    const doneMs = d.completedAt ? Date.parse(d.completedAt) : NaN;
+                    const good = ["resolved", "closed", "active", "adopted", "shipped"].includes(d.outcome);
+                    return (
+                      <li key={d.ideaId} className="pc-learning__draftrow">
+                        <CheckCircle2 size={11} aria-hidden />
+                        <strong title={d.routedRef}>{d.title ?? d.routedRef}</strong>
+                        <em>{d.rail}</em>
+                        <span
+                          className={`pc-learning__flowchip${good ? " pc-learning__flowchip--wd-good" : ""}`}
+                          title={`The routed artifact's end state (${d.routedRef}).`}
+                        >
+                          {d.outcome}
+                        </span>
+                        {!Number.isNaN(doneMs) ? (
+                          <span className="pc-learning__draftwhen">
+                            {whenLabel(doneMs)}
+                          </span>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </LearningDisclosure>
+            ) : null}
             {retainLensEntries.length > 0 ? (
               <LearningDisclosure
                 label="Lens weights"

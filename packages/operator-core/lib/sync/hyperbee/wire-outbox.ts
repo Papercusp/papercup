@@ -15,6 +15,21 @@
  *      LISTEN connection + poll timer release exactly once on teardown without
  *      boot-all tracking a parallel stopper Map.
  *
+ * WI-1942 (bounded backfill retry): `backfillLocalState`'s own enqueue-bail cap
+ * (backfill-local-state.ts `DEFAULT_ENQUEUE_BAIL_CAP`) can trip on the FIRST boot
+ * of any harness whose pre-existing (`*_consolidated` + friends) corpus exceeds
+ * the cap — a very common case for an established harness. Before this fix, a
+ * bail was silent to this caller (the return value was never inspected) and the
+ * ONLY retry path was the NEXT full process boot — an UNBOUNDED wait on a
+ * long-running process (hours/days), during which a late-joining peer's
+ * pre-existing (historical) content federation never gets enqueued at all, while
+ * ongoing (live-tail) writes federate normally via the already-running drain —
+ * exactly the "historical entries apply minutes-to-never late, live-tail applies
+ * in seconds" asymmetry the bug reported. We now inspect the result and, on a
+ * bail, arm a BOUNDED periodic retry (within this same process) that re-attempts
+ * the backfill on a fixed cadence until it stops bailing, closing the gap
+ * without changing the bail cap's own protective semantics.
+ *
  * Extracted as a standalone, dependency-injected helper purely for testability:
  * the production deps default to the real backfill + drain, and the unit test
  * passes fakes (no PG, no swarm). `boot-all.ts` calls
@@ -22,6 +37,7 @@
  */
 
 import type postgres from 'postgres';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { BootedHarnessHandle } from './boot';
 import {
   backfillLocalState as realBackfillLocalState,
@@ -36,6 +52,12 @@ import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { registerPlanClobberNotifier } from './plan-clobber-notify';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+
+/** WI-1942 default cadence (ms) for retrying a BAILED backfill within this same
+ *  process, instead of only on the next full boot. Deliberately a few minutes —
+ *  the bail check runs several COUNT(*) queries across every unswept target, so
+ *  this must stay cheap/rare, not a tight poll. */
+export const DEFAULT_BACKFILL_RETRY_MS = 2 * 60 * 1000;
 
 /** System sender for the P-007 plan-clobber notice (mirrors LEARNING_HEALTH_IDENTITY). */
 const PLAN_CLOBBER_IDENTITY: AgentIdentity = {
@@ -57,6 +79,11 @@ export interface WireOutboxDeps {
    *  closed own-log session, so `ensureSendSideWired` (boot-all.ts) can un-mark
    *  this harness as wired and re-wire on the next boot pass. */
   onSessionClosed?: () => void;
+  /** WI-1942: cadence (ms) for retrying a BAILED backfill within this process.
+   *  `<= 0` disables the retry (restores the legacy next-boot-only behavior).
+   *  Default {@link DEFAULT_BACKFILL_RETRY_MS}. Tests inject a small value +
+   *  fake timers to drive it deterministically. */
+  backfillRetryMs?: number;
 }
 
 /**
@@ -114,15 +141,49 @@ export async function wireOutboxForHarness(
   // the backfill catches up rows that PRE-DATE federation; the drain handles
   // every ONGOING write, which is the more important guarantee. The marker is
   // only written on a successful run, so a transient failure re-runs next boot.
-  try {
-    await backfill(handle, pg);
-  } catch (e) {
-     
-    console.error(
-      `[wire-outbox] backfillLocalState failed for ${handle.workspaceId}::${handle.harnessSlug} ` +
-        `(continuing — drain still starts):`,
-      e instanceof Error ? e.message : String(e),
+  const attemptBackfill = async (): Promise<BackfillResult | null> => {
+    try {
+      return await backfill(handle, pg);
+    } catch (e) {
+
+      console.error(
+        `[wire-outbox] backfillLocalState failed for ${handle.workspaceId}::${handle.harnessSlug} ` +
+          `(continuing — drain still starts):`,
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
+    }
+  };
+
+  const initialResult = await attemptBackfill();
+
+  // WI-1942: a BAIL (candidate corpus over the enqueue cap) previously had no
+  // retry within this process — only the next full boot re-attempted it, an
+  // unbounded wait during which a late-joining peer never receives pre-existing
+  // (historical) content while ongoing writes federate normally. Arm a bounded
+  // periodic retry until a re-attempt stops bailing.
+  const backfillRetryMs = deps.backfillRetryMs ?? DEFAULT_BACKFILL_RETRY_MS;
+  if (initialResult?.bailed && backfillRetryMs > 0) {
+    let retrying = false;
+    const retryTimer = managedSetInterval(
+      `hyperbee-backfill-retry:${handle.workspaceId}:${handle.harnessSlug}`,
+      backfillRetryMs,
+      () => {
+        if (retrying) return; // don't overlap a slow retry with the next tick
+        retrying = true;
+        void attemptBackfill()
+          .then((result) => {
+            // Stop once a re-attempt actually ran without bailing (success OR
+            // already-skipped) — a thrown/null result keeps retrying.
+            if (result && !result.bailed) retryTimer.stop();
+          })
+          .finally(() => {
+            retrying = false;
+          });
+      },
+      { category: 'lifecycle', instanced: true },
     );
+    handle.registerCloseHook(() => retryTimer.stop());
   }
 
   // (2) Start the drain loop.

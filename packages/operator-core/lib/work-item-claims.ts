@@ -392,7 +392,7 @@ export async function gcOrphanIssueClaimsLocal(): Promise<number> {
        AND c.workspace_id = e.workspace_id
        AND c.intent = 'work-stealing claim (claim_next)'
        AND (e.assignee IS NULL OR e.assignee = '')
-       AND e.state NOT IN ('resolved', 'closed')   -- = ISSUE_TERMINAL_STATUSES (work-item-blocking.ts)
+       AND e.state NOT IN ('resolved', 'closed', 'done', 'dropped')   -- ISSUE_TERMINAL_STATUSES, transitional legacy∪unified (work-item-status-full-unify)
     RETURNING c.work_item_id
   `;
   return rows.length;

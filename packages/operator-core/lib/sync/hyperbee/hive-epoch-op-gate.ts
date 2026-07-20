@@ -128,9 +128,33 @@ export interface EpochOpGateDeps {
 export function buildEpochEncryptCapability(
   deps: EpochOpGateDeps & { getCurrentEpoch: () => Promise<number> },
 ): EpochEncryptCapability {
+  // EI-6945: `getCurrentEpoch` (getHiveEpoch → getHiveSetting) is an UNCACHED PG
+  // SELECT against harness_shared.pot_settings, and `encryptOp` is called ONCE PER
+  // ROW from outbox-drain's per-row loop (DEFAULT_DRAIN_BATCH=200) — so every
+  // drained content row paid a full extra PG round-trip just to re-read a value
+  // that changes ONLY on an explicit, rare, human/policy-driven re-key
+  // (advanceHiveEpoch — member-remove / go-private). Under this harness's heavy
+  // write/connection load this uncached per-row SELECT was the N+1 behind the
+  // systemically-slow epoch-encrypt stage (confirmed live: stage-stall logs
+  // showing per-row epoch-encrypt taking >15s with the STALLING ROW ID
+  // ADVANCING pass to pass — not a single poison row — while substrate_outbox's
+  // undrained depth grew unbounded). Cache the epoch for a short TTL: safe
+  // because a re-key is never latency-sensitive to the sub-second level (the
+  // decrypt gate's DEFER-until-key-arrives semantics already tolerate a content
+  // op briefly encrypted under the outgoing epoch), and this bounds staleness to
+  // well under the drain's own poll cadence.
+  const EPOCH_CACHE_TTL_MS = 5000;
+  let epochCache: { epoch: number; at: number } | null = null;
+  const getCurrentEpochCached = async (): Promise<number> => {
+    const now = Date.now();
+    if (epochCache && now - epochCache.at < EPOCH_CACHE_TTL_MS) return epochCache.epoch;
+    const epoch = await deps.getCurrentEpoch();
+    epochCache = { epoch, at: now };
+    return epoch;
+  };
   return {
     async encryptOp(op: LocalWriteOp): Promise<{ epoch: number; value: unknown } | null> {
-      const epoch = await deps.getCurrentEpoch();
+      const epoch = await getCurrentEpochCached();
       // WI-2102: epoch 0 = the PRE-re-key BASELINE (hive-epoch-state.ts) — content
       // federates PLAINTEXT (today's path), exactly as the decrypt gate's
       // `op.epoch == null` passthrough expects. Without this bypass a never-rekeyed

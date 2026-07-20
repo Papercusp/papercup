@@ -1240,10 +1240,31 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   return wi;
 }
 
-/** The issue family's native Lifecycle states (the engineer_issues CHECK). */
-// Canonical lifecycle vocabulary (P-007) — widened to string[] for the
-// includes(string) call site below; values come from the one LIFECYCLE_STATES.
-export const ISSUE_FAMILY_STATES: readonly string[] = LIFECYCLE_STATES;
+/**
+ * The issue family's agent-settable lifecycle states — the validation allowlist in
+ * `normalizeWorkItemState`'s issue branch.
+ *
+ * work-item-status-full-unify (P-003 writer-flip): DECOUPLED from the generic 3-state
+ * pubsub `LIFECYCLE_STATES` (`open|resolved|closed`, a domain-free abstraction we must not
+ * repurpose). The issue family now STORES the UNIFIED work-item enum directly
+ * (open|wip|blocked|needs-human|done|dropped) — there is no engineer_issues status CHECK
+ * (work_items is the base table; the view maps status↔state verbatim), so the old
+ * "collapse everything to open|resolved|closed" is gone. Legacy `resolved`/`closed` stay
+ * as a TRANSITIONAL superset so a pre-flip row or an un-upgraded federated peer's value
+ * still validates; the cleanup pass drops them.
+ */
+export const ISSUE_FAMILY_STATES: readonly string[] = [
+  'open',
+  'wip',
+  'blocked',
+  'needs-human',
+  'done',
+  'dropped',
+  // legacy issue terminals (transitional — aliased to done/dropped on write, but still
+  // recognized so a pre-flip/federated value validates)
+  'resolved',
+  'closed',
+];
 
 /**
  * The cross-family TERMINAL/settled state set. The single source of truth for "this work_item
@@ -1281,27 +1302,29 @@ export function isSettledWorkItemState(state: string | null | undefined): boolea
  * the literal list (which would silently drift out of sync with this one).
  */
 export const ISSUE_STATE_ALIASES: Record<string, string> = {
-  done: 'resolved',
-  passed: 'resolved',
+  // work-item-status-full-unify (P-003 writer-flip): INVERTED. The issue family now STORES
+  // the UNIFIED enum, so the unified in-flight tokens (wip|blocked|needs-human) pass through
+  // as IDENTITY (no entry) instead of collapsing to `open`. Only legacy/drift spellings map:
+  //   • legacy issue terminals → unified terminals (resolved→done, closed→dropped);
+  //   • the feature-terminal spellings a mis-targeted caller might pass → unified;
+  //   • legacy `todo` → the single claimable token `open`;
+  //   • separator/case drift for the in-flight tokens → their unified canonical form.
+  // The resolved↔done / closed↔dropped nuance is preserved in work_items.terminal_reason
+  // (stamped by setWorkItemState). EI-450 (the old 3-state CHECK refusal) no longer applies:
+  // there is no engineer_issues status CHECK, so blocked/needs-human/wip store directly.
+  resolved: 'done',
+  closed: 'dropped',
+  passed: 'done',
+  deprecated: 'dropped',
   todo: 'open',
-  dropped: 'closed',
-  deprecated: 'closed',
-  // The "active / in-flight" canonical lifecycle dialect (CLAUDE.md + the
-  // coord-lifecycle docs tell agents to set work-items in_progress/blocked/
-  // needs-human) collapses to the issue family's single not-yet-settled state
-  // `open` — the 3-state engineer_issues CHECK has no native in_flight state,
-  // so these would otherwise throw the structural refusal (EI-450).
-  in_progress: 'open',
-  'in-progress': 'open',
-  inprogress: 'open',
-  'in progress': 'open',
-  wip: 'open',
-  blocked: 'open',
-  'needs-human': 'open',
-  needs_human: 'open',
-  needshuman: 'open',
-  'needs human': 'open',
-  'need-human': 'open',
+  in_progress: 'wip',
+  'in-progress': 'wip',
+  inprogress: 'wip',
+  'in progress': 'wip',
+  needs_human: 'needs-human',
+  needshuman: 'needs-human',
+  'needs human': 'needs-human',
+  'need-human': 'needs-human',
 };
 
 /**
@@ -2409,8 +2432,10 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- ('<harness>#<feature_id>' for features, bare 'EI-<n>' for issues — featureRef /
     -- issues:link), in the single coordination workspace ('default'). A blocker is
     -- SATISFIED iff TERMINAL or ABSENT; we exclude the row only when a present blocker is
-    -- non-terminal — feature terminal = status IN ('passed','deprecated'); issue terminal =
-    -- state IN ('resolved','closed') (the cross-family set, ALL_TERMINAL_STATUSES). An
+    -- non-terminal — feature terminal = status IN ('passed','deprecated','done','dropped');
+    -- issue terminal = state IN ('resolved','closed','done','dropped') (the cross-family set,
+    -- transitional legacy∪unified per work-item-status-full-unify — narrow to done/dropped at
+    -- cleanup). An
     -- absent blocker ref (no matching feature/issue row) never blocks.
     --
     -- P-005 maintained-readiness cutover (SCHEDULER_MAINTAINED_READY): when ON, the SAME predicate
@@ -2438,13 +2463,13 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
            EXISTS (
              SELECT 1 FROM harness_shared.harness_features_consolidated bf
               WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                AND bf.status NOT IN ('passed', 'deprecated')
+                AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
            )
            OR EXISTS (
              SELECT 1 FROM harness_shared.engineer_issues bi
               WHERE bi.workspace_id = 'default'
                 AND bi.issue_id = d.blocker_ref
-                AND bi.state NOT IN ('resolved', 'closed')
+                AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
            )
          )
     )`
@@ -3207,13 +3232,13 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
                   EXISTS (
                     SELECT 1 FROM harness_shared.harness_features_consolidated bf
                      WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                       AND bf.status NOT IN ('passed', 'deprecated')
+                       AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
                   )
                   OR EXISTS (
                     SELECT 1 FROM harness_shared.engineer_issues bi
                      WHERE bi.workspace_id = 'default'
                        AND bi.issue_id = d.blocker_ref
-                       AND bi.state NOT IN ('resolved', 'closed')
+                       AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
                   )
                 )
          )
@@ -3508,13 +3533,13 @@ export async function claimNextIssueWorkItem(
                    EXISTS (
                      SELECT 1 FROM harness_shared.harness_features_consolidated bf
                       WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                        AND bf.status NOT IN ('passed', 'deprecated')
+                        AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
                    )
                    OR EXISTS (
                      SELECT 1 FROM harness_shared.engineer_issues bi
                       WHERE bi.workspace_id = 'default'
                         AND bi.issue_id = d.blocker_ref
-                        AND bi.state NOT IN ('resolved', 'closed')
+                        AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
                    )
                  )
           )

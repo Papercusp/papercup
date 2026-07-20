@@ -15,7 +15,7 @@
  * as `buildPrompt({ mugBrief })`, which places it in the volatile tail as a
  * `<system-reminder>` (never the cacheable preamble — D-001).
  */
-import { surveyPot, type ScopeFilter } from './survey';
+import { surveyPot, resolvePotMembership, type ScopeFilter } from './survey';
 import { getPotCarryJournal } from './wake';
 import { summarizeOpenPlacements, resolveMugOwner } from './placement-watchdog';
 import { listEscalations } from '../agent-tools/coordination/escalations';
@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { renderMugBrief, floorFromSurvey, type BriefEscalation, type BriefCup, type BriefInboxItem, type BriefCapacity } from './mug-brief';
 import { overwatchAliveForQueen } from '../overwatch/cross-monitor';
+import { potHomeSlugForHarness } from '../hive-federation';
 import { getOwnerSteering, isPausedNow, hasActiveThrottle, steeringModelSpecDrift, type OwnerSteering } from '../owner-steering';
 import { fetchGatewayHeadroom } from '../inference-gateway/observability';
 import { buildCapacityReport } from '../fleet/capacity-dispatch';
@@ -61,11 +62,21 @@ async function gatherCapacity(): Promise<BriefCapacity | undefined> {
 }
 
 /** Live pot cups → the floor's cup load + liveness (warm-inject-vs-spawn signal).
- *  gatherLiveCups already excludes non-cups + joins load/liveness; fail-soft. */
-async function gatherCups(workspaceId: string): Promise<BriefCup[]> {
+ *  gatherLiveCups already excludes non-cups + joins load/liveness; fail-soft.
+ *
+ *  `hiveHarnesses` (EI-6176): gatherLiveCups reads WORKSPACE-WIDE (it has no
+ *  harness/hive concept of its own — every other caller, place_batch/
+ *  system-health, legitimately wants that). When THIS pot is Hive-federation
+ *  confined (see resolveMugScope's scopeHive), a sibling hive's cups (e.g. a
+ *  bee doing a DIFFERENT hive's work-item) must not leak into her brief the
+ *  way her direct tool calls to that hive are already rejected
+ *  (harness_forbidden) — so filter to the caller's own hive subtree when set;
+ *  `undefined` (not hive-confined) keeps today's unrestricted behaviour. */
+async function gatherCups(workspaceId: string, hiveHarnesses?: ReadonlySet<string>): Promise<BriefCup[]> {
   try {
     const cups = await gatherLiveCups(workspaceId);
-    return cups.map((b) => ({
+    const scoped = hiveHarnesses ? cups.filter((b) => !b.harness || hiveHarnesses.has(b.harness)) : cups;
+    return scoped.map((b) => ({
       id: b.label || b.ownerId,
       doing: b.intent || b.currentPlanSlug || b.doingHarness || null,
       load: b.load,
@@ -235,6 +246,47 @@ export async function computePotPlacementSplit(
 }
 
 /**
+ * EI-6176: when `installSlug` is itself a Hive-federation home (see
+ * hive-federation.ts `potHomeSlugForHarness`), the wake-brief's cross-pot
+ * additions (the "owner model 2026-07-01" extraSurveySlugs expansion below,
+ * and the live-cup gather) must stay confined to THAT SAME hive — a sibling
+ * hive's frontier/plans/bee-load are already tool-call-rejected for this
+ * session (`harness_forbidden`, P-014a, owner-ratified 2026-06-18), so
+ * silently including them in the PRECOMPUTED brief just wastes her
+ * round-trips discovering a boundary she can't act across anyway (the filed
+ * incident: an oddsmith-hive Queen's brief listed 12 papercusp-tagged
+ * frontier items + a papercusp bee, neither of which she could place/message
+ * once she tried). Non-hive deployments — the overwhelming majority;
+ * `potHomeSlugForHarness` returns `null` for a plain (non-federated) pot —
+ * are completely unaffected: `scopeHive` is `null` and every caller keeps
+ * today's full workspace-wide behaviour byte-for-byte.
+ */
+async function resolveHiveConfinement(
+  workspaceId: string,
+  installSlug: string,
+  candidateSlugs: readonly string[],
+): Promise<{ scopeHive: string | null; sameHiveSlugs: string[]; hiveHarnesses: Set<string> | undefined }> {
+  const scopeHive = await potHomeSlugForHarness(workspaceId, installSlug).catch(() => null);
+  if (!scopeHive) return { scopeHive: null, sameHiveSlugs: [...candidateSlugs], hiveHarnesses: undefined };
+  const homes = await Promise.all(
+    candidateSlugs.map((slug) => potHomeSlugForHarness(workspaceId, slug).catch(() => null)),
+  );
+  const sameHiveSlugs = candidateSlugs.filter((_, i) => homes[i] === scopeHive);
+  // The concrete harness set her OWN hive covers (home + declared registry
+  // members, per resolvePotMembership) UNIONED with the now-confined
+  // cross-pot slugs above — defaults to just the home when membership isn't
+  // wired (conservative: under-include rather than fall through to
+  // workspace-wide, mirroring the P-014a enforcement's own fail-closed bias).
+  const membership = await resolvePotMembership(workspaceId, scopeHive).catch(() => null);
+  const hiveHarnesses = new Set<string>([
+    scopeHive,
+    ...(membership && membership.surveySlugs.length > 0 ? membership.surveySlugs : []),
+    ...sameHiveSlugs,
+  ]);
+  return { scopeHive, sameHiveSlugs, hiveHarnesses };
+}
+
+/**
  * Resolve the Mug's steering + placement scope ONCE — the shared front half of
  * BOTH `computeMugWakeBrief` (the Mug's wake prompt) and
  * `computeMugBriefFloorView` (the sidebar's pot-status projection,
@@ -248,6 +300,8 @@ async function resolveMugScope(
   ownerSteering: OwnerSteering | undefined;
   scopeFilter: ScopeFilter | undefined;
   placementSplit: { started: string[]; stopped: string[] };
+  /** EI-6176: the caller's own hive's harness subtree, when hive-confined — undefined for a non-hive pot. */
+  hiveHarnesses: Set<string> | undefined;
 }> {
   // mug-steering-panel C-2 (P-003): read owner-steering ONCE up front (via the
   // B-02 gatherOwnerSteering normalizer — returns the ACTIVE steering, or undefined
@@ -262,9 +316,17 @@ async function resolveMugScope(
   // allow-list) so standalone / unhived / started work is never regressed.
   // Fail-open ([] on error). Independent of steering, so a Stop gates even when
   // no other steering is active.
-  const placementSplit = await computePotPlacementSplit(workspaceId).catch(
+  const rawPlacementSplit = await computePotPlacementSplit(workspaceId).catch(
     () => ({ started: [] as string[], stopped: [] as string[] }),
   );
+  // EI-6176: confine the cross-pot `started` expansion to the caller's own hive
+  // (a no-op for a non-hive pot — see resolveHiveConfinement).
+  const { sameHiveSlugs, hiveHarnesses } = await resolveHiveConfinement(
+    workspaceId,
+    installSlug,
+    rawPlacementSplit.started,
+  );
+  const placementSplit = { started: sameHiveSlugs, stopped: rawPlacementSplit.stopped };
   const stoppedHarnesses = placementSplit.stopped;
   const steeringActive = !!ownerSteering && (
     ownerSteering.pauseNewWork ||
@@ -288,7 +350,7 @@ async function resolveMugScope(
           ...(stoppedHarnesses.length > 0 ? { stoppedHarnesses } : {}),
         }
       : undefined;
-  return { ownerSteering, scopeFilter, placementSplit };
+  return { ownerSteering, scopeFilter, placementSplit, hiveHarnesses };
 }
 
 export async function computeMugWakeBrief(
@@ -297,7 +359,7 @@ export async function computeMugWakeBrief(
   opts: { wokeBy?: string } = {},
 ): Promise<string | null> {
   try {
-    const { ownerSteering, scopeFilter, placementSplit } = await resolveMugScope(
+    const { ownerSteering, scopeFilter, placementSplit, hiveHarnesses } = await resolveMugScope(
       workspaceId,
       installSlug,
     );
@@ -313,6 +375,9 @@ export async function computeMugWakeBrief(
         // extraSurveySlugs = the STARTED hives (owner model 2026-07-01): the
         // workspace Mug's survey covers EVERY started pot, not just the home
         // pot's membership — the start/stop popup is the scope control.
+        // EI-6176: placementSplit.started is already confined to the caller's
+        // own hive (resolveHiveConfinement, above) when hive-confined — a
+        // no-op list expansion for a non-hive pot.
         surveyPot(workspaceId, installSlug, {
           ...(scopeFilter ? { scopeFilter } : {}),
           ...(placementSplit.started.length > 0 ? { extraSurveySlugs: placementSplit.started } : {}),
@@ -321,7 +386,9 @@ export async function computeMugWakeBrief(
         summarizeOpenPlacements(workspaceId, installSlug),
         gatherEscalations(),
         gatherRecentChanges(),
-        gatherCups(workspaceId),
+        // EI-6176: scope live-cup gather to the caller's own hive subtree when
+        // confined — a sibling hive's bee-load must not leak into her floor.
+        gatherCups(workspaceId, hiveHarnesses),
         gatherInbox(workspaceId, installSlug),
         gatherOverwatchLiveness(workspaceId, installSlug),
         gatherCapacity(),
@@ -511,7 +578,7 @@ export async function computeMugBriefFloorView(
   workspaceId: string,
   installSlug: string,
 ): Promise<MugBriefFloorView> {
-  const { ownerSteering, scopeFilter, placementSplit } = await resolveMugScope(
+  const { ownerSteering, scopeFilter, placementSplit, hiveHarnesses } = await resolveMugScope(
     workspaceId,
     installSlug,
   );
@@ -521,7 +588,10 @@ export async function computeMugBriefFloorView(
       ...(scopeFilter ? { scopeFilter } : {}),
       ...(placementSplit.started.length > 0 ? { extraSurveySlugs: placementSplit.started } : {}),
     }).catch(() => empty as unknown as Awaited<ReturnType<typeof surveyPot>>),
-    gatherCups(workspaceId),
+    // EI-6176: scope live-cup gather to the caller's own hive subtree when
+    // confined — the sidebar shows the SAME filtered world the Mug is briefed
+    // with (this file's own stated contract), never a cross-hive leak.
+    gatherCups(workspaceId, hiveHarnesses),
     gatherEscalations(),
     summarizeOpenPlacements(workspaceId, installSlug),
     // WI-4778: the pot-health view renders her capacity + carry-note decision

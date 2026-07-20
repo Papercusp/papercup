@@ -59,8 +59,26 @@ interface SetResp {
 /** Roles whose persona a hive can override. Any already-overridden role outside this
  *  set is surfaced too (below), so nothing a hive set is ever hidden. */
 const ROLE_OPTIONS = ['su', 'mug', 'cup', 'overwatch', 'operator', 'kettle'] as const;
-/** Structured config sections. Only `scout` has a real schema today (D-005). */
-const CONFIG_SECTIONS = ['scout'] as const;
+/** Structured config sections (D-005 + learning-settings 2026-07-19):
+ *  `scout` = judgment tuning (lenses/buckets/routing/framing/models);
+ *  `cadence` = the FIRE knobs (threshold, heartbeat, floors — ScoutCadenceOptions);
+ *  `budget` = per-cycle spend. scout-cycle-action layers all three onto the
+ *  tick payload, so these settings are the live knobs. */
+const CONFIG_SECTIONS = ['scout', 'cadence', 'budget'] as const;
+
+const CADENCE_PLACEHOLDER = `{
+  "signalScoreThreshold": 25,
+  "maxIntervalSec": 3600,
+  "minIntervalSec": 3600,
+  "minVolumeIntervalSec": 900,
+  "frictionThreshold": 3
+}`;
+
+const BUDGET_PLACEHOLDER = `{
+  "maxCostUsd": 0.25,
+  "maxIdeators": 6,
+  "maxCriticsPerIdea": 2
+}`;
 
 const SCOUT_PLACEHOLDER = `{
   "lenses": ["analogical", "first-principles", "inversion"],
@@ -230,7 +248,15 @@ function ConfigOverrideEditor({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         spellCheck={false}
-        placeholder={section === 'scout' ? SCOUT_PLACEHOLDER : '{ }'}
+        placeholder={
+          section === 'scout'
+            ? SCOUT_PLACEHOLDER
+            : section === 'cadence'
+              ? CADENCE_PLACEHOLDER
+              : section === 'budget'
+                ? BUDGET_PLACEHOLDER
+                : '{ }'
+        }
         style={TEXTAREA_STYLE}
       />
       {parsed.error && draft.trim().length > 0 && (

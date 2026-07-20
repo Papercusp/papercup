@@ -94,34 +94,43 @@ export function makeScoutCycleAction(
     let payloadTemplate = ctx.payloadTemplate;
     try {
       const { getHiveLocalBlueprintConfig } = await import('../hive-settings-store');
-      let delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, ctx.installSlug, 'scout');
       // WORKSPACE-scoped scout (WORKSPACE_COORDINATION ON): ctx.installSlug is the
       // workspace SENTINEL — not a hive, so it has no hive_settings row and a per-hive
-      // scout override could NEVER apply (the owner's gpt-5.4 model config sat unread
+      // override could NEVER apply (the owner's gpt-5.4 model config sat unread
       // on the home hive while scout ran engine defaults, 2026-07-01). Fall back to
       // the HOME hive's row — the same resolution the Queen's steering uses. Fail-soft
       // like the primary read.
-      if (delta == null) {
-        try {
-          const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
-            import('../pot/wake'),
-            import('../harness/operator-home-harness'),
-          ]);
-          const home = resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
-          if (home && home !== ctx.installSlug) {
-            delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, home, 'scout');
-          }
-        } catch {
-          /* home resolution unavailable → defaults, as before */
-        }
+      let home: string | null = null;
+      try {
+        const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
+          import('../pot/wake'),
+          import('../harness/operator-home-harness'),
+        ]);
+        home = resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+      } catch {
+        /* home resolution unavailable → defaults, as before */
       }
-      if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
-        const base = (payloadTemplate ?? {}) as Record<string, unknown>;
-        const baseScout =
-          base.scout && typeof base.scout === 'object' && !Array.isArray(base.scout)
-            ? (base.scout as Record<string, unknown>)
-            : {};
-        payloadTemplate = { ...base, scout: { ...baseScout, ...(delta as Record<string, unknown>) } };
+      // Settings-resident sections layered onto the routine payload (D-005 +
+      // learning-settings 2026-07-19): `scout` (judgment tuning), `cadence`
+      // (fire threshold / heartbeat / floors — ScoutCadenceOptions), `budget`
+      // (per-cycle spend). run.ts reads payload.cadence/budget/scout, so the
+      // owner's settings become the live knobs without touching the routine row.
+      for (const section of ['scout', 'cadence', 'budget'] as const) {
+        let delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, ctx.installSlug, section);
+        if (delta == null && home && home !== ctx.installSlug) {
+          delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, home, section);
+        }
+        if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+          const base = (payloadTemplate ?? {}) as Record<string, unknown>;
+          const baseSection =
+            base[section] && typeof base[section] === 'object' && !Array.isArray(base[section])
+              ? (base[section] as Record<string, unknown>)
+              : {};
+          payloadTemplate = {
+            ...base,
+            [section]: { ...baseSection, ...(delta as Record<string, unknown>) },
+          };
+        }
       }
     } catch {
       // hive_settings unavailable → use the routine payload as-is (behavior-neutral).

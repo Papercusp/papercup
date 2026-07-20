@@ -137,22 +137,27 @@ function spawnChildStartTimeoutMs(): number {
   return Number.isFinite(n) && n > 0 ? Math.max(1_000, Math.floor(n)) : DEFAULT_CHILD_START_TIMEOUT_MS;
 }
 
+/**
+ * EI-6476 root cause: this used to hand-roll a `harness_features_consolidated`-only
+ * UPDATE, which silently no-op'd for an ISSUE-family work-item (bug/change/task,
+ * `engineer_issues` — the family a `WI-`/`EI-` id is as likely to be as a feature).
+ * A fresh spawn placed onto a bug whose child never started (childStartTimer
+ * timeout, or the launch throwing before `childStarted`) would then keep that bug
+ * claimed by the dead spawn id with NO immediate release — "the spawn/claim path
+ * can create a holder that never becomes live, leaving the item orphaned" (the
+ * bug's own words) — until the separate `sweepStaleSpawnClaims` periodic backstop
+ * eventually caught up. `releaseWorkItem` is the ONE unified release (work-items.ts)
+ * that already dispatches correctly by family (issue → `releaseIssue`, feature →
+ * the equivalent SQL) and fires the `claim:released`/`work-item:claimable` wake —
+ * reuse it here instead of re-deriving a feature-only subset of it.
+ */
 async function releaseSpawnWorkItemClaim(
-  sql: Sql,
+  _sql: Sql,
   opts: { harness: string; workItemId: string | null | undefined; spawnId: string },
 ): Promise<void> {
   const workItemId = (opts.workItemId ?? '').trim();
   if (!workItemId) return;
-  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
-  await sql`
-    UPDATE harness_shared.harness_features_consolidated
-       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL,
-           status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
-           updated_ts = ${Date.now()}
-     WHERE harness_slug = ${opts.harness}
-       AND feature_id = ${workItemId}
-       AND taken_by = ${opts.spawnId}
-  `;
+  await releaseWorkItem(workItemId, { harness: opts.harness, expectedAssignee: opts.spawnId });
 }
 
 /**

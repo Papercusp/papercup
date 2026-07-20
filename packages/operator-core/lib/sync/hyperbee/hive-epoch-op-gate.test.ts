@@ -268,6 +268,59 @@ describe('encryptOp at the BASELINE epoch (WI-2102)', () => {
   });
 });
 
+// EI-6945: outbox-drain calls encryptOp() ONCE PER ROW (up to DEFAULT_DRAIN_BATCH=200
+// per pass) — getCurrentEpoch must not re-hit its (uncached, PG-backed in production)
+// source on every row, or the per-row epoch-encrypt stage pays a full round-trip per
+// row under load, which is exactly the substrate_outbox N+1 that grew the backlog
+// unbounded. A short TTL cache bounds this to ~1 read per TTL window regardless of
+// how many rows a pass (or several rapid passes) drains.
+describe('encryptOp epoch-read caching (EI-6945: substrate_outbox N+1)', () => {
+  it('calling encryptOp many times in quick succession reads getCurrentEpoch only once', async () => {
+    const getCurrentEpoch = vi.fn(async () => 3);
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      potId: HIVE,
+      getCurrentEpoch,
+    });
+    for (let i = 0; i < 200; i++) {
+      const enc = await cap.encryptOp(localOp({ hbKey: `F-${i}` }));
+      expect(enc!.epoch).toBe(3);
+    }
+    expect(getCurrentEpoch).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-reads getCurrentEpoch after the TTL window elapses (epoch changes are not stuck forever)', async () => {
+    let epoch = 3;
+    const getCurrentEpoch = vi.fn(async () => epoch);
+    const nowSpy = vi.spyOn(Date, 'now');
+    nowSpy.mockReturnValue(1_000_000);
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      potId: HIVE,
+      getCurrentEpoch,
+    });
+    const first = await cap.encryptOp(localOp());
+    expect(first!.epoch).toBe(3);
+
+    // Still within the TTL — cached, no re-read.
+    nowSpy.mockReturnValue(1_002_000);
+    const second = await cap.encryptOp(localOp());
+    expect(second!.epoch).toBe(3);
+    expect(getCurrentEpoch).toHaveBeenCalledTimes(1);
+
+    // Past the TTL AND the hive re-keyed — must observe the new epoch.
+    epoch = 4;
+    nowSpy.mockReturnValue(1_006_000);
+    const third = await cap.encryptOp(localOp());
+    expect(third!.epoch).toBe(4);
+    expect(getCurrentEpoch).toHaveBeenCalledTimes(2);
+
+    nowSpy.mockRestore();
+  });
+});
+
 describe('buildEpochKeyResolver (owner|member dispatch)', () => {
   it('OWNER with a bundled/federated provider key → uses it; NEVER mints (seed 57-drop fix)', async () => {
     const derive = vi.fn(async () => 'MINT' as unknown as EpochKey);

@@ -24,10 +24,10 @@ function evt(tool: string, data: unknown, ok = true): ToolInvocationEvent {
   };
 }
 
-function stamped(state: string, extra: Record<string, unknown> = {}) {
+function stamped(state: string, extra: Record<string, unknown> = {}, needsHuman = false) {
   return {
     ok: true,
-    workItem: { id: 'WI-9', state, payload: { plan_item: STAMP } },
+    workItem: { id: 'WI-9', state, payload: { plan_item: STAMP, ...(needsHuman ? { needsHuman: true } : {}) } },
     ...extra,
   };
 }
@@ -77,6 +77,17 @@ describe('reflectedStatus — work_item state → plan-item status', () => {
     expect(reflectedStatus('validating')).toBeNull();
     expect(reflectedStatus('failing')).toBeNull();
     expect(reflectedStatus(undefined)).toBeNull();
+  });
+
+  it('EI-6569: maps a parked work-item onto blocked/needs-human instead of falling through to null', () => {
+    // feature-family native 'blocked' state, no needsHuman flag.
+    expect(reflectedStatus('blocked')).toBe('blocked');
+    // feature-family native distinct 'needs-human' state.
+    expect(reflectedStatus('needs-human')).toBe('needs-human');
+    // issue-family needs-human ALIAS dialect: state collapses to 'blocked' +
+    // payload.needsHuman:true — the second arg disambiguates it from a plain park.
+    expect(reflectedStatus('blocked', true)).toBe('needs-human');
+    expect(reflectedStatus('blocked', false)).toBe('blocked');
   });
 });
 
@@ -147,6 +158,23 @@ describe('plan-item-reflect:set-state', () => {
   it('does NOT fire on an in-flight (unmapped) state', () => {
     const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
     expect(fires(rule, evt('work_items:set_state', stamped('validating')))).toBe(false);
+  });
+
+  it('EI-6569: fires on a park into blocked/needs-human instead of leaving the plan item stale', () => {
+    const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
+
+    const blocked = evt('work_items:set_state', stamped('blocked'));
+    expect(fires(rule, blocked)).toBe(true);
+    expect(renderArgs(rule, blocked)).toMatchObject({ item: 'P-007', status: 'blocked' });
+
+    const needsHumanState = evt('work_items:set_state', stamped('needs-human'));
+    expect(fires(rule, needsHumanState)).toBe(true);
+    expect(renderArgs(rule, needsHumanState)).toMatchObject({ item: 'P-007', status: 'needs-human' });
+
+    // issue-family alias dialect: state:'blocked' + payload.needsHuman:true.
+    const aliasedNeedsHuman = evt('work_items:set_state', stamped('blocked', {}, true));
+    expect(fires(rule, aliasedNeedsHuman)).toBe(true);
+    expect(renderArgs(rule, aliasedNeedsHuman)).toMatchObject({ item: 'P-007', status: 'needs-human' });
   });
 });
 

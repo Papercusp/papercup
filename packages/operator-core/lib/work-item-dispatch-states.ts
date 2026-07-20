@@ -81,17 +81,29 @@ export const FEATURE_FAMILY_STATES: readonly string[] = [
 ];
 
 /**
- * Cross-dialect + drift-variant aliases → canonical feature state. The canonical
- * lifecycle dialect (done/dropped/…) folds to the native vocabulary, AND known
- * separator/case typos (`in-progress`, `needs_human`) fold to canonical so a typo
- * lands in the RIGHT state instead of a non-dispatchable limbo (the GAP-5 harm).
- * Inputs are lower-cased before lookup, so case typos normalize too.
+ * Cross-dialect + drift-variant aliases → the UNIFIED work-item enum
+ * (open | wip | blocked | needs-human | done | dropped). The unified tokens pass
+ * through as identity (no entry needed); the legacy feature dialect + the pre-cutover
+ * phase spellings + known separator/case typos all fold onto unified, so a typo lands
+ * in the RIGHT state instead of a non-dispatchable limbo (the GAP-5 harm). Inputs are
+ * lower-cased before lookup, so case typos normalize too.
+ *
+ * work-item-status-full-unify (P-003 writer-flip): this map was INVERTED — the feature
+ * writer now STORES the unified enum, not the legacy feature vocabulary. `passed`→`done`,
+ * `deprecated`→`dropped`, `todo`/`failing`→`open`, `in_progress`/`validating`→`wip`.
+ * The passed↔done / deprecated↔dropped nuance is preserved in work_items.terminal_reason,
+ * stamped by the writer (setWorkItemState). Legacy tokens stay in FEATURE_FAMILY_STATES
+ * as a recognition superset (the DBOS pipeline still writes phase statuses via raw SQL,
+ * and readers must classify pre-flip rows) — only the WRITE mapping flips here.
  */
 export const FEATURE_STATE_ALIASES: Record<string, string> = {
-  // canonical lifecycle dialect → native feature vocabulary
-  done: 'passed', resolved: 'passed', dropped: 'deprecated', closed: 'deprecated', open: 'todo',
-  // known separator/case drift variants → canonical
-  'in-progress': 'in_progress', inprogress: 'in_progress', 'in progress': 'in_progress',
+  // legacy feature dialect + phase spellings → unified enum
+  todo: 'open', failing: 'open', in_progress: 'wip', validating: 'wip',
+  passed: 'done', deprecated: 'dropped',
+  // issue-dialect terminals a mis-targeted caller might pass → unified (defensive)
+  resolved: 'done', closed: 'dropped',
+  // known separator/case drift variants → unified
+  'in-progress': 'wip', inprogress: 'wip', 'in progress': 'wip',
   needs_human: 'needs-human', needshuman: 'needs-human', 'needs human': 'needs-human',
   'need-human': 'needs-human',
 };

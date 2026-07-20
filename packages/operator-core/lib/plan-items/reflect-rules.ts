@@ -16,8 +16,26 @@
  *   set_state passed | resolved | done           → done
  *   set_state deprecated | closed | dropped      → dropped
  *   set_state todo | open                        → todo   (reopened)
+ *   set_state needs-human                        → needs-human (feature-family native state)
+ *   set_state blocked                            → blocked, or needs-human when the item
+ *                                                    carries payload.needsHuman:true (the
+ *                                                    issue-family needs-human ALIAS dialect,
+ *                                                    which collapses onto `state:'blocked'` +
+ *                                                    a payload flag instead of a distinct state)
  *   release (drop the claim, state non-terminal) → todo   (back to the pool)
  *   validating / failing / wip / …               → no flip (still being worked)
+ *
+ * EI-6569: `blocked`/`needs-human` were MISSING from this mapping entirely (fell to
+ * the `default: no flip` case) — so a work-item parked at either state (the self-select
+ * exclusion dialects: the WI-2797 claim hold, or an owner-acceptance-only item no bee
+ * can ever complete) left its linked plan item's CACHED status stuck at whatever it was
+ * before parking (usually `todo`) forever. The Mug's plan survey counts a plan item's
+ * OWN stored status toward `openItems` (survey.ts `planToCandidate`) — never the linked
+ * work-item's real state — so a plan with a parked-but-never-reflected item kept reading
+ * as "has open placeable work" indefinitely, driving repeated Queen-wake false positives
+ * (survey re-surfacing an item no bee can ever actually place; live case: WI-1439 / plan
+ * `voice-unified-sentinel-pipeline-2026-07-01`#P-016, parked `blocked` on 2026-07-03 with
+ * its plan item stuck at `todo` for over two weeks).
  *
  * Registered on import (the plan_items tool barrel imports this module), same
  * pattern as coord-lifecycle/lifecycle-rules.ts.
@@ -29,7 +47,7 @@ import type { PlanItemStamp } from './convert';
 interface StampedWorkItem {
   id?: string;
   state?: string;
-  payload?: { plan_item?: PlanItemStamp } | null;
+  payload?: { plan_item?: PlanItemStamp; needsHuman?: boolean } | null;
 }
 
 interface FinishReceipt {
@@ -61,8 +79,15 @@ function workItemOf(e: ToolInvocationEvent): StampedWorkItem {
 
 const TERMINAL_STATES = new Set(['passed', 'resolved', 'closed', 'done', 'deprecated', 'dropped']);
 
-/** set_state's work-item state → the plan-item status to reflect (null = no flip). */
-export function reflectedStatus(state: string | undefined): 'done' | 'dropped' | 'todo' | null {
+/** set_state's work-item state (+ its `payload.needsHuman` flag, for the issue-family
+ *  alias dialect that collapses `needs-human` onto `state:'blocked'`) → the plan-item
+ *  status to reflect (null = no flip, still being worked). EI-6569: `blocked` and
+ *  `needs-human` are deliberately reflected too — a parked work-item's plan item must
+ *  stop reading as open/placeable (see the module header for the full rationale). */
+export function reflectedStatus(
+  state: string | undefined,
+  needsHuman?: boolean,
+): 'done' | 'dropped' | 'todo' | 'blocked' | 'needs-human' | null {
   switch (state) {
     case 'passed':
     case 'resolved':
@@ -75,6 +100,13 @@ export function reflectedStatus(state: string | undefined): 'done' | 'dropped' |
     case 'todo':
     case 'open':
       return 'todo';
+    // Feature-family carries `needs-human` as its own distinct native status (unlike
+    // the issue-family 3-state vocabulary, which has no room for it and instead aliases
+    // onto `blocked` + payload.needsHuman — see the `blocked` case below).
+    case 'needs-human':
+      return 'needs-human';
+    case 'blocked':
+      return needsHuman ? 'needs-human' : 'blocked';
     default:
       return null;
   }
@@ -121,15 +153,20 @@ registerReactionRule({
   source: 'plan-item-reflect',
 });
 
-/** SET_STATE → the mapped plan status (terminal-success → done, terminal-drop → dropped, reopen → todo). */
+/** SET_STATE → the mapped plan status (terminal-success → done, terminal-drop → dropped,
+ *  reopen → todo, park → blocked/needs-human — EI-6569). */
 registerReactionRule({
   id: 'plan-item-reflect:set-state',
   on: 'work_items:set_state',
-  when: (e) => stampOf(e) !== null && reflectedStatus(workItemOf(e).state) !== null,
+  when: (e) => {
+    const wi = workItemOf(e);
+    return stampOf(e) !== null && reflectedStatus(wi.state, wi.payload?.needsHuman === true) !== null;
+  },
   fire: 'plans:set-status',
   args: (e) => {
     const wi = workItemOf(e);
-    return setStatusArgs(e, reflectedStatus(wi.state)!, wi.state ?? 'state-changed');
+    const status = reflectedStatus(wi.state, wi.payload?.needsHuman === true)!;
+    return setStatusArgs(e, status, wi.state ?? 'state-changed');
   },
   onlyOnSuccess: true,
   source: 'plan-item-reflect',

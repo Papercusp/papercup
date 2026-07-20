@@ -632,13 +632,13 @@ export async function aggregateIssueClaimExclusions(
                  EXISTS (
                    SELECT 1 FROM harness_shared.harness_features_consolidated bf
                     WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                      AND bf.status NOT IN ('passed', 'deprecated')
+                      AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
                  )
                  OR EXISTS (
                    SELECT 1 FROM harness_shared.engineer_issues bi
                     WHERE bi.workspace_id = 'default'
                       AND bi.issue_id = d.blocker_ref
-                      AND bi.state NOT IN ('resolved', 'closed')
+                      AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
                  )
                )
         ))                                                                AS ok_no_blocker,

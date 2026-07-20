@@ -132,6 +132,34 @@ function loadVditorCss(): Promise<unknown> {
   return _vditorCssPromise;
 }
 
+// Warm the whole Vditor stack — the `vditor` JS chunk, its CSS chunk, and the
+// one-time Lute (Go→WASM) markdown-parser init that a `Vditor.preview()` call
+// triggers — AHEAD of first use, off the critical path. Measured (WI-5547): a
+// COLD first plan-popup open pays ~600ms of Lute init + first-parse on top of
+// the ~300–700ms React mount (~1.6s total, over the 1500ms desktop-perf
+// budget); a WARM open is ~430ms. Calling this on idle from a surface that is
+// about to render markdown (the Plans sidebar face) moves that cold cost off
+// the click. Idempotent + best-effort: a failure resets the memo so a later
+// call retries, and never surfaces (the real mount re-imports + shows its own
+// VditorUnavailable fallback). The throwaway preview renders into a DETACHED
+// node — no flash, no layout, no KaTeX/mermaid (minimal content) — but Lute's
+// WASM instance is process-global, so the real render reuses it.
+let _vditorPreloadPromise: Promise<void> | null = null;
+export function preloadVditor(): Promise<void> {
+  if (_vditorPreloadPromise) return _vditorPreloadPromise;
+  _vditorPreloadPromise = (async () => {
+    try {
+      await loadVditorCss();
+      const Vditor = (await import('vditor')).default;
+      const warm = document.createElement('div');
+      await Vditor.preview(warm, 'warm', { mode: 'dark', lang: 'en_US' } as never);
+    } catch {
+      _vditorPreloadPromise = null; // best-effort — allow a later retry
+    }
+  })();
+  return _vditorPreloadPromise;
+}
+
 export type MarkdownEditorMode = 'ir' | 'wysiwyg' | 'sv';
 type VditorOptions = NonNullable<ConstructorParameters<typeof import('vditor').default>[1]>;
 export type MarkdownEditorToolbar = NonNullable<VditorOptions['toolbar']>;

@@ -98,6 +98,12 @@ vi.mock('./spawn-reclaim', () => ({
 vi.mock('../events/await/engine', () => ({
   emitAwaitedEvent: vi.fn(async () => ({ ok: true, key: '', woken: 0, notified: [], msgId: null })),
 }));
+// EI-6476: releaseSpawnWorkItemClaim now delegates to the unified releaseWorkItem
+// (correctly dispatches feature vs issue family) instead of hand-rolling a
+// features-only UPDATE — mock it here so the timeout/never-started-child test
+// below asserts the call directly rather than needing a full work-items.ts
+// PG-backed read (getWorkItem) to succeed against this file's minimal sql fake.
+vi.mock('../work-items', () => ({ releaseWorkItem: vi.fn(async () => null) }));
 
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
@@ -109,6 +115,7 @@ import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import { reclaimOrphanedSpawns, recordSpawnPid } from './spawn-reclaim';
+import { releaseWorkItem } from '../work-items';
 import {
   spawnAgentInHarness,
   abortLocalSpawn,
@@ -292,18 +299,44 @@ describe('spawnAgentInHarness — happy path', () => {
         errorMessage: expect.stringContaining('timed out before child process start'),
       }));
 
-      const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
-      const releaseCall = sqlMock.mock.calls.find(
-        (c) => Array.isArray(c[0]) && (c[0] as string[]).join('').includes('UPDATE harness_shared.harness_features_consolidated'),
-      );
-      expect(releaseCall).toBeDefined();
-      expect(releaseCall).toContain('demo');
-      expect(releaseCall).toContain('WI-1');
-      expect(releaseCall).toContain(res.spawnId);
+      // EI-6476: the release now goes through the unified releaseWorkItem (which
+      // correctly dispatches feature vs issue family) instead of a hand-rolled
+      // features-only UPDATE — assert the delegated call directly.
+      expect(releaseWorkItem).toHaveBeenCalledWith('WI-1', {
+        harness: 'demo',
+        expectedAssignee: res.spawnId,
+      });
     } finally {
       vi.useRealTimers();
       vi.unstubAllEnvs();
     }
+  });
+
+  it('EI-6476: a launch that throws before the child ever starts releases the claim too (bug/issue-family item id)', async () => {
+    // The exact reported symptom: a fresh spawn reserved onto an ISSUE-family work
+    // item (EI-/WI- bug, not a feature) whose launch fails before childStarted —
+    // the spawn/claim path must not leave the item claimed by a holder that never
+    // went live. `featureId` here is an issue id on purpose — releaseWorkItem
+    // (unlike the old hand-rolled features-only UPDATE) dispatches correctly by
+    // family, so this same call-site now covers both.
+    vi.mocked(spawnInvokeOnceWithFallback).mockRejectedValue(new Error('spawn transport exploded'));
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1',
+      harness: 'demo',
+      role: 'cup',
+      featureId: 'EI-9',
+    });
+    expect(res.ok).toBe(true);
+    await flush();
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId,
+      status: 'failed',
+      errorMessage: 'spawn transport exploded',
+    }));
+    expect(releaseWorkItem).toHaveBeenCalledWith('EI-9', {
+      harness: 'demo',
+      expectedAssignee: res.spawnId,
+    });
   });
 
   it('a non-zero child exit finishes the row failed with the stderr tail', async () => {

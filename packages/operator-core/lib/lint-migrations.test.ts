@@ -15,6 +15,7 @@ import {
   stripSqlBodies,
   findRawTxControl,
   findUnguardedConstraintRename,
+  findUnguardedReslug,
   findLiteralTenantDefault,
   duplicateNumberGroups,
   unreservedNumbers,
@@ -224,6 +225,40 @@ describe('the real libs/papercusp/libs/db/sql/ directory (gate wiring)', () => {
  * it shipped 181/181 mis-tenanted agent_chats rows and reached the owner as a chat
  * panel spinning on "loading chat…" forever.
  */
+describe('findUnguardedReslug (the migration-631 crash-loop class)', () => {
+  const RESLUG = `UPDATE harness_shared.work_items SET harness_slug = 'papercusp'
+    WHERE harness_slug = 'operator:papercusp-workspace' AND item_kind IN ('change','task');`;
+
+  it('flags a straight work_items.harness_slug reslug UPDATE with no collision guard', () => {
+    // This is exactly what shipped as migration 631 v1 and crash-looped the seed.
+    const hits = findUnguardedReslug(RESLUG);
+    expect(hits.length).toBe(1);
+  });
+
+  it('accepts a reslug guarded by a dedup DELETE first (the 630/631 fix shape)', () => {
+    const guarded = `DELETE FROM harness_shared.work_items o
+        WHERE o.harness_slug = 'operator:papercusp-workspace'
+          AND EXISTS (SELECT 1 FROM harness_shared.work_items p
+                      WHERE p.harness_slug = 'papercusp' AND p.feature_id = o.feature_id);
+      ${RESLUG}`;
+    expect(findUnguardedReslug(guarded)).toEqual([]);
+  });
+
+  it('accepts a reslug guarded by NOT EXISTS on the UPDATE itself', () => {
+    const guarded = `UPDATE harness_shared.work_items AS src SET harness_slug = 'papercusp'
+        WHERE src.harness_slug = 'operator:papercusp-workspace'
+          AND NOT EXISTS (SELECT 1 FROM harness_shared.work_items dst
+                          WHERE dst.harness_slug = 'papercusp' AND dst.feature_id = src.feature_id);`;
+    expect(findUnguardedReslug(guarded)).toEqual([]);
+  });
+
+  it('does not flag a migration with no work_items reslug at all', () => {
+    expect(findUnguardedReslug('CREATE TABLE harness_shared.t (id text);\n')).toEqual([]);
+    // a reslug mentioned only in a comment is stripped → not flagged
+    expect(findUnguardedReslug("-- reslug work_items SET harness_slug='x' someday\n")).toEqual([]);
+  });
+});
+
 describe('findLiteralTenantDefault', () => {
   it('flags the exact DDL that caused WI-5125 (migration 116)', () => {
     // Verbatim shape from 116-consolidate-agent-chats.sql: the literal rides a

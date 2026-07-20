@@ -58,7 +58,7 @@ import {
 } from '../coordination/inbox-read-freshness';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 import { shapeFleetAssignments } from './assignments-shape';
-import { getPlanRow, planItemsForRow } from '../plans/source';
+import { getPlanRow, planItemsForRow, planSlugsForHarness } from '../plans/source';
 import { resolveEffectiveStatusForItems } from '../plans/effective-status';
 import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../../fleet-dag-view';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
@@ -709,10 +709,21 @@ export default defineTool({
               ].filter((s): s is string => typeof s === 'string' && s.length > 0),
             )
           : null;
+      // EI-6176: a passed `harness` filter narrowed EVERY other section of this
+      // read (rows/agents above are queried `WHERE harness_slug = args.harness`)
+      // but was silently ignored here — the coverage rollup returned every OTHER
+      // harness's plan-item coverage too (a hive-confined caller like
+      // `fleet:assignments { harness: 'oddsmith' }` saw a sibling hive's plan
+      // leak straight through, matching the harness_forbidden enforcement other
+      // tools already apply to a `harness` arg). Scope to the queried harness's
+      // OWN plans, ANDed with the plan/agent narrowing above (an explicit
+      // `{ plan }` still wins outright — it names one plan directly).
+      const harnessPlans: Set<string> | null = args.harness && !args.plan ? await planSlugsForHarness(workspaceId, args.harness) : null;
       const inScope = (ref: string): boolean => {
         const hash = ref.indexOf('#');
         const plan = hash > 0 ? ref.slice(0, hash) : null;
         if (args.plan) return plan === args.plan;
+        if (harnessPlans && (plan == null || !harnessPlans.has(plan))) return false;
         if (agentPlans) return plan != null && agentPlans.has(plan);
         return true;
       };

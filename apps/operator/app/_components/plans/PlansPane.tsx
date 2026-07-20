@@ -28,7 +28,7 @@
  * agent-driveable: `?plq` search, `?plf` show-finished, `?pplan` popup plan,
  * `?ppv` popup tab (see PlanPopupModal).
  */
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Archive, ClipboardList } from 'lucide-react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -37,6 +37,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { preloadVditor } from '@/app/_components/MarkdownEditor';
 import {
   bucketOf,
   setPlanArchived,
@@ -140,6 +141,18 @@ export default function PlansPane() {
   const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
   const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
   const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
+
+  // Warm the Vditor stack shortly after the Plans face mounts, so the first
+  // plan popup opens WARM (~430ms) instead of paying the ~600ms cold Lute/WASM
+  // init on the click (WI-5547 — the "several seconds to load a plan" report).
+  // A plain setTimeout (NOT requestIdleCallback — unreliable in the Tauri
+  // WebKitGTK webview) guarantees it fires; the 600ms delay yields the mount +
+  // initial list render before the warm work runs off the critical path.
+  useEffect(() => {
+    const t = window.setTimeout(() => void preloadVditor(), 600);
+    return () => window.clearTimeout(t);
+  }, []);
+
   // The input updates ?plq on every keystroke (instant), but the EXPENSIVE
   // consumer — buildGlanceRows re-filtering + re-rendering the whole (up to
   // ~500-row) unvirtualized list — reads this DEBOUNCED value, so typing stays

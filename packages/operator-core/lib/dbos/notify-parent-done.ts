@@ -84,7 +84,7 @@ export async function notifyParentOnDone(opts: {
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${opts.harnessSlug}
          AND feature_id  <> ${opts.featureId ?? ''}
-         AND status NOT IN ('passed', 'deprecated')
+         AND status NOT IN ('passed', 'deprecated', 'done', 'dropped')
     `;
     const remaining = remainRows[0]?.n ?? 0;
     if (remaining > 0) {

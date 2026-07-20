@@ -150,6 +150,29 @@ export function findUnguardedConstraintRename(sqlText) {
 }
 
 /**
+ * The migration-631 class: a re-slug UPDATE that assigns a literal to
+ * work_items.harness_slug WITHOUT a collision guard. On a shipped SEED that already
+ * has a row at the target slug for the same feature_id, a straight UPDATE dupes
+ * work_items_pkey and CRASH-LOOPS the packaged operator on first boot — the v0.0.12
+ * bug that was found only AFTER a ~45-minute build (a big slice of that release's
+ * 12h). Collision-safe = the file EITHER de-dups colliders first (a DELETE FROM
+ * work_items) OR guards the UPDATE with NOT EXISTS; migrations 630/631 do the
+ * dedup-DELETE. Returns the offending UPDATE snippet(s) ONLY when the file has a
+ * reslug UPDATE and no guard (so a guarded reslug — or a file with none — is clean).
+ */
+export function findUnguardedReslug(sqlText) {
+  const stripped = stripSqlBodies(sqlText);
+  const reslugRe =
+    /UPDATE\s+[\w".]*\bwork_items\b[\s\S]*?SET\b[\s\S]*?\bharness_slug\s*=\s*'[^']+'/gi;
+  const reslugs = stripped.match(reslugRe);
+  if (!reslugs) return [];
+  const hasDedupDelete = /DELETE\s+FROM\s+[\w".]*\bwork_items\b/i.test(stripped);
+  const guardedUpdate = /NOT\s+EXISTS/i.test(stripped);
+  if (hasDedupDelete || guardedUpdate) return [];
+  return reslugs.map((s) => s.replace(/\s+/g, ' ').slice(0, 70));
+}
+
+/**
  * Flag a LITERAL default on a tenant-scoping column — the WI-5125 class.
  *
  * Seven consolidation migrations (116/118/119/120/170) each ended with:
@@ -316,7 +339,19 @@ async function main() {
     );
   }
 
-  // 5. unreserved numbers (PG optional)
+  // 5. unguarded work_items harness_slug re-slug (the migration-631 crash-loop class)
+  for (const f of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    if (num < ENFORCED_FROM) continue; // applied history: immutable, already ran
+    const hits = findUnguardedReslug(readFileSync(join(SQL_DIR, f), 'utf8'));
+    if (!hits.length) continue;
+    failed = true;
+    console.error(
+      `✗ ${f}: work_items.harness_slug re-slug UPDATE with no collision guard (${hits.join(' · ')}) — on a shipped seed that already has a row at the target slug for the same feature_id this dupes work_items_pkey and CRASH-LOOPS the packaged operator on first boot (the v0.0.12 migration-631 bug, caught only after a ~45-min build). De-dup colliders first with a DELETE FROM harness_shared.work_items (mirror 630/631), or guard the UPDATE with "AND NOT EXISTS (SELECT 1 … row already at the target slug …)".`,
+    );
+  }
+
+  // 6. unreserved numbers (PG optional)
   const fileNums = files
     .map((f) => /^(\d+)-/.exec(f)?.[1])
     .filter(Boolean)
@@ -333,7 +368,7 @@ async function main() {
   }
 
   if (failed) process.exit(1);
-  console.log(`✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, reservations≥${ENFORCED_FROM})`);
+  console.log(`✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, reservations≥${ENFORCED_FROM})`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

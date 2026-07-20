@@ -14,9 +14,14 @@
  * active=false and keeps the cron. Everything else takes effect on the next
  * routine tick with no restart.
  *
- * `auth: 'public'` — same single-user-install semantics as the sibling
- * /user/memory endpoints (the desktop webview typically carries no session
- * cookie; a strict 401 would blank the settings section).
+ * Auth tier (auth-tier Wave 1, standing gate): GET is `auth: 'public'` — same
+ * single-user-install semantics as the sibling /user/memory GET (the desktop
+ * webview typically carries no session cookie; a strict 401 would blank the
+ * settings section). POST is `auth: 'loopback'`, matching the sibling
+ * /user/memory MUTATING routes (POST/PUT/DELETE) — a mutating route stays
+ * loopback-or-better unless the owner has explicitly ratified it as a named
+ * remote exception (apps/operator/docs/auth-tier-rollout-2026-06-10.md); this
+ * route doesn't need remote-mutate reachability, so it takes the default.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import {
@@ -55,7 +60,7 @@ const get = defineTool({
 const set = defineTool({
   method: 'POST',
   path: '/user/knowledge-pack-settings',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: unknown;
     try {

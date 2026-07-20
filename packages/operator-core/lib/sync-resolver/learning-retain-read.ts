@@ -53,8 +53,24 @@ export interface RetainRecipe {
   lastRunAt: string | null;
 }
 
+/** An idea whose routed artifact REACHED an outcome — a resolved/closed work
+ *  item or an adopted (non-draft) plan. The idea→work→done chain, banked
+ *  (owner ask 2026-07-19: idea-derived shipped outcomes must be visible in
+ *  Retain, not just implied by lens weights). */
+export interface RetainShippedIdea {
+  ideaId: string;
+  title: string | null;
+  rail: string;
+  routedRef: string;
+  /** engineer_issues.state (resolved/closed) or the plan's lifecycle status. */
+  outcome: string;
+  completedAt: string | null;
+}
+
 export interface RetainExtrasSnapshot {
   banked: RetainBankedCounts;
+  /** Idea-derived artifacts that reached an outcome, newest first. */
+  shippedFromIdeas: RetainShippedIdea[];
   /** null when none recorded yet (or the read degraded). */
   lensWeights: Record<string, number> | null;
   rubricChanges: RetainRubricChange[];
@@ -171,6 +187,48 @@ export async function readRetainExtras(
     console.warn('[learning.retain] plans-count read failed:', err instanceof Error ? err.message : err);
   }
 
+  // Idea-derived outcomes (owner ask 2026-07-19): routed ideas whose artifact
+  // REACHED an end state — wi: refs resolved/closed, plan: refs past draft.
+  // Workspace-scoped joins (multi-tenant tables); newest outcome first.
+  let shippedFromIdeas: RetainShippedIdea[] = [];
+  try {
+    const rows = (await sql`
+      SELECT DISTINCT ON (r.idea_id)
+             r.idea_id, r.title, r.rail, r.routed_ref,
+             COALESCE(ei.state, hp.status) AS outcome,
+             COALESCE(ei.updated_at, hp.updated_at)::text AS completed_at
+        FROM harness_shared.scout_routed_ideas r
+        LEFT JOIN harness_shared.engineer_issues ei
+          ON ei.workspace_id = r.workspace_id
+         AND r.routed_ref LIKE 'wi:%'
+         AND ei.issue_id = substring(r.routed_ref from 4)
+        LEFT JOIN harness_shared.harness_plans hp
+          ON hp.workspace_id = r.workspace_id
+         AND r.routed_ref LIKE 'plan:%'
+         AND hp.plan_slug = substring(r.routed_ref from 6)
+       WHERE r.workspace_id = ${workspaceId}
+         AND (
+           ei.state IN ('resolved', 'closed')
+           OR (hp.status IS NOT NULL AND hp.status NOT IN ('draft', 'superseded'))
+         )
+       ORDER BY r.idea_id, COALESCE(ei.updated_at, hp.updated_at) DESC NULLS LAST
+    `) as Array<Record<string, unknown>>;
+    shippedFromIdeas = rows
+      .map((r) => ({
+        ideaId: String(r.idea_id ?? ''),
+        title: typeof r.title === 'string' && r.title ? r.title : null,
+        rail: String(r.rail ?? ''),
+        routedRef: String(r.routed_ref ?? ''),
+        outcome: String(r.outcome ?? ''),
+        completedAt: typeof r.completed_at === 'string' ? r.completed_at : null,
+      }))
+      .filter((r) => r.ideaId)
+      .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? ''))
+      .slice(0, SECTION_CAP);
+  } catch (err) {
+    console.warn('[learning.retain] shipped-from-ideas read failed:', err instanceof Error ? err.message : err);
+  }
+
   let lensWeights: Record<string, number> | null = null;
   try {
     const weights = await deps.readLensWeights();
@@ -208,6 +266,7 @@ export async function readRetainExtras(
 
   return {
     banked: { improvementsFiled7d, plansDrafted7d },
+    shippedFromIdeas,
     lensWeights,
     rubricChanges,
     insightDocs,
