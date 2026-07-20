@@ -1949,7 +1949,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       ]);
       // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
       // envelope) so the UI shows "N of TOTAL" instead of the capped length.
-      return attachListMeta(rows, { total }) as unknown[];
+      // P-006: drop the heavy per-row `summary` (avg ~694 chars, the dominant
+      // remaining field in the 3.79MB payload) at the SYNC boundary only — the
+      // grid never renders/filters/searches it; DetailPanel fetches the selected
+      // row's full detail on demand via workItems.detail. The /api HTTP route
+      // (pui TUI) keeps the full row.
+      const { projectWorkItemsListForUi } = await import('./work-items-ui-projection');
+      return projectWorkItemsListForUi(attachListMeta(rows, { total }));
+    },
+  },
+
+  // workItems.detail — the single-item ON-DEMAND detail read (P-006). The Detail
+  // pane fetches ONE enriched row (with the full `summary` + payload/completion
+  // blobs the list strips) when a WI is selected, instead of the whole harness
+  // carrying every row's summary in workItems.byHarness. Always a 1-element array
+  // (or [] when the id isn't in this harness). Invalidated via the same work_items
+  // table bridge as byHarness.
+  'workItems.detail': {
+    argsSchema: z.object({ harnessSlug: z.string(), id: z.string().min(1) }),
+    resolve: async (args) => {
+      const { harnessSlug, id } = args as { harnessSlug: string; id: string };
+      const { getEnrichedWorkItem } = await import('../endpoint-route/routes/harness/work-items');
+      const item = await getEnrichedWorkItem(harnessSlug, id);
+      return item ? [item] : [];
     },
   },
 

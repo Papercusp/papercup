@@ -211,9 +211,27 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     enabled: Boolean(slug) && kind === 'workItem',
   });
   const workItemRows = workItemsQuery.loading ? null : workItemsQuery.data;
+  // P-006: the grid's byHarness rows no longer carry the heavy per-row `summary`
+  // (dropped at the sync boundary — the grid never renders it). Fetch the selected
+  // item's FULL detail on demand (its own tiny 1-row query, not a fork of the
+  // grid's key), so the prose block shows the full summary. Enabled only while a
+  // WI is actually selected.
+  const workItemDetailQuery = useSyncQuery<WorkItemRow>({
+    queryName: 'workItems.detail',
+    args: { harnessSlug: slug, id: selectedId },
+    enabled: Boolean(slug) && kind === 'workItem' && Boolean(selectedId),
+  });
+  const workItemDetailRow = workItemDetailQuery.loading ? null : (workItemDetailQuery.data?.[0] ?? null);
   const workItem = useMemo(
-    () => (kind === 'workItem' ? (workItemRows ?? []).find((w) => w.id === selectedId) ?? null : null),
-    [kind, workItemRows, selectedId],
+    () => {
+      if (kind !== 'workItem') return null;
+      // Prefer the full detail row (carries summary); fall back to the already-
+      // loaded grid row for the light fields while the detail request is in flight.
+      const gridRow = (workItemRows ?? []).find((w) => w.id === selectedId) ?? null;
+      if (workItemDetailRow && workItemDetailRow.id === selectedId) return workItemDetailRow;
+      return gridRow;
+    },
+    [kind, workItemRows, workItemDetailRow, selectedId],
   );
   // agent:* resolves against the same `fleetAssignments.byHarness` sync query
   // the Agents panel's Working view reads (one projection, identical rows).

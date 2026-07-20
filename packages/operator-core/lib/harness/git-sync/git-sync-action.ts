@@ -1538,8 +1538,10 @@ async function resolveHiveGitTopicHex(
  * the peer's store later comes into existence (e.g. it runs its own
  * bootstrap and gains the repo). In-memory, per-process: resets harmlessly
  * on restart (one extra dial next tick costs nothing), keyed by
- * `${slug}:${peerDevicePubkeyBase64}` since a dial always addresses
- * `repoKey: slug` (see the openHiveGitDuplexToDevice call below).
+ * `${repoKey}:${peerDevicePubkeyBase64}` where `repoKey` is the FEDERATED
+ * cross-device repo identity (WI-5168, repo-identity.ts's `canonicalRepoKey`
+ * — NOT the local install slug, which can differ per device for the same
+ * repo; see the openHiveGitDuplexToDevice call below).
  */
 const NO_SUCH_REPO_BACKOFF_MS = 30 * 60 * 1000; // 30 min ≈ 6 ticks at the ~5-min cadence
 const noSuchRepoBackoffUntil = new Map<string, number>();
@@ -1749,9 +1751,10 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
  * `worktree_bridge` key and P-203's `integrator` key, so the three legs never
  * clobber each other's watermark).
  *
- * TWO SUB-LEGS, same repo (`hiveGitRepoPath(potHomeSlug, slug)` — one bare
+ * TWO SUB-LEGS, same repo (`hiveGitRepoPath(potHomeSlug, repoKey)` — one bare
  * store per (hive, repo) key holding every member's namespace, exactly like
- * the integrator/worktree-bridge legs read/write):
+ * the integrator/worktree-bridge legs read/write; `repoKey` is the FEDERATED
+ * cross-device identity, WI-5168 / repo-identity.ts — never the local slug):
  *   1. PUBLISH — `runRefAnnouncePublishTick`: no-ops unless this device's own
  *      namespace advanced since its last sigrefs snapshot; on advance, emits
  *      the signed announcement hive-wide (local `emitAwaitedEvent` +

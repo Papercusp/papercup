@@ -136,6 +136,25 @@ export async function listEnrichedWorkItems(opts: {
   return mergeWorkItemDimensions(workItems, planMap, spineMap).map(slimListRow);
 }
 
+/**
+ * The single-item ENRICHED read (whole-app-sync-payload-audit phase2 P-006) — one
+ * work item with the same v2 dimensions the list carries, but NOT slimmed: the
+ * detail view shows the full `summary` (which the list drops) plus the `payload` /
+ * completion blobs the list nulls. Backs the `workItems.detail` sync query so the
+ * Detail pane fetches one row on demand instead of the whole harness carrying
+ * every row's summary. Returns null when the id isn't found in this harness.
+ */
+export async function getEnrichedWorkItem(harness: string, id: string): Promise<EnrichedWorkItem | null> {
+  const { getWorkItem } = await import('../../../work-items');
+  const wi = await getWorkItem(id, harness);
+  if (!wi) return null;
+  const featureIds = wi.family === 'feature' ? [wi.id] : [];
+  const { planMap, spineMap } = await fetchDimensionMaps(harness, featureIds);
+  // NO slimListRow: the detail view is exactly the on-demand consumer of the full
+  // summary + payload + completion refs the list strips.
+  return mergeWorkItemDimensions([wi], planMap, spineMap)[0] ?? null;
+}
+
 const getWorkItems = defineTool({
   method: 'GET',
   path: '/harness/:slug/work-items',

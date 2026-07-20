@@ -260,6 +260,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // to any member busts the whole hive rollup (the rollup is hive-grained).
     'featuresConsolidated.byHive',
     'workItems.byHarness',
+    // P-006: the single-item on-demand detail read — bridged wherever byHarness is
+    // so an open Detail pane live-refreshes on the same writes (state, blockers,
+    // spine, plan-link) that move the list row.
+    'workItems.detail',
     // The Overview stats tile's kind × state aggregate (WI-5517) — any work-item
     // write can move a count cell.
     'workItems.stats',
@@ -284,6 +288,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'featuresConsolidated.byPlanSlug',
     'featuresConsolidated.byHive',
     'workItems.byHarness',
+    // P-006: the single-item on-demand detail read — bridged wherever byHarness is
+    // so an open Detail pane live-refreshes on the same writes (state, blockers,
+    // spine, plan-link) that move the list row.
+    'workItems.detail',
     'workItems.stats',
     'contributors.byHarness',
     'featureTimeline.byFeature',
@@ -296,7 +304,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   // engineer_issues = the issue-family compat view over work_items (post-374; the base
   // table is the real producer above).
-  'harness_shared.engineer_issues': ['workItems.byHarness', 'workItems.stats'],
+  'harness_shared.engineer_issues': ['workItems.byHarness', 'workItems.detail', 'workItems.stats'],
   // coord_links = the rel='blocks' feature/work-item blocking edge table (EI-1/D-027,
   // the single source of truth for blocking) + the rel='implements' plan↔work-item
   // ledger edges. A blocks-edge add/remove is the single most important
@@ -309,6 +317,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // bus-deduped at coord_links's low write rate (~30/hr).
   'harness_shared.coord_links': [
     'workItems.byHarness',
+    // P-006: the single-item on-demand detail read — bridged wherever byHarness is
+    // so an open Detail pane live-refreshes on the same writes (state, blockers,
+    // spine, plan-link) that move the list row.
+    'workItems.detail',
     'conversations.questionsList',
     'conversations.questionDetail',
   ],
@@ -326,6 +338,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'agentRunsConsolidated.bySlug',
     'agentRunsConsolidated.recent',
     'workItems.byHarness',
+    // P-006: the single-item on-demand detail read — bridged wherever byHarness is
+    // so an open Detail pane live-refreshes on the same writes (state, blockers,
+    // spine, plan-link) that move the list row.
+    'workItems.detail',
     'fleetAssignments.byHarness',
     'advRoster.list',
     // sidebar.fleetCups reads the SAME fleet_assignment view as

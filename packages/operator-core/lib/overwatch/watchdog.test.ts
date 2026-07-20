@@ -19,10 +19,12 @@ const setOverwatchStarted = vi.fn();
 // consumes the DE-DUPED supervisor set (listStartedWorkspaceOverwatches), the exact
 // mirror of the Queen watchdog consuming listStartedWorkspaceLoops.
 const listStartedWorkspaceOverwatches = vi.fn();
+const getOverwatchCadenceSec = vi.fn();
 vi.mock('./control-state', () => ({
   getOverwatchStarted: (...a: unknown[]) => getOverwatchStarted(...a),
   setOverwatchStarted: (...a: unknown[]) => setOverwatchStarted(...a),
   listStartedWorkspaceOverwatches: (...a: unknown[]) => listStartedWorkspaceOverwatches(...a),
+  getOverwatchCadenceSec: (...a: unknown[]) => getOverwatchCadenceSec(...a),
 }));
 
 const declareOverwatchTimeWake = vi.fn();
@@ -77,6 +79,7 @@ beforeEach(() => {
   midTurnRows = [];
   getFlag.mockResolvedValue(true); // flag ON by default in tests
   getOverwatchStarted.mockResolvedValue(true);
+  getOverwatchCadenceSec.mockResolvedValue(600); // DEFAULT_OVERWATCH_CADENCE_SEC
   listStartedWorkspaceOverwatches.mockResolvedValue([{ workspaceId: WS, installSlug: SLUG }]);
   isRegisteredHive.mockResolvedValue(true);
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
@@ -218,6 +221,52 @@ describe('overwatchWatchdogSweep (every condition gates)', () => {
     const res = await overwatchWatchdogSweep({ now: NOW });
     expect(res).toHaveLength(1);
     expect(res[0].outcome).toBe('armed');
+  });
+
+  it('WI-3777: one guarded item throwing does not block or hide its siblings', async () => {
+    listStartedWorkspaceOverwatches.mockResolvedValue([
+      { workspaceId: WS, installSlug: 'h-throws' },
+      { workspaceId: WS, installSlug: 'h-fine' },
+    ]);
+    // overwatchLivenessCheck is NOT internally guarded (unlike isRegisteredHive /
+    // overwatchMidTurn / armFallbackOverwatchWake) — before WI-3777's per-item
+    // isolation, a throw HERE escaped the whole for-loop and starved every
+    // later guarded item in the same tick. That is exactly what this pins.
+    overwatchLivenessCheck.mockImplementation(async (_sql: unknown, slug: string) => {
+      if (slug === 'h-throws') throw new Error('liveness read boom');
+      return { armed: false, nextFireAt: null, lastFiredAt: new Date(NOW - (overwatchWatchdogStaleSec() + 60) * 1_000), staleForMs: (overwatchWatchdogStaleSec() + 60) * 1_000 };
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await overwatchWatchdogSweep({ now: NOW });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('h-throws'));
+    errSpy.mockRestore();
+    // both items produce a result — the throw is caught+recorded, not swallowed,
+    // and the SECOND item still gets processed (no starvation of siblings).
+    expect(res).toHaveLength(2);
+    expect(res.find((r) => r.outcome === 'error')?.reason).toContain('h-throws');
+    expect(res.find((r) => r.outcome === 'armed')).toBeTruthy();
+  });
+
+  it('WI-3777: a routine single-cadence recovery does not alarm the owner', async () => {
+    stale(); // just over the 15-min tick-sweep threshold, nowhere near a long outage
+    const res = await overwatchWatchdogSweep({ now: NOW });
+    expect(res).toHaveLength(1);
+    expect(res[0].outcome).toBe('armed');
+    // no wake to an owner recorded via inbox-wake's underlying fire path — the
+    // long-stale alert path only escalates far beyond the routine tick threshold.
+  });
+
+  it('WI-3777: a PROLONGED, previously-invisible outage past the alarm threshold still just arms (alert best-effort, arm unconditional)', async () => {
+    overwatchLivenessCheck.mockResolvedValue({
+      armed: false,
+      nextFireAt: null,
+      lastFiredAt: new Date(NOW - 10 * 3600 * 1_000),
+      staleForMs: 10 * 3600 * 1_000, // 10h — far past any cadence-based alarm floor
+    });
+    const res = await overwatchWatchdogSweep({ now: NOW });
+    expect(res).toHaveLength(1);
+    expect(res[0].outcome).toBe('armed');
+    expect(fires).toHaveLength(1); // the arm itself still recorded normally
   });
 });
 
