@@ -1,15 +1,15 @@
 /**
  * Startup validation for the operator-home harness (EI-2224 recurrence guard).
- * 
- * Fail-loud assertion: the configured home harness slug MUST resolve to a 
- * registered project. This catches slug mismatches early (e.g. fire-paths 
- * targeting an unregistered harness after a slug migration) instead of 
+ *
+ * Fail-loud assertion: the configured home harness slug MUST resolve to a
+ * registered project. This catches slug mismatches early (e.g. fire-paths
+ * targeting an unregistered harness after a slug migration) instead of
  * silently 404ing during dispatch and going dark.
  *
  * Called at operator boot by src/server.ts before any business logic.
  */
 
-import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { HOME_HARNESS_ENV, operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { resolveProject } from '../harness-core';
 import { activeWorkspaceId } from '../workspace-registry';
 import { loadHarnessRegistry } from '../harness-registry';
@@ -24,6 +24,24 @@ import { loadHarnessRegistry } from '../harness-registry';
  * Call this ONCE at operator startup, before any fire-paths fire.
  */
 export async function validateHomeHarnessResolution(): Promise<void> {
+  // EI-18189651437540304: a hermetic/no-home-hive operator instance (the gym's
+  // spawned gym-operator, boot-spec.ts) intentionally sets PAPERCUSP_POT_HOME_SLUG
+  // to the EMPTY STRING to declare "this instance has no home hive at all" — the
+  // same semantic `resolvePotHomeSlug()` (pot/wake.ts) already honors (blank ⇒
+  // null, no fallback). But `operatorHomeHarnessSlug()` cannot express that: by
+  // design (papercup→papercusp generalization) it treats "unset" and "explicitly
+  // blanked" identically and falls back to LEGACY_DEFAULT_HOME_HARNESS
+  // ('papercusp') either way — so a deliberately-blanked hermetic instance still
+  // validates against 'papercusp', which of course isn't registered in its own
+  // isolated workspace, and this fires every time. Distinguish the two cases HERE
+  // (not in the shared resolver, which ~70 other call sites rely on always
+  // returning a concrete slug): only a genuinely present-but-EMPTY env var means
+  // "no home harness, skip validation" — an absent/unset env var still resolves
+  // and validates via the legacy-default fallback exactly as before.
+  if (process.env[HOME_HARNESS_ENV] === '') {
+    return;
+  }
+
   const slug = operatorHomeHarnessSlug();
   if (!slug || !slug.trim()) {
     throw new Error(

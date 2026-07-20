@@ -12,6 +12,7 @@ import {
 // Mock the dependencies
 vi.mock('../harness/operator-home-harness', () => ({
   operatorHomeHarnessSlug: vi.fn(),
+  HOME_HARNESS_ENV: 'PAPERCUSP_POT_HOME_SLUG',
 }));
 
 vi.mock('../harness-core', () => ({
