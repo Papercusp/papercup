@@ -75,3 +75,32 @@ describe('WI-5600: the Windows leg builds gui+server by DEFAULT (never a dead gu
     expect(releaseLocal).not.toMatch(/win_env\+=\("PAPERCUSP_BUILD_ROLES=gui server"\)/);
   });
 });
+
+describe('WI-5600: the spanned Windows Server is normalized to a single publishable zip', () => {
+  // The Windows Server DiskSpans (it bundles the dogfood source tree >4GB) into a
+  // setup.exe stub + *-setup-N.bin disks. record-release-cli SKIPS a bare spanned
+  // stub (isSpannedInstaller — an uninstallable download), so release-local.sh
+  // must zip the span into ONE download the release page can offer. Without this,
+  // every default Windows cut re-hides the Server from the page (the WI-5600
+  // symptom) even though the by-default build now produces it.
+  it('release-local.sh zips the spanned Server set (stub + *.bin slices) into a -setup.zip', () => {
+    // stores (no compression: -0) the stub + its slices into one archive.
+    expect(releaseLocal).toMatch(/zip -0 -j[^\n]*_win_srv_zip[\s\S]{0,120}_win_srv_stub[\s\S]{0,120}_win_srv_slices/);
+    // detection is structural: a Server stub WITH sibling -setup-N.bin disks.
+    expect(releaseLocal).toMatch(/_win_srv_slices=\(\s*"\$_win_srv_base"-\*\.bin\s*\)/);
+    expect(releaseLocal).toMatch(/\$\{#_win_srv_slices\[@\]\} > 0/);
+  });
+
+  it('swaps the raw stub+slices OUT of ARTIFACTS and the single zip IN', () => {
+    // The published set is the one zip, not the ~5 GB of raw disks the page can't use.
+    expect(releaseLocal).toMatch(/ARTIFACTS=\(\s*"\$\{_win_kept\[@\]\}"\s*"\$_win_srv_zip"\s*\)/);
+  });
+
+  it('is fall-back-safe: a zip failure leaves the raw artifacts (no cut regression)', () => {
+    // Guarded on `command -v zip` and the zip exit + a non-empty result; the else
+    // branch warns and leaves ARTIFACTS untouched, so a missing/failed zip degrades
+    // to today's behavior (record-release skips the stub) rather than failing the cut.
+    expect(releaseLocal).toMatch(/command -v zip/);
+    expect(releaseLocal).toMatch(/could not zip the spanned Server set/);
+  });
+});

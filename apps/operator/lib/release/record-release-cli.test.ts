@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   buildRunOpts,
   classifyArtifact,
@@ -197,6 +197,24 @@ describe('classifyArtifact — real filenames from real cuts, not invented ones'
     expect(classifyArtifact('Papercusp GUI_0.0.9_x64_en-US.msi')?.platform).toBe('windows-x86_64');
   });
 
+  it('WI-5600: recognizes the normalized spanned Windows Server zip as the windows installer', () => {
+    // The Windows Server DiskSpans (it bundles the dogfood source tree >4GB), so
+    // release-local.sh normalizes the setup.exe stub + *-setup-N.bin disks into a
+    // single "…-setup.zip" — THAT is the Windows Server download the page offers.
+    expect(classifyArtifact('Papercusp Server_0.0.12_x64-setup.zip')).toEqual({
+      product: 'server',
+      platform: 'windows-x86_64',
+    });
+    // a gui-role zip (were the GUI ever to span) classifies as gui/windows.
+    expect(classifyArtifact('Papercusp GUI_0.0.12_x64-setup.zip')).toEqual({
+      product: 'gui',
+      platform: 'windows-x86_64',
+    });
+    // Scoped to the "-setup.zip" suffix: an unrelated .zip is NOT a desktop installer.
+    expect(classifyArtifact('source-bundle.zip')).toBeNull();
+    expect(classifyArtifact('Papercusp_0.0.12_debug-symbols.zip')).toBeNull();
+  });
+
   it('ignores signatures and checksums — they are not downloads', () => {
     expect(classifyArtifact('Papercusp_GUI_0.0.8_amd64.AppImage.sig')).toBeNull();
     expect(classifyArtifact('Papercusp GUI_0.0.8_amd64.deb.sha256')).toBeNull();
@@ -301,6 +319,40 @@ describe('scanArtifacts', () => {
     expect(all.filter((a) => a.product === 'gui')).toHaveLength(3);
 
     for (const d of [lin, mac, win]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('WI-5600: records the normalized Server zip and SKIPS the bare spanned stub + .bin disks', () => {
+    // As they land on disk after release-local.sh's span-normalization: the raw
+    // spanned Server (stub + disks) PLUS the single "…-setup.zip" it produces, and
+    // a single-file GUI alongside. The recorder must publish the zip (a working
+    // download) — never the bare stub (isSpannedInstaller: an uninstallable
+    // download) nor the raw .bin disks (not installers on their own).
+    const win = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-span-'));
+    fs.mkdirSync(path.join(win, 'inno'), { recursive: true });
+    const inno = path.join(win, 'inno');
+    fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup.exe'), 'stub');
+    fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup-1.bin'), 'd1');
+    fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup-2.bin'), 'd2');
+    fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup.zip'), 'zip');
+    fs.writeFileSync(path.join(inno, 'Papercusp GUI_0.0.12_x64-setup.exe'), 'gui');
+
+    // scanArtifacts warns (by design) as it skips the bare spanned stub; swallow
+    // + assert that warning so vitest-fail-on-console stays green and the skip is pinned.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const found = scanArtifacts([win], '0.0.12', 'desktop-v0.0.12-alpha');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('SKIPPING Papercusp Server_0.0.12_x64-setup.exe'));
+    warn.mockRestore();
+    const names = found.map((a) => a.name).sort();
+    expect(names).toContain('Papercusp Server_0.0.12_x64-setup.zip');
+    expect(names).not.toContain('Papercusp Server_0.0.12_x64-setup.exe'); // bare stub skipped
+    expect(names).not.toContain('Papercusp Server_0.0.12_x64-setup-1.bin'); // raw disk not an installer
+    expect(names).toContain('Papercusp GUI_0.0.12_x64-setup.exe'); // single-file GUI recorded normally
+    expect(found).toHaveLength(2); // exactly the two real downloads, no phantom rows
+    const srv = found.find((a) => a.name.endsWith('.zip'))!;
+    expect(srv.product).toBe('server');
+    expect(srv.platform).toBe('windows-x86_64');
+
+    fs.rmSync(win, { recursive: true, force: true });
   });
 
   it('records an artifact reachable from two roots exactly ONCE', () => {
