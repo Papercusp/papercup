@@ -14,7 +14,10 @@
  *   GET  /api/gym/:slug/autoloop               → autoloop config (defaults if unset)
  *   POST /api/gym/:slug/autoloop  {enabled?,budgetUsd?,status?} → upsert → config
  *   GET  /api/gym/:slug/cycles | /variants | /compare | /frontier → run analytics
- *        (wrap read-api against the gym run DB; available:false until one is wired)
+ *        (read the DURABLE harness_gym read-cache in the LIVE operator DB — migration 650,
+ *        populated by the cycle-end copy step store.ts copyRunAnalyticsToDurable — via the
+ *        SAME routeWithWorkspace pool as the control plane, scoped by (workspace, harness);
+ *        replaces the old per-request postgres() to a separate PAPERCUSP_GYM_DATABASE_URL)
  *
  * Public + loopback-only, consistent with the sibling /adv + /harness UI routes.
  * State is workspace-scoped via routeWithWorkspace (RLS GUC = active workspace).
@@ -290,15 +293,17 @@ const autoloopSet = defineTool({
   },
 });
 
-// --- run-analytics wrappers (read the ephemeral gym run DB when one is configured) ---
+// --- run-analytics reads (the DURABLE harness_gym read-cache in the live operator DB) ---
 
 const cycles = defineTool({
   method: 'GET',
   path: '/gym/:slug/cycles',
   auth: 'public',
-  async handler() {
-    const res = await withGymSql((sql) => readCycleHistory(sql));
-    return res.available ? Response.json({ cycles: res.data }) : Response.json({ cycles: [], ...res });
+  async handler(_req, ctx) {
+    const slug = ctx.params.slug as string;
+    const ws = activeWorkspaceId();
+    const rows = await routeWithWorkspace((tx) => readDurableCycleHistory(tx, { workspaceId: ws, harnessSlug: slug }));
+    return Response.json({ cycles: rows });
   },
 });
 
@@ -306,21 +311,11 @@ const variants = defineTool({
   method: 'GET',
   path: '/gym/:slug/variants',
   auth: 'public',
-  async handler() {
-    const res = await withGymSql(async (sql) => {
-      const rows = (await sql`
-        SELECT variant_id, parent_id, label, status, diff_from_parent, proposer_rationale
-          FROM harness_gym.gym_variants ORDER BY variant_id`) as Record<string, unknown>[];
-      return rows.map((r) => ({
-        variantId: String(r.variant_id),
-        parentId: r.parent_id == null ? null : String(r.parent_id),
-        label: String(r.label),
-        status: String(r.status),
-        diffFromParent: r.diff_from_parent == null ? null : String(r.diff_from_parent),
-        rationale: r.proposer_rationale == null ? null : String(r.proposer_rationale),
-      }));
-    });
-    return res.available ? Response.json({ variants: res.data }) : Response.json({ variants: [], ...res });
+  async handler(_req, ctx) {
+    const slug = ctx.params.slug as string;
+    const ws = activeWorkspaceId();
+    const rows = await routeWithWorkspace((tx) => readDurableVariants(tx, { workspaceId: ws, harnessSlug: slug }));
+    return Response.json({ variants: rows });
   },
 });
 
@@ -328,14 +323,16 @@ const compare = defineTool({
   method: 'GET',
   path: '/gym/:slug/compare',
   auth: 'public',
-  async handler(req) {
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const ws = activeWorkspaceId();
     const url = new URL(req.url);
     const a = url.searchParams.get('a') ?? '';
     const b = url.searchParams.get('b') ?? '';
-    const rubricHash = url.searchParams.get('rubricHash') ?? '';
-    if (!a || !b || !rubricHash) return Response.json({ error: 'a_b_rubricHash_required', rows: [] }, { status: 400 });
-    const res = await withGymSql((sql) => compareVariantsRead(sql, a, b, rubricHash));
-    return res.available ? Response.json({ rows: res.data }) : Response.json({ rows: [], ...res });
+    const rh = url.searchParams.get('rubricHash') || DEFAULT_RUBRIC_HASH;
+    if (!a || !b) return Response.json({ error: 'a_b_required', rows: [] }, { status: 400 });
+    const rows = await routeWithWorkspace((tx) => compareDurableVariants(tx, { workspaceId: ws, harnessSlug: slug }, a, b, rh));
+    return Response.json({ rows });
   },
 });
 
@@ -343,11 +340,12 @@ const frontier = defineTool({
   method: 'GET',
   path: '/gym/:slug/frontier',
   auth: 'public',
-  async handler(req) {
-    const rubricHash = new URL(req.url).searchParams.get('rubricHash') ?? '';
-    if (!rubricHash) return Response.json({ error: 'rubricHash_required', frontier: [] }, { status: 400 });
-    const res = await withGymSql((sql) => frontierView(sql, rubricHash));
-    return res.available ? Response.json({ frontier: res.data }) : Response.json({ frontier: [], ...res });
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const ws = activeWorkspaceId();
+    const rh = new URL(req.url).searchParams.get('rubricHash') || DEFAULT_RUBRIC_HASH;
+    const rows = await routeWithWorkspace((tx) => durableFrontierView(tx, { workspaceId: ws, harnessSlug: slug }, rh));
+    return Response.json({ frontier: rows });
   },
 });
 
