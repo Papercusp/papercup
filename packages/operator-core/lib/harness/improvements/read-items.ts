@@ -18,10 +18,25 @@
  *     (anti-re-dispatch counter + the explicit human-routing flag, D-001).
  */
 
-import { listIssues, type EngineerIssue, type ListIssuesFilter } from '../../issues-engineer';
-import type { ImprovementCandidate, WorkItemKind } from './policy';
+import { listIssues, type EngineerIssue, type IssueState, type ListIssuesFilter } from '../../issues-engineer';
+import type { ImprovementCandidate, ImprovementState, WorkItemKind } from './policy';
 import { isSignalOrigin, originAllowed, ORGANIC_ONLY, type SignalOrigin } from './provenance';
 import { asStructuredObservation } from './observation-types';
+
+/** Collapse the richer 8-value `IssueState` (unify-work-items) onto the
+ *  domain-free 3-value `LifecycleState` (open|resolved|closed) that
+ *  `ImprovementCandidate.state` is typed as (P-007 canonical lifecycle
+ *  vocabulary). Every non-terminal issue state reads as 'open' — every
+ *  downstream consumer of candidate.state only ever checks `=== 'open'`, so
+ *  the wip/blocked/needs-human distinction is deliberately NOT surfaced
+ *  here; 'done'/'resolved' → 'resolved', 'dropped'/'closed' → 'closed'
+ *  mirrors the resolved/closed→done/dropped aliasing issues-engineer.ts
+ *  documents at IssueState's definition. */
+function toLifecycleState(state: IssueState): ImprovementState {
+  if (state === 'done' || state === 'resolved') return 'resolved';
+  if (state === 'dropped' || state === 'closed') return 'closed';
+  return 'open';
+}
 
 /** The built-in capture/triage lens topic (D-003). */
 export const IMPROVEMENT_TOPIC = 'papercusp-improvement';
@@ -97,7 +112,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     title: issue.title,
     body: issue.body,
     severity: issue.severity,
-    state: issue.state,
+    state: toLifecycleState(issue.state),
     assignee: issue.assignee,
     assignedAt: issue.assignedAt,
     createdAt: issue.createdAt,

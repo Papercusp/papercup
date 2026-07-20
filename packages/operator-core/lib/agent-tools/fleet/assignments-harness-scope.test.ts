@@ -81,7 +81,7 @@ function cov(ref: string): PlanItemCoverage {
     links: [],
     directlyClaimed: true,
     directHolder: 'someone',
-    directActivity: 'live',
+    directActivity: 'alive',
     level: 'partial',
     workers: ['someone'],
     lastActivityAt: new Date(),

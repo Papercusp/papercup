@@ -193,7 +193,7 @@ async function liveHygieneDeps(workspaceId: string): Promise<HygieneDeps> {
       const rows = (await sql`
         DELETE FROM harness_shared.knowledge_pack_candidates
          WHERE status = 'dismissed' AND decided_at < now() - make_interval(days => ${olderThanDays})
-         RETURNING id`) as Array<unknown>;
+         RETURNING id`) as unknown as Array<unknown>;
       return rows.length;
     },
   };
