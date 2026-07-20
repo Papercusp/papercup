@@ -205,9 +205,9 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await expect(wi.setWorkItemState(feat.id, 'some-novel-pipeline-phase', { harness: 'papercup' }))
       .rejects.toThrow(/cannot take state 'some-novel-pipeline-phase' — valid: .*in_progress/);
-    // unchanged in the DB (still todo) — not dropped into a non-dispatchable limbo.
+    // unchanged in the DB (still open — the unified claimable entry state) — not dropped into a non-dispatchable limbo.
     expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status)
-      .toBe('todo');
+      .toBe('open');
   });
 
   it('feature-family NORMALIZES a separator/case drift typo to the unified token (In-Progress → wip)', async () => {
@@ -243,10 +243,10 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     await expect(wi.setWorkItemState(feat.id, 'passed', { harness: 'papercup' })).rejects.toThrow(
       /completion-integrity:.*requires an owner/,
     );
-    // unchanged in the DB (still todo) — a rejected gate must not half-apply the write.
+    // unchanged in the DB (still open — the unified claimable entry state) — a rejected gate must not half-apply the write.
     expect(
       (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status,
-    ).toBe('todo');
+    ).toBe('open');
   });
 
   it('feature-family REJECTS a terminal transition with an owner but no completionRef', async () => {
@@ -941,9 +941,10 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
   });
 
   // P-003 / D-002: a VOLUNTARY release of a feature mid-flight resets its status →
-  // todo so it returns to the claimable pool (symmetry with the reaper). Terminal /
-  // blocked rows keep their status.
-  it('releasing a mid-flight (in_progress) feature resets status → todo (P-003)', async () => {
+  // open so it returns to the claimable pool (symmetry with the reaper). Terminal /
+  // blocked rows keep their status. work-item-status-full-unify P-004/P-005: the requeue
+  // target is the unified claimable token 'open' (was 'todo').
+  it('releasing a mid-flight (in_progress) feature resets status → open (P-003 / status-unify)', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'mid-flight', harness: 'papercup', createdBy: 'agA' });
     expect((await wi.claimWorkItem(feat.id, 'agA'))?.assignee).toBe('agA');
     await wi.setWorkItemState(feat.id, 'in_progress');
@@ -952,7 +953,7 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
 
     await wi.releaseWorkItem(feat.id);
     const after = (await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
-    expect(after.status).toBe('todo');
+    expect(after.status).toBe('open');
     expect(after.taken_by).toBeNull();
     // …and it's observable as available again.
     expect(await wi.observeWorkItem(feat.id)).toMatchObject({ available: true, claimedBy: null });
@@ -996,7 +997,7 @@ describe('unified work_items surface (real PG)', () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'add export', harness: 'papercup', createdBy: 'agA' });
     expect(feat.id).toBe('WI-2');
     expect(feat.family).toBe('feature');
-    expect(feat.state).toBe('todo');
+    expect(feat.state).toBe('open'); // work-item-status-full-unify: fresh feature lands at the unified claimable token
 
     const change = await wi.createWorkItem({ kind: 'change', title: 'make it bigger', harness: 'papercup', createdBy: 'agA' });
     expect(change.id).toBe('WI-3');
@@ -1383,7 +1384,7 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
     const wiItem = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA', assignee: 'bee-7' });
     // The returned item is already owned (no second claim call happened).
     expect(wiItem.assignee).toBe('bee-7');
-    expect(wiItem.state).toBe('todo');
+    expect(wiItem.state).toBe('open'); // work-item-status-full-unify: fresh feature lands at the unified claimable token
     const [row] = await db.sql<{ taken_by: string | null; taken_at: Date | null }[]>`
       SELECT taken_by, taken_at FROM harness_shared.harness_features_consolidated WHERE feature_id = ${wiItem.id}`;
     expect(row.taken_by).toBe('bee-7'); // claimed atomically in the INSERT

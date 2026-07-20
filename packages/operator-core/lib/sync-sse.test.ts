@@ -67,7 +67,16 @@ async function load() {
     }),
   }));
   vi.doMock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
-  vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: notifySql }) }));
+  vi.doMock('@papercusp/db-org', () => ({
+    getOrgPg: () => ({ sql: notifySql }),
+    // sync-sse.ts's dedicated LISTEN connection spreads this into its `postgres()`
+    // options (EI-18122461766429683 zombie-safe tagging) — the mock must export it
+    // or the real module's named import throws "no export defined on the mock".
+    longLivedPoolConnectionOptions: (_label: string) => ({
+      onnotice: () => {},
+      connection: {},
+    }),
+  }));
   // caching-layer-tag-eca P-017 wired a cold-bust onListen hook into sync-sse;
   // stub the cache so the LISTEN start doesn't reach the real L1 instance.
   vi.doMock('./cache/instance', () => ({ getOperatorCache: () => ({ clearL1: () => {} }) }));

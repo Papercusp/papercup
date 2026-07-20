@@ -325,7 +325,7 @@ describe('emitClaimReleasedEvent (P-105)', () => {
   it('announceClaimable:false suppresses the work-item:claimable co-fire but still fires claim:released:<id>', async () => {
     const emit = typedEmit();
     const { emitClaimReleasedEvent } = await import('./work-items-events');
-    emitClaimReleasedEvent(wi({ id: 'WI-36', state: 'todo', assignee: null, harness: null }), {
+    emitClaimReleasedEvent(wi({ id: 'WI-36', state: 'open', assignee: null, harness: null }), {
       emit,
       announceClaimable: false,
     });
@@ -338,7 +338,7 @@ describe('emitClaimReleasedEvent (P-105)', () => {
   it('announceClaimable omitted (default) still co-fires work-item:claimable — unchanged for every other caller', async () => {
     const emit = typedEmit();
     const { emitClaimReleasedEvent } = await import('./work-items-events');
-    emitClaimReleasedEvent(wi({ id: 'WI-37', state: 'todo', assignee: null }), { emit });
+    emitClaimReleasedEvent(wi({ id: 'WI-37', state: 'open', assignee: null }), { emit });
     await new Promise((r) => setTimeout(r, 0));
     const keys = emit.mock.calls.map((c) => c[0].key).sort();
     expect(keys).toEqual(['claim:released:WI-37', 'work-item:claimable']);
@@ -407,7 +407,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
     emitWorkItemClaimableEvent(
-      wi({ id: 'WI-30', kind: 'task', state: 'todo', assignee: null, harness: 'papercusp', title: 'fresh work' }),
+      wi({ id: 'WI-30', kind: 'task', state: 'open', assignee: null, harness: 'papercusp', title: 'fresh work' }),
       'created',
       { emit },
     );
@@ -421,7 +421,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
         kind: 'task',
         harness: 'papercusp',
         title: 'fresh work',
-        state: 'todo',
+        state: 'open',
         reason: 'created',
       }),
     });
@@ -444,7 +444,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
   it('EI-14161: a tag-less item carries an empty tags array (never undefined — payload_filter needs a stable shape)', async () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
-    emitWorkItemClaimableEvent(wi({ id: 'WI-34', state: 'todo', assignee: null }), 'created', { emit });
+    emitWorkItemClaimableEvent(wi({ id: 'WI-34', state: 'open', assignee: null }), 'created', { emit });
     await new Promise((r) => setTimeout(r, 0));
     expect(emit.mock.calls[0][0]).toMatchObject({ payload: expect.objectContaining({ tags: [] }) });
   });
@@ -452,7 +452,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
   it('the guard drops an ASSIGNED item — claimable never advertises work a pull would refuse', async () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
-    emitWorkItemClaimableEvent(wi({ id: 'WI-31', state: 'todo', assignee: 'su-holder' }), 'created', { emit });
+    emitWorkItemClaimableEvent(wi({ id: 'WI-31', state: 'open', assignee: 'su-holder' }), 'created', { emit });
     await new Promise((r) => setTimeout(r, 0));
     expect(emit).not.toHaveBeenCalled();
   });
@@ -465,7 +465,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
       await new Promise((r) => setTimeout(r, 0));
       expect(emit, `state '${state}' must not fire`).not.toHaveBeenCalled();
     }
-    for (const state of ['todo', 'open', 'failing']) {
+    for (const state of ['open', 'failing']) {
       const emit = typedEmit();
       emitWorkItemClaimableEvent(wi({ id: 'WI-33', state, assignee: null }), 'released', { emit });
       await new Promise((r) => setTimeout(r, 0));
@@ -496,7 +496,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
   it('CO-FIRES from emitWorkItemCreatedEvent for an unclaimed-claimable create (one hook at the call site)', async () => {
     const emit = typedEmit();
     const { emitWorkItemCreatedEvent } = await import('./work-items-events');
-    emitWorkItemCreatedEvent(wi({ id: 'WI-34', state: 'todo', assignee: null, severity: null }), { emit });
+    emitWorkItemCreatedEvent(wi({ id: 'WI-34', state: 'open', assignee: null, severity: null }), { emit });
     await new Promise((r) => setTimeout(r, 0));
     const keys = emit.mock.calls.map((c) => c[0].key).sort();
     expect(keys).toEqual(['work-item:claimable', 'work-item:created']);
@@ -505,7 +505,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
   it('CO-FIRES from emitClaimReleasedEvent when the row returned to a claimable state', async () => {
     const emit = typedEmit();
     const { emitClaimReleasedEvent } = await import('./work-items-events');
-    emitClaimReleasedEvent(wi({ id: 'WI-35', state: 'todo', assignee: null }), { emit });
+    emitClaimReleasedEvent(wi({ id: 'WI-35', state: 'open', assignee: null }), { emit });
     await new Promise((r) => setTimeout(r, 0));
     const keys = emit.mock.calls.map((c) => c[0].key).sort();
     expect(keys).toEqual(['claim:released:WI-35', 'work-item:claimable']);
@@ -516,7 +516,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
     const emit = vi.fn(async () => { throw new Error('pg down'); });
     expect(() =>
-      emitWorkItemClaimableEvent(wi({ state: 'todo', assignee: null }), 'created', { emit: emit as never }),
+      emitWorkItemClaimableEvent(wi({ state: 'open', assignee: null }), 'created', { emit: emit as never }),
     ).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('claimable-event'));
@@ -552,21 +552,21 @@ describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', (
   it('CO-FIRES work-item:claimable when a bare set_state ENTERS a claimable state (reason: requeued — WI-4180, the P-007 gap-(A) close)', async () => {
     const emit = typedEmit();
     const { emitWorkItemStatusEvent } = await import('./work-items-events');
-    emitWorkItemStatusEvent(wi({ id: 'WI-11', state: 'todo', assignee: null }), 'blocked', { emit });
+    emitWorkItemStatusEvent(wi({ id: 'WI-11', state: 'open', assignee: null }), 'blocked', { emit });
     await new Promise((r) => setTimeout(r, 0));
     const keys = emit.mock.calls.map((c) => c[0].key).sort();
     expect(keys).toEqual(['work-item:claimable', 'work-item:status:WI-11']);
     const claimable = emit.mock.calls
       .map((c) => (c as unknown as [{ key: string; payload: { id?: string; state?: string; reason?: string } }])[0])
       .find((a) => a.key === 'work-item:claimable');
-    expect(claimable?.payload).toMatchObject({ id: 'WI-11', state: 'todo', reason: 'requeued' });
+    expect(claimable?.payload).toMatchObject({ id: 'WI-11', state: 'open', reason: 'requeued' });
   });
 
   it('the ENTERING-EDGE guard: claimable→claimable moves and assigned/non-claimable landings do NOT re-announce', async () => {
     const { emitWorkItemStatusEvent } = await import('./work-items-events');
     const cases: Array<[string, Partial<WorkItem>, string]> = [
-      ['todo→open (already advertised)', { id: 'WI-12', state: 'open', assignee: null }, 'todo'],
-      ['blocked→todo while ASSIGNED', { id: 'WI-13', state: 'todo', assignee: 'su-holder' }, 'blocked'],
+      ['open→failing (already advertised — claimable→claimable)', { id: 'WI-12', state: 'failing', assignee: null }, 'open'],
+      ['blocked→open while ASSIGNED', { id: 'WI-13', state: 'open', assignee: 'su-holder' }, 'blocked'],
       ['wip→blocked (non-claimable landing)', { id: 'WI-14', state: 'blocked', assignee: null }, 'wip'],
     ];
     for (const [label, over, prev] of cases) {

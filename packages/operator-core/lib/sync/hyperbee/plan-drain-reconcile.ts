@@ -11,20 +11,53 @@
  * substrate-outbox-backstop-GC drops the undrained-orphaned rows.
  *
  * This module is PURE (no PG, no registry, no side effects) so the stall logic is
- * unit-testable in isolation — the action wrapper (federation-drain-reconcile-
- * action.ts) feeds it `load-drain-stats` output over `listBootedHandles()` and
- * raises the deduped alert. Thresholds mirror `assessHarnessSubstrateHealth`'s
- * drain ladder (60s degraded / 5m unhealthy) so the routine and the on-read
- * verdict agree on what "stalled" means.
+ * unit-testable in isolation — the action wrapper (run-drain-reconcile.ts) feeds
+ * it `load-drain-stats` output over `listBootedHandles()` and raises the deduped
+ * alert. Thresholds (`DRAIN_STALLED_MS` / `DRAIN_UNHEALTHY_MS`) DELIBERATELY
+ * DIVERGE from `assessHarnessSubstrateHealth`'s on-read drain ladder (60s
+ * degraded / 5m unhealthy) as of 2026-07-19 — see `DRAIN_STALLED_MS`'s doc
+ * comment for why: this reconcile files a DURABLE tracked bug per breach (unlike
+ * the ephemeral on-read verdict), so it needs a materially higher bar to avoid
+ * flooding the tracker with noise from routine host-recycle catch-up gaps.
  */
 import type { SubstrateDrainStat } from './load-drain-stats';
 
-/** Oldest-undrained age (ms) past which an outbox counts as stalled (≥ this →
- *  degraded). Mirrors `assessHarnessSubstrateHealth`'s drainStalledThresholdMs. */
-export const DRAIN_STALLED_MS = 60_000;
+/**
+ * Oldest-undrained age (ms) past which an outbox counts as stalled (≥ this →
+ * degraded) FOR THIS PROACTIVE, DURABLE-FILING RECONCILE. Originally set to mirror
+ * `assessHarnessSubstrateHealth`'s on-read `drainStalledThresholdMs` (60s) 1:1 — but
+ * live evidence (2026-07-19, papercusp harness: 24 duplicate "Federation stall" bugs
+ * filed in ~12h, each investigated + closed as self-resolved by a separate agent)
+ * showed that 1:1 mirroring was WRONG for this call site specifically: the on-read
+ * verdict in `health.ts` is EPHEMERAL (recomputed per read, free to be sensitive —
+ * a momentary "degraded" in the UI costs nothing), while THIS reconcile FILES A
+ * DURABLE TRACKED BUG on every breach (dedup'd per-harness, but re-opens on every
+ * fresh recurrence) — a materially higher-cost action that deserves a higher bar.
+ * Root cause of the noise: this dev box's `papercup-staging-api`/`papercup-dev-api`
+ * hosts routinely self-recycle every ~5-8min (host-recycle SIGKILL, see journalctl),
+ * which tears down + re-establishes the in-process outbox-drain loop each time; the
+ * observed capture→drain catch-up gap after a recycle was consistently ~90-130s —
+ * comfortably past the old 60s bar (hence the flood) but a normal, self-healing
+ * artifact of the recycle cadence, not a genuine stall. `outbox-drain.ts` already
+ * has its own, better-tuned, restart-resilient detectors for a GENUINE wedge
+ * (`DRAIN_BACKLOG_STALL_MS` — 10min zero-progress; `DRAIN_BACKLOG_AGE_STALL_MS` /
+ * `DRAIN_BACKLOG_SIZE_STALL_THRESHOLD` — 1h / 2000 rows, PROGRESS-INDEPENDENT), so
+ * this reconcile no longer needs to be maximally sensitive to serve its stated
+ * purpose ("catch a silent stall before the 48h backstop-GC drops the rows" — a
+ * huge no-race margin survives at any of these values). 5min clears the observed
+ * noise floor (~130s) with >2x margin while staying far tighter than the other
+ * detectors, so a real stall is still filed promptly. Deliberately DIVERGES from
+ * `assessHarnessSubstrateHealth`'s on-read threshold now — see that function's own
+ * (unchanged) default for the live-UI verdict. */
+export const DRAIN_STALLED_MS = 5 * 60_000;
 /** Oldest-undrained age (ms) past which a stall is unhealthy (≥ this → unhealthy).
- *  Mirrors `assessHarnessSubstrateHealth`'s drainUnhealthyThresholdMs. */
-export const DRAIN_UNHEALTHY_MS = 5 * 60_000;
+ *  See `DRAIN_STALLED_MS` above for why this reconcile's thresholds were raised off
+ *  `assessHarnessSubstrateHealth`'s on-read ladder (2026-07-19 noise-storm fix).
+ *  20min keeps a healthy margin above `DRAIN_STALLED_MS` and above
+ *  `outbox-drain.ts`'s own 10min no-progress detector, so an 'unhealthy' filing
+ *  here means something has stayed bad well past what the other detectors already
+ *  independently caught. */
+export const DRAIN_UNHEALTHY_MS = 20 * 60_000;
 
 /** One booted harness's drain state, as the action gathers it. */
 export interface DrainReconcileInput {
