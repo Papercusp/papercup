@@ -630,23 +630,67 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
 export type GitEditCheck = (filePath: string, sinceIso: string, untilIso: string) => Promise<boolean>;
 
 /**
- * Pure-ish (the one IO side-effect is fully behind the injected `checkEdited`):
- * a file that failed repeatedly WHILE ALSO being actively git-committed across
- * that same span is far more likely a concurrent-refactor artifact (the test
- * harness catching the file mid-edit — transform/resolve failures) than a real
- * regression (EI-10102 / EI-10065). Debounce = drop the signal entirely for
- * this tick; a genuine regression keeps failing in a LATER tick once the file
- * has settled (no commits in that tick's window), so this only delays, never
- * permanently suppresses, a real red test.
+ * EI-18145972782668210: esbuild/transform-class failure signatures — the
+ * hallmark of vitest/tsx catching a file mid-WRITE by a concurrent
+ * (UNCOMMITTED) peer edit on this heavily-parallel shared tree, as opposed to
+ * a genuine assertion failure. Confirmed live: re-reading
+ * `outbox-drain.ts` moments apart during triage showed a backtick pair
+ * appear-then-vanish inside a SQL template literal (a torn read of a peer's
+ * in-flight, uncommitted write) — the matching failure class ("Transform
+ * failed with N error", esbuild's "Expected \")\" but found …") is exactly
+ * what a transform step reports when it parses a file mid-write. Deliberately
+ * narrow (transform/parse-time signatures only, NOT e.g. "Cannot find
+ * module" — a missing import is very often a REAL break, not a torn read) so
+ * this only fires on the class of failure a torn read actually produces.
+ */
+export const TRANSFORM_FAILURE_RE =
+  /Transform failed with \d+ error|SyntaxError: |Unexpected token|Expected ".*?" but found|Unterminated string|Unterminated template/i;
+
+/** Pure: does this failure's output read like a transform/parse-time crash
+ *  (as opposed to a real assertion failure)? */
+export function isLikelyTransientTransformFailure(outputTail: string | null | undefined): boolean {
+  return TRANSFORM_FAILURE_RE.test(outputTail ?? '');
+}
+
+/** Callback shape for "does `filePath` parse/transform cleanly RIGHT NOW?" —
+ *  dependency-injected so the debounce DECISION logic stays unit-testable
+ *  without touching the real filesystem/esbuild. `doesFileCurrentlyParseCleanly`
+ *  below is the real IO implementation wired in by `collectRedTestSignals`. */
+export type FileParsesCleanlyCheck = (filePath: string) => Promise<boolean>;
+
+/**
+ * Pure-ish (the two IO side-effects — git + optionally a live re-parse — are
+ * fully behind the injected callbacks):
  *
- * Fails OPEN: any signal missing a path/earliestAt/latestAt (a collector that
- * doesn't window a span), or a `checkEdited` that throws, is KEPT — a git
- * hiccup must never silently swallow a real signal.
+ *   1. A file that failed repeatedly WHILE ALSO being actively git-committed
+ *      across that same span is far more likely a concurrent-refactor
+ *      artifact (the test harness catching the file mid-edit —
+ *      transform/resolve failures) than a real regression (EI-10102 /
+ *      EI-10065).
+ *   2. (EI-18145972782668210) An in-flight, still-UNCOMMITTED edit produces
+ *      NO commit in range at all (git-sync commits on a schedule, not per
+ *      keystroke), so check #1 alone misses it. When the failure itself
+ *      LOOKS like a transform/parse crash (`isLikelyTransientTransformFailure`)
+ *      and an (optional) live re-parse of the file's CURRENT on-disk content
+ *      succeeds, the earlier failure was near-certainly a torn read of a
+ *      peer's in-flight write, not a regression — debounce it too.
+ *
+ * Either way, debounce = drop the signal entirely for this tick; a genuine
+ * regression keeps failing in a LATER tick once the file has settled, so this
+ * only delays, never permanently suppresses, a real red test.
+ *
+ * Fails OPEN throughout: any signal missing a path/earliestAt/latestAt (a
+ * collector that doesn't window a span), a `checkEdited` that throws, a
+ * failure that doesn't read as a transform crash, no `checkParsesCleanly`
+ * wired, or a `checkParsesCleanly` that throws/returns false, is all KEPT —
+ * neither a git hiccup nor a re-parse hiccup may silently swallow a real
+ * signal.
  */
 export async function debounceRedTestSignals(
   signals: WatchdogSignal[],
   checkEdited: GitEditCheck,
   bufferMs = 10 * 60 * 1000,
+  checkParsesCleanly?: FileParsesCleanlyCheck,
 ): Promise<WatchdogSignal[]> {
   const kept: WatchdogSignal[] = [];
   for (const s of signals) {
@@ -663,7 +707,17 @@ export async function debounceRedTestSignals(
     } catch {
       edited = false; // fail open — never let a git error silently eat a real signal
     }
-    if (!edited) kept.push(s);
+    if (edited) continue;
+    if (checkParsesCleanly && isLikelyTransientTransformFailure(s.body)) {
+      let parsesCleanly = false;
+      try {
+        parsesCleanly = await checkParsesCleanly(path);
+      } catch {
+        parsesCleanly = false; // fail open — an unverifiable re-parse never eats a real signal
+      }
+      if (parsesCleanly) continue;
+    }
+    kept.push(s);
   }
   return kept;
 }
@@ -734,6 +788,37 @@ export async function wasFilePathCommittedInRange(
 }
 
 /**
+ * (EI-18145972782668210) Real IO `FileParsesCleanlyCheck`: does `filePath`
+ * parse/transform cleanly RIGHT NOW? Uses esbuild's `transform` — the same
+ * transform engine vitest/tsx run under the hood — against the file's CURRENT
+ * on-disk content: a fast syntax-level check, no type-check, no module
+ * resolution. Any failure (file missing, a genuine syntax error still present,
+ * esbuild unavailable) resolves to `false`. Note this function fails CLOSED on
+ * purpose (unlike the debounce call site around it, which fails OPEN): a
+ * `false` here just means "don't debounce this signal", never "suppress a
+ * real one" — the caller only ever uses `true` to drop a signal.
+ */
+export async function doesFileCurrentlyParseCleanly(filePath: string): Promise<boolean> {
+  try {
+    const repoRoot = resolveRedTestRepoRoot();
+    const abs = pathIsAbsolute(filePath) ? filePath : pathJoin(repoRoot, filePath);
+    const source = await readFile(abs, 'utf8');
+    const { transform } = await import('esbuild');
+    const loader = /\.tsx$/.test(filePath)
+      ? 'tsx'
+      : /\.ts$/.test(filePath)
+        ? 'ts'
+        : /\.jsx$/.test(filePath)
+          ? 'jsx'
+          : 'js';
+    await transform(source, { loader, sourcefile: filePath });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * red-test: a test file that failed ≥ N times in the window AND whose LATEST run
  * in the window is still a fail — i.e. repeatedly red and currently red, not a
  * one-off dev iteration. Carries the file path (→ the protected-path gate).
@@ -773,7 +858,10 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
   // EI-10102: drop signals for files that were being actively git-committed
   // across their own failure window — a mid-refactor artifact, not a real
   // regression. A genuine break re-fires next tick once the file settles.
-  return debounceRedTestSignals(signals, wasFilePathCommittedInRange);
+  // EI-18145972782668210: ALSO drop a transform/parse-class failure when the
+  // file parses cleanly right now — catches the UNCOMMITTED-edit case the
+  // git check above can't see (git-sync commits on a schedule, not per write).
+  return debounceRedTestSignals(signals, wasFilePathCommittedInRange, undefined, doesFileCurrentlyParseCleanly);
 }
 
 interface SmokeFailRow { harness_slug: string; failure_content: string | null; mtime_ms: number | string | null }

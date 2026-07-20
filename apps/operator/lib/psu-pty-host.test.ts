@@ -307,10 +307,15 @@ describe('isCarryRespawnStale (EI-18109211232286833 — age-based carry-respawn 
     expect(isCarryRespawnStale(null, { maxAgeMs: 600_000, now: 1_000_000 })).toBe(false);
   });
 
-  it('defaults maxAgeMs to the module constant (10 minutes) and now to the real clock when omitted', () => {
+  it('defaults maxAgeMs to the module constant (30 minutes — WI-5623) and now to the real clock when omitted', () => {
+    // WI-5623 raised the default 10m→30m so a re-polling production respawn
+    // survives long enough to catch the session's next idle/recycle boundary
+    // (fleet bug-drain members recycle ~every 22-33min); a >30-min-busy session
+    // is pathological and stale-drops to the hard-wall watchdog.
     const justNow = Date.now();
     expect(isCarryRespawnStale(justNow)).toBe(false);
-    expect(isCarryRespawnStale(justNow - 11 * 60_000)).toBe(true);
+    expect(isCarryRespawnStale(justNow - 20 * 60_000)).toBe(false); // 20m < 30m ⇒ still fresh
+    expect(isCarryRespawnStale(justNow - 31 * 60_000)).toBe(true); // 31m > 30m ⇒ stale
   });
 });
 

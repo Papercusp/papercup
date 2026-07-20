@@ -341,37 +341,65 @@ export function selectAgentRows(
   return roster.slice(0, limit);
 }
 
+// ── workItems.delta24h: one per-kind 24h burn-down row (opened = created in the
+//    window, closed = went terminal in the window — derived server-side, P-002). ─
+export interface WorkItemDeltaCell {
+  kind: string;
+  opened: number;
+  closed: number;
+}
+
 export interface WorkItemStatsSummary {
   total: number;
   open: number;
+  /** 24h burn-down totals across ALL kinds (not just the rendered top-N). */
+  opened24h: number;
+  closed24h: number;
   /** Per-kind rollup ("bugs vs the rest"), open-count desc then total desc. */
-  kinds: Array<{ kind: string; open: number; total: number }>;
+  kinds: Array<{ kind: string; open: number; total: number; opened24h: number; closed24h: number }>;
 }
 
 /**
  * Roll the server's kind × state cells up to totals + a per-kind breakdown
- * (owner ask 2026-07-19: "how many items, how many are bugs vs other").
+ * (owner ask 2026-07-19: "how many items, how many are bugs vs other"), merging
+ * the 24h burn-down deltas in (P-002: +opened/−closed per kind + headline).
  * `open` = non-terminal per the resolver's canonical `terminal` stamp. Pure.
  */
-export function summarizeWorkItemStats(cells: readonly WorkItemStatsCell[]): WorkItemStatsSummary {
-  const byKind = new Map<string, { open: number; total: number }>();
+export function summarizeWorkItemStats(
+  cells: readonly WorkItemStatsCell[],
+  deltas: readonly WorkItemDeltaCell[] = [],
+): WorkItemStatsSummary {
+  const byKind = new Map<string, { open: number; total: number; opened24h: number; closed24h: number }>();
+  const ensure = (kind: string) => {
+    const k = byKind.get(kind) ?? { open: 0, total: 0, opened24h: 0, closed24h: 0 };
+    byKind.set(kind, k);
+    return k;
+  };
   let total = 0;
   let open = 0;
   for (const c of cells) {
-    const k = byKind.get(c.kind) ?? { open: 0, total: 0 };
+    const k = ensure(c.kind);
     k.total += c.n;
     total += c.n;
     if (!c.terminal) {
       k.open += c.n;
       open += c.n;
     }
-    byKind.set(c.kind, k);
+  }
+  let opened24h = 0;
+  let closed24h = 0;
+  for (const d of deltas) {
+    const k = ensure(d.kind);
+    k.opened24h += d.opened;
+    k.closed24h += d.closed;
+    opened24h += d.opened;
+    closed24h += d.closed;
   }
   const kinds = [...byKind.entries()]
     .map(([kind, v]) => ({ kind, ...v }))
     .sort((a, b) => b.open - a.open || b.total - a.total)
     .slice(0, TILE_LIMIT);
-  return { total, open, kinds };
+  return { total, open, opened24h, closed24h, kinds };
 }
 
 /** warn/crit health panels, crit first (stable within a tier), top-N. Pure. */
@@ -463,6 +491,12 @@ export default function AdvOverviewTab() {
     args: projectSlug ? { harnessSlug: projectSlug } : {},
     staleTime: 15_000,
   });
+  // P-002: the 24h burn-down companion (same scoping + invalidation bridge).
+  const deltaQ = useSyncQuery<WorkItemDeltaCell>({
+    queryName: 'workItems.delta24h',
+    args: projectSlug ? { harnessSlug: projectSlug } : {},
+    staleTime: 15_000,
+  });
 
   // Health + Learning headline stats (owner ask 2026-07-19): the SAME queries
   // their tabs hold (health.snapshot / learning.releaseReadiness — identical
@@ -511,7 +545,10 @@ export default function AdvOverviewTab() {
     [rosterQ.data],
   );
   const agentRows = useMemo(() => selectAgentRows(roster), [roster]);
-  const workItemStats = useMemo(() => summarizeWorkItemStats(statsQ.data ?? []), [statsQ.data]);
+  const workItemStats = useMemo(
+    () => summarizeWorkItemStats(statsQ.data ?? [], deltaQ.data ?? []),
+    [statsQ.data, deltaQ.data],
+  );
   const deployTile = useMemo(
     () => deriveDeployTile(pipelineQ.data?.[0], Date.now()),
     [pipelineQ.data],
@@ -712,6 +749,18 @@ export default function AdvOverviewTab() {
           emptyLabel="No work items"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.workItems)}
         >
+          {/* P-002: the 24h burn-down headline — one row, only when it moved. */}
+          {(workItemStats.opened24h > 0 || workItemStats.closed24h > 0) && (
+            <div className="pc-overview__row">
+              <span className="pc-overview__row-actor">24h</span>
+              <span
+                className="pc-overview__row-title"
+                title="Work items opened vs driven terminal in the last 24 hours (all kinds)"
+              >
+                +{workItemStats.opened24h} opened · −{workItemStats.closed24h} closed
+              </span>
+            </div>
+          )}
           {workItemStats.kinds.map((k) => (
             <div key={k.kind} className="pc-overview__row">
               {/* Owner ask 2026-07-19: the canonical per-kind icon chip
@@ -722,6 +771,7 @@ export default function AdvOverviewTab() {
               </span>
               <span className="pc-overview__row-tag">
                 {k.open} open · {k.total} all
+                {k.opened24h > 0 || k.closed24h > 0 ? ` · +${k.opened24h}/−${k.closed24h}` : ''}
               </span>
             </div>
           ))}

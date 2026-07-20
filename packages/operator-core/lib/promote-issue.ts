@@ -42,7 +42,10 @@ export interface PromotedFeature {
   id: string;
   title: string;
   claims: string[];
-  status: 'todo';
+  // work-item-status-full-unify P-007: promoted features are born at the unified claimable
+  // token 'open' (was 'todo') — a raw INSERT bypasses setWorkItemState's alias-fold, so 'todo'
+  // here would strand the new feature OUTSIDE the ['open'] claim floor (P-004), unclaimable.
+  status: 'open';
   attempts: 0;
   sourceIssueId: string;
   notes: string;
@@ -161,7 +164,7 @@ export async function mintFixFeatureRow(
          (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
           kind, project_id, expected_cost_cents, tags, needs_human_review,
           workspace_id, ts, created_ts, updated_ts)
-       VALUES (?, ?, ?, NULL, 'todo', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, NULL, 'open', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?, ?)`,
     )
     .run(
       project.slug,
@@ -189,7 +192,7 @@ export async function mintFixFeatureRow(
     id: featureId,
     title: issue.title,
     claims,
-    status: 'todo',
+    status: 'open',
     attempts: 0,
     sourceIssueId: issue.id,
     notes: featureNotes,

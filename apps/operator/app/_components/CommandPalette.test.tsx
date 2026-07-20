@@ -15,6 +15,14 @@ vi.mock('../../lib/useLexicon', () => ({
   useLexicon: () => (term: string) => term,
 }));
 
+// P-006 perf-marks wiring: spy end, keep the real PERF_INTERACTIONS names.
+const perfMarks = vi.hoisted(() => ({ begin: vi.fn(), end: vi.fn() }));
+vi.mock('./perf/perf-marks', async (orig) => ({
+  ...(await orig<typeof import('./perf/perf-marks')>()),
+  beginInteraction: perfMarks.begin,
+  endInteraction: perfMarks.end,
+}));
+
 // Root/watchdog selection does not inherit apps/operator's setupFiles. Radix
 // may touch ResizeObserver while mounting the force-mounted dialog tree.
 if (typeof globalThis.ResizeObserver === 'undefined') {
@@ -48,6 +56,14 @@ function cmd(over: Partial<Command> = {}): Command {
 afterEach(cleanup);
 
 describe('CommandPalette (global ⌘K palette)', () => {
+  it('ends the command-palette-open perf interaction on mount (P-006)', () => {
+    // GlobalCommandPalette lazy-mounts this only on first open, so a mount-once
+    // end closes the measure its open-transition effect began.
+    perfMarks.end.mockClear();
+    render(<CommandPalette open onClose={vi.fn()} commands={[cmd()]} />);
+    expect(perfMarks.end).toHaveBeenCalledWith('command-palette-open');
+  });
+
   it('renders the search input + footer hints when open', () => {
     render(<CommandPalette open onClose={vi.fn()} commands={[cmd()]} />);
     expect(screen.getByLabelText('Search commands')).toBeTruthy();

@@ -859,6 +859,12 @@ async function sendOne(
     // nobody (an explicit selector reaching nobody already returned above).
     ...(audienceSelectors.length > 0 ? { recipients_resolved: env.to.length } : {}),
     ...(zeroRecipients ? { zero_recipients: zeroRecipients } : {}),
+    // EI-18145: the reply was recorded (satisfying unanswered-directed /
+    // delivery-ladder for `related_msg_id`) even though this addressee no
+    // longer resolves in the roster — their session ended, so no wake was
+    // attempted for them. Never an error: this IS how you close a loop with a
+    // departed correspondent.
+    ...(goneRepliedTo.length ? { recipients_gone: goneRepliedTo } : {}),
   };
 }
 

@@ -301,6 +301,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // spine, plan-link) that move the list row.
     'workItems.detail',
     'workItems.stats',
+    'workItems.delta24h',
     'contributors.byHarness',
     'featureTimeline.byFeature',
     'scheduler.running',
@@ -312,7 +313,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   // engineer_issues = the issue-family compat view over work_items (post-374; the base
   // table is the real producer above).
-  'harness_shared.engineer_issues': ['workItems.byHarness', 'workItems.detail', 'workItems.stats'],
+  'harness_shared.engineer_issues': ['workItems.byHarness', 'workItems.detail', 'workItems.stats', 'workItems.delta24h'],
   // coord_links = the rel='blocks' feature/work-item blocking edge table (EI-1/D-027,
   // the single source of truth for blocking) + the rel='implements' plan↔work-item
   // ledger edges. A blocks-edge add/remove is the single most important

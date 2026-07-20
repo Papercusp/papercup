@@ -19,7 +19,8 @@
  * inbox-sse.ts, neither of which this test exercises.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CoordEnvelope } from '../../../agent-tools/coordination/envelope';
+import type { CoordEnvelope, EscalationRecord } from '@papercusp/coordination/core';
+import type { HandoffWithAcceptance } from '../../../agent-tools/coordination/handoffs';
 
 const {
   readLinesBoundedMock,
@@ -29,10 +30,18 @@ const {
   listHandoffsPaginatedMock,
 } = vi.hoisted(() => ({
   readLinesBoundedMock: vi.fn(async () => [] as CoordEnvelope[]),
-  listEscalationsMock: vi.fn(async () => []),
-  listEscalationsPaginatedMock: vi.fn(async () => ({ escalations: [], truncated: false, total: 0 })),
-  listHandoffsMock: vi.fn(async () => []),
-  listHandoffsPaginatedMock: vi.fn(async () => ({ handoffs: [], truncated: false, total: 0 })),
+  listEscalationsMock: vi.fn(async () => [] as EscalationRecord[]),
+  listEscalationsPaginatedMock: vi.fn(async () => ({
+    escalations: [] as EscalationRecord[],
+    truncated: false,
+    total: 0,
+  })),
+  listHandoffsMock: vi.fn(async () => [] as HandoffWithAcceptance[]),
+  listHandoffsPaginatedMock: vi.fn(async () => ({
+    handoffs: [] as HandoffWithAcceptance[],
+    truncated: false,
+    total: 0,
+  })),
 }));
 
 vi.mock('@papercusp/agent-mcp', () => ({

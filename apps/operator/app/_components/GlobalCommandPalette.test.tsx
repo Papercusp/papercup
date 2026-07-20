@@ -96,13 +96,14 @@ describe('GlobalCommandPalette', () => {
   });
 
   it('begins the command-palette-open perf interaction when opened (P-006)', async () => {
-    // closed → no begin; open transition → begin fires once (any open path).
-    const { rerender } = renderHost(<GlobalCommandPalette />, '');
-    expect(perfMarks.begin).not.toHaveBeenCalled();
-    rerender(
-      <NuqsTestingAdapter searchParams="?palette=true"><GlobalCommandPalette /></NuqsTestingAdapter>,
-    );
+    // open (deep-link) → the open-transition effect begins the interaction.
+    renderHost(<GlobalCommandPalette />, '?palette=true');
     await waitFor(() => expect(perfMarks.begin).toHaveBeenCalledWith('command-palette-open'));
+  });
+
+  it('does not begin the command-palette-open interaction while closed (P-006)', () => {
+    renderHost(<GlobalCommandPalette />);
+    expect(perfMarks.begin).not.toHaveBeenCalled();
   });
 
   it('registers the palette.toggle shortcut', () => {

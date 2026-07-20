@@ -21,6 +21,7 @@ import { loadavg, availableParallelism } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
+import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -88,10 +89,17 @@ const captureOutput = () => retryFailed || !process.stdout.isTTY || process.env.
 // VITEST_MAX_WORKERS is the vitest-4 name (verified: the only worker-cap env
 // in vitest 4.1.8's dist); MAX_THREADS/MAX_FORKS kept as belts for any tree
 // still on vitest ≤3.
-const WORKER_CAP = String(Math.min(32, Math.max(8, Math.floor(availableParallelism() / 4))));
-if (!process.env.VITEST_MAX_WORKERS) process.env.VITEST_MAX_WORKERS = WORKER_CAP;
-if (!process.env.VITEST_MAX_FORKS) process.env.VITEST_MAX_FORKS = WORKER_CAP;
-if (!process.env.VITEST_MAX_THREADS) process.env.VITEST_MAX_THREADS = WORKER_CAP;
+//
+// WI-5621 (2026-07-20): the static cap above only protects against ONE run's
+// own worker count — it says nothing about how many OTHER concurrent
+// test:affected/test:file invocations (this fleet routinely runs dozens) are
+// already piling onto the same box. `applyWorkerCapEnv` adds an adaptive
+// shrink term: when loadavg is already above the core count (the host is
+// oversubscribed before this run even starts), the cap shrinks proportionally
+// instead of unconditionally grabbing up to 32 more workers. See
+// scripts/lib/worker-cap.mjs for the full rationale + the (unit-tested) pure
+// function this wraps.
+const WORKER_CAP = applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
