@@ -47,14 +47,36 @@ import { captureImprovement } from '../improvements/capture-core';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { requestUrgentPotWake } from '../../pot/urgent-wake';
 
-/** Terminal-enough statuses: the loop carried the canary to a verdict. */
-const CANARY_TERMINAL = new Set(['passed', 'deprecated', 'failed']);
+/**
+ * Terminal-enough statuses: the loop carried the canary to a verdict. Includes the
+ * unified work-item enum (`done`/`dropped`, work-item-status-full-unify) AND the
+ * legacy feature spellings (`passed`/`deprecated`/`failed`/`resolved`/`closed`).
+ * A cup now COMPLETES a canary to `done`, so omitting `done` here (the pre-unify
+ * bug, EI-18170) made a SUCCEEDED canary read as non-terminal — once the daily
+ * check ran unpaused it would falsely re-report + deprecate every completed canary
+ * older than the deadline. Exported for reuse by the fast SLA sweep so both
+ * detectors share ONE terminal definition.
+ */
+export const CANARY_TERMINAL = new Set([
+  'done',
+  'dropped',
+  'deprecated',
+  'passed',
+  'failed',
+  'resolved',
+  'closed',
+]);
+
+/** True when a canary feature has reached any terminal state (unified or legacy). */
+export function isCanaryTerminal(status: string): boolean {
+  return CANARY_TERMINAL.has(status);
+}
 
 export interface CanaryFeatureRow {
   feature_id: string;
   status: string;
   created_ts: number | string;
-  payload: { canary?: boolean; canary_reported?: boolean } | null;
+  payload: { canary?: boolean; canary_reported?: boolean; canary_sla_reported?: boolean } | null;
 }
 
 export interface CanaryPlan {
