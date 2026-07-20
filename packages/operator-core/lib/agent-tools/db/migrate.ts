@@ -92,11 +92,9 @@ const TRANSIENT_CONNECTION_ERROR_CODES = new Set([
  *  failure — the ONLY class the retry wrapper below targets. Exported + pure
  *  for unit testing. */
 export function isTransientConnectionFailure(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    typeof (err as { code?: unknown }).code === 'string' &&
-    TRANSIENT_CONNECTION_ERROR_CODES.has((err as { code: string }).code)
-  );
+  if (!(err instanceof Error)) return false;
+  const code = (err as Error & { code?: unknown }).code;
+  return typeof code === 'string' && TRANSIENT_CONNECTION_ERROR_CODES.has(code);
 }
 
 /** Exponential backoff (1s, 2s, 4s, capped at 8s) for attempt N (1-based) —
