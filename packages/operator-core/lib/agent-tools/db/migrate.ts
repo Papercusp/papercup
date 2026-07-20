@@ -65,6 +65,66 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// EI-18159491440495603: guardResource's underlying su-lock-store pool (postgres-js,
+// routed through the box's PgBouncer at :6432) occasionally drops a connection
+// mid-write on this heavily-parallel dev box — pgbouncer.log shows periodic
+// "pooler error: server conn crashed?" warnings independent of any code bug here.
+// postgres-js surfaces that as a plain Error with `.code` one of its own connection-
+// layer codes (CONNECTION_CLOSED / CONNECTION_DESTROYED / CONNECT_TIMEOUT — see
+// node_modules/postgres/src/errors.js's `connection()` factory), NOT a PostgresError
+// (a real SQL/logic failure). Previously this propagated as an UNCAUGHT throw out of
+// the handler (MCP error -32603: "write CONNECTION_CLOSED 127.0.0.1:6432"), forcing
+// every caller to fall back to a raw hand-rolled psql apply. Mirrors the EI-9417
+// lock-timeout retry below: same shape, a DIFFERENT (connection-layer, not
+// contention-layer) transient failure class — never retries a genuine SQL/logic
+// error, which throws a PostgresError with no such `.code`.
+const CONNECTION_RETRY_MAX_ATTEMPTS = 3;
+const CONNECTION_RETRY_BASE_DELAY_MS = 1000;
+const CONNECTION_RETRY_MAX_DELAY_MS = 8000;
+const TRANSIENT_CONNECTION_ERROR_CODES = new Set([
+  'CONNECTION_CLOSED',
+  'CONNECTION_DESTROYED',
+  'CONNECT_TIMEOUT',
+]);
+
+/** True iff `err` is one of postgres-js's own transient connection-layer errors
+ *  (see TRANSIENT_CONNECTION_ERROR_CODES above) rather than a real SQL/logic
+ *  failure — the ONLY class the retry wrapper below targets. Exported + pure
+ *  for unit testing. */
+export function isTransientConnectionFailure(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    typeof (err as { code?: unknown }).code === 'string' &&
+    TRANSIENT_CONNECTION_ERROR_CODES.has((err as { code: string }).code)
+  );
+}
+
+/** Exponential backoff (1s, 2s, 4s, capped at 8s) for attempt N (1-based) —
+ *  gives a dropped pgbouncer/PG connection a window to recover between
+ *  attempts. Pure + unit tested. */
+export function connectionRetryBackoffMs(attempt: number): number {
+  return Math.min(CONNECTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), CONNECTION_RETRY_MAX_DELAY_MS);
+}
+
+/** Run `fn` (a guardResource(...) call), retrying ONLY on a transient
+ *  connection-layer throw, up to `maxAttempts`, with backoff between
+ *  attempts. A non-transient error (including a genuine SQL/logic failure)
+ *  rethrows immediately, unretried — same contract as runMigrationWithLockRetry
+ *  above, at the connection layer instead of the lock-contention layer. */
+async function withConnectionRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = CONNECTION_RETRY_MAX_ATTEMPTS,
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= maxAttempts || !isTransientConnectionFailure(err)) throw err;
+      await sleep(connectionRetryBackoffMs(attempt));
+    }
+  }
+}
+
 type SpawnResult = SpawnSyncReturns<string>;
 
 /** Run the migration script via psql, retrying ONLY on a lock-timeout cancel,
