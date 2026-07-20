@@ -117,7 +117,10 @@ export function endInteraction(name: PerfInteractionName | string): number | nul
 export function getLatestMeasure(name: PerfInteractionName | string): number | null {
   const p = perf();
   if (!p) return null;
-  return latestMeasureDuration(p, name);
+  const d = latestMeasureDuration(p, name);
+  // Round at the public boundary so this matches endInteraction()'s return and
+  // the recorder's stored duration (both Math.round the same measure).
+  return d === null ? null : Math.round(d);
 }
 
 /** Drop any pending start mark for a name (the interaction was aborted). */

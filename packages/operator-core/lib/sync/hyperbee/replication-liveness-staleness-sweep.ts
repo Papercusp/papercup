@@ -1,0 +1,269 @@
+/**
+ * replication-liveness-staleness-sweep — closes the "abandoned but still-registered
+ * harness" hole in the replication-stall EI class (WI-5563).
+ *
+ * Context: replication-stall-orphan-sweep.ts already auto-resolves an open
+ * replication-liveness EI whose target harness has been RENAMED/DELETED (no longer
+ * in the workspace's harness registry at all) — that is unconditionally safe (a
+ * harness that doesn't exist can, by construction, never again produce a recovery
+ * sample). This sweep covers the WIDER, riskier case that orphan-sweep deliberately
+ * leaves alone: a target harness that STILL EXISTS in the registry (even a demo/test
+ * harness like hello-world*, spoon-knife*, dummy-pot-0707, sharetest732, lane2-*)
+ * but has had NO activity for a long time — i.e. genuinely abandoned, not renamed.
+ *
+ * WI-5563's own SQL diagnosis found 172 open replication-liveness EIs papercusp-wide
+ * (71 on papercusp itself), spanning 53 distinct harness slugs, most of them clearly
+ * one-off test/demo pots that will never run again — but whose registry ROW still
+ * exists, so orphan-sweep's existence check alone does not resolve them. Left alone,
+ * this class only ever grows (~12/day net accumulation as of 2026-07-20) and
+ * permanently inflates the "open bug" count with structurally-undrainable noise,
+ * starving any generic bug-drain fleet whose claim spec targets kind=bug (the
+ * bug-drain-200k fleet starvation this WI was filed to diagnose).
+ *
+ * SAFETY (mirrors auto-close.ts's philosophy for the same class of decision —
+ * autonomously resolving a durable escalation without a human/agent looking at the
+ * specific item is unsafe by default):
+ *   - Scoped to the connectivity-only EI kinds (`no_replicator` / `frozen` /
+ *     `connected_never_replicated`) — NEVER the `drain_*` kinds, which indicate an
+ *     active outbox-drain defect that could still affect a currently-idle-but-alive
+ *     harness and needs a human/agent look, not a blanket time sweep.
+ *   - Requires BOTH the EI itself to be old (`minEiAgeMs`) AND the target harness to
+ *     have recorded NO activity (`harness_status.last_active_ts`) for a long,
+ *     separate inactivity window (`minInactivityMs`) — an EI can be old on a harness
+ *     that only just went quiet; this sweep only fires once the harness itself has
+ *     been silent for a long time too.
+ *   - FAILS CLOSED: a harness with no `harness_status` row at all (last_active_ts
+ *     unknowable — could be a harness that was only just registered and never run)
+ *     is left untouched, exactly like an existence-check error in orphan-sweep.
+ *   - Gated behind a NEW default-OFF flag (`FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE`,
+ *     owner-authority class, same precedent as `WATCHDOG_AUTO_CLOSE`) — inert until
+ *     the owner reviews and enables it. KNOWN_DARK_FLAGS.
+ */
+
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { parseStallEiTarget } from './replication-stall-orphan-sweep';
+
+const KIND_RE = /(?:^|\s)kind=(\S+)/;
+
+/** Parse the `kind=…` field stamped by buildReplicationStallBody. */
+export function parseStallEiKind(body: string): string | null {
+  const m = KIND_RE.exec(body);
+  return m ? m[1] : null;
+}
+
+/**
+ * EI kinds eligible for the staleness sweep — connectivity-only signals whose
+ * absence-of-activity genuinely means "nobody is using this harness anymore",
+ * never the `drain_*` kinds (those indicate an active defect on a possibly-still-live
+ * harness, not mere disuse).
+ */
+export const STALENESS_ELIGIBLE_KINDS: ReadonlySet<string> = new Set([
+  'no_replicator',
+  'frozen',
+  'connected_never_replicated',
+]);
+
+/** Resolver identity stamped on staleness-swept EIs — distinct from both the normal
+ *  recovery-sample RECOVERY_OWNER and orphan-sweep's ORPHAN_SWEEP_OWNER so all three
+ *  closure reasons stay independently attributable. */
+export const STALENESS_SWEEP_OWNER = 'system:replication-liveness-staleness-sweep';
+
+/** Consecutive open EIs inspected per pass (same rationale as orphan-sweep's SWEEP_LIMIT). */
+const SWEEP_LIMIT = 1000;
+
+/** An EI younger than this never staleness-closes — give it a chance to recover
+ *  through the normal path first. Default 14 days. */
+export const DEFAULT_MIN_EI_AGE_MS = 14 * 24 * 60 * 60_000;
+
+/** The harness itself must have recorded NO activity for at least this long — a
+ *  SEPARATE, longer window than the EI age so a harness that only just went quiet
+ *  is not swept just because an old-ish EI happens to be open on it. Default 30 days. */
+export const DEFAULT_MIN_INACTIVITY_MS = 30 * 24 * 60 * 60_000;
+
+export interface StalenessSweepOptions {
+  minEiAgeMs?: number;
+  minInactivityMs?: number;
+}
+
+export interface StalenessCandidate {
+  id: string;
+  kind: string | null;
+  createdAtMs: number;
+  /** ms epoch of the target harness's last recorded activity, or null when unknown. */
+  lastActiveMs: number | null;
+}
+
+export interface StalenessDecision {
+  resolve: boolean;
+  reason: string;
+}
+
+/**
+ * Pure: should this open replication-stall EI staleness-close? Every guard is
+ * independently observable/unit-tested, mirroring decideAutoClose's shape.
+ */
+export function decideStaleness(
+  c: StalenessCandidate,
+  nowMs: number,
+  opts: StalenessSweepOptions = {},
+): StalenessDecision {
+  const minEiAge = opts.minEiAgeMs ?? DEFAULT_MIN_EI_AGE_MS;
+  const minInactivity = opts.minInactivityMs ?? DEFAULT_MIN_INACTIVITY_MS;
+  if (!c.kind || !STALENESS_ELIGIBLE_KINDS.has(c.kind)) {
+    return { resolve: false, reason: 'ineligible-kind' };
+  }
+  if (!Number.isFinite(c.createdAtMs) || nowMs - c.createdAtMs < minEiAge) {
+    return { resolve: false, reason: 'ei-too-new' };
+  }
+  if (c.lastActiveMs == null) {
+    // Fail CLOSED: unknown activity history (no harness_status row at all) —
+    // never resolve on an uncertain read, exactly like orphan-sweep's existence check.
+    return { resolve: false, reason: 'unknown-activity-fail-closed' };
+  }
+  if (nowMs - c.lastActiveMs < minInactivity) {
+    return { resolve: false, reason: 'harness-recently-active' };
+  }
+  return {
+    resolve: true,
+    reason:
+      `harness inactive for ≥${Math.round(minInactivity / 86_400_000)}d (last activity ` +
+      `${new Date(c.lastActiveMs).toISOString()}) and this ${c.kind} EI has been open ≥` +
+      `${Math.round(minEiAge / 86_400_000)}d with no recovery — treated as abandoned, not merely renamed/deleted`,
+  };
+}
+
+export interface StalenessSweepDeps {
+  listOpenReplicationStallEis(): Promise<Array<{ id: string; body: string; createdAtMs: number }>>;
+  /** Still-registered check (mirrors orphan-sweep's harnessExists) — a harness that no
+   *  longer exists is orphan-sweep's job, not this sweep's; skip it here either way. */
+  harnessExists(workspaceId: string, harnessSlug: string): Promise<boolean>;
+  /** ms epoch of the harness's last recorded activity, or null when no status row exists. */
+  harnessLastActiveMs(workspaceId: string, harnessSlug: string): Promise<number | null>;
+  resolve(id: string, note: string): Promise<void>;
+}
+
+export interface StalenessSweepResult {
+  checked: number;
+  resolvedIds: string[];
+  errors: number;
+}
+
+async function defaultDeps(): Promise<StalenessSweepDeps> {
+  const [{ listIssues, setIssueState }, { harnessExistsInWorkspace, harnessStatusFor }, { REPLICATION_LIVENESS_TOPIC }] =
+    await Promise.all([
+      import('../../issues-engineer'),
+      import('../../device-harnesses'),
+      import('./replication-stall-ei'),
+    ]);
+  return {
+    listOpenReplicationStallEis: async () => {
+      const issues = await listIssues({
+        state: 'open',
+        topic: REPLICATION_LIVENESS_TOPIC,
+        limit: SWEEP_LIMIT,
+      });
+      return issues.map((i) => ({
+        id: i.id,
+        body: i.body,
+        createdAtMs: i.createdAt ? Date.parse(i.createdAt) : NaN,
+      }));
+    },
+    harnessExists: harnessExistsInWorkspace,
+    harnessLastActiveMs: async (workspaceId, harnessSlug) => {
+      const status = await harnessStatusFor(workspaceId, harnessSlug);
+      return status?.last_active_ts ?? null;
+    },
+    resolve: async (id, note) => {
+      await setIssueState(id, 'resolved', STALENESS_SWEEP_OWNER, note);
+    },
+  };
+}
+
+/**
+ * One sweep pass: resolve every open, connectivity-only replication-stall EI whose
+ * target harness still exists but has been inactive long enough to be treated as
+ * abandoned. Flag-gated (default OFF) — returns a zero-result until the owner enables
+ * `papercusp-replication-liveness-staleness-auto-close`. Never throws — best-effort,
+ * same VITEST-without-deps safety gate as the orphan sweep.
+ */
+export async function runReplicationLivenessStalenessSweepOnce(
+  workspaceId: string,
+  opts: StalenessSweepOptions = {},
+  deps?: StalenessSweepDeps,
+): Promise<StalenessSweepResult> {
+  if (process.env.VITEST && !deps) {
+    return { checked: 0, resolvedIds: [], errors: 0 };
+  }
+  if (!deps) {
+    if (!(await getFlag(FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE, `replication-liveness-staleness-sweep:${workspaceId}`))) {
+      return { checked: 0, resolvedIds: [], errors: 0 };
+    }
+  }
+
+  let d: StalenessSweepDeps;
+  try {
+    d = deps ?? (await defaultDeps());
+  } catch {
+    return { checked: 0, resolvedIds: [], errors: 0 };
+  }
+
+  let open: Array<{ id: string; body: string; createdAtMs: number }>;
+  try {
+    open = await d.listOpenReplicationStallEis();
+  } catch {
+    return { checked: 0, resolvedIds: [], errors: 0 };
+  }
+
+  const nowMs = Date.now();
+  const activeCache = new Map<string, number | null>();
+  const resolvedIds: string[] = [];
+  let errors = 0;
+
+  for (const issue of open) {
+    const target = parseStallEiTarget(issue.body);
+    if (!target) continue; // malformed/foreign body — never touched
+    const kind = parseStallEiKind(issue.body);
+
+    // Orphan-sweep's job, not ours: a nonexistent harness is skipped here either way
+    // (it either already resolved via orphan-sweep, or will on its next pass).
+    let exists: boolean;
+    try {
+      exists = await d.harnessExists(target.workspaceId, target.harnessSlug);
+    } catch {
+      continue; // uncertain — leave it, never assume either sweep's precondition
+    }
+    if (!exists) continue;
+
+    const cacheKey = `${target.workspaceId}::${target.harnessSlug}`;
+    let lastActiveMs = activeCache.get(cacheKey);
+    if (lastActiveMs === undefined) {
+      try {
+        lastActiveMs = await d.harnessLastActiveMs(target.workspaceId, target.harnessSlug);
+      } catch {
+        lastActiveMs = null; // fails closed via decideStaleness's unknown-activity guard
+      }
+      activeCache.set(cacheKey, lastActiveMs);
+    }
+
+    const decision = decideStaleness(
+      { id: issue.id, kind, createdAtMs: issue.createdAtMs, lastActiveMs },
+      nowMs,
+      opts,
+    );
+    if (!decision.resolve) continue;
+
+    try {
+      await d.resolve(
+        issue.id,
+        `auto-resolved (staleness sweep): ${decision.reason}. If harness '${target.harnessSlug}' ` +
+          `becomes active again and re-stalls, a fresh alert files normally.`,
+      );
+      resolvedIds.push(issue.id);
+    } catch {
+      errors += 1;
+    }
+  }
+
+  return { checked: open.length, resolvedIds, errors };
+}

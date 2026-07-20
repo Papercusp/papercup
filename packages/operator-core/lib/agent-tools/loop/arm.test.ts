@@ -263,3 +263,35 @@ describe('loop:arm — EI-6878: firstFireAt must not leak the raw parked-loop se
     expect(b.loop.firstFireAt).toBeNull();
   });
 });
+
+describe('loop:arm — WI-5557 TIER 1: unbounded warm-carry WORK loop warning (additive, no behavior change)', () => {
+  it('warm + work + no maxFires/maxDurationSec (the default arm shape) → warning present in both the note and the structured field', async () => {
+    const b = body(await call({}));
+    expect(b.ok).toBe(true); // purely additive — arming still succeeds
+    expect(b.unboundedWarmLoopWarning).toContain('WI-5557');
+    expect(b.unboundedWarmLoopWarning).toMatch(/maxFires|maxDurationSec/);
+    expect(b.note).toContain('unattended warm-carry WORK loop');
+  });
+
+  it("warm + mode:'monitor' → no warning (a monitor loop is actively watched each wake by contract)", async () => {
+    const b = body(await call({ mode: 'monitor' }));
+    expect(b.unboundedWarmLoopWarning).toBeNull();
+    expect(b.note).not.toContain('unattended warm-carry WORK loop');
+  });
+
+  it("carry:'cold' → no warning (cold resets to the carry-note each fire, so context never grows unbounded)", async () => {
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.unboundedWarmLoopWarning).toBeNull();
+    expect(b.note).not.toContain('unattended warm-carry WORK loop');
+  });
+
+  it('either dead-man guard set (maxFires) suppresses the warning', async () => {
+    const b = body(await call({ maxFires: 20 }));
+    expect(b.unboundedWarmLoopWarning).toBeNull();
+  });
+
+  it('either dead-man guard set (maxDurationSec) suppresses the warning', async () => {
+    const b = body(await call({ maxDurationSec: 3600 }));
+    expect(b.unboundedWarmLoopWarning).toBeNull();
+  });
+});

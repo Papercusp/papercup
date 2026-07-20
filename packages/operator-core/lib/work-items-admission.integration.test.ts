@@ -109,7 +109,7 @@ function ins(fid: string, origin: string, verdict: string | null, ts: number, re
   return h.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, redundancy, created_ts, updated_ts)
-    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'todo', 'feature', ${origin}, ${verdict}, ${redundancy}, ${ts}, ${ts})`;
+    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'open', 'feature', ${origin}, ${verdict}, ${redundancy}, ${ts}, ${ts})`;
 }
 
 let db: FreshPgDb;
@@ -143,7 +143,7 @@ function insAuthored(fid: string, origin: string, verdict: string | null, ts: nu
   return h.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, author_pubkey, created_ts, updated_ts)
-    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'todo', 'feature', ${origin}, ${verdict}, ${pubkey}, ${ts}, ${ts})`;
+    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'open', 'feature', ${origin}, ${verdict}, ${pubkey}, ${ts}, ${ts})`;
 }
 
 /** Seed a feature with a VERIFIED author id (what P-008 stamps) — for the trust-leg cases. */
@@ -151,7 +151,7 @@ function insVerified(fid: string, origin: string, verdict: string | null, ts: nu
   return h.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, verified_author_github_user_id, created_ts, updated_ts)
-    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'todo', 'feature', ${origin}, ${verdict}, ${verifiedAuthorId}, ${ts}, ${ts})`;
+    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'open', 'feature', ${origin}, ${verdict}, ${verifiedAuthorId}, ${ts}, ${ts})`;
 }
 
 /** Add a trusted github id to a workspace's local trust list (defaults to the test WS). */
@@ -329,7 +329,7 @@ describe('G2 own-node leg — a workspace trusts its own substrate keys (real PG
     await h.sql`
       INSERT INTO harness_shared.harness_features_consolidated
         (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, author_pubkey, created_ts, updated_ts)
-      VALUES ('other-ws', ${HARNESS}, 'F-OTHER-LOCAL', 'F-OTHER-LOCAL', 'todo', 'feature', 'local', NULL, ${OURS}, 1, 1)`;
+      VALUES ('other-ws', ${HARNESS}, 'F-OTHER-LOCAL', 'F-OTHER-LOCAL', 'open', 'feature', 'local', NULL, ${OURS}, 1, 1)`;
     await insAuthored('F-REMOTE-HERE', 'remote', null, 2, OURS);
 
     expect(await claimWorkItem('F-REMOTE-HERE', 'cup', { harness: HARNESS })).toBeNull();
