@@ -151,13 +151,14 @@ const SYNTHETIC_MARKERS = [
  *
  * Deliberately BROADER than the live classifier's `detectMachineSurface`
  * (turn-provenance.ts), which mirrors the bash UserPromptSubmit hook
- * byte-for-byte and needs only the SYSTEM-NOTIFICATION banner. This post-hoc
- * transcript pass feeds the carry-doc continuation (P-010), where a
- * `<task-notification>`, a `[Request interrupted by user]` marker, or a
- * self-issued `/compact` misread as an "open owner message" would hand a
- * successor a machine string as its actual first prompt. Keep the
- * SYSTEM-NOTIFICATION + compaction-continuation shapes in lockstep with
- * turn-provenance.ts; the rest are transcript-only by design.
+ * byte-for-byte and (as of EI-18112745557098348) covers the SYSTEM-NOTIFICATION
+ * banner AND the bare `<task-notification>` tag. This post-hoc transcript pass
+ * feeds the carry-doc continuation (P-010), where those two plus a
+ * `[Request interrupted by user]` marker or a self-issued `/compact` misread
+ * as an "open owner message" would hand a successor a machine string as its
+ * actual first prompt. Keep the SYSTEM-NOTIFICATION + task-notification +
+ * compaction-continuation shapes in lockstep with turn-provenance.ts; the
+ * rest are transcript-only by design.
  *
  * Tested against the turn HEAD (bounds an incidental mid-body quote from
  * tripping a marker); each pattern carries its own anchor.

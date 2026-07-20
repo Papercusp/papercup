@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/cc-hooks/pretooluse-secrets-guard.mjs
+// apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs
 //
 // PreToolUse (Edit|Write|MultiEdit) BLOCKING secrets guard — su-papercusp-way-gate-2026-07-06 P-006.
 //
@@ -9,6 +9,13 @@
 //   A key written into a git-sync-owned shared tree is auto-committed within minutes and
 //   then lives in history. This hook is the hard backstop: it DENIES the write BEFORE the
 //   key-shaped string reaches a shared-tree file.
+//
+// Wired via mergeClaudeHookSettings (packages/operator-core/lib/desktop-
+// install/papercusp-files.ts) + the install-standalone-mcp.sh sibling
+// (merge_secrets_guard_hook) — KEEP THE TWO IN SYNC (knowledge-pack-loop-integrity
+// sibling bug pattern, EI-16981: this hook previously lived at repo-root
+// scripts/cc-hooks/ and was NEVER wired into either installer, so the deny this
+// header claims never actually fired — see the fix that moved it here).
 //
 // CONTRACT
 //   - Scope: writes whose file_path is inside a shared git-sync tree (built-in:

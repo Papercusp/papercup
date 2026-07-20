@@ -1,7 +1,12 @@
 #!/usr/bin/env node
-// scripts/cc-hooks/pretooluse-content-lint.mjs
+// apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs
 //
 // PreToolUse (Edit|Write|MultiEdit) ADVISORY content-lint — git-sync-dx-hardening-2026-06-17 P-013.
+//
+// WI-5543: previously lived at repo-root scripts/cc-hooks/ and was never wired into
+// CC_HOOK_FILES / mergeClaudeHookSettings / install-standalone-mcp.sh (same orphaned-dir
+// shape as EI-16981's guard-operator-desktop.mjs) — its curly-quote advisory never fired.
+// Moved here + wired below.
 //
 // WHY
 //   The git-sync content-guard quarantines a .ts/.tsx file containing a curly/"smart" quote in

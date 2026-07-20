@@ -5721,12 +5721,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 // ─── Public API ─────────────────────────────────────────────────────
 
 /**
+ * Bound on a single query name's resolve() (EI-18106470827657366): a resolver
+ * commonly awaits an unbounded downstream primitive (a PG-pool acquire, an fs
+ * walk) with no timeout of its own. When that primitive wedges — e.g. a
+ * starved getOrgPg pool, the same failure class dbos/pool-pressure.ts guards
+ * on the routines-tick path — the resolve() promise never settles, and the
+ * caller hangs indefinitely (observed: advRoster.list, self-recovered after
+ * 5-8 minutes with zero visible error in between, HTTP 000 on the client the
+ * whole time). This turns that silent indefinite hang into a fast, loud,
+ * recoverable 500 (rest-query.ts / rest-query-batch.ts already catch +
+ * surface any resolve() rejection). Override via
+ * PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS; comfortably under the ~15s window where
+ * a client gives up and reports HTTP 000, so a wedge fails clearly on the
+ * SERVER side first.
+ */
+const RESOLVER_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS) || 10_000;
+
+/**
  * Resolve a named query against the v2 registry. Returns flat rows on
  * success, NAME_NOT_FOUND if the name isn't registered yet (callers
  * fall back to the legacy resolver). Throws on schema-validation
- * failure or downstream errors — the route handler maps to HTTP.
+ * failure, downstream errors, or a resolver that didn't settle within
+ * RESOLVER_TIMEOUT_MS (QueryResolveTimeoutError) — the route handler maps
+ * every throw to HTTP.
  */
-export const resolveNamedQueryV2 = createResolver(REGISTRY as unknown as QueryRegistry);
+export const resolveNamedQueryV2 = createResolver(REGISTRY as unknown as QueryRegistry, {
+  timeoutMs: RESOLVER_TIMEOUT_MS,
+});
 
 /** Test-only — enumerate which names the v2 registry currently knows. */
 export function knownQueryNamesV2(): string[] {

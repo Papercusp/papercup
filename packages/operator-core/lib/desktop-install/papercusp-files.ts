@@ -526,6 +526,18 @@ const CC_HOOK_FILES = [
   // any installer (dead code with a misleading "Registered" comment); moved
   // here and wired below.
   'guard-operator-desktop.mjs',
+  // WI-5543: same orphaned-directory shape as guard-operator-desktop.mjs above — this
+  // PreToolUse (Edit|Write|MultiEdit) advisory curly-quote content-lint (P-013) lived at
+  // repo-root scripts/cc-hooks/ and was never wired into any installer (dead code). Moved
+  // here and wired below.
+  'pretooluse-content-lint.mjs',
+  // WI-5542: same orphaned-directory shape as guard-operator-desktop.mjs /
+  // pretooluse-content-lint.mjs above — this PreToolUse (Edit|Write|MultiEdit) hard
+  // DENY backstop against writing key-shaped secrets into a shared git-sync tree
+  // file lived at repo-root scripts/cc-hooks/ and was never wired into any
+  // installer (dead code whose own header claimed it was "the hard backstop").
+  // Moved here and wired below.
+  'pretooluse-secrets-guard.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1451,6 +1463,21 @@ export function mergeClaudeHookSettings(
       matcher:
         'mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill',
       hooks: cmd('guard-operator-desktop.mjs'),
+    });
+  // merge_content_lint_hook — PreToolUse, matcher 'Edit|Write|MultiEdit' (P-013). WI-5543:
+  // this hook existed in-repo but was never wired (same shape as guard-operator-desktop above).
+  if (has('pretooluse-content-lint.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-content-lint.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('pretooluse-content-lint.mjs'),
+    });
+  // merge_secrets_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit' (su-papercusp-way-gate
+  // P-006). WI-5542: this hard-DENY secrets backstop existed in-repo but was never wired (same
+  // dead-code shape as guard-operator-desktop / content-lint above).
+  if (has('pretooluse-secrets-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-secrets-guard.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('pretooluse-secrets-guard.mjs'),
     });
 
   return cfg;

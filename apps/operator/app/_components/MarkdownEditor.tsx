@@ -326,14 +326,14 @@ export function MarkdownPreview({
   if (outline) {
     const position = outline === 'right' ? 'right' : 'left';
     return (
-      <div className={className} style={{ display: 'flex', gap: 16, background: '#19232A', ...style }}>
+      <div className={className} style={{ display: 'flex', flex: '1 1 auto', minHeight: 0, gap: 16, background: '#19232A', ...style }}>
         {position === 'left' && (
           <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
         )}
         <div
           ref={ref}
           className="vditor-reset pc-md-preview"
-          style={{ flex: 1, background: '#19232A', color: '#e6e6e6', minWidth: 0 }}
+          style={{ flex: 1, background: '#19232A', color: '#e6e6e6', minWidth: 0, minHeight: 0 }}
         />
         {position === 'right' && (
           <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
