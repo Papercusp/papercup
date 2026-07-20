@@ -2146,6 +2146,17 @@ export function realCheckpointDeps(
    *  below) so the SAME runId appears in both the normal verdict path and the self-watchdog
    *  emergency-red path, which builds deps separately. */
   runId: string = randomUUID(),
+  /** EI-18104902318285612: test-only seam threaded straight through to the
+   *  attemptFlakeAbsorption call inside runGreen (its own now/sleep/retry* options).
+   *  A REAL invocation always omits this, so production behaviour is byte-identical
+   *  (attemptFlakeAbsorption defaults to real Date.now/setTimeout). A unit test whose
+   *  fixture makes a file fail on every isolation attempt (retryMax=1 still retries
+   *  ONCE before giving up) can inject a no-op `sleep` here so it never performs a
+   *  real ISOLATION_RETRY_DELAY_MS (5s) wait — eliminating the host-CPU-load timing
+   *  correlation this previously gave green-checkpoint-real-deps.test.ts's "real
+   *  break" / "fail-safe: re-run throws" cases (they retry a deterministically-still-
+   *  failing file once, so ran a real 5s setTimeout on every invocation). */
+  flakeAbsorptionOpts?: Parameters<typeof attemptFlakeAbsorption>[3],
 ): CheckpointDeps {
   const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
@@ -2376,7 +2387,7 @@ export function realCheckpointDeps(
       // undiagnosable after the fact).
       let isolationNote: string | undefined;
       if (r.code !== 0 && buildOk) {
-        const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log);
+        const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log, flakeAbsorptionOpts);
         isolationNote = outcome.note;
         if (outcome.absorbedToGreen) {
           green = true;

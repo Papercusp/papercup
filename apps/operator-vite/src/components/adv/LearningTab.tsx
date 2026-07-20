@@ -1533,12 +1533,6 @@ function CardGradeStars({
           </button>
         ))}
       </span>
-      <span
-        className="pc-learning__starmeta"
-        title={feedback ? `“${feedback}”` : undefined}
-      >
-        {attribution ?? "ungraded — a grade teaches the generator"}
-      </span>
       <button
         type="button"
         className="pc-learning__starnote"
@@ -1547,6 +1541,12 @@ function CardGradeStars({
       >
         {noteOpen ? "hide note" : feedback ? "note ✓" : "+ note"}
       </button>
+      <span
+        className="pc-learning__starmeta"
+        title={feedback ? `“${feedback}”` : undefined}
+      >
+        {attribution ?? "ungraded — a grade teaches the generator"}
+      </span>
       {noteOpen ? (
         <span className="pc-learning__stargrade-note">
           <input
@@ -1789,11 +1789,49 @@ function GymView({
               <div className="pc-learning__sectionhead">
                 <h2>Recent challengers</h2>
               </div>
-              <ul className="pc-learning__list">
-                {proposals.map((p) => (
-                  <GymProposalRow key={p.id} p={p} />
-                ))}
-              </ul>
+              {/* One deck per target ROLE (owner ask 2026-07-19e — the gym in
+                  cards too): the role is the deck's category + accent. */}
+              <div className="pc-learning__lensstacks">
+                {[...proposals
+                  .reduce((m, p) => {
+                    const role = p.role || "unknown";
+                    const bucket = m.get(role);
+                    if (bucket) bucket.push(p);
+                    else m.set(role, [p]);
+                    return m;
+                  }, new Map<string, GymProposal[]>())
+                  .entries()]
+                  .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+                  .map(([role, group]) => (
+                    <section
+                      key={role}
+                      className="pc-learning__lensgroup"
+                      aria-label={`${role} challengers`}
+                    >
+                      <CardStack
+                        items={group}
+                        getKey={(p) => p.id}
+                        ariaLabel={`${role} challengers`}
+                        accent={lensColor(role)}
+                        header={
+                          <>
+                            <span className="pc-cardstack__header-label">
+                              {role}
+                            </span>
+                            <span className="pc-cardstack__header-count">
+                              {group.length}
+                            </span>
+                          </>
+                        }
+                        renderCard={(p) => (
+                          <ul className="pc-learning__list pc-learning__gymcard">
+                            <GymProposalRow p={p} />
+                          </ul>
+                        )}
+                      />
+                    </section>
+                  ))}
+              </div>
             </>
           ) : null}
           {/* WI-5412 item 4: the gym-rail pills in Ideas reference Scout-SEEDED
@@ -3391,7 +3429,9 @@ export function ScoutView({
             onClick={() => openImprovement(rest)}
           >
             <i>{kind}</i>
-            {title ? `${rest} · ${title}` : rest}
+            <span className="pc-learning__tracechip-text">
+              {title ?? rest}
+            </span>
           </button>
         </Tooltip>
       );
@@ -3405,7 +3445,7 @@ export function ScoutView({
             onClick={() => openPlan(rest)}
           >
             <i>{kind}</i>
-            {rest}
+            <span className="pc-learning__tracechip-text">{rest}</span>
           </button>
         </Tooltip>
       );
@@ -3413,7 +3453,7 @@ export function ScoutView({
     return (
       <span key={ref} className="pc-learning__tracechip" title={ref}>
         <i>{kind}</i>
-        {rest}
+        <span className="pc-learning__tracechip-text">{rest}</span>
       </span>
     );
   };
@@ -3486,7 +3526,7 @@ export function ScoutView({
                   aria-hidden
                 />
                 <span>{meta.label}</span>
-                <b>{shortRef}</b>
+                <b className="pc-learning__tracechip-text">{shortRef}</b>
               </button>
             </Tooltip>
           </span>
@@ -3828,6 +3868,34 @@ export function ScoutView({
         label="How the cycle engine is doing"
         subtitle="what fires a cycle, the recent runs, and where routed ideas went"
       >
+      {/* The idea→work funnel LEADS the section (owner ask 2026-07-19e):
+          the outcome story first, the machinery below it. */}
+      {snap?.improveFunnel ? (
+        <div className="pc-learning__funnel" aria-label="Idea-to-work funnel">
+          <span title="Every idea a cycle routed onto a rail (work item, gym seed, plan, benchmark).">
+            <strong>{snap.improveFunnel.routed}</strong>
+            <small>ideas routed</small>
+          </span>
+          <i aria-hidden>→</i>
+          <span title="Routed onto the improvement rail — filed as a work item.">
+            <strong>{snap.improveFunnel.filed}</strong>
+            <small>filed as work</small>
+          </span>
+          <i aria-hidden>→</i>
+          <span title="Filed items currently claimed by an agent (open + assigned).">
+            <strong>{snap.improveFunnel.claimed}</strong>
+            <small>claimed</small>
+          </span>
+          <i aria-hidden>→</i>
+          <span
+            className={snap.improveFunnel.done > 0 ? "is-good" : undefined}
+            title="Filed items resolved or closed."
+          >
+            <strong>{snap.improveFunnel.done}</strong>
+            <small>done</small>
+          </span>
+        </div>
+      ) : null}
       {health.markers.length > 0 ? (
         <ul className="pc-learning__warnlist" aria-label="Ideas health warnings">
           {health.markers.map((m) => (
@@ -3916,35 +3984,6 @@ export function ScoutView({
         )}
       </div>
 
-      {/* Improve-stage funnel (WI-5412 item 3): ideas → filed → claimed → done
-          — what the routed work actually did, distinct from grading (which
-          teaches the generator). Server-derived (improveFunnel leg). */}
-      {snap?.improveFunnel ? (
-        <div
-          className="pc-learning__improvementflow pc-learning__improvementflow--funnel"
-          aria-label="Idea-to-work funnel"
-        >
-          <span title="Every idea a cycle routed onto a rail (work item, gym seed, plan, benchmark).">
-            <small>Ideas routed</small>
-            <strong>{snap.improveFunnel.routed}</strong>
-          </span>
-          <i aria-hidden />
-          <span title="Routed onto the improvement rail — filed as a work item.">
-            <small>Filed</small>
-            <strong>{snap.improveFunnel.filed}</strong>
-          </span>
-          <i aria-hidden />
-          <span title="Filed items currently claimed by an agent (open + assigned).">
-            <small>Claimed</small>
-            <strong>{snap.improveFunnel.claimed}</strong>
-          </span>
-          <i aria-hidden />
-          <span className="is-good" title="Filed items resolved or closed.">
-            <small>Done</small>
-            <strong>{snap.improveFunnel.done}</strong>
-          </span>
-        </div>
-      ) : null}
       </LearningDisclosure>
 
       {/* Lens weights — always visible under a standard header (owner ask
@@ -5002,15 +5041,19 @@ export function LearningStyles() {
         font-size: 11px; font-weight: 520; font-style: italic; color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__tracedot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+      .pc-learning__tracechip-text {
+        flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
       .pc-learning__tracechip b { font-weight: 680; color: var(--fg, #e7eef5); overflow: hidden; text-overflow: ellipsis; }
       .pc-learning__tracechip {
         display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 8px;
         font-size: 10.5px; font-weight: 600; border-radius: 6px; font-family: inherit;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         background: var(--bg-2, rgba(255, 255, 255, 0.04)); color: var(--fg-dim, #b9d4e8);
-        /* WRAP long refs — clipping cut fact/plan slugs unreadably mid-token
-           (owner screenshot 2026-07-19 19:31). */
-        max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left;
+        /* FIXED width + end-ellipsis (owner ask 2026-07-19e): the raw id/slug
+           is never needed in full on the card — the tooltip and the artifact
+           itself carry it. The child -text span does the truncating. */
+        max-width: 200px; white-space: nowrap; text-align: left;
         transition: border-color 130ms ease, color 130ms ease, background 130ms ease;
       }
       .pc-learning__tracechip i {
@@ -5160,9 +5203,11 @@ export function LearningStyles() {
         font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8);
       }
       .pc-learning__gymhow { margin: -2px 2px 6px; }
+      .pc-learning__gymcard { margin: 0; }
+      .pc-learning__gymcard > li { border: none; background: transparent; padding: 11px 13px; }
       /* ── Inline star grader on the idea card (owner ask 2026-07-19d) ───── */
       .pc-learning__stargrade {
-        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px;
         padding: 6px 8px; border-radius: 8px;
         border: 1px dashed color-mix(in srgb, #fbbf24 35%, var(--border, rgba(125, 211, 252, 0.16)));
         background: color-mix(in srgb, #fbbf24 4%, transparent);
@@ -5181,10 +5226,13 @@ export function LearningStyles() {
       .pc-learning__star:hover { transform: scale(1.2); color: #fbbf24; }
       .pc-learning__star.is-on { color: #fbbf24; }
       .pc-learning__star:disabled { opacity: 0.5; cursor: default; }
-      .pc-learning__starmeta { font-size: 10.5px; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
+      .pc-learning__starmeta {
+        flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-size: 10.5px; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums;
+      }
       .pc-learning__stargrade.is-ungraded .pc-learning__starmeta { color: var(--fg-mute, #7f9bb4); font-style: italic; }
       .pc-learning__starnote {
-        margin-left: auto; padding: 2px 9px; border-radius: 6px; cursor: pointer;
+        flex: none; padding: 2px 9px; border-radius: 6px; cursor: pointer;
         font: inherit; font-size: 10px; font-weight: 600;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
         background: none; color: var(--fg-mute, #7f9bb4);
@@ -5241,6 +5289,35 @@ export function LearningStyles() {
       .pc-learning__tickrow--bad strong { color: #ef4444; }
       .pc-learning__tickwhat { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pc-learning__tickrow .pc-learning__tickspend { flex: none; font-variant-numeric: tabular-nums; color: var(--fg-mute, #7f9bb4); }
+      /* The idea→work funnel: stage tiles, big numbers, arrows between
+         (owner ask 2026-07-19e — leads the cycle-engine section). */
+      .pc-learning__funnel {
+        display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap;
+        margin: 2px 0 10px;
+      }
+      .pc-learning__funnel > span {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 2px; min-width: 86px; padding: 9px 14px; border-radius: 9px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        background: var(--bg-2, rgba(255, 255, 255, 0.04));
+      }
+      .pc-learning__funnel > span > strong {
+        font-size: 17px; font-weight: 760; line-height: 1;
+        color: var(--fg, #e7eef5); font-variant-numeric: tabular-nums;
+      }
+      .pc-learning__funnel > span > small {
+        font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+        color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__funnel > span.is-good {
+        border-color: color-mix(in srgb, var(--good, #34d399) 45%, transparent);
+        background: color-mix(in srgb, var(--good, #34d399) 8%, transparent);
+      }
+      .pc-learning__funnel > span.is-good > strong { color: var(--good, #34d399); }
+      .pc-learning__funnel > i {
+        align-self: center; font-style: normal; font-size: 14px;
+        color: var(--fg-mute, #7f9bb4);
+      }
       /* The one-line plain-language glance replacing the instrument stack
          (owner ask 2026-07-19). */
       .pc-learning__glance {

@@ -268,8 +268,11 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     // ISOLATION_RETRY_MAX(=1) retry, which must ALSO fail (isolation-retry-resilience /
     // EI-15849). Without scripting the retry result the exhausted-queue default ({code:0})
     // would let file #2's retry "pass", masking the real break as an absorbed load-flake.
+    // EI-18104902318285612: that retry is gated behind a REAL ISOLATION_RETRY_DELAY_MS
+    // (5s) setTimeout unless a sleep seam is injected — inject a no-op so this stays a
+    // fast, hermetic unit test with zero host-load timing correlation.
     const { exec } = makeExec([{ code: 1, stdout: RED_OUTPUT }, { code: 0 }, { code: 1 }, { code: 1 }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
+    const r = await realCheckpointDeps(cfg, exec, undefined, { sleep: async () => {} }).runGreen(cpTree, null);
 
     expect(r.green).toBe(false); // a real deterministic break is NEVER hidden
     expect(r.flakeSuspects).toBeUndefined();
@@ -279,14 +282,16 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   });
 
   it('fail-safe: an isolation re-run that THROWS leaves the gate red (no false green)', async () => {
-    // A red suite with one parseable failing file; the isolation exec throws.
+    // A red suite with one parseable failing file; the isolation exec throws — on every
+    // attempt, so this also drives the ISOLATION_RETRY_MAX(=1) retry path (EI-18104902318285612):
+    // inject a no-op sleep so the retry's real ISOLATION_RETRY_DELAY_MS wait never fires.
     let i = 0;
     const throwingExec: CheckpointExec = async (cmd, _args, _opts) => {
       i++;
       if (i === 1) return { code: 1, stdout: '>>> @papercusp/x :: npm run test\n FAIL  lib/a.test.ts > c', stderr: '' };
       throw new Error('vitest spawn ENOMEM'); // the isolation re-run itself errors
     };
-    const r = await realCheckpointDeps(cfg, throwingExec).runGreen(cpTree, null);
+    const r = await realCheckpointDeps(cfg, throwingExec, undefined, { sleep: async () => {} }).runGreen(cpTree, null);
     expect(r.green).toBe(false);
     expect(r.flakeSuspects).toBeUndefined();
   });

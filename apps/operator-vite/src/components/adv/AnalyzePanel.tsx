@@ -155,6 +155,12 @@ export function AnalyzePanel({
         padding-left: 8px;
       }
       .pc-analyze__notes b { font-weight: 660; color: var(--fg, #e7eef5); }
+      /* Ref chips: fixed width + end-ellipsis — the raw id is never needed in
+         full on the card (owner ask 2026-07-19e); tooltip carries it. */
+      .pc-analyze__chip--ref { max-width: 190px; }
+      .pc-analyze__chip-text {
+        flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
       .pc-analyze__sectionhead {
         display: flex; align-items: baseline; gap: 10px; margin: 12px 2px 6px;
       }
@@ -316,7 +322,7 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
         <Tooltip key={ref} label={`${rest} — open in Improvements`}>
           <button
             type="button"
-            className="pc-analyze__chip pc-analyze__chip--link"
+            className="pc-analyze__chip pc-analyze__chip--link pc-analyze__chip--ref"
             onClick={() => {
               void setLsel(rest);
               void setLane(null);
@@ -324,14 +330,14 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
               void setLviewRaw("improvements");
             }}
           >
-            ⊙ {rest}
+            ⊙ <span className="pc-analyze__chip-text">{rest}</span>
           </button>
         </Tooltip>
       );
     }
     return (
-      <span key={ref} className="pc-analyze__chip" title={ref}>
-        ⊙ {rest}
+      <span key={ref} className="pc-analyze__chip pc-analyze__chip--ref" title={ref}>
+        ⊙ <span className="pc-analyze__chip-text">{rest}</span>
       </span>
     );
   };

@@ -784,8 +784,8 @@ describe("LearningTab — Gym view", () => {
       screen.getByText("tighten the worker acceptance check"),
     ).toBeTruthy();
     expect(screen.getByText("more explicit chunk sizing")).toBeTruthy();
-    // the champion (accepted) proposal's role
-    expect(screen.getByText("worker")).toBeTruthy();
+    // the champion (accepted) proposal's role — on the deck badge AND the row
+    expect(screen.getAllByText("worker").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders the gym empty state when no proposals exist", () => {
@@ -1215,11 +1215,12 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     const trace = screen.getByLabelText(
       "Pipeline trace for Cache-warmup plan draft",
     );
-    // Grounding: the wi: ref resolved to its title (clickable), the readable
-    // typed ref rendered as-is.
+    // Grounding: a RESOLVED wi: ref shows its title alone (the raw id lives in
+    // the tooltip — owner ask 2026-07-19e); the readable typed ref renders as-is.
     expect(trace.textContent).toContain(
-      "EI-100 · coord invariant: wake-queue depth growth",
+      "coord invariant: wake-queue depth growth",
     );
+    expect(trace.textContent).not.toContain("EI-100 ·");
     expect(trace.textContent).toContain("workspace:some-standing-fact");
     // Lens + origin, the routed artifact, the grade GAP, and the outcome.
     expect(trace.textContent).toContain("reframing");

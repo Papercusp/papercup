@@ -1550,7 +1550,10 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
       file,
       passed: file.includes('runner-aggregate'), // scheduler-workspace-scope STILL fails
     });
-    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun);
+    // EI-18104902318285612: the still-failing file re-fails on every attempt, so this
+    // exercises the ISOLATION_RETRY_MAX(=1) retry — inject a no-op sleep so the real
+    // ISOLATION_RETRY_DELAY_MS (5s) setTimeout never fires (host-load-correlated flake).
+    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, { sleep: async () => {} });
     expect(out.absorbedToGreen).toBe(false);
     expect(out.flakeSuspects).toEqual([]);
   });
@@ -1559,7 +1562,9 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
     const isolationRun = async (): Promise<IsolationResult> => {
       throw new Error('vitest spawn failed');
     };
-    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun);
+    // EI-18104902318285612: throws on every attempt too — same retry path, same no-op
+    // sleep seam to keep this a fast, deterministic unit test.
+    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, { sleep: async () => {} });
     expect(out.absorbedToGreen).toBe(false);
   });
 
