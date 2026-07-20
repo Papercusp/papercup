@@ -1226,6 +1226,27 @@ export function startOutboxDrain(
         if (n >= rowQuarantineThreshold) {
           rowTimeoutCounts.delete(key);
           quarantinedIds.add(key);
+          // mig 645 (WI-3896 follow-up): PERSIST the quarantine so it survives
+          // this process's restart (this dev box's hosts self-recycle every
+          // ~5-8min) — without this, a restart forgets `quarantinedIds` and
+          // re-discovers the SAME poison row from scratch (3 more consecutive
+          // 45s stage timeouts before re-quarantining, every single restart,
+          // forever). Best-effort + fire-and-forget: a write failure here must
+          // never block the drain loop — the in-memory `quarantinedIds` add
+          // above already protects THIS process's passes regardless.
+          void pg`
+            UPDATE harness_shared.substrate_outbox
+               SET quarantined_at = ${Date.now()}
+             WHERE id = ${e.rowId}
+               AND quarantined_at IS NULL
+          `.catch((persistErr: unknown) => {
+            console.error(
+              `[outbox-drain] WI-3896 quarantine: failed to PERSIST quarantined_at for row ` +
+                `id=${e.rowId} (in-memory quarantine still applies for this process; a restart ` +
+                `will re-discover + re-time-out this row):`,
+              persistErr instanceof Error ? persistErr.message : String(persistErr),
+            );
+          });
           const detail =
             `outbox-drain for ${wantPayload}: row id=${e.rowId} (stage '${e.stage}') timed out ` +
             `${n}× consecutively and is now QUARANTINED (permanently skipped — left undrained ON ` +

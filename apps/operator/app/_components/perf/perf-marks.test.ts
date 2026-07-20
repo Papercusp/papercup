@@ -15,6 +15,7 @@ import {
   getLatestMeasure,
   clearInteraction,
 } from './perf-marks';
+import { DESKTOP_PERF_BUDGETS } from '@papercusp/operator-core/lib/system-health/desktop-perf-budgets';
 
 const NAME = PERF_INTERACTIONS.planPopupOpen;
 const START = `${NAME}:start`;
@@ -44,6 +45,15 @@ describe('PERF_INTERACTIONS registry', () => {
     expect(PERF_INTERACTIONS.inboxListSettle).toBe('inbox-list-settle');
     expect(PERF_INTERACTIONS.conversationThreadLoad).toBe('conversation-thread-load');
     expect(PERF_INTERACTIONS.harnessDockOpen).toBe('harness-dock-open');
+  });
+
+  it('every registered interaction has a DESKTOP_PERF_BUDGETS entry (no unbudgeted instrumentation)', () => {
+    for (const name of Object.values(PERF_INTERACTIONS)) {
+      expect(
+        DESKTOP_PERF_BUDGETS.interactions[name],
+        `PERF_INTERACTIONS.${name} is instrumented but has no budget in DESKTOP_PERF_BUDGETS.interactions`,
+      ).toBeTypeOf('number');
+    }
   });
 
   it('every P-006 interaction begins + ends like plan-popup-open (shared substrate)', () => {
