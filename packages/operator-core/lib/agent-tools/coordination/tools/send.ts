@@ -340,17 +340,72 @@ async function sendOne(
   const wakeOnReplyFlag = await getFlag(FLAGS.COORD_WAKE_ON_REPLY, 'system').catch(() => true);
   const effectiveWakeOnReply = wakeOnReplyFlag && (msg.wakeOnReply ?? isDirected(msg.to));
 
+  // Reply-threading honesty (WI-5072): related_msg_id is the edge the ENTIRE
+  // reply-wake contract fires on — the asker's wakeOnReply can only match a
+  // reply whose related_msg_id resolves to their message. A dangling id
+  // (hand-typed, placeholder, stale) silently voided that contract for BOTH
+  // sides: the replier's send returned ok, the asker slept until a human
+  // prodded them (live incident 2026-07-16: a reply threaded to the literal id
+  // 'mrnyt8k4-0000-placeholder'; 62 of 870 replies in the prior 7 days dangled
+  // the same way, across many senders). Mirror the relayOf contract directly
+  // below: a CLEAN lookup miss refuses the message loudly; an infra error
+  // stays fail-soft (never refuse a genuine reply on a transient read hiccup).
+  // The fetched original is reused by the reply-wake block below (one lookup),
+  // AND by the recipient-resolution block right after (EI-18145: see
+  // `goneRepliedTo` — resolved BEFORE recipient resolution so that block can
+  // tell "closing a loop with a since-ended sender" apart from a bad address).
+  let relatedOriginal: Awaited<ReturnType<typeof getMessageById>> = null;
+  if (msg.related_msg_id) {
+    let lookupErrored = false;
+    try {
+      relatedOriginal = await getMessageById(msg.related_msg_id);
+    } catch {
+      lookupErrored = true; // infra hiccup — deliver anyway (fail-soft)
+    }
+    if (!lookupErrored && relatedOriginal == null) {
+      return {
+        ok: false,
+        to: msg.to,
+        error: 'related_msg_not_found',
+        message:
+          `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent. ` +
+          `A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
+          `you believe you replied). Copy the EXACT msg_id from coord:inbox / the message you ` +
+          `are answering — never hand-type or placeholder it. If the original is genuinely ` +
+          `old/pruned, resend without related_msg_id.`,
+      };
+    }
+  }
+
   // owner-2026-06-17: validate + resolve recipients against the live roster
   // BEFORE sending. A short ownerId PREFIX resolves to the full id (so the exact
   // `coord:inbox-wake:<ownerId>` wake key matches and the wake lands); a concrete
   // recipient that matches NO known agent is a LOUD error — the send does NOT
   // happen — instead of the old silent ok:true. Fail-soft: a roster-read hiccup
   // degrades to the raw ids (never blocks coord). Local-roster scoped.
+  //
+  // EI-18145: a reply CLOSING A LOOP with the original sender of `related_msg_id`
+  // is exempt from the unknown-recipient refusal for THAT one id. A directed
+  // obligation (unanswered-directed / the delivery-ladder alarm) is satisfied by
+  // recording a reply authored by the recipient with `related_msg_id` set — it
+  // does NOT require the original sender to still exist. Before this fix, once
+  // a correspondent's session ended (reaped from the roster), NOTHING could ever
+  // satisfy that check: the only tool that writes the satisfying reply row
+  // (coord:send) hard-refused with `unknown_recipient` the moment its `to`
+  // named the now-gone sender — a structurally unresolvable dead end (observed
+  // live: EI-18145123522199011, a directed ping from a since-ended sender kept
+  // re-surfacing as "unanswered" with no way to ever clear it). Scoped tight:
+  // only the specific unknown id that IS `relatedOriginal.from` is exempted —
+  // any OTHER unknown/ambiguous recipient on the same send still hard-refuses.
   let toSend = msg.to;
+  let goneRepliedTo: string[] = [];
   if (msg.to.some((id) => !isSelectorOrWildcard(id))) {
     try {
       const r = await resolveRecipients(msg.to, identity.workspaceId);
-      if (r.unknown.length || r.ambiguous.length) {
+      const closingGoneSender = relatedOriginal?.from ?? null;
+      goneRepliedTo = closingGoneSender ? r.unknown.filter((id) => id === closingGoneSender) : [];
+      const trulyUnknown = r.unknown.filter((id) => !goneRepliedTo.includes(id));
+      if (trulyUnknown.length || r.ambiguous.length) {
         return {
           ok: false,
           to: msg.to,
@@ -359,11 +414,11 @@ async function sendOne(
             'coord:send addressed agent(s) not in the roster — nothing was sent. ' +
             'Use the short handle from [coord+N]/inbox, the su- prefix, or the full ownerId ' +
             '(coord:presence lists them); a substring of a live ownerId also resolves.',
-          ...(r.unknown.length ? { unknown_recipients: r.unknown } : {}),
+          ...(trulyUnknown.length ? { unknown_recipients: trulyUnknown } : {}),
           ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
         };
       }
-      toSend = r.resolved;
+      toSend = [...r.resolved, ...goneRepliedTo];
     } catch (e) {
       console.warn(
         `[coord:send] recipient resolve failed, sending unresolved: ${e instanceof Error ? e.message : e}`,
@@ -394,40 +449,6 @@ async function sendOne(
       };
     }
     relayStamp = r.stamp;
-  }
-
-  // Reply-threading honesty (WI-5072): related_msg_id is the edge the ENTIRE
-  // reply-wake contract fires on — the asker's wakeOnReply can only match a
-  // reply whose related_msg_id resolves to their message. A dangling id
-  // (hand-typed, placeholder, stale) silently voided that contract for BOTH
-  // sides: the replier's send returned ok, the asker slept until a human
-  // prodded them (live incident 2026-07-16: a reply threaded to the literal id
-  // 'mrnyt8k4-0000-placeholder'; 62 of 870 replies in the prior 7 days dangled
-  // the same way, across many senders). Mirror the relayOf contract directly
-  // above: a CLEAN lookup miss refuses the message loudly; an infra error
-  // stays fail-soft (never refuse a genuine reply on a transient read hiccup).
-  // The fetched original is reused by the reply-wake block below (one lookup).
-  let relatedOriginal: Awaited<ReturnType<typeof getMessageById>> = null;
-  if (msg.related_msg_id) {
-    let lookupErrored = false;
-    try {
-      relatedOriginal = await getMessageById(msg.related_msg_id);
-    } catch {
-      lookupErrored = true; // infra hiccup — deliver anyway (fail-soft)
-    }
-    if (!lookupErrored && relatedOriginal == null) {
-      return {
-        ok: false,
-        to: msg.to,
-        error: 'related_msg_not_found',
-        message:
-          `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent. ` +
-          `A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
-          `you believe you replied). Copy the EXACT msg_id from coord:inbox / the message you ` +
-          `are answering — never hand-type or placeholder it. If the original is genuinely ` +
-          `old/pruned, resend without related_msg_id.`,
-      };
-    }
   }
 
   // EI-279: persist the wake intent ON the envelope so it federates — a recipient

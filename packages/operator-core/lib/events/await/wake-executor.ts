@@ -388,6 +388,14 @@ function payloadIsTimeout(payload: unknown): boolean {
   return false;
 }
 
+/** The per-agent inbox-wake key prefix (`coord:inbox-wake:<owner>`). Kept in
+ *  lockstep with the canonical export in agent-tools/coordination/inbox-wake.ts —
+ *  duplicated (not imported) ONLY to avoid the wake-executor → inbox-wake →
+ *  engine → wake-executor import cycle (engine.ts imports THIS module; inbox-wake
+ *  imports engine). Same "two owners, one string, in lockstep" pattern as
+ *  TURN_SUBMIT_CR_DELAY_MS above. */
+const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
+
 /** Compose the single-line wake turn injected/submitted into the woken session. */
 export function wakeTurnText(d: DeliveryWork): string {
   const note = d.note ? ` (your note: ${d.note})` : '';
@@ -397,12 +405,28 @@ export function wakeTurnText(d: DeliveryWork): string {
   const timeout = payloadIsTimeout(d.payload)
     ? ' [TIMEOUT — the event did NOT fire before your deadline]'
     : '';
+  // EI-16648: an always-armed inbox-wake (`coord:inbox-wake:<owner>`) can be
+  // CONSUMED late. A continuously-busy recipient's OWN periodic coord:inbox
+  // polling may already have surfaced + acted on the quoted message before the
+  // injected wake turn is drained from its CLI's input queue — a PUSH (wake
+  // injection) vs PULL (the recipient's own inbox read) race, not a duplicate-row
+  // or stale-pump bug (each delivery is distinct + fresh at fire time; the
+  // staleness only emerges at consumption). Presenting the possibly-already-
+  // handled `summary`/`payload` as fresh actionable work ("continue the work…")
+  // then misleads the woken agent into re-doing handled mail. So for inbox-wake
+  // keys ONLY, stamp a self-identifying reconciliation instruction (the EI-15799
+  // precedent for the analogous stale cold-loop-wake delivery) — keep the quoted
+  // body (useful when genuinely new) but tell the agent to reconcile against
+  // coord:inbox before trusting it. Every non-inbox-wake key is byte-identical.
+  const inboxWakeReconcile = d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)
+    ? ' NOTE (inbox-wake): the quoted message may ALREADY have been surfaced + handled by your own coord:inbox polling before this wake was consumed — reconcile against coord:inbox { since_ts: <your last read> } and do NOT re-do handled mail or trust the quoted body as necessarily new.'
+    : '';
   // P-006 (fleet-member-dx, EI-9018): `d.id` is the DELIVERY-LOG row id, not a
   // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
   // two contradictory counters and confused resuming agents. Label it as an id.
   const base = (
     `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
-    `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)`
+    `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)${inboxWakeReconcile}`
   ).replace(/\s*\n\s*/g, ' ');
   // Ambient-push rail (P-003): a prepared teaser block rides the wake injection.
   // Appended AFTER the collapse so it keeps its own line formatting; undefined on

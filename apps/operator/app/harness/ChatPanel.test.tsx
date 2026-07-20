@@ -16,7 +16,7 @@
  */
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 // useSyncQuery → a single chat row matching the panel's chatId so `chat`
 // populates from the cache (loadChat takes the cached-row path, no REST fetch).
@@ -107,6 +107,17 @@ afterEach(() => {
  * The distinction these tests pin: STILL-LOADING must keep spinning, but
  * RESOLVED-AND-EMPTY is a real, reportable outcome. Empty is never eternal.
  */
+describe('ChatPanel — conversation-thread-load perf interaction (P-006)', () => {
+  it('begins on open (chatId set) and ends when the thread renders', async () => {
+    syncRows = [chatRow()]; // resolves to a matching chat.id === chatId
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    // begins the moment the conversation is opened…
+    expect(perfMarks.begin).toHaveBeenCalledWith('conversation-thread-load');
+    // …and ends once that chat's transcript first renders.
+    await waitFor(() => expect(perfMarks.end).toHaveBeenCalledWith('conversation-thread-load'));
+  });
+});
+
 describe('ChatPanel — resolved-but-empty is an error, not an eternal spinner (WI-5125)', () => {
   it('surfaces a not-found fault when the subscription settles with zero rows', async () => {
     syncRows = [];

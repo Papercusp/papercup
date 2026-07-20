@@ -1238,8 +1238,12 @@ export default defineTool({
       `;
       let passed = 0;
       let inflight = 0;
+      // work-item-status-full-unify P-007: the success terminal is the unified `done`
+      // (feature `passed`→`done`, nuance in terminal_reason). Count BOTH spellings so a
+      // post-backfill `done` feature isn't miscounted as still-inflight.
+      const isPassed = (s: string) => s === 'passed' || s === 'done';
       for (const r of rows) {
-        if (r.status === 'passed') passed++;
+        if (isPassed(r.status)) passed++;
         else inflight++;
       }
       statusCounts = { total: rows.length, inflight, passed };
@@ -1254,7 +1258,7 @@ export default defineTool({
         const ws = waveMap.get(w)!;
         ws.total += 1;
         const s = r.status;
-        if (s === 'passed') ws.passed += 1;
+        if (isPassed(s)) ws.passed += 1;
         else if (s === 'failing') { ws.failing += 1; ws.inflight += 1; }
         else if (s === 'blocked') { ws.blocked += 1; }
         else ws.inflight += 1;
