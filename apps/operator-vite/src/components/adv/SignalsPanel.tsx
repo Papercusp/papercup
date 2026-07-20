@@ -450,6 +450,7 @@ export function SignalsPanel({
                         items={entries}
                         getKey={(e) => e.ref}
                         ariaLabel={`New ${laneLabel(lane)} entries`}
+                        accent={FED_LANE_COLOR[lane] ?? hashLaneColor(lane)}
                         header={
                           <>
                             <Tooltip label={FED_LANE_DOCS[lane] ?? lane}>
@@ -508,6 +509,7 @@ export function SignalsPanel({
                             items={entries}
                             getKey={(e) => e.ref}
                             ariaLabel={`${laneLabel(lane)} standing entries`}
+                            accent={FED_LANE_COLOR[lane] ?? hashLaneColor(lane)}
                             header={
                               <>
                                 <Tooltip label={FED_LANE_DOCS[lane] ?? lane}>

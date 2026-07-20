@@ -3856,7 +3856,7 @@ export function ScoutView({
           starvation lived, invisibly. Newest first; same ledger rows the
           quality/success metrics judge from (D-001). */}
       <div
-        className="pc-learning__tickstrip"
+        className="pc-learning__tickstrip pc-learning__tickstrip--rows"
         role="list"
         aria-label={`${t("scout")} tick economics, newest first`}
       >
@@ -3886,11 +3886,12 @@ export function ScoutView({
                 : tk.status === "gated"
                   ? `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · self-gated (${tk.stop ?? "gate"}) — no cycle ran, no spend`
                   : `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · tick errored${tk.stop ? `: ${tk.stop}` : ""}`;
+            void lensPairs;
             return (
               <span
                 key={tk.cycleId ?? tk.at ?? i}
                 role="listitem"
-                className={`pc-learning__tick pc-learning__tick--${tone}`}
+                className={`pc-learning__tickrow pc-learning__tickrow--${tone}`}
                 title={tip}
               >
                 <em>{!Number.isNaN(ms) ? whenLabel(ms) : "—"}</em>
@@ -3899,32 +3900,15 @@ export function ScoutView({
                     ? `${tk.generated}→${tk.routed}`
                     : (tk.status ?? "?")}
                 </strong>
-                {tk.stop ? (
-                  <span className="pc-learning__tickstop">{tk.stop}</span>
-                ) : null}
+                <span className="pc-learning__tickwhat">
+                  {tk.status === "ran"
+                    ? `generated ${tk.generated}, routed ${tk.routed} · ${tk.stop ?? "ran"}`
+                    : tk.status === "gated"
+                      ? `skipped — ${tk.stop ?? "gate"}`
+                      : `error — ${tk.stop ?? "unknown"}`}
+                </span>
                 {spend ? (
                   <span className="pc-learning__tickspend">{spend}</span>
-                ) : null}
-                {lensPairs.slice(0, 3).map(([lens, n]) => (
-                  <i
-                    key={lens}
-                    className="pc-learning__ticklens"
-                    title={`${lens} ×${n}`}
-                  >
-                    {lensAbbrev(lens)}
-                    {n > 1 ? `×${n}` : ""}
-                  </i>
-                ))}
-                {lensPairs.length > 3 ? (
-                  <i
-                    className="pc-learning__ticklens"
-                    title={lensPairs
-                      .slice(3)
-                      .map(([lens, n]) => `${lens} ×${n}`)
-                      .join(" · ")}
-                  >
-                    +{lensPairs.length - 3}
-                  </i>
                 ) : null}
               </span>
             );
@@ -5138,6 +5122,87 @@ export function LearningStyles() {
         font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8);
       }
       .pc-learning__gymhow { margin: -2px 2px 6px; }
+      /* ── Inline star grader on the idea card (owner ask 2026-07-19d) ───── */
+      .pc-learning__stargrade {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 6px 8px; border-radius: 8px;
+        border: 1px dashed color-mix(in srgb, #fbbf24 35%, var(--border, rgba(125, 211, 252, 0.16)));
+        background: color-mix(in srgb, #fbbf24 4%, transparent);
+      }
+      .pc-learning__stargrade.is-graded {
+        border-style: solid;
+        border-color: color-mix(in srgb, #fbbf24 45%, transparent);
+        background: color-mix(in srgb, #fbbf24 7%, transparent);
+      }
+      .pc-learning__stars { display: inline-flex; gap: 2px; }
+      .pc-learning__star {
+        display: inline-flex; padding: 2px; border: 0; background: none; cursor: pointer;
+        color: color-mix(in srgb, var(--fg-mute, #7f9bb4) 65%, transparent);
+        transition: color 120ms ease, transform 120ms ease;
+      }
+      .pc-learning__star:hover { transform: scale(1.2); color: #fbbf24; }
+      .pc-learning__star.is-on { color: #fbbf24; }
+      .pc-learning__star:disabled { opacity: 0.5; cursor: default; }
+      .pc-learning__starmeta { font-size: 10.5px; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
+      .pc-learning__stargrade.is-ungraded .pc-learning__starmeta { color: var(--fg-mute, #7f9bb4); font-style: italic; }
+      .pc-learning__starnote {
+        margin-left: auto; padding: 2px 9px; border-radius: 6px; cursor: pointer;
+        font: inherit; font-size: 10px; font-weight: 600;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
+        background: none; color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__starnote:hover { color: var(--fg-dim, #b9d4e8); border-color: color-mix(in srgb, #fbbf24 45%, var(--border)); }
+      .pc-learning__stargrade-note { display: flex; gap: 6px; width: 100%; }
+      .pc-learning__stargrade-note input {
+        flex: 1 1 auto; min-width: 0; padding: 4px 9px; border-radius: 6px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
+        background: var(--bg-1, #0d151d); color: var(--fg, #e7eef5); font: inherit; font-size: 11px;
+      }
+      .pc-learning__stargrade-note button {
+        padding: 4px 12px; border-radius: 6px; cursor: pointer; font: inherit;
+        font-size: 11px; font-weight: 700;
+        border: 1px solid color-mix(in srgb, #fbbf24 50%, transparent);
+        background: color-mix(in srgb, #fbbf24 14%, transparent); color: #fbbf24;
+      }
+      .pc-learning__stargrade-note button:disabled { opacity: 0.4; cursor: default; }
+      /* Outcome chips: won/lost unmistakably green/red (owner ask 2026-07-19d). */
+      .pc-learning__score--won {
+        min-width: 0; padding: 1px 9px; border-radius: 6px; text-align: center;
+        color: #052e1b; background: var(--good, #34d399); font-weight: 760;
+      }
+      .pc-learning__score--lost {
+        min-width: 0; padding: 1px 9px; border-radius: 6px; text-align: center;
+        color: #fff; background: #ef4444; font-weight: 760;
+      }
+      /* Plain-sentence loop warnings. */
+      .pc-learning__warnlist { list-style: none; margin: 2px 0 6px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+      .pc-learning__warnlist li {
+        display: flex; align-items: baseline; gap: 7px;
+        font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8);
+        padding: 6px 10px; border-radius: 8px;
+        border: 1px solid color-mix(in srgb, var(--warn, #fbbf24) 30%, transparent);
+        background: color-mix(in srgb, var(--warn, #fbbf24) 6%, transparent);
+      }
+      .pc-learning__warnlist li.is-bad {
+        border-color: color-mix(in srgb, #ef4444 40%, transparent);
+        background: color-mix(in srgb, #ef4444 7%, transparent);
+      }
+      .pc-learning__warnlist li svg { flex: none; align-self: center; color: var(--warn, #fbbf24); }
+      .pc-learning__warnlist li.is-bad svg { color: #ef4444; }
+      /* Readable per-run rows (replaces the tick chip soup). */
+      .pc-learning__tickstrip--rows { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+      .pc-learning__tickrow {
+        display: flex; align-items: baseline; gap: 9px;
+        padding: 4px 9px; border-radius: 7px; font-size: 11px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.1));
+        color: var(--fg-dim, #b9d4e8);
+      }
+      .pc-learning__tickrow em { flex: none; width: 52px; font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+      .pc-learning__tickrow strong { flex: none; width: 38px; font-weight: 720; font-variant-numeric: tabular-nums; color: var(--fg, #e7eef5); }
+      .pc-learning__tickrow--warn strong { color: var(--warn, #fbbf24); }
+      .pc-learning__tickrow--bad strong { color: #ef4444; }
+      .pc-learning__tickwhat { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-learning__tickrow .pc-learning__tickspend { flex: none; font-variant-numeric: tabular-nums; color: var(--fg-mute, #7f9bb4); }
       /* The one-line plain-language glance replacing the instrument stack
          (owner ask 2026-07-19). */
       .pc-learning__glance {

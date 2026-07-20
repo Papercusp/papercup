@@ -734,6 +734,28 @@ export async function resolvePlanHarnessSlug(
   return rows[0]?.harness_slug ?? null;
 }
 
+/**
+ * The set of plan slugs owned by `harnessSlug` in this workspace — the batch
+ * sibling of `resolvePlanHarnessSlug` (one plan → its harness) for a caller
+ * that instead has a HARNESS and needs to scope a plan-slug-keyed list to it
+ * (EI-6176: `fleet:assignments`'s plan-item coverage rollup ignored a passed
+ * `harness` filter entirely — it filtered by `plan`/`agent` but never by
+ * `harness`, so a caller like `fleet:assignments { harness: 'oddsmith' }`
+ * still got back coverage rows for every OTHER harness's plans too). One
+ * query; empty set on an unresolvable harness (never throws).
+ */
+export async function planSlugsForHarness(workspaceId: string, harnessSlug: string): Promise<Set<string>> {
+  const slug = harnessSlug?.trim();
+  if (!slug) return new Set();
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ plan_slug: string }[]>`
+      SELECT plan_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${slug}
+    `;
+  });
+  return new Set(rows.map((r) => r.plan_slug));
+}
+
 /** All plan rows for a harness (PG), live + optionally archived. The archived
  *  filter runs in SQL — excluded rows' content blobs never leave PG (P-042). */
 export async function listPlanRows(

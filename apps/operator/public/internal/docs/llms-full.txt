@@ -76431,6 +76431,17 @@ Both are `registerSystemAction` system actions (`lib/harness/routines/knowledge-
   2. **Conflict sweep** — `sweepHiveConflicts` per local hive (bounded); auto-resolved ONLY when exactly one side is a pristine pack row and the other organic — the pack row is forgotten (organic outranks pack, mirroring install-review D-003). Every other pair (organic vs organic, edited, pack vs pack) is FILED via improvements capture.
   3. **Queue prune** — dismissed candidate rows older than `pruneDismissedDays` are deleted; adopted rows are provenance and kept forever.
 
+## Settings — the “Fleet knowledge packs” section (workspace-wide)
+
+[Section titled “Settings — the “Fleet knowledge packs” section (workspace-wide)”](#settings--the-fleet-knowledge-packs-section-workspace-wide)
+
+The loop’s knobs are runtime-tunable from the **memory settings page** (`/settings/user/memory`, the “Fleet knowledge packs — workspace-wide” section), backed by `GET/POST /api/user/knowledge-pack-settings` (knowledge-pack-settings-2026-07-19):
+
+* **Storage + resolution**: a single-row-per-workspace JSONB record (`harness_shared.knowledge_pack_config`, migration 639; `lib/knowledge-packs/config.ts`). Every knob resolves **stored → env → default**, so the pre-settings env vars (`PAPERCUSP_KNOWLEDGE_HYGIENE_MIN_AGE_DAYS` etc.) keep working as boot-time fallbacks and an empty table changes nothing. Knob edits apply on the next routine tick — no restart.
+* **Cadence presets**: the UI writes named presets (delivery hourly/6h/daily/ paused; hygiene daily/weekly/paused) mapped to vetted cron strings and applied to the two `harness_shared.routines` rows (same columns `routines:set` mutates, next-fire recomputed). `paused` flips the row inactive and keeps the cron; raw cron editing stays with `routines:set`, which the UI then reports as `custom`.
+* **Adoption policy**: `auto` (the WI-5414 judged auto-adopt) ↔ `owner-approval` — the latter disables the automated sweep entirely (no judge LLM spend); candidates stay pending for `knowledge_packs:decide_candidate`.
+* **Not duplicated there**: the master `KNOWLEDGE_PACKS` flag (`/admin/features`), per-pot pack mute (Learnings view), and the read-only routine inventory (`/admin/schedules`).
+
 ## Surfaces
 
 [Section titled “Surfaces”](#surfaces)

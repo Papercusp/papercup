@@ -590,6 +590,7 @@ function ObservationStacks({
             items={group}
             getKey={(row) => row.id}
             ariaLabel={`${KIND_LABEL[kind] ?? kind} observations`}
+            accent={OBSERVATION_KIND_COLOR[kind]}
             // The kind badge rides ON the active card's top edge (CardStack
             // renders it overlapping), keeping it attached to its deck.
             header={

@@ -1326,23 +1326,24 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("keeps grading controls behind the selected row and shows attribution at rest", () => {
-    const { rerender } = render(<ScoutView />);
-    expect(screen.queryByRole("radio", { name: "Grade 3 of 5" })).toBeNull();
+  it("shows the inline star grader ON the ungraded card, and attribution on graded rows", () => {
+    render(<ScoutView />);
+    // The star grader lives on the card itself now (owner ask 2026-07-19d) —
+    // five radios, visible at rest, no popup to open.
+    expect(screen.getByRole("radio", { name: "Grade 3 of 5" })).toBeTruthy();
+    expect(
+      screen.getByRole("radiogroup", { name: "Grade this idea" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/ungraded — a grade teaches the generator/),
+    ).toBeTruthy();
     // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
-    // value) → the attribution chip routes it through the lexicon; under the echo
-    // mock t('brain') → 'brain' (restore-pot-lexicon P-006).
+    // value) → the graded ROW keeps its attribution chip + popover affordance.
     fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
     expect(screen.getByText("★4 · brain")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Grade this idea" }),
-    ).toBeTruthy();
-    expect(
       screen.getByRole("button", { name: "Review idea grade" }),
     ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
-    rerender(<ScoutView />);
-    expect(screen.getByRole("radio", { name: "Grade 3 of 5" })).toBeTruthy();
   });
 
   it("writes a star click through the blender:grade-idea proxy optimistically and invalidates", async () => {
@@ -1351,11 +1352,9 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       json: async () => ({ applied: true }),
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const { rerender } = render(<ScoutView />);
-    fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
-    rerender(<ScoutView />);
+    render(<ScoutView />);
+    // Clicking a star on the card grades IMMEDIATELY (no popup, no save step).
     fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
-    fireEvent.click(screen.getByRole("button", { name: "save grade" }));
     // Optimistic: the row leaves the ungraded queue and joins reviewed history.
     await waitFor(() =>
       expect(
@@ -1382,11 +1381,8 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       json: async () => ({}),
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const { rerender } = render(<ScoutView />);
-    fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
-    rerender(<ScoutView />);
+    render(<ScoutView />);
     fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
-    fireEvent.click(screen.getByRole("button", { name: "save grade" }));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("HTTP 404"),
     );
@@ -1401,16 +1397,19 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     vi.stubGlobal("fetch", fetchMock);
     nuqsState.grade = "idea-1";
     render(<ScoutView />);
+    // ?grade=<ideaId> opens the card's INLINE note editor (no popup). Save is
+    // disabled until a star is picked; a star picked while the editor is open
+    // waits for Save so grade + note submit together.
     const panel = screen
       .getByRole("radio", { name: "Grade 2 of 5" })
-      .closest(".pc-learning__gradepanel") as HTMLElement;
+      .closest(".pc-learning__stargrade") as HTMLElement;
     expect(panel).toBeTruthy();
-    expect(within(panel).queryByLabelText("Grading note")).toBeNull();
-    expect(
-      within(panel).queryByRole("button", { name: "save grade" }),
-    ).toBeNull();
+    const save0 = within(panel).getByRole("button", {
+      name: "save grade",
+    }) as HTMLButtonElement;
+    expect(save0.disabled).toBe(true);
     fireEvent.click(within(panel).getByRole("radio", { name: "Grade 2 of 5" }));
-    fireEvent.change(within(panel).getByLabelText("Grading note"), {
+    fireEvent.change(within(panel).getByLabelText("Grade feedback"), {
       target: { value: "Too speculative" },
     });
     const save = within(panel).getByRole("button", {

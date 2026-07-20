@@ -28,6 +28,7 @@ import type {
 } from "@papercusp/operator-core/lib/sync-resolver/learning-analyze-read";
 import { CardStack } from "@papercusp/card-stack";
 import { Tooltip } from "@/app/harness/Tooltip";
+import { CATEGORICAL } from "@/app/harness/theme";
 import { useLexicon } from "@/lib/useLexicon";
 import {
   LearningDisclosure,
@@ -262,6 +263,16 @@ function CompletenessMark({
   );
 }
 
+/** Stable category color per lens (owner ask 2026-07-19d — deck accents follow
+ *  the CATEGORY): hash into the theme's fixed categorical swatches, the same
+ *  scheme the Ideas view + SignalsPanel use. */
+const CATEGORICAL_HEXES = Object.values(CATEGORICAL).map((c) => c.hex);
+function lensColor(lens: string): string {
+  let h = 0;
+  for (let i = 0; i < lens.length; i++) h = (h * 31 + lens.charCodeAt(i)) | 0;
+  return CATEGORICAL_HEXES[Math.abs(h) % CATEGORICAL_HEXES.length];
+}
+
 /** Group a cycle's raw ideas by their creative lens — biggest lens first, so
  *  the dominant decks lead (mirrors the Ideas view's lens stacks). */
 function groupIdeasByLens<T extends { lens?: string | null } | null | undefined>(
@@ -409,6 +420,7 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
                 items={ideas}
                 getKey={(idea, i) => idea?.id ?? `idea-${i}`}
                 ariaLabel={`${lens} ideas this cycle`}
+                accent={lensColor(lens)}
                 header={
                   <>
                     <span className="pc-cardstack__header-label">{lens}</span>
@@ -512,6 +524,7 @@ function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {
               items={cycle.proposals}
               getKey={(p, i) => p?.id ?? `fusion-${i}`}
               ariaLabel="Recombined proposals"
+              accent={lensColor("fusions")}
               header={
                 <>
                   <span className="pc-cardstack__header-label">fusions</span>

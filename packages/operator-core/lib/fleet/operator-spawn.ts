@@ -66,7 +66,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { backendFeatureGuard, interactiveBackendFromSpawnBackend } from '../backend-feature-capabilities';
-import { FEATURE_NON_REQUEUE_STATES } from '../work-item-dispatch-states';
+import { releaseWorkItem } from '../work-items';
 
 /**
  * The deterministic SAFETY-FLOOR ceiling on concurrently-running spawns — the
