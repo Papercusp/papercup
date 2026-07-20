@@ -130,7 +130,21 @@ export interface IngressResult {
   nonFF: IngressNonFF[];
   /** Branches absent on the remote (deleted / never existed). */
   absent: string[];
-  errors: { branch?: string; message: string }[];
+  errors: {
+    branch?: string;
+    message: string;
+    /**
+     * True when this error came from `defaultRunGit`'s `code === -1`
+     * never-throw sentinel — the git PROCESS itself failed to spawn
+     * (ENOENT/EACCES, typically right after an env/PATH change such as a
+     * host restart) or was killed by the 60s watchdog, so the transport
+     * never actually ran. Distinct from git running and returning a real
+     * (>=0) exit code with a transport-level error (auth refused, repo not
+     * found, network unreachable) — only the latter is genuinely a
+     * "fix the remote URL or credential" situation (EI-18152354175913564).
+     */
+    transient?: boolean;
+  }[];
 }
 
 /**

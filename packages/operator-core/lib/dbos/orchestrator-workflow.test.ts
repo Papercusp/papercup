@@ -217,6 +217,45 @@ describe('featurePipelineWorkflow — no false success', () => {
   });
 });
 
+describe('featurePipelineWorkflow — unresolved harness is terminal, not retryable (WI-5630)', () => {
+  it('STOPS cleanly (no throw, no finalize, no retry) when the DECIDE invoke reports an unresolved harness', async () => {
+    let calls = 0;
+    setPipelineInvokeRunner(async (_s, role) => {
+      calls++;
+      runnerCalls.push({ role, feature: '', key: '', extras: [] });
+      // resolveProject → null: harness gone (a torn-down gym throwaway).
+      return { output: '', exitCode: 1, unresolvedHarness: true };
+    });
+
+    const result = await featurePipelineWorkflow(input());
+
+    // Clean terminal stop — NOT the thrown "decide invoke failed" retry-storm.
+    expect(result).toBe('pipeline-complete (last=HARNESS_UNRESOLVED)');
+    // Called exactly once: no 3× step retry on an invoke that can never succeed.
+    expect(calls).toBe(1);
+    expect(finalizer).not.toHaveBeenCalled();
+    expect(settledHook).not.toHaveBeenCalled();
+  });
+
+  it('STOPS cleanly when the harness vanishes mid-pipeline (a DISPATCH invoke reports unresolved)', async () => {
+    directorOutputs = ['NEXT_WORKER F-1'];
+    setPipelineInvokeRunner(async (_s, role, feature, key, extras, ws) => {
+      runnerCalls.push({ role, feature, key, extras, ws });
+      if (role === ORCH) return { output: directorOutputs[directorIdx++] ?? 'IDLE', exitCode: 0 };
+      // The worker dispatch finds the harness already torn down.
+      return { output: '', exitCode: 1, unresolvedHarness: true };
+    });
+
+    const result = await featurePipelineWorkflow(input());
+
+    expect(result).toBe('pipeline-complete (last=HARNESS_UNRESOLVED)');
+    // director (decide) then the worker (dispatch) that hit the gone harness — then stop.
+    expect(runnerCalls.map((c) => c.role)).toEqual(['director', 'worker']);
+    expect(finalizer).not.toHaveBeenCalled();
+    expect(settledHook).not.toHaveBeenCalled();
+  });
+});
+
 describe('featurePipelineWorkflow — bounded + gated', () => {
   it('a never-terminating director stops at MAX_TURNS without finalizing', async () => {
     infiniteDispatch = true; // director always says NEXT_WORKER

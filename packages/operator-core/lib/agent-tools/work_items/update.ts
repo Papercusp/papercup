@@ -19,7 +19,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { updateWorkItem } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 
@@ -47,6 +47,19 @@ const FIELDS = {
     .optional()
     .describe(
       "EI-8497: a `body` edit that would replace a substantial existing body with something far shorter is REJECTED by default (a fat-finger guard — there's no body revision history to recover from a mis-call). Pass true to confirm a genuinely intended drastic shrink.",
+    ),
+  // EI-18151406094317010: tag/untag an item as needing a live ≥2-machine (Hetzner/
+  // federation) rig to actually execute. scheduler:get_next / claim_next then EXCLUDE
+  // it from single-box self-select (crossMachineRigExclusionSql) — without this, a
+  // single-box fleet can only discover a rig-only item by claiming then releasing it,
+  // which re-fires work-item:claimable and wakes every idle member on every churn
+  // cycle. Sets/clears payload.needs_2_machine_rig; not a real column, so it's applied
+  // via mergeWorkItemPayload rather than the updateIssue column patch.
+  needsTwoMachineRig: z
+    .boolean()
+    .optional()
+    .describe(
+      'WI-2796: mark (true) or unmark (false) this item as requiring a live ≥2-machine / Hetzner federation rig to work — scheduler:get_next / claim_next then exclude it from single-box self-select instead of letting single-box agents claim-then-release it repeatedly (EI-18151406094317010). Sets payload.needs_2_machine_rig.',
     ),
 };
 
