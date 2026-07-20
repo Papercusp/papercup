@@ -188,6 +188,20 @@ manifest</strong>, so a platform added to one must be added to the other or it r
 so a newly-dropped <code dir="auto">.dmg</code> in <code dir="auto">$BUNDLE/dmg/</code> is picked up) then
 <code dir="auto">publish-release-history.sh</code>. Miss this and the auto-updater has the new platform but
 the shared beta link does not.</p>
+<ul>
+<li><strong>Heed the two non-blocking completeness alerts <code dir="auto">record-release-cli</code> prints.</strong> A
+partial cut is legal, but must be a <em>conscious</em> choice, never a silent one: (1) the
+desktop <strong>INCOMPLETE RELEASE</strong> alert names every missing <code dir="auto">gui</code>/<code dir="auto">server</code> × platform
+slot (WI-5515); (2) the <strong>MOBILE REGRESSION</strong> alert (WI-5583) fires when a cut LOSES
+a phone build its predecessor carried (0.0.11 shipped Android+iOS, 0.0.12 shipped
+neither — previously silent, because mobile is not part of the required desktop set).
+If the drop is intentional (mobile leg skipped this cut), fine — but if the phone
+build exists on disk and just wasn’t recorded, re-run with <code dir="auto">--mobile-root</code> pointing
+at <code dir="auto">papercup-rust-mobile</code>. ⚠ Mobile filenames carry <strong>no version</strong> (<code dir="auto">app-release.apk</code>,
+<code dir="auto">Papercup.ipa</code>); the recorder <em>synthesizes</em> the version, so a backfill labels whatever
+bytes are on disk AS this cut — confirm they are THIS build, not a stale prior one.
+Both alerts re-surface on every <code dir="auto">--regenerate</code> until resolved.</li>
+</ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-mac-leg--a-dmg-from-an-intact-app-and-enospc">The mac leg — a DMG from an intact <code dir="auto">.app</code>, and ENOSPC</h2><a class="sl-anchor-link" href="#the-mac-leg--a-dmg-from-an-intact-app-and-enospc"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The mac leg — a DMG from an intact .app, and ENOSPC”</span></a></div>
 <ul>
 <li><strong>A build that dies AFTER producing the signed <code dir="auto">.app</code> but BEFORE the DMG step is a
@@ -242,6 +256,16 @@ compile only, 2026-07-16):</strong> a full 428-crate recompile was <strong>143 s
 after a one-line change was <strong>4 s</strong>. So the linux Rust compile is already fast — the
 build-time that matters lives in the slower mac/windows VM legs (keep <em>their</em> target
 dirs warm, per the first bullet), not linux micro-optimizations.</li>
+<li><strong>sccache is OPT-IN, default OFF — leave it off for normal cuts.</strong> sccache and cargo
+incremental are mutually exclusive: enabling sccache forces <code dir="auto">CARGO_INCREMENTAL=0</code>, which
+overrides the <code dir="auto">incremental = true</code> profile above, and running both just splits the
+hit-rate between two caches. sccache only helps a genuinely <em>cold</em> build (fresh checkout /
+reverted VM / rotated target) — which the warm-cache design + WI-5027 made rare — so it is
+now gated behind <code dir="auto">PAPERCUSP_USE_SCCACHE=1</code> (<code dir="auto">bin/lib/sccache.sh</code> for the linux+mac legs,
+the token-substitution twin in <code dir="auto">bin/build-windows-on-vm.sh</code> for windows). The default cut
+keeps the incremental warm path; reach for <code dir="auto">PAPERCUSP_USE_SCCACHE=1</code> only when you KNOW the
+target dir is cold. (Plan <code dir="auto">desktop-build-speed-2026-07-16</code> D-006 / WI-5577 — it was briefly
+wired on-by-default, which silently disabled the incremental warm win.)</li>
 <li><strong>Fast iteration build: one role, not two.</strong> <code dir="auto">PAPERCUSP_BUILD_ROLES=gui bin/release-local.sh</code> (or <code dir="auto">bin/mac-vm-build.sh</code>) skips the ~12 GB Server-role compile
 — roughly halving the build — and produces only the auto-updatable/download GUI
 artifact. Use this for iteration. It is <strong>not</strong> the release default: the linux Server
@@ -290,4 +314,4 @@ the manifest route discovered releases only from GitHub Releases, which we stopp
 publishing to.</p>
 <p>The lesson generalizes: <strong>a signed, schema-valid manifest that names a download
 location which does not exist is still a broken release.</strong> Verify the bytes are
-fetchable at the advertised url, not merely that the manifest validates.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-16T22:57:37.000Z">Jul 16, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/desktop-host-suppresses-js-hard-navigation.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The desktop host suppresses JS hard navigation — use the stashed originals</span> </span> </a> <a href="/internal/docs/agent-insights/desktop-session-liveness-ancestry.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">On-desktop session detection: launch-handle capture rots — derive from proc ancestry</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+fetchable at the advertised url, not merely that the manifest validates.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-20T04:22:01.000Z">Jul 20, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/desktop-host-suppresses-js-hard-navigation.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The desktop host suppresses JS hard navigation — use the stashed originals</span> </span> </a> <a href="/internal/docs/agent-insights/desktop-session-liveness-ancestry.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">On-desktop session detection: launch-handle capture rots — derive from proc ancestry</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

@@ -146,6 +146,19 @@ so a newly-dropped `.dmg` in `$BUNDLE/dmg/` is picked up) then
 `publish-release-history.sh`. Miss this and the auto-updater has the new platform but
 the shared beta link does not.
 
+* **Heed the two non-blocking completeness alerts `record-release-cli` prints.** A
+  partial cut is legal, but must be a *conscious* choice, never a silent one: (1) the
+  desktop **INCOMPLETE RELEASE** alert names every missing `gui`/`server` × platform
+  slot (WI-5515); (2) the **MOBILE REGRESSION** alert (WI-5583) fires when a cut LOSES
+  a phone build its predecessor carried (0.0.11 shipped Android+iOS, 0.0.12 shipped
+  neither — previously silent, because mobile is not part of the required desktop set).
+  If the drop is intentional (mobile leg skipped this cut), fine — but if the phone
+  build exists on disk and just wasn't recorded, re-run with `--mobile-root` pointing
+  at `papercup-rust-mobile`. ⚠ Mobile filenames carry **no version** (`app-release.apk`,
+  `Papercup.ipa`); the recorder *synthesizes* the version, so a backfill labels whatever
+  bytes are on disk AS this cut — confirm they are THIS build, not a stale prior one.
+  Both alerts re-surface on every `--regenerate` until resolved.
+
 ## The mac leg — a DMG from an intact `.app`, and ENOSPC
 
 * **A build that dies AFTER producing the signed `.app` but BEFORE the DMG step is a
@@ -201,6 +214,16 @@ path," not "add one." (Plan: `desktop-build-speed-2026-07-16`.)
   after a one-line change was **4 s**. So the linux Rust compile is already fast — the
   build-time that matters lives in the slower mac/windows VM legs (keep *their* target
   dirs warm, per the first bullet), not linux micro-optimizations.
+* **sccache is OPT-IN, default OFF — leave it off for normal cuts.** sccache and cargo
+  incremental are mutually exclusive: enabling sccache forces `CARGO_INCREMENTAL=0`, which
+  overrides the `incremental = true` profile above, and running both just splits the
+  hit-rate between two caches. sccache only helps a genuinely *cold* build (fresh checkout /
+  reverted VM / rotated target) — which the warm-cache design + WI-5027 made rare — so it is
+  now gated behind `PAPERCUSP_USE_SCCACHE=1` (`bin/lib/sccache.sh` for the linux+mac legs,
+  the token-substitution twin in `bin/build-windows-on-vm.sh` for windows). The default cut
+  keeps the incremental warm path; reach for `PAPERCUSP_USE_SCCACHE=1` only when you KNOW the
+  target dir is cold. (Plan `desktop-build-speed-2026-07-16` D-006 / WI-5577 — it was briefly
+  wired on-by-default, which silently disabled the incremental warm win.)
 * **Fast iteration build: one role, not two.** `PAPERCUSP_BUILD_ROLES=gui
   bin/release-local.sh` (or `bin/mac-vm-build.sh`) skips the \~12 GB Server-role compile
   — roughly halving the build — and produces only the auto-updatable/download GUI

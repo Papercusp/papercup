@@ -2728,91 +2728,40 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .optional(),
     resolve: async (args) => {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number; hive?: string };
-      const { readImprovementItems } = await import('../harness/improvements/read-items');
-      const { buildDigest } = await import('../harness/improvements/digest');
-      const { applyHumanQueueRanking } = await import('../queue-ranker/human-queue');
-      const { computeImprovementFlow, readWatchdogFlowTicks } = await import('../harness/improvements/flow-metrics');
-      const { activeWorkspaceId } = await import('../workspace-registry');
-      const { readOwnerFullAutonomyGrant } = await import('../harness/improvements/full-autonomy-grant');
-      const nowMs = Date.now();
-      // The OWNER FULL-AUTONOMY grant (Phase 2): this resolver IS the owner's Learning-tab
-      // view of the queue — keep its auto/human split consistent with the live dispatch so
-      // a protected-surface kind=bug isn't shown as "needs your decision" while the loop
-      // auto-implements it once the grant is on.
-      const ownerFullAutonomy = await readOwnerFullAutonomyGrant(activeWorkspaceId());
-      // P-040: resolve the Hive → its member-harness scope set (the Hive is the
-      // tenancy unit) so the feed only shows that Hive's improvements. Best-effort:
-      // a registry read failure degrades to the unfiltered (workspace) feed rather
-      // than 500ing the tab.
-      let harnessScopes: string[] | undefined;
-      if (a.hive) {
-        try {
-          const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
-          const reg = await loadHarnessRegistry();
-          harnessScopes = hiveMemberHarnessScopes(reg.projects, a.hive);
-        } catch (err) {
-          console.warn(
-            '[learning.improvements] hive scope resolution failed:',
-            err instanceof Error ? err.message : err,
-          );
-        }
+      // PRECOMPUTED (phase2 P-003, WI-5460 follow-up) — but ONLY the DEFAULT variant.
+      // buildDigest + human-queue ranking + flow-metrics over the whole improvement
+      // corpus was measured 0.4-0.5s on this user-facing read; the routine now fills
+      // a snapshot (short 90s ttl, liveness-sensitive tier) and the panel's default
+      // mount ({} args) is a plain SELECT. Derived-read snapshots key on
+      // (ws, harness_slug, key) with NO arg dimension, so a NON-default view (a
+      // state filter, a custom limit, or the per-Hive lens) cannot be served from
+      // the snapshot and falls through to the live inline compute.
+      const isDefaultVariant = a.state === undefined && a.limit === undefined && a.hive === undefined;
+      let rows: Array<{ humanQueue?: Array<{ id: string }> } & Record<string, unknown>>;
+      if (isDefaultVariant) {
+        const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+        await import('../derived-reads/producers');
+        rows = await readDerivedSnapshotRows('learning.improvements');
+      } else {
+        const { computeLearningImprovementsSnapshot } = await import(
+          '../harness/improvements/learning-digest-snapshot'
+        );
+        rows = (await computeLearningImprovementsSnapshot(a)) as typeof rows;
       }
-      const items = await readImprovementItems({
-        state: a.state,
-        limit: a.limit,
-        ...(harnessScopes ? { harnessScopes } : {}),
-      });
-      // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
-      // consume-edges P-022's blocking impact) — the owner's queue leads with
-      // what blocks the most, each item carrying its per-feature breakdown.
-      const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs, ownerFullAutonomy }), {
-        candidates: items,
-      });
-      // FB-15 (P-043): this resolver IS the owner's view of the queue (the
-      // improvements:digest tool and the digest routine read elsewhere), so a
-      // hit here = the queue was rendered to the owner. Record a throttled
-      // queue-view exposure row — the denominator the owner preference model
-      // learns "ignored despite being shown" from. Fire-and-forget: capture
-      // must never affect the read.
-      void import('../owner-preference/interactions')
-        .then((m) => m.recordQueueExposure(digest.humanQueue.map((i) => i.id)))
-        .catch(() => {});
-      // Watchdog ticks are best-effort: a tick-read failure degrades the flow
-      // strip to "watchdog: never" rather than 500ing the whole improvements view.
-      let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];
-      try {
-        ticks = await readWatchdogFlowTicks(activeWorkspaceId());
-      } catch (err) {
-        console.warn('[learning.improvements] watchdog tick read failed:', err instanceof Error ? err.message : err);
+      // FB-15 (P-043): this resolver IS the owner's view of the queue, so a hit
+      // here = the queue was rendered to the owner. Record a throttled queue-view
+      // exposure row — the denominator the owner-preference model learns "ignored
+      // despite being shown" from. This MUST fire on the real read (never the
+      // precompute routine), so it lives here in BOTH branches, keyed off whatever
+      // humanQueue the read actually returned. Fire-and-forget: capture must never
+      // affect the read.
+      const exposedIds = (rows[0]?.humanQueue ?? []).map((i) => i.id);
+      if (exposedIds.length > 0) {
+        void import('../owner-preference/interactions')
+          .then((m) => m.recordQueueExposure(exposedIds))
+          .catch(() => {});
       }
-      // Dispatch-ledger rollup (consume-edges P-010 / B-04) — same best-effort
-      // rule: a ledger read failure degrades the strip's dispatch chip to "—".
-      let dispatchStats: import('../harness/improvements/dispatch-ledger').DispatchStats | null = null;
-      try {
-        const { readRecentDispatches, computeDispatchStats } = await import('../harness/improvements/dispatch-ledger');
-        dispatchStats = computeDispatchStats(await readRecentDispatches(activeWorkspaceId()), { nowMs });
-      } catch (err) {
-        console.warn('[learning.improvements] dispatch ledger read failed:', err instanceof Error ? err.message : err);
-      }
-      const flow = computeImprovementFlow(items, ticks, {
-        nowMs,
-        // Reuse the digest's recurrence computation (P-041) — do not re-derive.
-        recurringSignatureCount: digest.recurringSignatures.length,
-        dispatchStats,
-      });
-      // Wire slimming (WI-5412): the ranked humanQueue items each carry a ~1KB
-      // `rank` breakdown + `impact` struct that NO Learning-tab consumer
-      // renders — across ~380 items that was ~65% of a 479KB payload. The
-      // ORDER the ranker produced is preserved; the per-feature "why" stays on
-      // the improvements:digest tool for consumers that want it.
-      const humanQueue = digest.humanQueue.map((item) => {
-        const { impact: _impact, rank: _rank, ...slim } = item as typeof item & {
-          impact?: unknown;
-          rank?: unknown;
-        };
-        return slim;
-      });
-      return [{ ...digest, humanQueue, flow }];
+      return rows;
     },
   },
 

@@ -327,3 +327,41 @@ registerDerivedRead({
     });
   },
 });
+
+// ── learning.improvements (phase2 P-003) — measured 0.4-0.5s / 134KB on the
+// Learning tab's self-improvement feed (WI-5460 follow-up). buildDigest +
+// human-queue ranking + flow-metrics get rebuilt over the WHOLE improvement
+// corpus (~380 items) on every user-facing read. Precompute moves that compute
+// onto the routine; the resolver's default mount ({} args) becomes a plain
+// snapshot SELECT.
+//
+// The compute is shared with the resolver's live inline path
+// (computeLearningImprovementsSnapshot) so the precomputed default and the
+// on-read non-default variants can never drift. The `recordQueueExposure`
+// owner-preference side-effect is DELIBERATELY excluded from the shared compute
+// (it must fire on the real read, not the routine thread) — the resolver fires
+// it from whatever humanQueue the read returns.
+//
+// FRESHNESS (the plan's "verify Scout/owner freshness needs; short ttl"):
+//   - Scout reads the improvements:digest TOOL, not this sync resolver, so it is
+//     UNAFFECTED by precomputing the resolver.
+//   - Owner: a 90s ttl (the liveness-sensitive tier, matching dev.serviceHealth /
+//     dev.gitPipeline) recomputes on essentially every 2-min routine tick, so the
+//     Learning queue is at most ~one tick stale — consistent with the already
+//     shipped, owner-accepted rubrics.list / storage.usage precompute behavior
+//     under the substrate's D-003 "a read never computes" invariant. The panel
+//     surfaces computedAt via _meta.derivedRead ("as of HH:MM"). NON-default views
+//     (state/limit/hive) stay fully live.
+registerDerivedRead({
+  key: 'learning.improvements',
+  ttlMs: 90_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { computeLearningImprovementsSnapshot } = await import(
+      '../harness/improvements/learning-digest-snapshot'
+    );
+    // The DEFAULT variant: no state filter, default limit, whole workspace (no hive lens).
+    return computeLearningImprovementsSnapshot({});
+  },
+});
