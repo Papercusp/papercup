@@ -1228,19 +1228,49 @@ export async function joinHarnessSwarm(
    * own doc's motivating scenario is a socket that stays live (never closes)
    * while replication silently dies, i.e. precisely the socket still sitting in
    * `mySockets`. For each such socket: first UNREGISTER this topic's own claim
-   * on it (we've independently decided this topic is done with it — the same
-   * bookkeeping a genuine `close` would perform, just performed proactively
-   * instead of waiting for one that may never come), THEN check the
-   * cross-harness registry — only destroy it if NO other harness/topic still
-   * has a live claim (never touch a socket another join genuinely still needs).
-   * A socket some other harness still relies on is left completely alone; only
-   * our own bookkeeping for it is cleared, so a later close still prunes
-   * cleanly.
+   * on it (proactively performing the bookkeeping a genuine `close` would do),
+   * THEN destroy it.
+   *
+   * EI-13317/WI-5481 (shared-socket eviction DEADLOCK): the original guard only
+   * destroyed a socket if NO other harness/topic still claimed it
+   * (`isSocketIdleAcrossAllTopics`) — "never touch a socket another join still
+   * needs". But ONE peer socket is muxed across every harness sharing that peer
+   * (the live-fed rig runs hello-world-pot + hello-world + papercusp over a
+   * single connection). When the peer restarts, that shared socket half-opens
+   * (stays live at the transport layer, dead for replication) and ALL of those
+   * topics go `connected_never_replicated` at once. Each topic's forced rejoin
+   * then refused to evict — the OTHERS still claimed the same dead socket — so
+   * NOBODY evicted it and the connection sat connected-but-dead until the OS TCP
+   * timeout finally closed it ~6 min later (full-suite gate RED: forced-rejoin
+   * fired promptly but replicator re-attach took 341-378s, past the 90s SLA).
+   * Reaching a FORCED rejoin means this topic's link is already proven dead, and
+   * a dead handshake is dead for EVERY topic muxed over the same socket — so we
+   * now destroy it unconditionally. The destroy fires the socket's own `close`,
+   * every sharing topic prunes cleanly, and Hyperswarm redials a fresh
+   * connection that re-attaches replication for all of them within seconds. (The
+   * cost — a brief reconnect blip for a co-tenant topic that was genuinely
+   * healthy on the same peer — is bounded by the redial and far cheaper than a
+   * multi-minute federation freeze; a forced rejoin is a rare recovery action.)
    */
   async function forceRejoinNow(): Promise<void> {
     for (const socket of mySockets) {
       swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
-      if (isSocketIdleAcrossAllTopics(socket)) evictIdleZombieSocket(socket);
+      // Diagnostic-only: note when we are breaking the shared-socket deadlock
+      // (destroying a socket another topic still claims). Never let a throwing
+      // console block the eviction below (same VITEST-gating as elsewhere).
+      if (!isSocketIdleAcrossAllTopics(socket) && !process.env.VITEST) {
+        try {
+          console.error(
+            `[swarm] force-evicting a peer socket still shared with other topics ` +
+              `(topic ${topicHex.slice(0, 16)}…) — a forced rejoin means the link is ` +
+              `proven dead for every muxed topic; breaking the shared-socket ` +
+              `eviction deadlock (EI-13317/WI-5481).`,
+          );
+        } catch {
+          /* diagnostic-only; swallow */
+        }
+      }
+      evictIdleZombieSocket(socket);
     }
     mySockets.clear();
     await Promise.resolve(opts.swarm.leave(opts.topic)).catch(() => {});
