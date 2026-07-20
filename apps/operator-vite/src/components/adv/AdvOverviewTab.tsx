@@ -129,6 +129,122 @@ export interface OverviewReadinessSnapshot {
   errors?: string[];
 }
 
+// ── dev.gitPipeline: the subset of GitPipelineSnapshot the Deploy tile reads
+//    (overview-tab-expansion-2026-07-20 P-001). Gate counters arrive ALREADY
+//    corrected server-side (pinProvenGateCorrection / verdict-freshness) — never
+//    re-derive gate colour client-side from raw counters. ────────────────────
+export interface OverviewPipelineSnapshot {
+  gitSync: { headSha: string | null; lastSyncedAtMs: number | null };
+  gate: {
+    consecutiveReds: number;
+    stalled: boolean;
+    verdictStale: boolean;
+    verdictObservedAtMs: number | null;
+    lastGreenAtMs: number | null;
+    failingTests: string[];
+  };
+  /** null = the snapshot was computed without the systemd probe (older producer);
+   *  { active:false } = probed and idle; { active:true } = a suite run is judging. */
+  activeRun: { active: boolean; candidate: string | null; elapsedSec: number | null } | null;
+  deploy: {
+    stagingHead: { sha: string } | null;
+    greenPin: { sha: string } | null;
+    deployed: { sha: string } | null;
+    deployedAtMs: number | null;
+    greenPinBehindStaging: number | null;
+    deployedBehindGreenPin: number | null;
+  };
+}
+
+/** "45s" / "12m" / "3h" / "2d" — compact age for tile tags. Pure. */
+export function fmtAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '?';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+const shortSha = (sha: string | null | undefined): string => (sha ? sha.slice(0, 8) : '—');
+
+export interface DeployTileModel {
+  verdict: 'green' | 'red' | 'unknown';
+  /** One line for the gate row: colour + failing count + verdict age (+ STALLED). */
+  gateLine: string;
+  /** "judging 06a0eb95 · 14m in" | "idle" | null when the snapshot wasn't probed. */
+  runLine: string | null;
+  failingCount: number;
+  refs: Array<{ key: string; label: string; sha: string; tag: string | null }>;
+}
+
+/**
+ * Derive the Deploy tile from the pipeline snapshot (P-001). Pure. The three refs
+ * answer the owner's standing question "is my change live yet?": staging tip (what
+ * agents committed) → green pin (what the gate proved) → :3070 (what actually runs).
+ */
+export function deriveDeployTile(
+  snap: OverviewPipelineSnapshot | undefined,
+  nowMs: number,
+): DeployTileModel | null {
+  if (!snap) return null;
+  const g = snap.gate;
+  const verdict: DeployTileModel['verdict'] = g.verdictStale
+    ? 'unknown'
+    : g.consecutiveReds > 0
+      ? 'red'
+      : g.verdictObservedAtMs != null || g.lastGreenAtMs != null
+        ? 'green'
+        : 'unknown';
+  const verdictAge = g.verdictObservedAtMs != null ? `verdict ${fmtAge(nowMs - g.verdictObservedAtMs)} ago` : null;
+  const gateLine =
+    verdict === 'red'
+      ? `gate RED — ${g.failingTests.length} failing${g.stalled ? ' · STALLED' : ''}${verdictAge ? ` · ${verdictAge}` : ''}`
+      : verdict === 'green'
+        ? `gate green${verdictAge ? ` · ${verdictAge}` : ''}`
+        : 'gate unknown — verdict stale';
+  const run = snap.activeRun;
+  const runLine =
+    run == null
+      ? null
+      : run.active
+        ? `judging ${shortSha(run.candidate)}${run.elapsedSec != null ? ` · ${fmtAge(run.elapsedSec * 1000)} in` : ''}`
+        : 'idle';
+  const d = snap.deploy;
+  const buffer = d.greenPinBehindStaging;
+  const gap = d.deployedBehindGreenPin;
+  const refs: DeployTileModel['refs'] = [
+    {
+      key: 'staging',
+      label: 'staging',
+      sha: shortSha(d.stagingHead?.sha ?? snap.gitSync.headSha),
+      tag: buffer != null ? (buffer > 0 ? `+${buffer} unjudged` : 'all green') : null,
+    },
+    {
+      key: 'green',
+      label: 'green pin',
+      sha: shortSha(d.greenPin?.sha),
+      tag: g.lastGreenAtMs != null ? `green ${fmtAge(nowMs - g.lastGreenAtMs)} ago` : null,
+    },
+    {
+      key: 'live',
+      label: 'live :3070',
+      sha: shortSha(d.deployed?.sha),
+      tag:
+        gap != null && gap > 0
+          ? `${gap} behind green`
+          : d.deployedAtMs != null
+            ? `deployed ${fmtAge(nowMs - d.deployedAtMs)} ago`
+            : gap === 0
+              ? 'current'
+              : null,
+    },
+  ];
+  return { verdict, gateLine, runLine, failingCount: g.failingTests.length, refs };
+}
+
 // ── one `dev.coordFeed` row (the fields this tile reads). ────────────────────
 interface CoordFeedRow {
   ts: string;
@@ -158,6 +274,8 @@ export const OVERVIEW_TILE_TARGETS = {
   workItems: 'harnesses',
   health: 'health',
   learning: 'learning',
+  // P-001: the Deploy tile opens the full Git pipeline surface.
+  deploy: 'git',
 } as const;
 
 /** done / (todo+wip+blocked+needs-human+done) — dropped/unknown excluded. */
@@ -356,6 +474,14 @@ export default function AdvOverviewTab() {
   const readinessQ = useSyncQuery<OverviewReadinessSnapshot>({
     queryName: 'learning.releaseReadiness',
     staleTime: 30_000,
+  });
+  // Deploy pipeline (P-001): the SAME precomputed dev.gitPipeline snapshot the
+  // /admin Git panel reads (1-element array; 90s producer TTL) — a plain snapshot
+  // SELECT, no git spawns on this read path (whole-app-sync-payload-audit P-007).
+  const pipelineQ = useSyncQuery<OverviewPipelineSnapshot>({
+    queryName: 'dev.gitPipeline',
+    args: {},
+    staleTime: 15_000,
   });
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
