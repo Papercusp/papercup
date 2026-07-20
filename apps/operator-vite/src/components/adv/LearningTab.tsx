@@ -1992,63 +1992,6 @@ function GymView({
   );
 }
 
-function GymProposalRow({ p }: { p: GymProposal }) {
-  const statusColor = statusToneColor(p.status);
-  const delta = deltaLabel(p.devAnchorDelta);
-  return (
-    <li
-      className="pc-learning__row pc-learning__row--gym"
-      title={p.rationale ?? undefined}
-    >
-      <span
-        className="pc-learning__sev"
-        style={{ background: statusColor }}
-        aria-hidden
-      />
-      <span className="pc-learning__id">{p.role}</span>
-      <span className="pc-learning__title">
-        {p.rationale || <em className="pc-learning__muted">(no rationale)</em>}
-      </span>
-      <span className="pc-learning__meta">
-        <span
-          className="pc-learning__chip"
-          style={{ color: statusColor, borderColor: statusColor }}
-        >
-          {p.status === "accepted" ? (
-            <CheckCircle2 size={10} aria-hidden />
-          ) : p.status === "rejected" ? (
-            <XCircle size={10} aria-hidden />
-          ) : (
-            <Clock size={10} aria-hidden />
-          )}
-          {p.status}
-        </span>
-        <span
-          className="pc-learning__chip pc-learning__chip--idea"
-          title="The gym harness that ran this experiment"
-        >
-          {p.harnessSlug}
-        </span>
-        <span
-          className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
-          title="Judge-score change vs the current prompt — positive means the variant did better"
-        >
-          Δ {delta.text}
-        </span>
-        <span
-          className="pc-learning__age"
-          title={`Experiment cycle ${p.cycle}`}
-        >
-          c{p.cycle}
-        </span>
-        <span className="pc-learning__age">
-          {whenLabel(p.decidedAt ?? p.createdAt)}
-        </span>
-      </span>
-    </li>
-  );
-}
-
 // ─── Benchmark view (apiary / IQ-battery) ────────────────────────────────────
 
 interface ApiaryInstance {
@@ -5298,8 +5241,19 @@ export function LearningStyles() {
         font-size: 11.5px; line-height: 1.45; color: var(--fg-dim, #b9d4e8);
       }
       .pc-learning__gymhow { margin: -2px 2px 6px; }
-      .pc-learning__gymcard { margin: 0; }
-      .pc-learning__gymcard > li { border: none; background: transparent; padding: 11px 13px; }
+      .pc-learning__gymtitle {
+        font-size: 13px; font-weight: 660; line-height: 1.42;
+        color: var(--fg, #e7eef5); overflow-wrap: anywhere;
+      }
+      .pc-learning__gymdeltas { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .pc-learning__gymprompt {
+        margin: 2px 0 0; padding: 8px 10px; border-radius: 8px;
+        font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5;
+        color: var(--fg-dim, #b9d4e8);
+        background: color-mix(in srgb, var(--bg-1, #0d151d) 60%, transparent);
+        white-space: pre-wrap; overflow-wrap: anywhere;
+        display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
+      }
       /* ── Inline star grader on the idea card (owner ask 2026-07-19d) ───── */
       .pc-learning__stargrade {
         display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px;

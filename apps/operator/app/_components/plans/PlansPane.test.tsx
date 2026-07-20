@@ -110,6 +110,7 @@ afterEach(() => {
   toastSpies.error.mockClear();
   planListRefresh.mockClear();
   preloadVditorSpy.mockClear();
+  beginInteractionSpy.mockClear();
 });
 
 /** An ISO timestamp `days` in the past — for the stale (≥14d) threshold. */
@@ -141,6 +142,13 @@ describe('PlansPane', () => {
     render(<PlansPane />);
     fireEvent.click(screen.getByTestId('plans-pane-row-p-open'));
     expect(setters.pplan).toHaveBeenCalledWith('p-open');
+  });
+
+  it('starts the plan-popup-open interaction timing on a row click (P-001 wiring)', () => {
+    planListData.value = { plans: [plan({ slug: 'p-open', title: 'Open me' })] };
+    render(<PlansPane />);
+    fireEvent.click(screen.getByTestId('plans-pane-row-p-open'));
+    expect(beginInteractionSpy).toHaveBeenCalledWith('plan-popup-open');
   });
 
   it('finished toggle flips ?plf', () => {
