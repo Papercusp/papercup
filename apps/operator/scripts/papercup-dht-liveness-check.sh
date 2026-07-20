@@ -109,7 +109,15 @@ fi
 
 # ── run the real probe. ──
 log "probing bootstrap $DHT_HOST:$DHT_PORT (timeout ${DHT_PROBE_TIMEOUT_MS}ms) …"
-PROBE_OUT="$(cd "$REPO_ROOT" && timeout $(( (DHT_PROBE_TIMEOUT_MS / 1000) + 10 )) node "$PROBE" --host "$DHT_HOST" --port "$DHT_PORT" --timeout-ms "$DHT_PROBE_TIMEOUT_MS" 2>&1)"
+# WI-4077: the probe itself now bounds ALL of its work (announce/flush AND
+# connection-wait, not just the latter) to DHT_PROBE_TIMEOUT_MS, plus its own
+# 5s teardown backstop — so it always self-reports well inside that budget.
+# This outer `timeout` is now a pure last-resort backstop (should never
+# actually fire); the wider margin just avoids re-clipping the probe's own
+# diagnostic output the way the tighter +10s margin once did (empty
+# "Probe output:" body on the WI-4077 incident, root-caused as the probe
+# hanging past this wrapper's kill before reaching its own FAIL branch).
+PROBE_OUT="$(cd "$REPO_ROOT" && timeout $(( (DHT_PROBE_TIMEOUT_MS / 1000) + 20 )) node "$PROBE" --host "$DHT_HOST" --port "$DHT_PORT" --timeout-ms "$DHT_PROBE_TIMEOUT_MS" 2>&1)"
 PROBE_EXIT=$?
 log "$PROBE_OUT"
 

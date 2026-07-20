@@ -101,17 +101,48 @@ async function main() {
     }, timeoutMs);
   });
 
-  try {
-    // Sequenced per the hyperswarm README's exact pattern — do NOT parallelize
-    // this: the server must be fully announced (discovery.flushed()) BEFORE the
-    // client joins, and the client uses swarm.flush() (not discovery.flushed(),
-    // which has different — and here, hanging — semantics on the client side).
-    const discA = swarmA.join(topic, { server: true, client: false });
-    await discA.flushed();
-    swarmB.join(topic, { server: false, client: true });
-    await swarmB.flush();
+  // WI-4077 root cause: `discovery.flushed()` / `swarm.flush()` carry NO
+  // timeout of their own — against a bootstrap that is wedged badly enough to
+  // not even ack the initial announce/lookup (rather than merely failing to
+  // route a 'connection'), those calls can hang well past `timeoutMs`. The
+  // `result` timer above only starts covering the "did we see a connection"
+  // phase — it never guards this earlier await. Observed live: the wrapper
+  // script's outer `timeout` (bash) killed the hung node process before this
+  // script ever reached its own FAIL branch, so the escalation WI-4077 filed
+  // got created with a genuinely EMPTY diagnostic body ("Probe output:\n"
+  // followed by nothing) — the class this probe exists to catch, silently
+  // breaking the very tool built to catch it. Race the whole announce+connect
+  // sequence (not just the connection-wait) against `timeoutMs` so the probe
+  // ALWAYS settles — and always reports something — inside its stated budget,
+  // regardless of which stage hangs.
+  const overallTimeout = new Promise((resolve) => {
+    const t = setTimeout(() => resolve('stage-timeout'), timeoutMs);
+    t.unref?.();
+  });
 
-    connected = await result;
+  try {
+    const attempt = (async () => {
+      // Sequenced per the hyperswarm README's exact pattern — do NOT
+      // parallelize this: the server must be fully announced
+      // (discovery.flushed()) BEFORE the client joins, and the client uses
+      // swarm.flush() (not discovery.flushed(), which has different — and
+      // here, hanging — semantics on the client side).
+      const discA = swarmA.join(topic, { server: true, client: false });
+      await discA.flushed();
+      swarmB.join(topic, { server: false, client: true });
+      await swarmB.flush();
+      return result;
+    })();
+
+    const outcome = await Promise.race([attempt, overallTimeout]);
+    if (outcome === 'stage-timeout') {
+      process.stderr.write(
+        `[p2p-dht-probe] announce/flush did not complete within ${timeoutMs}ms — bootstrap is not even acking join/lookup (worse than a plain connect-timeout)\n`,
+      );
+      connected = false;
+    } else {
+      connected = outcome === true;
+    }
   } catch (err) {
     process.stderr.write(`[p2p-dht-probe] error during probe: ${err instanceof Error ? err.stack || err.message : String(err)}\n`);
     connected = false;

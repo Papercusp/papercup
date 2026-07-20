@@ -21,7 +21,13 @@ type BootstrapOutcome = {
   skippedSelf: string | null;
   stderr: string;
 };
-type RegistryProject = { slug: string; hive_slug?: string; self_repo?: boolean };
+type RegistryProject = {
+  slug: string;
+  hive_slug?: string;
+  self_repo?: boolean;
+  github_repository_id?: number;
+  github_remote?: string;
+};
 
 const {
   loadHarnessRegistryMock,
@@ -304,6 +310,68 @@ describe('runBootstrapLeg', () => {
     expect(device).toBe(PEER_DEVICE); // dials a peer, never self (WI-1559 squat guard stays in bootstrapFromPeer)
     expect((req as { repoKey: string }).repoKey).toBe(SLUG);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── WI-5168: federated repoKey (repo-identity.ts's canonicalRepoKey) ──────
+  // A device's LOCAL install `slug` for the same upstream repo can differ from
+  // a peer's (join-pot derives it from that device's own registry — e.g. a
+  // tower registers 'hello-world-3', a joining VM registers 'hello-world' for
+  // the SAME octocat/Hello-World), so keying the bare-store path AND the wire
+  // repoKey on `slug` meant a G-8 fetch asked the peer for a repoKey the peer
+  // never created its store under — NEVER rendezvousing for two devices whose
+  // install slugs differ. These assert the store path + wire repoKey both key
+  // on the FEDERATED identity (github_repository_id) instead, whenever it's
+  // known — independent of what this device happens to call the repo locally.
+  it('WI-5168: keys the bare store + wire repoKey on github_repository_id, NOT the local slug, when known', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{ slug: 'hello-world-3', hive_slug: 'hello-world-3', self_repo: true, github_repository_id: 1296269 }],
+    });
+    await runBootstrapLeg('hello-world-3', WS);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith('hello-world-3', 'gh-1296269');
+    expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
+    const [, , req] = openHiveGitDuplexToDeviceMock.mock.calls[0];
+    expect((req as { repoKey: string }).repoKey).toBe('gh-1296269');
+  });
+
+  it('WI-5168: two devices with DIFFERENT local slugs for the SAME github_repository_id resolve to the IDENTICAL repoKey', async () => {
+    // Simulates the exact live-caught defect: tower + VM registered the same
+    // upstream under different install slugs. Both must derive the same
+    // wire+store repoKey for G-8 to ever rendezvous.
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{ slug: 'hello-world-3', hive_slug: 'hello-world-3', self_repo: true, github_repository_id: 1296269 }],
+    });
+    await runBootstrapLeg('hello-world-3', WS);
+    const towerRepoKey = (openHiveGitDuplexToDeviceMock.mock.calls[0][2] as { repoKey: string }).repoKey;
+    openHiveGitDuplexToDeviceMock.mockClear();
+    ensurePotGitRepoMock.mockClear();
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{ slug: 'hello-world', hive_slug: 'hello-world', self_repo: true, github_repository_id: 1296269 }],
+    });
+    await runBootstrapLeg('hello-world', WS);
+    const vmRepoKey = (openHiveGitDuplexToDeviceMock.mock.calls[0][2] as { repoKey: string }).repoKey;
+    expect(towerRepoKey).toBe(vmRepoKey);
+    expect(towerRepoKey).toBe('gh-1296269');
+  });
+
+  it('WI-5168: falls back to owner/repo from github_remote when github_repository_id is not yet known', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [{
+        slug: SLUG,
+        hive_slug: SLUG,
+        self_repo: true,
+        github_remote: 'https://github.com/octocat/Hello-World.git',
+      }],
+    });
+    await runBootstrapLeg(SLUG, WS);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, 'gh-octocat--hello-world');
+  });
+
+  it('WI-5168: falls back to the local slug when neither github_repository_id nor github_remote is known (pre-existing, non-regressed limitation)', async () => {
+    await runBootstrapLeg(SLUG, WS); // default fixture: no github coords at all
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
   });
 
   it('falls back to the pre-WI-3583 destroyed stub (never dials) when no live swarm topic exists', async () => {
