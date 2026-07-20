@@ -13,9 +13,10 @@
  *   default (real)  → real AGENT_CMD pipeline + real opus-4-8 judge + real proposer. Bounded
  *                     (D-019): GYM_LOOP_MAX_CYCLES (default 1) × a hard GYM_LOOP_BUDGET_USD.
  *
- *   cd apps/operator && set -a; . ./.env.local; set +a; \
- *     GYM_LOOP_FAKE=1 npx tsx lib/gym/gym-loop-run.ts             # zero-LLM assembly check
- *     GYM_LOOP_MAX_CYCLES=1 npx tsx lib/gym/gym-loop-run.ts        # real run (on capacity)
+ *   From repo root (REPO_ROOT derives from __dirname, so this is cwd-independent):
+ *     set -a; . apps/operator/.env.local; set +a; \
+ *       GYM_LOOP_FAKE=1 npx tsx packages/operator-core/lib/gym/gym-loop-run.ts        # zero-LLM assembly check
+ *       GYM_LOOP_MAX_CYCLES=1 npx tsx packages/operator-core/lib/gym/gym-loop-run.ts  # real run (on capacity)
  *
  * Env knobs (all read inside runOneAutoloopCycle): GYM_LOOP_PORT (pins the gym-operator's port;
  * omitted ⇒ a genuinely-free ephemeral port is probed per run, so concurrent/manual cycles never

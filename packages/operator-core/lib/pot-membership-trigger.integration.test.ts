@@ -34,6 +34,13 @@ function insertItem(row: {
     VALUES (${row.workspace_id}, ${row.harness_slug}, ${row.feature_id}, ${row.item_kind ?? 'bug'}, ${row.origin ?? 'local'}, 'open')`;
 }
 
+/** The harness_slug actually stored for a feature_id (post-trigger). */
+async function storedSlug(featureId: string): Promise<string | undefined> {
+  const rows = await db.sql<{ harness_slug: string }[]>`
+    SELECT harness_slug FROM harness_shared.work_items WHERE feature_id = ${featureId} LIMIT 1`;
+  return rows[0]?.harness_slug;
+}
+
 beforeAll(async () => {
   db = await createFreshPgDb('potmemb');
   const { sql } = db;
@@ -75,28 +82,32 @@ describe('pot-membership backstop trigger (migration 651)', () => {
     await expect(insertItem({ workspace_id: WS, harness_slug: 'papercup', feature_id: 'WI-OK-3' })).resolves.toBeDefined();
   });
 
-  it('REJECTS an operator/global scope label in the enforced workspace', async () => {
-    await expect(
-      insertItem({ workspace_id: WS, harness_slug: 'operator:papercusp-workspace', feature_id: 'WI-BAD-1' }),
-    ).rejects.toThrow(/not a real Pot/i);
-    await expect(insertItem({ workspace_id: WS, harness_slug: '@singleton', feature_id: 'WI-BAD-2' })).rejects.toThrow(
-      /not a real Pot/i,
-    );
-    await expect(
-      insertItem({ workspace_id: WS, harness_slug: 'papercusp-workspace', feature_id: 'WI-BAD-3' }),
-    ).rejects.toThrow(/not a real Pot/i);
+  it('SELF-HEALS a known workspace-global scope label to the platform Pot (deploy-order safe)', async () => {
+    // operator:<ws> / @singleton / the bare workspace id are not Pots — the backstop
+    // rewrites them to the platform Pot instead of failing a pre-P-005 writer.
+    for (const [slug, fid] of [
+      ['operator:papercusp-workspace', 'WI-HEAL-1'],
+      ['@singleton', 'WI-HEAL-2'],
+      ['papercusp-workspace', 'WI-HEAL-3'],
+      ['operator', 'WI-HEAL-4'],
+    ] as const) {
+      await expect(insertItem({ workspace_id: WS, harness_slug: slug, feature_id: fid })).resolves.toBeDefined();
+      expect(await storedSlug(fid)).toBe('papercusp');
+    }
   });
 
-  it('REJECTS a made-up Pot slug in the enforced workspace', async () => {
+  it('REJECTS a genuinely made-up Pot slug in the enforced workspace', async () => {
     await expect(insertItem({ workspace_id: WS, harness_slug: 'totally-made-up', feature_id: 'WI-BAD-4' })).rejects.toThrow(
       /not a real Pot/i,
     );
   });
 
-  it('ALLOWS a federation replica (origin<>local) even under a non-pot slug', async () => {
+  it('ALLOWS a federation replica (origin<>local) and leaves its slug untouched', async () => {
     await expect(
       insertItem({ workspace_id: WS, harness_slug: 'operator:papercusp-workspace', feature_id: 'WI-REMOTE-1', origin: 'remote' }),
     ).resolves.toBeDefined();
+    // Remote-origin rows are owned by the authoring peer — never rewritten.
+    expect(await storedSlug('WI-REMOTE-1')).toBe('operator:papercusp-workspace');
   });
 
   it('FAILS OPEN for a workspace with no platform Pot (test fixture tenant)', async () => {

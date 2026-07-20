@@ -105,12 +105,16 @@ describe('createWorkItem fires emitWorkItemCreatedEvent (EI-8296)', () => {
   });
 
   it('feature-family create ALSO fires the created-event hook', async () => {
+    // 'papercup' is the legacy dogfood slug — pot-membership-enforcement-2026-07-20
+    // (P-005) now resolves it against harness_shared.pots to its real Pot home
+    // ('papercusp') at write time, so the created-event hook receives the RESOLVED
+    // slug, not the caller's raw legacy input. See pot-membership.ts canonicalPotSlug.
     const wi = await createWorkItem({ kind: 'feature', title: 'a new feature', harness: 'papercup' });
     expect(wi.id).toBe('WI-9001');
     await vi.waitFor(() => expect(emitWorkItemCreatedEvent).toHaveBeenCalledTimes(1));
     const arg = emitWorkItemCreatedEvent.mock.calls[0][0] as { id: string; harness: string | null };
     expect(arg.id).toBe('WI-9001');
-    expect(arg.harness).toBe('papercup');
+    expect(arg.harness).toBe('papercusp');
   });
 
   it('fire-and-forget: a throwing hook never fails the create', async () => {

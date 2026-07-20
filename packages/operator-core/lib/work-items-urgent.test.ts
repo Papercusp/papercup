@@ -128,9 +128,15 @@ describe('createWorkItem urgent hook (P-006)', () => {
   });
 
   it('feature-family urgent create passes the item harness as the hive home slug', async () => {
+    // 'papercup' is the legacy dogfood slug — pot-membership-enforcement-2026-07-20
+    // (P-005) now resolves it against harness_shared.pots to its real Pot home
+    // ('papercusp') at write time, so the wake hook receives the RESOLVED slug,
+    // not the caller's raw legacy input. See pot-membership.ts canonicalPotSlug.
     await createWorkItem({ kind: 'feature', title: 'hotfix', harness: 'papercup', urgent: true });
     await vi.waitFor(() => expect(requestUrgentPotWake).toHaveBeenCalledTimes(1));
-    expect((requestUrgentPotWake.mock.calls[0][0] as unknown as { harness: string | null }).harness).toBe('papercup');
+    expect((requestUrgentPotWake.mock.calls[0][0] as unknown as { harness: string | null }).harness).toBe(
+      'papercusp',
+    );
   });
 
   it('a non-urgent create never touches the wake path', async () => {
