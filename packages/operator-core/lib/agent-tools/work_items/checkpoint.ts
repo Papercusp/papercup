@@ -145,9 +145,8 @@ export default defineTool({
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
-    'Writes are verify-read and fail loudly on an invisible write (checkpoint_verify_failed). A plain replace that would ' +
-    'shrink a substantial checkpoint >50% is BLOCKED (`shrink_blocked`) — pass `append:true` or `confirmShrink:true`. ' +
-    'Refuses a peer-held item (`not_holder`).',
+    'Writes are verify-read (checkpoint_verify_failed on a miss); a plain replace shrinking a substantial checkpoint ' +
+    '>50% is BLOCKED (`shrink_blocked` — pass `append:true`/`confirmShrink:true`). Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next ' +

@@ -621,6 +621,123 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       },
     },
     {
+      id: 'interaction-command-palette-open',
+      label: 'Command palette open interaction',
+      run: async () => {
+        // Open the global command palette via its ?palette=true deep-link — the
+        // open transition begins the interaction, the lazy cmdk chunk mount ends
+        // it. No click trigger: the setup IS the trigger (P-006).
+        await clearPerfRecorder(ctx);
+        const result = await measureInteraction(ctx, {
+          name: 'command-palette-open',
+          setup: `const u = new URL(location.href); u.searchParams.set('palette', 'true'); history.pushState({}, '', u.pathname + u.search + u.hash); window.dispatchEvent(new PopStateEvent('popstate'));`,
+          settleTimeoutMs: 8_000,
+        });
+        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['command-palette-open'];
+        if (!result.ok) {
+          return fail(
+            `The global command palette opens within ${budgetMs}ms in the Tauri desktop shell.`,
+            `Could not measure command-palette-open: ${result.detail}`,
+            ['The app root must be mounted so ?palette=true opens the palette (GlobalCommandPalette).'],
+          );
+        }
+        const verdict = evaluateInteractionBudget('command-palette-open', result.measuredMs);
+        return statusResult(
+          verdict.ok,
+          `The global command palette opens within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
+          `command-palette-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+          undefined,
+          [{ key: 'interaction:command-palette-open', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+        );
+      },
+    },
+    {
+      id: 'interaction-inbox-list-settle',
+      label: 'Inbox list filter settle interaction',
+      run: async () => {
+        // Open the op-chat sidebar Inbox face, force the 'needs' filter, then click
+        // the 'all' chip so the scoped virtualized list definitely re-scopes; the
+        // begin fires on the chip click, the end after the list re-renders (P-006).
+        await clearPerfRecorder(ctx);
+        const result = await measureInteraction(ctx, {
+          name: 'inbox-list-settle',
+          setup: `const u = new URL(location.href); u.searchParams.set('opcv', 'inbox'); u.searchParams.set('opci', 'needs'); history.pushState({}, '', u.pathname + u.search + u.hash); window.dispatchEvent(new PopStateEvent('popstate'));`,
+          triggerSelector: '[data-testid="inbox-filter-all"]',
+          settleTimeoutMs: 6_000,
+        });
+        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['inbox-list-settle'];
+        if (!result.ok) {
+          return fail(
+            `The Inbox filter re-scopes the virtualized list within ${budgetMs}ms in the Tauri desktop shell.`,
+            `Could not measure inbox-list-settle: ${result.detail}`,
+            ['Open the op-chat sidebar Inbox face (?opcv=inbox) so the filter chips (inbox-filter-all) are present.'],
+          );
+        }
+        const verdict = evaluateInteractionBudget('inbox-list-settle', result.measuredMs);
+        return statusResult(
+          verdict.ok,
+          `The Inbox filter re-scopes the virtualized list within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
+          `inbox-list-settle=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+          undefined,
+          [{ key: 'interaction:inbox-list-settle', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+        );
+      },
+    },
+    {
+      id: 'interaction-conversation-thread-load',
+      label: 'Conversation thread load interaction',
+      run: async () => {
+        // ChatPanel emits conversation-thread-load whenever a conversation opens
+        // (chatId set → transcript rendered). It needs a specific chat to drive, so
+        // the fresh-binary wdio harness opens one cold; in the long-lived shell we
+        // report the latest recorded measure, or skip if none was exercised (P-006).
+        const result = await readLatestInteractionMeasure(ctx, 'conversation-thread-load');
+        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['conversation-thread-load'];
+        if (!result.ok) {
+          return skip(
+            `A conversation thread loads within ${budgetMs}ms in the Tauri desktop shell.`,
+            `No conversation-thread-load measure recorded in this shell yet — driven cold by the fresh-binary wdio harness (${result.detail}).`,
+          );
+        }
+        const verdict = evaluateInteractionBudget('conversation-thread-load', result.measuredMs);
+        return statusResult(
+          verdict.ok,
+          `A conversation thread loads within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
+          `conversation-thread-load=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+          undefined,
+          [{ key: 'interaction:conversation-thread-load', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+        );
+      },
+    },
+    {
+      id: 'interaction-harness-dock-open',
+      label: 'Harness dock open interaction',
+      run: async () => {
+        // HarnessDock emits harness-dock-open on mount → dockview API bind (layout
+        // hydration). The dock mounts once per session, so we navigate to the dock
+        // route (in case it isn't mounted) and read the latest recorded measure —
+        // the fresh-binary wdio harness drives it cold on boot (P-006).
+        await runTauri(ctx, ['navigate', 'http://localhost:3055/adv?slug=papercup&ws=default'], 12_000).catch(() => undefined);
+        await sleep(1200, ctx.signal);
+        const result = await readLatestInteractionMeasure(ctx, 'harness-dock-open');
+        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['harness-dock-open'];
+        if (!result.ok) {
+          return skip(
+            `The harness dock hydrates within ${budgetMs}ms in the Tauri desktop shell.`,
+            `No harness-dock-open measure recorded in this shell yet — driven cold by the fresh-binary wdio harness (${result.detail}).`,
+          );
+        }
+        const verdict = evaluateInteractionBudget('harness-dock-open', result.measuredMs);
+        return statusResult(
+          verdict.ok,
+          `The harness dock hydrates within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
+          `harness-dock-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+          undefined,
+          [{ key: 'interaction:harness-dock-open', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+        );
+      },
+    },
+    {
       id: 'chaos-recorder-usability',
       label: 'Chaos recorder usability',
       run: async () => {
@@ -1349,12 +1466,15 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
         if (entries.length > 0) { measuredMs = Math.round(entries[entries.length - 1].duration); break; }
         await sleep(100);
       }
-      // Best-effort cleanup: drop the popup deep-link so the modal doesn't linger
-      // for the next check.
+      // Best-effort cleanup: drop the popup/palette deep-links so a modal doesn't
+      // linger open and block the next check's clicks.
       try {
         const u = new URL(location.href);
-        if (u.searchParams.has('pplan')) {
-          u.searchParams.delete('pplan');
+        let changed = false;
+        for (const p of ['pplan', 'palette']) {
+          if (u.searchParams.has(p)) { u.searchParams.delete(p); changed = true; }
+        }
+        if (changed) {
           history.pushState({}, '', u.pathname + u.search + u.hash);
           window.dispatchEvent(new PopStateEvent('popstate'));
         }

@@ -179,20 +179,22 @@ describe('<FeatureEditor />', () => {
     expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ title: 'Title', status: 'in_progress', attempts: 2, claims: ['VAL-1'] });
   });
 
-  it('blocks save (no fetch) when status is "deprecated" but the reason is blank', async () => {
+  it('blocks save (no fetch) when status is "dropped" but the reason is blank', async () => {
     const fetchSpy = vi.fn(async () => ({ ok: true, text: async () => '' }) as unknown as Response);
     vi.stubGlobal('fetch', fetchSpy);
     render(
       <FeatureEditor
         slug="h"
-        feature={{ id: 'F-7', title: 'Title', status: 'in_progress', attempts: 0, claims: [] }}
+        feature={{ id: 'F-7', title: 'Title', status: 'wip', attempts: 0, claims: [] }}
         onClose={() => {}}
         onSaved={() => {}}
         embedded
       />,
     );
-    // Flip status → deprecated. The required deprecation-reason field appears.
-    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'deprecated' } });
+    // work-item-status-full-unify P-007: the drop terminal is the unified `dropped`
+    // (feature `deprecated`→`dropped`). Flip status → dropped; the required
+    // deprecation-reason field appears.
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'dropped' } });
     expect(screen.getByText(/Deprecation reason/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     // The guard short-circuits before any fetch and surfaces the validation toast.

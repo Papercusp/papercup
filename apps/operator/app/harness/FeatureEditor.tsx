@@ -306,7 +306,14 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
                 value={status}
                 onChange={(v) => setStatus(v as Status)}
                 ariaLabel="Status"
-                options={VALID_STATUSES.map((s) => ({ value: s, label: s }))}
+                options={[
+                  ...VALID_STATUSES.map((s) => ({ value: s, label: s })),
+                  // Keep a residual legacy-spelled current status selectable so the editor
+                  // isn't blank when opened on a pre-backfill/federated row (P-007).
+                  ...(!(VALID_STATUSES as readonly string[]).includes(status)
+                    ? [{ value: status, label: `${status} (legacy)` }]
+                    : []),
+                ]}
                 triggerStyle={{
                   width: '100%', boxSizing: 'border-box',
                   background: 'var(--bg-2)', color: 'var(--fg)',
@@ -334,7 +341,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
             )}
           </div>
 
-          {status === 'deprecated' && (
+          {status === 'dropped' && (
             <div>
               <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>
                 Deprecation reason <span style={{ color: 'var(--bad)' }}>(required)</span>
