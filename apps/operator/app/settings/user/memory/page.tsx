@@ -26,6 +26,7 @@ export const META_FETCH_TIMEOUT_MS = 20_000;
  */
 export const DEFAULT_MEMORY_PAGE_LIMIT = 300;
 import { Select } from '@/app/harness/Select';
+import { FleetKnowledgePacksSection } from './FleetKnowledgePacksSection';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
 import { originOf, agentSourceDetailOf, type MemoryOrigin } from './origin';
@@ -902,6 +903,11 @@ export default function MemoryPage() {
           (the index itself is regenerated, never hand-edited).
         </div>
       )}
+
+      {/* knowledge-pack-settings-2026-07-19 P-005 — the workspace-wide
+          fleet-lessons loop knobs (cadence, adoption policy, hygiene bounds).
+          Deliberately on this page (D-001): knowledge packs are fleet memory. */}
+      <FleetKnowledgePacksSection />
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <input

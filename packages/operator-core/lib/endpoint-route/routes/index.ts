@@ -443,6 +443,7 @@ import notesRoutes from './notes/notes';
 import userMemory from './user/memory';
 import userMemoryFeedback from './user/memory-feedback';
 import userMemoryReembed from './user/memory-reembed';
+import userKnowledgePackSettings from './user/knowledge-pack-settings';
 import userMemoryRelinkEntities from './user/memory-relink-entities';
 import userMemoryAudit from './user/memory-audit';
 import devSql from './dev/sql';
@@ -904,6 +905,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(userMemory as AnyRoute[]),
   ...flatten(userMemoryFeedback as AnyRoute),
   ...flatten(userMemoryReembed as AnyRoute),
+  ...flatten(userKnowledgePackSettings as AnyRoute),
   ...flatten(userMemoryRelinkEntities as AnyRoute),
   ...flatten(userMemoryAudit as AnyRoute),
   ...flatten(devSql as AnyRoute),

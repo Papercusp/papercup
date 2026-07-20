@@ -653,6 +653,10 @@ export interface AutoAdoptSweepResult {
    *  decide() that didn't succeed (e.g. the D-006 transfer bar refused an
    *  adopt) — the candidate stays pending and the next tick retries it. */
   failed: number;
+  /** knowledge-pack-settings P-003: adoptionPolicy='owner-approval' — the
+   *  whole sweep was skipped (no LLM spend); candidates stay pending for
+   *  knowledge_packs:decide_candidate. */
+  skippedPolicy?: true;
 }
 
 /** Injectable seam (unit tests pin this without PG/LLM). */
@@ -673,9 +677,29 @@ export interface AutoAdoptDeps {
  * itself fails (e.g. the transfer bar) simply stays pending for the next tick.
  */
 export async function autoAdoptPendingCandidates(
-  opts: { maxPerRun?: number; packsRoot?: string; workspaceId?: string } = {},
+  opts: {
+    maxPerRun?: number;
+    packsRoot?: string;
+    workspaceId?: string;
+    /** Explicit policy override (tests / callers that already resolved knobs);
+     *  omitted ⇒ resolved from the stored settings (knowledge-pack-settings P-003). */
+    adoptionPolicy?: 'auto' | 'owner-approval';
+  } = {},
   deps: AutoAdoptDeps = {},
 ): Promise<AutoAdoptSweepResult> {
+  // P-003: 'owner-approval' disables the AUTOMATED sweep entirely — candidates
+  // stay pending for the manual decide_candidate path, and no judge LLM spend
+  // happens in manual mode. Fail-open to 'auto' (the shipped WI-5414 behavior)
+  // if the settings read breaks.
+  const policy =
+    opts.adoptionPolicy ??
+    (await import('./config')
+      .then((m) => m.resolveKnowledgePackKnobs())
+      .then((k) => k.adoptionPolicy)
+      .catch(() => 'auto' as const));
+  if (policy === 'owner-approval') {
+    return { reviewed: 0, adopted: 0, dismissed: 0, failed: 0, skippedPolicy: true };
+  }
   const list = deps.list ?? listKnowledgePackCandidates;
   const decide = deps.decide ?? decideKnowledgePackCandidate;
   const review = deps.review ?? reviewCandidateForAutoAdopt;

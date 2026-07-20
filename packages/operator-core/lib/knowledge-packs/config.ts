@@ -69,6 +69,24 @@ export const knowledgePackSettingsSchema = z
 
 export type KnowledgePackSettings = z.infer<typeof knowledgePackSettingsSchema>;
 
+/** The POST patch shape: every field also accepts null = "clear this override
+ *  back to env/default resolution" (writeKnowledgePackSettings deletes it). */
+export const knowledgePackSettingsPatchSchema = z
+  .object({
+    deliveryCadence: z.enum(['hourly', '6h', 'daily', 'paused']).nullable().optional(),
+    hygieneCadence: z.enum(['daily', 'weekly', 'paused']).nullable().optional(),
+    adoptionPolicy: z.enum(['auto', 'owner-approval']).nullable().optional(),
+    minAgeDays: z.number().int().min(0).max(3650).nullable().optional(),
+    pruneDismissedDays: z.number().int().min(1).max(3650).nullable().optional(),
+    pendingCandidateCap: z.number().int().min(1).max(500).nullable().optional(),
+    maxReviewsPerTick: z.number().int().min(0).max(200).nullable().optional(),
+    hygieneMaxHivesPerTick: z.number().int().min(0).max(100).nullable().optional(),
+    deliveryMaxHivesPerTick: z.number().int().min(1).max(100).nullable().optional(),
+  })
+  .strict();
+
+export type KnowledgePackSettingsPatch = z.infer<typeof knowledgePackSettingsPatchSchema>;
+
 /* ── storage ────────────────────────────────────────────────────────────── */
 
 const TABLE = 'knowledge_pack_config' as const;
