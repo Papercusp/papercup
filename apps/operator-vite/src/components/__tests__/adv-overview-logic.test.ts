@@ -23,8 +23,11 @@ import {
   selectAgentRows,
   summarizeWorkItemStats,
   selectUnhealthyPanels,
+  deriveDeployTile,
+  fmtAge,
   OVERVIEW_TILE_TARGETS,
   type OverviewRosterEntry,
+  type OverviewPipelineSnapshot,
 } from '../adv/AdvOverviewTab';
 import { ADV_TABS } from '../adv/AdvShell';
 
@@ -266,15 +269,123 @@ describe('OVERVIEW_TILE_TARGETS', () => {
       expect(ids.has(target as (typeof ADV_TABS)[number]['id'])).toBe(true);
     }
   });
-  it('covers all seven tiles', () => {
+  it('covers all eight tiles', () => {
     expect(Object.keys(OVERVIEW_TILE_TARGETS).sort()).toEqual([
       'activity',
       'agents',
+      'deploy',
       'health',
       'learning',
       'needsYou',
       'plans',
       'workItems',
     ]);
+  });
+});
+
+// ─── deriveDeployTile / fmtAge (overview-tab-expansion-2026-07-20 P-001) ────
+const NOW = Date.parse('2026-07-20T05:00:00.000Z');
+
+function pipelineSnap(over: {
+  gate?: Partial<OverviewPipelineSnapshot['gate']>;
+  deploy?: Partial<OverviewPipelineSnapshot['deploy']>;
+  activeRun?: OverviewPipelineSnapshot['activeRun'];
+  gitSync?: Partial<OverviewPipelineSnapshot['gitSync']>;
+} = {}): OverviewPipelineSnapshot {
+  return {
+    gitSync: { headSha: 'aaaa111122223333', lastSyncedAtMs: NOW - 60_000, ...over.gitSync },
+    gate: {
+      consecutiveReds: 0,
+      stalled: false,
+      verdictStale: false,
+      verdictObservedAtMs: NOW - 12 * 60_000,
+      lastGreenAtMs: NOW - 12 * 60_000,
+      failingTests: [],
+      ...over.gate,
+    },
+    activeRun: over.activeRun !== undefined ? over.activeRun : null,
+    deploy: {
+      stagingHead: { sha: 'aaaa111122223333' },
+      greenPin: { sha: 'bbbb444455556666' },
+      deployed: { sha: 'bbbb444455556666' },
+      deployedAtMs: NOW - 2 * 60 * 60_000,
+      greenPinBehindStaging: 3,
+      deployedBehindGreenPin: 0,
+      ...over.deploy,
+    },
+  };
+}
+
+describe('fmtAge', () => {
+  it('compacts to s / m / h / d and shrugs at garbage', () => {
+    expect(fmtAge(45_000)).toBe('45s');
+    expect(fmtAge(12 * 60_000)).toBe('12m');
+    expect(fmtAge(3 * 60 * 60_000)).toBe('3h');
+    expect(fmtAge(49 * 60 * 60_000)).toBe('2d');
+    expect(fmtAge(-5)).toBe('?');
+    expect(fmtAge(Number.NaN)).toBe('?');
+  });
+});
+
+describe('deriveDeployTile', () => {
+  it('null without a snapshot', () => {
+    expect(deriveDeployTile(undefined, NOW)).toBeNull();
+  });
+
+  it('green gate: verdict + age; refs carry staging buffer, green age, and deploy age', () => {
+    const m = deriveDeployTile(pipelineSnap(), NOW)!;
+    expect(m.verdict).toBe('green');
+    expect(m.gateLine).toBe('gate green · verdict 12m ago');
+    expect(m.failingCount).toBe(0);
+    expect(m.refs.map((r) => r.sha)).toEqual(['aaaa1111', 'bbbb4444', 'bbbb4444']);
+    expect(m.refs[0].tag).toBe('+3 unjudged');
+    expect(m.refs[1].tag).toBe('green 12m ago');
+    // gap 0 + a known deploy time → the deploy age, not a bare 'current'
+    expect(m.refs[2].tag).toBe('deployed 2h ago');
+  });
+
+  it('red gate: failing count + STALLED marker; live ref shows the real deploy gap', () => {
+    const m = deriveDeployTile(
+      pipelineSnap({
+        gate: { consecutiveReds: 3, stalled: true, failingTests: ['a.test.ts', 'b.test.ts'] },
+        deploy: { deployedBehindGreenPin: 5 },
+      }),
+      NOW,
+    )!;
+    expect(m.verdict).toBe('red');
+    expect(m.gateLine).toBe('gate RED — 2 failing · STALLED · verdict 12m ago');
+    expect(m.failingCount).toBe(2);
+    expect(m.refs[2].tag).toBe('5 behind green');
+  });
+
+  it('a STALE verdict reads unknown — never trust (or colour by) stale counters', () => {
+    const m = deriveDeployTile(pipelineSnap({ gate: { verdictStale: true, consecutiveReds: 4 } }), NOW)!;
+    expect(m.verdict).toBe('unknown');
+    expect(m.gateLine).toBe('gate unknown — verdict stale');
+  });
+
+  it('runLine: judging (candidate + elapsed) vs idle vs null when the producer did not probe', () => {
+    expect(
+      deriveDeployTile(
+        pipelineSnap({ activeRun: { active: true, candidate: '06a0eb9577dead', elapsedSec: 840 } }),
+        NOW,
+      )!.runLine,
+    ).toBe('judging 06a0eb95 · 14m in');
+    expect(
+      deriveDeployTile(pipelineSnap({ activeRun: { active: false, candidate: null, elapsedSec: null } }), NOW)!
+        .runLine,
+    ).toBe('idle');
+    expect(deriveDeployTile(pipelineSnap(), NOW)!.runLine).toBeNull();
+  });
+
+  it('falls back to the git-sync head sha when the deploy ref block is unreadable', () => {
+    const m = deriveDeployTile(
+      pipelineSnap({ deploy: { stagingHead: null, greenPin: null, deployed: null, deployedAtMs: null, greenPinBehindStaging: null, deployedBehindGreenPin: null } }),
+      NOW,
+    )!;
+    expect(m.refs[0].sha).toBe('aaaa1111');
+    expect(m.refs[1].sha).toBe('—');
+    expect(m.refs[2].sha).toBe('—');
+    expect(m.refs[2].tag).toBeNull();
   });
 });

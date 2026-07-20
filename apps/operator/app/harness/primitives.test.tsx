@@ -52,9 +52,18 @@ describe('SEVERITY_ICON / ISSUE_STATUS_ICON maps', () => {
     );
   });
 
-  it('STATUS_ICON covers exactly the coding-harness status keys', () => {
+  it('STATUS_ICON covers exactly the unified + legacy-tolerant status keys', () => {
+    // work-item-status-full-unify P-007: STATUS_ICON now spans the unified
+    // lifecycle spellings (open/wip/blocked/needs-human/done/dropped) PLUS the
+    // legacy per-family spellings kept tolerant in theme.ts's _STATUS_TABLE
+    // (todo/in_progress/validating/failing/passed/deprecated/resolved/closed) —
+    // see primitives.tsx's STATUS_ICON doc-comment.
     expect(Object.keys(STATUS_ICON).sort()).toEqual(
-      ['todo', 'in_progress', 'validating', 'failing', 'blocked', 'passed', 'deprecated'].sort(),
+      [
+        'open', 'wip', 'blocked', 'needs-human', 'done', 'dropped',
+        'todo', 'in_progress', 'validating', 'failing', 'passed', 'deprecated',
+        'resolved', 'closed',
+      ].sort(),
     );
   });
 
