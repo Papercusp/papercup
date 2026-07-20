@@ -118,6 +118,15 @@ export function classifyArtifact(name: string): Pick<ReleaseArtifact, 'product' 
   if (/\.(deb|AppImage)$/.test(name)) return { product, platform: 'linux-x86_64' };
   if (/\.(dmg)$/.test(name) || /\.app\.tar\.gz$/.test(name)) return { product, platform: 'darwin-universal' };
   if (/\.(exe|msi)$/.test(name)) return { product, platform: 'windows-x86_64' };
+  // WI-5600: the Windows Server DiskSpans — it bundles the dogfood source tree
+  // (source.tar.zst, staged by default), pushing the payload past Inno's ~4GB
+  // single-exe ceiling, so Inno emits a `…-setup.exe` stub + `…-setup-N.bin`
+  // disks (isSpannedInstaller). A bare spanned stub is unpublishable — it would
+  // offer a download that can't install — so release-local.sh normalizes the span
+  // into ONE `…-setup.zip` the release page offers and the tester unzips + runs.
+  // Recognize that zip as the Windows installer it is. Scoped to the `-setup.zip`
+  // suffix that step produces, so an unrelated `.zip` is NOT misclassified.
+  if (/-setup\.zip$/i.test(name)) return { product, platform: 'windows-x86_64' };
   return null;
 }
 
