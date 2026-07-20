@@ -206,7 +206,19 @@ describe('outboxRowToLocalWriteOp — features', () => {
       // mapper maps absent → null (real-value federation is covered elsewhere).
       terminal_owner: null,
       terminal_completion_ref: null,
+      // work-item-status-full-unify-2026-07-19 (P-009/D-001): the terminal nuance
+      // (passed/resolved→done, deprecated/closed→dropped) federates. NULL here
+      // because this fixture's source row predates it → mapper maps absent → null.
+      terminal_reason: null,
     });
+  });
+
+  it('carries terminal_reason when present (P-009/D-001): the terminal nuance survives the mapper', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...featureOutboxRow,
+      row: { ...featureOutboxRow.row, status: 'done', terminal_reason: 'passed' },
+    })!;
+    expect((op.value as HarnessFeatureRow).terminal_reason).toBe('passed');
   });
 
   it('an OLD-shape outbox row (no dispatch columns) maps them to null and still validates', () => {
@@ -440,6 +452,14 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
     expect(v.assigned_at).toBe('2026-06-08T12:00:00.000Z'); // ISO preserved (PG casts on insert)
     expect(v.created_at).toBe('2026-06-08T11:59:00.000Z');
     expect(v.payload).toEqual({ agentSessionId: 'sess-1', backend: 'claude-code' });
+  });
+
+  it('carries terminal_reason when present (P-009/D-001): resolved→done nuance survives the mapper', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...engineerIssueOutboxRow,
+      row: { ...engineerIssueOutboxRow.row, state: 'done', terminal_reason: 'resolved' },
+    })!;
+    expect((op.value as EngineerIssueRow).terminal_reason).toBe('resolved');
   });
 
   it('maps a del to a keyed LocalWriteOp with no value', () => {

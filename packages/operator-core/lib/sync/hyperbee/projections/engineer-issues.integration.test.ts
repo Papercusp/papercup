@@ -180,6 +180,50 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(r?.fed_ts).toBe(100);
   });
 
+  // work-item-status-full-unify-2026-07-19 (P-009, owner hard-req D-001): a remote
+  // issue op's terminal_reason (the resolved/closed→done/dropped nuance, mig 638 +
+  // the CDC issue wire-shape mig 640) must survive the APPLY into the work_items
+  // base table — it was silently DROPPED before this fix (the mapper + projection
+  // carried terminal_owner/completion_ref but not terminal_reason). Reads the base
+  // table directly (what the projection writes), covering both INSERT + UPSERT.
+  it('applies terminal_reason on a terminal issue op — INSERT then UPSERT (P-009/D-001)', async () => {
+    const terminalReason = async (id: string) =>
+      (
+        await db.sql<{ terminal_reason: string | null }[]>`
+          SELECT terminal_reason FROM harness_shared.work_items
+           WHERE workspace_id = ${WS} AND feature_id = ${id} AND item_kind IN ('bug', 'change', 'task')`
+      )[0]?.terminal_reason ?? null;
+
+    // INSERT path: a resolved issue federates in as status='done'+terminal_reason='resolved'.
+    await proj().writeToPg(issueRow({ issue_id: 'EI-tr', state: 'done', terminal_reason: 'resolved' }), {
+      ts: 100,
+      fedHlc: '100:00001:a',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    expect(await terminalReason('EI-tr')).toBe('resolved');
+
+    // UPSERT path: a strictly-newer op flips it (e.g. corrected to closed→dropped).
+    // A higher fed_ts/fed_hlc wins the LWW guard, so the ON CONFLICT SET must carry
+    // terminal_reason for the new nuance to land.
+    await proj().writeToPg(issueRow({ issue_id: 'EI-tr', state: 'dropped', terminal_reason: 'closed' }), {
+      ts: 200,
+      fedHlc: '200:00001:a',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    expect(await terminalReason('EI-tr')).toBe('closed');
+
+    // A plain (non-nuanced) terminal op carries NULL — no stale nuance retained.
+    await proj().writeToPg(issueRow({ issue_id: 'EI-plain', state: 'done' }), {
+      ts: 100,
+      fedHlc: '100:00001:b',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    expect(await terminalReason('EI-plain')).toBeNull();
+  });
+
   it('stores operator-scope remote issues under operator:<workspace>, never empty harness_slug', async () => {
     await proj().writeToPg(
       issueRow({

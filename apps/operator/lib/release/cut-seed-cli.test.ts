@@ -415,21 +415,34 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
   });
 
   it('a single-pass-timeout-length stall (the exact race that used to fail the cut) no longer trips the default tolerance', async () => {
-    // Simulate the diagnosed incident: undrained count is stuck for exactly one
-    // DRAIN_PASS_TIMEOUT_MS-length hang (a single hung pass self-healing), then resumes
-    // progress. With the OLD coincidentally-equal 120_000 default this would have thrown;
-    // the derived default must ride it out.
-    const { sql } = pgReturning([100, 100, 0]); // stuck once, then a fresh pass drains it
+    // Simulate the diagnosed incident: undrained count is stuck for a span that reaches
+    // exactly one DRAIN_PASS_TIMEOUT_MS (120s) of real elapsed no-progress (a single hung
+    // pass self-healing), then resumes progress. `now`/`sleep` model real wall-clock time
+    // advancing 60s per poll \u2014 independent of how many times the implementation happens to
+    // call `now()` per iteration, unlike incrementing inside `now` itself. With the OLD
+    // coincidentally-equal 120_000 default, stalledFor reaching exactly 120_000 THROWS
+    // (stalledFor >= stallMs); the derived ~300s default must ride it out.
+    const { sql } = pgReturning([100, 100, 100, 0]); // stuck for 2 full polls (120s), then drains
     let t = 0;
+    const now = () => t;
+    const sleep = async () => {
+      t += 60_000;
+    };
+
+    // Sanity: confirm this exact scenario WOULD have thrown under the old literal default \u2014
+    // otherwise the "no longer trips" assertion below would be vacuous.
+    t = 0;
+    await expect(
+      waitForOperatorDrain({ ...base, pg: pgReturning([100, 100, 100, 0]).sql, stallMs: 120_000, now, sleep, warn: () => {} }),
+    ).rejects.toThrow(/NO progress/);
+
+    t = 0;
     const res = await waitForOperatorDrain({
       ...base,
       pg: sql,
       // no explicit stallMs \u2014 exercise the real default
-      now: () => {
-        t += DRAIN_PASS_TIMEOUT_MS; // one full pass-timeout of apparent no-progress per poll
-        return t;
-      },
-      sleep: async () => {},
+      now,
+      sleep,
       warn: () => {},
     });
     expect(res.undrained).toBe(0);
