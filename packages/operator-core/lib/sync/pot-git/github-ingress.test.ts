@@ -8,6 +8,7 @@ import { deviceNamespaceKey } from './storage';
 import {
   githubOriginDevicePubkey,
   githubOriginNamespaceKey,
+  ingressOriginBranches,
   normalizeGithubRemote,
 } from './github-ingress';
 
@@ -61,5 +62,31 @@ describe('githubOriginDevicePubkey / githubOriginNamespaceKey', () => {
   it('namespaceKey matches what ingress reports', () => {
     const url = 'https://github.com/acme/widgets';
     expect(githubOriginNamespaceKey(url)).toBe(deviceNamespaceKey(githubOriginDevicePubkey(url)));
+  });
+});
+
+describe('ingressOriginBranches — transient vs real transport errors (EI-18152354175913564)', () => {
+  it('a spawn-level fault (defaultRunGit code:-1, e.g. ENOENT/timeout) is tagged transient:true', async () => {
+    const r = await ingressOriginBranches({
+      repoPath: '/tmp/fake-bare.git',
+      remoteUrl: 'https://github.com/acme/widgets.git',
+      branches: ['main'],
+      runGit: async () => ({ code: -1, stdout: '', stderr: 'Error: spawn git ENOENT' }),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].transient).toBe(true);
+  });
+
+  it('a real git transport error (a genuine non-negative exit code) is tagged transient:false', async () => {
+    const r = await ingressOriginBranches({
+      repoPath: '/tmp/fake-bare.git',
+      remoteUrl: 'https://github.com/acme/widgets.git',
+      branches: ['main'],
+      runGit: async () => ({ code: 128, stdout: '', stderr: 'remote: Repository not found.' }),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].transient).toBe(false);
   });
 });

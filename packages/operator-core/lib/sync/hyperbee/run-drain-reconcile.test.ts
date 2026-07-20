@@ -136,4 +136,108 @@ describe('runDrainReconcileOnce', () => {
     expect(res.flagged).toEqual([]);
     expect(capture).not.toHaveBeenCalled();
   });
+
+  // 2026-07-20 ticket-storm fix (EI-18151359560402948 follow-up): a recurring stall
+  // whose PRIOR issue was already closed recently must post a recurrence comment,
+  // not mint a duplicate issue — see the module doc comment for the 20-tickets/9h
+  // live evidence this guards against.
+  describe('re-file cooldown', () => {
+    it('comments on a recently-closed same-key issue instead of filing a duplicate', async () => {
+      const capture = vi.fn(async () => okCapture());
+      const commentOnRecurrence = vi.fn(async () => ({}));
+      const findByWatchdogKey = vi.fn(async () => [
+        { id: 'EI-prior', state: 'done', updatedAt: new Date(1_000_000 - 5 * 60_000).toISOString() },
+      ]);
+      const res = await runDrainReconcileOnce({
+        loadDrainStats: async () => new Map([['ws::flapping', { undrainedCount: 9, oldestUndrainedAgeMs: 9 * 60_000 }]]),
+        getStatus: fakeGetStatus([['ws', 'flapping']]),
+        capture,
+        findByWatchdogKey,
+        commentOnRecurrence,
+        nowMs: 1_000_000, // prior closed 5min ago — well inside the default 30min cooldown
+        log: () => {},
+      });
+      expect(findByWatchdogKey).toHaveBeenCalledWith('federation-drain-stall:ws:flapping');
+      expect(capture).not.toHaveBeenCalled();
+      expect(commentOnRecurrence).toHaveBeenCalledTimes(1);
+      expect(commentOnRecurrence.mock.calls[0][0]).toBe('EI-prior');
+      expect(res.captured).toBe(0);
+      expect(res.coolingDown).toBe(1);
+    });
+
+    it('files a fresh issue once the cooldown has elapsed', async () => {
+      const capture = vi.fn(async () => okCapture());
+      const commentOnRecurrence = vi.fn(async () => ({}));
+      const findByWatchdogKey = vi.fn(async () => [
+        { id: 'EI-prior', state: 'done', updatedAt: new Date(1_000_000 - 60 * 60_000).toISOString() },
+      ]);
+      const res = await runDrainReconcileOnce({
+        loadDrainStats: async () => new Map([['ws::flapping', { undrainedCount: 9, oldestUndrainedAgeMs: 9 * 60_000 }]]),
+        getStatus: fakeGetStatus([['ws', 'flapping']]),
+        capture,
+        findByWatchdogKey,
+        commentOnRecurrence,
+        nowMs: 1_000_000, // prior closed 60min ago — past the default 30min cooldown
+        log: () => {},
+      });
+      expect(capture).toHaveBeenCalledTimes(1);
+      expect(commentOnRecurrence).not.toHaveBeenCalled();
+      expect(res.captured).toBe(1);
+      expect(res.coolingDown).toBe(0);
+    });
+
+    it('does not cool down on a still-OPEN top hit — leaves the decision to capture()’s own dedup', async () => {
+      const capture = vi.fn(async () => ({ created: false, reason: 'likely-duplicate' }) as CaptureResult);
+      const commentOnRecurrence = vi.fn(async () => ({}));
+      const findByWatchdogKey = vi.fn(async () => [{ id: 'EI-open', state: 'open', updatedAt: new Date(1_000_000).toISOString() }]);
+      const res = await runDrainReconcileOnce({
+        loadDrainStats: async () => new Map([['ws::flapping', { undrainedCount: 9, oldestUndrainedAgeMs: 9 * 60_000 }]]),
+        getStatus: fakeGetStatus([['ws', 'flapping']]),
+        capture,
+        findByWatchdogKey,
+        commentOnRecurrence,
+        nowMs: 1_000_000,
+        log: () => {},
+      });
+      expect(capture).toHaveBeenCalledTimes(1); // still asked — capture()'s own open-dedup declines it
+      expect(commentOnRecurrence).not.toHaveBeenCalled();
+      expect(res.coolingDown).toBe(0);
+    });
+
+    it('a lookup failure degrades to the always-refile path (fails open, never wedges the watchdog)', async () => {
+      const capture = vi.fn(async () => okCapture());
+      const findByWatchdogKey = vi.fn(async () => {
+        throw new Error('pg boom');
+      });
+      const res = await runDrainReconcileOnce({
+        loadDrainStats: async () => new Map([['ws::flapping', { undrainedCount: 9, oldestUndrainedAgeMs: 9 * 60_000 }]]),
+        getStatus: fakeGetStatus([['ws', 'flapping']]),
+        capture,
+        findByWatchdogKey,
+        nowMs: 1_000_000,
+        log: () => {},
+      });
+      expect(capture).toHaveBeenCalledTimes(1);
+      expect(res.captured).toBe(1);
+      expect(res.coolingDown).toBe(0);
+    });
+
+    it('refileCooldownMs: 0 disables the guard entirely (opt-out escape hatch)', async () => {
+      const capture = vi.fn(async () => okCapture());
+      const findByWatchdogKey = vi.fn(async () => [
+        { id: 'EI-prior', state: 'done', updatedAt: new Date(1_000_000).toISOString() },
+      ]);
+      const res = await runDrainReconcileOnce({
+        loadDrainStats: async () => new Map([['ws::flapping', { undrainedCount: 9, oldestUndrainedAgeMs: 9 * 60_000 }]]),
+        getStatus: fakeGetStatus([['ws', 'flapping']]),
+        capture,
+        findByWatchdogKey,
+        refileCooldownMs: 0,
+        nowMs: 1_000_000,
+        log: () => {},
+      });
+      expect(capture).toHaveBeenCalledTimes(1);
+      expect(res.coolingDown).toBe(0);
+    });
+  });
 });

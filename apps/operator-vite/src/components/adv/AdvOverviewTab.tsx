@@ -11,6 +11,7 @@ import {
   GraduationCap,
   Rocket,
   Coins,
+  FileText,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import FleetRateControl from './FleetRateControl';
@@ -325,6 +326,18 @@ export function deriveSpendTile(
   return { headline, unavailable, rows };
 }
 
+// ── operatorReports.latest: the newest operator <report> turns (P-004). This is
+//    the operator's NARRATIVE account — every other tile reads ground-truth
+//    state (D-002); the tile labels the distinction explicitly. ───────────────
+export interface OverviewReportRow {
+  turnId: string;
+  conversationId: string;
+  createdAt: number;
+  title: string;
+  excerpt: string | null;
+  planCount: number;
+}
+
 // ── one `dev.coordFeed` row (the fields this tile reads). ────────────────────
 interface CoordFeedRow {
   ts: string;
@@ -603,6 +616,12 @@ export default function AdvOverviewTab() {
     queryName: 'dev.gitPipeline',
     args: {},
     staleTime: 15_000,
+  });
+  // Operator report (P-004): the newest <report> turns — the operator's
+  // NARRATIVE, a thin projection over the report-cards substrate (48h window).
+  const reportsQ = useSyncQuery<OverviewReportRow>({
+    queryName: 'operatorReports.latest',
+    staleTime: 30_000,
   });
   // Spend (P-003): the 1h/24h spend envelope + the SAME accounts.pool read the
   // sidebar Accounts tab holds (identical args ⇒ shared cache entry).
@@ -967,6 +986,38 @@ export default function AdvOverviewTab() {
               ))}
             </>
           )}
+        </OverviewTile>
+
+        {/* Operator report (P-004): the newest <report> — EXPLICITLY the
+            operator's narrative account, unlike the ground-truth tiles (D-002).
+            Opens the inbox where report cards live. */}
+        <OverviewTile
+          icon={<FileText size={14} aria-hidden />}
+          title="Operator report"
+          accent="#38bdf8"
+          loading={reportsQ.loading && !reportsQ.data}
+          error={reportsQ.error ? String((reportsQ.error as Error).message ?? reportsQ.error) : null}
+          empty={!reportsQ.data || reportsQ.data.length === 0}
+          emptyLabel="No operator report in the last 48h"
+          onOpen={() => void openInbox('activity')}
+        >
+          {(reportsQ.data ?? []).map((r, i) => (
+            <div key={r.turnId} className="pc-overview__row">
+              <span className="pc-overview__row-title" title={r.excerpt ?? r.title}>
+                {r.title}
+                {i === 0 && r.excerpt ? ` — ${r.excerpt}` : ''}
+              </span>
+              {i === 0 && (
+                <span
+                  className="pc-overview__row-tag"
+                  title="The operator's own written status report — a narrative account; the other tiles read ground-truth state directly"
+                >
+                  narrative
+                </span>
+              )}
+              <span className="pc-overview__row-tag">{fmtAge(Date.now() - r.createdAt)} ago</span>
+            </div>
+          ))}
         </OverviewTile>
 
         {/* Health headline (owner ask 2026-07-19): overall verdict + the

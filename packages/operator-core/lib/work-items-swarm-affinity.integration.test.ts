@@ -45,16 +45,17 @@ vi.mock('./workspace-registry', async () => {
 
 const wi = await import('./work-items');
 const coLocateTool = (await import('./agent-tools/work_items/co_locate')).default;
+// co_locate returns the modern `defineTool` ToolResponse shape `{ data }` (its local
+// `json()` helper is `(o) => ({ data: o })`) — NOT the legacy `{ content: [{ text }] }`
+// envelope this helper used to JSON.parse. Read `.data` directly (already the object).
 const runCoLocate = async (args: Record<string, unknown>) =>
-  JSON.parse(
-    (
-      await (
-        coLocateTool as unknown as {
-          handler: (a: unknown, c: unknown) => Promise<{ content: { text: string }[] }>;
-        }
-      ).handler(args, { log() {}, workspaceId: 'default', role: 'operator' })
-    ).content[0].text,
-  );
+  (
+    await (
+      coLocateTool as unknown as {
+        handler: (a: unknown, c: unknown) => Promise<{ data: unknown }>;
+      }
+    ).handler(args, { log() {}, workspaceId: 'default', role: 'operator' })
+  ).data as Record<string, unknown>;
 const H = 'papercup';
 const S1 = 'swarm-one';
 const S2 = 'swarm-two';

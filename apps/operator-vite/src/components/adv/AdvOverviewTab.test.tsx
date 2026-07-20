@@ -72,6 +72,8 @@ let deltaResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: 
 // P-003: the Spend tile's usage envelope + account pool.
 let spendResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
 let accountsResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
+// P-004: the Operator-report tile's latest <report> turns.
+let reportsResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
@@ -106,6 +108,8 @@ vi.mock('@papercusp/sync', () => ({
         return { ...spendResult, error: null };
       case 'accounts.pool':
         return { ...accountsResult, error: null };
+      case 'operatorReports.latest':
+        return { ...reportsResult, error: null };
       default:
         return { data: undefined, loading: false, error: null };
     }
@@ -207,6 +211,7 @@ describe('AdvOverviewTab component', () => {
     deltaResult = { data: [], loading: false };
     spendResult = { data: undefined, loading: false };
     accountsResult = { data: [], loading: false };
+    reportsResult = { data: [], loading: false };
   });
 
   afterEach(() => {
@@ -214,7 +219,7 @@ describe('AdvOverviewTab component', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the nine tiles, the top-bar rate control, and the empty states', async () => {
+  it('renders the ten tiles, the top-bar rate control, and the empty states', async () => {
     render(<AdvOverviewTab />);
     expect(screen.getByTestId('fleet-rate-control')).toBeTruthy();
     expect(screen.getByText('Plans')).toBeTruthy();
@@ -224,9 +229,11 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('Work items')).toBeTruthy();
     expect(screen.getByText('Spend')).toBeTruthy();
     expect(screen.getByText('Deploy')).toBeTruthy();
+    expect(screen.getByText('Operator report')).toBeTruthy();
     expect(screen.getByText('Health')).toBeTruthy();
     expect(screen.getByText('Learning')).toBeTruthy();
     expect(screen.getByText('No usage telemetry yet')).toBeTruthy();
+    expect(screen.getByText('No operator report in the last 48h')).toBeTruthy();
     expect(screen.getByText('No active plans')).toBeTruthy();
     expect(screen.getByText('Nothing needs you right now')).toBeTruthy();
     expect(screen.getByText('No live agents')).toBeTruthy();
@@ -500,6 +507,41 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('1')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Open Spend' }));
     await waitFor(() => expect(nuqsSetters.__states).toHaveBeenCalledWith({ lsb: true, lst: 'accounts' }));
+  });
+
+  it('renders the Operator-report tile: title+excerpt, narrative label, ages, and the inbox deep-link (P-004)', async () => {
+    reportsResult = {
+      data: [
+        {
+          turnId: 't-1',
+          conversationId: 'c-1',
+          createdAt: Date.now() - 20 * 60_000,
+          title: 'Overnight status',
+          excerpt: 'All lanes green; two items deferred',
+          planCount: 2,
+        },
+        {
+          turnId: 't-0',
+          conversationId: 'c-1',
+          createdAt: Date.now() - 5 * 60 * 60_000,
+          title: 'Earlier report',
+          excerpt: null,
+          planCount: 1,
+        },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    // newest report carries the excerpt inline + the explicit narrative label
+    expect(screen.getByText('Overnight status — All lanes green; two items deferred')).toBeTruthy();
+    expect(screen.getByText('narrative')).toBeTruthy();
+    expect(screen.getByText('20m ago')).toBeTruthy();
+    // older reports render title + age only
+    expect(screen.getByText('Earlier report')).toBeTruthy();
+    expect(screen.getByText('5h ago')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Operator report' }));
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('plans'));
+    expect(nuqsSetters.inboxTier).toHaveBeenCalledWith('activity');
   });
 
   it('shows the Agents loading state while advRoster.list is in flight', () => {

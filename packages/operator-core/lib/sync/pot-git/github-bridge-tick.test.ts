@@ -116,6 +116,50 @@ describe('runGithubBridgeTick — an unreachable remote must not read green', ()
     const out = await runGithubBridgeTick(input);
     expect(out.verdict.signals.map((s) => s.kind)).not.toContain('bridge-remote-unreachable');
   });
+
+  // EI-18152354175913564: a `spawn git ENOENT` right after a bg-host restart
+  // misclassified as "fix the remote URL or credential" — an owner acting on
+  // that literal guidance wastes time on a problem that was never a
+  // credential/URL issue and had already self-cleared.
+  it('a spawn-level fault (transient) still escalates but does NOT need an owner', async () => {
+    const { input } = bridgeInput(
+      {},
+      {
+        ingress: async () =>
+          cleanIngress({
+            ok: false,
+            upToDate: [],
+            errors: [{ branch: 'main', message: 'Error: spawn git ENOENT', transient: true }],
+          }),
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.action).toBe('escalate');
+    expect(out.verdict.signals.map((s) => s.kind)).toContain('bridge-remote-unreachable');
+    expect(out.verdict.needsOwner).toBe(false);
+    expect(out.verdict.detail).not.toMatch(/fix the remote URL or wire the credential/i);
+    expect(out.verdict.detail).toMatch(/transient/i);
+  });
+
+  it('a mix of transient AND real errors across branches is NOT treated as transient', async () => {
+    const { input } = bridgeInput(
+      {},
+      {
+        ingress: async () =>
+          cleanIngress({
+            ok: false,
+            upToDate: [],
+            errors: [
+              { branch: 'main', message: 'Error: spawn git ENOENT', transient: true },
+              { branch: 'staging', message: 'remote: Repository not found.', transient: false },
+            ],
+          }),
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.needsOwner).toBe(true);
+    expect(out.verdict.detail).toMatch(/fix the remote URL or wire the credential/i);
+  });
 });
 
 describe('runGithubBridgeTick — composition', () => {

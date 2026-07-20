@@ -209,8 +209,45 @@ export async function runDrainReconcileOnce(
   });
 
   let captured = 0;
+  let coolingDown = 0;
   for (const f of flagged) {
+    const watchdogKey = drainStallWatchdogKey(f.workspaceId, f.harnessSlug);
     try {
+      let recent: RecentWatchdogIssue[] = [];
+      try {
+        recent = await findByWatchdogKey(watchdogKey);
+      } catch (e) {
+        log(`findByWatchdogKey failed for ${watchdogKey} (treating as no prior issue): ${e instanceof Error ? e.message : e}`);
+      }
+      // findIssuesByWatchdogKeys orders newest-updated first; an OPEN top hit is
+      // capture()'s own dedup to handle (it will decline below). Only a CLOSED
+      // top hit inside the cooldown window is this module's concern.
+      const top = recent[0];
+      const closedRecently =
+        top &&
+        top.state !== 'open' &&
+        Number.isFinite(Date.parse(top.updatedAt)) &&
+        now - Date.parse(top.updatedAt) < cooldownMs;
+      if (closedRecently) {
+        coolingDown += 1;
+        const ageS = Math.round((now - Date.parse(top.updatedAt)) / 1000);
+        log(
+          `${watchdogKey}: recurrence within re-file cooldown (prior issue ${top.id} closed ${ageS}s ago) — ` +
+            `posting a recurrence comment instead of a duplicate issue`,
+        );
+        try {
+          await commentOnRecurrence(
+            top.id,
+            `Recurred: outbox undrained again ${Math.round(f.oldestUndrainedAgeMs / 1000)}s / ` +
+              `${f.undrainedCount} row(s), ${ageS}s after this issue was last closed — within the ` +
+              `${Math.round(cooldownMs / 1000)}s re-file cooldown, so no duplicate was filed. If this keeps ` +
+              `recurring, the flapping itself (not any single occurrence) is the bug to root-cause.`,
+          );
+        } catch (e) {
+          log(`comment-on-recurrence failed for ${top.id} (skipped): ${e instanceof Error ? e.message : e}`);
+        }
+        continue;
+      }
       const res = await capture({
         title: `Federation stall: ${f.harnessSlug} outbox undrained ${Math.round(
           f.oldestUndrainedAgeMs / 1000,
@@ -220,7 +257,7 @@ export async function runDrainReconcileOnce(
         body: bodyFor(f),
         foundDuring: 'federation-drain-reconcile',
         dedupScope: 'open',
-        watchdogKey: drainStallWatchdogKey(f.workspaceId, f.harnessSlug),
+        watchdogKey,
       });
       if (res.created) captured += 1;
     } catch (e) {
@@ -232,8 +269,8 @@ export async function runDrainReconcileOnce(
     log(
       `${flagged.length} stalled harness(es): ` +
         flagged.map((f) => `${f.harnessSlug}=${f.undrainedCount}u/${Math.round(f.oldestUndrainedAgeMs / 1000)}s[${f.severity}]`).join(', ') +
-        ` (${captured} newly filed, rest deduped)`,
+        ` (${captured} newly filed, ${coolingDown} cooling-down, rest deduped)`,
     );
   }
-  return { flagged, captured };
+  return { flagged, captured, coolingDown };
 }

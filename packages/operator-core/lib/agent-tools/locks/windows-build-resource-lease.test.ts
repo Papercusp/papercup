@@ -62,6 +62,19 @@ if (tool === 'locks:acquire_resource') {
     output({ ok: false, reason: 'held_exclusive', holders: row ? [row] : [] });
   }
 } else if (tool === 'locks:heartbeat_resource') {
+  // WI-5600: simulate a transient mcp-call transport failure (like a real
+  // "fetch failed") for the next N heartbeat calls via a countdown file,
+  // so tests can exercise the retry-before-terminate behavior without
+  // waiting on a real network blip.
+  const failCounterPath = process.env.PAPERCUSP_FAKE_LEASE_HEARTBEAT_FAIL_COUNTER;
+  if (failCounterPath && existsSync(failCounterPath)) {
+    const remaining = parseInt(readFileSync(failCounterPath, 'utf8') || '0', 10);
+    if (remaining > 0) {
+      writeFileSync(failCounterPath, String(remaining - 1));
+      process.stderr.write('simulated transient failure: fetch failed');
+      process.exit(1);
+    }
+  }
   const row = current();
   if (row?.owner === owner) {
     process.stdout.write('format: toon\nok: true\nresults[1]{ok,lock_id,extended,expires_ts}:\n  true,' + row.lock_id + ',true,"2099-01-01T00:00:00.000Z"\ncounts:\n  ok: 1\n  failed: 0\n');

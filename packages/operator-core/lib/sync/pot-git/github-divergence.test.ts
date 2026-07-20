@@ -60,6 +60,23 @@ describe('collectDivergenceSignals — folds the mechanism residues', () => {
     expect(verdict.detail).toMatch(/INERT/);
   });
 
+  it('a TRANSIENT unreachable remote (spawn-level fault, EI-18152354175913564) escalates but does not need an owner', () => {
+    const signals = collectDivergenceSignals({
+      remoteUnreachable: {
+        remoteUrl: 'https://github.com/acme/widgets.git',
+        branches: ['main'],
+        errors: ['Error: spawn git ENOENT'],
+        transient: true,
+      },
+    });
+    expect(signals[0]!.kind).toBe('bridge-remote-unreachable');
+    const verdict = classifyDivergence(signals);
+    expect(verdict.action).toBe('escalate');
+    expect(verdict.needsOwner).toBe(false);
+    expect(verdict.detail).not.toMatch(/fix the remote URL or wire the credential/i);
+    expect(verdict.detail).toMatch(/transient/i);
+  });
+
   it('admitted heads (baseline/clean) are non-events; empty/absent inputs yield no signals', () => {
     expect(
       collectDivergenceSignals({
