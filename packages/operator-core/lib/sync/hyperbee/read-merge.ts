@@ -385,10 +385,22 @@ export interface MergeCursor {
    * built as a bare `{ positions, winners }` (lazily initialized at the apply site).
    */
   applyThrows?: Map<string, number>;
+  /**
+   * WI-2003: per-position CONSECUTIVE read-throw counter (`${log.keyHex}:${pos}`
+   * → count), the READ-side mirror of `applyThrows`. `readOpBoundedDetailed`
+   * distinguishes a genuinely TRANSIENT timeout (peer withholding/offline — kept
+   * as unbounded retry-via-break, unchanged) from a REJECTED read (e.g. a
+   * hypercore/signature verify failure during identity divergence) — the latter
+   * bounds via this counter and dead-letters (advances past the position) after
+   * `MAX_READ_THROWS`, instead of `break`ing forever and wedging every
+   * SUBSEQUENT op in that peer's strictly-sequential single-writer log (the
+   * "silent REV fed_event outage class", WI-2003). Optional for back-compat.
+   */
+  readThrows?: Map<string, number>;
 }
 
 export function createMergeCursor(): MergeCursor {
-  return { positions: new Map(), winners: new Map(), applyThrows: new Map() };
+  return { positions: new Map(), winners: new Map(), applyThrows: new Map(), readThrows: new Map() };
 }
 
 /**
@@ -1016,13 +1028,41 @@ export async function mergeAdmittedLogsIncremental(
           // best-effort: a failed persist must never abort the merge pass
         }
       }
-      // Distinguish "op resolved (possibly version-dropped)" from
-      // "unavailable" — only the former may advance the cursor.
+      // Distinguish "op resolved (possibly version-dropped)" from "unavailable"
+      // (a transient timeout — peer withholding/offline; unbounded retry-via-
+      // break, unchanged) from "read-error" (a REJECTED read — e.g. a permanent
+      // hypercore/signature verify failure during identity divergence, WI-2003):
+      // bounded retry, then dead-letter past it so a single unreadable position
+      // can't wedge every subsequent op in this peer's strictly-sequential log
+      // forever (the pre-fix behavior — "silent REV fed_event outage class").
       let op: PeerLogOp | null;
       try {
         const got = await readOpBoundedDetailed(log, pos, getTimeoutMs);
         if (got.kind === 'unavailable') break; // retry from here next pass
-        op = got.op;
+        if (got.kind === 'read-error') {
+          const throws = (cursor.readThrows ??= new Map());
+          const ident = `${log.keyHex}:${pos}`;
+          const n = (throws.get(ident) ?? 0) + 1;
+          if (n < MAX_READ_THROWS) {
+            throws.set(ident, n); // may still be transient — retry from here next pass
+            break;
+          }
+          // Persistently unreadable/unverifiable at this position — DEAD-LETTER:
+          // advance past it instead of wedging the rest of this peer's log forever.
+          throws.delete(ident);
+          console.error(
+            `[read-merge] WI-2003 quarantine: unreadable op at ${log.keyHex.slice(0, 12)}#${pos} ` +
+              `after ${n} consecutive read failures — advancing past it so the rest of this peer's ` +
+              `log can keep folding (this position itself never folds; if this is an identity-` +
+              `divergence signature-verify rejection, re-grant/re-emit the underlying wraps so the ` +
+              `sender re-publishes under a verifiable identity):`,
+            got.err instanceof Error ? got.err.message : String(got.err),
+          );
+          op = null; // treated like a version-gated drop below — cursor advances past it
+        } else {
+          cursor.readThrows?.delete(`${log.keyHex}:${pos}`); // success clears any throw streak
+          op = got.op;
+        }
       } catch {
         break;
       }
@@ -1096,14 +1136,29 @@ export async function mergeAdmittedLogsIncremental(
   return { applied, decoded, caughtUp, truncated: false };
 }
 
+/**
+ * WI-2003: how many CONSECUTIVE read failures (rejected `log.get(i)` — e.g. a
+ * hypercore/signature verify failure during identity divergence) at the SAME
+ * position before we stop retrying and dead-letter (advance past) it. Mirrors
+ * `MAX_APPLY_THROWS` — a couple of free retries in case it's transient (e.g. a
+ * race with identity repair landing), bounded so a genuinely-permanent failure
+ * can't wedge the rest of this peer's log forever.
+ */
+const MAX_READ_THROWS = 3;
+
 /** Like readOpBounded, but distinguishes a RESOLVED null (gate drop / out of
- *  range → cursor may advance) from an UNAVAILABLE op (timeout / rejection →
- *  cursor must NOT advance). */
+ *  range → cursor may advance) from an UNAVAILABLE op (timeout — a transient
+ *  peer-offline/not-yet-downloaded condition; cursor must NOT advance, retried
+ *  unbounded) from a "read-error" (WI-2003: `log.get(i)` itself REJECTED — e.g.
+ *  a permanent signature/verify failure; bounded retry + dead-letter at the
+ *  call site, see `MAX_READ_THROWS`). Only the timeout RACE collapses to
+ *  `unavailable` — a thrown/rejected `log.get(i)` is surfaced distinctly so the
+ *  caller can tell "peer hasn't sent it yet" apart from "this will never read". */
 async function readOpBoundedDetailed(
   log: AdmittedLog,
   i: number,
   timeoutMs: number,
-): Promise<{ kind: 'op'; op: PeerLogOp | null } | { kind: 'unavailable' }> {
+): Promise<{ kind: 'op'; op: PeerLogOp | null } | { kind: 'unavailable' } | { kind: 'read-error'; err: unknown }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const UNAVAILABLE = Symbol('unavailable');
   try {
@@ -1119,8 +1174,8 @@ async function readOpBoundedDetailed(
     });
     const r = await Promise.race([get, timeout]);
     return r === UNAVAILABLE ? { kind: 'unavailable' } : r;
-  } catch {
-    return { kind: 'unavailable' };
+  } catch (err) {
+    return { kind: 'read-error', err };
   } finally {
     if (timer) clearTimeout(timer);
   }

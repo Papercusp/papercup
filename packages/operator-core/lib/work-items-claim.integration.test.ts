@@ -288,4 +288,35 @@ describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 clas
     const remoteRow = (await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-remote-first'`)[0];
     expect(remoteRow.taken_by).toBeNull();
   });
+
+  // work-item-status-full-unify (owner 2026-07-20 root-cause): the own-node leg of the
+  // issue-family claim floor. A bug THIS box authored, once it round-trips the hyperbee
+  // federation, comes back projected origin='remote'; when the box's substrate identity drifts
+  // (re-provision / device re-key / hive re-join) that self-authored work would be permanently
+  // stranded as un-claimable by the flat origin check above. isIssueLocallyClaimableWhereSql
+  // admits a remote row whose author_pubkey is one this workspace has ALSO written locally
+  // (evidence OUR substrate log produced it) — while a true-peer remote row stays owned by its
+  // authoring core. This is the POSITIVE counterpart of the remote-skip tests above.
+  it('claimNextIssueWorkItem CLAIMS a self-authored remote issue (own-node round-trip) but never a true-peer remote', async () => {
+    // Enroll pk-self as one of OUR own substrate author keys via a row the box authored
+    // locally. Own-key derivation reads the work_items BASE across ALL statuses/families, so a
+    // DONE local issue is sufficient enrollment (it is itself un-claimable — status is terminal).
+    await seedIssue('WI-own-enroll', { origin: 'local', status: 'done', authorPubkey: 'pk-self', createdTs: 50 });
+    // A self-authored issue that round-tripped federation: origin='remote' but OUR author key.
+    await seedIssue('WI-self-roundtrip', { origin: 'remote', status: 'open', authorPubkey: 'pk-self', createdTs: 100 });
+    // A genuine peer-authored remote row (foreign key) — owned by its authoring core forever.
+    await seedIssue('WI-peer-remote', { origin: 'remote', status: 'open', authorPubkey: 'pk-foreign', createdTs: 200 });
+
+    // The own-node round-trip IS self-selectable; nothing else open is claimable, so it wins.
+    const claimed = await wi.claimNextIssueWorkItem({ harness: H, assignee: 'w1' }, 'default');
+    expect(claimed?.id).toBe('WI-self-roundtrip');
+    const selfRow = (await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-self-roundtrip'`)[0];
+    expect(selfRow.taken_by).toBe('w1');
+
+    // The foreign remote stays untouched, and a second self-select finds nothing else claimable
+    // (only the terminal enroll row + the un-claimable peer remote remain).
+    expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'w1' }, 'default')).toBeNull();
+    const peerRow = (await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-peer-remote'`)[0];
+    expect(peerRow.taken_by).toBeNull();
+  });
 });

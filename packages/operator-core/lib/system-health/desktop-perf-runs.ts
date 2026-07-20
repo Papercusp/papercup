@@ -124,6 +124,9 @@ export function computeDesktopPerfTrend(runsNewestFirst: DesktopPerfRun[]): Desk
 
 // ───────── DB plumbing (mirrors dock-layouts.ts) ─────────
 
+/** The exact value type postgres-js `sql.json()` accepts (llm-testing/storage.ts pattern). */
+type JSONValueCompat = Parameters<ReturnType<typeof postgres>['json']>[0];
+
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
   if (!pool) {
@@ -161,7 +164,7 @@ export async function recordDesktopPerfRun(input: RecordDesktopPerfRunInput): Pr
     VALUES
       (${id}, ${input.workspaceId}, ${createdTs}, ${input.source}, ${input.status},
        ${input.gitSha ?? null}, ${input.runId ?? null},
-       ${sql.json(input.measures as unknown as Record<string, unknown>[])})
+       ${sql.json(input.measures as unknown as JSONValueCompat)})
   `;
   return id;
 }
