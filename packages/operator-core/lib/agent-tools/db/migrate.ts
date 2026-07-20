@@ -212,16 +212,17 @@ export default defineTool({
     const coordIdentity = resolveAgentIdentity(ctx);
     const enabled = process.env.PAPERCUSP_ALLOW_DB_MIGRATE === '1';
 
-    const outcome = await guardResource(
-      {
-        coordinationDomain,
-        ownerId,
-        ownerLabel,
-        coordIdentity,
-        resource: 'db-schema',
-        mode: 'exclusive',
-        maxDrainSec: args.max_drain_sec ?? DEFAULT_DRAIN_SEC,
-        reason: `apply migration ${args.file}`,
+    const outcome = await withConnectionRetry(() =>
+      guardResource(
+        {
+          coordinationDomain,
+          ownerId,
+          ownerLabel,
+          coordIdentity,
+          resource: 'db-schema',
+          mode: 'exclusive',
+          maxDrainSec: args.max_drain_sec ?? DEFAULT_DRAIN_SEC,
+          reason: `apply migration ${args.file}`,
       },
       async (fence) => {
         if (!enabled) {
@@ -390,6 +391,7 @@ export default defineTool({
           attempts,
         });
       },
+      ),
     );
 
     if (outcome.acquired) return outcome.result;
