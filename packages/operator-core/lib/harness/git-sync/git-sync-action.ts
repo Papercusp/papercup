@@ -2035,7 +2035,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     // lag and both integrate — the FF-only + CAS + epoch fence resolves that
     // noisily but safely (the documented accepted-risk posture, proven P-308);
     // views converge with the stores.
-    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
+    const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
     const storeCheck = await defaultRunGit(['rev-parse', '--git-dir'], repoPath);
     if (storeCheck.code !== 0) {
       await decline('no_local_store', `no bare store at ${repoPath} — this device cannot integrate this repo`);
@@ -2104,7 +2104,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     const outcome = await runIntegratorTick({
       potHomeSlug,
       workspaceId,
-      repoKey: slug,
+      repoKey,
       memberDevicePubkeysBase64,
       integratorDevicePubkeyBase64: actor.devicePubkey,
       epoch,

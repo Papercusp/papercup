@@ -74,12 +74,16 @@ async function seedIssue(
     status?: string;
     takenBy?: string | null;
     origin?: string;
+    // work-item-status-full-unify: the substrate author key. A row whose author is one this
+    // workspace ALSO wrote locally is OUR own-node work even when it round-trips federation as
+    // origin='remote' (issueOwnAuthorWhereSql). NULL ⇒ anonymous (the default federated row).
+    authorPubkey?: string | null;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'})`;
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, author_pubkey)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.authorPubkey ?? null})`;
 }
 
 beforeAll(async () => {
