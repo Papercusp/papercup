@@ -1753,6 +1753,17 @@ export async function setWorkItemState(
   // payload.reopenHistory (bounded, newest-last) so the audit trail survives the
   // clear. Best-effort: the reopen itself already committed; a failed clear leaves
   // the pre-P-006 behavior (stamps linger) rather than failing the state change.
+  // eslint-disable-next-line no-console
+  console.error('[DBG reopen-clear] cond', {
+    hasResult: !!result,
+    wiState: wi.state,
+    wiSettled: isSettledWorkItemState(wi.state),
+    resultState: result?.state,
+    resultSettled: isSettledWorkItemState(result?.state ?? ''),
+    wiTermOwner: wi.terminalOwner,
+    wiTermRef: wi.terminalCompletionRef,
+    family: wi.family,
+  });
   if (
     result &&
     isSettledWorkItemState(wi.state) &&
@@ -1773,7 +1784,7 @@ export async function setWorkItemState(
         terminalCompletionRef: wi.terminalCompletionRef,
       };
       const history = JSON.stringify({ reopenHistory: [...prevHistory.slice(-4), entry] });
-      await sql`
+      const upd = await sql`
         UPDATE harness_shared.work_items
            SET terminal_owner = NULL,
                terminal_completion_ref = NULL,
@@ -1785,10 +1796,18 @@ export async function setWorkItemState(
                updated_ts = ${Date.now()}
          WHERE feature_id = ${id}
            AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+      // eslint-disable-next-line no-console
+      console.error('[DBG reopen-clear] UPDATE count', upd.count, 'scope', {
+        issuesScope: issuesScopeWorkspace(),
+        activeWs: activeWorkspaceId(),
+        id,
+      });
       // Reflect the clear in the returned row so callers see the truth this turn.
       (result as { terminalOwner?: string | null }).terminalOwner = null;
       (result as { terminalCompletionRef?: string | null }).terminalCompletionRef = null;
-    } catch {
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[DBG reopen-clear] THREW', e);
       /* best-effort — see above */
     }
   }
