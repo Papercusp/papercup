@@ -13,6 +13,7 @@
  * poll: the bus wakes them on each insert instead.
  */
 import postgres from "postgres";
+import { longLivedPoolConnectionOptions } from "@papercusp/db-org";
 import { getHarnessAdminUrl } from "./embedded-pg-discovery";
 import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
@@ -87,7 +88,10 @@ export function createNotifyBus(channel: string, label: string = channel): Notif
       if (listenHubEnabled()) {
         hubUnsub = await hubListen(channel, onNotify);
       } else {
-        listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
+        listenerSql = postgres(getHarnessAdminUrl(), {
+          ...longLivedPoolConnectionOptions(`notify-bus:${label}`),
+          max: 1,
+        });
         await listenerSql.listen(channel, onNotify);
       }
       clearRetry();
