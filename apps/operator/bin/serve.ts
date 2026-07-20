@@ -77,6 +77,45 @@ import { managedSetInterval } from "@papercusp/scheduled-registry";
 // init, so the packaged bundle is unchanged in shape and only the eager
 // evaluation goes away.
 
+// (WI-5654) Boot-time background-task safety net — MUST be registered before
+// runBootstrap() (called fire-and-forget, un-awaited, further down) fires its
+// many detached best-effort warm-up tasks (memory embedder warm, hyperbee
+// substrate boot, OMP integration, spawner/embed-sidecar warm-ups, …). Each is
+// documented as non-fatal ("never affect boot", "best-effort") and is
+// individually try/catch'd or `.catch()`-chained at its own call site — but
+// THIS file (serve.ts, the packaged desktop entrypoint) never imports
+// hono-host.ts, so unlike the multi-tenant `:3070` production host, this
+// process has NEVER had a process-level unhandledRejection/uncaughtException
+// guard. A single missed `.catch()` anywhere inside that fire-and-forget boot
+// graph — first- or third-party, e.g. WI-5654: the harrier HF-cache-miss
+// during the boot-time embedder warm-up crashing on a stripped bundle cache —
+// becomes a bare Node unhandledRejection with ZERO listeners, which (per
+// Node's default `--unhandled-rejections=throw`) kills the ENTIRE desktop app
+// before it ever binds its HTTP port, with no diagnostic beyond a raw stack
+// dump ("live-federation-gate RED 3/3", inst-a/inst-b.log). Unlike
+// hono-host.ts (a live multi-tenant request-serving host, where masking a
+// genuine bug could hide a real problem fleet-wide), this is a SINGLE-USER
+// DESKTOP BOOT sequence: a fault in a best-effort background warm-up must
+// never take the whole app down with it. Genuine CRITICAL boot failures
+// (embedded PG, the HTTP listen) are unaffected by this — they're properly
+// awaited inside main()'s own try/catch and surface through the informative
+// `main().catch()` handler at the bottom of this file, which still exits(1).
+// This backstop exists purely for the detached fire-and-forget class: log
+// loudly (so the fault stays debuggable) and keep booting, instead of the
+// whole app dying silently mid-boot with nothing but a raw V8 stack dump.
+process.on('unhandledRejection', (reason) => {
+  console.error(
+    '[serve] non-fatal unhandledRejection in a detached boot/background task (continuing boot):',
+    reason instanceof Error ? (reason.stack ?? reason.message) : reason,
+  );
+});
+process.on('uncaughtException', (err) => {
+  console.error(
+    '[serve] non-fatal uncaughtException in a detached boot/background task (continuing boot):',
+    err instanceof Error ? (err.stack ?? err.message) : err,
+  );
+});
+
 // EI-13917: honor PAPERCUSP_HOME (the established isolation escape hatch —
 // see packages/operator-core/lib/papercusp-root.ts) BEFORE falling back to the
 // box-wide `~/.papercusp`. Without this, ANY isolated invocation of this

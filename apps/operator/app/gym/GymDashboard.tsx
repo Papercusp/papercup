@@ -157,6 +157,11 @@ export default function GymDashboard() {
 }
 
 // ── Proposals (the headline: proposer-diff review → accept/reject → promote) ────
+/** Status pill colour: accepted=good, rejected=bad, pending/other=accent. */
+function proposalStatusColor(status: string): string {
+  return status === 'accepted' ? goodText : status === 'rejected' ? dangerText : 'var(--accent-soft)';
+}
+
 function ProposalsTab({ slug }: { slug: string }) {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [selId, setSelId] = useQueryState('proposalId', parseAsString.withDefault(''));
@@ -164,13 +169,23 @@ function ProposalsTab({ slug }: { slug: string }) {
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    api<{ proposals: Proposal[] }>(`/${slug}/proposals?status=pending`)
-      .then((r) => { setProposals(r.proposals); setErr(null); })
+    // P-020: default to ALL statuses. The gym auto-decides every proposal (owner mandate
+    // 2026-07-19 — "no human in the loop"), so a pending-only view hides EVERY challenger the
+    // gym produces. Show accepted/rejected/pending so the auto-promoted winners are visible;
+    // accept/reject stays available for any row still pending (a manual/attended run).
+    api<{ proposals: Proposal[] }>(`/${slug}/proposals?status=all`)
+      .then((r) => {
+        // Pending first (still actionable), then the decided history in the API's order.
+        const rank = (p: Proposal) => (p.status === 'pending' ? 0 : 1);
+        setProposals([...r.proposals].sort((a, b) => rank(a) - rank(b)));
+        setErr(null);
+      })
       .catch((e) => setErr(String(e)));
   }, [slug]);
   useEffect(() => { load(); }, [load]);
 
   const sel = useMemo(() => proposals.find((p) => p.id === selId) ?? proposals[0], [proposals, selId]);
+  const pendingCount = useMemo(() => proposals.filter((p) => p.status === 'pending').length, [proposals]);
 
   const decide = async (decision: 'accept' | 'reject') => {
     if (!sel) return;
@@ -185,13 +200,15 @@ function ProposalsTab({ slug }: { slug: string }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 12 }}>
       <div style={card} data-testid="gym-proposal-list">
-        <div style={{ ...mono, opacity: 0.7, marginBottom: 6 }}>pending ({proposals.length})</div>
-        {proposals.length === 0 && <div style={{ ...mono, opacity: 0.6 }}>No pending proposals. Run the autoloop to generate suggestions.</div>}
+        <div style={{ ...mono, opacity: 0.7, marginBottom: 6 }} data-testid="gym-proposal-count">
+          proposals ({proposals.length}){pendingCount ? ` · ${pendingCount} pending` : ''}
+        </div>
+        {proposals.length === 0 && <div style={{ ...mono, opacity: 0.6 }}>No proposals yet. Run the autoloop to generate suggestions.</div>}
         {proposals.map((p) => (
           <button key={p.id} onClick={() => void setSelId(p.id)} data-testid="gym-proposal-row"
             style={{ ...mono, display: 'block', width: '100%', textAlign: 'left', padding: 6, marginBottom: 4, borderRadius: 6, cursor: 'pointer',
               border: '1px solid ' + (sel?.id === p.id ? 'var(--accent-strong)' : 'var(--border)'), background: sel?.id === p.id ? 'color-mix(in srgb, var(--accent), transparent 88%)' : 'transparent', color: 'inherit' }}>
-            <div>cycle {p.cycle} · <b>{p.role}</b></div>
+            <div>cycle {p.cycle} · <b>{p.role}</b> · <span style={{ color: proposalStatusColor(p.status) }}>{p.status}</span></div>
             <div style={{ opacity: 0.7 }}>devΔ {fmt(p.devAnchorDelta)} · costΔ {fmt(p.costDelta)} · probe {p.probeStatus ?? '—'}</div>
           </button>
         ))}
@@ -203,20 +220,26 @@ function ProposalsTab({ slug }: { slug: string }) {
         ) : (
           <div>
             <div style={{ ...mono, marginBottom: 8 }}>
-              <b>{sel.role}</b> — cycle {sel.cycle}{sel.variantId ? ` · ${sel.variantId}` : ''}
+              <b>{sel.role}</b> — cycle {sel.cycle}{sel.variantId ? ` · ${sel.variantId}` : ''} · <span style={{ color: proposalStatusColor(sel.status) }} data-testid="gym-proposal-status">{sel.status}</span>
             </div>
             {sel.rationale && <div style={{ ...mono, opacity: 0.85, marginBottom: 8, whiteSpace: 'pre-wrap' }}>“{sel.rationale}”</div>}
             <ProposalDiff original={sel.originalMd ?? ''} proposed={sel.proposedMd} />
-            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button disabled={busy} onClick={() => decide('accept')} data-testid="gym-accept"
-                style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--good), transparent 55%)', background: 'color-mix(in srgb, var(--good), transparent 84%)', color: 'var(--good)' }}>
-                Accept → promote
-              </button>
-              <button disabled={busy} onClick={() => decide('reject')} data-testid="gym-reject"
-                style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--bad), transparent 55%)', background: 'transparent', color: 'var(--bad)' }}>
-                Reject
-              </button>
-            </div>
+            {sel.status === 'pending' ? (
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button disabled={busy} onClick={() => decide('accept')} data-testid="gym-accept"
+                  style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--good), transparent 55%)', background: 'color-mix(in srgb, var(--good), transparent 84%)', color: 'var(--good)' }}>
+                  Accept → promote
+                </button>
+                <button disabled={busy} onClick={() => decide('reject')} data-testid="gym-reject"
+                  style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--bad), transparent 55%)', background: 'transparent', color: 'var(--bad)' }}>
+                  Reject
+                </button>
+              </div>
+            ) : (
+              <div style={{ ...mono, opacity: 0.75, marginTop: 10 }} data-testid="gym-proposal-decided">
+                Auto-{sel.status} by the loop — {sel.status === 'accepted' ? 'promoted to the live prompt.' : 'not promoted.'}
+              </div>
+            )}
           </div>
         )}
       </div>

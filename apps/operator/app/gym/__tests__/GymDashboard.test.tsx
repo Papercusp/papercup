@@ -26,6 +26,10 @@ const PROPOSAL = {
 };
 
 let posted: Array<{ url: string; body: unknown }> = [];
+let getUrls: string[] = [];
+// P-020: the proposals mock is a mutable fixture so a test can supply decided (auto-accepted)
+// proposals and assert they render — the whole point of defaulting the tab to status=all.
+let proposalsFixture: Array<Record<string, unknown>> = [PROPOSAL];
 
 function mockFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -33,22 +37,26 @@ function mockFetch() {
     const method = init?.method ?? 'GET';
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
     if (method === 'POST') posted.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+    else getUrls.push(url);
 
     if (url.endsWith('/api/gym/harnesses')) return json([{ harnessSlug: 'gymtest', pendingCount: 1, lastCycle: 2, autoloop: null }]);
-    if (url.includes('/api/gym/gymtest/proposals')) return json({ proposals: [PROPOSAL] });
+    if (url.includes('/api/gym/gymtest/proposals')) return json({ proposals: proposalsFixture });
     if (url.endsWith('/api/gym/gymtest/accept')) return json({ ok: true, promoted: true });
     if (url.endsWith('/api/gym/gymtest/reject')) return json({ ok: true, promoted: false });
     if (url.endsWith('/api/gym/gymtest/prompts') && method === 'GET') return json({ judgeRubric: 'the rubric', roles: { worker: 'wprompt' }, editableKeys: ['judge', 'worker'] });
     if (url.endsWith('/api/gym/gymtest/prompts') && method === 'POST') return json({ ok: true, judgeRubric: 'the rubric', roles: { worker: 'wprompt' } });
     if (url.endsWith('/api/gym/gymtest/autoloop') && method === 'GET') return json({ autoloop: { enabled: false, status: 'idle', budgetUsd: 50, spentUsd: 0, lastCycle: null }, configured: true });
     if (url.endsWith('/api/gym/gymtest/autoloop') && method === 'POST') return json({ ok: true });
-    if (url.includes('/api/gym/gymtest/cycles')) return json({ cycles: [], available: false });
+    // The durable live-DB read now always answers (migration 650); no more available:false.
+    if (url.includes('/api/gym/gymtest/cycles')) return json({ cycles: [{ cycle: 0, parentId: null, candidateId: 'cand-c0', decision: 'accept' }] });
     return json({}, 404);
   });
 }
 
 beforeEach(() => {
   posted = [];
+  getUrls = [];
+  proposalsFixture = [PROPOSAL];
   vi.stubGlobal('fetch', mockFetch());
   // The Monaco mock throws → the LoadBoundary catches it (the EXPECTED fallback path); React DEV
   // logs the caught error + a component-stack notice to console.error. Swallow ONLY those; any
@@ -65,13 +73,28 @@ const renderAt = (search: string) =>
   render(<GymDashboard />, { wrapper: withNuqsTestingAdapter({ searchParams: search }) });
 
 describe('GymDashboard', () => {
-  it('proposals: renders the diff + numbers and accept→promote POSTs the proposal id', async () => {
+  it('proposals: defaults to status=all, renders the diff + numbers and accept→promote POSTs the proposal id', async () => {
     const { findByTestId, getByTestId } = renderAt('?gymSlug=gymtest&gymTab=proposals');
     await findByTestId('gym-proposal-row');
+    // P-020: the tab must request ALL statuses (not the pending-only default that hid every
+    // auto-decided challenger).
+    expect(getUrls.some((u) => u.includes('/proposals?status=all'))).toBe(true);
     const diff = await findByTestId('gym-diff');
     expect(diff.textContent).toContain('Re-read acceptance');
     fireEvent.click(getByTestId('gym-accept'));
     await waitFor(() => expect(posted.some((p) => p.url.endsWith('/accept') && (p.body as { id: string }).id === 'p1')).toBe(true));
+  });
+
+  it('proposals: a decided (auto-accepted) challenger is visible and has no accept button (P-020)', async () => {
+    proposalsFixture = [
+      { ...PROPOSAL, id: 'p2', status: 'accepted' },
+    ];
+    const { findByTestId, queryByTestId } = renderAt('?gymSlug=gymtest&gymTab=proposals');
+    await findByTestId('gym-proposal-row');
+    // The decided proposal shows its status + the "auto-accepted" note, and offers no accept/reject.
+    await findByTestId('gym-proposal-decided');
+    expect((await findByTestId('gym-proposal-status')).textContent).toContain('accepted');
+    expect(queryByTestId('gym-accept')).toBeNull();
   });
 
   it('prompts: lists editable keys and saving POSTs { role, md }', async () => {
@@ -92,8 +115,10 @@ describe('GymDashboard', () => {
     await waitFor(() => expect(posted.some((p) => p.url.endsWith('/autoloop') && (p.body as { enabled: boolean }).enabled === true)).toBe(true));
   });
 
-  it('run-analytics: shows the Unavailable notice when no gym run DB is configured', async () => {
+  it('run-analytics: the Cycles tab renders rows from the durable live-DB read (P-013)', async () => {
     const { findByTestId } = renderAt('?gymSlug=gymtest&gymTab=cycles');
-    await findByTestId('gym-unavailable');
+    const grid = await findByTestId('gym-cycles');
+    expect(grid.textContent).toContain('cand-c0');
+    expect(grid.textContent).toContain('accept');
   });
 });
