@@ -298,7 +298,7 @@ async function writeToPg(
     -- earlier briefly held the same item).
     -- P-009/D-001: terminal_reason joins the digest for the SAME reason as the
     -- terminal_owner pair above — two completions can converge to an identical
-    -- status (e.g. both `done`) while carrying a different terminal_reason
+    -- status (e.g. both 'done') while carrying a different terminal_reason
     -- (resolved vs plain-done), so excluding it would let a racing peer silently
     -- overwrite the correct terminal nuance under the "equal digest ⇒ no-op" tie.
     WHERE harness_shared.fed_apply_wins(
