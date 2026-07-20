@@ -520,6 +520,13 @@ export async function runOneAutoloopCycle(
     }
 
     report.loop = result;
+    // WI-5674: a skipped candidate (propose/evaluate threw) is otherwise invisible — no
+    // proposal, no cycle row, no curator, nothing new in /gym. Surface the concrete reason
+    // loudly so the silent-skip failure mode is diagnosable from the run log + report.
+    if (result.skipReasons.length > 0) {
+      for (const r of result.skipReasons) log(`⚠ CANDIDATE SKIPPED — ${r}`);
+      report.skipReasons = result.skipReasons;
+    }
     report.autoloop = await getAutoloop(controlSql, { workspaceId: WS, harnessSlug: slug });
     // D-014/P-028 falsifiability surface: train vs real-anchor composite per variant. If the
     // train aggregate climbs across variants while the real-anchor stays flat, the loop is

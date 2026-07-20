@@ -228,13 +228,12 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
       // Rate-limited past the bounded pause, or a non-rate failure → skip this cycle and
       // continue (the loop's progress is preserved). WI-5674: a silently-swallowed skip
       // means no candidate → no proposal → the curator never runs → nothing new in /gym,
-      // so RECORD the concrete reason (both to the returned result and stderr) instead of
-      // discarding it. This is a diagnosis surface, not a control-flow change — the loop
-      // still preserves its champion/frontier/accepts and continues.
+      // so RECORD the concrete reason instead of discarding it. The caller surfaces
+      // skipReasons via its own logger + the run report (the loop stays effect-injected —
+      // it never writes to console itself). This is a diagnosis surface, not a control-flow
+      // change: the loop still preserves its champion/frontier/accepts and continues.
       const reason = err instanceof Error ? (err.stack ?? err.message) : String(err);
       skipReasons.push(`cycle ${cycle}: ${reason}`);
-      // eslint-disable-next-line no-console
-      console.error(`[gym-loop] cycle ${cycle} SKIPPED (propose/evaluate threw): ${reason}`);
       skipped++;
       continue;
     }

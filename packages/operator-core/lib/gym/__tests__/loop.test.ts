@@ -153,6 +153,11 @@ describe('runOptimizationLoop', () => {
     const res = await runOptimizationLoop(config, d);
     expect(res.skipped).toBe(1);
     expect(res.cycles).toBe(3);
+    // WI-5674: the swallowed reason is now CAPTURED (not discarded) so the silent-skip
+    // failure mode is diagnosable from the run report.
+    expect(res.skipReasons).toHaveLength(1);
+    expect(res.skipReasons[0]).toContain('proposer boom');
+    expect(res.skipReasons[0]).toContain('cycle 1');
   });
 
   // P-011 (D-008) — quality-diversity parent selection. The novelty signal is only
