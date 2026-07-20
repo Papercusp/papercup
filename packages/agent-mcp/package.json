@@ -26,8 +26,7 @@
     "@papercusp/tooldef-http": "*",
     "@papercusp/sse": "file:../../libs/generic/sse",
     "postgres": "*",
-    "zod": "*",
-    "zod-to-json-schema": "*"
+    "zod": "*"
   },
   "devDependencies": {
     "js-tiktoken": "*"
