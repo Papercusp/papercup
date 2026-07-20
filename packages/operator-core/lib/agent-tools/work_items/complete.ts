@@ -41,6 +41,7 @@ import {
   resolveWorkItemRef,
   linkWorkItem,
   subscribeWorkItem,
+  SETTLED_WORK_ITEM_STATES,
 } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 import { renderCompletion } from '../../coord-lifecycle/render';

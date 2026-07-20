@@ -28,6 +28,7 @@
  * payload parsing / fan-out signature in the same change.
  */
 import postgres from "postgres";
+import { longLivedPoolConnectionOptions } from "@papercusp/db-org";
 import { getHarnessAdminUrl } from "./embedded-pg-discovery";
 import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
