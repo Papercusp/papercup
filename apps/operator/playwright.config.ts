@@ -39,7 +39,22 @@ export default defineConfig({
     : {
         command: 'npm run dev',
         url: BASE_URL,
-        reuseExistingServer: true,
+        // WI-5603: this branch is reached exactly when the caller asked for
+        // an ISOLATED, dedicated server (OPERATOR_E2E_REUSE_SERVER unset /
+        // not '1') — reuseExistingServer must be false here. It was
+        // hardcoded `true`, which silently defeated the whole point: on
+        // this shared dev box a persistent systemd `papercup-vite.service`
+        // always already answers on the default port (3055), so Playwright
+        // treated it as "already up" and reused THAT live, heavily-loaded
+        // shared instance instead of spinning a fresh one — for every run,
+        // regardless of the env var. Route settings-page navigation flakes
+        // (WI-5603) trace to exactly this: tests silently ran against the
+        // shared instance under real concurrent fleet load. With `false`,
+        // an isolated run now either spins its own dedicated server (when
+        // OPERATOR_E2E_PORT points at a free port) or fails LOUDLY with a
+        // port-already-in-use error instead of silently degrading to a
+        // shared, contended instance.
+        reuseExistingServer: false,
         timeout: 120_000,
         stdout: 'ignore',
         stderr: 'pipe',

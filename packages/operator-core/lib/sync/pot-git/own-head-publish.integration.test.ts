@@ -138,14 +138,17 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     const before = await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`);
     const refsBefore = await git(['for-each-ref', '--format=%(refname)'], repoPath);
 
-    // A live-looking AWS access key id + secret pair (the secrets-guard's
-    // canonical detector class).
-    await commitFile(
-      worktree,
-      'oops.env',
-      'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n',
-      'oops secrets',
-    );
+    // A live-looking secret-shaped token (the secrets-guard's canonical
+    // detector class) — a fake GitHub-token shape, NOT an AWS access-key-id:
+    // secrets-guard.ts's isDocumentedExample() now deliberately EXEMPTS any
+    // aws-access-key-id match ending in the literal "EXAMPLE" (P-402 defect
+    // #10, 2026-07-19 — a doc citing AWS's own documented placeholder key
+    // was wedging the publish plane), so AWS's own EXAMPLE-suffixed fixture
+    // would silently pass the guard here, testing nothing (WI-5163 follow-up
+    // — this test itself regressed the moment that exemption landed). This
+    // shape exercises the 'github-token' rule, unaffected by that exemption.
+    const fakeToken = `ghp_${'A'.repeat(20)}${'1'.repeat(20)}`;
+    await commitFile(worktree, 'oops.env', `SOME_TOKEN=${fakeToken}\n`, 'oops secrets');
     const out = await runOwnHeadPublishTick({
       potHomeSlug: HIVE,
       repoKey: REPO_KEY,

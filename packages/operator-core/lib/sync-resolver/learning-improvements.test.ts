@@ -33,6 +33,32 @@ vi.mock('../harness/improvements/flow-metrics', async (importOriginal) => {
 
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
+// EI-18138040328678826: computeLearningImprovementsSnapshot ALSO reads the owner
+// full-autonomy grant (readOwnerFullAutonomyGrant, Phase 2) and the dispatch-ledger
+// rollup (readRecentDispatches, P-010/B-04) — both added to the implementation
+// AFTER this test file's mock set was written, and both LEFT UNMOCKED. Neither
+// touches PG/PostHog directly in a unit run (they're wrapped in try/catch here and
+// fall back), but that means this "unit" test's outcome silently depended on
+// whatever REAL flag-override / DB state happened to be reachable in the process —
+// order/isolation-dependent by construction (flaked under the full `test:affected`
+// run, 7/7 green in isolation: getFlag() falls through to a module-level
+// `overrides` singleton in `@papercusp/flags/test` that OTHER unit test files set
+// via setFlagOverridesForTest and — for at least one file, since fixed — never
+// reset, and that singleton is a real external-package module instance NOT reset
+// between test files sharing a vitest forked worker). Mock both explicitly, like
+// every other data source here, so this test can never again depend on real
+// process-global state.
+const readOwnerFullAutonomyGrant = vi.fn();
+vi.mock('../harness/improvements/full-autonomy-grant', () => ({
+  readOwnerFullAutonomyGrant: (...a: unknown[]) => readOwnerFullAutonomyGrant(...a),
+}));
+
+const readRecentDispatches = vi.fn();
+vi.mock('../harness/improvements/dispatch-ledger', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../harness/improvements/dispatch-ledger')>();
+  return { ...real, readRecentDispatches: (...a: unknown[]) => readRecentDispatches(...a) };
+});
+
 // P-040: the per-Hive lens resolves the hive → its member-harness scope set via
 // the registry. Keep hiveMemberHarnessScopes REAL (pure) over a mocked registry.
 const loadHarnessRegistry = vi.fn();
@@ -50,6 +76,8 @@ beforeEach(() => {
   readImprovementItems.mockReset();
   readWatchdogFlowTicks.mockReset();
   loadHarnessRegistry.mockReset();
+  readOwnerFullAutonomyGrant.mockReset().mockResolvedValue(false);
+  readRecentDispatches.mockReset().mockResolvedValue([]);
 });
 
 describe('learning.* resolver registration', () => {

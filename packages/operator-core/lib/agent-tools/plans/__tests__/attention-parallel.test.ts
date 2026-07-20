@@ -8,7 +8,7 @@
  * is intact. The mappers + grouping are REAL (pure); only the data sources are
  * mocked. Sources not under test return empty so the assertions are unambiguous.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── Mock the source-helpers + every data source. The two under test
 //    (escalations, conversations) return identifiable items; the rest are empty.
@@ -65,6 +65,7 @@ vi.mock('@papercusp/flags', async (orig) => {
   return { ...actual, DARK_FLAGS: new Map() };
 });
 
+import { afterEach } from 'vitest';
 import tool from '../attention';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { resetOperatorCacheForTests } from '../../../cache';

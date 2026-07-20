@@ -90,6 +90,8 @@ export function Table<Row>({
   onRowClick,
   isRowSelected,
   rowStyle,
+  rowClassName,
+  rowTestId,
   emptyLabel,
 }: {
   className?: string;
@@ -102,6 +104,10 @@ export function Table<Row>({
   isRowSelected?: (row: Row) => boolean;
   /** Optional per-row style (e.g. dimming a revoked row). Merged over the built-ins. */
   rowStyle?: (row: Row) => CSSProperties | undefined;
+  /** Optional per-row `className` applied to the `<tr>` (e.g. a regression-row marker). */
+  rowClassName?: (row: Row) => string | undefined;
+  /** Optional per-row `data-testid` on the `<tr>` (for test hooks that target a specific row). */
+  rowTestId?: (row: Row) => string | undefined;
   /** Rendered as a single caption-only row when `rows` is empty (default: nothing extra). */
   emptyLabel?: ReactNode;
 }) {
@@ -130,6 +136,8 @@ export function Table<Row>({
             return (
               <tr
                 key={key}
+                className={rowClassName?.(row)}
+                data-testid={rowTestId?.(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 style={{
                   cursor: onRowClick ? 'pointer' : undefined,

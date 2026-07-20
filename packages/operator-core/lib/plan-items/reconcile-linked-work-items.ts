@@ -40,6 +40,7 @@ import {
   setWorkItemClaimHold,
   mergeWorkItemPayload,
   isSettledWorkItemState,
+  SETTLED_WORK_ITEM_STATES,
   type WorkItem,
 } from '../work-items';
 import { getPlanRow, planItemsForRow } from '../agent-tools/plans/source';
@@ -538,11 +539,16 @@ export async function reconcileOrphanedPlanItemWorkItems(
   //    `(payload - '_ei')`, which throws `cannot delete from scalar` when the
   //    planner evaluates it over a string-scalar payload during inlining; the base
   //    table exposes the raw `payload` (the normalized-payload CASE handles either
-  //    jsonb shape). `status` is family-agnostic here: a feature settles at
-  //    passed/deprecated and an issue at resolved/closed, so one NOT IN the union of
-  //    both excludes every terminal item across families. Workspace-agnostic on the
-  //    stamp exactly like findAllLinkedWorkItems; `harness_slug` is the getPlanRow
-  //    hint; the per-item reconciler re-resolves the plan.
+  //    jsonb shape). `status` exclusion uses the FULL cross-family SETTLED_WORK_-
+  //    ITEM_STATES superset (WI-5279: the legacy-only 4-value list here predated
+  //    work-item-status-full-unify/2026-07-19 and silently stopped excluding rows
+  //    already written with the unified 'done'/'dropped' spelling — live-verified
+  //    1638 of 1898 plan_item-stamped rows now carry those spellings, so the stale
+  //    filter let already-terminal noise crowd out the `LIMIT cap` candidate
+  //    window, starving genuine orphans like WI-3676/WI-4669/EI-13337's class from
+  //    ever being enumerated by this sweep). Workspace-agnostic on the stamp
+  //    exactly like findAllLinkedWorkItems; `harness_slug` is the getPlanRow hint;
+  //    the per-item reconciler re-resolves the plan.
   const cands = new Map<string, OrphanCandidate>();
   const npF = normalizedPayloadExpr(sql, 'payload');
   const key = (planSlug: string, itemId: string) => `${planSlug}\0${itemId}`;
@@ -553,7 +559,7 @@ export async function reconcileOrphanedPlanItemWorkItems(
                     harness_slug
       FROM harness_shared.work_items
      WHERE payload IS NOT NULL
-       AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')
+       AND NOT (status = ANY(${SETTLED_WORK_ITEM_STATES}::text[]))
        AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
        AND ${npF}->'plan_item'->>'item_id' IS NOT NULL
      LIMIT ${cap}`;

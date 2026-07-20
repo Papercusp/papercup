@@ -17,6 +17,7 @@ import type {
   DesktopPerfTrendPoint,
 } from '@papercusp/operator-core/lib/admin-test-suites-shared';
 import { Button } from '../../../harness/Button';
+import { Table } from '../../../harness/Table';
 
 export function formatMeasureValue(value: number, unit: DesktopPerfMeasureDelta['unit']): string {
   if (unit === 'kb') return `${Math.round(value / 1024)}MB`;
@@ -97,34 +98,37 @@ export default function DesktopPerfTrendPanel({ refreshSignal = 0 }: { refreshSi
           </div>
 
           {latest ? (
-            <table className="pc-test-perf-trend-table" style={{ width: '100%', marginTop: 12, borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ textAlign: 'left', color: 'var(--fg-mute)' }}>
-                  <th style={{ padding: '4px 8px' }}>Metric</th>
-                  <th style={{ padding: '4px 8px' }}>Latest</th>
-                  <th style={{ padding: '4px 8px' }}>Budget</th>
-                  <th style={{ padding: '4px 8px' }}>Δ vs prev</th>
-                </tr>
-              </thead>
-              <tbody>
-                {latest.measures.map((m) => (
-                  <tr key={m.key} data-testid={`perf-measure-${m.key}`} className={isRegression(m) ? 'is-regression' : undefined}>
-                    <td style={{ padding: '4px 8px' }}>
-                      <code>{m.key}</code>
-                    </td>
-                    <td style={{ padding: '4px 8px' }}>
-                      <span className={`pc-test-badge ${m.ok ? 'is-good' : 'is-poor'}`}>{formatMeasureValue(m.value, m.unit)}</span>
-                    </td>
-                    <td style={{ padding: '4px 8px', color: 'var(--fg-mute)' }}>
-                      {m.budget === null ? '—' : formatMeasureValue(m.budget, m.unit)}
-                    </td>
-                    <td style={{ padding: '4px 8px', color: isRegression(m) ? 'var(--danger, #c0392b)' : 'var(--fg-mute)' }}>
-                      {formatDelta(m)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <Table<DesktopPerfMeasureDelta>
+              className="pc-test-perf-trend-table"
+              style={{ marginTop: 12, fontSize: 13 }}
+              rows={latest.measures}
+              getRowKey={(m) => m.key}
+              rowTestId={(m) => `perf-measure-${m.key}`}
+              rowClassName={(m) => (isRegression(m) ? 'is-regression' : undefined)}
+              columns={[
+                { key: 'metric', header: 'Metric', render: (m) => <code>{m.key}</code> },
+                {
+                  key: 'latest',
+                  header: 'Latest',
+                  render: (m) => (
+                    <span className={`pc-test-badge ${m.ok ? 'is-good' : 'is-poor'}`}>{formatMeasureValue(m.value, m.unit)}</span>
+                  ),
+                },
+                {
+                  key: 'budget',
+                  header: 'Budget',
+                  cellStyle: { color: 'var(--fg-mute)' },
+                  render: (m) => (m.budget === null ? '—' : formatMeasureValue(m.budget, m.unit)),
+                },
+                {
+                  key: 'delta',
+                  header: 'Δ vs prev',
+                  render: (m) => (
+                    <span style={{ color: isRegression(m) ? 'var(--bad)' : 'var(--fg-mute)' }}>{formatDelta(m)}</span>
+                  ),
+                },
+              ]}
+            />
           ) : null}
         </>
       ) : null}
