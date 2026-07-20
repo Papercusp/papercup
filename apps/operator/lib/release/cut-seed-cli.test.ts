@@ -20,7 +20,9 @@ import {
   isCorestoreLockedError,
   waitForOperatorDrain,
   openSourceStoreForCut,
+  CUT_SEED_DRAIN_STALL_MS,
 } from './cut-seed-cli';
+import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
 const EPOCH_KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => (i * 7) % 256));
@@ -400,6 +402,37 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     await expect(
       waitForOperatorDrain({ ...base, pg: sql, stallMs: 10, now: () => (t += 100), sleep: async () => {}, warn: () => {} }),
     ).rejects.toThrow(/cannot drain on its behalf without corrupting delivery state/);
+  });
+
+  // EI-18155637095067676: the default stall tolerance used to be an independent 120_000
+  // constant that coincidentally EQUALED outbox-drain's own DRAIN_PASS_TIMEOUT_MS (also
+  // 120s) \u2014 a single legitimate drain-pass self-heal (WI-2009) then raced the cut's own
+  // stall detector and lost every time. Lock in that the default is DERIVED from the
+  // drain's real constant and gives it strictly more than one full pass-timeout cycle.
+  it('defaults the stall tolerance to strictly more than one outbox-drain pass-timeout cycle (no more coincidental-equal race, EI-18155637095067676)', () => {
+    expect(CUT_SEED_DRAIN_STALL_MS).toBeGreaterThan(DRAIN_PASS_TIMEOUT_MS * 2);
+    expect(CUT_SEED_DRAIN_STALL_MS).not.toBe(DRAIN_PASS_TIMEOUT_MS);
+  });
+
+  it('a single-pass-timeout-length stall (the exact race that used to fail the cut) no longer trips the default tolerance', async () => {
+    // Simulate the diagnosed incident: undrained count is stuck for exactly one
+    // DRAIN_PASS_TIMEOUT_MS-length hang (a single hung pass self-healing), then resumes
+    // progress. With the OLD coincidentally-equal 120_000 default this would have thrown;
+    // the derived default must ride it out.
+    const { sql } = pgReturning([100, 100, 0]); // stuck once, then a fresh pass drains it
+    let t = 0;
+    const res = await waitForOperatorDrain({
+      ...base,
+      pg: sql,
+      // no explicit stallMs \u2014 exercise the real default
+      now: () => {
+        t += DRAIN_PASS_TIMEOUT_MS; // one full pass-timeout of apparent no-progress per poll
+        return t;
+      },
+      sleep: async () => {},
+      warn: () => {},
+    });
+    expect(res.undrained).toBe(0);
   });
 });
 

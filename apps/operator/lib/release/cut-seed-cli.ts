@@ -97,7 +97,7 @@ import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp
 import { backfillLocalState, type BackfillResult } from '@papercusp/operator-core/lib/sync/hyperbee/backfill-local-state';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
-import { drainOutboxOnce } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
+import { drainOutboxOnce, DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import { openOwnLog, type OwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/log-snapshot';
 import { CURRENT_SCHEMA_VERSION } from '@papercusp/operator-core/lib/sync/hyperbee/schema-version';
@@ -568,18 +568,35 @@ export async function openSourceStoreForCut(inp: {
   return { store: store!, sourceWritable };
 }
 
+// EI-18155637095067676: outbox-drain.ts LEGITIMATELY lets a single drain pass hang up to
+// DRAIN_PASS_TIMEOUT_MS (120s) before its own watchdog abandons the zombie pass and a fresh
+// pass retries (WI-2009) — a documented, healthy self-heal, not a wedge. cut-seed's stall
+// tolerance used to be an independent, coincidentally-EQUAL 120_000 constant, so a single
+// hung pass produced exactly 120s of no-progress and the cut declared the operator wedged at
+// the EXACT moment the drain's own watchdog would have recovered it — a guaranteed race under
+// any transient append stall (confirmed live 2026-07-20: an 8779-row backlog the operator was
+// healthily draining the whole time got refused because ONE pass took its documented up-to-120s
+// self-heal window). Derive the default from the drain's own constant instead of a coincidence:
+// give it at least two full pass-timeout cycles plus margin before concluding it's genuinely
+// wedged. This does not mask a real wedge — outbox-drain's own DRAIN_BACKLOG_STALL_MS (10min)
+// and age/size detectors (WI-5147) still escalate a genuinely-dead drain; a truly-stuck backlog
+// still never drains and this still eventually fails, just not on one transient pass stall.
+export const CUT_SEED_DRAIN_STALL_MS = DRAIN_PASS_TIMEOUT_MS * 2 + 60_000; // 120s pass-timeout × 2 + 60s margin = 300s
+
 export async function waitForOperatorDrain(inp: {
   readonly pg: postgres.Sql;
   readonly workspaceId: string;
   readonly hive: string;
-  /** Fail after this long with NO progress (default 120s). Not a total budget — see below. */
+  /** Fail after this long with NO progress (default CUT_SEED_DRAIN_STALL_MS — derived from
+   *  outbox-drain's own DRAIN_PASS_TIMEOUT_MS so this can never be tighter than a single
+   *  legitimate self-heal cycle; see EI-18155637095067676). Not a total budget — see below. */
   readonly stallMs?: number;
   readonly pollMs?: number;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly warn?: (msg: string) => void;
 }): Promise<{ undrained: number; waitedMs: number }> {
-  const stallMs = inp.stallMs ?? 120_000;
+  const stallMs = inp.stallMs ?? CUT_SEED_DRAIN_STALL_MS;
   const pollMs = inp.pollMs ?? 500;
   const now = inp.now ?? (() => Date.now());
   const sleep = inp.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
