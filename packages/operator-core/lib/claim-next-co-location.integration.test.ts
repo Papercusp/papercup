@@ -78,7 +78,7 @@ async function seed(id: string, opts: { affinity?: string | null; createdTs?: nu
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, swarm_affinity, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', 'todo', ${opts.affinity ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
+    VALUES (${H}, ${id}, 'feature', 'open', ${opts.affinity ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
 }
 
 /** Drive the real claim_next HANDLER as a given Swarm. */

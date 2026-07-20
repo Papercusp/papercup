@@ -353,6 +353,36 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.workItem.state).toBe('done');
     });
 
+    it('EI-18129407319885561: a watchdog EI-* item with kind=null (item_kind stored separately as `bug`) still closes on resolved/closed — terminality is keyed on FAMILY, not `kind`', async () => {
+      // Watchdog-authored engineer_issues rows (harness_slug='operator:<workspace>') can carry
+      // a null `kind` column while the row is still issue-family (item_kind='bug' at the store
+      // layer). The reporter theorized work_items:complete's terminal-state resolution keyed off
+      // the (null) `kind` instead of `item_kind`/family and so silently misrouted these rows to a
+      // non-terminal alias. It doesn't: `existing.family` (hardcoded 'issue' for every
+      // engineer_issues row by issueToWorkItem, independent of `kind`) is the only discriminator
+      // TERMINAL_WORK_ITEM_STATES/closeIntended/closeLanded ever consult — assert that holds for
+      // BOTH the 'resolved' and 'closed' close-intents on a kind=null row.
+      const watchdogItem = { id: 'EI-999', kind: null, family: 'issue', state: 'open', harness: null };
+      getWorkItem.mockResolvedValue(watchdogItem);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+        workItem: { ...watchdogItem, state: state === 'closed' ? 'dropped' : 'done' },
+        aliased: true,
+        requestedState: state,
+        appliedState: state === 'closed' ? 'dropped' : 'done',
+        aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as '${state === 'closed' ? 'dropped' : 'done'}' instead.`,
+      }));
+
+      const resolved = await one({ id: 'EI-999', state: 'resolved', completion: { summary: 'fixed', tests: '3 green' } });
+      expect(resolved.ok).toBe(true);
+      expect(resolved.error).toBeUndefined();
+      expect(resolved.workItem.state).toBe('done');
+
+      const closed = await one({ id: 'EI-999', state: 'closed', completion: { summary: 'wontfix', tests: 'n/a' } });
+      expect(closed.ok).toBe(true);
+      expect(closed.error).toBeUndefined();
+      expect(closed.workItem.state).toBe('dropped');
+    });
+
     it('a DELIBERATE non-terminal park (needs_human) is NOT a failure — stays ok:true', async () => {
       // The guard against over-correcting: `complete` with a non-close state is a legitimate
       // "I did the work, it now needs a human" call. It must not be reported as a failed close.

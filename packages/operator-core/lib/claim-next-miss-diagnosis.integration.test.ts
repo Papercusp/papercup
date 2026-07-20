@@ -55,7 +55,7 @@ async function seedFeature(id: string, opts: { status?: string; takenBy?: string
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, ${WS},
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${WS},
        ${opts.createdTs ?? 0}, 0)`;
 }
 
@@ -118,7 +118,7 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
     // The only unclaimed todo is blocked by a non-terminal feature. claim_next (readiness
     // floor) refuses it; a direct claim(id) (named-assignment exception) takes it.
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200 });
     await blockByFeature('F-blocked', 'F-blocker');
 
     // claim_next hands out nothing (the blocked item is not self-selectable).
@@ -136,7 +136,7 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
   });
 
   it('READY-BUT-RACED: an unblocked item that a peer already took ⇒ drained:false, pendingUnclaimed:0 after it is claimed; drained flips true when the pool empties', async () => {
-    await seedFeature('F-ready', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-ready', { status: 'open', createdTs: 100 });
 
     // Before any claim: it is both pending and ready.
     const before = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
@@ -154,7 +154,7 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
 
   it('BLOCKER GOES TERMINAL: the pending item becomes ready ⇒ readyUnclaimed rises and claim_next then serves it', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200 });
     await blockByFeature('F-blocked', 'F-blocker');
 
     // Blocked: present but not ready.

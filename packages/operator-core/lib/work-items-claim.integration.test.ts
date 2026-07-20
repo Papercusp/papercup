@@ -58,7 +58,7 @@ async function seedFeature(
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, audit_verdict)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
+    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
 }
 
 // WI-3649: the issue-family (bug/change/task) counterpart of seedFeature — inserted
@@ -79,7 +79,7 @@ async function seedIssue(
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'})`;
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'})`;
 }
 
 beforeAll(async () => {

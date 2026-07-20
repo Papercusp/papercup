@@ -156,12 +156,33 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
     expect(cov.get(planItemRef('p1', 'P-002'))!.level).toBe('complete');
   });
 
+  // EI-18129037155166784: post work-item-status-full-unify (2026-07-19), the issue-family
+  // alias layer persists a 'resolved'/'closed' completion request as the UNIFIED terminal
+  // 'done'/'dropped' — so a work-item that actually closed can be stored with state 'done',
+  // never the literal string 'resolved'. A coverage classifier that only recognized
+  // resolved|closed treated that already-closed work as non-terminal, rolling its plan item
+  // up to 'unclaimed'/'partial' forever (the "circular trap": closing it correctly still
+  // reads as not done). Guard both unified spellings directly.
+  it('a work-item stamped with the UNIFIED terminal state (done/dropped) rolls up to "complete", not "unclaimed"', async () => {
+    await insertIssue({ id: 'WI-unified-done', state: 'done', plan: 'p1', item: 'P-002b' });
+    await insertIssue({ id: 'WI-unified-dropped', state: 'dropped', plan: 'p1', item: 'P-002c' });
+    const cov = await getAllPlanItemCoverage();
+    expect(cov.get(planItemRef('p1', 'P-002b'))!.level).toBe('complete');
+    expect(cov.get(planItemRef('p1', 'P-002c'))!.level).toBe('complete');
+  });
+
   it('a feature-family stamped work-item terminal-classifies via passed/deprecated, not resolved/closed', async () => {
     await insertFeature({ id: 'F-1', status: 'passed', plan: 'p1', item: 'P-003' });
     await insertFeature({ id: 'F-2', status: 'todo', plan: 'p1', item: 'P-004' });
     const cov = await getAllPlanItemCoverage();
     expect(cov.get(planItemRef('p1', 'P-003'))!.level).toBe('complete');
     expect(cov.get(planItemRef('p1', 'P-004'))!.level).toBe('unclaimed');
+  });
+
+  it('a feature-family work-item stamped with the UNIFIED terminal state (done) rolls up to "complete"', async () => {
+    await insertFeature({ id: 'F-unified', status: 'done', plan: 'p1', item: 'P-003b' });
+    const cov = await getAllPlanItemCoverage();
+    expect(cov.get(planItemRef('p1', 'P-003b'))!.level).toBe('complete');
   });
 
   it('unwraps a jsonb STRING-SCALAR payload (postgres-js binding quirk) for both families', async () => {

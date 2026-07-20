@@ -74,7 +74,7 @@ async function seedFeature(id: string, opts: { createdTs?: number; status?: stri
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, NULL, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, NULL, ${WS}, ${opts.createdTs ?? 0}, 0)`;
 }
 
 async function readPayload(id: string): Promise<Record<string, unknown> | null> {
@@ -183,7 +183,7 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
       await db.sql`
         INSERT INTO harness_shared.harness_features_consolidated
           (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
-        VALUES (${H}, ${id}, 'feature', 'todo', NULL, ${workspace}, ${createdTs}, ${createdTs})`;
+        VALUES (${H}, ${id}, 'feature', 'open', NULL, ${workspace}, ${createdTs}, ${createdTs})`;
     }
     async function payloadInWorkspace(id: string, workspace: string) {
       const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`

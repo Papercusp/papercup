@@ -75,7 +75,7 @@ async function seedFeature(
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, feature_order, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', 'todo', ${opts.takenBy ?? null}, ${opts.order ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
+    VALUES (${H}, ${id}, 'feature', 'open', ${opts.takenBy ?? null}, ${opts.order ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
 }
 
 beforeAll(async () => {

@@ -205,7 +205,11 @@ describe('EI-14231 — a not:{id in [...]} exclusion in a wide drain spec never 
     revision: 8,
     view: { filter: DRAIN_FILTER },
     rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
-    states: ['todo', 'open', 'failing'],
+    // work-item-status-full-unify P-004/P-005 (migration 642) rewrote every stored
+    // spec's `states` todo→open — 'todo' is no longer a valid claimable token
+    // (CLAIM_STATES_ALLOWLIST = ['open', 'failing']); this fixture reflects the
+    // spec as it is stored TODAY, not its pre-migration historical shape.
+    states: ['open', 'failing'],
   };
 
   it('the incident spec VALIDATES (the trap is that it validates, then mis-executed)', () => {

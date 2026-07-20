@@ -15,7 +15,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { listPresence } from '../agent-tools/coordination/presence';
 import { groupByAgent, listFleetAssignments } from './assignments';
-import { getWorkItem, listWorkItems, type WorkItem } from '../work-items';
+import { getWorkItem, isClaimHoldParked, listWorkItems, type WorkItem } from '../work-items';
 import { isAutoPickable, loadTrustedGithubUserIds } from '../work-items-admission';
 import { placementConfig } from '../pot/placement-watchdog';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
@@ -80,14 +80,15 @@ export function isObservationLaneItem(payload: unknown): boolean {
  * stays claimable BY ID, but must never be an AUTOMATIC placement candidate. Mirrors the
  * SQL floor (`claimHoldExclusionSql`: `->> '_claimHold' IS DISTINCT FROM 'true'`) at the
  * place_batch frontier so a claimHold-parked item (e.g. a genuinely-stale ticket like the
- * reported WI-4141) is never re-surfaced as a spawn target on every dry-run. Text-compare
- * (`String(...) === 'true'`) mirrors the SQL `->>` extraction, matching both the boolean
- * `true` `setWorkItemClaimHold` writes and a legacy string `'true'`. Pure; exported.
+ * reported WI-4141) is never re-surfaced as a spawn target on every dry-run.
+ *
+ * Re-exported from `../work-items` (its canonical home, alongside the SQL sibling
+ * {@link claimHoldExclusionSql}, since EI-18128621906886568) so this module and
+ * `work-items-events.ts`'s claimable-event guard can never drift on what "parked"
+ * means. Kept as a named re-export (not removed) so this module's own callers/tests
+ * that import it from here need no changes.
  */
-export function isClaimHoldParked(payload: unknown): boolean {
-  if (!payload || typeof payload !== 'object') return false;
-  return String((payload as Record<string, unknown>)._claimHold) === 'true';
-}
+export { isClaimHoldParked };
 
 /**
  * WI-677 — does a `cursed` placement HARD-BLOCK re-placement? Only a GENUINELY

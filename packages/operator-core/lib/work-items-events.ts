@@ -173,7 +173,7 @@ export function emitWorkItemClaimableEvent(
   reason: 'created' | 'released' | 'unblocked' | 'requeued',
   deps: Pick<SettledEventsDeps, 'emit'> = {},
 ): void {
-  if (wi.assignee || !CLAIMABLE_STATES.has(wi.state)) return;
+  if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return;
   const emit = deps.emit ?? emitAwaitedEvent;
   const payload = {
     id: wi.id,

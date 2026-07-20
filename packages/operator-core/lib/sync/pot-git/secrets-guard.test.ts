@@ -107,6 +107,10 @@ describe('secrets-guard rules', () => {
     // literal wedged the papercusp own-head publish plane 2026-07-20 — same
     // class, exempted by exact path.
     expect(isFixtureFile('apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs')).toBe(true);
+    // The scanner's own source is exempt too: it is the one product file
+    // guaranteed to carry credential-shape-adjacent text (the RULES regexes +
+    // any documenting comment), and a bare literal there wedges publish forever.
+    expect(isFixtureFile('packages/operator-core/lib/sync/pot-git/secrets-guard.ts')).toBe(true);
     expect(isFixtureFile('packages/operator-core/lib/sync/pot-git/own-head-publish.ts')).toBe(false);
     const loaded = `k="${AKIA}"\n${GH}`; // real shapes that WOULD flag anywhere else
     expect(scanForSecrets([{ path: fixturePath, content: loaded }])).toEqual([]);

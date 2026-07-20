@@ -568,10 +568,12 @@ describe('claim-spec `states` field (D-002, EI-11300)', () => {
       revision: 0,
       view: {},
       rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
-      states: ['todo', 'open', 'failing'],
+      // work-item-status-full-unify P-004/P-005: 'todo' was retired — 'open' is the
+      // single unified claimable token across both families now (CLAIM_STATES_ALLOWLIST).
+      states: ['open', 'failing'],
     });
     expect(r.ok).toBe(true);
-    expect(r.spec?.states).toEqual(['todo', 'open', 'failing']);
+    expect(r.spec?.states).toEqual(['open', 'failing']);
   });
 
   it('omitting `states` still validates (backward-compatible — undefined, not required)', () => {

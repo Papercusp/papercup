@@ -56,7 +56,7 @@ async function seedFeature(
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
 }
 
 /** A feature→feature blocks edge (harness-qualified refs, the featureRef convention). */
@@ -113,7 +113,7 @@ beforeEach(async () => {
 describe('claimNextWorkItem readiness — feature blocker (P-005, F1)', () => {
   it('does NOT claim a feature with a non-terminal feature blocker', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200 });
     await blockByFeature('F-blocked', 'F-blocker');
     // F-blocker is 'wip' (not claimable here — not 'todo'); F-blocked is the only 'todo'
     // candidate, but its blocker is non-terminal ⇒ nothing should be claimed.
@@ -122,7 +122,7 @@ describe('claimNextWorkItem readiness — feature blocker (P-005, F1)', () => {
 
   it('CLAIMS the blocked feature once the blocker reaches a terminal status', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200 });
     await blockByFeature('F-blocked', 'F-blocker');
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
 
@@ -134,14 +134,14 @@ describe('claimNextWorkItem readiness — feature blocker (P-005, F1)', () => {
 
   it('treats deprecated (the other feature-terminal) as satisfying the blocker too', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200 });
     await blockByFeature('F-blocked', 'F-blocker');
     await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='deprecated' WHERE feature_id='F-blocker'`;
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
   });
 
   it('an ABSENT blocker ref (no matching feature row) does NOT block', async () => {
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
     // Edge points at a blocker that has no row in the table — an absent blocker never deadlocks.
     await blockByFeature('F-blocked', 'F-ghost');
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
@@ -150,7 +150,7 @@ describe('claimNextWorkItem readiness — feature blocker (P-005, F1)', () => {
 
 describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family terminal)', () => {
   it('an OPEN issue blocker blocks; a RESOLVED one does not', async () => {
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
     await seedIssue('EI-1', 'open');
     await blockByIssue('F-blocked', 'EI-1');
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
@@ -160,14 +160,14 @@ describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family 
   });
 
   it('a CLOSED issue blocker (the other issue-terminal) does not block', async () => {
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
     await seedIssue('EI-2', 'closed');
     await blockByIssue('F-blocked', 'EI-2');
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
   });
 
   it('an ABSENT issue blocker ref (no matching issue row) does not block', async () => {
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
     await blockByIssue('F-blocked', 'EI-ghost');
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
   });
@@ -175,14 +175,14 @@ describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family 
 
 describe('claimNextWorkItem readiness — unblocked work is unaffected', () => {
   it('claims a normal unblocked todo feature exactly as before', async () => {
-    await seedFeature('F-free', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-free', { status: 'open', createdTs: 100 });
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-free');
   });
 
   it('prefers the unblocked item over a blocked older one', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 50 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 }); // older, but blocked
-    await seedFeature('F-ready', { status: 'todo', createdTs: 200 }); // newer, but ready
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 }); // older, but blocked
+    await seedFeature('F-ready', { status: 'open', createdTs: 200 }); // newer, but ready
     await blockByFeature('F-blocked', 'F-blocker');
     // Oldest-first would pick F-blocked, but it's blocked ⇒ the claim skips to F-ready.
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-ready');
