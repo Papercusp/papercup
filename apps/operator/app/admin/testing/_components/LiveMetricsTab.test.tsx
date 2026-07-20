@@ -68,9 +68,18 @@ describe('filterAndSortEvents', () => {
 });
 
 describe('countEventsByKind', () => {
-  it('zero-defaults all five kinds and tallies present ones', () => {
+  it('zero-defaults all six kinds and tallies present ones', () => {
     const c = countEventsByKind([ev({ id: '1', kind: 'interaction' }), ev({ id: '2', kind: 'interaction' }), ev({ id: '3', kind: 'console-error' })]);
-    expect(c).toEqual({ interaction: 2, longtask: 0, 'layout-shift': 0, 'console-error': 1, 'unhandled-error': 0 });
+    expect(c).toEqual({ interaction: 2, longtask: 0, 'layout-shift': 0, measure: 0, 'console-error': 1, 'unhandled-error': 0 });
+  });
+  it('tallies the measure kind (named interaction timings, P-002)', () => {
+    const c = countEventsByKind([
+      ev({ id: '1', kind: 'measure', target: 'plan-popup-open', duration: 430 }),
+      ev({ id: '2', kind: 'measure', target: 'plan-popup-open', duration: 512 }),
+      ev({ id: '3', kind: 'interaction' }),
+    ]);
+    expect(c.measure).toBe(2);
+    expect(c.interaction).toBe(1);
   });
 });
 
