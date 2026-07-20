@@ -61,10 +61,10 @@ beforeAll(async () => {
   await db.sql.unsafe(`ALTER TABLE harness_shared.plan_item_assignments ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
   await db.sql.unsafe(`ALTER TABLE harness_shared.plan_item_assignments ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
   // WI-971-followup: this table is also a REAL carrier of `stamp_local_federated_write_trg`
-  // (mig 214 attached it to plan_item_assignments; mig 517 is the live function body) — but
+  // (mig 214 attached it to plan_item_assignments; mig 653 is the live function body) — but
   // that trigger lives in ~11 OTHER tables' migration files too, most of which this minimal
   // fixture doesn't create, so we can't just `readMigration('214-...')`'s DO-block (it would
-  // 42P01 on e.g. harness_plans). Attach the CURRENT (mig 517) function body verbatim to JUST
+  // 42P01 on e.g. harness_plans). Attach the CURRENT (mig 653) function body verbatim to JUST
   // this table, mirroring engineer-issues.integration.test.ts's identical stub-and-attach
   // pattern for work_items, so this test exercises the real prod trigger stack.
   await db.sql.unsafe(`
@@ -86,9 +86,12 @@ beforeAll(async () => {
         END IF;
         RETURN NEW;
       END IF;
-      IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+      -- mig 653: exclude fed_key (this table's GENERATED ALWAYS ... STORED key) --
+      -- NEW.fed_key reads NULL pre-generation inside a BEFORE trigger while OLD.fed_key
+      -- is already populated, so omitting it here spuriously flip-flops on every UPDATE.
+      IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'fed_key')
          IS DISTINCT FROM
-         (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+         (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'fed_key')
       THEN
         NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
         NEW.fed_hlc := harness_shared.hlc_now();

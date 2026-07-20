@@ -1,13 +1,19 @@
 /**
  * P-006 DB backstop trigger (pot-membership-enforcement-2026-07-20): the
- * BEFORE INSERT / UPDATE-OF-harness_slug guard on harness_shared.work_items
- * installed by migration 651 must REJECT a non-pot harness_slug in a workspace
- * that has a platform Pot, while failing OPEN for federation replicas
- * (origin<>'local') and for workspaces with no platform Pot (test fixtures).
+ * BEFORE INSERT / UPDATE-OF-harness_slug guard on harness_shared.work_items.
+ * A non-pot harness_slug that names a known workspace-global scope label
+ * (operator:<ws> / @singleton / the bare ws id / ...) SELF-HEALS to the platform
+ * Pot; a genuinely made-up slug is REJECTED; it fails OPEN for federation
+ * replicas (origin<>'local') and for workspaces with no platform Pot (fixtures).
  *
- * Self-contained: builds the minimal schema the trigger reads (canonical_harness_slug
- * + pots + work_items) then applies the REAL migration file, so the trigger under
- * test is exactly what ships.
+ * Ships as migration 651 + the 652 reconcile. 651 was edited to the self-heal
+ * form AFTER an interim REJECT-ONLY version had already applied to the live DB,
+ * so the runner (apply-once by filename) never re-applied it and the live trigger
+ * stayed reject-only — actively erroring improvements:capture's operator-scope
+ * writes. Migration 652 CREATE-OR-REPLACEs the function to self-heal. This test
+ * applies BOTH real migration files, so the trigger under test is the full
+ * shipping chain (a fresh DB's path); the live DB reached the same end-state via
+ * 652's function-only reconcile.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
@@ -64,15 +70,17 @@ beforeAll(async () => {
   // NO platform Pot ⇒ fail-open.
   await sql`INSERT INTO harness_shared.pots (workspace_id, pot_home_slug) VALUES
     (${WS}, 'papercusp'), (${WS}, 'oddsmith-hive'), (${FIXTURE_WS}, 'lane7hive')`;
-  // Apply the REAL migration under test.
+  // Apply the REAL migration chain under test: 651 (installs the trigger) then
+  // the 652 self-heal reconcile (CREATE OR REPLACE of the trigger function).
   await applyMigrationForTest(sql, join(SQL_DIR, '651-pot-membership-enforce-trigger.sql'));
+  await applyMigrationForTest(sql, join(SQL_DIR, '652-pot-membership-selfheal-reconcile.sql'));
 });
 
 afterAll(async () => {
   await db?.cleanup();
 });
 
-describe('pot-membership backstop trigger (migration 651)', () => {
+describe('pot-membership backstop trigger (migration 651 + 652 self-heal reconcile)', () => {
   it('ALLOWS an insert under a real Pot in the enforced workspace', async () => {
     await expect(insertItem({ workspace_id: WS, harness_slug: 'papercusp', feature_id: 'WI-OK-1' })).resolves.toBeDefined();
     await expect(insertItem({ workspace_id: WS, harness_slug: 'oddsmith-hive', feature_id: 'WI-OK-2' })).resolves.toBeDefined();
