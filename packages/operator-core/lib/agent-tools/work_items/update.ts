@@ -61,6 +61,18 @@ const FIELDS = {
     .describe(
       'WI-2796: mark (true) or unmark (false) this item as requiring a live ≥2-machine / Hetzner federation rig to work — scheduler:get_next / claim_next then exclude it from single-box self-select instead of letting single-box agents claim-then-release it repeatedly (EI-18151406094317010). Sets payload.needs_2_machine_rig.',
     ),
+  // work-item-claimability-clarity-2026-07-20 P-004: the RE-ADMIT lever. Sets/clears
+  // payload.needsHuman — the SAME human-review gate improvements:resolve sets when routing an
+  // item to a human. Clearing it (false) re-admits an over-flagged agent-fixable bug back into
+  // scheduler:get_next / claim_next self-select — the canonical, tool-mediated replacement for the
+  // raw `mergeIssuePayload(id,{needsHuman:false})` SQL a re-admit used to require. Applied via
+  // mergeWorkItemPayload (not a real column), exactly like needsTwoMachineRig above.
+  needsHuman: z
+    .boolean()
+    .optional()
+    .describe(
+      'work-item-claimability-clarity P-004: mark (true) or CLEAR (false) payload.needsHuman — the human-review gate improvements:resolve sets. Clearing re-admits an over-flagged agent-fixable bug into scheduler:get_next / claim_next self-select (the re-admit lever — no raw SQL). Reserve true for a GENUINE human-capability need (owner-decision / credential / physical-device), not an auto-implement failure.',
+    ),
 };
 
 // EI-6060: `status` / `state` are NOT update fields — a work-item's lifecycle state
