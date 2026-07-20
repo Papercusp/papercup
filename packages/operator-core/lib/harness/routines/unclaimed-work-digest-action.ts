@@ -77,7 +77,9 @@ registerSystemAction('unclaimed-work-digest', async (ctx: SystemActionCtx) => {
   const topN = Number.isFinite(Number(cfg.top_n)) && Number(cfg.top_n) > 0 ? Number(cfg.top_n) : DEFAULT_TOP_N;
   const harness = typeof cfg.harness === 'string' && cfg.harness.length > 0 ? cfg.harness : DEFAULT_HARNESS;
 
-  const rows = await listWorkItems({ harness, state: 'todo', limit: 500 });
+  // work-item-status-full-unify P-007: unclaimed CLAIMABLE work is at the unified token
+  // 'open' now (was 'todo'); listWorkItems matches status EXACTLY, so 'todo' → empty digest.
+  const rows = await listWorkItems({ harness, state: 'open', limit: 500 });
   const unclaimed = rows
     .filter((r) => !r.assignee)
     .map((r) => ({ id: r.id, title: r.title, kind: r.kind, createdAt: r.createdAt }));

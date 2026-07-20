@@ -670,6 +670,66 @@ export function diffHealth(
   return { transitions, next };
 }
 
+/**
+ * EI-18144960689849695 (service-down:desktop flap volume — 500+ up/down
+ * transitions since 2026-07-04, ~one every 45min, still recurring after both
+ * prior desktop-flap fixes: EI-7760's per-port discovery fix and
+ * EI-18131725582506957's single ipc-connect retry). Root cause of the
+ * REMAINING flaps: `diffHealth` (below) transitions on a SINGLE bad probe
+ * tick with no debounce — exactly the mechanism the EI-18131725582506957 doc
+ * comment already named as the enabler of that (narrower, now-fixed) bug
+ * class. The single retry in `realIpcConnectable` only bridges ONE specific
+ * known transient window (a routine operator restart's stop→re-exec); it
+ * does not cover other benign single-tick blips (a webview-eval hiccup, a
+ * momentary accept-queue delay under this box's heavy concurrent-agent
+ * load). Live-confirmed on 2026-07-20 06:33-06:46Z: `desktop` reported DOWN
+ * for ~13 consecutive minutes with `papercup-staging-api.service` NEVER
+ * restarted in that window (systemd ActiveEnterTimestamp/NRestarts
+ * unchanged) — i.e. a real multi-tick flap unrelated to either previously-
+ * fixed cause, self-clearing with no operator action.
+ *
+ * Fix: require `DESKTOP_DOWN_CONFIRM_TICKS` CONSECUTIVE bad ticks before
+ * `desktop` is reported down to any consumer (coord broadcast, the
+ * `collectServiceDownSignals` watchdog EI-filer, `dev:service_health`) — a
+ * single good tick clears the streak immediately (fast-recover, slow-alarm:
+ * standard flap damping). This generalizes the intent already on record in
+ * the EI-18131725582506957 comment instead of adding a fourth narrow
+ * per-cause patch. Scoped to `desktop` only (not every monitored service) —
+ * it is the one with a documented, repeated flapping history; HTTP endpoints
+ * that the fleet relies on for fast down-detection (e.g. :3170 staging,
+ * watched by `dev:restart` drains) keep today's single-tick alerting.
+ */
+export const DESKTOP_DOWN_CONFIRM_TICKS = 2;
+
+let desktopDownStreak = 0;
+
+/**
+ * Pure debounce step for the `desktop` entry only: increments/resets a
+ * consecutive-bad-tick streak and, while under `confirmTicks`, rewrites the
+ * exposed result to `up: true` (annotated) so downstream consumers never see
+ * the not-yet-confirmed blip. Exported for direct unit testing.
+ */
+export function applyDesktopDebounce(
+  results: ProbeResult[],
+  streak: number,
+  confirmTicks = DESKTOP_DOWN_CONFIRM_TICKS,
+): { results: ProbeResult[]; nextStreak: number } {
+  const idx = results.findIndex((r) => r.name === 'desktop');
+  if (idx === -1) return { results, nextStreak: 0 };
+  const r = results[idx];
+  if (r.present === false || r.up) return { results, nextStreak: 0 };
+  const nextStreak = streak + 1;
+  if (nextStreak >= confirmTicks) return { results, nextStreak };
+  const suppressed: ProbeResult = {
+    ...r,
+    up: true,
+    note: `unconfirmed down (streak ${nextStreak}/${confirmTicks}) — ${r.note ?? 'no detail'}`,
+  };
+  const next = results.slice();
+  next[idx] = suppressed;
+  return { results: next, nextStreak };
+}
+
 // Cross-tick last-known state. A module singleton (not PG): on operator
 // restart it resets, and diffHealth's unknown-as-up default means a restart
 // re-alerts only services that are actually DOWN — no spurious spam.
@@ -706,7 +766,9 @@ export function lastServiceHealthAt(): number | null {
  * periodic scheduler. Returns the transitions for logging/tests.
  */
 export async function runServiceHealthTick(): Promise<{ checked: number; transitions: HealthTransition[] }> {
-  const results = await probeAll();
+  const rawResults = await probeAll();
+  const { results, nextStreak } = applyDesktopDebounce(rawResults, desktopDownStreak);
+  desktopDownStreak = nextStreak;
   lastResults = results;
   lastResultsAt = Date.now();
   const { transitions, next } = diffHealth(lastHealth, results);

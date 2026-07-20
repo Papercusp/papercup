@@ -73,9 +73,10 @@ export default defineTool({
       load: a.load,
     }));
 
-    // Frontier: todo work-items in the pot's harness — the queue depth the Mug
-    // places from.
-    const todo = await listWorkItems({ harness: pot.slug, state: 'todo', limit: 500 });
+    // Frontier: claimable work-items in the pot's harness — the queue depth the Mug
+    // places from. work-item-status-full-unify P-007: the unified claimable token is 'open'
+    // (was 'todo'); listWorkItems filters status EXACTLY, so 'todo' now matches ~nothing.
+    const todo = await listWorkItems({ harness: pot.slug, state: 'open', limit: 500 });
 
     return {
       content: [

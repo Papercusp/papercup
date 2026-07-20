@@ -67,6 +67,8 @@ let healthResult: { data?: unknown[]; loading?: boolean } = { data: undefined, l
 let readinessResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
 // P-001: the Deploy tile's dev.gitPipeline snapshot (1-element array).
 let pipelineResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
+// P-002: the Work-items tile's 24h burn-down companion.
+let deltaResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
@@ -95,6 +97,8 @@ vi.mock('@papercusp/sync', () => ({
         return { ...readinessResult, error: null };
       case 'dev.gitPipeline':
         return { ...pipelineResult, error: null };
+      case 'workItems.delta24h':
+        return { ...deltaResult, error: null };
       default:
         return { data: undefined, loading: false, error: null };
     }
@@ -193,6 +197,7 @@ describe('AdvOverviewTab component', () => {
     healthResult = { data: undefined, loading: false };
     readinessResult = { data: undefined, loading: false };
     pipelineResult = { data: undefined, loading: false };
+    deltaResult = { data: [], loading: false };
   });
 
   afterEach(() => {

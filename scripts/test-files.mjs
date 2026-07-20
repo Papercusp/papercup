@@ -14,8 +14,21 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadavg, availableParallelism } from 'node:os';
+import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// WI-5621 (2026-07-20): this is THE most frequently invoked test runner in the
+// repo (CLAUDE.md tells every agent to reach for `npm run test:file` after any
+// edit), yet — unlike scripts/affected-tests.mjs (capped since WI-3792) — it
+// ran every invocation at Vitest's uncapped, cores-sized default fork pool. On
+// a ~90-agent fleet where dozens of agents run `test:file` concurrently, that
+// is the dominant source of the fleet-wide CPU oversubscription observed in
+// WI-5621 (loadavg 60-100+ on a 128-core box, causing unrelated tests to flake
+// under scheduling contention). Apply the same shared, load-adaptive cap
+// affected-tests.mjs uses — see scripts/lib/worker-cap.mjs for the rationale.
+applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
 
 const UNIT_CONFIG_RE = /^vitest\.config\.(?:[cm]?[jt]s)$/;
 const INTEGRATION_CONFIG_RE = /^vitest\.integration\.config\.(?:[cm]?[jt]s)$/;

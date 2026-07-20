@@ -370,6 +370,39 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
     expect(getByIdM).toHaveBeenCalledTimes(1); // one lookup, not two
   });
+
+  // EI-18145123522199011: a reply CLOSING A LOOP with the original sender of
+  // `related_msg_id` must not hard-refuse just because that sender's session has
+  // since ended (reaped from the roster) — the unanswered-directed / delivery-
+  // ladder alarm is satisfied by RECORDING the reply, not by live-delivering it,
+  // and before this fix there was structurally no way to ever satisfy it once the
+  // original sender was gone (coord:send always refused with unknown_recipient).
+  it('EI-18145: replying to the original sender of related_msg_id who is now GONE from the roster still sends (closes the loop)', async () => {
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] } as never);
+    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['ghost-sender'], ambiguous: [] } as never);
+    const b = await body({ to: ['ghost-sender'], summary: 'closing this out', related_msg_id: 'orig' });
+    expect(b.results[0]).toMatchObject({ ok: true, recipients_gone: ['ghost-sender'] });
+    expect(b.results[0].error).toBeUndefined();
+    expect(sendM).toHaveBeenCalledTimes(1); // the reply WAS recorded
+    const opts = sendM.mock.calls[0][1] as { to: string[]; related_msg_id?: string };
+    expect(opts.to).toEqual(['ghost-sender']);
+    expect(opts.related_msg_id).toBe('orig');
+  });
+
+  it('EI-18145: an unknown recipient UNRELATED to related_msg_id.from still hard-refuses (the exemption is scoped, not blanket)', async () => {
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] } as never);
+    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['some-other-ghost'], ambiguous: [] } as never);
+    const b = await body({ to: ['some-other-ghost'], summary: 'hi', related_msg_id: 'orig' });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['some-other-ghost'] });
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('EI-18145: a genuinely unknown recipient with NO related_msg_id still hard-refuses (unchanged baseline)', async () => {
+    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['ghost'], ambiguous: [] } as never);
+    const b = await body({ to: ['ghost'], summary: 'hi' });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['ghost'] });
+    expect(sendM).not.toHaveBeenCalled();
+  });
 });
 
 describe('coord:send body auto-refs opt-out (coord-authority-hardening P-008)', () => {

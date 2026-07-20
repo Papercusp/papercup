@@ -217,8 +217,8 @@ describe('summarizeWorkItemStats', () => {
     expect(s.total).toBe(12);
     expect(s.open).toBe(6);
     expect(s.kinds).toEqual([
-      { kind: 'bug', open: 4, total: 10 },
-      { kind: 'change', open: 2, total: 2 },
+      { kind: 'bug', open: 4, total: 10, opened24h: 0, closed24h: 0 },
+      { kind: 'change', open: 2, total: 2, opened24h: 0, closed24h: 0 },
     ]);
   });
   it('orders kinds by open desc, then total desc', () => {
@@ -230,7 +230,21 @@ describe('summarizeWorkItemStats', () => {
     expect(s.kinds.map((k) => k.kind)).toEqual(['bug', 'task', 'chunk']);
   });
   it('empty cells → all-zero summary', () => {
-    expect(summarizeWorkItemStats([])).toEqual({ total: 0, open: 0, kinds: [] });
+    expect(summarizeWorkItemStats([])).toEqual({ total: 0, open: 0, opened24h: 0, closed24h: 0, kinds: [] });
+  });
+  it('merges 24h burn-down deltas per kind + headline totals across ALL kinds (P-002)', () => {
+    const s = summarizeWorkItemStats(
+      [cell('bug', 'open', 4, false), cell('change', 'open', 2, false)],
+      [
+        { kind: 'bug', opened: 7, closed: 12 },
+        { kind: 'change', opened: 1, closed: 0 },
+        // a kind whose CURRENT cells are absent still counts toward the headline
+        { kind: 'task', opened: 0, closed: 3 },
+      ],
+    );
+    expect(s.opened24h).toBe(8);
+    expect(s.closed24h).toBe(15);
+    expect(s.kinds.find((k) => k.kind === 'bug')).toEqual({ kind: 'bug', open: 4, total: 4, opened24h: 7, closed24h: 12 });
   });
 });
 
