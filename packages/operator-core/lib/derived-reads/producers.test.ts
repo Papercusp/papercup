@@ -270,3 +270,39 @@ describe('derived-reads producers: learning.improvements', () => {
     expect(computeLearningImprovementsSnapshot).toHaveBeenCalledWith({});
   });
 });
+
+// coord.history producer (phase2 P-004). Precomputes ONLY the DEFAULT view —
+// loadCoordHistory({}) (all sources, no filters, default limit) — and returns its
+// `.items` array (the shape the sync feed carries).
+async function loadCoordHistoryProducer() {
+  vi.resetModules();
+  const registry = await import('./registry');
+  registry.__clearDerivedReadRegistryForTest();
+  await import('./producers');
+  const producer = registry.listDerivedReadProducers().find((p) => p.key === 'coord.history');
+  if (!producer) throw new Error('coord.history producer not registered');
+  return producer;
+}
+
+describe('derived-reads producers: coord.history', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => {
+    vi.doUnmock('../endpoint-route/routes/coord');
+    vi.resetModules();
+  });
+
+  it('computes the DEFAULT view: loadCoordHistory({}) and returns its .items', async () => {
+    const items = [{ source: 'message', msg_id: 'm1', ts: 't', kind: 'note', payload: {} }];
+    const loadCoordHistory = vi.fn(async (_a: Record<string, unknown>) => ({ items, total: 1, truncated: false }));
+    vi.doMock('../endpoint-route/routes/coord', () => ({ loadCoordHistory }));
+
+    const producer = await loadCoordHistoryProducer();
+    expect(producer.scope).toBe('workspace');
+    expect(producer.ttlMs).toBe(90_000);
+    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as unknown[];
+
+    expect(out).toBe(items);
+    expect(loadCoordHistory).toHaveBeenCalledTimes(1);
+    expect(loadCoordHistory).toHaveBeenCalledWith({}); // default view, no filters
+  });
+});

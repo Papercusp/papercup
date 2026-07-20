@@ -163,9 +163,63 @@ export function ownAuthorWhereSql(sql: OrgSql, workspaceId: string) {
 }
 
 /**
+ * ISSUE-FAMILY own-node leg (work-item-status-full-unify / owner 2026-07-20 "these can't be
+ * truly remote"). The FEATURE family already trusts its own nodes via {@link ownAuthorWhereSql}
+ * (owner 2026-07-13 "trust our own nodes = the default"); the issue family (isIssueLocallyClaimable)
+ * historically hard-refused any origin!='local', with NO escape hatch. But `origin` records HOW a
+ * row ARRIVED, not WHO wrote it: a bug THIS box authored, once it round-trips the hyperbee
+ * federation, comes back projected origin='remote' — and when the box's substrate node identity
+ * drifts (re-provision / device re-key / hive re-join), work authored under the OLD identity is
+ * orphaned as un-claimable. This leg admits a remote issue whose author_pubkey is one this
+ * workspace has ALSO written locally (evidence OUR substrate log produced it — a foreign key can't
+ * manufacture that). Own-keys come from the work_items BASE (ALL families), because a substrate key
+ * authors both features and issues; {@link ownAuthorWhereSql}'s harness_features_consolidated
+ * source would miss an identity that authored only issues. Columns are `wi.`-qualified — compose
+ * ONLY into the issue claim/diagnose queries that alias the base table as `wi`. Same LOAD-BEARING
+ * guards as ownAuthorWhereSql: workspace-scoped (D-004), author_pubkey<>'' on BOTH sides.
+ */
+export function issueOwnAuthorWhereSql(sql: OrgSql, workspaceId: string) {
+  return sql`(wi.author_pubkey IS NOT NULL AND wi.author_pubkey <> '' AND wi.author_pubkey IN (
+    SELECT own.author_pubkey
+      FROM harness_shared.work_items own
+     WHERE own.workspace_id = ${workspaceId}
+       AND (own.origin = 'local' OR own.origin IS NULL)
+       AND own.author_pubkey IS NOT NULL
+       AND own.author_pubkey <> ''
+  ))`;
+}
+
+/**
+ * The issue-family locally-claimable SQL floor, own-node aware — the composable counterpart of
+ * {@link isIssueLocallyClaimable}. `(origin local/null OR own-node)`; `workspaceId` omitted ⇒ the
+ * own-node leg is dropped (fail-safe: only ever UNDER-admits when unscoped). `wi.`-qualified.
+ */
+export function isIssueLocallyClaimableWhereSql(sql: OrgSql, workspaceId?: string) {
+  const ownLeg = workspaceId ? sql` OR ${issueOwnAuthorWhereSql(sql, workspaceId)}` : sql``;
+  return sql`(wi.origin IS NULL OR wi.origin = 'local'${ownLeg})`;
+}
+
+/**
+ * JS counterpart of {@link isIssueLocallyClaimableWhereSql} for a fetched row: local (origin
+ * null/'local') OR its author is one of OUR own-node keys (load via {@link loadOwnAuthorPubkeys}).
+ * `ownKeys` empty ⇒ degrades to the origin-only check (fail-safe).
+ */
+export function isIssueLocallyClaimableWithOwn(
+  origin: string | null | undefined,
+  authorPubkey: string | null | undefined,
+  ownKeys: ReadonlySet<string>,
+): boolean {
+  if (isIssueLocallyClaimable(origin)) return true;
+  return !!authorPubkey && authorPubkey !== '' && ownKeys.has(authorPubkey);
+}
+
+/**
  * Load this workspace's OWN substrate-log author keys — the JS-gate counterpart of
  * {@link ownAuthorWhereSql}. Workspace-scoped (D-004). Empty set on any read failure
  * (fail-safe: no own-node fast-path rather than over-broad admission).
+ *
+ * work-item-status-full-unify: derives from the work_items BASE (all families) so it also
+ * feeds the issue-family own-node leg ({@link isIssueLocallyClaimableWithOwn}).
  */
 export async function loadOwnAuthorPubkeys(workspaceId: string): Promise<Set<string>> {
   const out = new Set<string>();
@@ -174,7 +228,7 @@ export async function loadOwnAuthorPubkeys(workspaceId: string): Promise<Set<str
     const { sql } = getOrgPg();
     const rows = await sql<{ author_pubkey: string }[]>`
       SELECT DISTINCT author_pubkey
-        FROM harness_shared.harness_features_consolidated
+        FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND (origin = 'local' OR origin IS NULL)
          AND author_pubkey IS NOT NULL

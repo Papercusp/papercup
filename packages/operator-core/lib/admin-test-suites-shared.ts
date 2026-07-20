@@ -11,6 +11,27 @@ export type AdminTestSuiteId =
 export type AdminTestStatus = 'pass' | 'warn' | 'fail' | 'skip';
 export type AdminTestRunStatus = 'running' | 'done' | 'error' | 'cancelled';
 
+/** Unit for a structured desktop-perf measure (desktop-performance-suite P-010). */
+export type DesktopPerfMetricUnit = 'ms' | 'kb' | 'count';
+
+/**
+ * One structured, cross-run-trendable metric a desktop-performance check emits
+ * (e.g. a warm route-settle time, the plan-popup-open interaction, chaos INP,
+ * RSS). Persisted per run (desktop_perf_runs) and diffed for the trend panel +
+ * the release gate. Lives here in the dependency-free shared module so both the
+ * check results and the persistence layer can reference it without a cycle.
+ */
+export interface DesktopPerfMeasure {
+  /** Stable metric key, e.g. 'route:harness-warm', 'interaction:plan-popup-open'. */
+  key: string;
+  value: number;
+  unit: DesktopPerfMetricUnit;
+  /** Budget asserted against, or null when recorded-but-unbudgeted. */
+  budget: number | null;
+  /** Met its budget (true when budget is null). */
+  ok: boolean;
+}
+
 export interface AdminTestSuiteSpec {
   id: AdminTestSuiteId;
   label: string;
@@ -31,6 +52,9 @@ export interface AdminTestCheckResult {
   actual: string;
   durationMs: number;
   details?: string[];
+  /** Structured metrics for trend/regression persistence (P-010). Populated by
+   *  desktop-performance checks; absent on checks that don't measure. */
+  measures?: DesktopPerfMeasure[];
 }
 
 export interface AdminTestSuiteProgress {

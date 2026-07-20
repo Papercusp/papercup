@@ -131,11 +131,17 @@ describe('runColdBootDrillAutorunOnce', () => {
   });
 
   it('grades a respawned-ungraded drill AND starts one on an eligible headless host when unproven', async () => {
+    // A MUTABLE ledger: grading appends a graded row (as the real gradeColdBootDrill
+    // does), so the runner's post-grade re-read no longer sees d1 as in-flight.
+    const ledger: ColdBootDrillLedgerEvent[] = [ev('carry-drill-respawned', 'd1', HEADLESS, 'su-old')];
     const startDrill = vi.fn(async () => ({ ok: true as const, drillId: 'nd', sessionClass: HEADLESS, queued: true as const, nextAllowedAt: '' }));
-    const gradeDrill = vi.fn(async () => ({ ok: true as const, drillId: 'd1', sample: { sessionClass: HEADLESS, lookups: [] }, report: { perClass: [], params: {} as never, sufficientClasses: [], terminalOutcomes: [] }, transcriptPath: '', alreadyGraded: false }));
+    const gradeDrill = vi.fn(async (ownerId: string, drillId: string) => {
+      ledger.push(ev('carry-drill-graded', drillId, HEADLESS, ownerId));
+      return { ok: true as const, drillId, sample: { sessionClass: HEADLESS, lookups: [] }, report: { perClass: [], params: {} as never, sufficientClasses: [], terminalOutcomes: [] }, transcriptPath: '', alreadyGraded: false };
+    });
     const r = await runColdBootDrillAutorunOnce(
       deps({
-        readLedger: async () => [ev('carry-drill-respawned', 'd1', HEADLESS, 'su-old')],
+        readLedger: async () => [...ledger],
         report: async () => ({ perClass: [], params: {} as never, sufficientClasses: [], terminalOutcomes: [] }),
         listHosts: () => [host({ ownerId: 'su-h1' })],
         startDrill,

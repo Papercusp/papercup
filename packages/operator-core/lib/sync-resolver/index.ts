@@ -4767,8 +4767,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       limit: clampedLimit(1000, 200),
     }),
     resolve: async (args) => {
+      const a = args as { kinds?: string[]; planSlug?: string; owner?: string; sinceTs?: string; limit?: number };
+      // PRECOMPUTED (phase2 P-004) — but ONLY the DEFAULT view (all sources, no
+      // planSlug/owner/sinceTs filter, the default limit of 200 — the /coord
+      // screen's mount). loadCoordHistory scans the whole coord corpus then
+      // filters/sorts in JS (0.1-0.8s, growing with volume); the routine now fills
+      // a snapshot and the default mount is a plain SELECT. Snapshots have no arg
+      // dimension, so any filtered/custom-limit view falls through to the live scan.
+      const isDefaultVariant =
+        (!a.kinds || a.kinds.length === 0) &&
+        !a.planSlug &&
+        !a.owner &&
+        !a.sinceTs &&
+        (a.limit === undefined || a.limit === 200);
+      if (isDefaultVariant) {
+        const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+        await import('../derived-reads/producers');
+        return readDerivedSnapshotRows('coord.history');
+      }
       const { loadCoordHistory } = await import('../endpoint-route/routes/coord');
-      return (await loadCoordHistory(args as never)).items;
+      return (await loadCoordHistory(a as never)).items;
     },
   },
   'coord.inbox': {

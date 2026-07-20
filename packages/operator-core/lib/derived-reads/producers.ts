@@ -365,3 +365,33 @@ registerDerivedRead({
     return computeLearningImprovementsSnapshot({});
   },
 });
+
+// ── coord.history (phase2 P-004) — measured 0.1-0.8s (variable) / 160KB on the
+// legacy /coord history viewer (WI-5460 follow-up). loadCoordHistory reads the
+// ENTIRE coord corpus (all plan-events + messages + escalations + handoffs) then
+// filters/sorts/slices in JS — so the compute grows with total coord volume, and
+// the variable latency the plan flagged is that full scan.
+//
+// Only the DEFAULT view (all sources, no planSlug/owner/sinceTs filter, the
+// default limit of 200 — exactly what the /coord screen mounts with) is
+// precomputed; snapshots have no arg dimension, so any filtered/custom-limit view
+// falls through to the live inline scan. The heavy per-item `payload` is KEPT (the
+// screen's on-demand expand renders it), served fast from the snapshot's jsonb.
+//
+// 90s ttl (live-feed tier): the routine recomputes on essentially every 2-min
+// tick, so the viewer is ≤1 tick stale — fine for a review/debug surface with a
+// manual Refresh (staleTime 30s), and consistent with the substrate's D-003 "a
+// read never computes". NOTE (follow-up, not P-004 scope): loadCoordHistory's
+// scan-everything-then-filter-in-JS is shared with the /api/coord/history HTTP
+// route (pui TUI); pushing the filter/limit into the DB is a broader refactor.
+registerDerivedRead({
+  key: 'coord.history',
+  ttlMs: 90_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { loadCoordHistory } = await import('../endpoint-route/routes/coord');
+    // DEFAULT variant only: no filters, default limit (200) — the /coord mount.
+    return (await loadCoordHistory({})).items;
+  },
+});
