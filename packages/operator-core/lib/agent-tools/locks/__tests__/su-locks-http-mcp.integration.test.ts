@@ -27,6 +27,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { liveTest, probeLive } from '../../../testing/live-integration';
 
 const OP_PORT = process.env.OP_PORT ?? null;
 const BASE = OP_PORT
@@ -34,7 +35,6 @@ const BASE = OP_PORT
   : (process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070');
 
 let TOKEN = '';
-let reachable = false;
 
 // `all_workspaces=1`: the scoped-superuser-workspace-clamp (2026-06-18,
 // FLAGS.SCOPED_SUPERUSER_CLAMP, default-on) rejects a bare `?superuser=1` whose
@@ -44,18 +44,32 @@ let reachable = false;
 // pre-clamp contract), so it opts into unscoped god-mode explicitly.
 try {
   TOKEN = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
-  const probe = await fetch(`${BASE}/api/mcp?superuser=1&all_workspaces=1`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list', params: {} }),
-    signal: AbortSignal.timeout(4000),
-  });
-  reachable = probe.status < 500;
-} catch { /* operator not running */ }
+} catch { /* no token on disk — probe below fails closed */ }
+
+// EI-52: probe a REAL `tools/call` against a locks verb, not `tools/list` — a bare
+// tools/list can return 200 while the actual MCP-over-HTTP tool-dispatch path (what
+// every test below exercises) is wedged, which is exactly what made this suite go RED
+// instead of SKIP under a degraded :3070 (18/21 timing out at their own 10s bound,
+// including instant zod-validation cases). `locks:queue` on a throwaway path is cheap
+// and side-effect-free, so it's a faithful stand-in for the tool-call path itself.
+const reachable = TOKEN
+  ? await probeLive(async () => {
+      const probe = await fetch(`${BASE}/api/mcp?superuser=1&all_workspaces=1&format=json`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 0, method: 'tools/call',
+          params: { name: 'locks:queue', arguments: { paths: [`e2e/reachability-probe/${Date.now()}`] } },
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      return probe.status < 500;
+    }, 8000)
+  : false;
 
 const itLive = reachable ? it : it.skip;
 
@@ -140,40 +154,40 @@ describe('§1 five tools over HTTP MCP transport', () => {
 
   afterAll(() => releaseAll(A));
 
-  itLive('acquire: returns ok + lock_id', async () => {
+  itLive('acquire: returns ok + lock_id', liveTest(async () => {
     const r = await callTool(A, 'locks:acquire', {
       paths: [p1], intent: 'E2E §1 acquire', ttl_sec: 60,
     });
     expect(r.ok).toBe(true);
     expect(typeof r.lock_id).toBe('string');
     lockIdA = r.lock_id as string;
-  }, 15_000);
+  }), 15_000);
 
-  itLive('queue: active_locks shows the holder', async () => {
+  itLive('queue: active_locks shows the holder', liveTest(async () => {
     const r = await callTool(A, 'locks:queue', { paths: [p1] });
     const locks = r.active_locks as Array<{ path: string; owner: string }>;
     const entry = locks?.find((l) => l.path === p1);
     expect(entry).toBeDefined();
     expect(entry?.owner).toContain(A);
-  }, 15_000);
+  }), 15_000);
 
-  itLive('heartbeat: extended=true on own lock', async () => {
+  itLive('heartbeat: extended=true on own lock', liveTest(async () => {
     const r = await callTool(A, 'locks:heartbeat', { lock_id: lockIdA, ttl_sec: 120 });
     expect(r.extended).toBe(true);
-  }, 15_000);
+  }), 15_000);
 
-  itLive('release: frees 1 path', async () => {
+  itLive('release: frees 1 path', liveTest(async () => {
     const r = await callTool(A, 'locks:release', { lock_id: lockIdA });
     expect((r.released as unknown[]).length).toBe(1);
     lockIdA = '';
-  }, 15_000);
+  }), 15_000);
 
-  itLive('cancel_wait: returns cancelled=false for non-existent ticket', async () => {
+  itLive('cancel_wait: returns cancelled=false for non-existent ticket', liveTest(async () => {
     const r = await callTool(A, 'locks:cancel_wait', {
       ticket_id: '00000000-0000-0000-0000-000000000000',
     });
     expect(r.cancelled).toBe(false);
-  }, 15_000);
+  }), 15_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -193,15 +207,15 @@ describe('§2 cross-owner attack defense', () => {
   });
   afterAll(() => releaseAll(A));
 
-  itLive("B cannot release A's lock_id", async () => {
+  itLive("B cannot release A's lock_id", liveTest(async () => {
     const r = await callTool(B, 'locks:release', { lock_id: lockIdA });
     expect((r.released as unknown[]).length).toBe(0);
-  }, 15_000);
+  }), 15_000);
 
-  itLive("B cannot heartbeat A's lock_id", async () => {
+  itLive("B cannot heartbeat A's lock_id", liveTest(async () => {
     const r = await callTool(B, 'locks:heartbeat', { lock_id: lockIdA, ttl_sec: 3000 });
     expect(r.extended).toBe(false);
-  }, 15_000);
+  }), 15_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -214,13 +228,13 @@ describe('§3 same-owner refresh preserves lock_id', () => {
 
   afterAll(() => releaseAll(A));
 
-  itLive('second acquire on same path returns same lock_id', async () => {
+  itLive('second acquire on same path returns same lock_id', liveTest(async () => {
     const r1 = await callTool(A, 'locks:acquire', { paths: [p3], intent: 'first', ttl_sec: 60 });
     const r2 = await callTool(A, 'locks:acquire', { paths: [p3], intent: 'second', ttl_sec: 60 });
     expect(r1.ok).toBe(true);
     expect(r2.ok).toBe(true);
     expect(r1.lock_id).toBe(r2.lock_id);
-  }, 15_000);
+  }), 15_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -235,13 +249,13 @@ describe('§4 multi-path acquire unification', () => {
 
   afterAll(() => releaseAll(A));
 
-  itLive('extend across 2 prior lock_ids: releasing merged lock frees all 3 paths', async () => {
+  itLive('extend across 2 prior lock_ids: releasing merged lock frees all 3 paths', liveTest(async () => {
     await callTool(A, 'locks:acquire', { paths: [pa], intent: 'u1', ttl_sec: 60 });
     await callTool(A, 'locks:acquire', { paths: [pb], intent: 'u2', ttl_sec: 60 });
     const r3 = await callTool(A, 'locks:acquire', { paths: [pa, pb, pc], intent: 'u3', ttl_sec: 60 });
     const rel = await callTool(A, 'locks:release', { lock_id: r3.lock_id });
     expect((rel.released as unknown[]).length).toBe(3);
-  }, 30_000);
+  }), 30_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -266,7 +280,7 @@ describe('§5 failed multi-path acquire is side-effect free', () => {
     await releaseAll(B);
   });
 
-  itLive("A's overlap call fails; pHeld intent stays 'original'", async () => {
+  itLive("A's overlap call fails; pHeld intent stays 'original'", liveTest(async () => {
     const rFail = await callTool(A, 'locks:acquire', {
       paths: [pHeld, pBlock], intent: 'A retry', ttl_sec: 600,
     });
@@ -276,7 +290,7 @@ describe('§5 failed multi-path acquire is side-effect free', () => {
     const locks = q.active_locks as Array<{ path: string; intent: string }>;
     const entry = locks?.find((l) => l.path === pHeld);
     expect(entry?.intent).toBe('original');
-  }, 20_000);
+  }), 20_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -290,7 +304,7 @@ describe('§6 concurrent contention', () => {
     for (let i = 1; i <= 5; i++) await releaseAll(agentId(`s6-race-${i}`));
   });
 
-  itLive('5 simultaneous acquires: exactly 1 winner', async () => {
+  itLive('5 simultaneous acquires: exactly 1 winner', liveTest(async () => {
     const results = await Promise.all(
       Array.from({ length: 5 }, (_, i) =>
         callTool(agentId(`s6-race-${i + 1}`), 'locks:acquire', {
@@ -300,7 +314,7 @@ describe('§6 concurrent contention', () => {
     );
     const winners = results.filter((r) => r.ok === true);
     expect(winners.length).toBe(1);
-  }, 30_000);
+  }), 30_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -318,7 +332,7 @@ describe('§9 wait subsystem via HTTP MCP', () => {
     await releaseAll(B);
   });
 
-  itLive('B wakes and acquires after A releases (wake within 12s)', async () => {
+  itLive('B wakes and acquires after A releases (wake within 12s)', liveTest(async () => {
     const ra = await callTool(A, 'locks:acquire', { paths: [pWait], intent: 'A holds', ttl_sec: 60 });
     lockA = ra.lock_id as string;
     expect(ra.ok).toBe(true);
@@ -349,7 +363,7 @@ describe('§9 wait subsystem via HTTP MCP', () => {
     // the NOTIFY path is broken and MUST fail here, not pass slowly.
     expect(rb.waited_sec as number, `waited_sec=${rb.waited_sec}`).toBeLessThanOrEqual(12);
     if (rb.lock_id) await callTool(B, 'locks:release', { lock_id: rb.lock_id });
-  }, 40_000);
+  }), 40_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -361,27 +375,27 @@ describe('§10 path validation', () => {
 
   afterAll(() => releaseAll(A));
 
-  itLive('rejects absolute path', async () => {
+  itLive('rejects absolute path', liveTest(async () => {
     const r = await callTool(A, 'locks:acquire', { paths: ['/etc/passwd'], intent: 'x', ttl_sec: 60 });
     expect(String(r.error ?? '')).toMatch(/absolute/i);
-  }, 15_000);
+  }), 15_000);
 
-  itLive('rejects path traversal', async () => {
+  itLive('rejects path traversal', liveTest(async () => {
     const r = await callTool(A, 'locks:acquire', { paths: ['../etc/passwd'], intent: 'x', ttl_sec: 60 });
     expect(String(r.error ?? '')).toMatch(/traversal/i);
-  }, 15_000);
+  }), 15_000);
 
-  itLive('rejects null byte in path', async () => {
+  itLive('rejects null byte in path', liveTest(async () => {
     const r = await callTool(A, 'locks:acquire', { paths: ['foo\x00bar'], intent: 'x', ttl_sec: 60 });
     expect(String(r.error ?? '')).toMatch(/null byte/i);
-  }, 15_000);
+  }), 15_000);
 
-  itLive('rejects Windows backslashes', async () => {
+  itLive('rejects Windows backslashes', liveTest(async () => {
     const r = await callTool(A, 'locks:acquire', { paths: ['apps\\\\foo.ts'], intent: 'x', ttl_sec: 60 });
     expect(String(r.error ?? '')).toMatch(/backslash/i);
-  }, 15_000);
+  }), 15_000);
 
-  itLive("'./x' collides with 'x' after canonicalization", async () => {
+  itLive("'./x' collides with 'x' after canonicalization", liveTest(async () => {
     const canon = uniquePath('s10/canon-test.ts');
     await callTool(A, 'locks:acquire', { paths: [canon], intent: 'A canon', ttl_sec: 60 });
     const rb = await callTool(agentId('s10-B'), 'locks:acquire', {
@@ -389,7 +403,7 @@ describe('§10 path validation', () => {
     });
     expect(rb.ok).toBe(false);
     await releaseAll(A);
-  }, 20_000);
+  }), 20_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -414,12 +428,12 @@ describe('§11 zod input validation', () => {
     return res.text();
   }
 
-  itLive('rejects empty paths array', async () => {
+  itLive('rejects empty paths array', liveTest(async () => {
     const body = await rawCall('locks:acquire', { paths: [], intent: 'x', ttl_sec: 60 });
     expect(body).toMatch(/invalid_args|Too small/i);
-  }, 15_000);
+  }), 15_000);
 
-  itLive('CLAMPS wait.max_sec > 300 instead of rejecting (free path still acquires)', async () => {
+  itLive('CLAMPS wait.max_sec > 300 instead of rejecting (free path still acquires)', liveTest(async () => {
     // MAX_WAIT_SEC clamp (acquire.ts): a value above the 300s cap is CLAMPED, NOT
     // rejected — the turn can't block past the tool's own timeout anyway, so the
     // schema accepts any nonnegative int and the handler clamps. A free path therefore
@@ -429,7 +443,7 @@ describe('§11 zod input validation', () => {
     });
     expect(body).not.toMatch(/invalid_args|too_big|Too big/i);
     expect(body).toMatch(/lock_id|"ok":true/i);
-  }, 15_000);
+  }), 15_000);
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -447,7 +461,7 @@ describe('§12 per-session identity via Mcp-Session-Id', () => {
     try { await callTool(sharedClient, 'locks:release', { all_mine: true }); } catch {}
   });
 
-  itLive('same ?client=, different Mcp-Session-Id → SAME owner (explicit SID outranks transport id, EI-7066)', async () => {
+  itLive('same ?client=, different Mcp-Session-Id → SAME owner (explicit SID outranks transport id, EI-7066)', liveTest(async () => {
     // EXPLICIT-SID-BEFORE-TRANSPORT-ID (EI-7066, 2026-07-03): an explicit per-launch
     // SID (`x-papercusp-client` header or `?client=`) now ALWAYS outranks the
     // per-CONNECTION Mcp-Session-Id — a reconnecting claude session (cold-loop
@@ -467,9 +481,9 @@ describe('§12 per-session identity via Mcp-Session-Id', () => {
     }, { mcpSessionId: 'e2e-sess-2' });
     expect(r2.ok).toBe(true);
     expect(r2.lock_id).toBe(sess1Lock);
-  }, 20_000);
+  }), 20_000);
 
-  itLive('no explicit SID at all → Mcp-Session-Id fallback still separates owners (session 2 busy)', async () => {
+  itLive('no explicit SID at all → Mcp-Session-Id fallback still separates owners (session 2 busy)', liveTest(async () => {
     // The transport id remains the LAST-resort identity for callers that supplied
     // no SID — there it must still isolate per-connection owners.
     const noSidPath = uniquePath('s12/identity/no-sid.ts');
@@ -484,9 +498,9 @@ describe('§12 per-session identity via Mcp-Session-Id', () => {
     expect(r2.ok).toBe(false);
     expect((r2.busy as unknown[])?.length).toBeGreaterThanOrEqual(1);
     try { await callTool('', 'locks:release', { all_mine: true }, { mcpSessionId: 'e2e-anon-1' }); } catch { /* cleanup */ }
-  }, 20_000);
+  }), 20_000);
 
-  itLive('same ?client=, no Mcp-Session-Id → same owner (refresh, stable lock_id)', async () => {
+  itLive('same ?client=, no Mcp-Session-Id → same owner (refresh, stable lock_id)', liveTest(async () => {
     const fb = uniquePath('s12/identity/fb.ts');
     const r1 = await callTool(sharedClient, 'locks:acquire', { paths: [fb], intent: 'fb1', ttl_sec: 60 });
     const r2 = await callTool(sharedClient, 'locks:acquire', { paths: [fb], intent: 'fb2', ttl_sec: 60 });
@@ -494,5 +508,5 @@ describe('§12 per-session identity via Mcp-Session-Id', () => {
     expect(r2.ok).toBe(true);
     expect(r1.lock_id).toBe(r2.lock_id);
     await callTool(sharedClient, 'locks:release', { lock_id: r1.lock_id });
-  }, 20_000);
+  }), 20_000);
 });

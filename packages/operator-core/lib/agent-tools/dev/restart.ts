@@ -58,12 +58,14 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
 import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { probeServiceStart } from './systemd-service-probe';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
@@ -159,13 +161,48 @@ const holderJson = (h: ResourceHolder) => ({
   owner: h.owner, owner_label: h.owner_label, mode: h.mode, status: h.status,
 });
 
+/**
+ * EI-18198340374286980: this tool's own description has always claimed
+ * "coordinated (drain + coalesce + audit)" but never actually wrote an
+ * `audit_log` row for a real restart — only the resource-lock holder state
+ * (ephemeral) and systemd's own logs recorded that it happened. Fire-and-forget,
+ * never throws (mirrors process-kill.ts / flag-audit.ts's canonical
+ * full-column shape) — the restart itself must never be blocked on this.
+ */
+async function writeRestartAudit(
+  actor: string,
+  details: {
+    target: RestartTarget;
+    unit: string;
+    viaEnv: boolean;
+    viaAuthorizeArg: boolean;
+    reason: string | null;
+    fenceSeq: number;
+    phantomCoalesceBroken: boolean;
+  },
+): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    const id = `restart-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await sql.unsafe(
+      `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+      [id, Date.now(), actor, 'dev:restart', details.target, JSON.stringify(details), activeWorkspaceId()],
+    );
+  } catch (err) {
+    // Best-effort: the restart already fired: never block/fail it on the audit write.
+
+    console.warn('[dev:restart] audit write failed:', (err as Error)?.message);
+  }
+}
+
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit) — the sanctioned alternative to a raw `systemctl restart`. Targets: "dev" (:3070 operator, default) · "staging" (:3170 operator) · "gateway" (inference gateway :8788 — every agent\'s LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true; the real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1. Every target but "dev" DEBOUNCES (per-target window): ~2min for staging/gateway/embed-sidecar, ~13min for bg-host (its real rejoin cost, EI-13307).',
+    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit) — the sanctioned alternative to a raw `systemctl restart`. Targets: "dev" (:3070 operator, default) · "staging" (:3170 operator) · "gateway" (inference gateway :8788 — every agent\'s LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true; the real restart needs EITHER the operator process env PAPERCUSP_ALLOW_DEV_RESTART=1 OR a per-call `authorize:true` (self-declared, in-band — EI-18198340374286980: the env var lives in the long-running operator process, which an agent cannot set for itself). Every real restart (either route) writes an `audit_log` row (actor, target, unit, which route enabled it, `reason` if given). Every target but "dev" DEBOUNCES (per-target window): ~2min for staging/gateway/embed-sidecar, ~13min for bg-host (its real rejoin cost, EI-13307).',
   guidance: {
-    when: 'To LOAD a code edit into a long-running host. KEY: gateway / bg-host / embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build, no deploy) — a RESTART, not the release pipeline, loads your edit; never wait on a deploy for those. Pick by what you edited: inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; operator server-side → "staging" (then probe :3170). Run dry first, then confirm.',
-    notWhen: 'Just probing a service — no restart needed. A gateway restart drops in-flight LLM requests for the WHOLE fleet (read gateway:status first). NEVER raw `systemctl --user restart` these units — it bypasses the drain AND the debounce (WI-4221).',
+    when: 'To LOAD a code edit into a long-running host. KEY: gateway / bg-host / embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build, no deploy) — a RESTART, not the release pipeline, loads your edit; never wait on a deploy for those. Pick by what you edited: inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; operator server-side → "staging" (then probe :3170). Run dry first, then confirm; if PAPERCUSP_ALLOW_DEV_RESTART isn\'t set on the host, pass `authorize:true` (+ a short `reason`) instead of falling back to raw `systemctl` — it is coordinated + audited, raw systemctl is neither.',
+    notWhen: 'Just probing a service — no restart needed. A gateway restart drops in-flight LLM requests for the WHOLE fleet (read gateway:status first). NEVER raw `systemctl --user restart` these units — it bypasses the drain AND the debounce (WI-4221); that includes when the env gate is withheld — use `authorize:true` instead of falling back to raw systemctl.',
     chaining: 'dev:restart (dry) → review holders → dev:restart { confirm:true, target } → service drops + returns (or coalesced:true — a peer just restarted it; probe directly). Gateway: gateway:status → restart → gateway:status.',
     seeAlso: [
       'dev:service_health (check what is down first)',
@@ -182,6 +219,16 @@ export default defineTool({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
     target: z.enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar']).optional(),
+    /** EI-18198340374286980: in-band alternative to the operator-process-env
+     *  PAPERCUSP_ALLOW_DEV_RESTART=1 gate, which an agent cannot set for a
+     *  server it did not itself spawn. Only takes effect with confirm:true —
+     *  confirm+drain is the deliberate-action gate; this only lifts the env
+     *  backstop. Every real restart it enables is written to audit_log. */
+    authorize: z.boolean().optional(),
+    /** Short free-text reason, recorded on the audit_log row when a real
+     *  restart fires (either enablement route). Optional but encouraged when
+     *  using `authorize` in place of the env gate. */
+    reason: z.string().max(300).optional(),
   }),
   async handler(args, ctx) {
     const target: RestartTarget = args.target ?? 'dev';
@@ -211,7 +258,14 @@ export default defineTool({
 
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
     const coordIdentity = resolveAgentIdentity(ctx);
-    const enabled = process.env.PAPERCUSP_ALLOW_DEV_RESTART === '1';
+    const enabledByEnv = process.env.PAPERCUSP_ALLOW_DEV_RESTART === '1';
+    // EI-18198340374286980: an agent cannot set PAPERCUSP_ALLOW_DEV_RESTART on
+    // the already-running operator process (no per-call env injection, and
+    // restarting the operator to add it is circular) — `authorize:true` is the
+    // in-band equivalent, gated the same way (capability + confirm + drain)
+    // and, unlike the raw-systemctl bypass it replaces, always audited below.
+    const enabledByArg = args.authorize === true;
+    const enabled = enabledByEnv || enabledByArg;
 
     // WI-4221 debounce: for a cooldown-bearing target (staging), try to claim
     // the cooldown marker FIRST, before touching the drain-gate at all. If a
@@ -329,7 +383,7 @@ export default defineTool({
             target,
             drained: true,
             restarted: false,
-            note: 'Drain complete, but restart WITHHELD — set PAPERCUSP_ALLOW_DEV_RESTART=1 to enable the real restart.',
+            note: 'Drain complete, but restart WITHHELD — set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process, OR re-call with confirm:true, authorize:true (and a `reason`) to enable it in-band for this call.',
           });
         }
         // D-001 fencing: re-verify we still hold the effective exclusive at our
@@ -353,6 +407,18 @@ export default defineTool({
         // real cycle happened (the restart is detached+delayed, so we cannot
         // confirm it synchronously — but a changed MainPID proves it landed).
         const before = await probeServiceStart(cfg.unit);
+        // Audit BEFORE spawning (mirrors process-kill.ts: a record must exist
+        // even if signaling crashes the process tree). Fire-and-forget — never
+        // blocks the restart.
+        void writeRestartAudit(ownerId, {
+          target,
+          unit: cfg.unit,
+          viaEnv: enabledByEnv,
+          viaAuthorizeArg: enabledByArg,
+          reason: args.reason ?? null,
+          fenceSeq: fence.seq,
+          phantomCoalesceBroken: phantomCoalesceBroken !== null,
+        });
         // Detached + delayed so this response returns before the service dies.
         const child = spawn('sh', ['-c', `sleep 1; ${restartCmd}`], {
           detached: true,
@@ -366,6 +432,8 @@ export default defineTool({
           restarted: true,
           fence_seq: fence.seq,
           restartedFromPid: before.mainPid ?? null,
+          enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+          audited: true,
           ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
           verifyWith: `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
             before.mainPid ? ` ≠ ${before.mainPid}` : ''
