@@ -203,11 +203,18 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
   } // end coldFire (queen-memory-hybrid L2 warm-branch wrapper)
 };
 
-/** Lazily-loaded built-in `coding-factory` blueprint — the fallback when a harness has no blueprint
- *  (behavior-preserving for every pre-blueprint harness: decider `director`, kind `feature`). */
+/** Lazily-loaded built-in fallback blueprint — used when a harness has no blueprint of its own.
+ *  Owner-directed 2026-07-20 (EI-18177667809538623 follow-up): repointed from the RETIRED
+ *  `coding-factory` (director→…→curator spine, retired 2026-06-24) to the LIVE `coding-solo`
+ *  (single-agent, decider `worker`, kind `feature`), so a blueprint-less harness never silently
+ *  runs dead legacy code. `coding-solo` is the live single-worker coding model — the same target
+ *  the gym substrate now uses (gym/autoloop-cycle.ts). A harness that genuinely needs the full
+ *  multi-role coding spine must declare its own `.papercusp/blueprint.yaml`, not lean on this
+ *  default. (Repointed — not removed — because live harnesses with no blueprint, e.g. `papercup`,
+ *  still resolve through here; a hard removal would halt their dispatch.) */
 let _codingFallback: Blueprint | null = null;
 function codingFallback(): Blueprint {
-  return (_codingFallback ??= loadBuiltinBlueprint('coding-factory').blueprint);
+  return (_codingFallback ??= loadBuiltinBlueprint('coding-solo').blueprint);
 }
 
 /**

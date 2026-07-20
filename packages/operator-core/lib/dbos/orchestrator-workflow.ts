@@ -278,7 +278,13 @@ export function setPipelineLeaseHeartbeatHook(fn: PipelineLeaseHeartbeatHook): v
 // harness (research, Phase E) passes its own resolved spine via PipelineInput.spine.
 let _codingSpine: BlueprintSpine | null = null;
 function codingSpine(): BlueprintSpine {
-  return (_codingSpine ??= loadBuiltinBlueprint('coding-factory').blueprint.spine);
+  // Owner-directed 2026-07-20: repointed the no-spine fallback from the RETIRED `coding-factory`
+  // spine (director → the full NEXT_* verb vocabulary) to the LIVE `coding-solo` spine (decider
+  // `worker`, DONE/ESCALATE/IDLE), matching the `codingFallback()` blueprint default above so a
+  // blueprint-less harness's pipeline never falls back onto dead legacy code. The derive-next
+  // equivalence invariant (derive-next-equivalence.test.ts) loads `coding-factory` DIRECTLY, so it
+  // is unaffected by this runtime-fallback repoint.
+  return (_codingSpine ??= loadBuiltinBlueprint('coding-solo').blueprint.spine);
 }
 
 const key = (slug: string, feature: string, role: string, turn: number): string =>
