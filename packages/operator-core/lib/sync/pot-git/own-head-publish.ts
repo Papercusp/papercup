@@ -38,6 +38,7 @@
  */
 import {
   type RunGit,
+  NETWORK_RUN_GIT_TIMEOUT_MS,
   defaultRunGit,
   ensurePotGitRepo,
   readNamespaceRef,
@@ -181,7 +182,12 @@ export async function runOwnHeadPublishTick(
             .map((l) => l.trim())
             .find(Boolean)
         : undefined) ?? 'origin';
-    const unshallow = await runGit(['fetch', '--quiet', '--unshallow', remoteName], input.worktreePath);
+    // Generous network timeout — a real remote (e.g. GitHub) unshallow can
+    // legitimately transfer a lot of history, not a local-op-speed transfer
+    // (github-bridge-ingress-timeout-too-short-2026-07-20, EI-18189246091367226).
+    const unshallow = await runGit(['fetch', '--quiet', '--unshallow', remoteName], input.worktreePath, {
+      timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS,
+    });
     if (unshallow.code !== 0) {
       errors.push(
         `source worktree is shallow and could not be unshallowed (remote '${remoteName}'): ${unshallow.stderr.trim().slice(0, 500)}`,

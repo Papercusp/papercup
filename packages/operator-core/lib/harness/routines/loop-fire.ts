@@ -225,13 +225,50 @@ export function readLoopCostCapCents(payloadTemplate: Record<string, unknown> | 
 
 export const LOOP_WAKE_CHECKPOINT_MAX_CHARS = 3_000;
 
+/** EI-18187907490692276: clip an over-long carry-note for a wake prompt WITHOUT dropping
+ *  the load-bearing tail. A loop:checkpoint carry-note is authored Did → Left → Insight →
+ *  Next action, so the single most load-bearing section — `## Next action`, i.e. what to
+ *  actually DO this wake — sits at the END. A plain head-keep `note.slice(0, max)` therefore
+ *  truncates exactly that (observed live 2026-07-20: a warm loop-fire cut the Next action
+ *  mid-word at "acknowled…", stranding the concrete next command). Instead keep a HEAD + the
+ *  load-bearing TAIL and elide the MIDDLE, so `## Next action` always survives — for BOTH warm
+ *  wakes (a bare pointer would arguably suffice since they re-orient, but this is cheap and
+ *  universal) and COLD wakes (whose ONLY continuity IS this note — a pointer would strand
+ *  them). The kept tail is anchored at the LAST `## ` section header when the whole final
+ *  section fits in the reserved tail budget (so `## Next action` is delivered intact, starting
+ *  at its header, not mid-sentence); otherwise it falls back to the last `tailBudget` chars,
+ *  still preferring a section boundary. Total length stays ≤ `max` (the marker is budgeted
+ *  inside `max`), so every existing scaffold byte-budget bound holds unchanged. */
+export function clipLoopCheckpointForWake(
+  checkpoint: string | null | undefined,
+  max: number = LOOP_WAKE_CHECKPOINT_MAX_CHARS,
+): string {
+  const note = (checkpoint ?? '').trim();
+  if (note.length <= max) return note;
+  const marker =
+    '\n…[loop:checkpoint MIDDLE elided for the wake prompt — HEAD + load-bearing TAIL kept so `## Next action` survives; the full note is in loop:checkpoint]…\n';
+  // Reserve up to half the budget for the tail (a normal Next-action section is well under
+  // this). Anchor at the last `## ` header when the whole final section fits; else start the
+  // tail at a section boundary inside the budget, else at the raw budget offset.
+  const tailBudget = Math.max(0, Math.min(Math.floor(max / 2), Math.max(0, max - marker.length)));
+  let tailStart = note.length - tailBudget;
+  const lastHeader = note.lastIndexOf('\n## ');
+  if (lastHeader !== -1 && lastHeader + 1 >= tailStart) {
+    tailStart = lastHeader + 1; // keep the whole final section (## Next action) intact
+  } else {
+    const boundary = note.indexOf('\n## ', tailStart);
+    if (boundary !== -1) tailStart = boundary + 1;
+  }
+  const tail = note.slice(tailStart);
+  const headBudget = Math.max(0, max - tail.length - marker.length);
+  const head = note.slice(0, headBudget).trimEnd();
+  return `${head}${marker}${tail}`;
+}
+
 export function spliceCurrentLoopCheckpoint(kickoff: string, checkpoint: string | null | undefined): string {
   const note = (checkpoint ?? '').trim();
   if (!note) return kickoff;
-  const clipped =
-    note.length > LOOP_WAKE_CHECKPOINT_MAX_CHARS
-      ? `${note.slice(0, LOOP_WAKE_CHECKPOINT_MAX_CHARS)}\n… (loop:checkpoint truncated in wake prompt)`
-      : note;
+  const clipped = clipLoopCheckpointForWake(note);
   return [
     kickoff,
     '',
@@ -337,10 +374,7 @@ export function renderLoopCheckpointBlock(
 ): string | null {
   const note = (checkpoint ?? '').trim();
   if (!note) return null;
-  const clipped =
-    note.length > LOOP_WAKE_CHECKPOINT_MAX_CHARS
-      ? `${note.slice(0, LOOP_WAKE_CHECKPOINT_MAX_CHARS)}\n… (loop:checkpoint truncated in wake prompt)`
-      : note;
+  const clipped = clipLoopCheckpointForWake(note);
   const now = opts.nowMs ?? Date.now();
   const ageMs = opts.updatedAtMs != null && Number.isFinite(opts.updatedAtMs) ? Math.max(0, now - opts.updatedAtMs) : null;
   const stale = ageMs != null && ageMs > loopCheckpointStaleMs(opts.intervalSec);

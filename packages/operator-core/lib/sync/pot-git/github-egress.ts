@@ -41,7 +41,7 @@
  * "origin" repos, no network.
  */
 
-import { type RunGit, defaultRunGit } from './storage';
+import { type RunGit, NETWORK_RUN_GIT_TIMEOUT_MS, defaultRunGit } from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
 
 /** Upper bound on delta files scanned for secrets per egressed ref. Exceeding
@@ -259,9 +259,13 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     //    bootstrap quarantine) so ancestry + delta-scan can run.
     if (remoteSha !== null) {
       if (!(await haveObject(input.repoPath, remoteSha, runGit))) {
+        // Generous network timeout (not the 60s local-op default) — a genuine
+        // bulk transfer over a real connection to GitHub (github-bridge-
+        // ingress-timeout-too-short-2026-07-20, EI-18189246091367226).
         const f = await runGit(
           ['fetch', input.remoteUrl, `+${remoteSha}:refs/egress-remote/head`],
           input.repoPath,
+          { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
         );
         if (f.code !== 0 || !(await haveObject(input.repoPath, remoteSha, runGit))) {
           // Can't establish ancestry → fail CLOSED as a non-FF (never push blind).
@@ -314,7 +318,13 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     // 4. The push — UN-FORCED, so the remote's own atomic old-sha check is the
     //    CAS: a race (someone pushed between our ls-remote and now) rejects
     //    non-FF and lands in rejectedNonFF for the next tick to reconcile.
-    const push = await runGit(['push', input.remoteUrl, `${spec.sha}:${spec.remoteRef}`], input.repoPath);
+    //    Generous network timeout — a genuine bulk transfer, not a local op
+    //    (github-bridge-ingress-timeout-too-short-2026-07-20, EI-18189246091367226).
+    const push = await runGit(
+      ['push', input.remoteUrl, `${spec.sha}:${spec.remoteRef}`],
+      input.repoPath,
+      { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
+    );
     if (push.code === 0) {
       res.pushed.push({ remoteRef: spec.remoteRef, from: remoteSha, to: spec.sha });
     } else if (/non-fast-forward|fetch first|failed to push some refs/i.test(push.stderr)) {
@@ -348,7 +358,11 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       res.tagsRejected.push({ name: tag.name, reason: 'tag exists on remote with a different sha — tags never move' });
       continue;
     }
-    const push = await runGit(['push', input.remoteUrl, `${tag.sha}:${tagRef}`], input.repoPath);
+    const push = await runGit(
+      ['push', input.remoteUrl, `${tag.sha}:${tagRef}`],
+      input.repoPath,
+      { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
+    );
     if (push.code === 0) res.tagsPushed.push(tag.name);
     else res.tagsRejected.push({ name: tag.name, reason: push.stderr.trim().split('\n')[0] ?? `exited ${push.code}` });
   }

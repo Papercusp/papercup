@@ -41,6 +41,7 @@
 import { createHash } from 'node:crypto';
 import {
   type RunGit,
+  NETWORK_RUN_GIT_TIMEOUT_MS,
   defaultRunGit,
   deviceNamespaceKey,
   readNamespaceRef,
@@ -173,10 +174,17 @@ export async function ingressOriginBranches(input: IngressInput): Promise<Ingres
     const quarantineRef = `${INGRESS_QUARANTINE_PREFIX}/${nsKey}/${branch}`;
 
     // 1. Fetch origin's head into the quarantine (forced — ours to clobber).
-    //    A missing remote branch is "absent", not an error.
+    //    A missing remote branch is "absent", not an error. A GENEROUS timeout
+    //    (NETWORK_RUN_GIT_TIMEOUT_MS, not the 60s local-op default): this is a
+    //    genuine bulk network transfer that can legitimately take minutes on a
+    //    real connection, and a killed fetch discards its partial pack — a
+    //    timeout tighter than the transfer needs makes the ingress permanently
+    //    un-completable (github-bridge-ingress-timeout-too-short-2026-07-20,
+    //    EI-18189246091367226).
     const fetch = await runGit(
       ['fetch', input.remoteUrl, `+refs/heads/${branch}:${quarantineRef}`],
       input.repoPath,
+      { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
     );
     if (fetch.code !== 0) {
       if (/couldn't find remote ref|no such ref/i.test(fetch.stderr)) {

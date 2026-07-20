@@ -3,6 +3,7 @@ import {
   fireLoopWake,
   defaultLoopKickoff,
   spliceCurrentLoopCheckpoint,
+  clipLoopCheckpointForWake,
   renderLoopCheckpointBlock,
   renderLoopWakeText,
   renderLoopWallsBlock,
@@ -176,12 +177,40 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
   it('caps an oversized checkpoint before putting it in the wake prompt', () => {
     const out = spliceCurrentLoopCheckpoint('kickoff', 'x'.repeat(3_100));
     expect(out).toContain('kickoff');
-    expect(out).toContain('loop:checkpoint truncated in wake prompt');
+    expect(out).toContain('MIDDLE elided for the wake prompt');
     expect(out.length).toBeLessThan(3_300);
 
     const block = renderLoopCheckpointBlock('y'.repeat(3_100), {});
-    expect(block).toContain('loop:checkpoint truncated in wake prompt');
+    expect(block).toContain('MIDDLE elided for the wake prompt');
     expect(block!.length).toBeLessThan(3_400);
+  });
+
+  it('EI-18187: an over-cap carry-note keeps the load-bearing TAIL (## Next action), not just the head', () => {
+    // Realistic Did/Left/Insight/Next carry-note whose head is padded past the cap so a
+    // plain head-keep slice would drop ## Next action entirely.
+    const note = [
+      '## Did',
+      'w'.repeat(LOOP_WAKE_CHECKPOINT_MAX_CHARS + 1_000),
+      '## Left',
+      'finish the deploy',
+      '## Key insight',
+      'the gate re-runs periodically, it does not react to the commit',
+      '## Next action',
+      'NEXT_ACTION_SENTINEL: release:deploy{op:status} then op:trigger if greenPin advanced',
+    ].join('\n');
+    const clipped = clipLoopCheckpointForWake(note);
+    // The single most load-bearing line — the concrete next command — survives verbatim…
+    expect(clipped).toContain('## Next action');
+    expect(clipped).toContain('NEXT_ACTION_SENTINEL: release:deploy{op:status}');
+    // …the middle was elided (not a full copy)…
+    expect(clipped).toContain('MIDDLE elided for the wake prompt');
+    expect(clipped.length).toBeLessThanOrEqual(LOOP_WAKE_CHECKPOINT_MAX_CHARS);
+    // …and it still shows the start of the note for context.
+    expect(clipped.startsWith('## Did')).toBe(true);
+
+    // The same guarantee through renderLoopCheckpointBlock (the live wake path).
+    const block = renderLoopCheckpointBlock(note, {})!;
+    expect(block).toContain('NEXT_ACTION_SENTINEL: release:deploy{op:status}');
   });
 
   it('FAILURE-STREAK gate trips → fire WITHHELD, no wake', async () => {

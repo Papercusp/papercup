@@ -31,13 +31,40 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, access, rm } from 'node:fs/promises';
 
+/** Per-call override for {@link defaultRunGit}'s kill-timeout. */
+export interface RunGitOptions {
+  /**
+   * Kill the process after this many ms instead of the 60s default
+   * (github-bridge-ingress-timeout-too-short-2026-07-20, EI-18189246091367226).
+   * A genuine BULK network transfer (a GitHub fetch/push doing a large
+   * catch-up, as opposed to a fast local op like merge-base/update-ref/rev-parse)
+   * can legitimately take much longer than 60s on a real connection — measured
+   * ~2-3 MB/s on this box's link to GitHub, so a several-hundred-MB catch-up
+   * pack straightforwardly exceeds 60s even with NOTHING wrong. Since a killed
+   * fetch discards its partial pack (git only finalizes a COMPLETE index-pack),
+   * a timeout tighter than the transfer needs makes that fetch permanently
+   * un-completable: every tick restarts from zero, `github-divergence.ts`'s
+   * escalation can never self-clear (its clear path only fires on a signal-free
+   * tick), and the `unresolved-escalation` watchdog re-files an "Unresolved
+   * escalation" EI every cycle forever. Callers doing real network I/O should
+   * pass a generous `timeoutMs` (see `NETWORK_RUN_GIT_TIMEOUT_MS`); local,
+   * same-host git plumbing should keep the 60s default so a truly wedged
+   * process is still caught quickly.
+   */
+  timeoutMs?: number;
+}
+
 /** The run-git seam (matches harness/git-sync/run-git-sync.ts): spawn `git
  *  <args>` in `cwd`, never throw, return the exit code + captured streams. */
-export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
+export type RunGit = (
+  args: string[],
+  cwd: string,
+  opts?: RunGitOptions,
+) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** Default RunGit — bounded, C-locale, never-throw. `cwd` is the bare repo (git
  *  operates on it via -C-equivalent cwd; bare repos need no worktree). */
-export const defaultRunGit: RunGit = (args, cwd) =>
+export const defaultRunGit: RunGit = (args, cwd, opts) =>
   new Promise((resolve) => {
     const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
     let stdout = '';
@@ -48,12 +75,13 @@ export const defaultRunGit: RunGit = (args, cwd) =>
       settled = true;
       resolve({ code, stdout, stderr });
     };
+    const timeoutMs = opts?.timeoutMs ?? 60_000;
     const t = setTimeout(() => {
       stderr += `\ngit ${args.join(' ')} timed out`;
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 5_000).unref?.();
       setTimeout(() => finish(-1), 10_000).unref?.();
-    }, 60_000);
+    }, timeoutMs);
     t.unref?.();
     child.stdout.on('data', (d) => (stdout += String(d)));
     child.stderr.on('data', (d) => (stderr += String(d)));
@@ -67,6 +95,15 @@ export const defaultRunGit: RunGit = (args, cwd) =>
       finish(code ?? -1);
     });
   });
+
+/**
+ * Timeout budget for a genuine bulk network transfer (GitHub fetch/push) —
+ * see {@link RunGitOptions.timeoutMs}. 10 minutes: comfortably covers a
+ * multi-hundred-MB catch-up at the ~2-3 MB/s throughput measured against
+ * github.com from this box, while still bounded (a truly wedged process is
+ * still killed, just not mistaken for one after 60s of real transfer).
+ */
+export const NETWORK_RUN_GIT_TIMEOUT_MS = 10 * 60_000;
 
 /** The pot-git storage root — one dir tree of bare repos. Env-overridable
  *  (tests point it at a temp dir; the shipping desktop uses ~/.papercusp). */
