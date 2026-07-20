@@ -139,30 +139,38 @@ describe('per-family state normalization (EI-24)', () => {
     expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('dropped');
   });
 
-  // EI-7125 / WI-2573: an issue-family 'blocked' request silently aliased to 'open'
-  // with nothing telling the caller — a real reclaim ping-pong followed from an
-  // agent assuming 'blocked' had stuck. onAlias fires exactly when the requested
-  // state differs from what actually got written, carrying both sides.
-  it('onAlias fires when an issue-family request aliases (blocked -> open), never when already canonical', async () => {
+  // EI-7125 / WI-2573: an issue-family 'blocked' request used to silently alias to 'open'
+  // with nothing telling the caller — a real reclaim ping-pong followed from an agent
+  // assuming 'blocked' had stuck. work-item-status-full-unify (P-003) fixes this at the
+  // root: 'blocked' is now a first-class unified token that stores as identity (no more
+  // 3-state collapse), so it no longer aliases at all. onAlias still fires exactly when
+  // a DIFFERENT legacy/drift spelling ('todo') gets folded onto its unified token ('open'),
+  // and never when the request is already canonical.
+  it("onAlias fires when an issue-family request aliases (todo -> open); 'blocked' no longer aliases (EI-7125 fixed at the root); never fires when already canonical", async () => {
     const task = await wi.createWorkItem({ kind: 'task', title: 't2', harness: 'papercup' });
     const seen: Array<{ requested: string; resolved: string }> = [];
-    const after = await wi.setWorkItemState(task.id, 'blocked', {
+
+    // 'blocked' is now identity — no alias, the EI-7125 regression is gone.
+    await wi.setWorkItemState(task.id, 'blocked', { onAlias: (info) => seen.push(info) });
+    expect(seen).toEqual([]);
+
+    const after = await wi.setWorkItemState(task.id, 'todo', {
       onAlias: (info) => seen.push(info),
     });
     expect(after?.state).toBe('open');
-    expect(seen).toEqual([{ requested: 'blocked', resolved: 'open' }]);
+    expect(seen).toEqual([{ requested: 'todo', resolved: 'open' }]);
 
     seen.length = 0;
     await wi.setWorkItemState(task.id, 'open', { onAlias: (info) => seen.push(info) });
     expect(seen).toEqual([]); // already canonical — no alias, no callback
 
     seen.length = 0;
-    await wi.setWorkItemState(task.id, 'resolved', {
+    await wi.setWorkItemState(task.id, 'done', {
       by: 'agA',
       completionRef: 'test',
       onAlias: (info) => seen.push(info),
     });
-    expect(seen).toEqual([]); // 'resolved' is already the canonical issue-family state
+    expect(seen).toEqual([]); // 'done' is already the canonical unified terminal state
   });
 });
 
@@ -186,7 +194,7 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
     expect(caught).not.toBeNull();
     // The message names the issue family's native + accepted-alias set (not a raw PG CHECK error).
     expect(caught!.message).toMatch(/cannot take state 'validating'/);
-    expect(caught!.message).toMatch(/valid: open, resolved, closed, done, dropped, todo, in_progress, wip, blocked, needs-human/);
+    expect(caught!.message).toMatch(/valid: open, wip, blocked, needs-human, done, dropped, resolved, closed/);
     expect(caught!.message).not.toMatch(/engineer_issues_state_check/); // never leaks the PG constraint
   });
 
@@ -202,10 +210,10 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
       .toBe('todo');
   });
 
-  it('feature-family NORMALIZES a separator/case drift typo to canonical (in-progress → in_progress)', async () => {
+  it('feature-family NORMALIZES a separator/case drift typo to the unified token (In-Progress → wip)', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const after = await wi.setWorkItemState(feat.id, 'In-Progress', { harness: 'papercup' });
-    expect(after?.state).toBe('in_progress');
+    expect(after?.state).toBe('wip');
   });
 
   it('a trusted restore (allowNonCanonical) bypasses the guard — feature only', async () => {
@@ -257,7 +265,7 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
       by: 'agA',
       completionRef: 'shipped in migration 432',
     });
-    expect(after?.state).toBe('passed');
+    expect(after?.state).toBe('done');
     expect(after?.assignee).toBeNull();
     expect(after?.terminalOwner).toBe('agA');
     expect(after?.terminalCompletionRef).toBe('shipped in migration 432');
@@ -291,7 +299,7 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await wi.claimWorkItem(bug.id, 'agA');
     const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
-    expect(after?.state).toBe('resolved');
+    expect(after?.state).toBe('done');
     expect(after?.assignee).toBeNull();
     expect(after?.terminalOwner).toBe('agA');
     expect(after?.terminalCompletionRef).toBe('fixed in PR #42');
@@ -348,7 +356,7 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
   it('a non-terminal transition is UNAFFECTED by the gate — no owner/completionRef required', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const after = await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' });
-    expect(after?.state).toBe('in_progress');
+    expect(after?.state).toBe('wip');
     expect(after?.terminalOwner).toBeNull();
     expect(after?.terminalCompletionRef).toBeNull();
   });
@@ -356,7 +364,7 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
   it('skipCompletionGate (WI-1404 watchdog/system-sweep bypass) allows a bare terminal flip, but it MUST NOT write a terminal_owner/terminal_completion_ref pair — the whole point is that this flip stays DISTINGUISHABLE from a genuine completion', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
-    expect(after?.state).toBe('resolved');
+    expect(after?.state).toBe('done');
     // `by` alone (no completionRef) is exactly the watchdog dedup shape — C-1 requires
     // BOTH, so this must NOT read back as a genuine completion.
     expect(after?.terminalCompletionRef).toBeNull();
@@ -376,9 +384,9 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
     await expect(wi.setWorkItemState(bug.id, 'in_progress', { by: 'agB' })).rejects.toThrow(
       /already terminally completed.*agA.*fixed in PR #42/s,
     );
-    // Rejected write must not half-apply — still resolved, still crediting agA.
+    // Rejected write must not half-apply — still done, still crediting agA.
     const after = await wi.getWorkItem(bug.id);
-    expect(after?.state).toBe('resolved');
+    expect(after?.state).toBe('done');
     expect(after?.terminalOwner).toBe('agA');
   });
 
@@ -388,18 +396,18 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
     await expect(
       wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agB' }),
     ).rejects.toThrow(/already terminally completed/);
-    expect((await wi.getWorkItem(feat.id, 'papercup'))?.state).toBe('passed');
+    expect((await wi.getWorkItem(feat.id, 'papercup'))?.state).toBe('done');
   });
 
   it('ALLOWS the reopen with { force: true } — a deliberate correction', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await wi.claimWorkItem(bug.id, 'agA');
     await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
-    // issue-family has no distinct 'in_progress' state — 'in_progress' aliases to 'open'
-    // (the family's 3-state CHECK, EI-450); the point under test is that force:true lets
-    // the reopen through at all, not the exact resulting state name.
+    // work-item-status-full-unify (P-003): 'in_progress' now folds to the unified
+    // in-flight token 'wip' (no longer collapsed to 'open' — EI-450's 3-state CHECK is
+    // gone); the point under test is that force:true lets the reopen through at all.
     const after = await wi.setWorkItemState(bug.id, 'in_progress', { by: 'agB', force: true });
-    expect(after?.state).toBe('open');
+    expect(after?.state).toBe('wip');
   });
 
   it('does NOT gate a transition between two non-terminal states, or the initial terminal completion itself', async () => {
@@ -408,7 +416,7 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
     await expect(wi.setWorkItemState(bug.id, 'open', { by: 'agA' })).resolves.toBeTruthy();
     // The FIRST terminal flip is not "reopening" anything — must still succeed.
     const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed' });
-    expect(after?.state).toBe('resolved');
+    expect(after?.state).toBe('done');
   });
 });
 
@@ -940,7 +948,7 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
     expect((await wi.claimWorkItem(feat.id, 'agA'))?.assignee).toBe('agA');
     await wi.setWorkItemState(feat.id, 'in_progress');
     const before = (await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
-    expect(before.status).toBe('in_progress');
+    expect(before.status).toBe('wip');
 
     await wi.releaseWorkItem(feat.id);
     const after = (await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
@@ -956,7 +964,7 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
     await wi.setWorkItemState(feat.id, 'passed', { by: 'agA', completionRef: 'test' });
     await wi.releaseWorkItem(feat.id);
     const after = (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
-    expect(after.status).toBe('passed');
+    expect(after.status).toBe('done');
   });
 
   // Bug fix (issues-engineer.claimIssue): the unified claim is atomic compare-and-claim for the
@@ -1062,11 +1070,11 @@ describe('unified work_items surface (real PG)', () => {
   it('set_state dispatches: feature → status; issue → state', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
-    expect((await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' }))?.state).toBe('in_progress');
-    expect((await wi.setWorkItemState(bug.id, 'needs_human'))?.state).toBe('open');
-    expect((await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'test' }))?.state).toBe('resolved');
-    expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status).toBe('in_progress');
-    expect((await db.sql`SELECT state FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].state).toBe('resolved');
+    expect((await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' }))?.state).toBe('wip');
+    expect((await wi.setWorkItemState(bug.id, 'needs_human'))?.state).toBe('needs-human');
+    expect((await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'test' }))?.state).toBe('done');
+    expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status).toBe('wip');
+    expect((await db.sql`SELECT state FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].state).toBe('done');
   });
 
   it('claim/release dispatch: feature → taken_by; issue → assignee', async () => {

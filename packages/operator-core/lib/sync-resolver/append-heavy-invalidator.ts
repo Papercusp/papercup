@@ -32,6 +32,7 @@
  * invalidation is name-only (full-bust), so each client refetches its own scope.
  */
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { notifySyncInvalidate } from '../sync-sse';
 import { APPEND_HEAVY_POLL_SPECS } from './table-to-query-names';
@@ -160,7 +161,15 @@ export function startAppendHeavyInvalidatorHost(opts?: {
 }): () => void {
   // Dedicated single connection on the BYPASSRLS admin URL (mig 016) so max(id) sees every
   // workspace's rows. max:1 — one long-lived poller connection, never per-call (perf-doc A-pattern).
-  const sql = postgres(getHarnessAdminUrl(), { max: 1, idle_timeout: 0, connect_timeout: 30 });
+  // EI-18122461766429683: tagged + zombie-safe (see longLivedPoolConnectionOptions) — this was
+  // one of the untagged, unreaped singleton pools whose accumulation across host restarts
+  // drove server-wide PG connection saturation past its SLO budget.
+  const sql = postgres(getHarnessAdminUrl(), {
+    ...longLivedPoolConnectionOptions('append-heavy-invalidator'),
+    max: 1,
+    idle_timeout: 0,
+    connect_timeout: 30,
+  });
   // Per-table MONOTONIC change-key column (bigint) — NOT every table has a usable `id` (see
   // APPEND_HEAVY_POLL_SPECS). Built from the hardcoded allow-list, never user input.
   const changeKeyByTable = new Map(APPEND_HEAVY_POLL_SPECS.map((s) => [s.table, s.changeKey]));

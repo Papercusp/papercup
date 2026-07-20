@@ -205,3 +205,77 @@ registerDerivedRead({
     return [{ services }];
   },
 });
+
+// ── rubrics.list (owner-reported 2026-07-19: the Learnings → Rubrics tab took
+// ~0.7s to OPEN on a LOCAL desktop app — "loading a little data should be
+// instant"). Root cause: an N+1 over-fetch on the user-facing read path. The
+// resolver ran, PER rubric, a `listScorecards({ rubricRef, limit: 500 })` (≈13
+// rubrics × up to 500 FULL scorecard rows) purely to project each rubric's
+// latest + average score10 in JS. score10 is a read-time projection over the
+// ratings jsonb, so the aggregation is genuinely expensive to do on read.
+//
+// This class was MISSED by the WI-5460 audit, which enumerated only the
+// `learning.*` sync queries — the `rubrics.*` / `scorecards.*` namespace behind
+// the imported RubricsPanel slipped through (the audit gap the owner flagged).
+// It also evaded the no-heavy-io-on-read-path guard, which catches
+// subprocess/recursive-fs, not a heavy N+1 PG over-fetch.
+//
+// The Rubrics tab is a read-mostly REVIEW surface (agents grade via
+// scorecards:emit; this tab reviews health/scores/trends), so a short precompute
+// lag on the aggregate OVERVIEW is invisible — the per-rubric DETAIL panel
+// (scorecards.list / rubrics.trend) stays a live read. 2-min ttl recomputes on
+// essentially every routine tick; the list surfaces computedAt via _meta.
+registerDerivedRead({
+  key: 'rubrics.list',
+  ttlMs: 2 * 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { listRubrics } = await import('../rubrics');
+    const { listScorecards, scorecardTotalCountsByRubric } = await import('../scorecards');
+    const rubrics = await listRubrics({});
+    // Per-rubric latest/avg window (WI-5415: a per-rubric window, not one shared
+    // globally-capped read, so a high-volume rubric never crowds a low-volume one
+    // out of the window) + a real UNBOUNDED total count.
+    const [totalCounts, perRubricScorecards] = await Promise.all([
+      scorecardTotalCountsByRubric(),
+      Promise.all(rubrics.map((r) => listScorecards({ rubricRef: r.rubricId, limit: 500 }))),
+    ]);
+    return rubrics.map((r, i) => {
+      const cards = perRubricScorecards[i] ?? [];
+      let latestAt: string | null = null;
+      let latestScore10: number | null = null;
+      let scoreSum = 0;
+      let scoreN = 0;
+      for (const s of cards) {
+        if (!latestAt || s.createdAt > latestAt) {
+          latestAt = s.createdAt;
+          latestScore10 = s.score10;
+        }
+        // avgScore10 = mean of the read-time 0–10 projections; null-scored
+        // (all-unknown) scorecards excluded, matching the per-scorecard rule.
+        if (s.score10 !== null) {
+          scoreSum += s.score10;
+          scoreN += 1;
+        }
+      }
+      return {
+        rubricId: r.rubricId,
+        characteristic: r.characteristic,
+        title: r.title,
+        status: r.status,
+        proposedBy: r.proposedBy,
+        ratifiedBy: r.ratifiedBy,
+        criteriaCount: r.criteria.length,
+        ratingScale: r.ratingScale,
+        methodRef: r.methodRef,
+        updatedAt: r.updatedAt,
+        // TRUE unbounded total (WI-5415) — never the capped per-rubric read length.
+        scorecardCount: totalCounts[r.rubricId] ?? cards.length,
+        latestScorecardAt: latestAt,
+        latestScore10,
+        avgScore10: scoreN > 0 ? Math.round((scoreSum / scoreN) * 10) / 10 : null,
+      };
+    });
+  },
+});

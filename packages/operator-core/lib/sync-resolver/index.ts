@@ -613,63 +613,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (lib/rubrics.ts / lib/scorecards.ts) — the same functions rubrics:list /
   // scorecards:list / rubrics:trend serve agents; never a parallel query.
   'rubrics.list': {
+    // PRECOMPUTED (owner-reported slow Rubrics tab, 2026-07-19). This used to run an
+    // N+1 over-fetch inline — a per-rubric listScorecards({ limit: 500 }) (≈13 rubrics
+    // × up to 500 full scorecard rows) + a JS score10 projection — measured ~0.7s on a
+    // user-facing read on a LOCAL desktop app. It is now produced by the
+    // `system:precompute-derived-reads` routine (see derived-reads/producers.ts, where
+    // the identical aggregation lives); this is a plain snapshot SELECT. The per-rubric
+    // DETAIL reads (scorecards.list / rubrics.trend) stay live.
     resolve: async () => {
-      const { listRubrics } = await import('../rubrics');
-      const { listScorecards, scorecardTotalCountsByRubric } = await import('../scorecards');
-      const rubrics = await listRubrics({});
-      // WI-5415: this used to bucket ONE globally-capped listScorecards({ limit: 500 })
-      // read shared across EVERY rubric combined — a high-volume rubric graded every
-      // turn (e.g. 968 real scorecards) fills that shared window on its own and crowds
-      // a low-volume rubric completely OUT of it, so BOTH showed scorecardCount: 0
-      // (misread in the UI as "never scored" despite real grading history). Fetch
-      // PER RUBRIC instead (mirrors rubrics:trend's own per-rubric window) for the
-      // latest/avg projection, and pair it with a real UNBOUNDED count so the true
-      // total never depends on how recently OTHER rubrics were graded.
-      const [totalCounts, perRubricScorecards] = await Promise.all([
-        scorecardTotalCountsByRubric(),
-        Promise.all(rubrics.map((r) => listScorecards({ rubricRef: r.rubricId, limit: 500 }))),
-      ]);
-      return rubrics.map((r, i) => {
-        const cards = perRubricScorecards[i] ?? [];
-        let latestAt: string | null = null;
-        let latestScore10: number | null = null;
-        let scoreSum = 0;
-        let scoreN = 0;
-        for (const s of cards) {
-          if (!latestAt || s.createdAt > latestAt) {
-            latestAt = s.createdAt;
-            latestScore10 = s.score10;
-          }
-          // avgScore10 = mean of the P-004 read-time 0–10 projections; null-scored
-          // (all-unknown) scorecards are excluded, matching the per-scorecard rule.
-          if (s.score10 !== null) {
-            scoreSum += s.score10;
-            scoreN += 1;
-          }
-        }
-        return {
-          rubricId: r.rubricId,
-          characteristic: r.characteristic,
-          title: r.title,
-          status: r.status,
-          // Governance provenance (WI-4506): who authored the current document vs who
-          // ratified it. The author≠ratifier split (D-012) is the whole point of the gate
-          // rubric's governance, so the list surfaces it rather than burying it in detail.
-          // Persisted in template_data (EI-10751); listRubrics already projects both.
-          proposedBy: r.proposedBy,
-          ratifiedBy: r.ratifiedBy,
-          criteriaCount: r.criteria.length,
-          ratingScale: r.ratingScale,
-          methodRef: r.methodRef,
-          updatedAt: r.updatedAt,
-          // The TRUE unbounded total (WI-5415) — never the length of the capped
-          // per-rubric read above, so a >500-scorecard rubric never under-reports.
-          scorecardCount: totalCounts[r.rubricId] ?? cards.length,
-          latestScorecardAt: latestAt,
-          latestScore10,
-          avgScore10: scoreN > 0 ? Math.round((scoreSum / scoreN) * 10) / 10 : null,
-        };
-      }) as unknown[];
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      return readDerivedSnapshotRows('rubrics.list');
     },
   },
   'scorecards.list': {
