@@ -502,6 +502,7 @@ describe('clean sync outcome', () => {
     // trigger config defaults flow into the pipeline (+ WI-1416: the checkpoint seam)
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
       config: expect.objectContaining({ push: true, pushSubmodules: true }),
+      deletionGuard: true,
       step: expect.any(Function),
     });
 
@@ -576,6 +577,7 @@ describe('clean sync outcome', () => {
 
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
       config: { push: false, pushSubmodules: false, branch: 'staging', remote: 'upstream', maxBlobBytes: 1024 },
+      deletionGuard: true,
       step: expect.any(Function),
     });
   });
@@ -1007,6 +1009,29 @@ describe('EI-438 content-guard kill-switch flag', () => {
     expect(runGitSyncOpts().contentDetectors).toEqual([]);
     expect(loopbackFetchMock).not.toHaveBeenCalled();
     expect(escalationUpserts().filter((u) => u.params[1] === 'git-sync-content')).toEqual([]);
+  });
+});
+
+describe('EI-17 deletion-guard kill-switch flag', () => {
+  const runGitSyncOpts = (): { deletionGuard?: unknown } =>
+    runGitSyncMock.mock.calls[0][1] as { deletionGuard?: unknown };
+
+  it('flag ON (default): runGitSync runs with the deletion guard active', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(runGitSyncOpts().deletionGuard).toBe(true);
+    expect(getFlagMock).toHaveBeenCalledWith('papercusp-git-sync-deletion-guard', 'papercup');
+  });
+
+  it('flag OFF (kill-switch): runGitSync runs with the deletion guard disabled — commits as before this plan', async () => {
+    getFlagMock.mockImplementation(async (key: string) => key !== 'papercusp-git-sync-deletion-guard');
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(runGitSyncOpts().deletionGuard).toBe(false);
   });
 });
 

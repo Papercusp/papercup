@@ -19,7 +19,7 @@ import { liveTest, probeLive } from '../testing/live-integration';
 // 'trusted', so issue with it.
 let SU_TOKEN = '';
 try { SU_TOKEN = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim(); } catch { /* */ }
-const suAuth = SU_TOKEN ? { Authorization: `Bearer ${SU_TOKEN}` } : {};
+const suAuth: Record<string, string> = SU_TOKEN ? { Authorization: `Bearer ${SU_TOKEN}` } : {};
 
 const OP_PORT = process.env.OP_PORT ?? null;
 const BASE = OP_PORT
