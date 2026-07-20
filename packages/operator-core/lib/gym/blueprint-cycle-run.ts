@@ -18,7 +18,9 @@
  *     npx tsx ../../packages/operator-core/lib/gym/blueprint-cycle-run.ts            # fake
  *     GYM_BP_FAKE=0 npx tsx ../../packages/operator-core/lib/gym/blueprint-cycle-run.ts  # real
  *
- * Env knobs (all read inside runGymBlueprintCycle): GYM_BP_PORT, GYM_BP_WORKSPACE,
+ * Env knobs (all read inside runGymBlueprintCycle): GYM_BP_PORT (pins the gym-operator's port;
+ * omitted ⇒ a genuinely-free ephemeral port is probed per run, so concurrent cycles never
+ * collide — EI-18154750714519366), GYM_BP_WORKSPACE,
  * GYM_BP_GYM_SLUG, GYM_BP_TARGET_SLUG, GYM_BP_FAKE, GYM_BP_TIMEOUT_MIN,
  * GYM_BP_AGENT_CMD, GYM_BP_KEEP.
  */

@@ -94,6 +94,15 @@ export interface HarnessFeatureRow {
    */
   terminal_owner?: string | null;
   terminal_completion_ref?: string | null;
+  /**
+   * work-item-status-full-unify-2026-07-19 (P-009, owner hard-req D-001): the
+   * pre-collapse terminal nuance (passed/resolved → done, deprecated/closed →
+   * dropped) preserved on the work_items base table (mig 638). MUST federate so a
+   * terminal item keeps its resolution kind across the wire — else the passed-vs-
+   * plain-done nuance is lost on every peer. OPTIONAL on the wire (pre-638 history
+   * lacks it → writeToPg maps absent → NULL).
+   */
+  terminal_reason?: string | null;
 }
 
 function isString(v: unknown): v is string { return typeof v === 'string'; }
@@ -156,6 +165,7 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (r.redundancy !== undefined && !isNumberOrNull(r.redundancy)) return false;
   if (r.terminal_owner !== undefined && !isStringOrNull(r.terminal_owner)) return false;
   if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
+  if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
   // metadata + tags + payload are JSONB blobs; accept anything (incl. null/missing).
   return true;
 }
@@ -283,7 +293,7 @@ async function writeToPg(
        item_kind, feature_order, swarm_affinity, redundancy, payload,
        design_spec_id, design_status, needs_design, discarded_design_work,
        source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
-       terminal_owner, terminal_completion_ref,
+       terminal_owner, terminal_completion_ref, terminal_reason,
        author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
@@ -308,7 +318,7 @@ async function writeToPg(
        ${row.source_plan_slug ?? null}, ${row.source_plan_item_ids ?? null}::text[],
        ${row.see_also ?? []}::text[], ${row.wave ?? null}, ${row.deprecation_reason ?? null},
        ${row.completion_ref == null ? null : JSON.stringify(normalizeJsonbInput(row.completion_ref))}::text::jsonb,
-       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null},
+       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null},
        ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -357,6 +367,8 @@ async function writeToPg(
       completion_ref = EXCLUDED.completion_ref,
       terminal_owner = EXCLUDED.terminal_owner,
       terminal_completion_ref = EXCLUDED.terminal_completion_ref,
+      -- P-009/D-001: the terminal nuance must converge like status itself.
+      terminal_reason = EXCLUDED.terminal_reason,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,
@@ -380,15 +392,24 @@ async function writeToPg(
     -- see the identical fix + rationale in projections/engineer-issues.ts's
     -- sibling writeToPg (both feature- and issue-family rows carry this
     -- completion-integrity pair and share the same fed_apply_wins tie-break).
+    -- P-009/D-001 (work-item-status-full-unify): terminal_reason joins the digest
+    -- for the SAME reason — two different completions of one item can converge to
+    -- an IDENTICAL status/taken_by (e.g. both `done`) while carrying DIFFERENT
+    -- terminal_reason (passed vs plain-done, resolved vs plain-done). Omitting it
+    -- would make the tie branch's "equal digest ⇒ identical content ⇒ no-op"
+    -- invariant FALSE for those ops, so a racing peer could silently overwrite the
+    -- correct terminal nuance while every other field looked converged.
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
                           EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text,
-                          EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref)),
+                          EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref,
+                          EXCLUDED.terminal_reason)),
             work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
             md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
                           work_items.status, work_items.taken_by, work_items.payload::text,
-                          work_items.terminal_owner, work_items.terminal_completion_ref)))
+                          work_items.terminal_owner, work_items.terminal_completion_ref,
+                          work_items.terminal_reason)))
   `;
 }
 

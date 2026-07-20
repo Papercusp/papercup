@@ -35,11 +35,19 @@ import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-spec';
 import { waitForOperatorReady } from './operator-ready';
+import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
 const FAKE_AGENT = join(__dirname, 'fixtures/fake-gym-agent.mjs');
 const FEATURE_ID = 'G-1';
+
+// EI-18154750714519366 (same class, sibling file — autoloop-cycle.ts had the identical bug with
+// its own fixed default): a fixed default port lets a concurrent cycle's waitForOperatorReady
+// silently pass against someone ELSE's already-running operator. Probe a free ephemeral port
+// instead; a distinct range from autoloop-cycle's GYM_LOOP_PORT_RANGE so the two never collide
+// with EACH OTHER either. An explicit GYM_BP_PORT / opts.port still wins outright.
+const GYM_BP_PORT_RANGE = { rangeStart: 40_000, rangeEnd: 41_000 } as const;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Mask credentials in postgres DSNs (safe for logs / reports). */
@@ -65,7 +73,8 @@ function writeHarnessTree(dir: string, blueprintId: string, extendsId: string, r
 export interface RunGymBlueprintCycleOptions {
   /** Fake (zero-LLM) assembly mode (default env GYM_BP_FAKE !== '0'). */
   fake?: boolean;
-  /** Gym-operator HTTP port (default env GYM_BP_PORT / 3977). */
+  /** Gym-operator HTTP port. Default: env GYM_BP_PORT if set, else a probed-free ephemeral port
+   *  (GYM_BP_PORT_RANGE) — never a fixed default, so concurrent cycles never collide. */
   port?: number;
   /** Workspace the run is scoped to (default env GYM_BP_WORKSPACE / 'gym-bp-ws'). */
   workspaceId?: string;
@@ -97,7 +106,10 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
   process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
 
   const FAKE = opts.fake ?? process.env.GYM_BP_FAKE !== '0';
-  const PORT = opts.port ?? Number(process.env.GYM_BP_PORT ?? 3977);
+  // Explicit pin (opts.port or GYM_BP_PORT) always wins; otherwise probe a genuinely-free
+  // ephemeral port (GYM_BP_PORT_RANGE above) so concurrent cycles never collide.
+  const explicitPort = opts.port ?? (process.env.GYM_BP_PORT !== undefined ? Number(process.env.GYM_BP_PORT) : undefined);
+  const PORT = explicitPort ?? (await findFreeBasePort({ count: 1, ...GYM_BP_PORT_RANGE }));
   const WS = opts.workspaceId ?? process.env.GYM_BP_WORKSPACE ?? 'gym-bp-ws';
   const GYM_SLUG = opts.gymSlug ?? process.env.GYM_BP_GYM_SLUG ?? 'g48gym';
   const TARGET_SLUG = opts.targetSlug ?? process.env.GYM_BP_TARGET_SLUG ?? 'g48target';
@@ -116,7 +128,7 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
   const opLogPath = join(tmpdir(), `gym-bp-op-${HEX}.log`);
   let gymSql: postgres.Sql | undefined;
   let ok = false;
-  const report: Record<string, unknown> = { mode: FAKE ? 'fake (zero-LLM)' : 'real', gymSlug: GYM_SLUG, targetSlug: TARGET_SLUG, featureId: FEATURE_ID };
+  const report: Record<string, unknown> = { mode: FAKE ? 'fake (zero-LLM)' : 'real', port: PORT, gymSlug: GYM_SLUG, targetSlug: TARGET_SLUG, featureId: FEATURE_ID };
 
   try {
     // 1. Dedicated gym DB (full migration baseline + preminted spawn-signing key).

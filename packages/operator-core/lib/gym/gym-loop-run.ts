@@ -17,7 +17,9 @@
  *     GYM_LOOP_FAKE=1 npx tsx lib/gym/gym-loop-run.ts             # zero-LLM assembly check
  *     GYM_LOOP_MAX_CYCLES=1 npx tsx lib/gym/gym-loop-run.ts        # real run (on capacity)
  *
- * Env knobs (all read inside runOneAutoloopCycle): GYM_LOOP_PORT, GYM_LOOP_WORKSPACE,
+ * Env knobs (all read inside runOneAutoloopCycle): GYM_LOOP_PORT (pins the gym-operator's port;
+ * omitted ⇒ a genuinely-free ephemeral port is probed per run, so concurrent/manual cycles never
+ * collide — EI-18154750714519366), GYM_LOOP_WORKSPACE,
  * GYM_LOOP_HARNESS, GYM_LOOP_MAX_CYCLES, GYM_LOOP_REPEATS, GYM_LOOP_BUDGET_USD,
  * GYM_LOOP_AGENT_CMD, GYM_LOOP_PROPOSER_MODEL, GYM_LOOP_NOVELTY_WEIGHT,
  * GYM_LOOP_CONTROL_DSN (control plane → the LIVE operator DB; else the gym DB).

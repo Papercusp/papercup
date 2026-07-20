@@ -779,6 +779,11 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
     // issue-family item and the evidence.
     terminal_owner: strOrNull(row.terminal_owner),
     terminal_completion_ref: strOrNull(row.terminal_completion_ref),
+    // work-item-status-full-unify-2026-07-19 (P-009, D-001): same terminal-nuance
+    // carrier as toFeatureValue — resolved→done / closed→dropped must survive the
+    // wire so an issue federated A→B keeps its resolution kind (mig 640 stamps
+    // terminal_reason into the issue wire-shape explicitly).
+    terminal_reason: strOrNull(row.terminal_reason),
   };
 }
 

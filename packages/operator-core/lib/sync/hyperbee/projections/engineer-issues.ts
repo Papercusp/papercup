@@ -55,6 +55,14 @@ export interface EngineerIssueRow {
    */
   terminal_owner?: string | null;
   terminal_completion_ref?: string | null;
+  /**
+   * work-item-status-full-unify-2026-07-19 (P-009, owner hard-req D-001): the
+   * pre-collapse terminal nuance (resolved → done, closed → dropped) preserved on
+   * the work_items base table (mig 638; the CDC issue wire-shape stamps it in mig
+   * 640). MUST federate so an issue keeps its resolution kind across the wire.
+   * OPTIONAL on the wire (pre-638 history lacks it → dropped on write → NULL).
+   */
+  terminal_reason?: string | null;
 }
 
 function isString(v: unknown): v is string {
@@ -85,6 +93,7 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (!isString(r.created_at)) return false;
   if (r.terminal_owner !== undefined && !isStringOrNull(r.terminal_owner)) return false;
   if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
+  if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
   // payload is jsonb-opaque — accept anything (incl. undefined → null on write).
   return true;
 }
@@ -233,7 +242,7 @@ async function writeToPg(
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
-       created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref)
+       created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref, terminal_reason)
     VALUES
       (${opts.workspaceId}, ${vSlug}, ${row.issue_id}, ${row.kind}, ${row.title},
        ${row.body}, ${row.state}, ${row.assignee}, ${row.assigned_at},
@@ -242,7 +251,7 @@ async function writeToPg(
                 (extract(epoch FROM now()) * 1000)::bigint),
        (extract(epoch FROM now()) * 1000)::bigint,
        (extract(epoch FROM now()) * 1000)::bigint,
-       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null})
+       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       item_kind     = EXCLUDED.item_kind,
       title         = EXCLUDED.title,
