@@ -821,6 +821,43 @@ const recipeHygieneWorkflow = idempotentRegisterWorkflow('recipeHygiene', () =>
 );
 DBOS.registerScheduled(recipeHygieneWorkflow, { name: 'recipeHygiene', crontab: '0 30 5 * * 0' });
 
+// Daily (04:25 UTC, in the 04:xx GC cluster): sweep orphaned replication-liveness
+// stall EIs (found triaging the papercusp open-bug backlog, 2026-07-20). A filed
+// stall EI (P-004 / WI-1840, WI-183 class) auto-resolves ONLY when a live process
+// later re-observes its EXACT (workspace, harness, log) recover or explicitly drops
+// that log's tracking — both require a process alive under the target harness's
+// identity. A renamed/deleted harness can never again satisfy that, so its open
+// stall EIs sit forever as major-severity noise (confirmed: the papercup→papercusp
+// rename alone orphaned 30 open EIs). See replication-stall-orphan-sweep.ts for the
+// full root-cause writeup + the (conservative — existence-only, never time-based)
+// resolution rule. Default ON; kill-switch PAPERCUSP_REPLICATION_ORPHAN_SWEEP=0.
+// Never throws → can't poison the scheduler. Shed under load.
+async function replicationStallOrphanSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_REPLICATION_ORPHAN_SWEEP === '0') return;
+    if (shouldShedHeavyTick('replication-stall-orphan-sweep')) return;
+    try {
+      const { runReplicationStallOrphanSweepOnce } = await import('../sync/hyperbee/replication-stall-orphan-sweep');
+      const r = await runReplicationStallOrphanSweepOnce();
+      if (r.resolvedIds.length > 0) {
+        console.log(
+          `[replication-stall-orphan-sweep] resolved ${r.resolvedIds.length} orphaned stall EI(s) ` +
+            `across ${r.orphanedTargets.length} no-longer-existing target(s) (checked ${r.checked}` +
+            `${r.errors > 0 ? `, ${r.errors} resolve error(s)` : ''})`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[replication-stall-orphan-sweep] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'replication-stall-orphan-sweep' });
+}
+const replicationStallOrphanSweepWorkflow = idempotentRegisterWorkflow('replicationStallOrphanSweep', () =>
+  DBOS.registerWorkflow(replicationStallOrphanSweepTick, {
+    name: 'replicationStallOrphanSweep', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(replicationStallOrphanSweepWorkflow, { name: 'replicationStallOrphanSweep', crontab: '0 25 4 * * *' });
+
 // Every 2min (offset :30s — off the :00 minute-tick stampede): session-transcript
 // ingest (session-search-scope-2026-07-05 P-003). Tails claude/omp/codex JSONL +
 // agent_chats_consolidated transcripts into harness_shared.session_turns — the

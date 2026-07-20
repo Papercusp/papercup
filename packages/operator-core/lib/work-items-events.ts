@@ -29,7 +29,14 @@ import { TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
 import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } from './work-item-blocking';
-import { CLAIM_STATES_ALLOWLIST, getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
+import {
+  CLAIM_STATES_ALLOWLIST,
+  getWorkItem,
+  isClaimHoldParked,
+  workItemObjectRef,
+  type WorkItem,
+  type WorkItemFamily,
+} from './work-items';
 // EI-15185: single-source the plan-slug derivation shared with the claim-spec
 // `plan` field, so the claimable payload's `plan` and a spec's `plan` filter agree.
 // EI-14161: same single-sourcing for `tags`, so a spec's tag-based exclusion
@@ -147,10 +154,15 @@ const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
  * keep working.
  *
  * The claimability guard lives HERE, single-sourced for every call site: an
- * item with an assignee, or in a non-claimable state (blocked / terminal /
- * wip), never fires — the key must never advertise work a get_next pull
- * would then refuse. `payload.reason` carries which transition made it
- * claimable. The FOURTH return-to-pool moment — a bare status flip INTO a
+ * item with an assignee, in a non-claimable state (blocked / terminal /
+ * wip), or claim-hold PARKED (`payload._claimHold` — WI-2797), never fires —
+ * the key must never advertise work a get_next pull would then refuse
+ * (EI-18128621906886568: this guard used to omit the claim-hold check, so a
+ * parked-but-unassigned row still fired on every release/requeue/unblock,
+ * waking every parked fleet member on non-work and inviting an "inadvertent
+ * re-claim" via the still-open claim-BY-ID path). `payload.reason` carries
+ * which transition made it claimable. The FOURTH return-to-pool moment — a
+ * bare status flip INTO a
  * claimable state (e.g. blocked→todo via set_state) — co-fires from
  * emitWorkItemStatusEvent with reason 'requeued' (WI-4180, the P-007 audit's
  * gap (A)), so it no longer strands a parked waiter to the ~30-min timeout

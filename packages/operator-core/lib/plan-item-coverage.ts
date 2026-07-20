@@ -41,16 +41,36 @@ import { activeWorkspaceId } from './workspace-registry';
 import { listFleetAssignments, deriveActivity } from './fleet/assignments';
 import { planItemRef, PLAN_ITEM_KIND } from './issue-blocks-merge';
 import { ISSUE_FAMILY_KINDS } from './work-items';
+import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { TERMINAL_STATUSES as FEATURE_TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import type { ItemActivity } from './item-activity';
 
 /** The link rels that count a work-item as ADDRESSING a plan item. `blocks` is NOT
  *  here — that's the issue-block overlay (todo→blocked), a different relationship. */
 export const COVERAGE_RELS = ['fixes', 'relates', 'duplicates'] as const;
 
-/** Terminal (work-done) states per family — the cross-family ALL_TERMINAL set
- *  (work-items.ts: issue terminal = resolved|closed; feature terminal = passed|deprecated). */
-const ISSUE_TERMINAL = new Set<string>(['resolved', 'closed']);
-const FEATURE_TERMINAL = new Set<string>(['passed', 'deprecated']);
+/**
+ * Terminal (work-done) states per family — sourced from the SAME canonical sets
+ * work-items.ts / work-item-blocking.ts use (issue: resolved|closed, PLUS the
+ * unified done|dropped terminals the issue-family alias layer now actually
+ * persists; feature: passed|deprecated, PLUS done|dropped).
+ *
+ * EI-18129037155166784: this used to be a LOCALLY-DUPLICATED literal
+ * `['resolved','closed']` / `['passed','deprecated']` that predated
+ * work-item-status-full-unify (2026-07-19) — after that migration the issue
+ * family's alias layer persists 'resolved'/'closed' requests as unified
+ * 'done'/'dropped' (work-items.ts ISSUE_STATE_ALIASES), so a work-item that
+ * HAD closed (state:'done') read as NON-terminal here. That silently
+ * mis-classified its linked plan item's coverage as 'partial'/'unclaimed'
+ * instead of 'complete' — an already-closed work-item's own plan item looking
+ * perpetually unworked, inviting a duplicate re-claim of work that was already
+ * done. Importing the single source of truth instead of a local copy is what
+ * complete.ts's TERMINAL_WORK_ITEM_STATES already did for the same class of bug
+ * (see its EI-5269/EI-18127483322976472 comment) — this module was the one
+ * remaining stale copy.
+ */
+const ISSUE_TERMINAL = ISSUE_TERMINAL_STATUSES;
+const FEATURE_TERMINAL = FEATURE_TERMINAL_STATUSES;
 
 /** An activity that means a LIVE holder currently has the item (counts as covered). */
 function isLiveActivity(a: ItemActivity): boolean {

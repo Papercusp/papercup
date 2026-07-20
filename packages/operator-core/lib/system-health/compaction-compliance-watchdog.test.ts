@@ -1229,3 +1229,66 @@ describe('EI-16190 pre-cutover-process self-check', () => {
     }
   });
 });
+
+describe('dark-presence gap backstop (EI-18127246030401689)', () => {
+  it('discoverPresencelessLoopOwners returns active-loop owners with no presence row', async () => {
+    const rows = await discoverPresencelessLoopOwners(
+      fakeSql({ presenceGaps: [{ owner_id: 'su-ghost', workspace_id: 'ws-1' }] }) as never,
+    );
+    expect(rows).toEqual([{ ownerId: 'su-ghost', workspaceId: 'ws-1' }]);
+  });
+
+  it('discoverPresencelessLoopOwners fails soft to [] on a query error', async () => {
+    const throwingSql = (() => {
+      throw new Error('boom');
+    }) as never;
+    await expect(discoverPresencelessLoopOwners(throwingSql)).resolves.toEqual([]);
+  });
+
+  it('self-heals a presence row for a presence-less active-loop owner and escalates once, using the fleet-membership label', async () => {
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        presenceGaps: [{ owner_id: 'su-ghost', workspace_id: 'ws-1' }],
+        fleetLabels: { 'su-ghost': 'su · ghost' },
+      }),
+    );
+    expect(out.presenceGapsHealed).toEqual(['su-ghost']);
+    expect(writePresenceMock).toHaveBeenCalledTimes(1);
+    const [identity] = writePresenceMock.mock.calls[0] as unknown as [
+      { ownerId: string; ownerLabel: string; workspaceId: string | null; source: string },
+    ];
+    expect(identity).toMatchObject({ ownerId: 'su-ghost', ownerLabel: 'su · ghost', workspaceId: 'ws-1' });
+    expect(out.bootConfigAlerts).toHaveLength(1);
+    expect(out.bootConfigAlerts[0]).toMatchObject({ owner: 'su-ghost', kind: 'dark-presence' });
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+
+    // A second sweep must NOT re-heal or re-escalate the SAME owner once its presence
+    // row exists (the discovery query itself won't return it — cp.owner_id IS NULL no
+    // longer matches — so this models the query correctly excluding it next pass).
+    const out2 = await checkCompactionCompliance(fakeSql({ fleetLabels: { 'su-ghost': 'su · ghost' } }));
+    expect(out2.presenceGapsHealed).toEqual([]);
+    expect(writePresenceMock).toHaveBeenCalledTimes(1);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the ownerId as the label when no fleet-membership fact exists', async () => {
+    const out = await checkCompactionCompliance(
+      fakeSql({ presenceGaps: [{ owner_id: 'su-solo-ghost', workspace_id: null }] }),
+    );
+    expect(out.presenceGapsHealed).toEqual(['su-solo-ghost']);
+    const [identity] = writePresenceMock.mock.calls[0] as unknown as [{ ownerLabel: string }];
+    expect(identity.ownerLabel).toBe('su-solo-ghost');
+  });
+
+  it('still escalates (but does not mark healed) when the presence write itself fails', async () => {
+    writePresenceMock.mockRejectedValueOnce(new Error('db down'));
+    const out = await checkCompactionCompliance(
+      fakeSql({ presenceGaps: [{ owner_id: 'su-unhealable', workspace_id: null }] }),
+    );
+    expect(out.presenceGapsHealed).toEqual([]);
+    expect(out.bootConfigAlerts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ owner: 'su-unhealable', kind: 'dark-presence' })]),
+    );
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+});

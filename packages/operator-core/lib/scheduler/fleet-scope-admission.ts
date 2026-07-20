@@ -409,6 +409,46 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
   }
 }
 
+/**
+ * WI-5561: the fleet-scoped sibling of `buildMissDiagnosis`'s EI-13965 aggregate floor
+ * breakdown. A fleet MEMBER's `scheduler:get_next` miss never ran `aggregateIssueClaimExclusions`
+ * at all (only a non-fleet caller did — `buildMissDiagnosis` short-circuits to an empty
+ * diagnosis whenever `reconciliation.scope` is set), so a member scoped to an issue-family
+ * `kind` filter (e.g. a bug-drain fleet's `{kind:'bug'}`) got a bare "no claimable work-item
+ * matched fleet scope" with NO explanation — even when the true cause is a fully floor-gated
+ * pool (confirmed live: fleet bug-drain-200k, 302 open+unclaimed+local bugs, ALL excluded by
+ * legitimate floors — 169 federation-detector, 80 needs-human, 33 claim-hold, 21
+ * observation-lane), not a scope/spec mismatch. Reuses the SAME `aggregateIssueClaimExclusions`
+ * the non-fleet path already relies on — one source of truth, never a second implementation.
+ * FAILS SOFT (same philosophy as `diagnoseFleetScopeCooldownMiss` / `buildMissDiagnosis`): any
+ * error, or a spec whose filter matches ZERO issue-family rows at all (a genuine spec problem,
+ * not a floor story), returns null and the miss degrades to the pre-existing bare message.
+ */
+export async function diagnoseFleetScopeIssueFloorMiss(args: {
+  scope: FleetScopeContext;
+  harness: string;
+  workspaceId?: string | null;
+  states?: string[];
+  rigAvailable?: boolean;
+}): Promise<import('./get-next').IssueClaimExclusionBreakdown | null> {
+  try {
+    const ws = resolveClaimSpecWorkspace(args.workspaceId);
+    if (!ws) return null;
+    const spec = args.scope.record.spec;
+    const { aggregateIssueClaimExclusions } = await import('./get-next');
+    const agg = await aggregateIssueClaimExclusions(spec.view.filter, {
+      harness: args.harness,
+      states: args.states ?? spec.states,
+      assignee: args.scope.ownerId,
+      rigAvailable: args.rigAvailable,
+    });
+    if (!agg || agg.matchedByFilter === 0) return null;
+    return agg;
+  } catch {
+    return null;
+  }
+}
+
 export function fleetScopedMiss(
   scope: FleetScopeContext,
   quarantinedIds: string[] = [],
@@ -436,10 +476,17 @@ export function fleetScopedMiss(
     pausedReason?: string | null;
     cooldownDiag?: CooldownMissDiagnosis | null;
     claimableAwaitsCancelled?: number;
+    /** WI-5561: the issue-family floor breakdown (see {@link diagnoseFleetScopeIssueFloorMiss}) —
+     *  ignored while paused (the pause message already fully explains the miss), and only ever
+     *  surfaced alongside (not instead of) the cooldown-only message when both are present. */
+    issueBreakdown?: import('./get-next').IssueClaimExclusionBreakdown | null;
   },
 ) {
   const paused = opts?.pausedReason !== undefined;
   const cooldown = !paused ? (opts?.cooldownDiag ?? null) : null;
+  // WI-5561: surfaced alongside the generic/cooldown message (never while paused — the pause
+  // message already fully explains the miss).
+  const breakdown = !paused ? (opts?.issueBreakdown ?? null) : null;
   // EI-15185: derive the ready-made `payload_filter` for a `work-item:claimable`
   // idle-park await from the member's OWN claim-spec view — the missing "how do I
   // scope this await" answer that led members to register an UNSCOPED await and
@@ -488,13 +535,34 @@ export function fleetScopedMiss(
     // compliant release was actually retired, not merely refused-if-it-fires.
     ...(paused ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt, cooldownEarliestRowId: cooldown.earliestRowId } : {}),
+    // WI-5561: the issue-family floor breakdown — present whenever the diagnosis ran and found
+    // the spec's filter matches ≥1 issue-family row (a genuine scope/spec-empty miss keeps this
+    // absent, same as the non-fleet buildMissDiagnosis breakdown it mirrors).
+    ...(breakdown
+      ? {
+          excludedBreakdown: breakdown,
+          excludedBreakdownSummary:
+            `Your spec's filter matches ${breakdown.matchedByFilter} issue-family row(s); stranded by: ` +
+            Object.entries(breakdown.excluded)
+              .filter(([, n]) => (n as number) > 0)
+              .sort((a, b) => (b[1] as number) - (a[1] as number))
+              .map(([k, n]) => `${k}=${n}`)
+              .join(', ') +
+            ' (buckets are independent, a row can count under more than one; 0 candidates surviving ALL floors means the pool is genuinely floor-gated, not a scope/spec bug — re-authoring the claim spec will not help).',
+        }
+      : {}),
     advice: paused
       ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Do NOT re-park a work-item:claimable await while paused (any pre-pause await of yours was just cancelled server-side, EI-15777 — a peer\'s compliant release will no longer re-wake you for nothing). Resume normal pull cadence only after a fleet:resume cue.'
       : cooldown
         ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
           '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
-        : claimablePayloadFilter
-          ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end. To be woken ONLY on work your spec could admit (EI-15185), park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } and end your turn — it is derived from your own claim spec\'s view, so it fires only on in-scope items instead of every system-wide release; the ~30-min on_timeout backstops a missed emit. The wake is a HINT: scheduler:get_next stays the authoritative claim (a re-miss just re-registers the await).'
-          : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
+        : breakdown
+          ? 'This is a FLOOR-GATED miss (WI-5561), not a scope/spec mismatch — see `excludedBreakdownSummary` for which floors (federation-detector / needs-human / claim-hold / observation-lane / …) are excluding your spec\'s matched rows. Checkpoint, release, loop:end, and report the breakdown to your fleet leader — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
+            (claimablePayloadFilter
+              ? 'You may still park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } in case a floor lifts (a claim-hold clears, a needs-human item gets picked up) and end your turn.'
+              : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')
+          : claimablePayloadFilter
+            ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end. To be woken ONLY on work your spec could admit (EI-15185), park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } and end your turn — it is derived from your own claim spec\'s view, so it fires only on in-scope items instead of every system-wide release; the ~30-min on_timeout backstops a missed emit. The wake is a HINT: scheduler:get_next stays the authoritative claim (a re-miss just re-registers the await).'
+            : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
   };
 }

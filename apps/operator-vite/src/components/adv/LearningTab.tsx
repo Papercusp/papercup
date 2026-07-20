@@ -3691,7 +3691,7 @@ export function ScoutView({
     const isOpen = gradeOpen === item.ideaId;
     const saving = savingId === item.ideaId;
     return (
-      <div className="pc-learning__ideacard">
+      <div className={`pc-learning__ideacard${eff ? " is-graded" : ""}`}>
         <div className="pc-learning__ideacard-head">
           <span
             className="pc-learning__id"
@@ -5342,6 +5342,18 @@ export function LearningStyles() {
         border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
         background: var(--bg-2, rgba(255, 255, 255, 0.04));
       }
+      /* Graded cards read at deck distance (design pass 2026-07-19g): a green
+         check badge rides the band's right corner. */
+      .pc-learning__ideacard { position: relative; }
+      .pc-learning__ideacard.is-graded::after {
+        content: "✓"; position: absolute; top: 6px; right: 8px;
+        display: flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; border-radius: 50%;
+        font-size: 11px; font-weight: 800; line-height: 1;
+        color: #052e1b; background: var(--good, #34d399);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+        pointer-events: none;
+      }
       /* Accent header BAND (design pass 2026-07-19f): the category color (the
          deck's --cs-accent, cascading in) structures the card's top — meta on
          a tinted strip, content below a hairline. */
@@ -5361,7 +5373,7 @@ export function LearningStyles() {
       .pc-learning__ideacard-head .pc-learning__sev {
         width: 7px; height: 7px; min-height: 0; border-radius: 50%;
       }
-      .pc-learning__ideacard-head .pc-learning__age { font-size: 10px; opacity: 0.85; }
+      .pc-learning__ideacard-head .pc-learning__age { font-size: 10px; opacity: 0.85; margin-right: 14px; }
       .pc-learning__ideacard-head .pc-learning__grade { margin-left: auto; }
       .pc-learning__ideacard-title {
         text-align: left; font: inherit; font-size: 13px; font-weight: 660; line-height: 1.42;

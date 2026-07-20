@@ -883,7 +883,13 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
   try {
     const gaps = await discoverPresencelessLoopOwners(sql);
     for (const gap of gaps) {
-      if (await healPresenceGap(sql, gap)) out.presenceGapsHealed.push(gap.ownerId);
+      const healed = await healPresenceGap(sql, gap);
+      if (healed) out.presenceGapsHealed.push(gap.ownerId);
+      out.bootConfigAlerts.push({
+        owner: gap.ownerId,
+        kind: 'dark-presence',
+        detail: healed ? 'presence row healed this pass' : 'heal write failed — retrying next sweep',
+      });
     }
   } catch (e) {
     console.warn(

@@ -163,6 +163,8 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const closeSubstrate = opts.closeSubstrate ?? closeAllBootedHarnesses;
   const isSaturated = opts.isSaturated ?? isLoopElevated;
   const skipSubstrateTeardown = opts.skipSubstrateTeardown ?? false;
+  const dropReplicationTracking =
+    opts.dropReplicationTracking ?? dropAllReplicationLivenessTracking;
   const hardExitOnRecycle = opts.hardExitOnRecycle ?? false;
   const killSelf =
     opts.killSelf ?? (() => process.kill(process.pid, 'SIGKILL'));
@@ -208,17 +210,32 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   // throw escapes below the JS layer). Skipping the attempt trades the same
   // pre-existing "sockets linger until peer timeout" cost this file already
   // accepts for a clean exit instead of a crash.
+  // EI-16949: best-effort, never blocks/throws — see dropReplicationTracking's doc.
+  const dropReplicationTrackingSafely = async (): Promise<void> => {
+    try {
+      const dropped = (await dropReplicationTracking()) as unknown;
+      const n = Array.isArray(dropped) ? dropped.length : undefined;
+      console.warn(
+        `[host-recycle] real substrate teardown skipped — still dropped replication-liveness tracking${n !== undefined ? ` for ${n} harness(es)` : ''} so any latched stall alarm's durable EI auto-resolves instead of orphaning open`,
+      );
+    } catch {
+      /* best-effort */
+    }
+  };
+
   const substrateDown = (async () => {
     if (skipSubstrateTeardown) {
       console.warn(
         '[host-recycle] skipping substrate teardown (skipSubstrateTeardown) — a memory-watchdog recycle tears down a large substrate that can throw an uncaught Napi::Error/SIGABRT below the JS layer regardless of loop pressure (EI-9649); the OS reclaims sockets/fds/LISTEN backends on exit, so this only defers the same peer-timeout socket-linger already accepted under saturation',
       );
+      await dropReplicationTrackingSafely();
       return;
     }
     if (isSaturated()) {
       console.warn(
         '[host-recycle] event loop under pressure at drain time — skipping substrate teardown to avoid the WI-3795/WI-3848 Napi::Error/SIGABRT race (sockets will linger until peer timeout, same as an abandoned-on-crash exit)',
       );
+      await dropReplicationTrackingSafely();
       return;
     }
     try {
@@ -254,6 +271,8 @@ export interface GracefulShutdownOpts {
   exit?: (code: number) => void;
   /** Test seam — forwarded to gracefulHostRecycle. */
   closeSubstrate?: () => Promise<unknown>;
+  /** Test seam — forwarded to gracefulHostRecycle (EI-16949). */
+  dropReplicationTracking?: () => Promise<unknown>;
   /** Test seam — forwarded to gracefulHostRecycle (WI-3795 saturated-skip check). */
   isSaturated?: () => boolean;
   /** Forwarded to gracefulHostRecycle (hard-exit backstop). */
@@ -310,6 +329,7 @@ export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
       recycleExitCode: 0, // intentional stop, not the non-zero recycle code
       exit: opts.exit,
       closeSubstrate: opts.closeSubstrate,
+      dropReplicationTracking: opts.dropReplicationTracking,
       isSaturated: opts.isSaturated,
       hardExitMs: opts.hardExitMs,
       hardExitOnRecycle: opts.hardExitOnRecycle,

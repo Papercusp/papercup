@@ -146,6 +146,16 @@ const FIXTURE_FILES: ReadonlySet<string> = new Set([
   // a real-issued key never lives in a secrets detector's own fixture set, so
   // exempting it costs no real-secret recall.
   'apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs',
+  // This scanner's OWN source. It is the one product file GUARANTEED to carry
+  // credential-shape-adjacent text — the RULES regexes above, plus any comment
+  // that documents a shape. The rules are hand-written to not self-match, but a
+  // single explanatory comment containing a bare literal (a PEM header) is
+  // enough to wedge the publish plane, and the offending blob then lives in the
+  // range forever (proven 2026-07-20 — a comment on THIS very exemption did
+  // exactly that). Exempt by exact path; the write-time PreToolUse secrets hook
+  // + code review remain as defense, and a real secret does not live in a
+  // scanner's source. Do NOT read this as license to exempt other product code.
+  'packages/operator-core/lib/sync/pot-git/secrets-guard.ts',
 ]);
 
 /** True if `path` is a designated credential-fixture file exempt from the scan. */
