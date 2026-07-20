@@ -2330,6 +2330,29 @@ export function hostThroughPty(o) {
       const payload = Buffer.concat(chunks);
       if (!payload.length) return;
       const msg = decodeControl(payload);
+      // EI-153: MISDELIVERY guard — the sender's addressed-recipient assertion
+      // (decodeOwnerIdentity) is checked against THIS host's own registered
+      // ownerId before anything else runs. This is leg-independent of *why* a
+      // wrong envelope reached this socket (a swapped subscriberId, a stale/
+      // reused host object, a sanitizeKey collision at some OTHER layer) — no
+      // matter the cause, a host that finds itself holding a control message
+      // addressed to a DIFFERENT agent must refuse to act on it rather than
+      // silently running another agent's work/identity in its own session (the
+      // su-b6c3f → su-ff997 incident). Absent `ownerId` (a pre-EI-153 sender, or
+      // a legacy non-envelope payload) is a no-op — unchanged behavior.
+      if (msg.ownerId != null && msg.ownerId !== ownerId) {
+        const rejectExtra = { reason: 'ownerId-mismatch', mode: msg.mode, expected: ownerId, got: msg.ownerId };
+        appendHostEvent(ownerId, 'control-payload-rejected', rejectExtra);
+        try {
+          process.stderr.write(
+            `psu-pty-host: control payload REJECTED for ${ownerId} — addressed to ${msg.ownerId} ` +
+              `(mode:${msg.mode}); refusing to run another agent's turn/identity in this session (EI-153)\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+        return;
+      }
       // EI-18109211232286833: stamp the receipt time ONCE, here, so both this
       // delivery attempt and its one makeCarryRearmController retry (which
       // reuses this same `msg` object — see carryRearm.schedule below) measure

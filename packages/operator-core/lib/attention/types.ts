@@ -311,7 +311,9 @@ export type AttentionRef =
   | { kind: 'dark-flag-ratification'; flagKey: string }
   | { kind: 'blocked-session'; sessionId: string; client: string; refId: string }
   // curated-signal-cards P-001:
-  | { kind: 'work-item-blocked'; workItemId: string; itemKind: string };
+  | { kind: 'work-item-blocked'; workItemId: string; itemKind: string }
+  // EI-147:
+  | { kind: 'decision-owed'; sessionId: string; refId: string };
 
 export interface AttentionItem {
   /** Unique within a reader response. `<kind>:<...>`. */

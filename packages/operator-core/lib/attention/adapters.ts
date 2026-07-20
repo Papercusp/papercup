@@ -901,3 +901,51 @@ export function blockedSessionToAttention(g: BlockedSessionInput): AttentionItem
     ref: { kind: 'blocked-session', sessionId: g.sessionId, client: g.client, refId: g.refId },
   };
 }
+
+/* ── decision owed (EI-147) ──────────────────────────────────────────────── */
+
+export interface DecisionOwedInput {
+  sessionId: string;
+  refId: string;
+  client: string;
+  question: string | null;
+  ownerAgentId: string | null;
+  harnessSlug: string | null;
+  closedAt: string;
+}
+
+/**
+ * A closed `session_pending_gates` 'ask' row (the owner answered a question)
+ * with no matching `plans:add-decision`/`ratify-decision` call by the same
+ * owner afterward — decision-owed-source.ts's mechanical heuristic (EI-147:
+ * "Owner decisions made in conversation aren't reliably recorded into
+ * plans"). Alert tier, never Decision: this is a NUDGE to the conversing
+ * agent that a decision may have leaked, not a confirmed miss the owner must
+ * personally adjudicate — false positives are expected (not every answered
+ * question is plan-worthy).
+ */
+export function decisionOwedToAttention(d: DecisionOwedInput): AttentionItem {
+  const tier: AttentionTier = 'alert';
+  return {
+    id: `decision-owed:${d.sessionId}:${d.refId}`,
+    kind: 'decision-owed',
+    category: ATTENTION_KIND_CATEGORY['decision-owed'],
+    source: 'harness',
+    harnessSlug: d.harnessSlug ?? null,
+    planSlug: null,
+    itemRef: null,
+    title: clip(d.question) || `A ${d.client} session answered a question with no decision recorded`,
+    body:
+      (d.question ? `"${d.question.trim()}"\n\n` : '') +
+      `The owner answered this in session ${d.sessionId}, but no plans:add-decision (or ratify-decision) call by that agent followed — the decision, if there was one, may not be captured in any plan. Review and record it with plans:add-decision if it should be, or ignore if this wasn't a plan-worthy choice.`,
+    status: 'possibly unrecorded',
+    importance: 'normal',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: d.ownerAgentId ?? null,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [DISCUSS, MESSAGE_OWNER],
+    ref: { kind: 'decision-owed', sessionId: d.sessionId, refId: d.refId },
+  };
+}
