@@ -470,7 +470,14 @@ export default function VoiceSettingsPage() {
                     options={[
                       { value: 'voicemode', label: 'Voicemode (Whisper, local)' },
                       { value: 'webspeech', label: 'Web Speech (browser cloud)' },
-                      { value: 'deepgram', label: 'Deepgram Nova-2 (cloud, BYO key)' },
+                      // Deepgram streaming STT was REMOVED from operator-core
+                      // (voice-engine slim-down, 2026-07-09 — WI-3510). Not
+                      // offered here anymore: selecting it silently degrades to
+                      // wake-word listening (voice-mode.ts), which looked like a
+                      // working "cloud STT" choice but wasn't. A stored
+                      // sttEngine:'deepgram' preference still resolves via that
+                      // fallback, same pattern as the elevenlabs-conversational
+                      // legacy alias above — just no longer selectable here.
                       { value: 'off', label: 'Off' },
                     ]}
                   />

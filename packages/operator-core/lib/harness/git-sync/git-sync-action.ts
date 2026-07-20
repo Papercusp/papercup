@@ -1286,6 +1286,11 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
     if (!entry) return;
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
     if (!potHomeSlug) return;
+    // WI-5168: the wire+store repoKey is the FEDERATED cross-device identity
+    // (github_repository_id when known), never the local install `slug` —
+    // see repo-identity.ts's module header for why keying on `slug` broke G-8
+    // for any two devices whose install slugs differ (nearly always).
+    const repoKey = canonicalRepoKey(entry);
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
@@ -1307,7 +1312,7 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
     // pruned mirror can't produce a dangling canonical ref).
     const wbSha = rows[0]?.wb_sha ?? null;
     if (wbSha) {
-      const bareRepoPath = hiveGitRepoPath(potHomeSlug, slug);
+      const bareRepoPath = hiveGitRepoPath(potHomeSlug, repoKey);
       const existing = await defaultRunGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], bareRepoPath);
       if (existing.code !== 0) {
         const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
@@ -1327,7 +1332,7 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
     const outcome = await runGithubBridgeTick({
       potHomeSlug,
       workspaceId,
-      repoKey: slug,
+      repoKey,
       githubRemote: entry.github_remote,
       forkRemote: entry.fork_remote,
       branches: [entry.github_default_branch ?? 'main'],

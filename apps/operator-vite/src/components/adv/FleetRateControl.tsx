@@ -48,16 +48,25 @@ export function fmtSpend(spendUsd: number | undefined): string {
   return `$${spendUsd.toFixed(2)}`;
 }
 
-/** "3 / 6 / 16" (real live agents / AIMD-effective / max) — eff omitted when = max.
-    The numerator is the REAL fleet-wide agent count (`liveAgents`, from coord_presence —
-    EI-18106936190883400), not the governor's `inFlight` (which only counts rate-governed
-    dispatches and reads 0 while dozens of su/fleet CLI agents run ungoverned). Falls back
-    to `inFlight` only if an older/partial wire payload omits `liveAgents`. */
-export function fmtAgents(fleet: FleetRateStatusWire['fleet'] | undefined): string {
+/** "81" — the REAL fleet-wide live-agent count (`liveAgents`, from coord_presence —
+    EI-18106936190883400). Rendered ALONE, never over the governed cap: the old
+    "liveAgents / cap" juxtaposition read as "81 of 8" nonsense (owner-flagged twice,
+    overview-tab-expansion P-005) because the two numbers describe DIFFERENT
+    populations — live counts every agent (mostly ungoverned su/CLI sessions), the
+    cap only bounds rate-governed dispatches. */
+export function fmtLiveAgents(fleet: FleetRateStatusWire['fleet'] | undefined): string {
+  if (!fleet || !Number.isFinite(fleet.liveAgents)) return '—';
+  return String(fleet.liveAgents);
+}
+
+/** "0 / 8" (rate-GOVERNED dispatches in flight / the editable `maxSimultaneousAgents`
+    cap) — "0 / eff 6 / 8" when AIMD adapted effective concurrency below the cap.
+    This pair is population-consistent: both sides count governed dispatches only. */
+export function fmtGoverned(fleet: FleetRateStatusWire['fleet'] | undefined): string {
   if (!fleet) return '—';
   const eff = Number.isFinite(fleet.effective) ? fleet.effective : fleet.cap;
   const cap = Number.isFinite(fleet.cap) ? String(fleet.cap) : '∞';
-  const n = Number.isFinite(fleet.liveAgents) ? fleet.liveAgents! : fleet.inFlight;
+  const n = Number.isFinite(fleet.inFlight) ? fleet.inFlight : 0;
   return eff < fleet.cap ? `${n} / eff ${eff} / ${cap}` : `${n} / ${cap}`;
 }
 

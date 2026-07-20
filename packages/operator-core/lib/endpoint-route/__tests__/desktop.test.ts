@@ -199,6 +199,52 @@ describe('buildGithubLoginSpec', () => {
     expect(script).toContain('&&');
     expect(script).toMatch(/auth setup-git --hostname github\.com/);
   });
+
+  // WI-3626 recurrence guard: `gh auth setup-git` bakes WHICHEVER path this
+  // function resolves verbatim into `credential.https://github.com.helper` in
+  // ~/.gitconfig. An app-bundle-relative path (`${process.cwd()}/bin/gh`) dangles
+  // the instant the app is renamed/replaced (confirmed live on the Mac VM:
+  // `Papercusp.app` -> `Papercusp Server.app` / `Papercusp GUI.app`). The fix
+  // (ensureGhLinked keeping a STABLE `~/.papercusp/bin/gh` shim, preferred first)
+  // landed with ZERO test coverage of the actual priority order — the one test
+  // above never mocks fs, so it silently exercises whichever branch happens to
+  // match the real filesystem instead of proving the stable shim wins. These two
+  // lock the ordering in so a future refactor can't silently re-widen the window.
+  describe('gh path resolution (WI-3626)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('prefers the stable ~/.papercusp/bin/gh shim over any app-bundle-relative path', async () => {
+      const fs = await import('node:fs');
+      const home = '/home/u';
+      const stableShim = `${home}/.papercusp/bin/gh`;
+      vi.spyOn(fs, 'existsSync').mockImplementation((p) => p === stableShim);
+      vi.spyOn(process, 'cwd').mockReturnValue('/Applications/Papercusp.app/Contents/Resources/sidecar');
+
+      const spec = buildGithubLoginSpec(home);
+      const script = spec.args[1] as string;
+
+      expect(script).toContain(`"${stableShim}" auth login`);
+      expect(script).toContain(`"${stableShim}" auth setup-git`);
+      // The whole point: never bakes a path that lives inside a *.app bundle
+      // when the durable shim is available.
+      expect(script).not.toMatch(/\.app\//);
+    });
+
+    it('falls back to the app-bundle-relative path only when the stable shim is absent (dev box / pre-relink)', async () => {
+      const fs = await import('node:fs');
+      const home = '/home/u';
+      const bundleGh = '/Applications/Papercusp.app/Contents/Resources/sidecar/bin/gh';
+      vi.spyOn(fs, 'existsSync').mockImplementation((p) => p === bundleGh);
+      vi.spyOn(process, 'cwd').mockReturnValue('/Applications/Papercusp.app/Contents/Resources/sidecar');
+
+      const spec = buildGithubLoginSpec(home);
+      const script = spec.args[1] as string;
+
+      expect(script).toContain(`"${bundleGh}" auth login`);
+    });
+  });
 });
 
 describe('desktop route ports', () => {

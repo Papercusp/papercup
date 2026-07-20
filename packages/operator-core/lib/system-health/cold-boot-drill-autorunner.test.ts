@@ -7,13 +7,14 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ColdBootDrillLedgerEvent } from '../cold-boot-drill-live';
-import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
+import { sessionClassForHost, type PsuPtyHost } from '../events/await/psu-pty-discovery';
 import {
   respawnedUngradedDrills,
   hasPendingDrillForClass,
   gradedDrillCountForClass,
   pickEligibleHost,
   runColdBootDrillAutorunOnce,
+  AUTO_DRILL_CLASSES,
   MAX_DRILLS_BEFORE_GIVEUP,
   type ColdBootDrillAutorunDeps,
 } from './cold-boot-drill-autorunner';
@@ -39,6 +40,21 @@ function host(over: Partial<PsuPtyHost>): PsuPtyHost {
     ...over,
   };
 }
+
+// A1 (cold-with-carry-activation-2026-07-20): the runner's target classes must be
+// EXACTLY what the live classifier emits, so a drill's grade lands under the class a
+// real wake gets (the EI-18133456688790756 mismatch was drills graded under a string
+// sessionClassForHost never produces).
+describe('A1 class-vocabulary correctness', () => {
+  it('AUTO_DRILL_CLASSES matches sessionClassForHost for a headless host', () => {
+    expect(sessionClassForHost({ bridgeTty: false })).toBe(HEADLESS);
+    expect(AUTO_DRILL_CLASSES).toContain(sessionClassForHost({ bridgeTty: false }));
+  });
+  it('an interactive host is NOT an auto-drill target (never auto-cut a human)', () => {
+    expect(sessionClassForHost({ bridgeTty: true })).toBe(INTERACTIVE);
+    expect(AUTO_DRILL_CLASSES).not.toContain(sessionClassForHost({ bridgeTty: true }));
+  });
+});
 
 describe('respawnedUngradedDrills', () => {
   it('returns respawned drills with no grade / no dead-terminal, deduped', () => {

@@ -355,6 +355,15 @@ export async function startDbos(): Promise<void> {
     // reaping stuck fires). Same process-level rationale; reads git-sync routine health.
     const { startGitSyncStallWatchdog } = await import('../release/git-sync-stall-watchdog');
     startGitSyncStallWatchdog(getOrgPg().sql);
+    // Sibling (WI-757 part b): a federation VM whose swarm join keeps failing (e.g. gh auth
+    // lost across a restart) silently stays local-only forever with nothing escalating it.
+    // Reads the in-process boot-history ring only — no DB round-trip needed.
+    try {
+      const { startFederationJoinStallWatchdog } = await import('../sync/hyperbee/federation-join-stall-watchdog');
+      startFederationJoinStallWatchdog();
+    } catch (e) {
+      console.warn('[federation-join-stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
+    }
     // Sibling (WI-3612, EI-8820 follow-up): a git worktree carrying uncommitted edits that
     // NO git-sync routine (or documented exclusion) covers — the class that stranded WI-3449
     // for hours (an agent worked inside a linked env-tree worktree git-sync never sees).

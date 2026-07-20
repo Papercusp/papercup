@@ -24,6 +24,36 @@ export type LocalGithubIdentity =
 export interface ResolveLocalGithubIdentityOpts {
   getToken?: () => Promise<{ kind: string; token?: string }>;
   getUser?: () => Promise<{ id: number; login: string } | null>;
+  /**
+   * Test seam only: force cache participation even with injected fns. In
+   * production the cache is used automatically when NO fns are injected (the
+   * default path); tests inject fns and must opt in explicitly so a cached
+   * value is never served across unrelated injected-mock cases.
+   */
+  _cache?: boolean;
+}
+
+/**
+ * Cache the resolved OK identity, keyed by the current gh token
+ * (whole-app-sync-payload-audit phase2 P-005). The `oc.users.getAuthenticated()`
+ * GET /user round-trip inside getAuthenticatedGithubUser() was measured on the
+ * read path of prReviewerSettings.byHarness (0.23s for 342B of data) and is
+ * shared by ~27 callers (PR panels, claim-status, viewer, poll-daemon, …), so a
+ * per-read network hop was paid all over the app. The {id, login} is machine-
+ * stable; keying the cache by the token means a re-auth (which rotates the token,
+ * already cached process-lifetime in gh-token with a 401-refresh hook) is a key
+ * MISS → automatic invalidation, so we never serve an identity for a token that
+ * is no longer current. A short TTL bounds staleness for the rare same-token
+ * account edge. getToken() still runs on every call (it is cheap/cached), so
+ * token freshness for federation callers is untouched — only the /user hop is
+ * cached.
+ */
+const IDENTITY_CACHE_TTL_MS = 60_000;
+let identityCache: { token: string; identity: Extract<LocalGithubIdentity, { kind: 'ok' }>; at: number } | null = null;
+
+/** Drop the cached identity (e.g. on a detected auth change). Also a test seam. */
+export function invalidateLocalGithubIdentityCache(): void {
+  identityCache = null;
 }
 
 /**
@@ -53,11 +83,23 @@ export async function resolveLocalGithubIdentity(
 ): Promise<LocalGithubIdentity> {
   const getToken = opts.getToken ?? getGhAuthToken;
   const getUser = opts.getUser ?? getAuthenticatedGithubUser;
+  // Cache participates on the default (production) path; injected-mock tests opt
+  // in explicitly via `_cache` so no cached value crosses unrelated cases.
+  const useCache = opts._cache ?? (!opts.getToken && !opts.getUser);
 
   const tok = await getToken().catch(() => null);
   if (!tok) return { kind: 'gh_auth_required' };
   if (tok.kind !== 'ok' || !tok.token) return { kind: 'gh_auth_required' };
+
+  // Serve the cached identity for this exact token within the TTL — skips the
+  // GET /user network hop. A rotated token (re-auth) is a key miss.
+  if (useCache && identityCache && identityCache.token === tok.token && Date.now() - identityCache.at < IDENTITY_CACHE_TTL_MS) {
+    return identityCache.identity;
+  }
+
   const user = await getUser().catch(() => null);
   if (!user) return { kind: 'gh_auth_required' };
-  return { kind: 'ok', token: tok.token, githubUserId: user.id, githubLogin: user.login };
+  const identity = { kind: 'ok' as const, token: tok.token, githubUserId: user.id, githubLogin: user.login };
+  if (useCache) identityCache = { token: tok.token, identity, at: Date.now() };
+  return identity;
 }

@@ -114,6 +114,12 @@ export function startAdminTestRun(selection: AdminTestSuiteId | 'all-safe', retu
         done: (payload) => {
           finishSuite(record, payload);
           appendLog(record, payload.suiteId, payload.status === 'fail' ? 'error' : payload.status === 'warn' ? 'warn' : 'info', `${payload.label} finished ${payload.status} in ${(payload.durationMs / 1000).toFixed(1)}s`);
+          // P-010: persist the desktop-perf run for trend/regression detection.
+          if (payload.suiteId === 'desktop-performance') {
+            void persistDesktopPerfRun(record, payload).catch((err) => {
+              appendLog(record, 'desktop-performance', 'warn', `perf-run persist skipped: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
         },
         log: (payload) => appendLog(record, payload.suiteId, payload.level, payload.line),
       }, controller.signal, { returnHref: restoreHref, tauriPid });
@@ -151,4 +157,36 @@ function withRunId(href: string, runId: string): string {
   const url = new URL(href);
   url.searchParams.set('run', runId);
   return url.toString();
+}
+
+/**
+ * Persist the just-finished desktop-performance run's structured measures for
+ * trend/regression detection (desktop-performance-suite-2026-07-20 P-010).
+ *
+ * Lazily imports the PG layer so the store stays DB-free in unit tests, and is
+ * best-effort: a persist failure logs a warn on the run and never fails the run.
+ * A run whose checks produced NO structured measures (e.g. every check errored
+ * before measuring) is skipped rather than storing an empty row.
+ */
+async function persistDesktopPerfRun(record: RunRecord, done: AdminTestSuiteDone): Promise<void> {
+  const results = record.snapshot.results.filter((r) => r.suiteId === 'desktop-performance');
+  const { extractDesktopPerfMeasures, recordDesktopPerfRun, toRunStatus } = await import('./system-health/desktop-perf-runs');
+  const measures = extractDesktopPerfMeasures(results);
+  if (measures.length === 0) return;
+  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? 'default';
+  const gitSha = process.env.PAPERCUSP_GIT_SHA ?? process.env.PAPERCUSP_RELEASE_SHA ?? null;
+  await recordDesktopPerfRun({
+    workspaceId,
+    source: 'admin-suite',
+    status: toRunStatus(done.status),
+    measures,
+    gitSha,
+    runId: record.snapshot.runId,
+  });
+  try {
+    const { notifySyncInvalidate } = await import('./sync-sse');
+    await notifySyncInvalidate('desktopPerfTrend', { workspaceId });
+  } catch {
+    /* the trend panel polls; sync invalidation is a best-effort nudge */
+  }
 }

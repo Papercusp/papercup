@@ -819,6 +819,22 @@ function statusResult(
   return { status: pass ? 'pass' : 'fail', expected, actual, details, measures };
 }
 
+/** A warm-route measure — value in ms, asserted against warmRouteSettleMs, ok
+ *  taken from the check's own pass verdict (which also folds in route-settle). */
+function routeMeasure(key: string, valueMs: number, ok: boolean): DesktopPerfMeasure {
+  return { key, value: valueMs, unit: 'ms', budget: DESKTOP_PERF_BUDGETS.warmRouteSettleMs, ok };
+}
+
+/** A budgeted measure whose ok is `value <= budget` (lower is better). */
+function budgetMeasure(
+  key: string,
+  value: number,
+  unit: DesktopPerfMeasure['unit'],
+  budget: number,
+): DesktopPerfMeasure {
+  return { key, value, unit, budget, ok: value <= budget };
+}
+
 function fail(
   expected: string,
   actual: string,

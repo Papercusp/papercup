@@ -24,9 +24,14 @@
  *     no log is ever admitted. The pubkey is the SAME raw-32-byte base64 the
  *     two-channel binding uses.
  *
- * Throws when the identity can't be resolved (no gh auth / keychain failure).
- * boot.ts's swarm-join catch treats that as "stay local-only" — a peer that
- * can't announce simply doesn't federate, which is correct.
+ * Throws when the identity can't be resolved AND no usable cache exists (no gh auth /
+ * keychain failure on a device that has never successfully announced before — see
+ * `identityFromCache` below, which transparently falls back to the persisted
+ * `~/.papercusp/local-announce-identity.json` on a re-auth failure once one exists).
+ * boot.ts's swarm-join catch treats an actual throw as "stay local-only" — a peer that
+ * truly can't announce simply doesn't federate. A SUSTAINED stall in that state is
+ * escalated by federation-join-stall-watchdog.ts (WI-757 part b), which reads the
+ * `swarm_join_failed` boot-history event that catch records.
  */
 
 import { loadOrGenerateDeviceKeypair, ensureAttestationGist } from '../../identity/attest';
