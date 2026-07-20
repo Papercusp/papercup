@@ -390,6 +390,86 @@ function unexpectedLocalStatusColorMaps(): string[] {
   return offenders;
 }
 
+/**
+ * Class names ever seen applied via a static `className="..."` (or a static
+ * template literal) directly on a `<button>` JSX element — used by the
+ * flex/grid-on-button hazard check below to catch component-scoped classes,
+ * not just a bare `button` type selector.
+ */
+let buttonClassNamesCache: ReadonlySet<string> | null = null;
+
+function collectButtonClassNames(): ReadonlySet<string> {
+  if (buttonClassNamesCache) return buttonClassNamesCache;
+  const classes = new Set<string>();
+  const buttonTagRe = /<button\b[^>]*>/gs;
+  const classNameRe = /className\s*=\s*(?:\{)?\s*["'`]([^"'`{}]*)["'`]/;
+  for (const file of collectFiles()) {
+    if (!file.endsWith('.tsx')) continue;
+    const tags = readCode(file).match(buttonTagRe) ?? [];
+    for (const tag of tags) {
+      const m = classNameRe.exec(tag);
+      if (!m) continue;
+      for (const cls of m[1].split(/\s+/).filter(Boolean)) classes.add(cls);
+    }
+  }
+  buttonClassNamesCache = classes;
+  return classes;
+}
+
+/**
+ * WebKitGTK (the Tauri desktop webview's engine) renders a `<button>`'s
+ * contents through an internal anonymous box (RenderButton) that IGNORES
+ * `display: flex`/`grid` set on the button element itself — Chromium honors
+ * it, so this diffs invisibly in jsdom/Chromium-run tests while shipping
+ * broken layout in the actual desktop app (diagnosed live 2026-07-20,
+ * EI-18135716653974462 / WI-5581 — a progress bar rendered 0×0 with
+ * overflowing children). The safe pattern: reset the `<button>` to a plain
+ * block (`display: block`) and move ALL flex/grid layout onto an inner
+ * `<span>`/`<div>` that carries the row.
+ *
+ * Flags any CSS ruleset (styled-jsx `<style jsx>` blocks or a plain .css
+ * file) whose selector list contains either a bare `button` type selector,
+ * or a class known (via collectButtonClassNames) to be applied directly on a
+ * `<button>` element as that selector's own last compound — while its
+ * declarations set `display: (inline-)flex` or `display: (inline-)grid`.
+ */
+function unexpectedFlexOrGridOnButtonSelectors(): string[] {
+  const offenders: string[] = [];
+  const buttonClasses = collectButtonClassNames();
+  const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+  const displayRe = /display\s*:\s*(?:inline-)?(?:flex|grid)\b/;
+  const bareButtonRe = /(^|[\s>+~,])button(?=[\s.:#\[>+~,]|$)/;
+
+  for (const file of collectFiles()) {
+    const content = readCode(file);
+    const matches = [...content.matchAll(ruleRe)];
+    for (const match of matches) {
+      const [whole, selectorList, decls] = match;
+      if (!displayRe.test(decls)) continue;
+      // Conservative CSS-ruleset shape guard: a real selector list never
+      // contains `;` or a bare `(` (template-literal/JS interpolation does) —
+      // except inside a pseudo-class like :not(...)/:hover — and stays short.
+      if (selectorList.length > 200) continue;
+      if (/[;]/.test(selectorList)) continue;
+      if (/\(/.test(selectorList) && !/:(?:not|is|where|hover|focus(?:-visible)?|active|disabled)\s*\(/.test(selectorList)) {
+        continue;
+      }
+      const selectors = selectorList.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const sel of selectors) {
+        const hasBareButton = bareButtonRe.test(sel);
+        const lastCompound = sel.split(/[\s>+~]+/).pop() ?? '';
+        const lastClasses = (lastCompound.match(/\.[A-Za-z0-9_-]+/g) ?? []).map((c) => c.slice(1));
+        const hasButtonClass = lastClasses.some((c) => buttonClasses.has(c));
+        if (!hasBareButton && !hasButtonClass) continue;
+        const before = content.slice(0, match.index! + whole.indexOf(selectorList));
+        const line = before.split('\n').length;
+        offenders.push(`${rel(file)}:${line}: ${sel}`);
+      }
+    }
+  }
+  return offenders;
+}
+
 function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
   const offenders: string[] = [];
   // All six brand-adjacent cyan/sky shades (P-006f): cyan-400/300, sky-500/400/300/200
