@@ -1,0 +1,80 @@
+/**
+ * Desktop-UI performance budgets — the thresholds the `desktop-performance`
+ * admin suite (admin-test-suites.ts `desktopPerformanceChecks`) and the
+ * packaged-binary wdio runner assert against.
+ *
+ * This is the DESKTOP-UI sibling of system-health/perf-budgets.ts (which budgets
+ * HOST/backend perf: worker CPU, event-loop lag, PSI). Kept here beside it so
+ * both budget families live in one place and a release gate (P-011) can read
+ * either.
+ *
+ * Extracted from the previously-inline numbers in desktopPerformanceChecks
+ * (desktop-performance-suite-2026-07-20 P-004) so every budget is named,
+ * reviewable, and referenced from exactly one place.
+ */
+
+export interface DesktopPerfBudgets {
+  /** Warm client-side route-settle ceiling (ms): a warm nav to a heavy route
+   *  must paint its identifying surface within this. */
+  warmRouteSettleMs: number;
+  /** Max single interaction latency (ms) the passive recorder may report. */
+  interactionMaxMs: number;
+  /** Chaos-run INP tiers (web.dev/inp): p95 ceiling + absolute max. */
+  chaosInpP95Ms: number;
+  chaosInpMaxMs: number;
+  /** Chaos-run frame budgets: worst single frame (ms) + count of severe drops. */
+  chaosMaxFrameMs: number;
+  chaosMaxFrameDrops: number;
+  /** Largest Tauri/WebKit process RSS ceiling (KB) — 512MB below the 4096MB
+   *  kill threshold. */
+  maxProcessRssKb: number;
+  /** Per-named-interaction settle budgets (ms), keyed by the perf-marks.ts
+   *  interaction name (the string emitted as a performance.measure + recorded
+   *  by the vitals recorder). The suite drives each interaction, reads its
+   *  measure, and asserts it against the budget here. */
+  interactions: Readonly<Record<string, number>>;
+}
+
+export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
+  warmRouteSettleMs: 1500,
+  interactionMaxMs: 200,
+  chaosInpP95Ms: 250,
+  chaosInpMaxMs: 500,
+  chaosMaxFrameMs: 200,
+  chaosMaxFrameDrops: 8,
+  maxProcessRssKb: 3584 * 1024,
+  interactions: {
+    // Sidebar Plans face: row click → plan body rendered in Vditor (WI-5547).
+    // Matches PERF_INTERACTIONS.planPopupOpen in
+    // apps/operator/app/_components/perf/perf-marks.ts.
+    'plan-popup-open': 1500,
+  },
+};
+
+/** Verdict for one named interaction measure vs its budget. */
+export interface InteractionBudgetVerdict {
+  name: string;
+  measuredMs: number;
+  budgetMs: number | null;
+  ok: boolean;
+}
+
+/**
+ * Evaluate a measured interaction duration against its budget. Pure — shared by
+ * the admin suite check, the packaged-binary runner, and the release gate
+ * (P-011). An interaction with no declared budget PASSES (ok:true,
+ * budgetMs:null): an unbudgeted interaction is recorded, never a failure.
+ */
+export function evaluateInteractionBudget(
+  name: string,
+  measuredMs: number,
+  budgets: DesktopPerfBudgets = DESKTOP_PERF_BUDGETS,
+): InteractionBudgetVerdict {
+  const budgetMs = budgets.interactions[name] ?? null;
+  return {
+    name,
+    measuredMs,
+    budgetMs,
+    ok: budgetMs === null ? true : measuredMs <= budgetMs,
+  };
+}

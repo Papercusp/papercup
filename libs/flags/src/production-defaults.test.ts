@@ -280,6 +280,18 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // sibling cross-machine flags already dark. Watermark raised 27→29. Count 27 → 29.
   'papercusp-authority-rpc-protomux',
   'papercusp-authority-eviction-probe',
+  // 2026-07-20 (WI-5563, bug-drain-200k structural-starvation diagnosis) —
+  // papercusp-replication-liveness-staleness-auto-close: DELIBERATE new dark flag, not
+  // a bug-fix correction (case: owner-authority, same class as WATCHDOG_AUTO_CLOSE).
+  // Gates a NEW sweep (replication-liveness-staleness-sweep.ts) that auto-resolves an
+  // open replication-liveness EI whose target harness still EXISTS (unlike the
+  // always-on replication-stall-orphan-sweep.ts, which only handles a renamed/deleted
+  // target) but has recorded no activity for a long inactivity window — the "abandoned
+  // demo/test harness" class. Autonomously resolving a durable escalation without a
+  // human/agent verifying the specific item is unsafe by default; OFF is byte-identical
+  // to today (escalate-only). Well under DARK_FLAGS_HIGH_WATERMARK (29) as an
+  // owner-authority case (does not count toward the parking watermark). Count 28 → 29.
+  'papercusp-replication-liveness-staleness-auto-close',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the

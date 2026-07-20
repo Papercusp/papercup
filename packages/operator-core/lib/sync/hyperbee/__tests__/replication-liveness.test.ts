@@ -483,7 +483,9 @@ describe('EI-7788: dropping an ALARMED log auto-resolves its durable EI (orphan 
     const recoveries: ReplicationStallEpisode[] = [];
     // The drop path routes through the module-level recovery reporter (no opts arg),
     // so capture it via the module seam rather than a per-call onRecovery.
-    setReplicationStallRecoveryReporterForTests((e) => recoveries.push(e));
+    setReplicationStallRecoveryReporterForTests((e) => {
+      recoveries.push(e);
+    });
     return recoveries;
   }
 

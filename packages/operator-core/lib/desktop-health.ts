@@ -234,17 +234,18 @@ function attemptIpcConnect(socketPath: string, timeoutMs: number): Promise<boole
  * with no intervening action — a same-tick restart-window flap, not a real outage. A
  * genuinely dead/wedged operator still fails both attempts and correctly alerts.
  */
-async function realIpcConnectable(timeoutMs = 2000): Promise<boolean> {
+export async function realIpcConnectable(timeoutMs = 2000, retryDelayMs = RETRY_DELAY_MS): Promise<boolean> {
   const disc = await resolveDesktopIpcDiscovery();
   if (!disc?.socketPath) return false;
   if (await attemptIpcConnect(disc.socketPath, timeoutMs)) return true;
-  await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+  await new Promise((r) => setTimeout(r, retryDelayMs));
   return attemptIpcConnect(disc.socketPath, timeoutMs);
 }
 
 /** Delay before the single retry in {@link realIpcConnectable} — comfortably bridges a
- *  routine operator restart's stop→re-exec window without materially slowing a real-down verdict. */
-const RETRY_DELAY_MS = 1000;
+ *  routine operator restart's stop→re-exec window without materially slowing a real-down verdict.
+ *  Exported so tests can override it (via the `retryDelayMs` param) instead of sleeping for real. */
+export const RETRY_DELAY_MS = 1000;
 
 async function realRecentErrorCount(windowMs: number): Promise<number> {
   const since = Date.now() - windowMs;

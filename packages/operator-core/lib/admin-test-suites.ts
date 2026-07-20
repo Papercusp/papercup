@@ -12,6 +12,7 @@ import {
   type AdminTestSuiteId,
   type AdminTestSuiteSpec,
 } from './admin-test-suites-shared';
+import { DESKTOP_PERF_BUDGETS, evaluateInteractionBudget } from './system-health/desktop-perf-budgets';
 
 export interface AdminTestEventSink {
   suite: (payload: { suiteId: AdminTestSuiteId; label: string; startedAt: number; description: string }) => void;
@@ -542,8 +543,8 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         const route = `/harness?slug=${encodeURIComponent(state.activeSlug)}&ws=default`;
         const result = await measureWarmRoute(ctx, route, (page) => page.href.includes('/harness') && page.hasHarnessRoot);
         return statusResult(
-          result.ok && result.elapsedMs <= 1500,
-          'Warm harness route settles within 1500ms in the Tauri desktop shell.',
+          result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs,
+          `Warm harness route settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
         );
@@ -557,8 +558,8 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         // /admin/testing route was removed once the Tests tab covered it.
         const result = await measureWarmRoute(ctx, '/adv?slug=papercup&tab=testing&testsTab=vitals', (page) => page.href.includes('testsTab=vitals') && page.h1.includes('Live metrics'));
         return statusResult(
-          result.ok && result.elapsedMs <= 1500,
-          'Warm Tests tab (Live metrics) settles within 1500ms in the Tauri desktop shell.',
+          result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs,
+          `Warm Tests tab (Live metrics) settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
         );
@@ -570,8 +571,8 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       run: async () => {
         const result = await measureWarmRoute(ctx, '/admin/plans', (page) => page.href.includes('/admin/plans') && page.h1.includes('Plans'));
         return statusResult(
-          result.ok && result.elapsedMs <= 1500,
-          'Warm /admin/plans settles within 1500ms in the Tauri desktop shell.',
+          result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs,
+          `Warm /admin/plans settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
         );
@@ -582,10 +583,10 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       label: 'Chaos recorder usability',
       run: async () => {
         const summary = await runChaosRecorder(ctx, '/adv?slug=papercup&tab=testing&testsTab=test-runs', 5_000);
-        const pass = summary.clicks > 0 && summary.maxInp <= 500 && summary.p95Inp <= 250 && summary.errors === 0 && summary.reloads === 0 && summary.frameDrops <= 8 && summary.maxFrameMs <= 200;
+        const pass = summary.clicks > 0 && summary.maxInp <= DESKTOP_PERF_BUDGETS.chaosInpMaxMs && summary.p95Inp <= DESKTOP_PERF_BUDGETS.chaosInpP95Ms && summary.errors === 0 && summary.reloads === 0 && summary.frameDrops <= DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops && summary.maxFrameMs <= DESKTOP_PERF_BUDGETS.chaosMaxFrameMs;
         return statusResult(
           pass,
-          'Existing Chaos recorder can click around for 5s with p95 INP <=250ms, max INP <=500ms, no errors, no reloads, <=8 severe frame drops, and max frame <=200ms.',
+          `Existing Chaos recorder can click around for 5s with p95 INP <=${DESKTOP_PERF_BUDGETS.chaosInpP95Ms}ms, max INP <=${DESKTOP_PERF_BUDGETS.chaosInpMaxMs}ms, no errors, no reloads, <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops} severe frame drops, and max frame <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameMs}ms.`,
           `${summary.clicks} clicks · p95=${summary.p95Inp}ms · max=${summary.maxInp}ms · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`,
           [
             `routes: ${summary.routes.join(', ') || '(none)'}`,
@@ -613,11 +614,11 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
             return { maxDuration: sorted[0]?.duration || 0, top: sorted.slice(0, 5) };
           })()`,
         );
-        if (!summary.ok || !summary.value) return fail('The desktop interaction recorder reports max interaction <= 200ms.', describeCommandFailure(summary));
+        if (!summary.ok || !summary.value) return fail(`The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`, describeCommandFailure(summary));
         const top = summary.value.top.map((row) => `${row.duration}ms ${row.route} ${row.target}`).slice(0, 5);
         return statusResult(
-          summary.value.maxDuration <= 200,
-          'The desktop interaction recorder reports max interaction <= 200ms.',
+          summary.value.maxDuration <= DESKTOP_PERF_BUDGETS.interactionMaxMs,
+          `The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`,
           `max interaction=${summary.value.maxDuration}ms.`,
           top.length > 0 ? top : ['No recorded interactions present in the current buffer.'],
         );
@@ -649,13 +650,13 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         ).catch(() => undefined);
         const pid = await getTauriPid(ctx);
         await sleep(1500, ctx.signal);
-        if (!pid) return fail('The largest Tauri/WebKit process RSS stays below 3584MB.', 'Could not determine the running Tauri PID.');
+        if (!pid) return fail(`The largest Tauri/WebKit process RSS stays below ${Math.round(DESKTOP_PERF_BUDGETS.maxProcessRssKb / 1024)}MB.`, 'Could not determine the running Tauri PID.');
         const tree = await readMemoryTree(pid);
         const top = [...tree.rows].sort((a, b) => b.rssKb - a.rssKb).slice(0, 5);
         const largest = top[0]?.rssKb ?? 0;
         return statusResult(
-          largest <= 3_584 * 1024,
-          'The largest Tauri/WebKit process RSS stays below 3584MB (512MB below the 4096MB kill threshold).',
+          largest <= DESKTOP_PERF_BUDGETS.maxProcessRssKb,
+          `The largest Tauri/WebKit process RSS stays below ${Math.round(DESKTOP_PERF_BUDGETS.maxProcessRssKb / 1024)}MB (512MB below the 4096MB kill threshold).`,
           `${Math.round(largest / 1024)}MB max RSS across ${tree.rows.length} processes (${Math.round(tree.totalRssKb / 1024)}MB total).`,
           top.map((row) => `${row.pid} ${row.name ?? 'unknown'} → ${Math.round(row.rssKb / 1024)}MB RSS (HWM ${Math.round(row.hwmKb / 1024)}MB)`),
         );

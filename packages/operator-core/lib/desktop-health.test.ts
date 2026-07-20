@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import net from 'node:net';
 
 // EI-7760 regression: `resolveDesktopIpcDiscovery` must resolve the discovery file
 // for the desktop's OWN configured operator (via ~/.papercusp/desktop-build-target.json),
