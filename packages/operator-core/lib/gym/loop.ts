@@ -155,6 +155,9 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   // RB-006: a rate-limited turn pauses+resumes (near reset) rather than aborting the loop.
   let skipped = 0;
+  // WI-5674: capture WHY each cycle skipped (propose/evaluate threw) so the silent-skip failure
+  // mode is diagnosable from the report instead of vanishing into a bare catch.
+  const skipReasons: string[] = [];
 
   // P-010 (D-008): feed each evaluated variant to the QD novelty/diversity archive. The
   // archive is auxiliary — a failure here must never abort the optimizer, so it's swallowed.
@@ -221,9 +224,17 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
       proposal = await runWithRatePause(() => deps.propose(parent.overlay, parent.worstTraces, changelog), { now, sleep });
       candidateId = deps.newVariantId(cycle);
       evalRes = await runWithRatePause(() => deps.evaluate(candidateId, proposal.overlay), { now, sleep });
-    } catch {
+    } catch (err) {
       // Rate-limited past the bounded pause, or a non-rate failure → skip this cycle and
-      // continue (the loop's progress is preserved). Surfacing is RB-009's job.
+      // continue (the loop's progress is preserved). WI-5674: a silently-swallowed skip
+      // means no candidate → no proposal → the curator never runs → nothing new in /gym,
+      // so RECORD the concrete reason (both to the returned result and stderr) instead of
+      // discarding it. This is a diagnosis surface, not a control-flow change — the loop
+      // still preserves its champion/frontier/accepts and continues.
+      const reason = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      skipReasons.push(`cycle ${cycle}: ${reason}`);
+      // eslint-disable-next-line no-console
+      console.error(`[gym-loop] cycle ${cycle} SKIPPED (propose/evaluate threw): ${reason}`);
       skipped++;
       continue;
     }
@@ -327,5 +338,5 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     }
   }
 
-  return { cycles, accepts, championId, spentUsd, breakerTripped, skipped };
+  return { cycles, accepts, championId, spentUsd, breakerTripped, skipped, skipReasons };
 }
