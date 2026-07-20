@@ -166,3 +166,33 @@ export async function listPendingGates(filter: {
   `;
   return rows;
 }
+
+/**
+ * Closed `ask` gates (an AskUserQuestion the owner actually answered) since a
+ * given ISO timestamp — the feed `decision-owed-source.ts` (EI-147) scans for
+ * possibly-unrecorded owner decisions. Distinct from {@link listPendingGates}
+ * (which defaults to still-OPEN gates and covers both kinds): this reads the
+ * RESOLVED-ask history, newest-first, bounded by `sinceIso` so a long-lived
+ * workspace never full-scans the table.
+ */
+export async function listClosedAskGatesSince(filter: {
+  workspaceId: string;
+  sinceIso: string;
+  limit?: number;
+}): Promise<PendingGateRow[]> {
+  const { sql } = getOrgPg();
+  const limit = Math.min(Math.max(filter.limit ?? 100, 1), 500);
+  const rows = await sql<PendingGateRow[]>`
+    SELECT id::text AS id, workspace_id, session_id, client, kind, ref_id, owner_id, question, options,
+           source, raw_ref, harness_slug, opened_at::text AS opened_at, closed_at::text AS closed_at,
+           closed_reason, created_at::text AS created_at
+    FROM harness_shared.session_pending_gates
+    WHERE workspace_id = ${filter.workspaceId}
+      AND kind = 'ask'
+      AND closed_at IS NOT NULL
+      AND closed_at >= ${filter.sinceIso}
+    ORDER BY closed_at DESC
+    LIMIT ${limit}
+  `;
+  return rows;
+}
