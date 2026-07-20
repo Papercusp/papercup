@@ -137,6 +137,10 @@ export interface LoopResult {
   /** RB-006: cycles skipped because their propose/evaluate failed (rate-limit past the pause,
       or another error) — recorded instead of crashing the loop. */
   skipped: number;
+  /** WI-5674: the concrete reason each skipped cycle failed (propose/evaluate threw). Empty
+      when nothing skipped. Surfaced so a silent skip (no candidate → no proposal → curator
+      never runs) is diagnosable from the run report instead of a swallowed error. */
+  skipReasons: string[];
 }
 
 interface Tracked {
