@@ -110,6 +110,7 @@ import {
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
+  subagentGatewayRiskNotice,
   OWNER_DESKTOP_NOTIFY_DENY_FLAG,
   BRAIN_TOMBSTONE_MESSAGE,
   reExecSafePermissionsFromArgs,
@@ -2245,6 +2246,34 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(roleLaunchArgs('claude', files).args).toContain(NO_SUBAGENTS_DENY_FLAG);
     expect(roleLaunchArgs('claude', { ...files, replaceClaudeBase: true }).args).toContain(NO_SUBAGENTS_DENY_FLAG);
     expect(roleLaunchArgs('claude', { ...files, allowSubagents: true }).args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
+  });
+
+  describe('subagentGatewayRiskNotice (EI-3294)', () => {
+    it('warns ONLY for claude + allowSubagents + the default (non-gateway) account route', () => {
+      expect(
+        subagentGatewayRiskNotice('claude', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }),
+      ).toMatch(/EI-3294/);
+    });
+
+    it('stays silent when subagents are not enabled', () => {
+      expect(subagentGatewayRiskNotice('claude', false, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' })).toBeNull();
+      expect(subagentGatewayRiskNotice('claude', null, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' })).toBeNull();
+    });
+
+    it('stays silent once the route is gateway-routed (auto or a pinned account) — the whole point is it sidesteps the risk', () => {
+      expect(subagentGatewayRiskNotice('claude', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' })).toBeNull();
+      expect(subagentGatewayRiskNotice('claude', true, {})).toBeNull();
+      expect(subagentGatewayRiskNotice('claude', true, undefined)).toBeNull();
+    });
+
+    it('stays silent for non-claude backends (subagent deny/allow is claude-only)', () => {
+      expect(
+        subagentGatewayRiskNotice('omp', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }),
+      ).toBeNull();
+      expect(
+        subagentGatewayRiskNotice('codex', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }),
+      ).toBeNull();
+    });
   });
 
   // P-019/D-007 (voice-public-release-readiness-2026-07-12): role sessions silently

@@ -185,7 +185,24 @@ export async function runOneAutoloopCycle(
   // GYM_LOOP_PORT_RANGE above for the full rationale — EI-18154750714519366).
   const explicitPort = opts.port ?? (process.env.GYM_LOOP_PORT !== undefined ? Number(process.env.GYM_LOOP_PORT) : undefined);
   const PORT = explicitPort ?? (await findFreeBasePort({ count: 1, ...GYM_LOOP_PORT_RANGE }));
-  const WS = opts.workspaceId ?? process.env.GYM_LOOP_WORKSPACE ?? 'gym-loop-ws';
+  // WI-5675: the cycle spans TWO workspace AXES that a single `WS` used to conflate:
+  //  - DURABLE_WS — the workspace the cycle is FOR. Every write that must OUTLIVE the run
+  //    (gym_proposals, the autoloop row, QD archive, champion outcomes, gym gates, the
+  //    run-analytics copy into harness_gym_durable) scopes here, because the owner's /gym
+  //    tab reads RLS-scoped to THIS workspace. Production passes it explicitly
+  //    (autoloop-tick → gym-actions, from the enabled gym_autoloop_config row); a CLI run
+  //    resolves like account routing does (explicit env → process pin → active workspace).
+  //  - EPHEMERAL_WS — the ISOLATED data workspace the throwaway gym stack runs under
+  //    (gym-operator boot pin, runner ports, per-run harness provisioning). Isolation here
+  //    is BY DESIGN: run e07ea777 (2026-07-20) proved candidate-harness provisioning
+  //    breaks under the owner's workspace (resolveProject NULL for gymcand* slugs).
+  //  The old single `WS` sent the durable writes under 'gym-loop-ws', so the owner's /gym
+  //  tab showed 0 rows forever despite completed runs (WI-5675 — same class as WI-5125).
+  const DURABLE_WS =
+    opts.workspaceId ??
+    (process.env.GYM_LOOP_WORKSPACE?.trim() || undefined) ??
+    resolveGymAccountWorkspace(process.env, activeWorkspaceId);
+  const EPHEMERAL_WS = process.env.GYM_LOOP_EPHEMERAL_WORKSPACE?.trim() || 'gym-loop-ws';
   const MAX_CYCLES = Math.max(1, opts.maxCycles ?? Number(process.env.GYM_LOOP_MAX_CYCLES ?? 1));
   const REPEATS = Math.max(1, opts.repeats ?? Number(process.env.GYM_LOOP_REPEATS ?? 1));
   const BUDGET_USD =
@@ -242,7 +259,8 @@ export async function runOneAutoloopCycle(
     // "API Error: Usage credits required for long context" (429). Route account selection
     // against the operator's CREDENTIAL workspace instead: an explicit override, else the
     // process pin, else the operator's active workspace (papercusp-workspace in the
-    // routine host, where the pool lives). Everything else still scopes to WS.
+    // routine host, where the pool lives). Data writes scope per-axis: DURABLE_WS
+    // for control-plane/durable rows, EPHEMERAL_WS for the throwaway gym stack (WI-5675).
     const accountRoutingWs = resolveGymAccountWorkspace(process.env, activeWorkspaceId);
     try {
       gymSpawnGatewayEnv = await resolveSpawnGatewayEnv({
@@ -283,12 +301,17 @@ export async function runOneAutoloopCycle(
     harnessSlug: slug,
     noveltyWeight: NOVELTY_WEIGHT,
     candidateDirections: opts.candidateDirections?.length ?? 0,
+    // WI-5675: both workspace axes in the report, so a run whose durable writes land
+    // invisibly (wrong workspace vs the owner's /gym view) is diagnosable at a glance.
+    durableWorkspace: DURABLE_WS,
+    ephemeralWorkspace: EPHEMERAL_WS,
   };
 
   try {
     // 1. Dedicated gym DB (execution data). Self-heal sweep FIRST (WI-4332): reclaims
     // any orphaned container a crashed prior gym run left behind before Ryuk could reap it.
     await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
+    log(`workspaces: durable='${DURABLE_WS}' (owner-visible writes) · ephemeral='${EPHEMERAL_WS}' (throwaway gym stack)`);
     log('provisioning gym DB …');
     // max_connections=500: the gym-operator opens MANY pools per process (org + per-harness
     // + cache/listeners ≈ 69/proc) and the CLI's gymSql + spawned role agents add more, which
@@ -345,7 +368,7 @@ export async function runOneAutoloopCycle(
       harnessCommit,
       gymDatabaseUrl: gymUri,
       honoPort: PORT,
-      workspaceId: WS,
+      workspaceId: EPHEMERAL_WS,
       agentCmd: FAKE ? `node ${FAKE_AGENT}` : REAL_AGENT_CMD,
     });
     logFd = openSync(opLogPath, 'w');
@@ -415,7 +438,7 @@ export async function runOneAutoloopCycle(
     // 5. Ports + loop deps.
     const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
     const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
-    const ports = createGymRunnerPorts({ operatorBaseUrl: `http://127.0.0.1:${PORT}`, gymSql, superuserToken: suToken, workspaceId: WS });
+    const ports = createGymRunnerPorts({ operatorBaseUrl: `http://127.0.0.1:${PORT}`, gymSql, superuserToken: suToken, workspaceId: EPHEMERAL_WS });
     // F1-6/P-014 (D-005 hole 3): resolve THIS peer's announce device key as the elite-outcome
     // signer, so an accepted champion federates with a device-signed outcome proof
     // (outcome-VERIFIED on receivers that resolve our device — anti-lift parity) rather than
@@ -429,10 +452,10 @@ export async function runOneAutoloopCycle(
     report.eliteOutcomeSigning = Boolean(eliteOutcomeSigner);
     // P-010/P-011 (D-008): the QD record + novelty seams over ONE live archive (+ a shared
     // variantId→descriptor cache), so noveltyForVariant's reads see recordArchive's writes.
-    const qdSeams = makeLoopQdSeams(controlSql, { workspaceId: WS, harnessSlug: slug }, { outcomeSigner: eliteOutcomeSigner });
+    const qdSeams = makeLoopQdSeams(controlSql, { workspaceId: DURABLE_WS, harnessSlug: slug }, { outcomeSigner: eliteOutcomeSigner });
     // P-030 (B-09): measured post-acceptance outcomes of past champions prime the
     // proposer. Defensive — a read failure yields [] and the cycle proceeds.
-    const championOutcomes = await gatherChampionOutcomeEntries(controlSql, { workspaceId: WS, harnessSlug: slug });
+    const championOutcomes = await gatherChampionOutcomeEntries(controlSql, { workspaceId: DURABLE_WS, harnessSlug: slug });
     report.championOutcomes = championOutcomes.length;
     const deps = buildLoopDeps({
       gymSql,
@@ -444,7 +467,8 @@ export async function runOneAutoloopCycle(
       rubric: GYM_JUDGE_RUBRIC_V1,
       baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
       harnessCommit,
-      workspaceId: WS,
+      // The per-run gym harness provisioning happens inside the EPHEMERAL operator.
+      workspaceId: EPHEMERAL_WS,
       scratchRoot: scratch,
       timeoutMs: FAKE ? 240_000 : 1_200_000,
       pollIntervalMs: 3000,
@@ -455,7 +479,7 @@ export async function runOneAutoloopCycle(
       // P-030: recent champion post-acceptance outcome lines (additive priming).
       championOutcomes,
       // Human-gated (D-020): the loop records proposals for review; the human promotes via gym:accept.
-      recordProposal: makeLoopProposalRecorder(controlSql, { workspaceId: WS, harnessSlug: slug }),
+      recordProposal: makeLoopProposalRecorder(controlSql, { workspaceId: DURABLE_WS, harnessSlug: slug }),
       // P-010 (D-008): feed each evaluated variant into the QD novelty/diversity archive.
       recordArchive: qdSeams.recordArchive,
       // P-011 (D-008): the distance-from-archive novelty signal for QD parent selection.
@@ -467,7 +491,7 @@ export async function runOneAutoloopCycle(
 
     // 6. (CLI mode) mark autoloop running, run the loop, then settle the status.
     if (manageRow) {
-      await setAutoloop(controlSql, { workspaceId: WS, harnessSlug: slug, enabled: true, budgetUsd: BUDGET_USD, status: 'running' });
+      await setAutoloop(controlSql, { workspaceId: DURABLE_WS, harnessSlug: slug, enabled: true, budgetUsd: BUDGET_USD, status: 'running' });
     }
     log(`running loop: maxCycles=${MAX_CYCLES} budget=${BUDGET_USD === null ? '∞' : '$' + BUDGET_USD} (auto-promote: winners crowned post-run — owner mandate 2026-07-19) …`);
     const runStartedAtMs = Date.now();
@@ -476,7 +500,7 @@ export async function runOneAutoloopCycle(
         // live-configurability-audit P-012: per-harness gym gates (operator_gym_gates), settable via
         // gym:set-gates; empty store ⇒ DEFAULT_GYM_GATES (the former inline placeholder). The human
         // gate reviews each proposal anyway, so these only steer the loop's advisory verdict.
-        thresholds: await readGymGates(slug, WS),
+        thresholds: await readGymGates(slug, DURABLE_WS),
         baselineMeanCost: 1,
         baselineOfRecord: 0,
         dropThreshold: 1000,
@@ -500,7 +524,7 @@ export async function runOneAutoloopCycle(
     try {
       const { autoDecideRunProposals } = await import('./control-plane');
       const decided = await autoDecideRunProposals(controlSql, {
-        workspaceId: WS,
+        workspaceId: DURABLE_WS,
         harnessSlug: slug,
         sinceMs: runStartedAtMs,
       });
@@ -512,7 +536,7 @@ export async function runOneAutoloopCycle(
 
     if (manageRow) {
       await setAutoloop(controlSql, {
-        workspaceId: WS,
+        workspaceId: DURABLE_WS,
         harnessSlug: slug,
         status: result.breakerTripped ? 'paused' : 'idle',
         spentUsd: result.spentUsd,
@@ -527,7 +551,7 @@ export async function runOneAutoloopCycle(
       for (const r of result.skipReasons) log(`⚠ CANDIDATE SKIPPED — ${r}`);
       report.skipReasons = result.skipReasons;
     }
-    report.autoloop = await getAutoloop(controlSql, { workspaceId: WS, harnessSlug: slug });
+    report.autoloop = await getAutoloop(controlSql, { workspaceId: DURABLE_WS, harnessSlug: slug });
     // D-014/P-028 falsifiability surface: train vs real-anchor composite per variant. If the
     // train aggregate climbs across variants while the real-anchor stays flat, the loop is
     // optimizing a proxy (the real-anchor is scored every cycle but never optimized).
@@ -543,7 +567,7 @@ export async function runOneAutoloopCycle(
     // cycle (the proposals already landed via the control-plane recorder).
     if (gymSql && controlSql && controlSql !== gymSql) {
       try {
-        const copied = await copyRunAnalyticsToDurable(gymSql, controlSql, { workspaceId: WS, harnessSlug: slug });
+        const copied = await copyRunAnalyticsToDurable(gymSql, controlSql, { workspaceId: DURABLE_WS, harnessSlug: slug });
         report.durableAnalytics = copied;
         log(`durable run-analytics copied → live DB: ${copied.cycles} cycle(s), ${copied.variants} variant(s), ${copied.runs} run(s), ${copied.scores} score(s)`);
       } catch (err) {

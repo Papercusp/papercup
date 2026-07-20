@@ -132,5 +132,22 @@ export async function escalateChampionToQueenFrontier(
   input: ChampionEscalationInput,
   deps: ChampionEscalationDeps = defaultDeps,
 ): Promise<CaptureImprovementResult> {
-  return deps.captureImprovement(buildChampionEscalationInput(input));
+  const built = buildChampionEscalationInput(input);
+  try {
+    return await deps.captureImprovement(built);
+  } catch (err) {
+    // Pot-membership enforcement (P-005, 2026-07-20): scope 'harness:<slug>' resolves to a
+    // Pot home slug at write time, and a gym target is often a THROWAWAY optimization
+    // harness (e.g. gymloopharness) that is NOT a real Pot in the workspace — the strict
+    // resolver then refuses the capture (PotMembershipError, code 'pot_not_found'). That
+    // strictness is right for agent-supplied slugs, but a SYSTEM escalation must not drop
+    // the champion signal: retry once under the workspace platform Pot (exactly what the
+    // refusal prescribes). The harness identity stays in the title/body/payloadExtra, so
+    // nothing is lost but the per-Hive scope label.
+    if ((err as { code?: string } | null)?.code === 'pot_not_found' && built.scope !== undefined) {
+      const { scope: _droppedScope, ...platformPotInput } = built;
+      return await deps.captureImprovement(platformPotInput);
+    }
+    throw err;
+  }
 }

@@ -640,6 +640,43 @@ export const NATIVE_SCHEDULER_DENY_FLAG =
 export const NO_SUBAGENTS_DENY_FLAG = '--disallowedTools=Task,Agent,Workflow';
 
 /**
+ * EI-3294 known-risk warning: an opted-in subagent (Task/Agent tool) session
+ * running on the DEFAULT (no-gateway, direct local OAuth) account route died
+ * with 401 "Please run /login" after 12-39 tool calls, while the PARENT
+ * session kept working fine (repro: su-7c7f465d, 2026-06-24). Root cause
+ * (unconfirmed against Anthropic's closed-source CLI — no repro access from
+ * a papercusp-denied session — but consistent with the evidence): the
+ * built-in Task/Agent tool's spawned subagents likely run long enough to
+ * cross the local OAuth token's refresh/rotation window, and either don't
+ * share the parent's refresh or race it (a rotating refresh can invalidate
+ * the token a subagent is still holding) — a client-side behavior papercusp
+ * does not control. Gateway-routed sessions (`--account auto` / a pinned
+ * pool account) sidestep this ENTIRELY: the CLI holds a static
+ * `ANTHROPIC_AUTH_TOKEN` placeholder that never expires (spawn-env.ts
+ * `gatewaySpawnEnv` — the gateway does the real OAuth server-side), so a
+ * long-running subagent can't hit a client-side refresh race. Subagents are
+ * DENIED BY DEFAULT fleet-wide (owner mandate 2026-07-02) specifically
+ * because of this class of unreliable behavior, so most sessions never hit
+ * this — this warning only fires for the explicit opt-in
+ * (`--allow-subagents`) combined with the default (non-gateway) account
+ * route, i.e. exactly the untested combination. Non-fatal: prints once and
+ * proceeds — account routing is the OWNER's call (su playbook: never
+ * silently switch it), so this only surfaces the tradeoff, never changes it.
+ * Full writeup: agent-insights doc `task-tool-subagent-401-on-default-account`.
+ */
+export function subagentGatewayRiskNotice(agent, allowSubagents, envelopeEnv) {
+  if (agent !== 'claude' || !allowSubagents) return null;
+  if (envelopeEnv?.PAPERCUSP_ACCOUNT_ROUTING_MODE !== 'default') return null;
+  return (
+    'psu: WARNING — subagents are enabled on the default (non-gateway) account route. ' +
+    'A long-running Task/Agent subagent can die with a 401 "Please run /login" while the ' +
+    'parent session keeps working (EI-3294) — a known Claude-Code-CLI local-OAuth-refresh risk that ' +
+    'gateway routing (`--account auto` or a pinned pool account) sidesteps. Not auto-switching your ' +
+    'account route (that choice is yours) — just flagging it before you rely on subagent output.'
+  );
+}
+
+/**
  * Owner-desktop-notification lockout (owner directive 2026-07-14): agents were
  * hand-firing `notify-send` popups at the owner's desktop. Deny the easy Bash
  * paths (bare name + the absolute paths that would trivially bypass the
@@ -6520,6 +6557,10 @@ async function roleFlow(args, role, rolesMeta) {
       `  ·  ${res.harnessSlug ? `harness ${res.harnessSlug}` : 'workspace-level (no harness)'}  ·  session ${res.sessionId ?? '?'}`,
   );
   if (res.accountNotice) console.error(`psu: ${res.accountNotice}`);
+  {
+    const subagentRisk = subagentGatewayRiskNotice(res.agent, args.allowSubagents, res.envelopeEnv);
+    if (subagentRisk) console.error(subagentRisk);
+  }
   console.error(`psu: cwd ${res.cwd}  —  role-scoped MCP (${res.role}); resume from here`);
   // Role sessions are AGENT sessions across all backends: the marker arms the
   // hook-level scheduler guard (bash gate / omp coord-hook / codex hooks.json)
@@ -6903,6 +6944,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // psu-account-chooser: surface whether the `--account` pin took effect (or the
   // fail-soft reason it was skipped) so the user is never silently unpinned.
   if (res.accountNotice) console.error(`psu: account — ${res.accountNotice}`);
+  {
+    const subagentRisk = subagentGatewayRiskNotice(res.agent, args.allowSubagents, res.envelopeEnv);
+    if (subagentRisk) console.error(subagentRisk);
+  }
   // named-su-agent-fleets P-006: surface the chosen fleet (leading a new one /
   // joining an existing one), or the fail-soft reason it was skipped.
   if (res.fleetNotice) console.error(`psu: fleet — ${res.fleetNotice}`);
