@@ -10,6 +10,7 @@ import {
   HeartPulse,
   GraduationCap,
   Rocket,
+  Coins,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import FleetRateControl from './FleetRateControl';
@@ -879,6 +880,55 @@ export default function AdvOverviewTab() {
           ))}
         </OverviewTile>
 
+        {/* Spend (P-003): 1h/24h LLM spend + per-account gateway utilization,
+            most-burned first. Opens the sidebar Accounts tab. */}
+        <OverviewTile
+          icon={<Coins size={14} aria-hidden />}
+          title="Spend"
+          count={spendTile && spendTile.unavailable > 0 ? spendTile.unavailable : undefined}
+          accent="#eab308"
+          loading={(spendQ.loading && !spendQ.data) || (accountsQ.loading && !accountsQ.data)}
+          error={
+            spendQ.error
+              ? String((spendQ.error as Error).message ?? spendQ.error)
+              : accountsQ.error
+                ? String((accountsQ.error as Error).message ?? accountsQ.error)
+                : null
+          }
+          empty={!spendTile}
+          emptyLabel="No usage telemetry yet"
+          onOpen={() => void openAccounts()}
+        >
+          {spendTile && (
+            <>
+              <div className="pc-overview__row">
+                <span className="pc-overview__row-actor">spend</span>
+                <span
+                  className="pc-overview__row-title"
+                  title="LLM spend over the last 1h / 24h (usage telemetry, all accounts; provider-reported cost where available)"
+                >
+                  {spendTile.headline}
+                </span>
+              </div>
+              {spendTile.rows.map((a) => (
+                <div key={a.id} className="pc-overview__row">
+                  <span className="pc-overview__row-dot" data-acct={a.state} aria-hidden />
+                  <span
+                    className="pc-overview__row-title"
+                    title={`${a.label} — 5h window ${a.utilPct ?? '?'}%${a.util7dPct != null ? ` · 7d ${a.util7dPct}%` : ''}${a.state !== 'ok' ? ` · ${a.state}` : ''}`}
+                  >
+                    {a.label}
+                  </span>
+                  <span className="pc-overview__row-tag">
+                    {a.utilPct != null ? `${a.utilPct}%` : '—'}
+                    {a.state !== 'ok' ? ` · ${a.state}` : ''}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </OverviewTile>
+
         {/* Deploy pipeline (P-001): staging tip → green pin → live :3070, the
             gate verdict (+ judging/idle from the producer's systemd probe), and
             the deploy gap — the owner's "is my change live yet?" at a glance. */}
@@ -1139,6 +1189,12 @@ export default function AdvOverviewTab() {
         .pc-overview__row-dot[data-health='warn'] { background: #facc15; }
         .pc-overview__row-dot[data-bar='pass'] { background: #4ade80; }
         .pc-overview__row-dot[data-bar='fail'] { background: #f87171; }
+        /* Spend tile account states (P-003): walled = hard red, edge = orange,
+           paused = yellow, ok = green. */
+        .pc-overview__row-dot[data-acct='ok'] { background: #4ade80; }
+        .pc-overview__row-dot[data-acct='paused'] { background: #facc15; }
+        .pc-overview__row-dot[data-acct='edge'] { background: #fb923c; }
+        .pc-overview__row-dot[data-acct='walled'] { background: #f87171; box-shadow: 0 0 6px rgba(248, 113, 113, 0.5); }
         .pc-overview__row-actor {
           font-size: 10.5px; font-weight: 700; color: var(--fg-mute, #7f9bb4);
           flex-shrink: 0; min-width: 40px; max-width: 64px;

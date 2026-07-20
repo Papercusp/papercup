@@ -69,6 +69,9 @@ let readinessResult: { data?: unknown[]; loading?: boolean } = { data: undefined
 let pipelineResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
 // P-002: the Work-items tile's 24h burn-down companion.
 let deltaResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
+// P-003: the Spend tile's usage envelope + account pool.
+let spendResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
+let accountsResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
@@ -99,6 +102,10 @@ vi.mock('@papercusp/sync', () => ({
         return { ...pipelineResult, error: null };
       case 'workItems.delta24h':
         return { ...deltaResult, error: null };
+      case 'usage.spend':
+        return { ...spendResult, error: null };
+      case 'accounts.pool':
+        return { ...accountsResult, error: null };
       default:
         return { data: undefined, loading: false, error: null };
     }
@@ -198,6 +205,8 @@ describe('AdvOverviewTab component', () => {
     readinessResult = { data: undefined, loading: false };
     pipelineResult = { data: undefined, loading: false };
     deltaResult = { data: [], loading: false };
+    spendResult = { data: undefined, loading: false };
+    accountsResult = { data: [], loading: false };
   });
 
   afterEach(() => {
@@ -205,7 +214,7 @@ describe('AdvOverviewTab component', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the eight tiles, the top-bar rate control, and the empty states', async () => {
+  it('renders the nine tiles, the top-bar rate control, and the empty states', async () => {
     render(<AdvOverviewTab />);
     expect(screen.getByTestId('fleet-rate-control')).toBeTruthy();
     expect(screen.getByText('Plans')).toBeTruthy();
@@ -213,9 +222,11 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('Agents')).toBeTruthy();
     expect(screen.getByText('Activity')).toBeTruthy();
     expect(screen.getByText('Work items')).toBeTruthy();
+    expect(screen.getByText('Spend')).toBeTruthy();
     expect(screen.getByText('Deploy')).toBeTruthy();
     expect(screen.getByText('Health')).toBeTruthy();
     expect(screen.getByText('Learning')).toBeTruthy();
+    expect(screen.getByText('No usage telemetry yet')).toBeTruthy();
     expect(screen.getByText('No active plans')).toBeTruthy();
     expect(screen.getByText('Nothing needs you right now')).toBeTruthy();
     expect(screen.getByText('No live agents')).toBeTruthy();
@@ -453,6 +464,42 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('1 behind green')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Open Deploy' }));
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('git'));
+  });
+
+  it('renders the Spend tile: 1h/24h headline, per-account utilization, and the accounts-rail deep-link (P-003)', async () => {
+    spendResult = { data: [{ h1: { spendUsd: 1.23, calls: 42 }, h24: { spendUsd: 18.4, calls: 900 } }], loading: false };
+    accountsResult = {
+      data: [
+        {
+          id: 'max-1',
+          label: 'Max A',
+          provider: 'anthropic',
+          available: true,
+          usageWalled: false,
+          edgeThrottled: false,
+          rate: { pausedUntil: 0, utilization: 0.62, utilization7d: 0.4 },
+        },
+        {
+          id: 'max-2',
+          label: 'Max B',
+          provider: 'anthropic',
+          available: false,
+          usageWalled: true,
+          edgeThrottled: false,
+          rate: { pausedUntil: 0, utilization: 1.02 },
+        },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText('$1.23 1h · $18.40 24h')).toBeTruthy();
+    // most-burned first, walled state surfaced on the tag
+    expect(screen.getByText('102% · walled')).toBeTruthy();
+    expect(screen.getByText('62%')).toBeTruthy();
+    // unavailable-count badge (1 walled account)
+    expect(screen.getByText('1')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Spend' }));
+    await waitFor(() => expect(nuqsSetters.__states).toHaveBeenCalledWith({ lsb: true, lst: 'accounts' }));
   });
 
   it('shows the Agents loading state while advRoster.list is in flight', () => {
