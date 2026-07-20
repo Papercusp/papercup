@@ -374,7 +374,8 @@ export async function runOneAutoloopCycle(
     if (manageRow) {
       await setAutoloop(controlSql, { workspaceId: WS, harnessSlug: slug, enabled: true, budgetUsd: BUDGET_USD, status: 'running' });
     }
-    log(`running loop: maxCycles=${MAX_CYCLES} budget=${BUDGET_USD === null ? '∞' : '$' + BUDGET_USD} (autoPromote:false, human-gated) …`);
+    log(`running loop: maxCycles=${MAX_CYCLES} budget=${BUDGET_USD === null ? '∞' : '$' + BUDGET_USD} (auto-promote: winners crowned post-run — owner mandate 2026-07-19) …`);
+    const runStartedAtMs = Date.now();
     result = await runOptimizationLoop(
       {
         // live-configurability-audit P-012: per-harness gym gates (operator_gym_gates), settable via
@@ -394,6 +395,25 @@ export async function runOneAutoloopCycle(
       },
       deps,
     );
+
+    // Owner mandate 2026-07-19 ("no human in the loop"): decide this run's
+    // proposals by their measured result — positive dev-anchor delta promotes
+    // the challenger to champion via the SAME atomic path a human accept used
+    // (prompt-override write + champion-outcome tracking); the rest reject.
+    // The ledger stays the audit trail. Fail-soft: a decide error leaves rows
+    // pending for the next run (or a manual decision) rather than aborting.
+    try {
+      const { autoDecideRunProposals } = await import('./control-plane');
+      const decided = await autoDecideRunProposals(controlSql, {
+        workspaceId: WS,
+        harnessSlug: slug,
+        sinceMs: runStartedAtMs,
+      });
+      log(`auto-decided proposals: ${decided.accepted} promoted, ${decided.rejected} rejected`);
+      report.autoDecided = decided;
+    } catch (err) {
+      log(`auto-decide failed (rows stay pending): ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     if (manageRow) {
       await setAutoloop(controlSql, {

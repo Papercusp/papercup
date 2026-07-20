@@ -497,7 +497,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // cutover dark-entry gate (p2p-part-merge-proof-2026-07-18 D-001). Count 28 → 27.
     // 2026-07-19 (EI-16635) — papercusp-capability-exec-sandbox: BUG-FIX correction,
     // EI-7230-class (see PRE_INVERSION_DEFAULT_OFF above). Count 27 → 28.
-    expect(offCount).toBe(28);
+    // 2026-07-20 (WI-5563) — papercusp-replication-liveness-staleness-auto-close:
+    // DELIBERATE new owner-authority dark flag (see PRE_INVERSION_DEFAULT_OFF above).
+    // Count 28 → 29.
+    expect(offCount).toBe(29);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

@@ -319,6 +319,47 @@ export interface DecideResult {
  * harness_prompt_overrides (the role's prompt) AND marks the row accepted; reject
  * just marks it. Re-deciding a non-pending / missing row is a no-op (ok:false).
  */
+/**
+ * Auto-decide a run's freshly-recorded proposals (owner mandate 2026-07-19:
+ * "there should be no human in the loop"): every still-pending proposal this
+ * run recorded is decided by its measured result — a positive dev-anchor delta
+ * auto-ACCEPTS (atomically promoting the challenger prompt to champion and
+ * opening its post-acceptance outcome window, exactly the human-accept path),
+ * anything else auto-REJECTS so nothing lingers pending. The ledger keeps every
+ * decision auditable, and a promoted champion can still be reverted by
+ * accepting a later counter-proposal (or editing the role's prompt override).
+ */
+export async function autoDecideRunProposals(
+  sql: Sql,
+  q: { workspaceId: string; harnessSlug: string; sinceMs: number; now?: number },
+): Promise<{ accepted: number; rejected: number }> {
+  const rows = (await sql`
+    SELECT id, dev_anchor_delta FROM harness_shared.gym_proposals
+     WHERE workspace_id = ${q.workspaceId}
+       AND harness_slug = ${q.harnessSlug}
+       AND status = 'pending'
+       AND created_at >= ${q.sinceMs}
+     ORDER BY created_at ASC`) as Array<{ id: string; dev_anchor_delta: unknown }>;
+  let accepted = 0;
+  let rejected = 0;
+  for (const row of rows) {
+    const delta = row.dev_anchor_delta == null ? null : Number(row.dev_anchor_delta);
+    const wins = delta != null && Number.isFinite(delta) && delta > 0;
+    const res = await decideProposal(sql, {
+      id: row.id,
+      workspaceId: q.workspaceId,
+      harnessSlug: q.harnessSlug,
+      decision: wins ? 'accepted' : 'rejected',
+      ...(q.now != null ? { now: q.now } : {}),
+    });
+    if (res.ok) {
+      if (wins) accepted += 1;
+      else rejected += 1;
+    }
+  }
+  return { accepted, rejected };
+}
+
 export async function decideProposal(
   sql: Sql,
   q: { id: string; workspaceId: string; harnessSlug: string; decision: 'accepted' | 'rejected'; now?: number },

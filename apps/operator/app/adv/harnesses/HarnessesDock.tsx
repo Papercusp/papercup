@@ -12,6 +12,7 @@ import {
   setPanelParams,
   setPanelTitle,
 } from '../../harness/dock/dock-actions';
+import { OPEN_DOCK_PANEL_EVENT, drainPanelOpens } from './open-dock-panel';
 import WorkItemsPanel from './WorkItemsPanel';
 import DetailPanel from './DetailPanel';
 import AdvChatPanel from './AdvChatPanel';
@@ -184,6 +185,30 @@ export default function HarnessesDock({ slug }: { slug: string }) {
     window.addEventListener(OPEN_CHAT_EVENT, handler);
     return () => {
       window.removeEventListener(OPEN_CHAT_EVENT, handler);
+      unbind();
+    };
+  }, [slug]);
+
+  // Panel-open handling (owner ask 2026-07-19): the Overview tiles' `open`
+  // can request a specific dock panel (e.g. adv:agents) that may be absent
+  // from the user's persisted layout — ensure it exists + focus it. Same
+  // queue/drain shape as open-chat above; drainPanelOpens lives in
+  // open-dock-panel.ts (exported for tests).
+  useEffect(() => {
+    if (!slug) return;
+    const drain = () =>
+      drainPanelOpens({ slug, listPanels, openPanel, focusPanel });
+    let bound = false;
+    const unbind = onDockApiBind((api) => {
+      bound = !!api;
+      if (api) drain();
+    });
+    const handler = () => {
+      if (bound) drain();
+    };
+    window.addEventListener(OPEN_DOCK_PANEL_EVENT, handler);
+    return () => {
+      window.removeEventListener(OPEN_DOCK_PANEL_EVENT, handler);
       unbind();
     };
   }, [slug]);

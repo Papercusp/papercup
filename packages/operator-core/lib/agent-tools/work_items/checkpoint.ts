@@ -50,6 +50,24 @@
  * is already SELECTed FOR UPDATE inside the write transaction to build the journal
  * ring) — no extra round-trip, so the existing "plain replace never pre-reads"
  * contract (see the append-mode tests) is unaffected.
+ *
+ * EI-18132462898750489: NO ownership guard existed — any agent could checkpoint (or
+ * CLEAR) an item it does not hold, silently overwriting the actual assignee's
+ * in-flight state. Confirmed live: a fleet member (su-2e534e59) that had only READ
+ * WI-5557 via work_items:get (assignee su-a7d08fd3, a different live agent) called
+ * this tool on it anyway; the write succeeded with no signal that the caller wasn't
+ * the holder. Believing the silent success proved ownership, that agent then told
+ * its OWN compaction summary "Currently holding WI-5557" — a false directive that
+ * would have caused its successor to edit the item concurrently with its real
+ * holder had the successor not independently re-verified via coord:orient. The
+ * checkpoint text itself shows this had already happened at least once before
+ * ("a prior holder's detailed design got lost when overwritten by a meta-checkpoint").
+ * Fix: refuse the write per-item when the item has an assignee and it is not the
+ * caller (`not_holder`) — this is the exploitable surface (the item's own
+ * `taken_by`/`assignee` column is the authoritative holder signal); an unassigned
+ * item (about to be claimed) or one already assigned to the caller still writes
+ * normally. A caller that wants to leave a note on an item it doesn't hold has
+ * work_items:comment for that.
  */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
@@ -110,7 +128,8 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
     'Writes are verify-read and fail loudly on an invisible write (checkpoint_verify_failed); a plain replace that shrinks ' +
-    'a substantial checkpoint >50% returns a non-blocking `shrinkWarning`.',
+    "a substantial checkpoint >50% returns a non-blocking `shrinkWarning`. Requires holding the item — an item assigned to " +
+    "someone else fails per-item with `not_holder` (EI-18132462898750489); it never silently overwrites a peer's state.",
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next ' +
@@ -118,7 +137,8 @@ export default defineTool({
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. NOT an edit channel ' +
       'for the item: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +
-      'tool surface reports them missing).',
+      'tool surface reports them missing). Not for an item ASSIGNED to a peer — that fails `not_holder`; leave a ' +
+      'work_items:comment instead, or work_items:claim it first if you are taking it over.',
     chaining:
       'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a claim held ' +
       'through long purely-local tool use can go presence-stale and be reclaimed (no separate heartbeat verb).',
@@ -166,6 +186,23 @@ export default defineTool({
         const item = await getWorkItem(it.id, hintHarness).catch(() => null);
         if (!item && !hintHarness) {
           return { ok: false as const, id: it.id, error: `could not resolve a harness for work_item '${it.id}' — pass { harness }` };
+        }
+        // EI-18132462898750489: refuse a checkpoint write/clear on an item ASSIGNED to
+        // someone else. Before this guard the write silently succeeded for anyone, which
+        // both corrupted the real holder's in-flight state and gave the writer a false
+        // "I must hold this, my checkpoint write succeeded" signal — the confirmed root
+        // cause of a false "currently holding" directive surviving into a compaction
+        // summary. An unassigned item (assignee null/undefined — about to be claimed, or
+        // an older row shape) or one already assigned to the caller is unaffected.
+        if (item && item.assignee && item.assignee !== ident.ownerId) {
+          return {
+            ok: false as const,
+            id: it.id,
+            error:
+              `not_holder — work_item '${it.id}' is assigned to ${item.assignee}, not you (${ident.ownerId}). ` +
+              'Checkpointing an item you do not hold would silently overwrite its real holder\'s in-flight state. ' +
+              'Leave a note instead with work_items:comment, or work_items:claim it first if you are taking it over.',
+          };
         }
         // The item's own harness is authoritative (null for a harness-null item — the
         // store canonicalizes it). Fall back to the hint only when the item can't be
