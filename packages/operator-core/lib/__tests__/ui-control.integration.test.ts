@@ -13,6 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { liveTest, probeLive, type SkippableTestContext } from '../testing/live-integration';
 
 const OP_PORT = process.env.OP_PORT ?? null;
 const BASE = OP_PORT
@@ -20,19 +21,40 @@ const BASE = OP_PORT
   : (process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070');
 
 let TOKEN = '';
-let baseUrl = '';
 try {
   TOKEN = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+} catch { /* no token on disk — probe below fails closed */ }
+
+const baseUrl = await probeLive(async () => {
   const probe = await fetch(`${BASE}/api/ui/presence`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_id: 'probe', url: BASE, title: 'probe' }),
     signal: AbortSignal.timeout(3000),
   });
-  if (probe.status < 500) baseUrl = BASE;
-} catch { /* operator not running */ }
+  return probe.status < 500;
+}, 3000)
+  ? BASE
+  : '';
 
 const itLive = baseUrl ? it : it.skip;
+
+// EI-52: the file-load probe only confirms `/api/ui/presence` answers — it does NOT
+// prove the SSE intents stream (opened in `beforeAll` below) will actually connect. When
+// it doesn't, `startStream()`'s first `fetch` used to hang until Vitest's 60s hook
+// timeout, which fails the HOOK itself and drags every one of this suite's 9 tests down
+// with it (not a clean per-test skip). `degraded` lets `beforeAll` bound that connect
+// attempt and fall back to a graceful per-test skip instead.
+let degraded = false;
+
+/** `itLive` test body wrapper for this file: skip when the SSE fixture never connected,
+ * in addition to the live-transient handling `liveTest` already provides. */
+function uiLiveTest(fn: () => Promise<void>): (ctx: SkippableTestContext) => Promise<void> {
+  return liveTest(async () => {
+    if (degraded) throw Object.assign(new Error('ui SSE fixture never connected'), { name: 'TimeoutError' });
+    await fn();
+  });
+}
 
 function uuid(): string {
   const b = new Uint8Array(16);
@@ -66,6 +88,9 @@ class FakeBrowser {
   private aborter = new AbortController();
   private running: Promise<void>;
   private handlers: Record<string, (args: Record<string, unknown>) => unknown>;
+  private connectedResolve!: () => void;
+  private connectedReject!: (e: unknown) => void;
+  private readonly connectedPromise: Promise<void>;
 
   constructor(clientId: string) {
     this.clientId = clientId;
@@ -83,15 +108,36 @@ class FakeBrowser {
       'snapshot': () => ({ found: true, text: 'fake-snapshot' }),
       'refresh-build': (args) => ({ feature_registered: true, args }),
     };
+    this.connectedPromise = new Promise((resolve, reject) => {
+      this.connectedResolve = resolve;
+      this.connectedReject = reject;
+    });
     this.running = this.startStream();
   }
 
+  /** Resolves once the SSE fetch's response headers arrive (connection established),
+   * rejects if the connect attempt itself fails. EI-52: `beforeAll` races this against
+   * a bound timeout instead of letting a never-connecting stream hang the hook. */
+  connected(): Promise<void> {
+    return this.connectedPromise;
+  }
+
   private async startStream() {
-    const r = await fetch(`${baseUrl}/api/ui/intents/stream?client_id=${encodeURIComponent(this.clientId)}`, {
-      headers: { Accept: 'text/event-stream' },
-      signal: this.aborter.signal,
-    });
-    if (!r.body) throw new Error('no SSE body');
+    let r: Response;
+    try {
+      r = await fetch(`${baseUrl}/api/ui/intents/stream?client_id=${encodeURIComponent(this.clientId)}`, {
+        headers: { Accept: 'text/event-stream' },
+        signal: this.aborter.signal,
+      });
+    } catch (e) {
+      this.connectedReject(e);
+      return;
+    }
+    if (!r.body) {
+      this.connectedReject(new Error('no SSE body'));
+      return;
+    }
+    this.connectedResolve();
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -153,66 +199,78 @@ describe('UI control surface (ui:list_clients / ui:get_state / ui:dispatch)', ()
     if (!baseUrl) return;
     clientId = uuid();
     browser = new FakeBrowser(clientId);
+    // EI-52: bound the SSE connect attempt instead of letting a never-connecting stream
+    // hang this hook to its full timeout — that used to fail the HOOK itself (dragging
+    // every test in the file down as a hard failure) rather than cleanly skipping.
+    try {
+      await Promise.race([
+        browser.connected(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('sse_connect_timeout')), 8000)),
+      ]);
+    } catch {
+      degraded = true;
+      return;
+    }
     await browser.heartbeat();
     await new Promise((r) => setTimeout(r, 500));
-  });
+  }, 15_000);
 
   afterAll(async () => {
     if (browser) await browser.stop();
   });
 
-  itLive('list_clients includes the new client', async () => {
+  itLive('list_clients includes the new client', uiLiveTest(async () => {
     const res = JSON.parse((await callTool('ui:list_clients', {}, `?superuser=1&workspace=default`)).text);
     expect(res.clients.some((c: any) => c.client_id === clientId)).toBe(true);
     expect(res.self_client_id).toBeNull();
-  });
+  }));
 
-  itLive('ctx.uiClientId populated via &client= URL param', async () => {
+  itLive('ctx.uiClientId populated via &client= URL param', uiLiveTest(async () => {
     const res = JSON.parse((await callTool('ui:list_clients', {}, `?superuser=1&workspace=default&client=${clientId}`)).text);
     expect(res.self_client_id).toBe(clientId);
     expect(res.clients.find((c: any) => c.client_id === clientId)?.is_self).toBe(true);
-  });
+  }));
 
-  itLive('get_state returns parsed params', async () => {
+  itLive('get_state returns parsed params', uiLiveTest(async () => {
     const state = JSON.parse((await callTool('ui:get_state', {}, `?superuser=1&workspace=default&client=${clientId}`)).text);
     expect(state.client_id).toBe(clientId);
     expect(state.params.tab).toBe('initial');
     expect(state.stale).toBe(false);
-  });
+  }));
 
-  itLive('get_state errors when no client_id available', async () => {
+  itLive('get_state errors when no client_id available', uiLiveTest(async () => {
     const res = await callTool('ui:get_state', {}, `?superuser=1&workspace=default`);
     expect(res.text.startsWith('client_id_required')).toBe(true);
-  });
+  }));
 
-  itLive('dispatch set_url updates URL in FakeBrowser', async () => {
+  itLive('dispatch set_url updates URL in FakeBrowser', uiLiveTest(async () => {
     const res = JSON.parse((await callTool('ui:dispatch', { intent: 'set_url', args: { params: { tab: 'sessions' } }, timeout_ms: 3000 }, `?superuser=1&workspace=default&client=${clientId}`)).text);
     expect(res.status).toBe('done');
     expect(String(res.result?.url ?? '')).toContain('tab=sessions');
-  });
+  }));
 
-  itLive('dispatch feature-registered intent runs custom handler', async () => {
+  itLive('dispatch feature-registered intent runs custom handler', uiLiveTest(async () => {
     const res = JSON.parse((await callTool('ui:dispatch', { intent: 'refresh-build', args: { reason: 'test' }, timeout_ms: 3000 }, `?superuser=1&workspace=default&client=${clientId}`)).text);
     expect(res.status).toBe('done');
     expect(res.result?.feature_registered).toBe(true);
     expect(res.result?.args?.reason).toBe('test');
-  });
+  }));
 
-  itLive('dispatch unknown intent → error', async () => {
+  itLive('dispatch unknown intent → error', uiLiveTest(async () => {
     const res = JSON.parse((await callTool('ui:dispatch', { intent: 'never-registered-xyz', timeout_ms: 3000 }, `?superuser=1&workspace=default&client=${clientId}`)).text);
     expect(res.status).toBe('error');
     expect(String(res.error ?? '')).toContain('unknown_intent');
-  });
+  }));
 
-  itLive('dispatch errors when no client_id available', async () => {
+  itLive('dispatch errors when no client_id available', uiLiveTest(async () => {
     const res = await callTool('ui:dispatch', { intent: 'set_url', args: {} }, `?superuser=1&workspace=default`);
     expect(res.text.startsWith('client_id_required')).toBe(true);
-  });
+  }));
 
-  itLive('dispatch timeout after browser stops responding', async () => {
+  itLive('dispatch timeout after browser stops responding', uiLiveTest(async () => {
     await browser.stop();
     const res = JSON.parse((await callTool('ui:dispatch', { intent: 'set_url', args: { params: { tab: 'never' } }, timeout_ms: 1000 }, `?superuser=1&workspace=default&client=${clientId}`)).text);
     expect(res.status).toBe('timeout');
     expect(String(res.error ?? '')).toContain('dispatch_timeout');
-  });
+  }));
 });

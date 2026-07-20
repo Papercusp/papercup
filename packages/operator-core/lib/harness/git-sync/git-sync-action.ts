@@ -1128,6 +1128,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   // fixer) — the instant off-switch on the shared commit path, no deploy needed. A
   // flag-infra error falls back to the default (ON), keeping the safety on.
   const contentGuardOn = await getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug);
+  // EI-17 kill-switch: default ON (see FLAGS.GIT_SYNC_DELETION_GUARD doc). A flag-infra
+  // error falls back to the default (ON), keeping the safety on — same as content-guard.
+  const deletionGuardOn = await getFlag(FLAGS.GIT_SYNC_DELETION_GUARD, slug);
   // P-004 (git-sync-dx-hardening): derived commit attribution (default OFF). When ON, supply the
   // LIVE roster of active agents + their declared files (coord presence current_files) so runGitSync
   // peels per-agent commits. DERIVED, never authored — agents stay git-free. Flag-gated read; a
@@ -1140,6 +1143,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     outcome = await runGitSync(slug, {
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
+      deletionGuard: deletionGuardOn,
       loadRoster: attributionOn ? () => loadAttributionRosterMerged(slug, workspaceId) : undefined,
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).

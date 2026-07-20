@@ -853,6 +853,15 @@ export const FLAGS = {
   // escalation, no fixer dispatch) — the instant off-switch if the guard ever
   // mis-quarantines real work on the shared commit path, without waiting for a deploy.
   GIT_SYNC_CONTENT_GUARD: "papercusp-git-sync-content-guard",
+  // EI-17 (git-sync-deletion-import-guard-2026-07-20): the runtime KILL-SWITCH for the
+  // git-sync DELETION-import guard — the pre-commit check that quarantines a dirty file
+  // DELETION when a surviving file still (relatively) imports it, so a breaking deletion
+  // (the 2026-06-05 fleet-wide crash-loop on `Cannot find module './operator-last-scan'`)
+  // can never reach `staging` again. ON by default (alpha default-on + it's a safety
+  // feature, same class as GIT_SYNC_CONTENT_GUARD). When OFF, the deletion is committed
+  // exactly as before this plan (no quarantine, no escalation) — the instant off-switch on
+  // this shared commit path if the guard ever mis-quarantines a real, safe deletion.
+  GIT_SYNC_DELETION_GUARD: "papercusp-git-sync-deletion-guard",
   // github-bridge-hive-egress-2026-07-02 P-008: the hive P2P git <-> GitHub bridge —
   // on a BRIDGED hive's git-sync tick, ingress origin branches into the synthetic
   // github-origin namespace (admission-gated) + egress canonical refs FF-only to the

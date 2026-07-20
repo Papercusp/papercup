@@ -28,17 +28,30 @@ vi.mock('../locks/resource-lock-guard', () => ({ guardResource: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ unref: vi.fn() })) }));
 // EI-11137: the systemd truth-check that decides genuine-vs-phantom coalesce.
 vi.mock('./systemd-service-probe', () => ({ probeServiceStart: vi.fn() }));
+// EI-18198340374286980: the audit_log writer — asserted directly in the new
+// authorize-arg tests below, and must never make a real restart fail if it
+// throws (fire-and-forget), so every OTHER test gets a working no-op stub.
+// Partial mock (importOriginal): @papercusp/agent-mcp's own bootstrap imports
+// OTHER exports (e.g. `generated`) from this same package — a full replacement
+// breaks that unrelated import chain.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: vi.fn() };
+});
 
 import { tryAcquireResource, tryReleaseResource } from '../locks/su-lock-store';
 import { guardResource } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
+import { getOrgPg } from '@papercusp/db-org';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
 const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
+const orgPgM = vi.mocked(getOrgPg);
+const auditUnsafeM = vi.fn(async () => undefined);
 
 const restartModule = await import('./restart');
 const tool = restartModule.default;
@@ -69,6 +82,8 @@ beforeEach(() => {
   // Benign default: no live main process to report. Individual tests that care
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never);
+  auditUnsafeM.mockClear();
+  orgPgM.mockReturnValue({ sql: { unsafe: auditUnsafeM } } as never);
 });
 
 afterAll(() => {
@@ -155,12 +170,14 @@ describe('dev:restart dry run', () => {
 });
 
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
-  it('target:dev drains but withholds the restart, without touching the cooldown marker', async () => {
+  it('target:dev drains but withholds the restart, without touching the cooldown marker, and the note points at authorize:true', async () => {
     guardM.mockImplementation(runGuard(fenceOk()) as never);
     const b = body(await call({ confirm: true }));
     expect(b).toMatchObject({ ok: true, target: 'dev', drained: true, restarted: false });
+    expect(b.note).toMatch(/authorize:true/);
     // dev has no cooldownResource — the debounce path must never engage for it.
     expect(acquireM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
   });
 
   it('target:staging withholds the restart too, and never claims the cooldown marker (nothing real happened to debounce)', async () => {
@@ -168,6 +185,43 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
     const b = body(await call({ confirm: true, target: 'staging' }));
     expect(b).toMatchObject({ ok: true, target: 'staging', drained: true, restarted: false });
     expect(acquireM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+});
+
+// EI-18198340374286980: an agent cannot set PAPERCUSP_ALLOW_DEV_RESTART on the
+// already-running operator process — authorize:true is the in-band equivalent,
+// still gated behind confirm:true (the deliberate-action + drain gate), and
+// always audited (unlike the raw-systemctl bypass it exists to replace).
+describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
+  it('fires a real restart on authorize:true alone (no env var needed) and writes an audit_log row tagged viaAuthorizeArg', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(5)) as never);
+
+    const b = body(await call({ confirm: true, authorize: true, reason: 'landing WI-5471 fix on bg-host', target: 'dev' }));
+
+    expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true, drained: true, enabledVia: 'authorize_arg', audited: true });
+    expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-dev-api.service')], expect.anything());
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
+    const [, params] = auditUnsafeM.mock.calls[0]!;
+    expect(params[3]).toBe('dev:restart'); // action
+    expect(params[4]).toBe('dev'); // subject = target
+    const details = JSON.parse(params[5] as string);
+    expect(details).toMatchObject({ target: 'dev', viaEnv: false, viaAuthorizeArg: true, reason: 'landing WI-5471 fix on bg-host' });
+  });
+
+  it('confirm:true alone (authorize omitted, no env) still withholds — authorize does not implicitly follow from confirm', async () => {
+    guardM.mockImplementation(runGuard(fenceOk()) as never);
+    const b = body(await call({ confirm: true, target: 'dev' }));
+    expect(b).toMatchObject({ ok: true, target: 'dev', restarted: false });
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('authorize:true WITHOUT confirm:true stays a dry run — authorize never bypasses the drain gate', async () => {
+    const b = body(await call({ authorize: true, target: 'dev' }));
+    expect(b).toMatchObject({ ok: true, dry_run: true, target: 'dev' });
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
   });
 });
 
@@ -188,12 +242,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       expect.anything(),
       expect.objectContaining({ resource: 'staging-server-cooldown', mode: 'exclusive', ttlSec: 120 }),
     );
-    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: true, drained: true, restartedFromPid: 4242 });
+    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: true, drained: true, restartedFromPid: 4242, enabledVia: 'env', audited: true });
     expect(b.verifyWith).toMatch(/MainPID/);
     expect(b).not.toHaveProperty('phantomCoalesceBroken');
     expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-staging-api.service')], expect.anything());
     // Left to expire, not released — the debounce depends on this.
     expect(releaseM).not.toHaveBeenCalled();
+    // EI-18198340374286980: a real restart is ALWAYS audited, even via the env route.
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
+    const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    expect(details).toMatchObject({ target: 'staging', viaEnv: true, viaAuthorizeArg: false, reason: null });
   });
 
   it('coalesces when the marker is held AND systemd confirms a genuine recent restart — no drain, no restart, no spawn', async () => {
