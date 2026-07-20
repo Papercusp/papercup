@@ -20,6 +20,17 @@
  * `drained_at`, BOTH `BIGINT` epoch-ms — there is NO `created_ts` / `captured_ts`
  * column. So oldest-undrained age = `Date.now() - MIN(ts)`, computed here, not in
  * SQL (`MIN(ts)` returns epoch-ms directly).
+ *
+ * QUARANTINED ROWS ARE EXCLUDED (mig 645, WI-3896 follow-up): a row that
+ * outbox-drain.ts's per-row poison quarantine has stamped `quarantined_at` on
+ * is DELIBERATELY left undrained forever (a triage decision, not a stall —
+ * see outbox-drain.ts's WI-3896 doc-comment) and must NOT count toward this
+ * read's undrained/oldest-age. Before this exclusion, a single permanently-
+ * quarantined poison row kept a harness's `oldestUndrainedAgeMs` growing
+ * without bound, so `plan-drain-reconcile.ts`'s federation-drain-reconcile
+ * refiled a fresh "Federation stall" bug forever (every time the previous one
+ * was closed) even though the harness was healthy and draining fresh writes
+ * in near-real-time — the live papercusp incident this migration fixes.
  */
 
 export interface SubstrateDrainStat {
@@ -71,6 +82,7 @@ export async function loadSubstrateDrainStats(
               MIN(ts)  AS oldest_ts
          FROM harness_shared.substrate_outbox
         WHERE drained_at IS NULL
+          AND quarantined_at IS NULL
         GROUP BY workspace_id, harness_slug`,
       [],
     );

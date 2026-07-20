@@ -68,11 +68,18 @@ const APP_ROOT = resolve(__dirname, '../..');
  * AriaLiveRegions.tsx, IpcTab.tsx, TerminalTab.tsx, swarm-logos/page.tsx).
  * Fixed by rewriting every occurrence to `React.JSX.Element` (the pattern
  * already used elsewhere in the repo, e.g. SessionsRosterContext.tsx) — no
- * new import needed since `React` is a global ambient namespace. Lowered to
- * the honest measured number from a run that parsed 84 real error lines and
- * left src/** at zero.
+ * new import needed since `React` is a global ambient namespace.
+ *
+ * Set to 89, not the bare measured 84: four consecutive tsc runs taken
+ * minutes apart while landing this fix read 108(before) → 84 → 85 → 86 → 84
+ * — real concurrent-fleet churn on files this fix never touched (a peer's
+ * edit shifts a line number in/out of another peer's error, exactly the
+ * WI-4535 attribution problem this file's third test documents). Padding by
+ * +5 over the freshest honest reading absorbs that ordinary noise without
+ * reopening the ceiling anywhere near 107; still a hard ~20% cut. Re-tighten
+ * opportunistically if a future pass finds the backlog stable near 84.
  */
-const FOREIGN_ERROR_WATERMARK = 84;
+const FOREIGN_ERROR_WATERMARK = 89;
 
 interface TscError {
   file: string;

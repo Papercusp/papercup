@@ -149,15 +149,15 @@ export default defineTool({
     '>50% is BLOCKED (`shrink_blocked` — pass `append:true`/`confirmShrink:true`). Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
-      'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next ' +
-      'fresh-context wake) needs — what is done, what is left, current approach, gotchas. A digest, not a transcript.',
+      'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
+      'next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript.',
     notWhen:
-      'Mid-task scratch the live transcript already holds; never dump file contents or tool output. NOT an edit channel ' +
-      'for the item: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +
-      "tool surface reports them missing). Not for a peer's item — claim it, or comment instead.",
+      'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
+      'channel: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +
+      "surface hides them). Not for a peer's item — claim it, or comment instead.",
     chaining:
-      'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a claim held ' +
-      'through long purely-local tool use can go presence-stale and be reclaimed (no separate heartbeat verb).',
+      'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a ' +
+      'claim held through long local-only tool use can go presence-stale and be reclaimed (no separate heartbeat verb).',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

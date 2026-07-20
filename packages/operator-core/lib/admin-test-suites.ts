@@ -960,6 +960,18 @@ function fail(
   return { status: 'fail', expected, actual, details };
 }
 
+/** A not-exercised check: 'skip' collapses to 'pass' in the run rollup, so it
+ *  never reds the suite. Used for interactions the long-lived admin shell can't
+ *  re-trigger (dock mounts once; a conversation needs a specific chat) — the
+ *  fresh-binary wdio harness drives those cold. */
+function skip(
+  expected: string,
+  actual: string,
+  details?: string[],
+): Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'> {
+  return { status: 'skip', expected, actual, details };
+}
+
 function resolveRepoRoot(): string {
   let dir = path.resolve(process.cwd());
   for (let i = 0; i < 12; i += 1) {

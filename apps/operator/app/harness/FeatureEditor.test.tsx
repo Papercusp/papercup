@@ -153,7 +153,9 @@ describe('<FeatureEditor />', () => {
     expect(url).toBe('/api/harness/h/features');
     expect((init as RequestInit).method).toBe('POST');
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      id: 'F-FIX-001', title: 'Fix it', claims: ['VAL-1', 'VAL-2'], status: 'todo',
+      // work-item-status-full-unify P-007: create-mode default is the unified claimable
+      // token `open` (was the legacy `todo`).
+      id: 'F-FIX-001', title: 'Fix it', claims: ['VAL-1', 'VAL-2'], status: 'open',
     });
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(screen.getByText('saved')).toBeTruthy();

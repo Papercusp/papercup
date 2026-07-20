@@ -243,8 +243,27 @@ export function pinProvenGateCorrection(
   return { consecutiveReds: 0, stalled: false, failingTests: [], firstRedAtMs: null };
 }
 
+/** Options for `gitPipelineSnapshot` (overview-tab-expansion P-001). */
+export interface GitPipelineSnapshotOpts {
+  /** Probe the live green-checkpoint systemd unit ("judging vs idle") into `activeRun`.
+   *  Default FALSE — the probe forks systemctl, so only the background derived-read
+   *  producer opts in; live callers stay fork-free. */
+  includeActiveRun?: boolean;
+  /** Test seam: the probe fn (defaults to release-checkpoint-launch's
+   *  checkActiveCheckpointRun, dynamic-imported only when opted in). */
+  probeActiveRun?: (root: string) => {
+    active: boolean;
+    candidate?: string | null;
+    started_at?: string | null;
+    elapsed_sec?: number | null;
+  };
+}
+
 /** Compute the full pipeline snapshot for `slug` (defaults to the operator's own). */
-export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<GitPipelineSnapshot> {
+export async function gitPipelineSnapshot(
+  slug: string = DEFAULT_SLUG,
+  opts: GitPipelineSnapshotOpts = {},
+): Promise<GitPipelineSnapshot> {
   const { sql } = getOrgPg();
 
   // The three pipeline routines + git-sync's latest metadata, in one read.

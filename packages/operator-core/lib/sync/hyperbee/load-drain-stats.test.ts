@@ -38,6 +38,13 @@ describe('loadSubstrateDrainStats', () => {
     expect(sql).toMatch(/GROUP BY workspace_id, harness_slug/);
   });
 
+  it('mig 645 (WI-3896 follow-up): also excludes QUARANTINED rows (quarantined_at IS NULL) — a permanently-poisoned row must never keep inflating oldestUndrainedAgeMs forever', async () => {
+    const runQuery = fakeRunQuery([]);
+    await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
+    const sql = runQuery.mock.calls[0][0];
+    expect(sql).toMatch(/quarantined_at IS NULL/);
+  });
+
   it('skips harnesses with a fully-drained outbox (0 undrained → absent from the map)', async () => {
     const runQuery = fakeRunQuery([
       { workspace_id: 'ws', harness_slug: 'clean', undrained: '0', oldest_ts: null },
