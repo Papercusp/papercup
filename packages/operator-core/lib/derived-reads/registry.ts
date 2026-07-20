@@ -280,7 +280,17 @@ export async function refreshDerivedReads(ctx: {
 }): Promise<RefreshOutcome[]> {
   const { sql } = getOrgPg();
   const outcomes: RefreshOutcome[] = [];
-  const producers = listDerivedReadProducers().filter((p) => !ctx.only || ctx.only.includes(p.key));
+  // Shortest-ttl FIRST (WI-5471): producers run sequentially, so a heavy long-walk
+  // producer must never head-of-line-block the liveness-sensitive short-ttl ones in
+  // the same pass. ttl already encodes "how fresh this must be" (see producers.ts
+  // header), and the heavy producers (storage.usage 30m, plans.lint 6h) have the
+  // longest ttls precisely because their signal moves slowly — so ordering by ttl
+  // ascending refreshes serviceHealth/gitPipeline/dev.* (90s) before the multi-second
+  // walks even on a pass where those walks are due. Producers are independent (each
+  // writes its own snapshot key), so the order is free to choose.
+  const producers = listDerivedReadProducers()
+    .filter((p) => !ctx.only || ctx.only.includes(p.key))
+    .sort((a, b) => a.ttlMs - b.ttlMs);
 
   for (const producer of producers) {
     const harnessSlug = producer.scope === 'workspace' ? GLOBAL_SCOPE : ctx.harnessSlug;
