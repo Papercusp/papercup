@@ -2,10 +2,11 @@
  * Unit tests for the /api/gym/* control-plane routes (gym-ui-handoff backend).
  * Drives each handler directly with a hand-built RouteContext, mocking the
  * workspace seam (routeWithWorkspace / activeWorkspaceId) + the control-plane
- * SQL helpers — so the test asserts the ROUTE's own logic (param/body parsing,
- * response envelopes, validation 400s, analytics degradation) without a DB. The
- * SQL is covered by control-plane.integration.test.ts. summarizeGymStatus +
- * GYM_PROMPT_KEYS are kept real.
+ * and run-analytics (gym/read-api) SQL helpers — so the test asserts the
+ * ROUTE's own logic (param/body parsing, response envelopes, validation 400s,
+ * scope threading) without a DB. The SQL is covered by
+ * control-plane.integration.test.ts. summarizeGymStatus + GYM_PROMPT_KEYS are
+ * kept real.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -22,6 +23,10 @@ const setAutoloop = vi.fn();
 // P-016: the commit→reproject accept path seams.
 const resolvePhasedProject = vi.fn();
 const acceptProposalViaCommit = vi.fn();
+// The durable live-DB run-analytics readers (migration 650) — mocked so the route's own
+// wiring (scope threading, response envelope) is asserted without a real `Sql` tag function
+// behind the dummy `tx` the route-workspace mock below hands the route.
+const readDurableCycleHistory = vi.fn();
 
 vi.mock('../../harness-core', async (importActual) => ({
   ...(await importActual<typeof import('../../harness-core')>()),
@@ -44,6 +49,10 @@ vi.mock('../../gym/control-plane', async (importActual) => ({
   decideProposal: (...a: unknown[]) => decideProposal(...a),
   getAutoloop: (...a: unknown[]) => getAutoloop(...a),
   setAutoloop: (...a: unknown[]) => setAutoloop(...a),
+}));
+vi.mock('../../gym/read-api', async (importActual) => ({
+  ...(await importActual<typeof import('../../gym/read-api')>()),
+  readDurableCycleHistory: (...a: unknown[]) => readDurableCycleHistory(...a),
 }));
 
 type Route = { method: string; path: string; handler: (req: Request, ctx: RouteContext) => Promise<Response> };
@@ -198,13 +207,23 @@ describe('POST /gym/:slug/autoloop', () => {
   });
 });
 
-describe('run-analytics degrade gracefully without a gym DB', () => {
-  it('GET /gym/:slug/cycles → available:false, empty', async () => {
+describe('run-analytics reads (durable live-DB, migration 650)', () => {
+  // Pre-migration-650 this route read an EPHEMERAL, separately-provisioned gym PG that could
+  // genuinely be absent, and degraded to `{ cycles: [], available: false }`. Migration 650 moved
+  // the read to the durable `harness_gym` cache in the LIVE operator DB (the same connection
+  // every other route uses) — there is no more "without a gym DB" case, so the route no longer
+  // emits an `available` field (see apps/operator/app/gym/__tests__/GymDashboard.test.tsx). This
+  // now just asserts the route threads the workspace/harness scope and shapes the response.
+  it('GET /gym/:slug/cycles → threads scope, returns { cycles }', async () => {
+    readDurableCycleHistory.mockResolvedValueOnce([
+      { cycle: 0, parentId: null, candidateId: 'cand-c0', decision: 'accept' },
+    ]);
     const r = await route('GET', '/gym/:slug/cycles');
     const res = await r.handler(req('/alpha/cycles'), ctx({ slug: 'alpha' }));
     const body = await res.json();
-    expect(body.cycles).toEqual([]);
-    expect(body.available).toBe(false);
+    expect(readDurableCycleHistory).toHaveBeenCalledWith(expect.anything(), { workspaceId: 'ws-test', harnessSlug: 'alpha' });
+    expect(body.cycles).toEqual([{ cycle: 0, parentId: null, candidateId: 'cand-c0', decision: 'accept' }]);
+    expect(body.available).toBeUndefined();
   });
   it('GET /gym/:slug/compare → 400 without a/b/rubricHash', async () => {
     const r = await route('GET', '/gym/:slug/compare');

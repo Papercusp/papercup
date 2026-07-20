@@ -20,7 +20,8 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from './work-items';
-import { assertScopeWellFormed } from './work-item-scope';
+import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
+import { resolveWorkItemPot } from './pot-membership';
 import { neutralizeToolCallTags } from './text-safety';
 import {
   PgTaggableStore,
@@ -540,8 +541,21 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // silently filed operator-global via a missing/blank harness. operator stays
   // valid only as the EXPLICIT default; a malformed `harness:` (empty slug) throws.
   // allow-scope-default: 'operator' is the explicit top-level issue scope (vs harness:<slug>), not a workspace.
-  const scope = input.scope ?? 'operator';
+  let scope = input.scope ?? 'operator';
   assertScopeWellFormed(scope);
+  // pot-membership-enforcement-2026-07-20 (P-005): every issue must belong to a REAL
+  // Pot (owner directive — Avi 2026-07-20 11:21). Resolve the scope's Pot: an
+  // operator / workspace-global scope homes to the workspace platform Pot (so
+  // `operator` issues are no longer stored under the non-pot `operator:<ws>` slug),
+  // and an explicit `harness:<made-up>` is REJECTED (PotMembershipError). Flag-gated
+  // (POT_MEMBERSHIP_ENFORCEMENT, default ON); fails open for an un-potted workspace.
+  if (await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system')) {
+    const pot = await resolveWorkItemPot({
+      rawSlug: harnessOfScope(scope),
+      workspaceId: issuesScopeWorkspace(),
+    });
+    scope = pot ? harnessScope(pot) : 'operator';
+  }
   // EI-9267: neutralize tool-call-lookalike tags (<invoke>/<parameter>/…) in the
   // free-text title/body BEFORE they are stored — the single choke point every
   // issue-family create path (improvements:capture, work_items:create) funnels

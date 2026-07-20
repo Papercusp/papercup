@@ -307,7 +307,13 @@ describe('recordAndCheckPublisherRate (property)', () => {
 
 describe('decideWindDown (property)', () => {
   it('only an explicit cancel is an excused breach; everything else is a refusal', () => {
-    const causes: WindDownCause[] = ['budget_exhausted', 'cancelled', 'liveness_unconfirmable', 'offer_expired'];
+    const causes: WindDownCause[] = [
+      'budget_exhausted',
+      'cancelled',
+      'liveness_unconfirmable',
+      'offer_expired',
+      'quota_exceeded',
+    ];
     fc.assert(
       fc.property(fc.constantFrom(...causes), (cause) => {
         const d = decideWindDown(cause);

@@ -26,8 +26,17 @@ const { sendMessage } = vi.hoisted(() => ({
 
 vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage }));
 
+// A minimal callable tagged-template stub — the P-017 lease-backstop leg (not
+// under test here) calls `sql\`...\`` directly rather than through a mocked
+// reclaim function; returning [] keeps it a real no-op instead of a caught
+// "sql is not a function" exception (non-fatal, but it logs a console.warn
+// that would otherwise trip this repo's fail-on-console test setup).
+const sqlStub = Object.assign(async () => [], {}) as unknown as (
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+) => Promise<unknown[]>;
 vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: {} }),
+  getOrgPg: () => ({ sql: sqlStub }),
 }));
 
 vi.mock('@papercusp/flags', () => ({ FLAGS: { RECLAIM_STALLED: 'RECLAIM_STALLED' } }));
@@ -91,8 +100,12 @@ afterEach(() => {
 
 describe('stale-claim-sweep tick — hold-open-sweep broadcast category (EI-18183171615661851)', () => {
   it('tags the hold-open-sweep "*" broadcast category: service-health', async () => {
+    // The tick's own [hold-open] summary line (informational, not under test
+    // here) is expected given the one starved hold this test manufactures.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const tick = buildDefaultChecks().find((c) => c.name === 'stale-claim-sweep')!.tick;
     await tick();
+    warnSpy.mockRestore();
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const [identity, opts] = sendMessage.mock.calls[0] as [

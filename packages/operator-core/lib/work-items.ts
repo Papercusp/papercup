@@ -32,6 +32,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from './flag-distinct-id';
 import { harnessScope, harnessOfScope } from './work-item-scope';
+import { resolveWorkItemPot } from './pot-membership';
 import {
   PgTaggableStore,
   PgThreadStore,
@@ -1109,6 +1110,16 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       ? input.workspaceId.trim()
       : null;
   const resolvedWs = explicitWs ?? activeWorkspaceId();
+  // pot-membership-enforcement-2026-07-20 (P-005): a feature-family row must belong to
+  // a REAL Pot (owner directive — Avi 2026-07-20 11:21). Resolve input.harness against
+  // harness_shared.pots: canonicalize + collapse a member harness to its Pot home; an
+  // explicit made-up slug is REJECTED (PotMembershipError propagates to the caller).
+  // Flag-gated (default ON); fails open (keeps input.harness) for an un-potted workspace.
+  let featureHarness = input.harness;
+  if (await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system')) {
+    const pot = await resolveWorkItemPot({ rawSlug: input.harness, workspaceId: resolvedWs });
+    if (pot) featureHarness = pot;
+  }
   // queen-steering-panel P-008: stamp the source plan slug so the Queen's survey can
   // HARD-filter the frontier by owner eligible-plans. source_plan_slug is ALWAYS written
   // (NULL when unplanned — the column is nullable). workspace_id is now ALSO always
@@ -1124,7 +1135,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // fixed order with each param index computed off `params.length`, so they never
   // collide on a positional slot regardless of which (or both) is present.
   const params: (string | number | null)[] = [
-    input.harness,
+    featureHarness,
     id,
     input.title,
     input.summary ?? null,
@@ -1218,7 +1229,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     id,
     kind: input.kind,
     family: 'feature',
-    harness: input.harness,
+    harness: featureHarness,
     title: input.title,
     summary: input.summary ?? '',
     // work-item-status-full-unify P-004/P-005: mirrors the INSERT above — a fresh
