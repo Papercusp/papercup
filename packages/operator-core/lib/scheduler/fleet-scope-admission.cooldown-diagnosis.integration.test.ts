@@ -49,7 +49,7 @@ async function seedFeature(id: string, opts: { createdTs?: number; takenBy?: str
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', ${`title ${id}`}, 'todo', ${opts.takenBy ?? null}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+    VALUES (${H}, ${id}, 'feature', ${`title ${id}`}, 'open', ${opts.takenBy ?? null}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
 }
 
 async function releaseAt(id: string, releasedBy: string, secondsAgo: number) {

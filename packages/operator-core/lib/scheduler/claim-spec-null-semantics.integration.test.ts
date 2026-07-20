@@ -74,7 +74,7 @@ async function seedFeature(id: string, opts: { plan?: string | null; createdTs?:
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
        created_ts, updated_ts, source_plan_slug, title)
-    VALUES (${H}, ${id}, 'feature', 'todo', ${null}, ${WS},
+    VALUES (${H}, ${id}, 'feature', 'open', ${null}, ${WS},
        ${opts.createdTs ?? 0}, 0, ${opts.plan ?? null}, ${id})`;
 }
 

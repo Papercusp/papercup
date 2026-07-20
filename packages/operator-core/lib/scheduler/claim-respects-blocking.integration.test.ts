@@ -85,7 +85,7 @@ async function seedFeature(id: string, opts: SeedOpts = {}) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, tags)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, ${WS},
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${WS},
        ${opts.createdTs ?? 0}, 0, ${opts.tags ? db.sql.json(opts.tags) : null})`;
 }
 
@@ -218,7 +218,7 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
     // F-blocker is 'wip' (not itself claimable here); F-blocked is the only 'todo' candidate,
     // tagged so a filter/spec WOULD otherwise select it — but its blocker is non-terminal.
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200, tags: ['sync'] });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200, tags: ['sync'] });
     await blockByFeature('F-blocked', 'F-blocker');
 
     // The inline ORACLE and the MAINTAINED sidecar agree: F-blocked is NOT ready.
@@ -233,7 +233,7 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
 
   it('2. CLAIMS the blocked feature via BOTH paths once the blocker reaches a terminal status', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200, tags: ['sync'] });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200, tags: ['sync'] });
     await blockByFeature('F-blocked', 'F-blocker');
     // Blocked first.
     expect((await claimViaBothPaths('w2')).legacy).toBeNull();
@@ -253,7 +253,7 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
   });
 
   it('3. a feature with NO blockers is claimable via BOTH paths', async () => {
-    await seedFeature('F-free', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-free', { status: 'open', createdTs: 100 });
     expect(await oracleSaysBlocked('F-free')).toBe(false);
     expect(await sidecarSaysBlocked('F-free')).toBe(false);
 
@@ -263,7 +263,7 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
   });
 
   it('4. an ABSENT / dangling blocker ref does NOT block (no deadlock) — BOTH paths', async () => {
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
     // The edge points at a blocker with NO row in the table — an absent blocker never deadlocks.
     await blockByFeature('F-blocked', 'F-ghost');
 
@@ -277,8 +277,8 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
 
   it('skips a blocked item for a ready one — the floor never starves the ready queue (BOTH paths)', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 1 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 }); // older, but blocked
-    await seedFeature('F-ready', { status: 'todo', createdTs: 200 }); //  newer, but ready
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 }); // older, but blocked
+    await seedFeature('F-ready', { status: 'open', createdTs: 200 }); //  newer, but ready
     await blockByFeature('F-blocked', 'F-blocker');
 
     // Oldest-first would pick F-blocked, but it's blocked ⇒ both claims skip to F-ready.
@@ -291,7 +291,7 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
 describe('maintained readiness sidecar tracks the inline oracle through the lifecycle (379)', () => {
   it('add-edge → blocked, terminal-blocker → ready, drop-edge → ready: sidecar mirrors the oracle at every step', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 1 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 2 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 2 });
     // Pre-edge: no blocker ⇒ ready in both.
     expect(await oracleSaysBlocked('F-blocked')).toBe(false);
     expect(await sidecarSaysBlocked('F-blocked')).toBe(false);
@@ -328,7 +328,7 @@ describe('claim respects blocking with SCHEDULER_MAINTAINED_READY ON — the ind
 
   it('flag ON: a feature with a non-terminal blocker is NOT claimed via EITHER path', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200, tags: ['sync'] });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200, tags: ['sync'] });
     await blockByFeature('F-blocked', 'F-blocker');
     expect(await sidecarSaysBlocked('F-blocked')).toBe(true);
     const { legacy, spec } = await claimViaBothPaths('m1');
@@ -338,7 +338,7 @@ describe('claim respects blocking with SCHEDULER_MAINTAINED_READY ON — the ind
 
   it('flag ON: the blocked feature becomes claimable via BOTH paths once the blocker is terminal', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 200, tags: ['sync'] });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200, tags: ['sync'] });
     await blockByFeature('F-blocked', 'F-blocker');
     expect((await claimViaBothPaths('m2')).legacy).toBeNull();
     await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id='F-blocker'`;
@@ -350,8 +350,8 @@ describe('claim respects blocking with SCHEDULER_MAINTAINED_READY ON — the ind
 
   it('flag ON: skips a blocked item for a ready one — the indexed floor never starves the queue', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 1 });
-    await seedFeature('F-blocked', { status: 'todo', createdTs: 100 });
-    await seedFeature('F-ready', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
+    await seedFeature('F-ready', { status: 'open', createdTs: 200 });
     await blockByFeature('F-blocked', 'F-blocker');
     const { legacy, spec } = await claimViaBothPaths('m3');
     expect(legacy).toBe('F-ready');

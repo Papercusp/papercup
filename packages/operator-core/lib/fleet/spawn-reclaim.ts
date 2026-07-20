@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Sql, TransactionSql } from 'postgres';
 import { wakeParentOnChildDeath } from './parent-wake';
-import { FEATURE_NON_REQUEUE_STATES } from '../work-item-dispatch-states';
+import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 
 /** A query handle — a pooled client or an open transaction. */
@@ -501,14 +501,6 @@ export interface RelaunchableSpawn {
 export type RelaunchSpawnFn = (spawn: RelaunchableSpawn) => Promise<boolean>;
 
 /**
- * Terminal feature-family work-item statuses (mirrors
- * `work-item-dispatch-states.FEATURE_TERMINAL_STATES`, inlined to keep this
- * pure-sql module dependency-free). A spawn whose work-item sits in one of these
- * is DONE — its dead row is reclaimed, never re-launched.
- */
-const TERMINAL_WORK_ITEM_STATES: ReadonlySet<string> = new Set(['passed', 'deprecated']);
-
-/**
  * Pure: should the boot reconcile RE-LAUNCH this reclaimed spawn (vs reclaim it to
  * `failed`)? Exported for the unit test of the branch logic.
  *
@@ -533,7 +525,7 @@ export function shouldRelaunchReclaimedSpawn(spawn: {
   // Unknown status (the join found no row — the work-item was deleted) is treated
   // as terminal: nothing to resume.
   if (!spawn.workItemStatus) return false;
-  return !TERMINAL_WORK_ITEM_STATES.has(spawn.workItemStatus);
+  return !FEATURE_TERMINAL_STATES.includes(spawn.workItemStatus);
 }
 
 /**

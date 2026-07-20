@@ -31,20 +31,20 @@ const inp = (
 });
 
 describe('planDrainReconcile', () => {
-  it('flags a stalled harness (undrained > 0, oldest age ≥ 60s) as degraded', () => {
-    const flags = planDrainReconcile([inp('a', 4, 90_000)]);
+  it('flags a stalled harness (undrained > 0, oldest age ≥ 5min) as degraded', () => {
+    const flags = planDrainReconcile([inp('a', 4, 6 * 60_000)]);
     expect(flags).toEqual([
-      { workspaceId: 'ws', harnessSlug: 'a', undrainedCount: 4, oldestUndrainedAgeMs: 90_000, severity: 'degraded' },
+      { workspaceId: 'ws', harnessSlug: 'a', undrainedCount: 4, oldestUndrainedAgeMs: 6 * 60_000, severity: 'degraded' },
     ]);
   });
 
-  it('escalates to unhealthy at the 5-minute mark', () => {
-    const flags = planDrainReconcile([inp('b', 12, 6 * 60_000)]);
+  it('escalates to unhealthy at the 20-minute mark', () => {
+    const flags = planDrainReconcile([inp('b', 12, 21 * 60_000)]);
     expect(flags[0].severity).toBe('unhealthy');
   });
 
-  it('does NOT flag a briefly-undrained outbox (< 60s) — transient drain, not a stall', () => {
-    expect(planDrainReconcile([inp('fresh', 3, 5_000)])).toEqual([]);
+  it('does NOT flag a briefly-undrained outbox (< 5min, e.g. a routine host-recycle catch-up gap) — transient drain, not a stall', () => {
+    expect(planDrainReconcile([inp('fresh', 3, 120_000)])).toEqual([]);
   });
 
   it('does NOT flag a fully-drained outbox (0 undrained)', () => {
@@ -58,9 +58,9 @@ describe('planDrainReconcile', () => {
   it('returns only the stalled harnesses from a mixed list', () => {
     const flags = planDrainReconcile([
       inp('clean', 0, null),
-      inp('fresh', 2, 10_000),
-      inp('stalled', 7, 120_000),
-      inp('dead', 99, 9 * 60_000),
+      inp('fresh', 2, 90_000),
+      inp('stalled', 7, 7 * 60_000),
+      inp('dead', 99, 25 * 60_000),
     ]);
     expect(flags.map((f) => f.harnessSlug)).toEqual(['stalled', 'dead']);
     expect(flags.find((f) => f.harnessSlug === 'dead')?.severity).toBe('unhealthy');

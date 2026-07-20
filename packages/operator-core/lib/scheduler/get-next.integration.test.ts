@@ -298,7 +298,7 @@ describe('get_next — spec filter + rank selects the correct item', () => {
 describe('get_next — floors ALWAYS apply (D-002: spec narrows+reorders, never un-floors)', () => {
   it('NEVER claims a blocked item even when spec.filter selects it', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 50 });
-    await seedFeature('F-blocked', { tags: ['sync'], status: 'todo', createdTs: 100 });
+    await seedFeature('F-blocked', { tags: ['sync'], status: 'open', createdTs: 100 });
     await blockByFeature('F-blocked', 'F-blocker');
     // The spec EXPLICITLY selects F-blocked (tags=sync) — but the readiness floor (a
     // non-terminal blocker) holds it back regardless of the spec.
@@ -342,8 +342,8 @@ describe('get_next — floors ALWAYS apply (D-002: spec narrows+reorders, never 
 
   it('skips a blocked higher-ranked item for a ready lower-ranked one', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 1 });
-    await seedFeature('F-top', { featureOrder: 1, status: 'todo', createdTs: 10 }); // top priority, but blocked
-    await seedFeature('F-next', { featureOrder: 5, status: 'todo', createdTs: 20 }); // lower priority, ready
+    await seedFeature('F-top', { featureOrder: 1, status: 'open', createdTs: 10 }); // top priority, but blocked
+    await seedFeature('F-next', { featureOrder: 5, status: 'open', createdTs: 20 }); // lower priority, ready
     await blockByFeature('F-top', 'F-blocker');
     const s = spec({
       specVersion: '1.0',
@@ -359,11 +359,12 @@ describe('get_next — floors ALWAYS apply (D-002: spec narrows+reorders, never 
 // ────────────────────────────────────────────────────────────────────────────
 // 2b. `states` rides the spec (drain-claim-spec-hardening-2026-07-13 D-002, fixes
 //     EI-11300): a fleet leader sets `states` ONCE on the spec; every member inheriting
-//     it defaults to that claimable-status subset instead of the plain ['todo'] floor.
-//     A per-call `opts.states` override still wins.
+//     it defaults to that claimable-status subset instead of the plain ['open'] floor.
+//     A per-call `opts.states` override still wins. work-item-status-full-unify P-004/P-005:
+//     the default claimable token is 'open' (feature `todo` retired); `failing` is opt-in re-drive.
 // ────────────────────────────────────────────────────────────────────────────
 describe('get_next — `states` rides the spec (D-002, EI-11300)', () => {
-  it('a spec-carried `states` claims an item OUTSIDE the plain [\'todo\'] default', async () => {
+  it('a spec-carried `states` claims an item OUTSIDE the plain [\'open\'] default', async () => {
     await seedFeature('F-failing', { status: 'failing', createdTs: 10 });
     const s = spec({
       specVersion: '1.0',
@@ -377,7 +378,7 @@ describe('get_next — `states` rides the spec (D-002, EI-11300)', () => {
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-failing');
   });
 
-  it('WITHOUT a spec `states` and no per-call override, the plain [\'todo\'] default is unchanged', async () => {
+  it('WITHOUT a spec `states` and no per-call override, the plain [\'open\'] default is unchanged', async () => {
     await seedFeature('F-failing-2', { status: 'failing', createdTs: 10 });
     const s = spec({
       specVersion: '1.0',
@@ -390,7 +391,7 @@ describe('get_next — `states` rides the spec (D-002, EI-11300)', () => {
   });
 
   it('an explicit per-call `opts.states` OVERRIDES the spec\'s `states` (member judgment wins)', async () => {
-    await seedFeature('F-todo-only', { status: 'todo', createdTs: 5 });
+    await seedFeature('F-open-only', { status: 'open', createdTs: 5 });
     await seedFeature('F-failing-3', { status: 'failing', createdTs: 1 }); // older, but excluded by the override
     const s = spec({
       specVersion: '1.0',
@@ -400,21 +401,21 @@ describe('get_next — `states` rides the spec (D-002, EI-11300)', () => {
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
       states: ['failing'],
     });
-    // The caller explicitly passes states:['todo'] — this wins over the spec's ['failing'].
-    const r = await getNextWorkItem(s, BEE, { harness: H, states: ['todo'] });
-    expect(r?.workItem.id).toBe('F-todo-only');
+    // The caller explicitly passes states:['open'] — this wins over the spec's ['failing'].
+    const r = await getNextWorkItem(s, BEE, { harness: H, states: ['open'] });
+    expect(r?.workItem.id).toBe('F-open-only');
   });
 
-  it('a spec `states` covering BOTH todo+failing claims whichever ranks first', async () => {
+  it('a spec `states` covering BOTH open+failing claims whichever ranks first', async () => {
     await seedFeature('F-multi-failing', { status: 'failing', featureOrder: 1, createdTs: 10 });
-    await seedFeature('F-multi-todo', { status: 'todo', featureOrder: 9, createdTs: 20 });
+    await seedFeature('F-multi-open', { status: 'open', featureOrder: 9, createdTs: 20 });
     const s = spec({
       specVersion: '1.0',
       specId: 'drain-both',
       revision: 1,
       view: {},
       rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
-      states: ['todo', 'failing'],
+      states: ['open', 'failing'],
     });
     // featureOrder 1 (highest priority) wins regardless of which status it carries.
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-multi-failing');

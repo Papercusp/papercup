@@ -289,6 +289,136 @@ async function escalateBootConfig(
   }
 }
 
+/** A live limit-setting session discoverable ONLY via its active loop routine —
+ *  it carries no coord_presence row at all. See {@link discoverPresencelessLoopOwners}. */
+export interface PresencelessLoopOwner {
+  ownerId: string;
+  workspaceId: string | null;
+}
+
+/**
+ * EI-18127246030401689 (dark-presence gap): discover LIVE limit-setting sessions via
+ * their ACTIVE loop routine (harness_shared.routines — `reschedule_interval_sec IS NOT
+ * NULL` is the loop signature per 323-loop-routines-reschedule-interval.sql,
+ * `target_owner_id` is the coord ownerId the loop wakes) that carry NO coord_presence
+ * row at all.
+ *
+ * The seed/estimate/force-compact passes in {@link checkCompactionCompliance} scan
+ * ONLY `coord_presence` (`WHERE compaction_limit IS NOT NULL/IS NULL ... heartbeat_at
+ * > now() - interval '10 minutes'`), so a session in this class is COMPLETELY invisible
+ * to every layer of the compaction backstop — not merely blind on one estimate (the
+ * pre-existing dark-telemetry case, which still requires a presence row to even be
+ * considered). This is exactly the blind spot that let su-43803a4c ride a warm loop
+ * from 77k to 974k tokens over ~7h and die on "Prompt is too long" while the watchdog
+ * correctly caught every OTHER over-limit session that same night (su-b00d5, tracked
+ * via its own presence row, was force-carry-respawned as designed).
+ *
+ * A `loop:arm`'d routine only exists for a session with a resolvable coord identity
+ * that is genuinely being woken — so a presence-less active-loop owner is ALWAYS
+ * anomalous, never a false positive to filter out. Uses the partial index
+ * `routines_loop_interval_idx` (WHERE reschedule_interval_sec IS NOT NULL), so this
+ * scan stays cheap regardless of how many cron/rrule routines exist. Best-effort:
+ * a query failure returns an empty list (never blocks the rest of the sweep).
+ */
+export async function discoverPresencelessLoopOwners(sql: Sql): Promise<PresencelessLoopOwner[]> {
+  try {
+    const rows = await sql<{ owner_id: string; workspace_id: string | null }[]>`
+      SELECT DISTINCT r.target_owner_id AS owner_id, r.workspace_id
+        FROM harness_shared.routines r
+        LEFT JOIN harness_shared.coord_presence cp ON cp.owner_id = r.target_owner_id
+       WHERE r.active = true
+         AND r.reschedule_interval_sec IS NOT NULL
+         AND r.target_owner_id IS NOT NULL
+         AND cp.owner_id IS NULL
+       LIMIT ${MAX_SEEDS_PER_PASS}
+    `;
+    return rows.map((r) => ({ ownerId: r.owner_id, workspaceId: r.workspace_id }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Best-effort display label for an owner id that has no presence row to read one
+ * from. `harness_shared.fleet_membership_events` is an APPEND-ONLY fact table
+ * stamped at spawn/boot time (named-su-agent-fleets-2026-06-29), independent of
+ * coord_presence, so a fleet member's label often survives here even after its
+ * presence row is gone. Falls back to the ownerId itself (label is display-only,
+ * never keyed on — AgentIdentity's own contract).
+ */
+async function resolveBestEffortOwnerLabel(sql: Sql, ownerId: string): Promise<string> {
+  try {
+    const rows = await sql<{ owner_label: string | null }[]>`
+      SELECT owner_label FROM harness_shared.fleet_membership_events
+       WHERE owner_id = ${ownerId} AND owner_label IS NOT NULL
+       ORDER BY id DESC LIMIT 1
+    `;
+    return rows[0]?.owner_label || ownerId;
+  } catch {
+    return ownerId;
+  }
+}
+
+/**
+ * Self-heal a MINIMAL coord_presence row for a presence-less active-loop owner (see
+ * {@link discoverPresencelessLoopOwners}) so it re-enters the SAME sweep's normal
+ * seed/estimate machinery: `writePresence` never sets `compaction_limit` on write (it
+ * is not in its column list — packages/coordination/src/presence/pg-store.ts), so the
+ * freshly-created row's limit stays NULL and is picked up by the very next "Seeding
+ * step" query below within this SAME pass; `estimateContextTokensForOwner` resolves
+ * the session ref via `harness_shared.adv_sessions` (resolveSessionRefReconciled),
+ * entirely independent of coord_presence, so estimation works immediately once a
+ * limit is seeded.
+ *
+ * ALSO escalates once per owner (dedup shared with the dark-telemetry rung above) so
+ * the underlying "why did this row go missing" stays visible for follow-up —
+ * self-healing must only shrink the blast radius, never hide the defect class.
+ * Best-effort: a failed heal write is logged and retried next sweep (the owner stays
+ * in `discoverPresencelessLoopOwners`' result until a row exists); the escalation
+ * still fires regardless, since the gap itself was already real.
+ */
+async function healPresenceGap(sql: Sql, gap: PresencelessLoopOwner): Promise<boolean> {
+  const ownerLabel = await resolveBestEffortOwnerLabel(sql, gap.ownerId);
+  let healed = false;
+  try {
+    const { writePresence } = await import('../agent-tools/coordination/presence');
+    await writePresence(
+      { ownerId: gap.ownerId, ownerLabel, source: 'omp-hook-session', workspaceId: gap.workspaceId, userId: null },
+      {},
+      null,
+    );
+    healed = true;
+    console.warn(
+      `[compaction-watchdog] HEALED a missing coord_presence row for ${ownerLabel} (${gap.ownerId}) — ` +
+        `discovered via its ACTIVE loop routine with NO presence row at all (dark-presence gap, ` +
+        `EI-18127246030401689). It will be seeded a default compaction limit and estimated starting ` +
+        `this same sweep.`,
+    );
+  } catch (e) {
+    console.warn(
+      `[compaction-watchdog] presence-gap heal FAILED for ${ownerLabel} (${gap.ownerId}) — will retry next ` +
+        `sweep: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  await escalateBootConfig(
+    gap.ownerId,
+    ownerLabel,
+    'dark-presence',
+    `${ownerLabel} had an ACTIVE loop routine but NO coord_presence row — it was completely invisible to ` +
+      `the compaction watchdog (dark-presence gap)`,
+    `discoverPresencelessLoopOwners found harness_shared.routines target_owner_id=${gap.ownerId} active with ` +
+      `reschedule_interval_sec set, but no matching coord_presence row. The seed/estimate/force-compact ` +
+      `backstop scans ONLY coord_presence, so this session's context could grow unbounded with zero mechanical ` +
+      `protection (the EI-18127246030401689 class: su-43803a4c rode a warm loop 77k→974k tokens and died on ` +
+      `"Prompt is too long" this way). A minimal presence row has ${healed ? 'been' : 'NOT been (write failed — see log)'} ` +
+      `self-healed so tracking resumes, but the underlying cause of the missing row (a reaper sweep during a ` +
+      `stretch with no presence-writing tool call? a self-relaunch that broke the beat's target row? something ` +
+      `else?) is NOT diagnosed by this alarm — investigate why this owner's row went missing / was never created ` +
+      `in the first place. (agent-managed-compaction-2026-07-01 P-018 / EI-18127246030401689)`,
+  );
+  return healed;
+}
+
 // (The P-012 force-compact focus helpers lived here until P-022 retired native
 // /compact — a forced cut now delivers the full carry-doc addendum instead of a
 // summarizer focus hint, so no focus derivation is needed.)
@@ -712,10 +842,15 @@ export interface CompactionComplianceResult {
    *  their context estimate never resolved (the gauge / per-turn reminder / force-compact are all
    *  blind to the session), so it can silently overflow. One entry per owner; escalated once per
    *  owner via escalateBootConfig. */
-  bootConfigAlerts: Array<{ owner: string; kind: 'dark-telemetry'; detail: string }>;
+  bootConfigAlerts: Array<{ owner: string; kind: 'dark-telemetry' | 'dark-presence'; detail: string }>;
   /** EI-10434: readings DISCARDED this pass for exceeding the plausibility ceiling —
    *  never cached, never counted toward overLimit/forceCompacted. One entry per owner. */
   implausibleReadings: Array<{ owner: string; est: number; ceiling: number }>;
+  /** EI-18127246030401689: owners discovered via an ACTIVE loop routine with NO
+   *  coord_presence row at all — self-healed a minimal row this pass so tracking
+   *  resumes (see discoverPresencelessLoopOwners / healPresenceGap). Always paired
+   *  with a 'dark-presence' bootConfigAlerts entry. */
+  presenceGapsHealed: string[];
 }
 
 /**
@@ -727,7 +862,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], carryRespawned: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], carryRespawned: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [], presenceGapsHealed: [] };
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
@@ -739,6 +874,21 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
     setContextGaugeEnabled(await getFlag(FLAGS.CONTEXT_GAUGE, 'system'));
   } catch {
     /* keep the previous mirror value */
+  }
+  // EI-18127246030401689 dark-presence backstop: discover + self-heal live loop-armed
+  // owners with NO coord_presence row at all, BEFORE the coord_presence-driven seed
+  // pass below — a healed row's compaction_limit stays NULL (writePresence never sets
+  // it), so it is picked up by that very next query within this SAME sweep instead of
+  // waiting a full cycle. Best-effort per owner; never blocks the rest of the sweep.
+  try {
+    const gaps = await discoverPresencelessLoopOwners(sql);
+    for (const gap of gaps) {
+      if (await healPresenceGap(sql, gap)) out.presenceGapsHealed.push(gap.ownerId);
+    }
+  } catch (e) {
+    console.warn(
+      `[compaction-watchdog] dark-presence discovery pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
   // Lazy per-pass tier menu, HOISTED so the seed pass AND the P-017 re-eval share ONE
   // workspace-config read: memoized, fail-soft to undefined (⇒ spec-derived defaults only).

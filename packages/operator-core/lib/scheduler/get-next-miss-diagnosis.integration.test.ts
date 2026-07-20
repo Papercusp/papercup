@@ -170,9 +170,11 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
 
   it('uses the caller/spec state floor instead of treating every issue state as admissible', async () => {
     await seedIssue('WI-9301', null, 'open');
-    const [todoOnly] = await explainIssueClaimFloors(H, ['WI-9301'], { states: ['todo'] });
+    // work-item-status-full-unify: a non-matching claimable token (`failing`) proves the state
+    // floor is honored — the open issue is refused by status; `open` (the unified token) admits it.
+    const [failingOnly] = await explainIssueClaimFloors(H, ['WI-9301'], { states: ['failing'] });
     const [open] = await explainIssueClaimFloors(H, ['WI-9301'], { states: ['open'] });
-    expect(todoOnly).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
+    expect(failingOnly).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
     expect(open).toMatchObject({ admissible: true, refusedBy: null });
   });
 });

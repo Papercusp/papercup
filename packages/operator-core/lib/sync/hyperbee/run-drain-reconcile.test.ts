@@ -40,8 +40,8 @@ const okCapture = (): CaptureResult => ({ created: true, issue: { id: 'EI-X' } }
 describe('runDrainReconcileOnce', () => {
   it('files ONE deduped improvement per stalled booted harness, none for fresh/clean', async () => {
     const drainByKey = new Map<string, SubstrateDrainStat>([
-      ['ws::stalled', { undrainedCount: 5, oldestUndrainedAgeMs: 120_000 }],
-      ['ws::veryStalled', { undrainedCount: 12, oldestUndrainedAgeMs: 600_000 }],
+      ['ws::stalled', { undrainedCount: 5, oldestUndrainedAgeMs: 8 * 60_000 }],
+      ['ws::veryStalled', { undrainedCount: 12, oldestUndrainedAgeMs: 25 * 60_000 }],
       ['ws::fresh', { undrainedCount: 3, oldestUndrainedAgeMs: 5_000 }],
       // ws::clean intentionally absent → resolver returns zero-drain
     ]);
@@ -68,8 +68,8 @@ describe('runDrainReconcileOnce', () => {
     const stalled = calls.find((a) => a.watchdogKey === 'federation-drain-stall:ws:stalled');
     const very = calls.find((a) => a.watchdogKey === 'federation-drain-stall:ws:veryStalled');
     expect(stalled).toBeDefined();
-    expect(stalled?.severity).toBe('minor'); // 120s ≥ 60s but < 5m → degraded → minor
-    expect(very?.severity).toBe('major'); // 600s ≥ 5m → unhealthy → major
+    expect(stalled?.severity).toBe('minor'); // 8min ≥ 5min but < 20min → degraded → minor
+    expect(very?.severity).toBe('major'); // 25min ≥ 20min → unhealthy → major
     for (const a of calls) {
       expect(a.dedupScope).toBe('open'); // the dedup — one improvement per open stall, not per tick
       expect(a.kind).toBe('bug');
@@ -91,7 +91,7 @@ describe('runDrainReconcileOnce', () => {
   it('counts only newly-created captures (a deduped capture does not increment)', async () => {
     const capture = vi.fn(async () => ({ created: false, reason: 'duplicate' }) as CaptureResult);
     const res = await runDrainReconcileOnce({
-      loadDrainStats: async () => new Map([['ws::s', { undrainedCount: 2, oldestUndrainedAgeMs: 90_000 }]]),
+      loadDrainStats: async () => new Map([['ws::s', { undrainedCount: 2, oldestUndrainedAgeMs: 8 * 60_000 }]]),
       getStatus: fakeGetStatus([['ws', 's']]),
       capture,
       log: () => {},
@@ -111,8 +111,8 @@ describe('runDrainReconcileOnce', () => {
     const res = await runDrainReconcileOnce({
       loadDrainStats: async () =>
         new Map([
-          ['ws::s1', { undrainedCount: 1, oldestUndrainedAgeMs: 90_000 }],
-          ['ws::s2', { undrainedCount: 1, oldestUndrainedAgeMs: 90_000 }],
+          ['ws::s1', { undrainedCount: 1, oldestUndrainedAgeMs: 8 * 60_000 }],
+          ['ws::s2', { undrainedCount: 1, oldestUndrainedAgeMs: 8 * 60_000 }],
         ]),
       getStatus: fakeGetStatus([['ws', 's1'], ['ws', 's2']]),
       capture: capture as never,
@@ -121,5 +121,19 @@ describe('runDrainReconcileOnce', () => {
     expect(res.flagged).toHaveLength(2);
     expect(capture).toHaveBeenCalledTimes(2); // both attempted despite the first throwing
     expect(res.captured).toBe(1); // only the second succeeded
+  });
+
+  it('does NOT flag a routine host-recycle catch-up gap (2026-07-19: a ~90-130s gap after a', async () => {
+    // dev-box host self-recycle is normal/self-healing, not a stall — see
+    // plan-drain-reconcile.ts's DRAIN_STALLED_MS doc comment for the live incident.
+    const capture = vi.fn(async () => okCapture());
+    const res = await runDrainReconcileOnce({
+      loadDrainStats: async () => new Map([['ws::recycling', { undrainedCount: 14, oldestUndrainedAgeMs: 97_000 }]]),
+      getStatus: fakeGetStatus([['ws', 'recycling']]),
+      capture,
+      log: () => {},
+    });
+    expect(res.flagged).toEqual([]);
+    expect(capture).not.toHaveBeenCalled();
   });
 });

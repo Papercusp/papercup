@@ -84,7 +84,7 @@ async function seedFeature(
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
 }
 
 /** An issue-family row (bug/change/task) on the work_items base, scope harness:papercup ⇒
@@ -245,7 +245,7 @@ describe('SCHEDULER_ISSUES_CLAIMABLE — flag ON: issues self-pickable, readines
   });
 
   it('prefers a claimable FEATURE first; only falls through to an issue when no feature is claimable', async () => {
-    await seedFeature('F-ready', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-ready', { status: 'open', createdTs: 200 });
     await seedIssue('EI-5', { state: 'open', createdTs: 100 });
     // A feature is claimable ⇒ the feature path wins (issue branch only runs on a feature miss).
     const first = (await wi.claimNextWorkItem({ harness: H, assignee: 'w-on-5' }))?.id ?? null;
@@ -288,7 +288,7 @@ describe('SCHEDULER_ISSUES_CLAIMABLE — flag OFF: issues NOT claimable, byte-id
   });
 
   it('STILL claims a feature (the feature path is untouched by the gate)', async () => {
-    await seedFeature('F-ready', { status: 'todo', createdTs: 200 });
+    await seedFeature('F-ready', { status: 'open', createdTs: 200 });
     await seedIssue('EI-11', { state: 'open', createdTs: 100 });
     // Even with an older open issue present, OFF ⇒ only the feature is claimable.
     expect(await claimOne('w-off-3')).toBe('F-ready');
@@ -531,7 +531,7 @@ describe('claim-hold exclusion — a do-not-opportunistically-claim item is NOT 
   });
 
   it('setWorkItemClaimHold on a feature-family id IS applicable (fleet-deltas-leader-primitives P-006 extended the hold to both families; full coverage lives in work-items-claim-hold.integration.test.ts)', async () => {
-    await seedFeature('F-HOLD-4', { status: 'todo', createdTs: 100 });
+    await seedFeature('F-HOLD-4', { status: 'open', createdTs: 100 });
     const held = await wi.setWorkItemClaimHold('F-HOLD-4', true, { harness: H });
     expect(held?.applicable).toBe(true);
   });

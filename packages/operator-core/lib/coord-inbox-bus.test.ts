@@ -66,7 +66,19 @@ vi.mock('./pg-listen-hub', () => ({
   listenHubEnabled: () => false,
   hubListen: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: orgSql }) }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: orgSql }),
+  // coord-inbox-bus.ts's dedicated LISTEN connection spreads this into its
+  // `postgres()` options (mirrors the sync-sse.test.ts EI-18122461766429683 fix) —
+  // the mock must export it or the real module's named import is `undefined`,
+  // so calling it throws inside ensureStarted's try/catch and `postgres(...)` (the
+  // mocked factory `listen` sits behind) is never reached: every listen-mock
+  // assertion below sees 0 calls instead of the expected reconnect attempts.
+  longLivedPoolConnectionOptions: (_label: string) => ({
+    onnotice: () => {},
+    connection: {},
+  }),
+}));
 
 describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;

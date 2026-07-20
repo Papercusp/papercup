@@ -248,6 +248,56 @@ describe('system:improvement-implement — dispatch ledger write path (consume-e
   });
 });
 
+describe('system:improvement-implement — claim-took-hold guard (EI-18123303195363852)', () => {
+  // dispatch-orphan-rate regression: a claim that silently no-ops (0 rows — e.g. a
+  // federated origin='remote' item the engineer_issues view guard refuses to write,
+  // EI-7833) must never be followed by firing a worker anyway — that worker can never
+  // report back, so it just re-queues and eventually orphans with no recorded cause.
+  const arm = (...items: ImprovementCandidate[]) => {
+    vi.mocked(getFlag).mockResolvedValue(true as never);
+    vi.mocked(readImprovementItems).mockResolvedValue(items as never);
+  };
+
+  it('markDispatched resolving false skips the fire AND the dispatch ledger entirely', async () => {
+    arm(cand({ id: 'EI-NOCLAIM', attempts: 0 }));
+    setImprovementMarkDispatched(async () => false); // claim did not take (0 rows)
+    let fireCalls = 0;
+    setImprovementImplementFire(async () => {
+      fireCalls += 1;
+    });
+
+    await run();
+
+    expect(fireCalls).toBe(0); // never fire a worker for a claim that didn't take
+    expect(ledgerFired).toEqual([]); // no dispatch-ledger row recorded either
+    expect(ledgerResults).toEqual([]);
+    expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/^\[improvement-implement\] EI-NOCLAIM.*$/));
+    // warned, not thrown — an honest, logged no-dispatch beats a silent doomed one.
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringMatching(/claim did not take for EI-NOCLAIM/),
+    );
+  });
+
+  it('a claim that did not take for one candidate does not block the next candidate in the same batch', async () => {
+    process.env.PAPERCUSP_IMPROVEMENT_MAX_PER_RUN = '5';
+    try {
+      arm(cand({ id: 'EI-NOCLAIM', attempts: 0 }), cand({ id: 'EI-OK', attempts: 0 }));
+      setImprovementMarkDispatched(async (item) => item.id !== 'EI-NOCLAIM');
+      let fired: string[] = [];
+      setImprovementImplementFire(async ({ candidate }) => {
+        fired.push(candidate.id);
+      });
+
+      await run();
+
+      expect(fired).toEqual(['EI-OK']); // only the item whose claim took actually fires
+      expect(ledgerFired.map((f) => f.itemId)).toEqual(['EI-OK']);
+    } finally {
+      delete process.env.PAPERCUSP_IMPROVEMENT_MAX_PER_RUN;
+    }
+  });
+});
+
 describe('system:improvement-implement — runner-harness defaults to ctx.installSlug (WI-290)', () => {
   const arm = (...items: ImprovementCandidate[]) => {
     vi.mocked(getFlag).mockResolvedValue(true as never);

@@ -62,7 +62,7 @@ async function seedFeature(id: string, opts: SeedOpts = {}) {
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
        created_ts, updated_ts, origin, payload)
-    VALUES (${H}, ${id}, 'feature', 'todo', NULL, ${WS},
+    VALUES (${H}, ${id}, 'feature', 'open', NULL, ${WS},
        ${opts.createdTs ?? 0}, 0, 'local', ${db.sql.json(payload)})`;
 }
 

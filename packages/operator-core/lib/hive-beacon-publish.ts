@@ -32,9 +32,6 @@
 
 import { makeBeacon, type HiveStatusBeacon } from './hive-beacon';
 
-/** The terminal work-item states (a settled item — see work-items.setWorkItemState). */
-const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'deprecated', 'resolved', 'closed']);
-
 /** The per-hive signals a beacon summarizes — injected so the build is testable. */
 export interface BeaconSignalSources {
   /** Distinct live agents working the hive right now. */
@@ -63,14 +60,14 @@ export function defaultBeaconSignalSources(): BeaconSignalSources {
     },
 
     workSignals: async (_workspaceId, potSlug) => {
-      const { listWorkItems } = await import('./work-items');
+      const { listWorkItems, isSettledWorkItemState } = await import('./work-items');
       // newest updatedAt first (listWorkItems default order).
       const items = await listWorkItems({ harness: potSlug, limit: 200 });
       let queueDepth = 0;
       let focus = '';
       let lastCompleted = '';
       for (const wi of items) {
-        if (TERMINAL_WORK_ITEM_STATES.has(wi.state)) {
+        if (isSettledWorkItemState(wi.state)) {
           if (!lastCompleted) lastCompleted = wi.title;
         } else {
           queueDepth += 1;

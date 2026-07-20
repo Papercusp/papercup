@@ -138,6 +138,13 @@ export function scanTextForSecrets(path: string, content: string): SecretFinding
  *  product code. (P-402 canonical-stall follow-on, 2026-07-19.) */
 const FIXTURE_FILES: ReadonlySet<string> = new Set([
   'packages/operator-core/lib/sync/pot-git/secrets-guard.test.ts',
+  // Sibling guard: the Claude Code PreToolUse secrets hook embeds credential
+  // SHAPES as detection patterns + self-test fixtures (e.g. a literal
+  // `-----BEGIN RSA PRIVATE KEY-----` on its PEM self-test case, line ~175). Its
+  // blob wedged the papercusp own-head publish plane 2026-07-20 (identical class
+  // to the .test.ts above) — a real-issued key never lives in a secrets
+  // detector's own fixture set, so exempting it costs no real-secret recall.
+  'apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs',
 ]);
 
 /** True if `path` is a designated credential-fixture file exempt from the scan. */

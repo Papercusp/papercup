@@ -267,7 +267,7 @@ export interface SampleReplicationLivenessOpts {
    * sat open forever because only the no_replicator axis reported recovery; now
    * each axis auto-resolves its own EI when the underlying replication recovers).
    */
-  onRecovery?: (recovery: ReplicationStallEpisode) => void;
+  onRecovery?: (recovery: ReplicationStallEpisode) => void | Promise<void>;
 }
 
 /**
@@ -298,10 +298,12 @@ export function setReplicationStallEpisodeReporterForTests(
  * confirm current status). Production default: auto-resolve the matching open
  * EI via a LAZY dynamic import (same pattern as defaultEpisodeReporter).
  */
-let episodeRecoveredReporter: ((recovery: ReplicationStallEpisode) => void) | null = null;
+let episodeRecoveredReporter:
+  | ((recovery: ReplicationStallEpisode) => void | Promise<void>)
+  | null = null;
 
 export function setReplicationStallRecoveryReporterForTests(
-  fn: ((recovery: ReplicationStallEpisode) => void) | null,
+  fn: ((recovery: ReplicationStallEpisode) => void | Promise<void>) | null,
 ): void {
   episodeRecoveredReporter = fn;
 }
@@ -400,7 +402,16 @@ function reportEpisode(episode: ReplicationStallEpisode): void {
   }
 }
 
-function defaultRecoveryReporter(recovery: ReplicationStallEpisode): void {
+// EI-16949/WI-183-orphan-class: this returns a Promise (previously void) so an
+// INTENTIONAL close path (dropReplicationLiveness/dropReplicationLogState) can
+// AWAIT the durable-EI auto-resolve write actually landing before the process
+// that called it exits — see the header doc on dropReplicationLiveness. The hot
+// merge-pass call sites in sampleReplicationLiveness below deliberately keep
+// firing this WITHOUT awaiting (`void reportRecovery(...)`), so this change adds
+// no latency to the sampling path — only a caller that explicitly awaits pays for
+// the completion. The returned promise NEVER rejects (every internal failure is
+// swallowed) so an unawaited call is exactly as safe as the old void-returning one.
+function defaultRecoveryReporter(recovery: ReplicationStallEpisode): Promise<void> {
   try {
     console.error(
       `[replication-liveness] recovered (${recovery.kind}) harness=${recovery.harnessSlug} ${recovery.detail}`,
@@ -411,18 +422,20 @@ function defaultRecoveryReporter(recovery: ReplicationStallEpisode): void {
   // Auto-resolve the durable EI the stall filed (best-effort; a resolve miss
   // just leaves the EI open for manual triage, same as before this existed).
   // Lazy import so the pure module never statically links PG.
-  void import('./replication-stall-ei')
+  return import('./replication-stall-ei')
     .then((m) => m.resolveReplicationStallEi(recovery))
+    .then(() => undefined)
     .catch(() => {
       /* resolution is best-effort; the registry verdict already reads 'live' */
     });
 }
 
-function reportRecovery(recovery: ReplicationStallEpisode): void {
+function reportRecovery(recovery: ReplicationStallEpisode): Promise<void> {
   try {
-    (episodeRecoveredReporter ?? defaultRecoveryReporter)(recovery);
+    return Promise.resolve((episodeRecoveredReporter ?? defaultRecoveryReporter)(recovery));
   } catch {
     /* never let a reporter throw back into the merge pass */
+    return Promise.resolve();
   }
 }
 
