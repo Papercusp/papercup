@@ -274,7 +274,7 @@ async function main(): Promise<void> {
         const distilled = distillTrace(rawTrace, { maxChars: JUDGE_BUDGET });
         const distilled2 = distillTrace(rawTrace, { maxChars: JUDGE_BUDGET });
         const rawInputBytes = rawTrace.diff.length + rawTrace.roleTranscripts.reduce((n, t) => n + t.text.length, 0);
-        report.distill = {
+        const distillReport = {
           rawInputBytes,
           outputChars: distilled.text.length,
           withinBudget: distilled.text.length <= JUDGE_BUDGET,
@@ -282,7 +282,8 @@ async function main(): Promise<void> {
           deterministic: distilled.text === distilled2.text,
           hasDiffSection: distilled.text.includes('## Diff'),
         };
-        log(`distill → ${distilled.text.length}/${JUDGE_BUDGET} chars (from ${rawInputBytes}B), truncated=${distilled.truncated}, deterministic=${report.distill.deterministic}`);
+        report.distill = distillReport;
+        log(`distill → ${distilled.text.length}/${JUDGE_BUDGET} chars (from ${rawInputBytes}B), truncated=${distilled.truncated}, deterministic=${distillReport.deterministic}`);
       }
     } finally {
       await gym.end({ timeout: 5 });

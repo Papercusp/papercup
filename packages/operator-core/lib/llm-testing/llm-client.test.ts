@@ -8,12 +8,37 @@
  * killed organic scout ideation for 2.3 days (07-14→07-16 2026) because the
  * 404 got folded into an ordinary "ran/no-ideas" cycle upstream.
  */
-import { describe, expect, it } from 'vitest';
-import {
-  backendForLlmCall,
-  modelForLlmCall,
-  canonicalizeAnthropicModel,
-} from './llm-client';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+// These pure routing assertions pin the DEFAULT (no explicit-override) backend,
+// which `backendForLlmCall` derives from `process.env.LLM_TEST_BACKEND` captured at
+// llm-client module-init (the module-level `TEST_BACKEND` const). operator-core's
+// vitest fork pool reuses a worker across files, and several gym/ab-run CLI entry
+// modules (ab-run.ts, autoloop-cycle.ts, gym-loop-run.ts, blueprint-cycle.ts,
+// wake-mode.ts, beekeeper-gen0-runner.ts) set `LLM_TEST_BACKEND='claude-code'` at
+// module load — so a gym sibling running first in the same worker leaks that value
+// into this worker's `process.env` and flips `backendForLlmCall` to 'claude-code',
+// reddening these tests ORDER-DEPENDENTLY (the operator-core "flaky gate" class;
+// green-checkpoint 2026-07-02, recurred 2026-07-20 on candidate 8c8d6eb9). Delete the
+// env BEFORE the first (dynamic) import so llm-client captures a clean `TEST_BACKEND`;
+// vitest isolates the module registry per file, so the dynamic import re-evaluates
+// llm-client fresh (mirrors the sibling __tests__/llm-client-error.test.ts guard).
+let backendForLlmCall: typeof import('./llm-client').backendForLlmCall;
+let modelForLlmCall: typeof import('./llm-client').modelForLlmCall;
+let canonicalizeAnthropicModel: typeof import('./llm-client').canonicalizeAnthropicModel;
+
+let savedLlmTestBackend: string | undefined;
+beforeAll(async () => {
+  savedLlmTestBackend = process.env.LLM_TEST_BACKEND;
+  delete process.env.LLM_TEST_BACKEND;
+  ({ backendForLlmCall, modelForLlmCall, canonicalizeAnthropicModel } = await import(
+    './llm-client'
+  ));
+});
+afterAll(() => {
+  if (savedLlmTestBackend === undefined) delete process.env.LLM_TEST_BACKEND;
+  else process.env.LLM_TEST_BACKEND = savedLlmTestBackend;
+});
 
 describe('backendForLlmCall', () => {
   it('routes chatgpt: / gpt- / openai-codex/ prefixed models to codex', () => {
