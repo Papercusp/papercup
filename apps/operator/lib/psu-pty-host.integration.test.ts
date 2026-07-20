@@ -540,6 +540,93 @@ describe('P-020 carry-respawn drill correlation', () => {
   );
 });
 
+describe('carry-respawn STALENESS guard — a message held too long by the busy gate is dropped, never delivered (EI-18109211232286833)', () => {
+  it(
+    'a carry-respawn that ages past PAPERCUSP_PSU_PTY_CARRY_STALE_MS while the busy gate waits is DROPPED — no second boot, no delivery, drop event recorded',
+    async () => {
+      const ownerId = `su-carry-stale-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+
+      // BOOT, then spin (busy) for ~600ms before going quiet + echoing stdin —
+      // long enough that the message, sent WHILE spinning, ages well past the
+      // tiny CARRY_STALE_MS below during the busy-gate's wait for it to settle.
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>30)clearInterval(iv);},20);' +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),20000);';
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the busy gate must NOT defer/drop here
+          PAPERCUSP_PSU_PTY_CARRY_STALE_MS: '50', // tiny — the ~600ms spin easily ages past it
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => { exitCode = c; },
+      });
+
+      try {
+        await sleep(80); // child has BOOTed and is mid-spin (busy) right now
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+
+        // Sent while the child is still busy spinning: receivedAtMs is stamped
+        // NOW, then the (unconditional) busy gate waits out the remaining spin
+        // + quiet(100ms) before this would otherwise deliver — comfortably
+        // aging past the 50ms stale cap during that wait.
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          data: 'CARRIED',
+          systemPromptAddendum: 'stale carry test',
+        });
+
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          const log = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (log.includes('"kind":"respawn-carry-dropped"')) break;
+          await sleep(25);
+        }
+
+        const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          mode: 'carry-respawn',
+          reason: 'carry-stale',
+        }));
+        // Never delivered — no second boot (no recycle happened) and the carry
+        // text never reached the child's stdin.
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+        expect(captured()).not.toContain('ECHO:CARRIED');
+
+        await rawInject(sock, 'QUIT\n');
+        expect(await done).toBe(0);
+        expect(exitCode).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+    },
+    25_000,
+  );
+});
+
 describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-1980 seam)', () => {
   it(
     'feeds the child the mintRecycleArgs-rewritten argv, fires onRespawn once with the fresh native id, and keeps the coord identity env unchanged',

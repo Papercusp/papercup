@@ -24,7 +24,7 @@ export interface FleetRateConfigWire {
 
 export interface FleetRateStatusWire {
   config: FleetRateConfigWire;
-  fleet: { cap: number; inFlight: number; effective: number; floor: number };
+  fleet: { cap: number; inFlight: number; effective: number; floor: number; liveAgents?: number };
   buckets: Array<{ key: string; paused: boolean; pausedUntil: string | null }>;
   usage: { spendUsd: number; calls: number; buckets: Array<{ key: string; usagePct: number | null }> };
 }
@@ -48,12 +48,17 @@ export function fmtSpend(spendUsd: number | undefined): string {
   return `$${spendUsd.toFixed(2)}`;
 }
 
-/** "3 / 6 / 16" (in-flight / AIMD-effective / max) — eff omitted when = max. */
+/** "3 / 6 / 16" (real live agents / AIMD-effective / max) — eff omitted when = max.
+    The numerator is the REAL fleet-wide agent count (`liveAgents`, from coord_presence —
+    EI-18106936190883400), not the governor's `inFlight` (which only counts rate-governed
+    dispatches and reads 0 while dozens of su/fleet CLI agents run ungoverned). Falls back
+    to `inFlight` only if an older/partial wire payload omits `liveAgents`. */
 export function fmtAgents(fleet: FleetRateStatusWire['fleet'] | undefined): string {
   if (!fleet) return '—';
   const eff = Number.isFinite(fleet.effective) ? fleet.effective : fleet.cap;
   const cap = Number.isFinite(fleet.cap) ? String(fleet.cap) : '∞';
-  return eff < fleet.cap ? `${fleet.inFlight} / eff ${eff} / ${cap}` : `${fleet.inFlight} / ${cap}`;
+  const n = Number.isFinite(fleet.liveAgents) ? fleet.liveAgents! : fleet.inFlight;
+  return eff < fleet.cap ? `${n} / eff ${eff} / ${cap}` : `${n} / ${cap}`;
 }
 
 /** Count of currently-paused governor buckets (the "rate-limited right now" signal). */
@@ -148,7 +153,12 @@ export default function FleetRateControl() {
     >
       <span className="pc-overview__rate-slot">
         <span className="pc-overview__rate-k">usage</span>
-        <span className="pc-overview__rate-v">{usagePct === null ? '—%' : `${Math.round(usagePct)}%`}</span>
+        <span
+          className="pc-overview__rate-v"
+          title={usagePct === null ? 'no provider rate-limit ceiling exposed — subscription accounts don’t expose one' : undefined}
+        >
+          {usagePct === null ? 'n/a' : `${Math.round(usagePct)}%`}
+        </span>
       </span>
       <span className="pc-overview__rate-slot">
         <span className="pc-overview__rate-k">spend 1h</span>

@@ -4,6 +4,8 @@
  * read. Assembles, in one place:
  *   - config: the user's editable knobs (maxSimultaneousAgents, concurrencyFloor) — D-004
  *   - fleet: the live fleet-wide cap + total in-flight + effective concurrency — D-004 / D-005
+ *     (`liveAgents` is the real fleet-wide agent count from coord_presence — EI-18106936190883400 —
+ *     distinct from `inFlight`, which only counts rate-GOVERNED dispatches)
  *   - buckets: per (provider, modelClass) governor state (paused/until, rpm/itpm/otpm headroom)
  *   - usage: token throughput + usage% (where a provider limit is known) + recent $spend — D-002
  *
@@ -16,6 +18,8 @@ import { summarizeUsage, type UsageSummary } from './agent-usage-telemetry';
 import { loadAccountPool } from './deployment/account-pool-store';
 import { summarizeOpusBudget, type OpusBudgetStatus } from './opus-budget-governor';
 import { readOpusBudgetPolicy } from './opus-budget-policy';
+import { listPresence, PRESENCE_STALE_MS } from './agent-tools/coordination/presence';
+import { activeWorkspaceId } from './workspace-registry';
 
 export interface FleetRateBucket {
   key: string;
@@ -42,12 +46,20 @@ export interface FleetRateStatus {
   fleet: {
     /** The user's hard cap (maxSimultaneousAgents). */
     cap: number;
-    /** Current total agents in flight across all buckets. */
+    /** Current total agents in flight across all RATE-GOVERNED buckets only — a
+     *  su/fleet CLI agent that never went through a governed dispatch (the
+     *  overwhelming majority of this fleet) is invisible here. See `liveAgents`
+     *  for the real fleet-wide count. */
     inFlight: number;
     /** AIMD effective concurrency under the cap (D-005); equals cap until AIMD adapts down. */
     effective: number;
     /** Floor the effective concurrency never drops below (D-005). */
     floor: number;
+    /** Real fleet-wide live-agent count (EI-18106936190883400) — every non-stale
+     *  coord_presence row for the active workspace, NOT just rate-governed
+     *  dispatches. This is what "how many agents are actually running" should
+     *  read; `inFlight` stays governor-scoped for saturation math. */
+    liveAgents: number;
   };
   buckets: FleetRateBucket[];
   usage: UsageSummary;
@@ -88,6 +100,13 @@ export async function buildFleetRateStatus(windowMs = 60 * 60 * 1000): Promise<F
   const opusBudget = await loadAccountPool()
     .then(async (pool) => summarizeOpusBudget(pool, now, await readOpusBudgetPolicy()))
     .catch(() => null);
+  // EI-18106936190883400: the real fleet-wide agent count — a cheap first-pass over
+  // presence rows (mirrors assemblePresenceSnapshot's own cheap split), never the
+  // expensive full roster/wakeability-join assembly. Best-effort: a presence-store
+  // read failure must not break the whole status assembly.
+  const liveAgents = await listPresence({ workspaceId: activeWorkspaceId() })
+    .then((rows) => rows.filter((r) => now - new Date(r.heartbeatAt).getTime() < PRESENCE_STALE_MS).length)
+    .catch(() => 0);
   return {
     ok: true,
     now: new Date(now).toISOString(),
@@ -97,6 +116,7 @@ export async function buildFleetRateStatus(windowMs = 60 * 60 * 1000): Promise<F
       inFlight: global.inFlight,
       effective: eff.effective ?? (Number.isFinite(global.cap) ? global.cap : cfg.maxSimultaneousAgents),
       floor: cfg.concurrencyFloor,
+      liveAgents,
     },
     buckets,
     usage,

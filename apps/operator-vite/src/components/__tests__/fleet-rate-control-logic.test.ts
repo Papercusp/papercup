@@ -61,10 +61,14 @@ describe('fmtSpend', () => {
 });
 
 describe('fmtAgents', () => {
-  it('shows in-flight / max, and surfaces eff only when AIMD adapted below max', () => {
-    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 16, floor: 1 })).toBe('3 / 16');
-    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 6, floor: 1 })).toBe('3 / eff 6 / 16');
+  it('shows real live-agent count / max (not the governor-scoped inFlight), and surfaces eff only when AIMD adapted below max', () => {
+    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 16, floor: 1, liveAgents: 12 })).toBe('12 / 16');
+    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 6, floor: 1, liveAgents: 12 })).toBe('12 / eff 6 / 16');
     expect(fmtAgents(undefined)).toBe('—');
+  });
+
+  it('falls back to inFlight when liveAgents is omitted (older/partial wire payload)', () => {
+    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 16, floor: 1 })).toBe('3 / 16');
   });
 });
 

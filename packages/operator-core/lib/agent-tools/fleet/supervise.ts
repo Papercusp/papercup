@@ -12,6 +12,12 @@
  * `spawn_ids` for several → { ok, results:[{ ok, spawn_id, action, … | error }],
  * counts }. Each result self-describes its spawn_id; one bad report never poisons
  * the rest. `reason` / `max_restarts` / `window_sec` / `workspace` are batch-level.
+ *
+ * WI-5541: a 'restart' action REALLY relaunches now (superviseCrash re-invokes the
+ * one spawn chokepoint for every id it marks 'restarting', then retires the
+ * superseded row) — it used to only flip status='restarting' and stop there, a
+ * phantom the caller had to notice and manually re-run. `relaunches[]` on each
+ * result reports the real outcome per id.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -27,11 +33,11 @@ export default defineTool({
   name: 'fleet:supervise',
   profile: 'engineer',
   description:
-    'Report one OR many crashed spawns. The supervisor restarts the strategy\'s set (one_for_one/one_for_all/rest_for_one) within the restart-intensity budget, or tears the subtree down + escalates to a human when it is crash-looping. Pass `spawn_id` for one or `spawn_ids` for several. Returns { ok, results:[{ ok, spawn_id, action, … | error }], counts } — correlate by spawn_id, not position; one failure never fails the rest.',
+    'Report one OR many crashed spawns. The supervisor ACTUALLY RESTARTS the strategy\'s set (one_for_one/one_for_all/rest_for_one) within the restart-intensity budget — re-launching each as a fresh spawn, no caller action needed — or tears the subtree down + escalates to a human when it is crash-looping. Pass `spawn_id` for one or `spawn_ids` for several. Returns { ok, results:[{ ok, spawn_id, action, relaunches, … | error }], counts } — correlate by spawn_id, not position; one failure never fails the rest.',
   guidance: {
-    when: 'A supervised child exited abnormally and you (the control supervisor / curator) must decide restart-vs-escalate. Returns each spawn\'s restart set, or its escalation id when the crash-loop bound is breached. Several crashed at once? Pass them all via `spawn_ids`.',
+    when: 'A supervised child exited abnormally and you (the control supervisor / curator) must decide restart-vs-escalate. On a restart it is ALREADY DONE by the time this returns — check each `relaunches[]` entry (ok/new_spawn_id/error) rather than re-launching yourself. Several crashed at once? Pass them all via `spawn_ids`.',
     notWhen: 'For a clean human abort — that is fleet:cancel, not a crash.',
-    chaining: 'detect crash → fleet:supervise { spawn_id } | { spawn_ids:[…] } → (restart the returned set) | (handle the escalation). Bulk: correlate by spawn_id, not position; one failure never fails the rest.',
+    chaining: 'detect crash → fleet:supervise { spawn_id } | { spawn_ids:[…] } → inspect `relaunches[]` (a false `ok` means the row is still \'restarting\' and needs a manual look) | handle the escalation. Bulk: correlate by spawn_id, not position; one failure never fails the rest.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -71,6 +77,16 @@ export default defineTool({
           strategy: res.strategy,
           restart_count: res.intensity?.count ?? null,
           to_restart: res.toRestart,
+          // WI-5541: `to_restart` is no longer just an intent — these are the REAL
+          // relaunch outcomes (one per to_restart id), so the caller can tell an
+          // actual replacement agent from a relaunch that was rejected (over ceiling,
+          // unknown role, missing project dir, …) and the old row was left 'restarting'.
+          relaunches: (res.relaunches ?? []).map((r) => ({
+            spawn_id: r.spawnId,
+            ok: r.ok,
+            new_spawn_id: r.newSpawnId,
+            error: r.error ?? null,
+          })),
           escalation_id: res.escalationId ?? null,
           reason: res.reason,
         };

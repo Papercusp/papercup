@@ -347,6 +347,26 @@ const RECYCLE_CARRY_INJECT_BUDGET_MS =
 const RECYCLE_CARRY_RETRY_BACKOFF_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS) || 3_000;
 
+/** EI-18109211232286833: max age a `carry-respawn` control message may reach
+ *  before delivery, measured from the moment this host first received it
+ *  (`msg.receivedAtMs`, stamped in `conn.on('end')`) to the instant it is
+ *  ABOUT to be delivered (immediately before `recycleChild`, in both the
+ *  first attempt and its one `makeCarryRearmController` retry — both legs
+ *  reuse the same `msg` object, so this measures TOTAL elapsed wait, not
+ *  per-attempt). A `session:request-compaction` carry-respawn never carries
+ *  `routineId`/`fireNumber` (WI-5510's stale-fire guard is a structural no-op
+ *  for it — loop-fire wakes are the only sender that stamps those fields), so
+ *  a single message held stale-long by the busy-gate (+ its one carryRearm
+ *  re-arm, up to 2× TURN_INJECT_BUSY_CAP_MS) previously delivered an outdated
+ *  carry document with no staleness check at all — the live instance of the
+ *  EI-15777 wake-churn family this guards against (see isCarryRespawnStale).
+ *  Generous default: a carry-respawn is deliberately a rare, human-scale event
+ *  (a deliberate compaction, not a tight polling loop), so 10 minutes is well
+ *  past any legitimate busy-gate wait while still catching a message that sat
+ *  stale through a pathologically long turn plus its re-arm. */
+const CARRY_RESPAWN_MAX_AGE_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_CARRY_STALE_MS) || 600_000;
+
 /** Orphan watchdog poll (WI-3141). A bridged interactive host exists ONLY to
  *  bridge the user's terminal to the agent under psu's own pty; once its
  *  launching shell dies it has no human to serve and MUST tear down — else it
@@ -762,6 +782,13 @@ export function makeCarryRearmController({
   recycle, // (data, { systemPromptAddendum, drillId, sessionClass }) => Promise<void>
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
+  // EI-18109211232286833: (msg) => boolean — re-checked right before this
+  // retry finally recycles, since the whole point of the retry is that a LOT
+  // of wall-clock time (the first busy-gate wait + this re-arm's) may have
+  // passed since the message first arrived. Default always-false preserves
+  // every existing controller unit test unchanged; the real host wires
+  // isCarryRespawnStale at construction (see carryRearm below).
+  isStale = () => false,
 }) {
   const pending = new Set();
   return {
@@ -800,6 +827,15 @@ export function makeCarryRearmController({
             // The re-armed attempt ALSO found the agent mid-turn past the cap —
             // terminal, loud, never a second re-arm.
             emitEvent(droppedKind, { ...extra, rearmed: true });
+            return;
+          }
+          // EI-18109211232286833: re-check staleness HERE, not just on the
+          // first attempt — this retry can itself run for up to `capMs`
+          // (2x the live-inject cap by default), so a message that was still
+          // fresh when schedule() was first called can cross the staleness
+          // threshold during the re-arm's own wait.
+          if (isStale(msg)) {
+            emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
             return;
           }
           await recycle(msg.data, {
@@ -1411,6 +1447,21 @@ export function makeStaleFireGuard() {
       return lastByRoutine.size;
     },
   };
+}
+
+/** EI-18109211232286833: is a `carry-respawn` control message too stale to
+ *  deliver? `receivedAtMs` is the moment this host first decoded the message
+ *  (stamped once in `conn.on('end')`, reused unchanged across the one
+ *  `makeCarryRearmController` retry), so this measures TOTAL elapsed wait —
+ *  original busy-gate wait plus the re-arm's — not a per-attempt window.
+ *  Pure + injectable clock (matches this file's style, e.g. makeStaleFireGuard
+ *  above); exported for unit tests. A message with no `receivedAtMs` (a
+ *  pre-fix sender, or any non-carry-respawn caller) is never considered stale
+ *  — this guard is opt-in per-message, same convention as the stale-fire
+ *  guard's opt-in `routineId`/`fireNumber`. */
+export function isCarryRespawnStale(receivedAtMs, { maxAgeMs = CARRY_RESPAWN_MAX_AGE_MS, now = Date.now() } = {}) {
+  if (receivedAtMs == null) return false;
+  return now - receivedAtMs > maxAgeMs;
 }
 
 /** The ordered write STEPS the host performs against the pty for a decoded
@@ -2145,6 +2196,12 @@ export function hostThroughPty(o) {
     env.PAPERCUSP_PSU_PTY_REARM_CAP_MS,
     turnInjectBusyCapMs * 2,
   );
+  // EI-18109211232286833: per-session tunable like the caps above, so tests
+  // can force a tiny budget instead of waiting out the 10-minute default.
+  const carryRespawnMaxAgeMs = positiveNumber(
+    env.PAPERCUSP_PSU_PTY_CARRY_STALE_MS,
+    CARRY_RESPAWN_MAX_AGE_MS,
+  );
   const carryRearm = makeCarryRearmController({
     acquireInject: () => injectMutex.acquire(),
     waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
@@ -2155,6 +2212,7 @@ export function hostThroughPty(o) {
       appendSharedDrillLedgerEvent(ownerId, kind, extra);
     },
     capMs: carryRearmCapMs,
+    isStale: (msg) => isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }),
   });
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
@@ -2196,6 +2254,13 @@ export function hostThroughPty(o) {
       const payload = Buffer.concat(chunks);
       if (!payload.length) return;
       const msg = decodeControl(payload);
+      // EI-18109211232286833: stamp the receipt time ONCE, here, so both this
+      // delivery attempt and its one makeCarryRearmController retry (which
+      // reuses this same `msg` object — see carryRearm.schedule below) measure
+      // TOTAL elapsed wait against isCarryRespawnStale, not a per-attempt one.
+      if (msg.mode === 'carry-respawn' && msg.receivedAtMs == null) {
+        msg.receivedAtMs = Date.now();
+      }
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
@@ -2328,6 +2393,33 @@ export function hostThroughPty(o) {
             if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
             return;
           }
+        }
+        // EI-18109211232286833: CARRY-RESPAWN STALENESS GUARD. Placed here —
+        // after every gate wait, immediately before the delivery it would
+        // otherwise perform — because this is the true "about to deliver"
+        // moment (same placement rationale as the stale-fire guard just
+        // above): a carry-respawn is a snapshot of the world taken when it was
+        // built, and one held this long by the busy-gate (+ its one
+        // carryRearm re-arm) is no longer trustworthy even though it carries
+        // no routineId/fireNumber for the stale-fire guard to catch.
+        if (
+          msg.mode === 'carry-respawn' &&
+          isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs })
+        ) {
+          const ageMs = Date.now() - msg.receivedAtMs;
+          const dropExtra = { mode: 'carry-respawn', reason: 'carry-stale', ageMs, maxAgeMs: carryRespawnMaxAgeMs };
+          appendHostEvent(ownerId, 'respawn-carry-dropped', dropExtra);
+          appendSharedDrillLedgerEvent(ownerId, 'respawn-carry-dropped', dropExtra);
+          try {
+            process.stderr.write(
+              `psu-pty-host: STALE carry-respawn DROPPED for ${ownerId} ` +
+                `(age ${ageMs}ms > ${carryRespawnMaxAgeMs}ms cap) — never delivered\n`,
+            );
+          } catch {
+            /* diagnostic only */
+          }
+          if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+          return;
         }
         // RECYCLE (su-cold-auto-mode P-004b): a hard cold reset — kill + respawn
         // the child in THIS host, then open the fresh process on the carry-note.

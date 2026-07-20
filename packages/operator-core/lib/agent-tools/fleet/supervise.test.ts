@@ -40,13 +40,17 @@ beforeEach(() => {
 });
 
 describe('fleet:supervise tool — result projection + bulk envelope (Gap 11 / P-006)', () => {
-  it('n=1 { spawn_id } restart action: one keyed result with strategy, restart_count, to_restart', async () => {
+  it('n=1 { spawn_id } restart action: one keyed result with strategy, restart_count, to_restart, relaunches', async () => {
     h.superviseCrash.mockResolvedValue({
       spawnId: 's-a',
       action: 'restart',
       intensity: { count: 2, maxRestarts: 3, windowSec: 600 },
       strategy: 'rest_for_one',
       toRestart: ['s-a', 's-b'],
+      relaunches: [
+        { spawnId: 's-a', ok: true, newSpawnId: 's-a-2' },
+        { spawnId: 's-b', ok: false, newSpawnId: null, error: 'over ceiling' },
+      ],
       reason: 'restart (rest_for_one); attempt 2/3 in window',
     });
 
@@ -60,6 +64,10 @@ describe('fleet:supervise tool — result projection + bulk envelope (Gap 11 / P
       strategy: 'rest_for_one',
       restart_count: 2,
       to_restart: ['s-a', 's-b'],
+      relaunches: [
+        { spawn_id: 's-a', ok: true, new_spawn_id: 's-a-2', error: null },
+        { spawn_id: 's-b', ok: false, new_spawn_id: null, error: 'over ceiling' },
+      ],
       escalation_id: null,
     });
     // The handler forwards the resolved actor + workspace + crash reason to the engine.

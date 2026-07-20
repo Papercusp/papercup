@@ -32,6 +32,7 @@ import {
   makeTurnCoalescer,
   makeInjectMutex,
   makeStaleFireGuard,
+  isCarryRespawnStale,
   ACTIVITY_PERSIST_MS,
   MAX_CONTROL_PAYLOAD_BYTES,
   controlPayloadWithinLimit,
@@ -282,6 +283,34 @@ describe('makeStaleFireGuard (WI-5510 — delivery-side dead-man switch against 
     // and would otherwise flush a stale, already-superseded wake mid-turn.
     const verdict = g.admit('r-1', 1);
     expect(verdict).toEqual({ admit: false, lastDelivered: 2 });
+  });
+});
+
+describe('isCarryRespawnStale (EI-18109211232286833 — age-based carry-respawn dead-man switch)', () => {
+  it('admits (not stale) a message received well within the max age', () => {
+    const now = 1_000_000;
+    expect(isCarryRespawnStale(now - 1_000, { maxAgeMs: 600_000, now })).toBe(false);
+  });
+
+  it('is stale once elapsed time strictly exceeds maxAgeMs', () => {
+    const now = 1_000_000;
+    expect(isCarryRespawnStale(now - 600_001, { maxAgeMs: 600_000, now })).toBe(true);
+  });
+
+  it('is exactly-at-the-boundary NOT stale (strictly greater-than, not >=)', () => {
+    const now = 1_000_000;
+    expect(isCarryRespawnStale(now - 600_000, { maxAgeMs: 600_000, now })).toBe(false);
+  });
+
+  it('a message with no receivedAtMs (pre-fix sender / non-carry-respawn caller) is never stale — opt-in guard', () => {
+    expect(isCarryRespawnStale(undefined, { maxAgeMs: 600_000, now: 1_000_000 })).toBe(false);
+    expect(isCarryRespawnStale(null, { maxAgeMs: 600_000, now: 1_000_000 })).toBe(false);
+  });
+
+  it('defaults maxAgeMs to the module constant (10 minutes) and now to the real clock when omitted', () => {
+    const justNow = Date.now();
+    expect(isCarryRespawnStale(justNow)).toBe(false);
+    expect(isCarryRespawnStale(justNow - 11 * 60_000)).toBe(true);
   });
 });
 
@@ -1652,5 +1681,44 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
     expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
     expect(h.controller.pendingCount()).toBe(2);
+  });
+
+  // EI-18109211232286833: the retry itself can run for up to `capMs` (2x the
+  // live-inject cap by default), so a message that was still fresh when
+  // schedule() was first called can cross the staleness threshold DURING the
+  // re-arm's own wait — isStale is re-checked right before recycle(), not
+  // only at schedule() time.
+  describe('isStale re-check (EI-18109211232286833)', () => {
+    it('a retry found stale right before recycling drops terminally with reason carry-stale and never recycles', async () => {
+      const events = [];
+      const recycles = [];
+      const controller = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt: async () => ({ deferred: false }),
+        recycle: async (data, opts) => recycles.push({ data, opts }),
+        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        capMs: 1234,
+        isStale: () => true,
+      });
+      expect(controller.schedule(NON_DRILL_MSG)).toBe('queued');
+      for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+      expect(recycles).toEqual([]);
+      expect(events.at(-1)).toMatchObject({
+        kind: 'respawn-carry-dropped',
+        mode: 'carry-respawn',
+        reason: 'carry-stale',
+        rearmed: true,
+      });
+      expect(controller.pendingCount()).toBe(0);
+    });
+
+    it('a retry found NOT stale recycles normally — isStale defaults to always-false, preserving every prior test unchanged', async () => {
+      const h = makeHarness();
+      // makeHarness never passes isStale — asserting the default still recycles
+      // guards against a default flip silently breaking every caller above.
+      expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
+      await h.settle();
+      expect(h.recycles).toHaveLength(1);
+    });
   });
 });

@@ -13,7 +13,7 @@
 import { z } from 'zod';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { projectDirForSlug } from '../../operator-notes';
@@ -68,7 +68,20 @@ export default defineTool({
     chaining: 'git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging).',
   },
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // The COMMIT lever of the three-part release pipeline (COMMIT → git-sync:run,
+  // VERDICT → release:checkpoint-run, DEPLOY → release:deploy) — see this file's
+  // header comment. checkpoint-run and deploy already widened their invoke
+  // allowlist to the full red-fix cohort + dropped the operator-config-write
+  // in-handler gate (EI-7426: that gate is for tools that MUTATE fleet-wide
+  // config; firing an already-scheduled, idempotent action is not that). This
+  // tool is the same shape — it just fires the SAME `system:git-sync` action a
+  // cron tick already runs on its own ≤3-min cycle — but was missed when
+  // EI-7426 fixed its two siblings, so release-fixer (told by its own persona
+  // to poll for its fix landing on staging HEAD before firing checkpoint-run)
+  // kept hitting a structural role-reject trying to speed that up
+  // (repeated-tool-error watchdog, EI-18117741153424215). Mirror the sibling
+  // tools' allowlist exactly.
+  agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
     installSlug: z
@@ -77,10 +90,11 @@ export default defineTool({
       .optional()
       .describe('Install slug whose git-sync to fire (default: the operator home harness).'),
   }),
-  async handler(args, ctx) {
-    if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('git-sync:run requires operator, architect, or mug role');
-    }
+  async handler(args, _ctx) {
+    // No in-handler role gate: firing git-sync is a SAFE, idempotent op — it runs
+    // the same commit+push action a cron tick already fires on its own ≤3-min
+    // cycle, self-locks against a concurrent tick, and mutates no config (see the
+    // agentRoles note above). Access control is the invoke allowlist.
     const slug = args.installSlug ?? operatorHomeHarnessSlug();
     const workspaceId = activeWorkspaceId();
 

@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
     cacheReadTokens: 0, cacheCreationTokens: 0, spendUsd: 0.01, buckets: [],
   })),
   loadAccountPool: vi.fn(async () => ({ accounts: [] as unknown[] })),
+  listPresence: vi.fn(async () => [] as Array<{ heartbeatAt: string }>),
+  activeWorkspaceId: vi.fn(() => 'ws-test'),
 }));
 
 vi.mock('@papercusp/papercusp-shared/agent', () => ({
@@ -31,6 +33,10 @@ vi.mock('./rate-limit-config', () => ({ getCachedRateLimitConfig: h.getCachedRat
 vi.mock('./agent-usage-telemetry', () => ({ summarizeUsage: h.summarizeUsage }));
 // B-GW-4 opus-budget: mock only the pool loader; the pure summarizeOpusBudget runs for real.
 vi.mock('./deployment/account-pool-store', () => ({ loadAccountPool: h.loadAccountPool }));
+// EI-18106936190883400 (liveAgents): mock presence — the real PRESENCE_STALE_MS constant
+// runs for real (it's a pure number, no need to mock it).
+vi.mock('./agent-tools/coordination/presence', () => ({ listPresence: h.listPresence, PRESENCE_STALE_MS: 10 * 60 * 1000 }));
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: h.activeWorkspaceId }));
 
 import { buildFleetRateStatus } from './fleet-rate-status';
 
@@ -65,6 +71,8 @@ beforeEach(() => {
     cacheReadTokens: 0, cacheCreationTokens: 0, spendUsd: 0.01, buckets: [],
   });
   h.loadAccountPool.mockResolvedValue({ accounts: [] });
+  h.listPresence.mockResolvedValue([]);
+  h.activeWorkspaceId.mockReturnValue('ws-test');
 });
 
 describe('buildFleetRateStatus (Gap 1 — read-model assembly, isolated)', () => {
@@ -197,5 +205,39 @@ describe('buildFleetRateStatus (Gap 1 — read-model assembly, isolated)', () =>
     const s = await buildFleetRateStatus();
     expect(s.opusBudget).toBeNull();
     expect(s.ok).toBe(true);
+  });
+
+  describe('(EI-18106936190883400) fleet.liveAgents — the real fleet-wide count, distinct from inFlight', () => {
+    it('counts only non-stale presence rows for the active workspace', async () => {
+      h.snapshotGovernors.mockReturnValue([]);
+      const now = Date.now();
+      h.listPresence.mockResolvedValue([
+        { heartbeatAt: new Date(now).toISOString() }, // fresh
+        { heartbeatAt: new Date(now - 60_000).toISOString() }, // fresh (1m old)
+        { heartbeatAt: new Date(now - 11 * 60_000).toISOString() }, // stale (>10m)
+      ]);
+      const s = await buildFleetRateStatus();
+      expect(s.fleet.liveAgents).toBe(2);
+      expect(h.listPresence).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
+    });
+
+    it('is independent of the governor-scoped inFlight (the divergence the bug reported)', async () => {
+      h.snapshotGovernors.mockReturnValue([]);
+      h.globalConcurrencySnapshot.mockReturnValue({ cap: 8, inFlight: 0 }); // governor sees 0 in-flight
+      h.listPresence.mockResolvedValue(
+        Array.from({ length: 59 }, () => ({ heartbeatAt: new Date().toISOString() })),
+      );
+      const s = await buildFleetRateStatus();
+      expect(s.fleet.inFlight).toBe(0);
+      expect(s.fleet.liveAgents).toBe(59);
+    });
+
+    it('degrades to 0 (never throws) when the presence store read rejects', async () => {
+      h.snapshotGovernors.mockReturnValue([]);
+      h.listPresence.mockRejectedValue(new Error('presence PG down'));
+      const s = await buildFleetRateStatus();
+      expect(s.fleet.liveAgents).toBe(0);
+      expect(s.ok).toBe(true);
+    });
   });
 });

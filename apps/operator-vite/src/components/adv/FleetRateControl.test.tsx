@@ -17,7 +17,10 @@ import FleetRateControl, { type FleetRateStatusWire } from './FleetRateControl';
 function makeStatus(over: Partial<FleetRateStatusWire> = {}): FleetRateStatusWire {
   return {
     config: { maxSimultaneousAgents: 16, concurrencyFloor: 1 },
-    fleet: { cap: 16, inFlight: 3, effective: 16, floor: 1 },
+    // liveAgents deliberately distinct from inFlight — proves the rendered "agents"
+    // number is the real fleet-wide count (EI-18106936190883400), not the
+    // governor-scoped inFlight.
+    fleet: { cap: 16, inFlight: 3, effective: 16, floor: 1, liveAgents: 9 },
     buckets: [
       { key: 'anthropic', paused: false, pausedUntil: null },
       { key: 'openai', paused: false, pausedUntil: null },
@@ -79,7 +82,8 @@ describe('FleetRateControl component', () => {
     await waitFor(() => expect(input.value).toBe('16'));
     expect(screen.getByText('62%')).toBeTruthy();
     expect(screen.getByText('$1.23')).toBeTruthy();
-    expect(screen.getByText('3 / 16')).toBeTruthy();
+    // the real liveAgents count (9), NOT the governor-scoped inFlight (3).
+    expect(screen.getByText('9 / 16')).toBeTruthy();
     expect(input.disabled).toBe(false);
     // no paused buckets → no badge
     expect(screen.queryByText(/paused/)).toBeNull();
@@ -104,7 +108,9 @@ describe('FleetRateControl component', () => {
     stubApi(new Error('ECONNREFUSED'));
     render(<FleetRateControl />);
     await waitFor(() => expect(screen.getByTitle(/unreachable: ECONNREFUSED/)).toBeTruthy());
-    expect(screen.getByText('—%')).toBeTruthy();
+    // no known provider ceiling (and no status at all here) → "n/a", not a bare "—%"
+    // that reads as frozen/broken (EI-18106936190883400).
+    expect(screen.getByText('n/a')).toBeTruthy();
     expect(screen.getByText('$0')).toBeTruthy();
     expect(screen.getByText('—')).toBeTruthy();
     expect(screen.getByLabelText<HTMLInputElement>('max agents').disabled).toBe(true);

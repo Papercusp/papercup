@@ -63,9 +63,37 @@ describe('git-sync:run', () => {
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, head_before: null, head_after: null });
   });
 
-  it('rejects a non-operator role', async () => {
-    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn() }));
+  // EI-18117741153424215: git-sync:run is the COMMIT lever of the three-part release
+  // pipeline (COMMIT → git-sync:run, VERDICT → release:checkpoint-run, DEPLOY →
+  // release:deploy) — same shape as its two siblings, which EI-7426 already fixed. It
+  // used to copy an operator-config-write gate (wrong here — firing an already-scheduled,
+  // idempotent commit+push mutates no config), so release-fixer (told by its own persona
+  // to poll for its fix landing on staging before firing checkpoint-run) hit a recurring
+  // structural tool-error trying to speed that commit up. There is now no in-handler role
+  // gate; the invoke allowlist (SU_ROLES + cup/release-fixer/release-manager) is the
+  // access control, mirroring release:checkpoint-run and release:deploy.
+  it.each(['worker', 'debugger', 'cup', 'release-fixer', 'release-manager'])(
+    'fires git-sync for a non-operator red-fixing role (%s) — no operator-config-write gate (EI-7426/EI-18117741153424215)',
+    async (role) => {
+      const fireSpy = vi.fn(async () => undefined);
+      vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+      vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+      vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+      vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+      const { default: tool } = await import('./run');
+      const result = await tool.handler({}, MAKE_CTX(role));
+
+      expect(fireSpy).toHaveBeenCalledTimes(1);
+      expect(parse(result as never)).toMatchObject({ ok: true, fired: true });
+    },
+  );
+
+  it('advertises the invoke allowlist to the red-fix cohort (mirrors release:checkpoint-run / release:deploy)', async () => {
     const { default: tool } = await import('./run');
-    await expect(tool.handler({}, MAKE_CTX('cup'))).rejects.toThrow(/operator, architect, or mug/);
+    const roles = (tool as { agentRoles?: readonly string[] }).agentRoles ?? [];
+    for (const r of ['worker', 'scoper', 'validator', 'reviewer', 'debugger', 'cup', 'release-fixer', 'release-manager']) {
+      expect(roles).toContain(r);
+    }
   });
 });
