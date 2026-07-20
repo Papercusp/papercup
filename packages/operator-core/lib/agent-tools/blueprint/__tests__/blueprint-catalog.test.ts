@@ -41,6 +41,7 @@ type Entry = {
   requiresRepo?: boolean;
   description?: string;
   error?: string;
+  retired?: { retired: true; at?: string; reason?: string };
 };
 const byId = (r: { blueprints: Entry[] }, id: string) => r.blueprints.find((b) => b.id === id);
 
@@ -85,6 +86,25 @@ describe('blueprint:catalog — built-in tier', () => {
     const base = byId(r, 'base')!;
     expect(base.abstract).toBe(true);
     expect(base.error).toBeUndefined();
+  });
+
+  // WI-5645 (no-retirement-launch-guard): the catalog is the discovery surface
+  // `harness:create` decisions start from, so a retired blueprint — or one
+  // extending a retired ancestor (external-bench ⟶ coding-factory, the exact
+  // EI-18177667809538623 shape) — must be visibly flagged here too.
+  it('flags a retired blueprint and every descendant that inherits it', async () => {
+    const r = await run();
+    const coding = byId(r, 'coding-factory')!;
+    expect(coding.retired?.retired).toBe(true);
+    expect(coding.retired?.at).toBe('2026-06-24');
+
+    const bench = byId(r, 'external-bench')!;
+    expect(bench.retired?.retired).toBe(true);
+    expect(bench.retired?.at).toBe('2026-06-24');
+
+    // A non-retired blueprint carries no `retired` key at all.
+    const research = byId(r, 'research')!;
+    expect(research.retired).toBeUndefined();
   });
 
   it('tier filter narrows to built-ins only', async () => {

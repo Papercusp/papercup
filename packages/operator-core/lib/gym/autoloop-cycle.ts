@@ -300,6 +300,19 @@ export async function runOneAutoloopCycle(
     // Production-fidelity: the REAL chunk-loop worker model with the L1 gate pointed at the
     // substrate's dependency-free `npm run typecheck`. The substrate is buildable. See ab-run.ts.
     writeFileSync(join(substrateDir, '.papercusp', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { workingStateCheck: 'npm run typecheck' } }));
+    // Pin the substrate to the LIVE single-worker coding blueprint (`coding-solo`) so the gym
+    // optimizes the CURRENT `worker.md` prompt. WITHOUT this the throwaway harness has NO
+    // blueprint and falls back to the RETIRED `coding-factory` director→…→curator spine
+    // (blueprint-run-action.ts `codingFallback`) — i.e. it would optimize dead legacy code
+    // (retired 2026-06-24). `coding-solo` extends `single-agent` (decider: `worker`), carries the
+    // `gym: collectTrace: git-diff` seam the ab-runner needs, and matches this substrate's stated
+    // "REAL chunk-loop worker model" intent above. The blueprint projection is keyed by
+    // (workspace_id, harness_slug) (project-to-pg.ts), so this fixed `id` never collides across the
+    // per-run gymRunIdentity slugs.
+    writeFileSync(
+      join(substrateDir, '.papercusp', 'blueprint.yaml'),
+      'id: gym-substrate\nextends: coding-solo\nversion: 0.0.1\n',
+    );
     for (const f of substrateFiles) writeFileSync(join(substrateDir, f.path), f.content);
     execFileSync('git', ['init', '-q'], { cwd: substrateDir });
     execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'add', '-A'], { cwd: substrateDir });

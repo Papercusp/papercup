@@ -275,19 +275,69 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
  * Host-log-silent owners (no psu host, never respawned, unreadable dir) keep the
  * DB ref unchanged, so non-psu and never-respawned cohorts are untouched.
  */
-export async function resolveSessionRefReconciled(ownerId: string): Promise<SessionRef | null> {
-  const ref = await resolveSessionRef(ownerId);
+/** Injectable seams for {@link resolveSessionRefReconciled} — real defaults in
+ *  prod, overridden in tests so the rung ordering is verifiable without a DB/FS. */
+export interface ResolveReconciledDeps {
+  resolveRef?: (ownerId: string) => Promise<SessionRef | null>;
+  latestRespawn?: (ownerId: string) => string | null;
+  newestTranscript?: (ownerId: string) => string | null;
+  isFresh?: (p: string) => boolean;
+}
+
+export async function resolveSessionRefReconciled(
+  ownerId: string,
+  deps: ResolveReconciledDeps = {},
+): Promise<SessionRef | null> {
+  const resolveRef = deps.resolveRef ?? resolveSessionRef;
+  const newestTranscript = deps.newestTranscript ?? newestTranscriptUnderOwner;
+  const isFresh = deps.isFresh ?? fallbackTranscriptFresh;
+
+  const ref = await resolveRef(ownerId);
   if (!ref) return null;
   // The rotation is a claude-only concept (--session-id); never touch omp/codex.
   if (ref.agent === 'omp' || ref.agent === 'codex') return ref;
+
+  // Rung 3: a respawn LOGGED since the current host started names the successor
+  // authoritatively — the host log knows about a just-happened carry-respawn even
+  // before the successor has written its first transcript byte, so an idle
+  // successor is never mis-pinned to its dead predecessor. When it names a NEWER
+  // id, trust it (and skip rung 4, which could otherwise re-pin to the frozen
+  // predecessor whose transcript is still the newest on disk for a few seconds).
   try {
-    const { latestRespawnNativeId } = await import('./events/await/psu-pty-discovery');
-    const hostNativeId = latestRespawnNativeId(ownerId);
-    if (!hostNativeId || hostNativeId === ref.sessionId) return ref;
-    return { ...ref, sessionId: hostNativeId };
+    const latestRespawn =
+      deps.latestRespawn ?? (await import('./events/await/psu-pty-discovery')).latestRespawnNativeId;
+    const hostNativeId = latestRespawn(ownerId);
+    if (hostNativeId && hostNativeId !== ref.sessionId) return { ...ref, sessionId: hostNativeId };
   } catch {
-    return ref;
+    /* fall through to rung 4 */
   }
+
+  // Rung 4 (WI-5644 / the WI-5075 rung-3 gap): the respawn log ALSO goes stale
+  // when a session acquires a NEW native transcript via a path that emits NO
+  // `respawned` event — a service-restart relaunch (the papercup-dev-api bounce
+  // that reaps+relaunches the headless child, EI-9748), a fork, or a fresh launch
+  // reusing the adv row. latestRespawnNativeId then returns null / an equal id and
+  // the DB ref keeps naming a dead predecessor, whose resolvable-but-frozen
+  // transcript estimateContextTokens reads as the live session's usage → the P-018
+  // kill loop, STILL LIVE for these unlogged transitions (2026-07-20 su-8e9c1164:
+  // adv_sessions + respawn log both froze at an early id while three later
+  // transcripts were written unlogged). The isolation dir's newest ACTIVELY-
+  // WRITTEN transcript is the ground truth for the current native session
+  // regardless of transition path — the same source the P-016 estimate fallback
+  // trusts. Prefer it when it is FRESH (a stale/frozen newest is a dead
+  // predecessor an idle successor must NOT be pinned to; rung 3 above already
+  // covers the just-respawned case) and names a different id than the DB ref.
+  try {
+    const newest = newestTranscript(ownerId);
+    if (newest && isFresh(newest)) {
+      const id = path.basename(newest, '.jsonl');
+      if (id && id !== ref.sessionId) return { ...ref, sessionId: id };
+    }
+  } catch {
+    /* fall through */
+  }
+
+  return ref;
 }
 
 /* ── WI-4154: anchored incremental reads — right the first time ─────────────

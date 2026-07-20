@@ -13,6 +13,7 @@ import {
   fallbackTranscriptFresh,
   newestTranscriptUnderOwner,
   parseLaunchCompactionLimitArgv,
+  resolveSessionRefReconciled,
   tokensFromFileSize,
 } from './compaction-usage';
 
@@ -141,6 +142,86 @@ describe('tokensFromFileSize (WI-3176 base64-image discount)', () => {
     // Old fast path would have read ~187k (750KB/4) — enough to trip a
     // 200k-window force threshold; discounted it is ~12.5k + 1600.
     expect(tokens).toBeLessThan(30_000);
+  });
+});
+
+describe('resolveSessionRefReconciled — rung 4: unlogged native-session transitions (WI-5650 / WI-5075)', () => {
+  const OWNER = 'su-8e9c1164-aa6e-4302-b78d-b03c7c86ae0a';
+  const claudeRef = (sessionId: string) => async () => ({ agent: 'claude', sessionId });
+  const never = () => {
+    throw new Error('should not be consulted');
+  };
+
+  it('rung 4 corrects a stale DB ref to the newest ACTIVELY-WRITTEN transcript when the respawn log is silent', async () => {
+    // The 2026-07-20 su-8e9c1164 case: DB + respawn log both froze at an early id
+    // while a later transcript was written via an unlogged (service-restart) path.
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: claudeRef('de49cf4e-stale'),
+      latestRespawn: () => null, // no `respawned` event since host start
+      newestTranscript: () => '/iso/su/projects/proj/c95d04fe-current.jsonl',
+      isFresh: () => true,
+    });
+    expect(out).toEqual({ agent: 'claude', sessionId: 'c95d04fe-current' });
+  });
+
+  it('rung 4 also corrects when the respawn log AGREES with the stale DB ref (both frozen)', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: claudeRef('de49cf4e-stale'),
+      latestRespawn: () => 'de49cf4e-stale', // log names the SAME stale id
+      newestTranscript: () => '/iso/c95d04fe-current.jsonl',
+      isFresh: () => true,
+    });
+    expect(out).toEqual({ agent: 'claude', sessionId: 'c95d04fe-current' });
+  });
+
+  it('rung 3 WINS over rung 4 — a just-respawned idle successor is never re-pinned to its dead predecessor', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: claudeRef('predecessor'),
+      latestRespawn: () => 'successor', // host log named the successor (no transcript yet)
+      newestTranscript: () => '/iso/predecessor.jsonl', // predecessor is still newest on disk, fresh
+      isFresh: () => true,
+    });
+    expect(out).toEqual({ agent: 'claude', sessionId: 'successor' });
+  });
+
+  it('does NOT override when the newest transcript is STALE/frozen (a dead predecessor)', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: claudeRef('live-id'),
+      latestRespawn: () => null,
+      newestTranscript: () => '/iso/some-frozen.jsonl',
+      isFresh: () => false, // >10min old ⇒ not the live session
+    });
+    expect(out).toEqual({ agent: 'claude', sessionId: 'live-id' });
+  });
+
+  it('does NOT override when the newest transcript already matches the DB ref', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: claudeRef('cur'),
+      latestRespawn: () => null,
+      newestTranscript: () => '/iso/cur.jsonl',
+      isFresh: () => true,
+    });
+    expect(out).toEqual({ agent: 'claude', sessionId: 'cur' });
+  });
+
+  it('leaves omp/codex refs untouched (rotation is claude-only) without consulting the FS', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: async () => ({ agent: 'omp', sessionId: 'omp-thread' }),
+      latestRespawn: never,
+      newestTranscript: never,
+      isFresh: never,
+    });
+    expect(out).toEqual({ agent: 'omp', sessionId: 'omp-thread' });
+  });
+
+  it('returns null when the DB has no session ref', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: async () => null,
+      latestRespawn: never,
+      newestTranscript: never,
+      isFresh: never,
+    });
+    expect(out).toBeNull();
   });
 });
 
