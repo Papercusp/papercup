@@ -18,6 +18,8 @@
  */
 import { readFileSync } from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
+import { spawn as nodeSpawn } from 'node:child_process';
+import type { SpawnOptions } from 'node:child_process';
 
 export interface WaitForOperatorReadyOpts {
   /** e.g. `http://127.0.0.1:3976` */
@@ -39,6 +41,70 @@ export function bootLogTail(logPath: string | undefined, lines = 15): string {
   } catch {
     return '';
   }
+}
+
+export interface SpawnGymOperatorWithRetryOpts {
+  command: string;
+  args: string[];
+  spawnOptions: SpawnOptions;
+  /** e.g. `http://127.0.0.1:3976` */
+  baseUrl: string;
+  timeoutMs: number;
+  /** Boot log path — its tail rides every rejection message; reused across attempts. */
+  logPath?: string;
+  pollMs?: number;
+  /** Total attempts (1 = no retry). Default 2 (one retry). */
+  maxAttempts?: number;
+  /** Called just before a retry, with the failure that triggered it. */
+  onRetry?: (err: Error, attempt: number) => void;
+}
+
+/**
+ * spawnGymOperatorWithRetry (EI-18157486989132279) — spawn + waitForOperatorReady
+ * with ONE automatic retry, but ONLY when the operator process actually EXITED
+ * during boot (a crash). On this heavily-parallel fleet, git-sync commits the
+ * shared source tree every ~3min while a gym-operator boot's tsx/esbuild
+ * transform re-reads the whole tree — so a boot can occasionally read a
+ * half-written file, hit an esbuild TransformError, and exit(1) with a message
+ * that LOOKS like a real syntax bug but is a transient partial-read (confirmed:
+ * re-transforming the same file after the commit settled parses clean). A
+ * respawn a few seconds later reads past the write.
+ *
+ * A bare readiness TIMEOUT (the operator never died, it just never became
+ * ready — e.g. a real migration hang) is a DIFFERENT failure class a respawn
+ * won't fix, so it is deliberately NOT retried — failing fast there beats
+ * silently doubling the boot budget on a non-transient hang.
+ */
+export async function spawnGymOperatorWithRetry(opts: SpawnGymOperatorWithRetryOpts): Promise<ChildProcess> {
+  const maxAttempts = opts.maxAttempts ?? 2;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const child = nodeSpawn(opts.command, opts.args, opts.spawnOptions);
+    try {
+      await waitForOperatorReady({
+        baseUrl: opts.baseUrl,
+        child,
+        timeoutMs: opts.timeoutMs,
+        logPath: opts.logPath,
+        pollMs: opts.pollMs,
+      });
+      return child;
+    } catch (err) {
+      lastErr = err;
+      // Best-effort cleanup of the failed attempt's process (group — callers
+      // spawn with `detached: true`, so the pid is a process-group leader).
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        /* already dead */
+      }
+      const exitedDuringBoot = err instanceof Error && /^gym-operator exited during boot/.test(err.message);
+      if (!exitedDuringBoot || attempt >= maxAttempts) throw err;
+      opts.onRetry?.(err as Error, attempt);
+    }
+  }
+  throw lastErr;
 }
 
 export async function waitForOperatorReady(opts: WaitForOperatorReadyOpts): Promise<void> {

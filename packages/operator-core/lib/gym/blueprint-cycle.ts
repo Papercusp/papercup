@@ -22,7 +22,7 @@
  * Two modes (opts.fake / env GYM_BP_FAKE, DEFAULT fake): fixtures/fake-gym-agent.mjs
  * walks the spine verbs with ZERO LLM spend; real mode runs real AGENT_CMD agents.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -34,7 +34,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-spec';
-import { waitForOperatorReady } from './operator-ready';
+import { spawnGymOperatorWithRetry } from './operator-ready';
 import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -176,16 +176,28 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
     });
     logFd = openSync(opLogPath, 'w');
     log(`booting gym-operator on :${PORT} (mode=${FAKE ? 'fake' : 'real'}, log → ${opLogPath}) …`);
-    operator = spawn(spec.command, spec.args, {
-      cwd: spec.cwd,
-      // EI-232: scrub the launcher Claude-Code session's env so real-mode gym
-      // agents auth against ~/.claude, not this session's per-session config dir.
-      env: scrubLauncherClaudeSessionEnv({ ...process.env, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' }),
-      stdio: ['ignore', logFd, logFd],
-      detached: true,
-    });
     // EI-368: readiness (DBOS launched) + fail-fast on child death, with boot-log tail.
-    await waitForOperatorReady({ baseUrl: `http://127.0.0.1:${PORT}`, child: operator, timeoutMs: 120_000, logPath: opLogPath });
+    // EI-18157486989132279: retry the boot ONCE, but only on an actual crash —
+    // a transient mid-git-sync-commit read of a half-written shared-tree file
+    // can make the tsx/esbuild transform throw during boot; a respawn a few
+    // seconds later reads past the write. A bare readiness timeout is not
+    // retried (see spawnGymOperatorWithRetry's doc comment).
+    operator = await spawnGymOperatorWithRetry({
+      command: spec.command,
+      args: spec.args,
+      spawnOptions: {
+        cwd: spec.cwd,
+        // EI-232: scrub the launcher Claude-Code session's env so real-mode gym
+        // agents auth against ~/.claude, not this session's per-session config dir.
+        env: scrubLauncherClaudeSessionEnv({ ...process.env, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' }),
+        stdio: ['ignore', logFd, logFd],
+        detached: true,
+      },
+      baseUrl: `http://127.0.0.1:${PORT}`,
+      timeoutMs: 120_000,
+      logPath: opLogPath,
+      onRetry: (err) => log(`operator boot crashed, retrying once (${err.message.split('\n')[0]}) …`),
+    });
     log('operator ready (DBOS launched)');
 
     // 4. Register both harnesses (the same public route the gym runner uses).
