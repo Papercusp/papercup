@@ -95,6 +95,18 @@ const ORIENT_PIPELINE_TIMEOUT_MS = 3_000;
  *  digest, live fleet — papercup-context.ts) — heavier than a single fleet leg,
  *  so it gets its own budget. Degrades to null past it (WI-3818 contract). */
 const ORIENT_PANE_CONTEXT_TIMEOUT_MS = 10_000;
+/** EI-18162666491500151: buildCompactionRecovery (afterCompaction:true) fans out
+ *  to FIVE independent legs — a self-transcript FORCE-TAIL/ingest (unbounded on a
+ *  large/first-time-seen session file), an armed-loop + control-anchor read, a
+ *  held-work-items query, and a staleness-warnings scan — none individually
+ *  budgeted, so any one hanging (observed: a healthy MCP connection where
+ *  SIBLING tool calls in the SAME turn returned instantly) silently wedged the
+ *  WHOLE orient call for the full 300s MCP tool-idle timeout instead of the
+ *  bounded-timeout contract (WI-3818) every other orient leg already gets.
+ *  Generous vs the other legs (15s, not 8-10s) because it does genuinely more
+ *  work and only runs on the FIRST post-compaction orient (low frequency), but
+ *  still an order of magnitude under the 300s wedge this exists to prevent. */
+const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
 
 export interface OrientArgs {
   harness?: string;
@@ -1573,7 +1585,18 @@ export default defineTool({
         // held-items query + checkpoint reads look under a workspace that holds
         // no rows. Resolve to the concrete active workspace.
         const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-        recovery = await buildCompactionRecovery(ownerId, ws);
+        // EI-18162666491500151: bounded — a slow leg inside buildCompactionRecovery
+        // (self-transcript ingest, held-items read, staleness scan) used to hang the
+        // WHOLE orient call for the full 300s MCP tool-idle timeout; now degrades to
+        // `undefined` (recovery omitted, same as the pre-existing catch contract)
+        // within ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS — the WI-3818 bounded-leg
+        // contract every other orient fold already gets.
+        const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws), {
+          fallback: undefined,
+          timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
+          label: 'orient:buildCompactionRecovery',
+        });
+        recovery = recoveryResult.value;
       } catch {
         /* fail-soft */
       }
