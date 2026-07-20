@@ -379,10 +379,35 @@ export function implementTimeoutMs(): number {
 const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candidate, dispatchId }) => {
   const attempt = (candidate.attempts ?? 0) + 1;
   // STABLE idempotency key (EI-403-A): derived from durable item state, never a
-  // clock, so a recovery replay of this dispatch re-fires the SAME durable workflow
-  // (`durable-spawn:<key>`) and dedups instead of double-dispatching. One key per
-  // genuine attempt (markDispatched bumps the attempt each dispatch).
-  const idempotencyKey = `implement:${candidate.id}:${attempt}`;
+  // clock, so a recovery replay of THIS SAME dispatch (the outer routine workflow
+  // crashing after this step already completed but before startDurableSpawns fired
+  // it — system-actions.ts's documented recovery case) re-fires the SAME durable
+  // workflow (`durable-spawn:<key>`) and dedups instead of double-dispatching.
+  //
+  // orphaned-dispatch root cause (EI-18117747280304049, live evidence: EI-10524 —
+  // 88 dispatches, EI-8914 — 10, EI-13241 — 4, EVERY one attempt=1 with the
+  // IDENTICAL spawned_run_id): keying on `attempt` collided across GENUINELY
+  // DISTINCT dispatches (different cadence ticks, hours apart) whenever
+  // payload.implementAttempts failed to advance between them — which
+  // implement-worker-exit.ts's EI-406 rollback (`implementAttempts: attempt - 1`
+  // on an env-failure/timeout/context-overflow death) makes a routine occurrence,
+  // not an edge case: a flaky-infra death pins the counter at the SAME value
+  // forever. Two dispatches sharing a key make DBOS.startWorkflow's
+  // {workflowID, deduplicationID} treat the 2nd+ as a replay of the FIRST
+  // (already-terminal) workflow — no NEW worker is ever spawned, so the dispatch
+  // silently does nothing until the 2h orphan collector flags it "orphaned",
+  // misleadingly implying a worker died when none ever ran. `dispatchId` is a
+  // fresh ledger-row UUID minted for THIS fire (recordDispatchFired, immediately
+  // before this runs) — unique per real dispatch, independent of the attempt
+  // counter's health, so it can never collide across ticks. It's still STABLE
+  // across the recovery-replay case above: that replay reuses this same
+  // completed step's cached return value (and therefore the same dispatchId),
+  // never re-executes this function body. Fall back to the attempt-keyed form
+  // only on the rare NULL (the ledger insert itself failed), so a dispatch is
+  // never blocked on the ledger.
+  const idempotencyKey = dispatchId
+    ? `implement:${candidate.id}:d${dispatchId}`
+    : `implement:${candidate.id}:${attempt}`;
   const durableSpawn = await buildLaunchSpawnRequest(
     'implement',
     {

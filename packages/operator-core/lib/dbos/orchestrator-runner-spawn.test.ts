@@ -26,9 +26,15 @@ vi.hoisted(() => {
 const H = vi.hoisted(() => ({
   cmd: null as null | { command: string; args: string[]; env: NodeJS.ProcessEnv },
   inputs: [] as Array<{ extraEnv: Record<string, string> }>,
+  // EI-18118494223190987: when set, buildInvokeOnce THROWS instead of returning
+  // a command — simulates a setup-step failure (e.g. instance-config read)
+  // upstream of the actual child spawn, to prove spawnInvokeOnce honors its own
+  // documented "never rejects" contract even then.
+  throwOnBuild: null as null | Error,
 }));
 vi.mock('../harness-invoke-once', () => ({
   buildInvokeOnce: (input: { extraEnv: Record<string, string> }) => {
+    if (H.throwOnBuild) throw H.throwOnBuild;
     H.inputs.push(input);
     return H.cmd;
   },
@@ -50,6 +56,7 @@ const node = (script: string) => ({ command: execPath, args: ['-e', script], env
 beforeEach(() => {
   // P-005 failLog / spawn-error log → console.error; silence (fail-on-console).
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  H.throwOnBuild = null;
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -60,6 +67,24 @@ describe('spawnInvokeOnce', () => {
     expect(r.exitCode).toBe(0);
     expect(r.output).toContain('NEXT_WORKER F-1');
     expect(console.error).not.toHaveBeenCalled();
+  });
+
+  // EI-18118494223190987: a throw from a SETUP step (buildInvokeOnce, the
+  // instance-config env-transport read, resolveSpawnBackendModel,
+  // governorForBackend, the governor acquire/feed path) used to propagate as a
+  // REJECTED promise, contradicting this function's own doc'd "never rejects"
+  // contract — and every caller (notably the harness /invoke route's auto-implement
+  // worker-exit back-edge) has no try/catch around its `await spawnInvokeOnce(...)`,
+  // so the rejection silently skipped their post-spawn bookkeeping instead of
+  // surfacing as a normal failed-exit result. Assert it now resolves instead.
+  it('resolves (never rejects) when a setup step throws before the child ever spawns', async () => {
+    H.throwOnBuild = new Error('instance-config read failed: ECONNREFUSED');
+    await expect(spawnInvokeOnce(process.cwd(), 'worker', [], {})).resolves.toMatchObject({
+      exitCode: 1,
+      output: '',
+      stderr: expect.stringContaining('instance-config read failed: ECONNREFUSED'),
+    });
+    expect(console.error).toHaveBeenCalled();
   });
 
   it('threads child pid and output activity callbacks on the default governor-off path', async () => {

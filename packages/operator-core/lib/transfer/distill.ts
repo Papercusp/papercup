@@ -24,6 +24,22 @@ const LESSON_TEXT_CAP = 1_200;
 const TITLE_CAP = 120;
 const DISTILL_MAX_TOKENS = 1_024;
 
+/**
+ * Cut `s` to at most `maxLen` chars WITHOUT chopping the last word in half
+ * (EI-18121665970916886 — a bare `.slice(0, TITLE_CAP)` produced titles like
+ * "…not class matchin" mid-word). Cuts at the last space at or before the
+ * budget (reserving one char for the ellipsis) and appends an ellipsis; falls
+ * back to a hard cut only when there's no space to cut on within budget (one
+ * very long unbroken word).
+ */
+function truncateAtWordBoundary(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  const cut = s.slice(0, maxLen - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  const boundary = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+  return `${boundary.trimEnd()}…`;
+}
+
 export function buildDistillSystemPrompt(maxLessons: number): string {
   return [
     'You distill TRANSFERABLE lessons from one coding-agent transcript.',
@@ -62,7 +78,7 @@ export function parseDistilledLessons(text: string, maxLessons: number): Distill
     if (!lessonText) continue;
     const title = typeof e.title === 'string' && e.title.trim() ? e.title.trim() : lessonText;
     out.push({
-      title: title.slice(0, TITLE_CAP),
+      title: truncateAtWordBoundary(title, TITLE_CAP),
       lessonText: lessonText.slice(0, LESSON_TEXT_CAP),
     });
   }

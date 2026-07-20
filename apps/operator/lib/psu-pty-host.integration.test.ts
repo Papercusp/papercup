@@ -550,12 +550,14 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
 
-      // BOOT, then spin (busy) for ~600ms before going quiet + echoing stdin —
-      // long enough that the message, sent WHILE spinning, ages well past the
-      // tiny CARRY_STALE_MS below during the busy-gate's wait for it to settle.
+      // BOOT, then spin (busy) for ~2000ms before going quiet + echoing stdin —
+      // a generous window (well past this environment's fork/pty-startup
+      // latency) so the message, sent once BOOT is confirmed AND still while
+      // spinning, ages well past the tiny CARRY_STALE_MS below during the
+      // busy-gate's wait for it to settle.
       const childCode =
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
-        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>30)clearInterval(iv);},20);' +
+        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>100)clearInterval(iv);},20);' +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -582,7 +584,13 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
       });
 
       try {
-        await sleep(80); // child has BOOTed and is mid-spin (busy) right now
+        // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
+        // varies by environment; the child's ~2000ms spin gives ample margin
+        // to detect BOOT and still inject while it's genuinely busy.
+        const bootDeadline = Date.now() + 3_000;
+        while (Date.now() < bootDeadline && !captured().includes('BOOT:')) {
+          await sleep(20);
+        }
         expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
 
         // Sent while the child is still busy spinning: receivedAtMs is stamped

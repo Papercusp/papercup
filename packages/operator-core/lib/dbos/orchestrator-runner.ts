@@ -415,6 +415,31 @@ export async function spawnInvokeOnce(
     const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
     feedGovernor(inner);
     return inner;
+  } catch (err) {
+    // EI-18118494223190987 (orphaned auto-implement dispatch worker): this
+    // function's own contract (see the doc comment above) promises it "never
+    // rejects" — every OTHER step in the try block above (buildInvokeOnce,
+    // resolveSpawnBackendModel, governorForBackend, gov.acquire, feedGovernor/
+    // classifyTurnError/gov.penalize) is synchronous or awaited INSIDE this try,
+    // but none of them was actually caught: a throw from any of them (e.g. a
+    // transient DB/instance-config read, a bad governor bucket key) propagated
+    // as a REJECTED promise, contradicting the doc'd contract. `runChild` itself
+    // never rejects (it's a bare `new Promise((resolve) => …)` with no reject
+    // path), so this can only be one of the setup/governor steps above it.
+    // Every caller of this chokepoint (the pipeline runner, the finalizer,
+    // cup:spawn, the coord-program fan-out, and the harness /invoke route)
+    // relies on the "never rejects" promise — the /invoke route in particular
+    // has no try/catch around its `await spawnInvokeOnce(...)` call, so an
+    // unhandled rejection here skipped its worker-exit back-edge entirely,
+    // leaving auto-implement dispatch rows to the silent 2h orphan collector
+    // instead of being closed promptly with a real diagnostic detail (the
+    // observed EI-18118494223190987 orphans). Resolve like a hard-failed spawn
+    // instead of rejecting, so every caller's normal exitCode!=0 handling (and
+    // this dispatch's worker-exit back-edge) fires immediately with the real
+    // cause instead of silently vanishing.
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    console.error(`[dbos-invoke] role=${role} spawnInvokeOnce setup/governor threw (never-rejects contract enforced): ${msg}`);
+    return { output: '', exitCode: 1, stderr: msg, rawStdoutTail: '' };
   } finally {
     displayLease?.release();
   }

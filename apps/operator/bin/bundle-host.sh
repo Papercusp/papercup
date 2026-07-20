@@ -84,7 +84,14 @@ for np in "${NATIVE_PKGS[@]}"; do HOST_EXTERNALS+=( "--external:$np" ); done
 mkdir -p "$(dirname "$OUTFILE")"
 LOCKFILE="$OUTFILE.build.lock"
 TMPFILE="$OUTFILE.tmp.$$"
-trap 'rm -f "$TMPFILE"' EXIT
+# EI-18119538868734274: the blueprints/ and sql/ asset directories below are
+# published with the SAME tmp-then-atomic-swap discipline as $TMPFILE here —
+# see the two "publish" comments further down for why (a live process's
+# ensureBootstrap()/blueprint loader can call fs.readdirSync on these paths at
+# ANY time, including mid-rebuild).
+NEW_BLUEPRINTS_DIR=""
+NEW_SQL_DIR=""
+trap 'rm -f "$TMPFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"; rm -rf "$OUTDIR_LOCKFILE_STALE_GLOB" 2>/dev/null || true' EXIT
 
 echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx loader)"
 (
@@ -120,13 +127,26 @@ if [[ ! -d "$HARNESS_BLUEPRINTS_SRC" ]]; then
 fi
 
 echo "→ bundling @papercusp/harness blueprints → $OUTDIR/blueprints"
-rm -rf "$OUTDIR/blueprints"
-mkdir -p "$OUTDIR/blueprints"
-cp -R "$HARNESS_BLUEPRINTS_SRC"/. "$OUTDIR/blueprints/"
-if [[ ! -f "$OUTDIR/blueprints/base/blueprint.yaml" ]]; then
-  echo "ERROR: bundled $OUTDIR/blueprints is missing base/blueprint.yaml"
+# EI-18119538868734274: publish via build-in-tmp-sibling + atomic `mv -T`
+# rename, exactly like $TMPFILE above. The old rm-rf/mkdir/cp-in-place left a
+# window (between the rm -rf and the cp finishing) where $OUTDIR/blueprints
+# does not exist or is only partially populated — @papercusp/harness's
+# blueprint resolver derives its root from import.meta.url and does a live
+# fs.readdirSync/readFileSync against this exact path from an ALREADY-RUNNING
+# process (a long-lived dev-api/bg-host process that hasn't loaded a blueprint
+# yet), completely independent of this build's own process. `mv -T` performs a
+# single same-filesystem rename() syscall, so any concurrent reader sees only
+# the complete old tree or the complete new tree, never a torn one.
+NEW_BLUEPRINTS_DIR="$OUTDIR/blueprints.new.$$"
+rm -rf "$NEW_BLUEPRINTS_DIR"
+mkdir -p "$NEW_BLUEPRINTS_DIR"
+cp -R "$HARNESS_BLUEPRINTS_SRC"/. "$NEW_BLUEPRINTS_DIR/"
+if [[ ! -f "$NEW_BLUEPRINTS_DIR/base/blueprint.yaml" ]]; then
+  echo "ERROR: bundled $NEW_BLUEPRINTS_DIR is missing base/blueprint.yaml"
   exit 1
 fi
+mv -T "$NEW_BLUEPRINTS_DIR" "$OUTDIR/blueprints"
+NEW_BLUEPRINTS_DIR=""
 echo "    ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml"
 
 LOCKS_SQL_SRC="${PAPERCUSP_LOCKS_SQL_DIR:-../../libs/papercusp/packages/locks/src/sql}"
@@ -136,19 +156,34 @@ if [[ ! -d "$LOCKS_SQL_SRC" ]]; then
 fi
 
 echo "→ bundling @papercusp/locks DDL → $OUTDIR/sql"
-rm -rf "$OUTDIR/sql"
-mkdir -p "$OUTDIR/sql"
-cp "$LOCKS_SQL_SRC/"*.sql "$OUTDIR/sql/"
+# EI-18119538868734274: publish via build-in-tmp-sibling + atomic `mv -T`
+# rename — same discipline as the blueprints/ publish above, and for the same
+# reason. su-lock-store.ts's ensureBootstrap() is called LAZILY, on the first
+# locks:* call of an already-running process's lifetime — that can happen at
+# ANY wall-clock moment, including the split second an unrelated ExecStartPre
+# rebuild is mid-way through `rm -rf $OUTDIR/sql; mkdir; cp`. Landed live:
+# EI-18119538868734274 caught `ENOENT: no such file or directory, scandir
+# '.../dist-host/sql'` from exactly that window (2 of 2259 calls — a narrow
+# race, not a persistent misconfig). The old in-place rm-rf/mkdir/cp is the
+# textbook non-atomic-publish bug (already fixed once for the sibling
+# desktop-sidecar build under EI-160/EI-200 — see build-desktop-sidecar.sh);
+# this closes the same class here instead of re-patching just this instance.
+NEW_SQL_DIR="$OUTDIR/sql.new.$$"
+rm -rf "$NEW_SQL_DIR"
+mkdir -p "$NEW_SQL_DIR"
+cp "$LOCKS_SQL_SRC/"*.sql "$NEW_SQL_DIR/"
 
 _locks_sql_max="$(ls "$LOCKS_SQL_SRC/"*.sql 2>/dev/null | xargs -n1 basename | grep -oE '^[0-9]+' | sort -n | tail -1)"
 _locks_sql_count="$(ls "$LOCKS_SQL_SRC/"*.sql 2>/dev/null | wc -l | tr -d ' ')"
-_bundled_locks_sql_max="$(ls "$OUTDIR/sql/"*.sql 2>/dev/null | xargs -n1 basename | grep -oE '^[0-9]+' | sort -n | tail -1)"
-_bundled_locks_sql_count="$(ls "$OUTDIR/sql/"*.sql 2>/dev/null | wc -l | tr -d ' ')"
+_bundled_locks_sql_max="$(ls "$NEW_SQL_DIR/"*.sql 2>/dev/null | xargs -n1 basename | grep -oE '^[0-9]+' | sort -n | tail -1)"
+_bundled_locks_sql_count="$(ls "$NEW_SQL_DIR/"*.sql 2>/dev/null | wc -l | tr -d ' ')"
 if [[ -z "$_locks_sql_max" || "$_locks_sql_max" != "$_bundled_locks_sql_max" || "$_locks_sql_count" != "$_bundled_locks_sql_count" ]]; then
-  echo "ERROR: bundled $OUTDIR/sql/ (highest=$_bundled_locks_sql_max, count=$_bundled_locks_sql_count) does not match"
+  echo "ERROR: bundled $NEW_SQL_DIR/ (highest=$_bundled_locks_sql_max, count=$_bundled_locks_sql_count) does not match"
   echo "       source $LOCKS_SQL_SRC (highest=$_locks_sql_max, count=$_locks_sql_count)"
   exit 1
 fi
+mv -T "$NEW_SQL_DIR" "$OUTDIR/sql"
+NEW_SQL_DIR=""
 echo "    ✓ bundled @papercusp/locks DDL matches the tree (highest migration $_locks_sql_max, $_locks_sql_count files)"
 
 # @papercusp/memory's local-embedder-worker.ts resolves its worker-thread

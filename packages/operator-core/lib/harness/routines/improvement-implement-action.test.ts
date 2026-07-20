@@ -18,6 +18,15 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
   getFlag: vi.fn(async () => false),
 }));
+vi.mock('../../blueprint/launch-blueprint', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../blueprint/launch-blueprint')>()),
+  buildLaunchSpawnRequest: vi.fn(async (_blueprintId: string, _input: unknown, idempotencyKey: string) => ({
+    url: 'http://x/invoke?role=worker',
+    body: { kickoff: 'go' },
+    idempotencyKey,
+    label: 'h/worker',
+  })),
+}));
 
 // Importing the module registers the improvement actions.
 import {
@@ -29,6 +38,7 @@ import {
 import { getSystemAction } from './system-actions';
 import { readImprovementItems } from '../improvements/read-items';
 import { getFlag } from '@papercusp/flags/server';
+import { buildLaunchSpawnRequest } from '../../blueprint/launch-blueprint';
 import type { ImprovementCandidate } from '../improvements/policy';
 import type { ScoredItem } from '../improvements/digest';
 import type { RecordDispatchInput, FireResultUpdate } from '../improvements/dispatch-ledger';

@@ -311,6 +311,38 @@ describe('startDurableSpawns (EI-403-A — the workflow-layer drain seam)', () =
     expect(res).toEqual({ enqueued: 1, total: 2 });
     expect(h.startWorkflow).toHaveBeenCalledTimes(2);
   });
+
+  // EI-18118495431535177 (dispatch-orphan investigation, root cause): a declined
+  // enqueue (durableSpawnFire returns false without throwing) previously left an
+  // improvementDispatch-correlated request silently dropped — no /invoke fire, no
+  // worker-exit back-edge, no ledger diagnostic — until the blind 2h orphan collector
+  // closed it with a blank fire_error. It must now close the ledger row itself, same
+  // shape as the pre-invoke skip paths.
+  it('EI-18118495431535177: closes the dispatch-ledger row (and rolls back the attempt) when a declined enqueue carries an improvementDispatch correlation', async () => {
+    h.state.dbosOn = false; // any decline reason exercises the same branch
+    const req = {
+      url: 'http://x/api/harness/h/invoke?role=worker',
+      body: { kickoff: 'go', improvementDispatch: { dispatchId: 'd-9', itemId: 'EI-10524', attempt: 3 } },
+      idempotencyKey: 'implement:EI-10524:3',
+      label: 'h/worker',
+    };
+    const res = await startDurableSpawns([req]);
+    expect(res).toEqual({ enqueued: 0, total: 1 });
+    expect(h.markDispatchOrphaned).toHaveBeenCalledWith(
+      'd-9',
+      'pre-invoke-skip:durable-fire-declined',
+      expect.stringContaining('attempt 3 not charged'),
+    );
+    expect(h.mergeIssuePayload).toHaveBeenCalledWith('EI-10524', { implementAttempts: 2 });
+  });
+
+  it('a declined enqueue with no improvementDispatch correlation is a plain no-op (no ledger writes)', async () => {
+    h.state.dbosOn = false;
+    const res = await startDurableSpawns([INPUT, REQ2]);
+    expect(res).toEqual({ enqueued: 0, total: 2 });
+    expect(h.markDispatchOrphaned).not.toHaveBeenCalled();
+    expect(h.mergeIssuePayload).not.toHaveBeenCalled();
+  });
 });
 
 // EI-403 round-2: the durable path used to write NO spawned_agents row, so the

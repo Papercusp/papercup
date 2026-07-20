@@ -961,7 +961,30 @@ export async function startDurableSpawns(
   const { cooperativeYield } = await import('../event-loop-lag-monitor');
   let yielded = 0;
   for (const req of reqs) {
-    if (await durableSpawnFire(req)) enqueued += 1;
+    if (await durableSpawnFire(req)) {
+      enqueued += 1;
+    } else {
+      // EI-18118495431535177 (dispatch-orphan investigation, root cause): a DECLINED
+      // enqueue here (DBOS not started on THIS process, an illegal in-step call, or a
+      // genuine `DBOS.startWorkflow` failure — `durableSpawnFire`'s own documented
+      // false-not-throw contract) previously left the request SILENTLY DROPPED: no
+      // /invoke fire ever happens, so the /invoke route's worker-exit back-edge
+      // (implement-worker-exit.ts) never runs either. Meanwhile the improvement-implement
+      // dispatch loop had ALREADY recorded this ledger row `fire_result: 'ok'`
+      // (improvement-actions.ts — optimistic, "durably handed off", before this
+      // workflow-layer fire even ran) — so the row just sat open, indistinguishable from
+      // a worker legitimately still running, until the blind 2h orphaned-dispatch
+      // collector finally closed it with NO diagnostic (`fire_error` NULL). That fed the
+      // "auto-implement lane is broken" watchdog signal (orphaned-dispatch:<item>) with
+      // zero evidence of WHY — live: EI-10524's dispatch ledger showed 8+ consecutive
+      // `orphaned-dispatch-collector` closes with a blank fire_error across 07-19
+      // 12:30-16:02, none tagged by any known death classifier. Close it here instead —
+      // same shape as the pre-invoke skip paths in `durableSpawnFireImpl` above (this is
+      // a strict subset: declined BEFORE even attempting the /invoke fire) — so the
+      // ledger always carries a reason and the item's attempt counter isn't burned on a
+      // request that never reached the runner at all.
+      await closeSkippedImprovementDispatch(req.body, 'durable-fire-declined');
+    }
     yielded = await cooperativeYield(yielded);
   }
   return { enqueued, total: reqs.length };

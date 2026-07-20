@@ -18,6 +18,7 @@ import { readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
@@ -40,7 +41,17 @@ import { writeAllSync, outSync as rawOutSync, errSync as rawErrSync } from './li
 // success and failure summaries). `outSync`/`errSync` below shadow the raw
 // sync-write helpers so every EXISTING call site in this file gets logged for
 // free, with zero behavior change to what's written to the real fd.
-const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${process.pid}.log`;
+// EI-18121314648626462: keying solely on process.pid is NOT collision-proof —
+// under this host's heavy concurrent load (dozens of agents + the hourly
+// green-checkpoint routine all running this script), Linux recycles PIDs
+// within minutes, so two unrelated invocations (e.g. a staging-tree run and a
+// papercusp-checkpoint-tree run started ~10min apart) can land on the SAME
+// reused PID and silently append/overwrite each other's log — corrupting the
+// "Full run log: ..." path every downstream verifier trusts as evidence. Add a
+// short random nonce (independent of pid, time-of-day, and host clock skew) so
+// two concurrent runs can never collide, while keeping the pid in the filename
+// for human readability when correlating with `ps`/`top`.
+const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${process.pid}-${randomBytes(4).toString('hex')}.log`;
 function logLine(text) {
   if (text == null || text === '') return;
   try {

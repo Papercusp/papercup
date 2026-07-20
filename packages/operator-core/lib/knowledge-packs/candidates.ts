@@ -301,15 +301,29 @@ const FLEET_LESSONS_MANIFEST: KnowledgePackManifest = {
   author: 'papercusp-fleet',
 };
 
+const CANDIDATE_ID_MAX_LEN = 60;
+
+/**
+ * Cut a kebab-cased slug to `maxLen` WITHOUT chopping the last word in half
+ * (EI-18121665970916886 — a bare `.slice(0, 60)` produced ids ending
+ * mid-word, e.g. `…-work-items-prob`). Cuts at the last `-` at or before
+ * `maxLen`; falls back to the raw hard cut only when there's no dash to cut
+ * on within the budget (one very long unbroken word).
+ */
+function truncateSlugAtWordBoundary(slug: string, maxLen: number): string {
+  if (slug.length <= maxLen) return slug;
+  const cut = slug.slice(0, maxLen);
+  const lastDash = cut.lastIndexOf('-');
+  return (lastDash > 0 ? cut.slice(0, lastDash) : cut).replace(/-+$/g, '');
+}
+
 /** Kebab-case an item id from the title, unique against `taken` (suffix -2, -3, …). */
 export function candidateItemId(title: string, taken: ReadonlySet<string>): string {
-  const base =
-    title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60)
-      .replace(/-+$/g, '') || 'fleet-lesson';
+  const kebab = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const base = truncateSlugAtWordBoundary(kebab, CANDIDATE_ID_MAX_LEN) || 'fleet-lesson';
   if (!taken.has(base)) return base;
   for (let n = 2; ; n += 1) {
     const next = `${base}-${n}`;
