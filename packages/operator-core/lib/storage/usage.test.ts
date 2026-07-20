@@ -18,6 +18,9 @@ function makeSql() {
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: makeSql() }) }));
 vi.mock('./disk', () => ({
   listDiskEntries: () => h.diskEntries,
+  // computeStorageUsage now walks disk via the event-loop-cooperative async twin
+  // (WI-5471); the sync export stays mocked for any direct caller.
+  listDiskEntriesAsync: () => Promise.resolve(h.diskEntries),
 }));
 
 import { computeStorageUsage, TRIM_THRESHOLD_DAYS } from './usage';

@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dirSizeBytes, type DiskWalkBudget } from './disk';
+import { dirSizeBytes, dirSizeBytesAsync, type DiskWalkBudget } from './disk';
 
 /**
  * Recurrence guard for EI-6045: the synchronous recursive disk-sizing walk must
@@ -59,6 +59,67 @@ describe('dirSizeBytes wall-clock budget (EI-6045)', () => {
       expect(dirSizeBytes(other, 400_000, budget)).toBe(0);
     } finally {
       rmSync(other, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * WI-5471: `dirSizeBytesAsync` is the event-loop-COOPERATIVE twin — it must be
+ * byte-identical to the sync walk, keep the same budget semantics, AND actually
+ * relinquish the loop mid-walk (the sync twin's ~90s bg-host freeze on the
+ * `storage.usage` precompute was the acute soak-blocker this fixes).
+ */
+describe('dirSizeBytesAsync (WI-5471 event-loop-cooperative walk)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'storage-disk-async-test-'));
+    writeFileSync(join(root, 'a.bin'), Buffer.alloc(100));
+    writeFileSync(join(root, 'b.bin'), Buffer.alloc(200));
+    const sub = join(root, 'sub');
+    mkdirSync(sub);
+    writeFileSync(join(sub, 'c.bin'), Buffer.alloc(50));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('sizes the full tree identically to the sync walk (behavior preserved)', async () => {
+    expect(await dirSizeBytesAsync(root)).toBe(350);
+    expect(await dirSizeBytesAsync(root)).toBe(dirSizeBytes(root));
+  });
+
+  it('honors the shared wall-clock budget (stops early + marks truncated)', async () => {
+    const budget: DiskWalkBudget = { deadlineMs: Date.now() - 1 };
+    expect(await dirSizeBytesAsync(root, 400_000, budget)).toBe(0);
+    expect(budget.truncated).toBe(true);
+  });
+
+  it('yields the event loop DURING a large walk — a concurrent macrotask interleaves', async () => {
+    // A tree wide enough that the walk crosses several cooperativeYield boundaries
+    // (yields every 64 iterations at rest), so a competing setImmediate loop must
+    // get to run before the walk finishes — proving the walk never blocks the loop.
+    const big = mkdtempSync(join(tmpdir(), 'storage-disk-async-big-'));
+    try {
+      for (let i = 0; i < 300; i++) writeFileSync(join(big, `f${i}.bin`), Buffer.alloc(1));
+
+      let ticks = 0;
+      let done = false;
+      const tick = (): void => {
+        if (done) return;
+        ticks++;
+        setImmediate(tick);
+      };
+      setImmediate(tick);
+
+      const total = await dirSizeBytesAsync(big);
+      done = true;
+
+      expect(total).toBe(300); // 300 × 1 byte
+      expect(ticks).toBeGreaterThan(0); // the loop ticked mid-walk → not blocked
+    } finally {
+      rmSync(big, { recursive: true, force: true });
     }
   });
 });
