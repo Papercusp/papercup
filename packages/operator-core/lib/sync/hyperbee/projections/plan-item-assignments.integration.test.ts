@@ -60,6 +60,49 @@ beforeAll(async () => {
   // EI-79 step 2 (mig 181): the PG-level LWW guard column the writer stamps.
   await db.sql.unsafe(`ALTER TABLE harness_shared.plan_item_assignments ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
   await db.sql.unsafe(`ALTER TABLE harness_shared.plan_item_assignments ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  // WI-971-followup: this table is also a REAL carrier of `stamp_local_federated_write_trg`
+  // (mig 214 attached it to plan_item_assignments; mig 517 is the live function body) — but
+  // that trigger lives in ~11 OTHER tables' migration files too, most of which this minimal
+  // fixture doesn't create, so we can't just `readMigration('214-...')`'s DO-block (it would
+  // 42P01 on e.g. harness_plans). Attach the CURRENT (mig 517) function body verbatim to JUST
+  // this table, mirroring engineer-issues.integration.test.ts's identical stub-and-attach
+  // pattern for work_items, so this test exercises the real prod trigger stack.
+  await db.sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.hlc_now() RETURNS text
+      LANGUAGE sql AS $hlc_stub$
+        SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':stub';
+      $hlc_stub$;
+
+    CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
+        LANGUAGE plpgsql
+        AS $fn$
+    BEGIN
+      IF TG_OP = 'UPDATE' AND NEW.fed_ts IS DISTINCT FROM OLD.fed_ts THEN
+        RETURN NEW;
+      END IF;
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.fed_ts IS NULL AND COALESCE(NEW.origin, 'local') = 'local' THEN
+          NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+         IS DISTINCT FROM
+         (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+      THEN
+        NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+        NEW.fed_hlc := harness_shared.hlc_now();
+        NEW.origin := 'local';
+      END IF;
+      RETURN NEW;
+    END;
+    $fn$;
+
+    DROP TRIGGER IF EXISTS stamp_local_federated_write_trg ON harness_shared.plan_item_assignments;
+    CREATE TRIGGER stamp_local_federated_write_trg
+      BEFORE INSERT OR UPDATE ON harness_shared.plan_item_assignments
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.stamp_local_federated_write();
+  `);
 }, 90_000);
 
 afterAll(async () => {
@@ -139,5 +182,36 @@ describe('projection apply (peer side)', () => {
   it('decodeValue rejects a malformed wire row', () => {
     expect(_testing.decodeValue({})).toBeNull();
     expect(_testing.decodeValue({ harness_slug: 'h', plan_slug: 'p', item_id: 'P-1', assignee_name: 42 })).toBeNull();
+  });
+
+  // WI-971-followup (live gate 2026-07-20 13:40:25 run — backfill + incr-A→B both showed
+  // src outbox=0/N drained-but-never-crossed for item-assignments while the other 9 CDC
+  // types passed): direct DB inspection of the live two-peer rig found the peer's row DID
+  // exist with correct content + a real author_pubkey/fed_ts, but `origin='local'` instead
+  // of 'remote' — so the smoke's `WHERE origin='remote'` poll never matched. Root cause:
+  // unlike engineer-issues/work_items (mig 517 fixed this exact class for THAT table),
+  // plan_item_assignments still carries mig-214's ORIGINAL `stamp_local_federated_write_trg`
+  // behavior — a same-op re-fold whose fed_ts is byte-identical to OLD is (correctly) treated
+  // as "not a fresh projection apply", falls into the local-write branch, and — because this
+  // table ALSO has its own unconditional `plan_item_assignments_updated_at_trg` (mig 140)
+  // touching `updated_at` on every UPDATE, and `updated_at` IS masked out — should be a no-op
+  // for byte-identical content. This test proves whether it actually is.
+  it('WI-971-followup: a same-op double-apply (identical remote op re-folded) does NOT flip origin/fed_ts', async () => {
+    const proj = buildPlanItemAssignmentsProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    const op = outboxRowToLocalWriteOp(outboxPut());
+    const decoded = proj.decodeValue(op.type === 'put' ? op.value : null)!;
+    const provenance = { ts: 500, fedHlc: '500:00000:peer', origin: 'remote' as const, authorPubkey: 'peerA' };
+
+    await proj.writeToPg(decoded, provenance);
+    const first = await db.sql`SELECT origin, fed_ts FROM harness_shared.plan_item_assignments WHERE plan_slug='demo-plan' AND item_id='P-001'`;
+    expect(first[0]!.origin).toBe('remote');
+    expect(Number(first[0]!.fed_ts)).toBe(500);
+
+    // Re-fold the IDENTICAL op a second time (a retry / backfill re-scan re-applying the
+    // same wire op) — must be a no-op on origin/fed_ts.
+    await proj.writeToPg(decoded, provenance);
+    const second = await db.sql`SELECT origin, fed_ts FROM harness_shared.plan_item_assignments WHERE plan_slug='demo-plan' AND item_id='P-001'`;
+    expect(second[0]!.origin).toBe('remote'); // must NOT flip to 'local'
+    expect(Number(second[0]!.fed_ts)).toBe(500); // must NOT advance
   });
 });

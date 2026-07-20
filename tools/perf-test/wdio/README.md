@@ -33,9 +33,15 @@ cd tools/perf-test/wdio && npm test
 ```
 
 `wdio.conf.ts` resolves the binary from `TAURI_APP_PATH` (or the real build
-locations — release preferred, honoring `CARGO_TARGET_DIR`), spawns
-`tauri-driver` on port 4445, drives the binary via WebDriver, and runs
-`specs/*.spec.ts`:
+locations — release preferred, honoring `CARGO_TARGET_DIR`), preflight-checks
+that `WebKitWebDriver` is installed (Linux — fails fast with an install
+command instead of an opaque 5-minute timeout if it's missing), spawns
+`tauri-driver` on a fresh ephemeral port pair (not a fixed 4445 — this box
+runs many concurrent agent/e2e sessions, and a fixed port doubles as
+tauri-driver's own default `--native-port`, which is a deterministic bind
+collision, not just a multi-agent one — see the doc comment on
+`assertNativeWebDriverAvailable` in `wdio.conf.ts`, WI-5662), drives the
+binary via WebDriver, and runs `specs/*.spec.ts`:
 
 - `smoke.spec.ts` — boots the app, waits for the operator UI to mount, injects
   `web-vitals`, and reports INP/LCP/CLS after 10s.
