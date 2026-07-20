@@ -144,4 +144,80 @@ describe('pot-git publish-guard (real bare repo)', () => {
     expect(res.refusalCode).toBe('error');
     expect(res.errors.length).toBeGreaterThan(0);
   });
+
+  // WI-5591: a runtime path exemption (harness_shared.secrets_guard_path_exemptions,
+  // migration 644) is the no-restart escape hatch for a false-positive secrets-guard
+  // wedge — the data-driven sibling of secrets-guard.ts's hardcoded FIXTURE_FILES.
+  describe('WI-5591 runtime path exemptions', () => {
+    it('admits a range whose only secret finding is on an exempted path', async () => {
+      const base = await commit(repo, { 'clean2.txt': 'nothing to see' });
+      const fakeKey = ['AKIA', 'QRSTUVWXYZABCDEF'].join('');
+      const withSecret = await commit(repo, { 'exempt.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n` }, base);
+
+      const res = await checkPublishGuard({
+        repoPath: repo,
+        fromOid: base,
+        toOid: withSecret,
+        workspaceId: 'ws-test',
+        loadPathExemptions: async (ws) => {
+          expect(ws).toBe('ws-test');
+          return new Set(['exempt.env']);
+        },
+      });
+      expect(res.ok).toBe(true);
+      expect(res.refusalCode).toBeNull();
+      expect(res.secretFindings).toEqual([]);
+      expect(res.exemptedFindings.length).toBe(1);
+      expect(res.exemptedFindings[0].path).toBe('exempt.env');
+    });
+
+    it('still refuses when only SOME of several secret findings are exempted', async () => {
+      const base = await commit(repo, { 'clean3.txt': 'nothing to see' });
+      const key1 = ['AKIA', 'ABCABCABCABCABCA'].join('');
+      const key2 = ['AKIA', 'DEFDEFDEFDEFDEFD'].join('');
+      const withSecrets = await commit(
+        repo,
+        {
+          'exempt2.env': `AWS_ACCESS_KEY_ID=${key1}\n`,
+          'not-exempt.env': `AWS_ACCESS_KEY_ID=${key2}\n`,
+        },
+        base,
+      );
+
+      const res = await checkPublishGuard({
+        repoPath: repo,
+        fromOid: base,
+        toOid: withSecrets,
+        workspaceId: 'ws-test',
+        loadPathExemptions: async () => new Set(['exempt2.env']),
+      });
+      expect(res.ok).toBe(false);
+      expect(res.refusalCode).toBe('secrets');
+      expect(res.secretFindings.length).toBe(1);
+      expect(res.secretFindings[0].path).toBe('not-exempt.env');
+      expect(res.exemptedFindings.length).toBe(1);
+      expect(res.exemptedFindings[0].path).toBe('exempt2.env');
+    });
+
+    it('does NOT consult runtime exemptions when workspaceId is omitted (unchanged prior behavior)', async () => {
+      const base = await commit(repo, { 'clean4.txt': 'nothing to see' });
+      const fakeKey = ['AKIA', 'GHIGHIGHIGHIGHIG'].join('');
+      const withSecret = await commit(repo, { 'would-be-exempt.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n` }, base);
+
+      let called = false;
+      const res = await checkPublishGuard({
+        repoPath: repo,
+        fromOid: base,
+        toOid: withSecret,
+        loadPathExemptions: async () => {
+          called = true;
+          return new Set(['would-be-exempt.env']);
+        },
+      });
+      expect(called).toBe(false);
+      expect(res.ok).toBe(false);
+      expect(res.refusalCode).toBe('secrets');
+      expect(res.exemptedFindings).toEqual([]);
+    });
+  });
 });

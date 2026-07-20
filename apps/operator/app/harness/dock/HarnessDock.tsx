@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import { DockWorkspace, createFetchDockLayoutStore, type DockLayoutRow, type DockLayoutStore } from '@papercusp/dock-workbench';
 import { fetchSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { beginInteraction, endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import './dock-drawer-guard.css';
 import { MissingPanel } from './MissingPanel';
 import { bindDockApi } from './dock-actions';

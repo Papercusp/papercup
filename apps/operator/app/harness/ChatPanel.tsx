@@ -22,6 +22,7 @@ import { COLORS, FONTS, RADIUS, SIZES } from './theme';
 import { Tooltip } from './Tooltip';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { beginInteraction, endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
@@ -156,6 +157,19 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
   }, [detailError, detailLoading, detailRows]);
 
   useEffect(() => { void loadChat(); }, [loadChat]);
+
+  // Perf-marks (P-006): begin the conversation-thread-load interaction when a
+  // conversation is opened (chatId set/changed), and end it when that chat's
+  // transcript first renders (chat resolves to the matching id). The measure
+  // spans "open a conversation → the thread is loaded + on screen" — the
+  // agent_chats.detail fetch + first render. endInteraction is measure-once, so
+  // later transcript/stream updates for the same chat emit nothing.
+  useEffect(() => {
+    if (chatId) beginInteraction(PERF_INTERACTIONS.conversationThreadLoad);
+  }, [chatId]);
+  useEffect(() => {
+    if (chat && chat.id === chatId) endInteraction(PERF_INTERACTIONS.conversationThreadLoad);
+  }, [chat, chatId]);
 
   // Mirror the freshness guards (see the ref declarations above) on every
   // render so loadChat reads current values without re-arming itself.

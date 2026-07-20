@@ -117,7 +117,7 @@ describe('work_items:set_blocker', () => {
     );
   });
 
-  it('EI-13301: feature-family clear restores blocked→todo and the response reflects POST-write state', async () => {
+  it('EI-13301: feature-family clear restores blocked→open and the response reflects POST-write state', async () => {
     const blocker = {
       kind: 'human',
       capability: 'physical-device',
@@ -144,11 +144,14 @@ describe('work_items:set_blocker', () => {
       ...item,
       payload: { ...item.payload, ...patch },
     }));
+    // work-item-status-full-unify P-007: features restore to the unified claimable
+    // token 'open' directly (the legacy 'todo' spelling is retired — no writer
+    // produces it and no row sits at it).
     setWorkItemStateWithAliasInfo.mockResolvedValue({
-      workItem: { ...item, state: 'todo' },
+      workItem: { ...item, state: 'open' },
       aliased: false,
-      requestedState: 'todo',
-      appliedState: 'todo',
+      requestedState: 'open',
+      appliedState: 'open',
     });
 
     const out = await one({
@@ -162,16 +165,16 @@ describe('work_items:set_blocker', () => {
     expect(out.activeBlockers).toEqual([]);
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
       'WI-1',
-      'todo',
+      'open',
       expect.objectContaining({ by: 'su-a' }),
     );
-    // Defect 2 regression: the returned workItem must be the POST-write ('todo')
+    // Defect 2 regression: the returned workItem must be the POST-write ('open')
     // snapshot, not the stale pre-write ('blocked') one merge returned.
-    expect(out.workItem.state).toBe('todo');
+    expect(out.workItem.state).toBe('open');
   });
 
   it('EI-13301 backstop: retries the restore when the primary attempt leaves state stuck at blocked', async () => {
-    // Simulates the race/no-op EI-13301 reported: the primary todo-restore call fires
+    // Simulates the race/no-op EI-13301 reported: the primary open-restore call fires
     // (updated.state was 'blocked') but its OWN result still reports 'blocked' (a
     // no-op write, or a concurrent write raced it) — the backstop must detect the
     // still-blocked, zero-active-blocker combination and retry rather than returning
@@ -204,15 +207,15 @@ describe('work_items:set_blocker', () => {
         // primary restore attempt: no-op, still 'blocked'
         workItem: { ...item, state: 'blocked' },
         aliased: false,
-        requestedState: 'todo',
+        requestedState: 'open',
         appliedState: 'blocked',
       })
       .mockResolvedValueOnce({
         // backstop retry: succeeds
-        workItem: { ...item, state: 'todo' },
+        workItem: { ...item, state: 'open' },
         aliased: false,
-        requestedState: 'todo',
-        appliedState: 'todo',
+        requestedState: 'open',
+        appliedState: 'open',
       });
 
     const out = await one({
@@ -226,12 +229,12 @@ describe('work_items:set_blocker', () => {
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
     expect(setWorkItemStateWithAliasInfo).toHaveBeenLastCalledWith(
       'WI-1',
-      'todo',
+      'open',
       expect.objectContaining({ by: 'su-a' }),
     );
     // The stranding this backstop exists to prevent: never return 'blocked' with zero
     // active blockers.
-    expect(out.workItem.state).toBe('todo');
+    expect(out.workItem.state).toBe('open');
   });
 
   it('AUTO authority history-clears approval without parking the item', async () => {

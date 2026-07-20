@@ -790,9 +790,12 @@ const createFeature = defineTool({
       await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id),
     );
     // P-070 usage ledger (best-effort, never throws): the human authored a
-    // feature, and if it lands in `todo` it's immediately queued for workers.
+    // feature, and if it lands claimable (`open`) it's immediately queued for workers.
+    // work-item-status-full-unify P-007: `status` is the NORMALIZED value — normalize folds
+    // the legacy `todo` onto the unified claimable token `open`, so the guard MUST be `open`
+    // (`=== 'todo'` went dead after P-003 and stopped emitting the queued event on create).
     void emitFeatureAuthored(project.slug, id, { title });
-    if (status === 'todo') void emitFeatureQueued(project.slug, id, {});
+    if (status === 'open') void emitFeatureQueued(project.slug, id, {});
     return Response.json({ ok: true, feature: created });
   },
 });
