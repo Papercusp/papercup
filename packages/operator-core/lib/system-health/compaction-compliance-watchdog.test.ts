@@ -58,6 +58,7 @@ const {
     budgetChars: 32_000,
     openOwnerQuestion: { crossesOpenOwnerMessage: false },
   })),
+  writePresenceMock: vi.fn(async () => {}),
 }));
 vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,

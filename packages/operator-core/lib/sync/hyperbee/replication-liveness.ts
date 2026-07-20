@@ -504,7 +504,7 @@ export function sampleReplicationLiveness(
       st.lastNonZeroPeersMs = now;
       st.alarmedNoReplicator = false; // recovered — a future stall re-fires
       if (wasAlarmed) {
-        onRecovery({
+        void onRecovery({
           workspaceId,
           harnessSlug,
           logKeyHex: sample.keyHex,
@@ -539,7 +539,7 @@ export function sampleReplicationLiveness(
         // behind, it earns a full grace window from the re-attach, not an instant
         // re-alarm carried over the detached stretch.
         st.lastIngestProgressMs = now;
-        onRecovery({
+        void onRecovery({
           workspaceId,
           harnessSlug,
           logKeyHex: sample.keyHex,
@@ -631,7 +631,7 @@ export function sampleReplicationLiveness(
     st.connectedNeverReplSinceMs = null;
     st.alarmedConnectedNever = false;
     if (wasAlarmedConnectedNever) {
-      onRecovery({
+      void onRecovery({
         workspaceId,
         harnessSlug,
         logKeyHex: sample.keyHex,
@@ -658,7 +658,7 @@ export function sampleReplicationLiveness(
       st.lastIngestProgressMs = now;
       st.alarmedFrozen = false;
       if (wasAlarmedFrozen) {
-        onRecovery({
+        void onRecovery({
           workspaceId,
           harnessSlug,
           logKeyHex: sample.keyHex,
@@ -847,75 +847,109 @@ export function getReplicationLiveness(
  * for latched alarms — a healthy log with no open EI is a no-op, so live logs
  * dropped on revoke/close never spuriously resolve anything.
  */
+// EI-16949: returns the in-flight recovery-report promises (never rejecting —
+// see reportRecovery) instead of firing them fully fire-and-forget. The hot
+// per-log drop call sites below don't need to await this (unchanged
+// behavior), but the whole-harness `dropReplicationLiveness` — the path a
+// process shutdown drives — awaits the combined set so its durable-EI
+// auto-resolve writes get a real chance to land before the caller (e.g. a
+// gracefully-shutting-down host) exits.
 function reportDropRecoveries(
   workspaceId: string,
   harnessSlug: string,
   st: LogState,
   now: number,
-): void {
+): Promise<void>[] {
   const shortKey = `${st.keyHex.slice(0, 12)}…`;
   const droppedDetail = (concern: string): string =>
     `log=${shortKey} dropped from tracking (revoked / re-verify-dropped / handle-closed) — ` +
     `no longer admitted, so the ${concern} concern no longer applies`;
+  const promises: Promise<void>[] = [];
   if (st.alarmedNoReplicator) {
-    reportRecovery({
-      workspaceId,
-      harnessSlug,
-      logKeyHex: st.keyHex,
-      kind: 'no_replicator',
-      stalledForMs: st.lastNonZeroPeersMs !== null ? now - st.lastNonZeroPeersMs : 0,
-      detail: droppedDetail('no_replicator'),
-    });
+    promises.push(
+      reportRecovery({
+        workspaceId,
+        harnessSlug,
+        logKeyHex: st.keyHex,
+        kind: 'no_replicator',
+        stalledForMs: st.lastNonZeroPeersMs !== null ? now - st.lastNonZeroPeersMs : 0,
+        detail: droppedDetail('no_replicator'),
+      }),
+    );
   }
   if (st.alarmedConnectedNever) {
-    reportRecovery({
-      workspaceId,
-      harnessSlug,
-      logKeyHex: st.keyHex,
-      kind: 'connected_never_replicated',
-      stalledForMs:
-        st.connectedNeverReplSinceMs !== null ? now - st.connectedNeverReplSinceMs : 0,
-      detail: droppedDetail('connected-but-dead'),
-    });
+    promises.push(
+      reportRecovery({
+        workspaceId,
+        harnessSlug,
+        logKeyHex: st.keyHex,
+        kind: 'connected_never_replicated',
+        stalledForMs:
+          st.connectedNeverReplSinceMs !== null ? now - st.connectedNeverReplSinceMs : 0,
+        detail: droppedDetail('connected-but-dead'),
+      }),
+    );
   }
   if (st.alarmedFrozen) {
-    reportRecovery({
-      workspaceId,
-      harnessSlug,
-      logKeyHex: st.keyHex,
-      kind: 'frozen',
-      stalledForMs: st.lastIngestProgressMs !== null ? now - st.lastIngestProgressMs : 0,
-      detail: droppedDetail('frozen-ingest'),
-    });
+    promises.push(
+      reportRecovery({
+        workspaceId,
+        harnessSlug,
+        logKeyHex: st.keyHex,
+        kind: 'frozen',
+        stalledForMs: st.lastIngestProgressMs !== null ? now - st.lastIngestProgressMs : 0,
+        detail: droppedDetail('frozen-ingest'),
+      }),
+    );
   }
+  return promises;
 }
 
-/** Drop one log's tracking state (revoked / re-verify-dropped / removed from the admitted set). */
-export function dropReplicationLogState(
+/** Drop one log's tracking state (revoked / re-verify-dropped / removed from the admitted set).
+ *  Returns once any durable-EI auto-resolve write this drop triggered has settled —
+ *  existing fire-and-forget callers are unaffected (the promise was void before). */
+export async function dropReplicationLogState(
   workspaceId: string,
   harnessSlug: string,
   keyHex: string,
-): void {
+): Promise<void> {
   const logs = registry.get(hKey(workspaceId, harnessSlug));
   const st = logs?.get(keyHex);
   if (!st) return; // already gone (idempotent — boot.ts double-calls on revoke)
   // EI-7788: auto-resolve any durable EI this log's stall filed before we forget it.
-  reportDropRecoveries(workspaceId, harnessSlug, st, Date.now());
+  const promises = reportDropRecoveries(workspaceId, harnessSlug, st, Date.now());
   logs!.delete(keyHex);
+  await Promise.all(promises);
 }
 
-/** Drop a whole harness's tracking state (handle close). */
-export function dropReplicationLiveness(workspaceId: string, harnessSlug: string): void {
+/**
+ * Drop a whole harness's tracking state (handle close). AWAITS every
+ * triggered durable-EI auto-resolve write (EI-16949): this is the path a
+ * graceful process shutdown drives (boot.ts `close()`, and the shutdown-time
+ * `dropAllReplicationLivenessTracking` sweep in boot-all.ts for the case where
+ * the native substrate close itself is skipped — see host-recycle.ts), and
+ * without awaiting here the fire-and-forget PG write used to race the
+ * process's own exit — a lost race left the EI orphaned open forever even
+ * though `dropReplicationLiveness` had already decided to resolve it. The
+ * write itself never rejects (see reportRecovery), so this await can never
+ * throw back into a caller.
+ */
+export async function dropReplicationLiveness(
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<void> {
   const logs = registry.get(hKey(workspaceId, harnessSlug));
+  const promises: Promise<void>[] = [];
   if (logs) {
     // EI-7788: auto-resolve any durable EIs the closing harness's stalled logs filed.
     const now = Date.now();
-    for (const st of logs.values()) reportDropRecoveries(workspaceId, harnessSlug, st, now);
+    for (const st of logs.values()) promises.push(...reportDropRecoveries(workspaceId, harnessSlug, st, now));
   }
   registry.delete(hKey(workspaceId, harnessSlug));
   // WI-3684: a closed harness's repair handler closes over its (now torn-down)
   // admitted set — drop it so a later episode can never act on stale state.
   repairHandlers.delete(hKey(workspaceId, harnessSlug));
+  await Promise.all(promises);
 }
 
 /** Test seam — wipe the registry between tests. */

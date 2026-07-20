@@ -123,7 +123,7 @@ describe('runDrainReconcileOnce', () => {
     expect(res.captured).toBe(1); // only the second succeeded
   });
 
-  it('does NOT flag a routine host-recycle catch-up gap (2026-07-19: a ~90-130s gap after a', async () => {
+  it('does NOT flag a routine host-recycle catch-up gap (97s, 2026-07-19 live incident)', async () => {
     // dev-box host self-recycle is normal/self-healing, not a stall — see
     // plan-drain-reconcile.ts's DRAIN_STALLED_MS doc comment for the live incident.
     const capture = vi.fn(async () => okCapture());
