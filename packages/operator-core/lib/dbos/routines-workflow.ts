@@ -509,6 +509,12 @@ async function routinesTickImpl(): Promise<void> {
       for (const res of results) {
         if (res.outcome === 'armed') {
           console.warn(`[overwatch-watchdog] tick armed a fallback wake: ${res.reason}`);
+        } else if (res.outcome === 'error') {
+          // WI-3777: a per-item sweep failure used to be swallowed silently
+          // (only the OUTER catch's generic "sweep failed" warned, with no
+          // per-hive detail) — surface it at error level so a starved guarded
+          // overwatch is visible in logs instead of just going quiet forever.
+          console.error(`[overwatch-watchdog] tick sweep item errored: ${res.reason}`);
         }
       }
     },

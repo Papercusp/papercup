@@ -139,6 +139,21 @@ export interface GitPipelineSnapshot {
 
   /** Release-gate snapshot (main vs `ready` vs deployed :3070). */
   deploy: DevDeployState;
+
+  /** overview-tab-expansion-2026-07-20 P-001: the LIVE green-checkpoint suite run
+   *  (systemd probe via checkActiveCheckpointRun — the same self-healing check the
+   *  launch path uses). `null` = NOT PROBED (the default: live callers — watchdogs,
+   *  why-chain, position, tools — skip the systemctl fork); `{ active:false }` =
+   *  probed and idle. Only the background derived-read producer (`dev.gitPipeline`)
+   *  opts in, so the "judging vs idle" verdict reaches the UI with zero cost on
+   *  every other snapshot read. */
+  activeRun: {
+    active: boolean;
+    /** Short/full sha the live run is judging (from its log head) — null if unreadable. */
+    candidate: string | null;
+    startedAtMs: number | null;
+    elapsedSec: number | null;
+  } | null;
 }
 
 /** The configured merge-resolver model spec (`AGENT_MODELS` → committed floor). */

@@ -32,6 +32,7 @@ import { getOrgPg } from "@papercusp/db-org";
 import { getFlag } from "@papercusp/flags/server";
 import { FLAGS } from "@papercusp/flags";
 import {
+  getOverwatchCadenceSec,
   getOverwatchStarted,
   listStartedWorkspaceOverwatches,
   setOverwatchStarted,
@@ -114,6 +115,55 @@ async function alertMissingStartedOverwatch(workspaceId: string, installSlug: st
   } catch (e) {
     console.warn(`[overwatch-watchdog] missing-harness alert failed: ${e instanceof Error ? e.message : e}`);
   }
+}
+
+/**
+ * WI-3777 (D-004 follow-up): a GENUINE cadence-miss alarm, distinct from
+ * `scorecards:freshness` (whose window is wide enough to mask a dead cadence —
+ * that was WI-3777's core complaint: "still reports status:'fresh'" through a
+ * multi-hour outage). This fires ONLY when the tick sweep is about to recover a
+ * guarded overwatch that had been unarmed for a PROLONGED stretch (well beyond
+ * a single missed cadence — routine, expected self-heals within one cadence
+ * never alarm), so an owner/agent learns the wake channel silently died and was
+ * quiet for real time, not just that "the watchdog fired" (which is already
+ * near-continuous background noise for a healthy system and easy to ignore).
+ * Naturally debounced: once armed, `live.armed` is true on the next tick, so
+ * the sweep skips the item and this never re-fires for the same outage.
+ */
+async function alertOverwatchLongStale(opts: {
+  workspaceId: string;
+  installSlug: string;
+  staleForMs: number;
+  cadenceSec: number;
+}): Promise<void> {
+  try {
+    const { resolveBrainOwner } = await import('../harness/routines/wake-brain-action');
+    const owner = await resolveBrainOwner(opts.workspaceId).catch(() => null);
+    if (!owner) return;
+    const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+    const staleMin = Math.round(opts.staleForMs / 60_000);
+    await wakeRecipients([owner], {
+      summary:
+        `⚠️ Kettle ("${opts.installSlug}") went unarmed for ~${staleMin}m (its self-declared next wake ` +
+        `never landed) before the watchdog tick sweep just recovered it. This is the D-004 dead-cadence ` +
+        `class: scorecards:freshness will NOT have flagged it (its window is wider than this gap). If this ` +
+        `recurs, investigate why the Kettle turn ending before the gap did not declare its next wake.`,
+      source: 'overwatch-watchdog:long-stale-recovery',
+      workspaceId: opts.workspaceId,
+    });
+  } catch (e) {
+    console.warn(`[overwatch-watchdog] long-stale alert failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** How many missed cadences of silence before a tick-sweep recovery is escalated
+ *  to the owner rather than just quietly self-healed (default 3x the configured
+ *  cadence, floored well above the tick sweep's own 15-min trigger so a routine
+ *  single-cadence miss — the common, expected case — never pages anyone). */
+export function overwatchLongStaleAlarmSec(cadenceSec: number): number {
+  const n = Number(process.env.PAPERCUSP_OVERWATCH_LONG_STALE_ALARM_SEC);
+  if (Number.isFinite(n) && n >= 60) return n;
+  return Math.max(3 * cadenceSec, 3 * overwatchWatchdogStaleSec());
 }
 
 export type OverwatchWatchdogSource = "turn-end" | "boot" | "tick";
@@ -304,6 +354,16 @@ export async function overwatchBootCheck(): Promise<
  * is violated: guarded (flag on + hive started) + no wake armed + not mid-turn +
  * stale (quiet ≥ staleSec, or never woken at all). Every condition is a cheap
  * query; the wake it MAY arm is the exception path.
+ *
+ * WI-3777: each guarded overwatch is processed in its OWN try/catch. Previously
+ * a single guarded item's unexpected throw (a transient PG hiccup, a registry
+ * read failure, …) escaped uncaught out of the for-loop body into the sweep's
+ * OUTER catch — silently aborting every LATER item in that same tick with only
+ * a swallowed console.warn (no result, no alarm, nothing operator-visible). In
+ * a multi-hive workspace that starves every hive processed after the one that
+ * threw, invisibly, tick after tick, which is exactly the "nothing alarms"
+ * failure mode WI-3777 reported. One item's failure must never block or hide
+ * its siblings' arms.
  */
 export async function overwatchWatchdogSweep(
   opts: { now?: number } = {},
@@ -315,39 +375,61 @@ export async function overwatchWatchdogSweep(
     const { sql } = getOrgPg();
     const now = opts.now ?? Date.now();
     for (const { workspaceId, installSlug } of guarded) {
-      const registryState = await registeredOverwatchState(workspaceId, installSlug);
-      if (registryState === null) continue;
-      if (!registryState) {
-        await setOverwatchStarted(workspaceId, installSlug, false);
-        await clearOverwatchTimeWake(sql, installSlug, { workspaceId });
-        await alertMissingStartedOverwatch(workspaceId, installSlug);
-        results.push({ outcome: 'skipped', reason: 'started Kettle Hive missing from registry; self-cleared' });
-        continue;
-      }
-      const live = await overwatchLivenessCheck(sql, installSlug, {
-        now,
-        workspaceId,
-      });
-      if (live.armed) continue;
-      // Stale gate: a just-finished turn belongs to the turn-end seam; a fresh
-      // boot to the boot seam. The sweep only catches the long-quiet case —
-      // EXCEPT an overwatch that has never woken (staleForMs null), which would
-      // otherwise never trip the threshold.
-      if (
-        live.staleForMs !== null &&
-        live.staleForMs < overwatchWatchdogStaleSec() * 1_000
-      )
-        continue;
-      if (await overwatchMidTurn(installSlug)) continue;
-      results.push(
-        await armFallbackOverwatchWake({
+      try {
+        const registryState = await registeredOverwatchState(workspaceId, installSlug);
+        if (registryState === null) continue;
+        if (!registryState) {
+          await setOverwatchStarted(workspaceId, installSlug, false);
+          await clearOverwatchTimeWake(sql, installSlug, { workspaceId });
+          await alertMissingStartedOverwatch(workspaceId, installSlug);
+          results.push({ outcome: 'skipped', reason: 'started Kettle Hive missing from registry; self-cleared' });
+          continue;
+        }
+        const live = await overwatchLivenessCheck(sql, installSlug, {
+          now,
+          workspaceId,
+        });
+        if (live.armed) continue;
+        // Stale gate: a just-finished turn belongs to the turn-end seam; a fresh
+        // boot to the boot seam. The sweep only catches the long-quiet case —
+        // EXCEPT an overwatch that has never woken (staleForMs null), which would
+        // otherwise never trip the threshold.
+        if (
+          live.staleForMs !== null &&
+          live.staleForMs < overwatchWatchdogStaleSec() * 1_000
+        )
+          continue;
+        if (await overwatchMidTurn(installSlug)) continue;
+        const result = await armFallbackOverwatchWake({
           workspaceId,
           installSlug,
           source: "tick",
           reason: "guarded overwatch quiet with no wake armed",
           now,
-        }),
-      );
+        });
+        results.push(result);
+        // WI-3777 cadence-miss alarm: a routine single-cadence recovery (the
+        // common case) never alarms — only a PROLONGED, previously-invisible
+        // outage does, and only once (armed:true on the next tick skips this
+        // item, so this can't spam per outage).
+        if (result.outcome === 'armed' && live.staleForMs !== null) {
+          const cadenceSec = await getOverwatchCadenceSec(workspaceId, installSlug);
+          if (live.staleForMs >= overwatchLongStaleAlarmSec(cadenceSec) * 1_000) {
+            await alertOverwatchLongStale({
+              workspaceId,
+              installSlug,
+              staleForMs: live.staleForMs,
+              cadenceSec,
+            });
+          }
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(
+          `[overwatch-watchdog] sweep item failed (${installSlug}): ${msg}`,
+        );
+        results.push({ outcome: 'error', reason: `${installSlug}: ${msg}` });
+      }
     }
   } catch (e) {
     console.warn(

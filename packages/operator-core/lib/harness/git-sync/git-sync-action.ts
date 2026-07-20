@@ -2170,7 +2170,10 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
             // holds its cursor retryable (live-caught: the papercusp install
             // wedged behind a hive-canary announcement minutes after the
             // bridged flip). Envelope metadata, NOT inside the signed payload.
-            repo_key: slug,
+            // WI-5168: the FEDERATED repoKey (see repo-identity.ts) — every
+            // member device must filter on the SAME key the integrator
+            // published under, which the local install `slug` is not.
+            repo_key: repoKey,
           },
         },
       });
@@ -2258,6 +2261,10 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     if (!entry) return;
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
     if (!potHomeSlug) return;
+    // WI-5168: federated repoKey — see repo-identity.ts. Must match what
+    // runIntegratorLeg published as `repo_key` on the staging-advance
+    // fed-event (below), or this device's own bridge never sees it.
+    const repoKey = canonicalRepoKey(entry);
 
     const members = await listHiveMembers(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -2290,7 +2297,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
          AND surface = 'messages'
          AND id > ${lastEventId}
          AND body->'fed_event'->>'key' = ${STAGING_ADVANCE_EVENT_KEY}
-         AND body->'fed_event'->>'repo_key' = ${slug}
+         AND body->'fed_event'->>'repo_key' = ${repoKey}
        ORDER BY id ASC
        LIMIT 200
     `;
@@ -2323,7 +2330,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       return;
     }
 
-    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
+    const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
     const { projectDirForSlug } = await import('../../operator-notes');
     const worktreePath = await projectDirForSlug(slug);
     if (!worktreePath) return; // no checked-out tree for this slug — next tick retries
