@@ -19,7 +19,6 @@
  * Public + loopback-only, consistent with the sibling /adv + /harness UI routes.
  * State is workspace-scoped via routeWithWorkspace (RLS GUC = active workspace).
  */
-import postgres from 'postgres';
 import { defineTool } from '@papercusp/agent-mcp';
 import { routeWithWorkspace } from '../../../route-workspace';
 import { activeWorkspaceId } from '../../../workspace-registry';
@@ -33,8 +32,9 @@ import {
   summarizeGymStatus,
   GYM_PROMPT_KEYS,
 } from '../../../gym/control-plane';
-import { readCycleHistory, frontierView } from '../../../gym/read-api';
-import { compareVariants as compareVariantsRead } from '../../../gym/store';
+import { readDurableCycleHistory, readDurableVariants, durableFrontierView } from '../../../gym/read-api';
+import { compareDurableVariants } from '../../../gym/store';
+import { rubricHash, GYM_JUDGE_RUBRIC_V1 } from '../../../gym/judge-scoring';
 // P-016 (D-007/D-021): accept = commit→reproject for blueprint-harness targets.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -50,33 +50,10 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
-/**
- * Resolve the ephemeral gym run DB for analytics reads — SERVER-CONTROLLED only.
- * Deliberately NOT a request parameter: accepting a client-supplied connection
- * string would let a caller make the operator open a postgres() connection to an
- * arbitrary host (SSRF / arbitrary-DB), even on a loopback service. Per-harness
- * gym-DB selection, if ever needed, must be looked up server-side from a registry.
- */
-function gymDbUrl(): string | null {
-  return process.env.PAPERCUSP_GYM_DATABASE_URL || null;
-}
-async function withGymSql<T>(
-  fn: (sql: postgres.Sql) => Promise<T>,
-): Promise<{ available: true; data: T } | { available: false; reason: string }> {
-  const url = gymDbUrl();
-  if (!url) {
-    return {
-      available: false,
-      reason: 'no gym run database configured (set PAPERCUSP_GYM_DATABASE_URL server-side). Run analytics populate once a gym run is registered.',
-    };
-  }
-  const sql = postgres(url, { max: 2, prepare: false, onnotice: () => {} });
-  try {
-    return { available: true, data: await fn(sql) };
-  } finally {
-    await sql.end({ timeout: 5 });
-  }
-}
+/** The frozen judge rubric hash the gym scores every run under. The compare/frontier reads
+ *  default to it when the caller omits rubricHash, so the tabs populate without the UI having
+ *  to know the hash (the gym only ever uses this one rubric). */
+const DEFAULT_RUBRIC_HASH = rubricHash(GYM_JUDGE_RUBRIC_V1);
 
 const harnesses = defineTool({
   method: 'GET',

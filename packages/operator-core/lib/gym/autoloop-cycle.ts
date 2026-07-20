@@ -45,6 +45,7 @@ import { gatherChampionOutcomeEntries } from './post-acceptance-outcomes';
 import { makeLoopQdSeams } from './qd/archive-recorder';
 import { resolveLocalEliteOutcomeSigner } from './qd/local-elite-signer';
 import { readPoolAggregates } from './read-api';
+import { copyRunAnalyticsToDurable } from './store';
 import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
 import type { JudgeLlmCall } from './judge';
 import type { GymLlmCall } from './task-generator';
@@ -509,6 +510,24 @@ export async function runOneAutoloopCycle(
     const rh = rubricHash(GYM_JUDGE_RUBRIC_V1);
     report.trainByVariant = await readPoolAggregates(gymSql, 'train', rh);
     report.realAnchorByVariant = await readPoolAggregates(gymSql, 'real-anchor', rh);
+
+    // Persist this cycle's run analytics to the DURABLE live-DB harness_gym read-cache
+    // (P-011) BEFORE the ephemeral gym PG is torn down, so the gym UI's Cycles/Variants/
+    // Frontier tabs read persisted data. Only when a distinct durable control DB is wired
+    // (the routine action's live org pool) — in standalone/fake mode controlSql === gymSql,
+    // so there is nothing durable to copy to. Best-effort: a copy failure never fails the
+    // cycle (the proposals already landed via the control-plane recorder).
+    if (gymSql && controlSql && controlSql !== gymSql) {
+      try {
+        const copied = await copyRunAnalyticsToDurable(gymSql, controlSql, { workspaceId: WS, harnessSlug: slug });
+        report.durableAnalytics = copied;
+        log(`durable run-analytics copied → live DB: ${copied.cycles} cycle(s), ${copied.variants} variant(s), ${copied.runs} run(s), ${copied.scores} score(s)`);
+      } catch (err) {
+        report.durableAnalyticsError = err instanceof Error ? err.message : String(err);
+        log(`durable run-analytics copy failed (non-fatal): ${report.durableAnalyticsError}`);
+      }
+    }
+
     ok = result.cycles >= 1 && !result.breakerTripped;
   } catch (err) {
     report.error = String(err);

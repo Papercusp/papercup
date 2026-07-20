@@ -11,6 +11,8 @@ import type { VariantOverlay } from './variant-overlay';
 import type { GymScore } from './judge';
 import { assertGymTaskNotContaminated } from './report-set-firewall';
 
+type Row = Record<string, unknown>;
+
 export interface VariantRow {
   variantId: string;
   parentId?: string | null;
@@ -135,6 +137,112 @@ export async function insertCycle(
       SET decision = EXCLUDED.decision, gate_results = EXCLUDED.gate_results, budget_spent_usd = EXCLUDED.budget_spent_usd`;
 }
 
+// ---------------------------------------------------------------------------
+// Durable run-analytics copy (plan gym-repoint-live-coding-and-visible-runs-2026-07-20
+// P-011). The cycle writes analytics into the EPHEMERAL gym PG (torn down at cycle end);
+// this copies the lightweight rows into the LIVE operator DB's harness_gym schema
+// (migration 650) so the gym UI's Cycles/Variants/Frontier tabs read persisted data.
+// The run-analytics analogue of makeLoopProposalRecorder (control-plane.ts): a cycle-end
+// bridge from the throwaway gym PG to the durable live DB, scoped by (workspace,harness).
+// ---------------------------------------------------------------------------
+
+export interface DurableAnalyticsScope {
+  workspaceId: string;
+  harnessSlug: string;
+}
+
+export interface DurableCopyCounts {
+  tasks: number;
+  variants: number;
+  runs: number;
+  scores: number;
+  cycles: number;
+}
+
+/**
+ * Copy this cycle's run analytics from the ephemeral gym PG (`src`) into the durable
+ * live-DB harness_gym tables (`dst`), stamping every row with (workspace_id, harness_slug)
+ * so multiple gym harnesses share the tables without id collisions ('baseline',
+ * 'gym-loop-health', 'cyc-0' repeat across harnesses). Idempotent upserts — a re-run of the
+ * same cycle overwrites its own rows. Only the columns the UI read-paths need are copied;
+ * the heavy blobs (deterministic_signals, trace/distilled refs, run params) stay in `src`.
+ * The whole copy runs in one `dst` transaction so a reader never sees a half-copied cycle.
+ */
+export async function copyRunAnalyticsToDurable(
+  src: Sql,
+  dst: Sql,
+  scope: DurableAnalyticsScope,
+): Promise<DurableCopyCounts> {
+  const ws = scope.workspaceId;
+  const hs = scope.harnessSlug;
+
+  const [tasks, variants, runs, scores, cycles] = await Promise.all([
+    src`SELECT task_id, pool, spec, intent, repo_url, repo_commit, generated_by, created_at
+          FROM harness_gym.gym_tasks` as Promise<Row[]>,
+    src`SELECT variant_id, parent_id, label, prompt_overrides, diff_from_parent, proposer_rationale, status, created_at
+          FROM harness_gym.gym_variants` as Promise<Row[]>,
+    src`SELECT run_id, variant_id, task_id, cycle, repeat, terminal_state, started_at, finished_at, elapsed_ms
+          FROM harness_gym.gym_runs` as Promise<Row[]>,
+    src`SELECT run_id, judge_model, rubric_hash, judge_temp, weights, d1, d2, d3, composite, rationale, scored_at
+          FROM harness_gym.gym_scores` as Promise<Row[]>,
+    src`SELECT cycle_id, cycle, parent_id, candidate_id, decision, gate_results, budget_spent_usd, created_at
+          FROM harness_gym.gym_cycles` as Promise<Row[]>,
+  ]);
+
+  await dst.begin(async (tx) => {
+    for (const r of tasks) {
+      await tx`
+        INSERT INTO harness_gym.gym_tasks (workspace_id, harness_slug, task_id, pool, spec, intent, repo_url, repo_commit, generated_by, created_at)
+        VALUES (${ws}, ${hs}, ${r.task_id as string}, ${r.pool as string}, ${(r.spec ?? null) as string | null}, ${(r.intent ?? null) as string | null},
+                ${(r.repo_url ?? null) as string | null}, ${(r.repo_commit ?? null) as string | null}, ${(r.generated_by ?? null) as string | null},
+                ${(r.created_at ?? new Date()) as Date})
+        ON CONFLICT (workspace_id, harness_slug, task_id) DO UPDATE
+          SET pool = EXCLUDED.pool, spec = EXCLUDED.spec, intent = EXCLUDED.intent`;
+    }
+    for (const r of variants) {
+      await tx`
+        INSERT INTO harness_gym.gym_variants (workspace_id, harness_slug, variant_id, parent_id, label, prompt_overrides, diff_from_parent, proposer_rationale, status, created_at)
+        VALUES (${ws}, ${hs}, ${r.variant_id as string}, ${(r.parent_id ?? null) as string | null}, ${r.label as string},
+                ${JSON.stringify(r.prompt_overrides ?? {})}::text::jsonb, ${(r.diff_from_parent ?? null) as string | null},
+                ${(r.proposer_rationale ?? null) as string | null}, ${(r.status ?? 'candidate') as string}, ${(r.created_at ?? new Date()) as Date})
+        ON CONFLICT (workspace_id, harness_slug, variant_id) DO UPDATE
+          SET parent_id = EXCLUDED.parent_id, label = EXCLUDED.label, prompt_overrides = EXCLUDED.prompt_overrides,
+              diff_from_parent = EXCLUDED.diff_from_parent, proposer_rationale = EXCLUDED.proposer_rationale, status = EXCLUDED.status`;
+    }
+    for (const r of runs) {
+      await tx`
+        INSERT INTO harness_gym.gym_runs (workspace_id, harness_slug, run_id, variant_id, task_id, cycle, repeat, terminal_state, started_at, finished_at, elapsed_ms)
+        VALUES (${ws}, ${hs}, ${r.run_id as string}, ${r.variant_id as string}, ${r.task_id as string}, ${Number(r.cycle ?? 0)}, ${Number(r.repeat ?? 0)},
+                ${(r.terminal_state ?? null) as string | null}, ${(r.started_at ?? null) as Date | null}, ${(r.finished_at ?? null) as Date | null},
+                ${r.elapsed_ms == null ? null : Number(r.elapsed_ms)})
+        ON CONFLICT (workspace_id, harness_slug, run_id) DO UPDATE
+          SET variant_id = EXCLUDED.variant_id, task_id = EXCLUDED.task_id, cycle = EXCLUDED.cycle, repeat = EXCLUDED.repeat,
+              terminal_state = EXCLUDED.terminal_state, finished_at = EXCLUDED.finished_at, elapsed_ms = EXCLUDED.elapsed_ms`;
+    }
+    for (const r of scores) {
+      await tx`
+        INSERT INTO harness_gym.gym_scores (workspace_id, harness_slug, run_id, judge_model, rubric_hash, judge_temp, weights, d1, d2, d3, composite, rationale, scored_at)
+        VALUES (${ws}, ${hs}, ${r.run_id as string}, ${r.judge_model as string}, ${r.rubric_hash as string}, ${r.judge_temp == null ? null : Number(r.judge_temp)},
+                ${JSON.stringify(r.weights ?? {})}::text::jsonb, ${Number(r.d1 ?? 0)}, ${Number(r.d2 ?? 0)}, ${Number(r.d3 ?? 0)}, ${Number(r.composite ?? 0)},
+                ${(r.rationale ?? null) as string | null}, ${(r.scored_at ?? new Date()) as Date})
+        ON CONFLICT (workspace_id, harness_slug, run_id, rubric_hash) DO UPDATE
+          SET d1 = EXCLUDED.d1, d2 = EXCLUDED.d2, d3 = EXCLUDED.d3, composite = EXCLUDED.composite, rationale = EXCLUDED.rationale`;
+    }
+    for (const r of cycles) {
+      await tx`
+        INSERT INTO harness_gym.gym_cycles (workspace_id, harness_slug, cycle_id, cycle, parent_id, candidate_id, decision, gate_results, budget_spent_usd, created_at)
+        VALUES (${ws}, ${hs}, ${r.cycle_id as string}, ${Number(r.cycle ?? 0)}, ${(r.parent_id ?? null) as string | null}, ${(r.candidate_id ?? null) as string | null},
+                ${(r.decision ?? null) as string | null}, ${JSON.stringify(r.gate_results ?? {})}::text::jsonb, ${r.budget_spent_usd == null ? null : Number(r.budget_spent_usd)},
+                ${(r.created_at ?? new Date()) as Date})
+        ON CONFLICT (workspace_id, harness_slug, cycle_id) DO UPDATE
+          SET cycle = EXCLUDED.cycle, parent_id = EXCLUDED.parent_id, candidate_id = EXCLUDED.candidate_id,
+              decision = EXCLUDED.decision, gate_results = EXCLUDED.gate_results, budget_spent_usd = EXCLUDED.budget_spent_usd`;
+    }
+  });
+
+  return { tasks: tasks.length, variants: variants.length, runs: runs.length, scores: scores.length, cycles: cycles.length };
+}
+
 export interface VariantComparisonRow {
   taskId: string;
   aComposite: number | null;
@@ -158,6 +266,42 @@ export async function compareVariants(
         FROM harness_gym.gym_runs r
         JOIN harness_gym.gym_scores s ON s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
        WHERE r.variant_id IN (${variantA}, ${variantB})
+    )
+    SELECT task_id,
+           MAX(composite) FILTER (WHERE variant_id = ${variantA}) AS a,
+           MAX(composite) FILTER (WHERE variant_id = ${variantB}) AS b
+      FROM scored
+     GROUP BY task_id
+     ORDER BY task_id`;
+  return rows.map((r) => ({
+    taskId: r.task_id,
+    aComposite: r.a,
+    bComposite: r.b,
+    delta: r.a !== null && r.b !== null ? r.b - r.a : null,
+  }));
+}
+
+/**
+ * Durable-DB (P-013) per-task A-vs-B — the same shape as compareVariants but against the
+ * live-DB harness_gym read-cache, scoped by (workspace_id, harness_slug). Every join carries
+ * the scope so a task/variant/run id shared across gym harnesses can't cross-contaminate.
+ */
+export async function compareDurableVariants(
+  sql: Sql,
+  scope: DurableAnalyticsScope,
+  variantA: string,
+  variantB: string,
+  rubricHash: string,
+): Promise<VariantComparisonRow[]> {
+  const rows = await sql<{ task_id: string; a: number | null; b: number | null }[]>`
+    WITH scored AS (
+      SELECT r.task_id, r.variant_id, s.composite
+        FROM harness_gym.gym_runs r
+        JOIN harness_gym.gym_scores s
+          ON s.workspace_id = r.workspace_id AND s.harness_slug = r.harness_slug
+         AND s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
+       WHERE r.workspace_id = ${scope.workspaceId} AND r.harness_slug = ${scope.harnessSlug}
+         AND r.variant_id IN (${variantA}, ${variantB})
     )
     SELECT task_id,
            MAX(composite) FILTER (WHERE variant_id = ${variantA}) AS a,

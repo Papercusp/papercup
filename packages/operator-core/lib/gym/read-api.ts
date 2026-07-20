@@ -9,6 +9,7 @@
  */
 import { paretoFrontier } from './frontier';
 import type { Sql } from 'postgres';
+import type { DurableAnalyticsScope } from './store';
 
 export interface ScoredTrainRow {
   variantId: string;
@@ -103,6 +104,67 @@ export async function readCycleHistory(sql: Sql): Promise<CycleHistoryRow[]> {
 /** The Pareto frontier view: read scored train rows → vectors → frontier variant ids. */
 export async function frontierView(sql: Sql, rubricHash: string): Promise<string[]> {
   return frontierFromVectors(buildVariantVectors(await readScoredTrainRows(sql, rubricHash)));
+}
+
+// --- durable live-DB readers (P-011/P-013) -----------------------------------------
+// These read the DURABLE harness_gym read-cache in the LIVE operator DB (migration 650),
+// which — unlike the ephemeral gym PG — is shared across every gym harness + workspace, so
+// every query is scoped by (workspace_id, harness_slug) and every join carries the scope.
+// They reuse the pure cores above (buildVariantVectors / frontierFromVectors), so the
+// frontier math is identical to the ephemeral path; only the SQL binding differs.
+
+export interface DurableVariantRow {
+  variantId: string;
+  parentId: string | null;
+  label: string;
+  status: string;
+  diffFromParent: string | null;
+  rationale: string | null;
+}
+
+/** Cycle history for one (workspace, harness) from the durable live DB. */
+export async function readDurableCycleHistory(sql: Sql, scope: DurableAnalyticsScope): Promise<CycleHistoryRow[]> {
+  const rows = await sql<{ cycle: number; parent_id: string | null; candidate_id: string | null; decision: string | null }[]>`
+    SELECT cycle, parent_id, candidate_id, decision
+      FROM harness_gym.gym_cycles
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+     ORDER BY cycle`;
+  return rows.map((r) => ({ cycle: Number(r.cycle), parentId: r.parent_id, candidateId: r.candidate_id, decision: r.decision }));
+}
+
+/** Variants for one (workspace, harness) from the durable live DB. */
+export async function readDurableVariants(sql: Sql, scope: DurableAnalyticsScope): Promise<DurableVariantRow[]> {
+  const rows = await sql<Record<string, unknown>[]>`
+    SELECT variant_id, parent_id, label, status, diff_from_parent, proposer_rationale
+      FROM harness_gym.gym_variants
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+     ORDER BY variant_id`;
+  return rows.map((r) => ({
+    variantId: String(r.variant_id),
+    parentId: r.parent_id == null ? null : String(r.parent_id),
+    label: String(r.label),
+    status: String(r.status),
+    diffFromParent: r.diff_from_parent == null ? null : String(r.diff_from_parent),
+    rationale: r.proposer_rationale == null ? null : String(r.proposer_rationale),
+  }));
+}
+
+/** Scored train rows for one (workspace, harness) under one rubric, from the durable live DB. */
+export async function readDurableScoredTrainRows(sql: Sql, scope: DurableAnalyticsScope, rubricHash: string): Promise<ScoredTrainRow[]> {
+  const rows = await sql<{ variant_id: string; task_id: string; composite: number }[]>`
+    SELECT r.variant_id, r.task_id, s.composite
+      FROM harness_gym.gym_runs r
+      JOIN harness_gym.gym_tasks t
+        ON t.workspace_id = r.workspace_id AND t.harness_slug = r.harness_slug AND t.task_id = r.task_id AND t.pool = 'train'
+      JOIN harness_gym.gym_scores s
+        ON s.workspace_id = r.workspace_id AND s.harness_slug = r.harness_slug AND s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
+     WHERE r.workspace_id = ${scope.workspaceId} AND r.harness_slug = ${scope.harnessSlug}`;
+  return rows.map((r) => ({ variantId: r.variant_id, taskId: r.task_id, composite: Number(r.composite) }));
+}
+
+/** The Pareto frontier view from the durable live DB, scoped by (workspace, harness). */
+export async function durableFrontierView(sql: Sql, scope: DurableAnalyticsScope, rubricHash: string): Promise<string[]> {
+  return frontierFromVectors(buildVariantVectors(await readDurableScoredTrainRows(sql, scope, rubricHash)));
 }
 
 /**
