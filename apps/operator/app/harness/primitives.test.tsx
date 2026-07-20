@@ -60,7 +60,9 @@ describe('SEVERITY_ICON / ISSUE_STATUS_ICON maps', () => {
 
   it('KIND_ICON covers exactly the canonical work-item kinds', () => {
     expect(Object.keys(KIND_ICON).sort()).toEqual(
-      ['feature', 'chunk', 'bug', 'change', 'task'].sort(),
+      // bet + research-task: owner ask 2026-07-19 — every wire kind carries
+      // its own icon (they previously fell to the neutral Circle fallback).
+      ['feature', 'chunk', 'bug', 'change', 'task', 'bet', 'research-task'].sort(),
     );
   });
 

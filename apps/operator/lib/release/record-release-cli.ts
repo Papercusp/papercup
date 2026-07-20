@@ -47,6 +47,7 @@ import {
   REQUIRED_DESKTOP_PLATFORMS,
   REQUIRED_DESKTOP_PRODUCTS,
   computeReleaseCompleteness,
+  computeMobileRegression,
   type RequiredDesktopProduct,
   type RequiredDesktopPlatform,
   type MissingArtifactSlot,
@@ -59,6 +60,7 @@ export {
   REQUIRED_DESKTOP_PLATFORMS,
   REQUIRED_DESKTOP_PRODUCTS,
   computeReleaseCompleteness,
+  computeMobileRegression,
   type RequiredDesktopProduct,
   type RequiredDesktopPlatform,
   type MissingArtifactSlot,
@@ -123,6 +125,8 @@ const PLATFORM_LABEL: Record<string, string> = {
   'linux-x86_64': 'Linux (x86_64)',
   'darwin-universal': 'macOS (universal)',
   'windows-x86_64': 'Windows (x64)',
+  'android-universal': 'Android',
+  'ios-arm64': 'iOS (arm64)',
 };
 
 /**

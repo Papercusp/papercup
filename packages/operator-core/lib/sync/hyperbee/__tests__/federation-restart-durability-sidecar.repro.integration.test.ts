@@ -52,7 +52,7 @@
  *     npx vitest run lib/sync/hyperbee/__tests__/federation-restart-durability-sidecar.repro.test.ts
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -999,6 +999,14 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       const MEMBER_SLUG = 'zombie-joined-hive';
       const MERGE_POLL_MS = 250;
       const GRACE_MS = 1_500; // shrunk from the 3min production default — same code path, faster wait
+
+      // replication-liveness.ts's default episode/recovery reporters use
+      // console.error as their (intentional, production) grep-able log channel
+      // — this suite runs under vitest-fail-on-console, so silence it the same
+      // way boot.test.ts's EI-13317 tests do (this test's own expect()s judge
+      // success/failure, not the console output).
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      cleanups.push(() => errorSpy.mockRestore());
 
       // ── env-route getOrgPg (identical pattern to the sibling repros above) ──
       const orgDb: OrgTestDb = await createOrgTestDb();

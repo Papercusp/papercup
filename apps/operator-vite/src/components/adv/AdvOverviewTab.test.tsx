@@ -329,9 +329,11 @@ describe('AdvOverviewTab component', () => {
       loading: false,
     };
     render(<AdvOverviewTab />);
-    expect(screen.getByText('bug')).toBeTruthy();
+    // Kinds render via the canonical KindPill (owner ask 2026-07-19: per-kind
+    // icons everywhere) — capitalized table labels, not raw wire names.
+    expect(screen.getByText('Bug')).toBeTruthy();
     expect(screen.getByText('4 open · 14 all')).toBeTruthy();
-    expect(screen.getByText('change')).toBeTruthy();
+    expect(screen.getByText('Change')).toBeTruthy();
     expect(screen.getByText('2 open · 2 all')).toBeTruthy();
   });
 

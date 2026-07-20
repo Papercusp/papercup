@@ -53,3 +53,27 @@ export function computeReleaseCompleteness(
   }
   return { missing, complete: missing.length === 0 };
 }
+
+/**
+ * Mobile platforms are OPTIONAL — never part of the required desktop set (a
+ * desktop-only cut is a complete release). But that made a mobile drop INVISIBLE:
+ * 0.0.11 recorded android + ios, 0.0.12 recorded neither, and nothing warned —
+ * exactly the "silent partial release" class the desktop completeness check exists
+ * to prevent, with a mobile blind spot (WI-5583). We can't require an absolute
+ * mobile set (iOS is dormant until Apple Developer enrollment; a channel may never
+ * ship a phone build), but a REGRESSION — a mobile platform the immediately-previous
+ * release carried and this one lost — is a concrete, non-arbitrary signal worth
+ * surfacing. It fires exactly ONCE at the drop point (the next release, still
+ * mobile-less, has a mobile-less predecessor → no regression), then stays quiet.
+ */
+export function computeMobileRegression(
+  current: { product: string; platform: string }[],
+  previous: { product: string; platform: string }[],
+): { dropped: string[] } {
+  const mobilePlatforms = (arts: { product: string; platform: string }[]): Set<string> =>
+    new Set(arts.filter((a) => a.product === 'mobile').map((a) => a.platform));
+  const have = mobilePlatforms(current);
+  const had = mobilePlatforms(previous);
+  const dropped = [...had].filter((p) => !have.has(p)).sort();
+  return { dropped };
+}
