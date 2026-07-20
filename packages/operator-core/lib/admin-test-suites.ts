@@ -11,6 +11,7 @@ import {
   type AdminTestSuiteDone,
   type AdminTestSuiteId,
   type AdminTestSuiteSpec,
+  type DesktopPerfMeasure,
 } from './admin-test-suites-shared';
 import { DESKTOP_PERF_BUDGETS, evaluateInteractionBudget } from './system-health/desktop-perf-budgets';
 
@@ -542,11 +543,13 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         const state = await getDesktopState(ctx);
         const route = `/harness?slug=${encodeURIComponent(state.activeSlug)}&ws=default`;
         const result = await measureWarmRoute(ctx, route, (page) => page.href.includes('/harness') && page.hasHarnessRoot);
+        const pass = result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
         return statusResult(
-          result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs,
+          pass,
           `Warm harness route settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
+          [routeMeasure('route:harness-warm', result.elapsedMs, pass)],
         );
       },
     },
@@ -557,11 +560,13 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         // The testing console lives on the harness Tests tab (/adv) — the
         // /admin/testing route was removed once the Tests tab covered it.
         const result = await measureWarmRoute(ctx, '/adv?slug=papercup&tab=testing&testsTab=vitals', (page) => page.href.includes('testsTab=vitals') && page.h1.includes('Live metrics'));
+        const pass = result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
         return statusResult(
-          result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs,
+          pass,
           `Warm Tests tab (Live metrics) settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
+          [routeMeasure('route:testing-live-warm', result.elapsedMs, pass)],
         );
       },
     },
@@ -570,11 +575,13 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       label: 'Plans warm route',
       run: async () => {
         const result = await measureWarmRoute(ctx, '/admin/plans', (page) => page.href.includes('/admin/plans') && page.h1.includes('Plans'));
+        const pass = result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs;
         return statusResult(
-          result.ok && result.elapsedMs <= DESKTOP_PERF_BUDGETS.warmRouteSettleMs,
+          pass,
           `Warm /admin/plans settles within ${DESKTOP_PERF_BUDGETS.warmRouteSettleMs}ms in the Tauri desktop shell.`,
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
+          [routeMeasure('route:plans-warm', result.elapsedMs, pass)],
         );
       },
     },
@@ -608,6 +615,8 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           verdict.ok,
           `The Plans sidebar popup-open interaction settles within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
           `plan-popup-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+          undefined,
+          [{ key: 'interaction:plan-popup-open', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
         );
       },
     },
@@ -625,6 +634,12 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
             `routes: ${summary.routes.join(', ') || '(none)'}`,
             `duration=${summary.durationMs}ms`,
             `longTasks=${summary.longTasks}`,
+          ],
+          [
+            budgetMeasure('chaos:inp-p95', summary.p95Inp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpP95Ms),
+            budgetMeasure('chaos:inp-max', summary.maxInp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpMaxMs),
+            budgetMeasure('chaos:max-frame', summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
+            budgetMeasure('chaos:frame-drops', summary.frameDrops, 'count', DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops),
           ],
         );
       },
@@ -654,6 +669,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`,
           `max interaction=${summary.value.maxDuration}ms.`,
           top.length > 0 ? top : ['No recorded interactions present in the current buffer.'],
+          [budgetMeasure('interaction:recorder-max', summary.value.maxDuration, 'ms', DESKTOP_PERF_BUDGETS.interactionMaxMs)],
         );
       },
     },
@@ -692,6 +708,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `The largest Tauri/WebKit process RSS stays below ${Math.round(DESKTOP_PERF_BUDGETS.maxProcessRssKb / 1024)}MB (512MB below the 4096MB kill threshold).`,
           `${Math.round(largest / 1024)}MB max RSS across ${tree.rows.length} processes (${Math.round(tree.totalRssKb / 1024)}MB total).`,
           top.map((row) => `${row.pid} ${row.name ?? 'unknown'} → ${Math.round(row.rssKb / 1024)}MB RSS (HWM ${Math.round(row.hwmKb / 1024)}MB)`),
+          [budgetMeasure('memory:rss-kb', largest, 'kb', DESKTOP_PERF_BUDGETS.maxProcessRssKb)],
         );
       },
     },
@@ -797,8 +814,9 @@ function statusResult(
   expected: string,
   actual: string,
   details?: string[],
+  measures?: DesktopPerfMeasure[],
 ): Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'> {
-  return { status: pass ? 'pass' : 'fail', expected, actual, details };
+  return { status: pass ? 'pass' : 'fail', expected, actual, details, measures };
 }
 
 function fail(

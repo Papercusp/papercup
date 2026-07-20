@@ -55,6 +55,7 @@ import {
   autoPickableWhereSql,
   isAutoPickable,
   isIssueLocallyClaimable,
+  isIssueLocallyClaimableWhereSql,
   loadTrustedGithubUserIds,
 } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
@@ -3311,6 +3312,12 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
          AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])
+         -- work-item-status-full-unify: mirror claimNextIssueWorkItem's origin floor (own-node aware)
+         -- so READY counts what the claim actually serves. Previously this query had NO origin floor
+         -- at all → it over-counted true-remote issues as ready while the claim (origin='local')
+         -- refused them (a "ready>0 but claim keeps missing" hot-retry mismatch). Now both admit
+         -- exactly (origin local/null OR our own-node author key).
+         AND ${isIssueLocallyClaimableWhereSql(sql, issueWs)}
          AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
          AND NOT EXISTS (
@@ -3601,9 +3608,13 @@ export async function claimNextIssueWorkItem(
           -- engineer_issues VIEW/trigger entirely, so unlike the single-id work_items:claim
           -- path (gated by engineer_issues_view_dml's EI-7833 remote-skip) it had NO origin
           -- guard at all — a self-select could actually SUCCEED in locally mutating taken_by
-          -- on a federated row, violating the "authoring peer owns it" LWW invariant. Mirrors
-          -- isIssueLocallyClaimable (work-items-admission.ts): only origin NULL/'local' self-selectable.
-          AND (wi.origin IS NULL OR wi.origin = 'local')
+          -- on a federated row, violating the "authoring peer owns it" LWW invariant.
+          -- work-item-status-full-unify (owner 2026-07-20): own-node aware — a self-authored row
+          -- that round-tripped federation (origin='remote' but OUR own substrate author key) IS
+          -- self-selectable (the issue-family analog of the feature family's ownAuthorWhereSql leg;
+          -- without it, node-identity drift permanently strands this box's own bugs). A true-peer
+          -- remote row stays excluded. Shared with the READY diagnose so the two never diverge.
+          AND ${isIssueLocallyClaimableWhereSql(sql, issueWs)}
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
           AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.

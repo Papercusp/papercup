@@ -150,6 +150,11 @@ export default defineConfig({
       // returns throws only if called, which never happens in the SPA.
       { find: /^node:module$/, replacement: resolve(import.meta.dirname, 'src/shims/node-module-browser.ts') },
       { find: /^node:async_hooks$/, replacement: resolve(import.meta.dirname, 'src/shims/async-hooks-browser.ts') },
+      // node:worker_threads: tooldef's run-script.ts lazily loads it for server-only
+      // script-orchestration (`await import`, never a static top-level import — see
+      // browser-safe-barrel.test.ts). The dynamic-import TARGET still gets resolved
+      // by Rolldown, which is the last externalized-warnings holdout (WI-4518).
+      { find: /^node:worker_threads$/, replacement: resolve(import.meta.dirname, 'src/shims/node-worker-threads-browser.ts') },
       // Server-only test-infra native addons: testcontainers → dockerode /
       // ssh-remote-port-forward → ssh2 → cpu-features. ssh2 + cpu-features each
       // require() a native `.node` binary at module scope, which Rolldown

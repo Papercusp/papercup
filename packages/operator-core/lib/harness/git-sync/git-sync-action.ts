@@ -61,6 +61,7 @@ import {
 } from '../../sync/pot-git/ref-announce';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
 import { defaultRunGit, deviceNamespaceKey, ensurePotGitRepo, hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
+import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer } from '../../sync/pot-git/bootstrap';
