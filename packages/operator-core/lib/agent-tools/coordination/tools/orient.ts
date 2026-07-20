@@ -1178,6 +1178,52 @@ export async function composeOrient(
   return result;
 }
 
+/** WI-5656: assembles the final coord:orient response object with
+ *  RESULT-DOOR-AWARE key priority. result-door.ts (`capInjectionText`) caps
+ *  the FINAL serialized JSON text at a per-result token budget and keeps only
+ *  the HEAD, spilling whatever comes after the cut to scratch — so KEY
+ *  INSERTION ORDER in this object literal directly determines what survives
+ *  in-context. `recovery` exists to carry the one thing a just-compacted
+ *  successor cannot get any other way (held-item checkpoints, armed-loop
+ *  status, staleness warnings, the self-recall pointer) — a just-compacted
+ *  agent's MOST fragile turn — so it is serialized right after minimal
+ *  identity (`self`), BEFORE every other preamble leg. modes /
+ *  instructionPrecedence / ideate / ownerDirectives / captureMiss /
+ *  configIntegrity / codexLocks / taskToolSchemaPack are all re-delivered on
+ *  subsequent turns via the system prompt + CTRL:transition (or are cheaply
+ *  re-fetchable), so they are the right things to spill instead when the
+ *  door truncates. `result` (claimable backlog, inbox, fleetDelta,
+ *  ownerPresent) is the lowest-priority, most re-fetchable tail and stays
+ *  last. Exported (pure, no IO) so a regression test can assert the ordering
+ *  directly against the real assembly code, not a mirrored fixture. */
+export function assembleOrientOutput(legs: {
+  self?: unknown;
+  recovery?: unknown;
+  ownerDirectives?: unknown;
+  modes?: unknown;
+  instructionPrecedence?: unknown;
+  ideate?: unknown;
+  captureMiss?: unknown;
+  configIntegrity?: unknown;
+  codexLocks?: unknown;
+  taskToolSchemaPack?: unknown;
+  result: object;
+}): Record<string, unknown> {
+  return {
+    ...(legs.self ? { self: legs.self } : {}),
+    ...(legs.recovery ? { recovery: legs.recovery } : {}),
+    ...(legs.ownerDirectives ? { ownerDirectives: legs.ownerDirectives } : {}),
+    ...(legs.modes ? { modes: legs.modes } : {}),
+    ...(legs.instructionPrecedence ? { instructionPrecedence: legs.instructionPrecedence } : {}),
+    ...(legs.ideate ? { ideate: legs.ideate } : {}),
+    ...(legs.captureMiss ? { captureMiss: legs.captureMiss } : {}),
+    ...(legs.configIntegrity ? { configIntegrity: legs.configIntegrity } : {}),
+    ...(legs.codexLocks ? { codexLocks: legs.codexLocks } : {}),
+    ...(legs.taskToolSchemaPack ? { taskToolSchemaPack: legs.taskToolSchemaPack } : {}),
+    ...legs.result,
+  };
+}
+
 export default defineTool({
   name: 'coord:orient',
   description:
@@ -1714,19 +1760,19 @@ export default defineTool({
     } catch {
       /* fail-soft */
     }
-    const out = {
-      ...(ownerDirectives ? { ownerDirectives } : {}),
-      ...(self ? { self } : {}),
-      ...(modes ? { modes } : {}),
-      ...(instructionPrecedence ? { instructionPrecedence } : {}),
-      ...(ideate ? { ideate } : {}),
-      ...(captureMiss ? { captureMiss } : {}),
-      ...(configIntegrity ? { configIntegrity } : {}),
-      ...(codexLocks ? { codexLocks } : {}),
-      ...(taskToolSchemaPack ? { taskToolSchemaPack } : {}),
-      ...(recovery ? { recovery } : {}),
-      ...(result as object),
-    };
+    const out = assembleOrientOutput({
+      self,
+      recovery,
+      ownerDirectives,
+      modes,
+      instructionPrecedence,
+      ideate,
+      captureMiss,
+      configIntegrity,
+      codexLocks,
+      taskToolSchemaPack,
+      result: result as object,
+    });
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never
