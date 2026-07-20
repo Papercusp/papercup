@@ -83,6 +83,19 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(false);
     }
   });
+
+  it('EI-18143028205990222: CLOSES a perf-regression SLO signal (e.g. dispatch-orphan-rate) once absent', () => {
+    // perf-regression-rig.ts's consider() re-derives every metric (loop-lag-p95,
+    // conn-saturation, dispatch-orphan-rate, coord-open-escalations, adv-tab-switch-median,
+    // adv-fcp) from a live read each tick — none cache/latch a stale verdict — so absence
+    // from known-open keys reliably means the metric dropped back under budget. Before this
+    // was added, a breach whose root cause was already fixed elsewhere (verified: zero new
+    // orphaned dispatches for 4h+ after durable-spawn.ts's EI-18118495431535177 fix) had no
+    // path back to closed while the SLO's trailing window still read the old pre-fix rows.
+    const d = decideAutoClose({ ...baseCandidate, watchdogKey: 'perf-regression:dispatch-orphan-rate' }, baseCtx);
+    expect(d.close).toBe(true);
+    expect(d.reason).toMatch(/evidence cleared/);
+  });
 });
 
 // ── processAutoClose IO (flag gate + orchestration) ──────────────────────────
