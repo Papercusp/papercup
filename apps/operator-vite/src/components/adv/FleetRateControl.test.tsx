@@ -2,7 +2,7 @@
 //
 // FleetRateControl mount coverage — the /adv top-bar fleet rate/usage/max
 // control (rate-limit-layer-v2-2026-06-05 P-013). The pure derivation layer
-// (headlineUsagePct / fmtSpend / fmtAgents / pausedCount / parseMaxDraft) is
+// (headlineUsagePct / fmtSpend / fmtLiveAgents / fmtGoverned / pausedCount / parseMaxDraft) is
 // pinned in __tests__/fleet-rate-control-logic.test.ts; THIS file mounts the
 // component against a stubbed GET/PUT /api/operator/rate-limit-config (the
 // sibling fetch-stub idiom — see AdvConversationsTab.test.tsx) and asserts the
@@ -76,14 +76,17 @@ describe('FleetRateControl component', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the live usage / spend / agents numbers and the max input', async () => {
+  it('renders usage / spend / the SPLIT live + governed slots and the governed-cap input', async () => {
     render(<FleetRateControl />);
-    const input = await screen.findByLabelText<HTMLInputElement>('max agents');
+    const input = await screen.findByLabelText<HTMLInputElement>('governed cap');
     await waitFor(() => expect(input.value).toBe('16'));
     expect(screen.getByText('62%')).toBeTruthy();
     expect(screen.getByText('$1.23')).toBeTruthy();
-    // the real liveAgents count (9), NOT the governor-scoped inFlight (3).
-    expect(screen.getByText('9 / 16')).toBeTruthy();
+    // P-005: live (real fleet-wide count, 9) and governed (inFlight/cap, 3/16) are
+    // SEPARATE slots — never the old "9 / 16" cross-population juxtaposition.
+    expect(screen.getByText('9')).toBeTruthy();
+    expect(screen.getByText('3 / 16')).toBeTruthy();
+    expect(screen.queryByText('9 / 16')).toBeNull();
     expect(input.disabled).toBe(false);
     // no paused buckets → no badge
     expect(screen.queryByText(/paused/)).toBeNull();
@@ -104,21 +107,34 @@ describe('FleetRateControl component', () => {
     expect(screen.getByText('1 paused')).toBeTruthy();
   });
 
+  it('HIDES the usage slot (instead of a fabricated "n/a") when no bucket exposes a ceiling', async () => {
+    stubApi(
+      makeStatus({
+        usage: { spendUsd: 0.5, calls: 7, buckets: [{ key: 'sub', usagePct: null }] },
+      }),
+    );
+    render(<FleetRateControl />);
+    await screen.findByText('$0.50');
+    // subscription-only pool: no usage% exists → the slot is absent, not "n/a"
+    expect(screen.queryByText('usage')).toBeNull();
+    expect(screen.queryByText('n/a')).toBeNull();
+  });
+
   it('degrades to placeholders + an unreachable tooltip when the API is down', async () => {
     stubApi(new Error('ECONNREFUSED'));
     render(<FleetRateControl />);
     await waitFor(() => expect(screen.getByTitle(/unreachable: ECONNREFUSED/)).toBeTruthy());
-    // no known provider ceiling (and no status at all here) → "n/a", not a bare "—%"
-    // that reads as frozen/broken (EI-18106936190883400).
-    expect(screen.getByText('n/a')).toBeTruthy();
+    // no status at all → usage hidden (nothing known), spend $0, live + governed both '—'
+    expect(screen.queryByText('usage')).toBeNull();
+    expect(screen.queryByText('n/a')).toBeNull();
     expect(screen.getByText('$0')).toBeTruthy();
-    expect(screen.getByText('—')).toBeTruthy();
-    expect(screen.getByLabelText<HTMLInputElement>('max agents').disabled).toBe(true);
+    expect(screen.getAllByText('—')).toHaveLength(2);
+    expect(screen.getByLabelText<HTMLInputElement>('governed cap').disabled).toBe(true);
   });
 
   it('commits an edited max on blur via PUT and adopts the saved config', async () => {
     render(<FleetRateControl />);
-    const input = await screen.findByLabelText<HTMLInputElement>('max agents');
+    const input = await screen.findByLabelText<HTMLInputElement>('governed cap');
     await waitFor(() => expect(input.value).toBe('16'));
 
     act(() => input.focus());
@@ -132,7 +148,7 @@ describe('FleetRateControl component', () => {
 
   it('does NOT PUT when the draft is invalid or unchanged', async () => {
     render(<FleetRateControl />);
-    const input = await screen.findByLabelText<HTMLInputElement>('max agents');
+    const input = await screen.findByLabelText<HTMLInputElement>('governed cap');
     await waitFor(() => expect(input.value).toBe('16'));
 
     // invalid (over the 64 ceiling)
@@ -150,7 +166,7 @@ describe('FleetRateControl component', () => {
 
   it('Escape cancels the edit without committing the draft', async () => {
     render(<FleetRateControl />);
-    const input = await screen.findByLabelText<HTMLInputElement>('max agents');
+    const input = await screen.findByLabelText<HTMLInputElement>('governed cap');
     await waitFor(() => expect(input.value).toBe('16'));
 
     act(() => input.focus());

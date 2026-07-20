@@ -9,7 +9,8 @@ import { describe, expect, it } from 'vitest';
 import {
   headlineUsagePct,
   fmtSpend,
-  fmtAgents,
+  fmtLiveAgents,
+  fmtGoverned,
   pausedCount,
   parseMaxDraft,
   type FleetRateStatusWire,
@@ -60,15 +61,27 @@ describe('fmtSpend', () => {
   });
 });
 
-describe('fmtAgents', () => {
-  it('shows real live-agent count / max (not the governor-scoped inFlight), and surfaces eff only when AIMD adapted below max', () => {
-    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 16, floor: 1, liveAgents: 12 })).toBe('12 / 16');
-    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 6, floor: 1, liveAgents: 12 })).toBe('12 / eff 6 / 16');
-    expect(fmtAgents(undefined)).toBe('—');
+describe('fmtLiveAgents', () => {
+  it('renders the real fleet-wide live-agent count ALONE — never juxtaposed with the governed cap (P-005 "81/8" confusion)', () => {
+    expect(fmtLiveAgents({ cap: 16, inFlight: 3, effective: 16, floor: 1, liveAgents: 12 })).toBe('12');
+    expect(fmtLiveAgents({ cap: 8, inFlight: 0, effective: 8, floor: 1, liveAgents: 81 })).toBe('81');
+    expect(fmtLiveAgents(undefined)).toBe('—');
   });
 
-  it('falls back to inFlight when liveAgents is omitted (older/partial wire payload)', () => {
-    expect(fmtAgents({ cap: 16, inFlight: 3, effective: 16, floor: 1 })).toBe('3 / 16');
+  it('shows a placeholder (not a dishonest inFlight fallback) when liveAgents is omitted', () => {
+    expect(fmtLiveAgents({ cap: 16, inFlight: 3, effective: 16, floor: 1 })).toBe('—');
+  });
+});
+
+describe('fmtGoverned', () => {
+  it('renders governed in-flight / cap — a population-consistent pair — and surfaces eff only when AIMD adapted below cap', () => {
+    expect(fmtGoverned({ cap: 16, inFlight: 3, effective: 16, floor: 1, liveAgents: 12 })).toBe('3 / 16');
+    expect(fmtGoverned({ cap: 16, inFlight: 4, effective: 6, floor: 1, liveAgents: 12 })).toBe('4 / eff 6 / 16');
+    expect(fmtGoverned(undefined)).toBe('—');
+  });
+
+  it('renders ∞ for a non-finite cap and 0 for a missing inFlight', () => {
+    expect(fmtGoverned({ cap: Number.POSITIVE_INFINITY, inFlight: 2, effective: Number.POSITIVE_INFINITY, floor: 1, liveAgents: 5 })).toBe('2 / ∞');
   });
 });
 

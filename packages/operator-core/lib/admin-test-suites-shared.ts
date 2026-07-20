@@ -32,6 +32,31 @@ export interface DesktopPerfMeasure {
   ok: boolean;
 }
 
+export type DesktopPerfSource = 'admin-suite' | 'wdio';
+/** Worst per-run rollup — 'skip' collapses to 'pass'. */
+export type DesktopPerfRunStatus = 'pass' | 'warn' | 'fail';
+
+/** A measure enriched with its delta vs the previous (older) run with the same key. */
+export interface DesktopPerfMeasureDelta extends DesktopPerfMeasure {
+  /** Previous run's value for this key, or null when there is no prior run with it. */
+  prevValue: number | null;
+  /** value − prevValue (null when no prior). Positive = slower/larger. */
+  deltaValue: number | null;
+  /** deltaValue as a fraction of prevValue (null when no prior or prev is 0). */
+  deltaPct: number | null;
+}
+
+/** One persisted desktop-perf run, enriched for the trend panel + release gate. */
+export interface DesktopPerfTrendPoint {
+  id: string;
+  createdTs: number;
+  source: DesktopPerfSource;
+  status: DesktopPerfRunStatus;
+  gitSha: string | null;
+  runId: string | null;
+  measures: DesktopPerfMeasureDelta[];
+}
+
 export interface AdminTestSuiteSpec {
   id: AdminTestSuiteId;
   label: string;

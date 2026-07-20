@@ -5,7 +5,7 @@ import {
   _resetFederationJoinStallAlertsForTests,
   DEFAULT_FEDERATION_JOIN_STALL_MS,
 } from './federation-join-stall-watchdog';
-import { recordBootEvent, _resetBootHistoryForTests, _setNowForTests } from './boot-history';
+import { recordBootEvent, _resetBootHistoryForTests } from './boot-history';
 
 vi.mock('../../severe-event-broadcast', () => ({
   broadcastSevereEvent: vi.fn().mockResolvedValue(true),
@@ -64,26 +64,32 @@ describe('checkFederationJoinStall (boot-history integration)', () => {
   });
 
   it('alarms once for a harness stuck on swarm_join_failed, then recovers on a later join_succeeded', async () => {
-    const t0 = Date.now();
-    _setNowForTests(() => t0);
-    recordBootEvent('ws-1', 'fed-a', 'swarm_join_failed', 'gh not authenticated');
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const t0 = Date.now();
+      recordBootEvent('ws-1', 'fed-a', 'swarm_join_failed', 'gh not authenticated');
 
-    const pass1 = await checkFederationJoinStall(30 * 60 * 1000);
-    expect(pass1.alarmed).toEqual([]); // within the stale window
+      const pass1 = await checkFederationJoinStall(30 * 60 * 1000);
+      expect(pass1.alarmed).toEqual([]); // within the stale window
 
-    _setNowForTests(() => t0 + 40 * 60 * 1000);
-    const pass2 = await checkFederationJoinStall(30 * 60 * 1000);
-    expect(pass2.alarmed).toEqual(['ws-1:fed-a']);
+      vi.setSystemTime(t0 + 40 * 60 * 1000);
+      const pass2 = await checkFederationJoinStall(30 * 60 * 1000);
+      expect(pass2.alarmed).toEqual(['ws-1:fed-a']);
 
-    // One-shot: a THIRD sweep with no new events must not re-alarm.
-    const pass3 = await checkFederationJoinStall(30 * 60 * 1000);
-    expect(pass3.alarmed).toEqual([]);
+      // One-shot: a THIRD sweep with no new events must not re-alarm.
+      const pass3 = await checkFederationJoinStall(30 * 60 * 1000);
+      expect(pass3.alarmed).toEqual([]);
 
-    // Recovery: a later join_succeeded clears the alert.
-    _setNowForTests(() => t0 + 41 * 60 * 1000);
-    recordBootEvent('ws-1', 'fed-a', 'join_succeeded', 'topic=abc');
-    const pass4 = await checkFederationJoinStall(30 * 60 * 1000);
-    expect(pass4.recovered).toEqual(['ws-1:fed-a']);
+      // Recovery: a later join_succeeded clears the alert.
+      vi.setSystemTime(t0 + 41 * 60 * 1000);
+      recordBootEvent('ws-1', 'fed-a', 'join_succeeded', 'topic=abc');
+      const pass4 = await checkFederationJoinStall(30 * 60 * 1000);
+      expect(pass4.recovered).toEqual(['ws-1:fed-a']);
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('never alarms a harness that has no join outcome recorded', async () => {

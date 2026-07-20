@@ -2,9 +2,13 @@
  * FleetRateControl — the /adv top-bar fleet rate/usage/max control
  * (rate-limit-layer-v2-2026-06-05 P-013, D-004/D-005).
  *
- * One strip: live usage% (where a provider ceiling is known — never fabricated),
- * recent $spend, in-flight vs AIMD-effective vs the EDITABLE hard max
- * (`maxSimultaneousAgents`). Edits commit on blur/Enter → PUT
+ * One strip: usage% (ONLY where a provider ceiling is known — hidden, never
+ * fabricated, on subscription-only pools), recent $spend, LIVE fleet-wide agent
+ * count (presence), and the GOVERNED pair — rate-governed in-flight vs
+ * AIMD-effective vs the EDITABLE governed cap (`maxSimultaneousAgents`). Live
+ * and governed are deliberately SEPARATE slots: they count different populations
+ * (owner-flagged "81/8" confusion — overview-tab-expansion-2026-07-20 P-005).
+ * Edits commit on blur/Enter → PUT
  * /api/operator/rate-limit-config, which persists to PG and propagates live
  * (governor global gate + dispatcher honor it with zero restart).
  *
@@ -160,26 +164,44 @@ export default function FleetRateControl() {
           : 'Fleet rate / usage — edit max to throttle or open up the fleet (live, no restart)'
       }
     >
-      <span className="pc-overview__rate-slot">
-        <span className="pc-overview__rate-k">usage</span>
+      {/* Usage% only renders when a provider actually exposes a rate-limit ceiling
+          (API-key buckets). Subscription accounts never do, so on a subscription-only
+          pool this slot used to permanently read "usage n/a" — pure confusion
+          (owner-flagged, overview-tab-expansion P-005). Hidden instead of fabricated. */}
+      {usagePct !== null && (
         <span
-          className="pc-overview__rate-v"
-          title={usagePct === null ? 'no provider rate-limit ceiling exposed — subscription accounts don’t expose one' : undefined}
+          className="pc-overview__rate-slot"
+          title="Worst provider rate-limit usage% across buckets that expose a ceiling (API-key paths only — subscription accounts expose none)"
         >
-          {usagePct === null ? 'n/a' : `${Math.round(usagePct)}%`}
+          <span className="pc-overview__rate-k">usage</span>
+          <span className="pc-overview__rate-v">{`${Math.round(usagePct)}%`}</span>
         </span>
-      </span>
-      <span className="pc-overview__rate-slot">
+      )}
+      <span className="pc-overview__rate-slot" title="LLM spend over the last hour (usage telemetry, all accounts)">
         <span className="pc-overview__rate-k">spend 1h</span>
         <span className="pc-overview__rate-v">{fmtSpend(status?.usage?.spendUsd)}</span>
       </span>
-      <span className="pc-overview__rate-slot">
-        <span className="pc-overview__rate-k">agents</span>
-        <span className="pc-overview__rate-v">{fmtAgents(status?.fleet)}</span>
+      <span
+        className="pc-overview__rate-slot"
+        title="Agents alive fleet-wide right now (fresh presence heartbeats) — includes the interactive su/CLI sessions the spawn governor does not manage, so this is NOT bounded by the governed cap"
+      >
+        <span className="pc-overview__rate-k">live</span>
+        <span className="pc-overview__rate-v">{fmtLiveAgents(status?.fleet)}</span>
+      </span>
+      <span
+        className="pc-overview__rate-slot"
+        title="Rate-GOVERNED dispatches in flight vs the editable cap — the cap throttles governed spawns (Mug/fleet placements) only, never the interactive sessions counted under LIVE"
+      >
+        <span className="pc-overview__rate-k">governed</span>
+        <span className="pc-overview__rate-v">{fmtGoverned(status?.fleet)}</span>
       </span>
       <span className="pc-overview__rate-slot">
-        <label className="pc-overview__rate-k" htmlFor="pc-fleet-max">
-          max agents
+        <label
+          className="pc-overview__rate-k"
+          htmlFor="pc-fleet-max"
+          title="maxSimultaneousAgents — hard cap on simultaneous rate-governed dispatches (edit commits live: persists + propagates, no restart). Does not limit interactive su sessions."
+        >
+          governed cap
         </label>
         <input
           id="pc-fleet-max"

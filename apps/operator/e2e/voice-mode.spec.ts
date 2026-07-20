@@ -9,7 +9,7 @@ import { expectNoA11yViolations } from './_axe';
  * services may not be running in CI. So this spec covers the bits that
  * are deterministic without real audio:
  *
- *   - Settings page renders all 5 TTS engines + 3 STT engines
+ *   - Settings page renders all 5 TTS engines + 2 STT engines
  *   - STT spend widget appears (parallel of TTS)
  *   - Voice mode toggle button mounts on the harness shell
  *   - Cap-knob inputs accept new values + persist via PUT
@@ -34,7 +34,7 @@ test.describe('voice settings', () => {
     await expect(page.getByText('Loading your voice settings')).toBeHidden({ timeout: 60_000 });
   }
 
-  test('renders all 5 TTS engines + 3 STT engines', async ({ page }) => {
+  test('renders all 5 TTS engines + 2 STT engines', async ({ page }) => {
     // PRECONDITION: the STT/TTS selects are deliberately DISABLED while a
     // full-agent engine is active ("overridden by full-agent" — see
     // settings/voice/page.tsx sttTtsDisabled). The workspace under test may
@@ -82,7 +82,11 @@ test.describe('voice settings', () => {
       await stt.click();
       await expect(page.getByRole('option', { name: /Voicemode/ })).toBeVisible();
       await expect(page.getByRole('option', { name: /Web Speech/ })).toBeVisible();
-      await expect(page.getByRole('option', { name: /Deepgram/ })).toBeVisible();
+      // Deepgram streaming STT was REMOVED from the picker (WI-3510
+      // follow-through — the underlying engine was already deleted from
+      // operator-core; selecting it used to silently degrade to wake-word
+      // listening instead of doing real cloud STT).
+      await expect(page.getByRole('option', { name: /Deepgram/ })).toHaveCount(0);
       await page.keyboard.press('Escape');
 
       const tts = page.getByRole('combobox', { name: 'TTS engine' });

@@ -306,3 +306,45 @@ describe('derived-reads producers: coord.history', () => {
     expect(loadCoordHistory).toHaveBeenCalledWith({}); // default view, no filters
   });
 });
+
+// P-005 producers: thin delegators to shared reads. Pin registration + delegation.
+describe('derived-reads producers: P-005 (releaseReadiness, observations)', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => {
+    vi.doUnmock('../sync-resolver/learning-release-readiness-read');
+    vi.doUnmock('../sync-resolver/learning-observations-read');
+    vi.resetModules();
+  });
+
+  async function loadProducer(key: string) {
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const p = registry.listDerivedReadProducers().find((x) => x.key === key);
+    if (!p) throw new Error(`${key} producer not registered`);
+    return p;
+  }
+
+  it('learning.releaseReadiness wraps readReleaseReadiness() as a 1-element snapshot', async () => {
+    vi.resetModules();
+    const readReleaseReadiness = vi.fn(async () => ({ ready: true, bars: [] }));
+    vi.doMock('../sync-resolver/learning-release-readiness-read', () => ({ readReleaseReadiness }));
+    const producer = await loadProducer('learning.releaseReadiness');
+    expect(producer.scope).toBe('workspace');
+    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as unknown[];
+    expect(out).toEqual([{ ready: true, bars: [] }]);
+    expect(readReleaseReadiness).toHaveBeenCalledTimes(1);
+  });
+
+  it('learning.observations delegates to computeLearningObservations({}) — the default view', async () => {
+    vi.resetModules();
+    const rows = [{ id: 'EI-1', body: 'x', _meta: { total: 1 } }];
+    const computeLearningObservations = vi.fn(async (_a: Record<string, unknown>) => rows);
+    vi.doMock('../sync-resolver/learning-observations-read', () => ({ computeLearningObservations }));
+    const producer = await loadProducer('learning.observations');
+    expect(producer.ttlMs).toBe(90_000);
+    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as unknown[];
+    expect(out).toBe(rows);
+    expect(computeLearningObservations).toHaveBeenCalledWith({});
+  });
+});

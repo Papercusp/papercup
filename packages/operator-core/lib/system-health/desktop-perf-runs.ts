@@ -22,16 +22,24 @@ import type {
   AdminTestStatus,
   DesktopPerfMeasure,
   DesktopPerfMetricUnit,
+  DesktopPerfSource,
+  DesktopPerfRunStatus,
+  DesktopPerfMeasureDelta,
+  DesktopPerfTrendPoint,
 } from '../admin-test-suites-shared';
 
-export type { DesktopPerfMeasure, DesktopPerfMetricUnit } from '../admin-test-suites-shared';
+export type {
+  DesktopPerfMeasure,
+  DesktopPerfMetricUnit,
+  DesktopPerfSource,
+  DesktopPerfRunStatus,
+  DesktopPerfMeasureDelta,
+  DesktopPerfTrendPoint,
+} from '../admin-test-suites-shared';
 
 // ───────── Types (pure) ─────────
 
-export type DesktopPerfSource = 'admin-suite' | 'wdio';
-/** Worst per-run rollup — 'skip' collapses to 'pass' (nothing measured is not a regression). */
-export type DesktopPerfRunStatus = 'pass' | 'warn' | 'fail';
-
+/** One persisted desktop-perf run row (persistence shape; adds workspaceId). */
 export interface DesktopPerfRun {
   id: string;
   workspaceId: string;
@@ -41,28 +49,6 @@ export interface DesktopPerfRun {
   gitSha: string | null;
   runId: string | null;
   measures: DesktopPerfMeasure[];
-}
-
-/** A run enriched with each measure's delta vs the previous (older) run that has
- *  the same measure key. */
-export interface DesktopPerfMeasureDelta extends DesktopPerfMeasure {
-  /** Previous run's value for this key, or null when there is no prior run with it. */
-  prevValue: number | null;
-  /** value − prevValue (null when no prior). Positive = slower/larger (a regression
-   *  for latency/RSS metrics). */
-  deltaValue: number | null;
-  /** deltaValue as a fraction of prevValue (null when no prior or prev is 0). */
-  deltaPct: number | null;
-}
-
-export interface DesktopPerfTrendPoint {
-  id: string;
-  createdTs: number;
-  source: DesktopPerfSource;
-  status: DesktopPerfRunStatus;
-  gitSha: string | null;
-  runId: string | null;
-  measures: DesktopPerfMeasureDelta[];
 }
 
 // ───────── Pure helpers ─────────

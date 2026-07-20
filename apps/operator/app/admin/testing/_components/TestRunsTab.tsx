@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Button } from '../../../harness/Button';
+import DesktopPerfTrendPanel from './DesktopPerfTrendPanel';
 import {
   ADMIN_TEST_SUITES,
   ADMIN_TEST_SUITE_IDS,

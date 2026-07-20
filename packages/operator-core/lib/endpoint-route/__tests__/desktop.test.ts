@@ -211,18 +211,16 @@ describe('buildGithubLoginSpec', () => {
   // match the real filesystem instead of proving the stable shim wins. These two
   // lock the ordering in so a future refactor can't silently re-widen the window.
   describe('gh path resolution (WI-3626)', () => {
-    afterEach(() => {
-      vi.restoreAllMocks();
-    });
+    const appBundleCwd = '/Applications/Papercusp.app/Contents/Resources/sidecar';
 
-    it('prefers the stable ~/.papercusp/bin/gh shim over any app-bundle-relative path', async () => {
-      const fs = await import('node:fs');
+    it('prefers the stable ~/.papercusp/bin/gh shim over any app-bundle-relative path', () => {
       const home = '/home/u';
       const stableShim = `${home}/.papercusp/bin/gh`;
-      vi.spyOn(fs, 'existsSync').mockImplementation((p) => p === stableShim);
-      vi.spyOn(process, 'cwd').mockReturnValue('/Applications/Papercusp.app/Contents/Resources/sidecar');
 
-      const spec = buildGithubLoginSpec(home);
+      const spec = buildGithubLoginSpec(home, {
+        cwd: appBundleCwd,
+        exists: (p) => p === stableShim,
+      });
       const script = spec.args[1] as string;
 
       expect(script).toContain(`"${stableShim}" auth login`);
@@ -232,17 +230,26 @@ describe('buildGithubLoginSpec', () => {
       expect(script).not.toMatch(/\.app\//);
     });
 
-    it('falls back to the app-bundle-relative path only when the stable shim is absent (dev box / pre-relink)', async () => {
-      const fs = await import('node:fs');
+    it('falls back to the app-bundle-relative path only when the stable shim is absent (dev box / pre-relink)', () => {
       const home = '/home/u';
-      const bundleGh = '/Applications/Papercusp.app/Contents/Resources/sidecar/bin/gh';
-      vi.spyOn(fs, 'existsSync').mockImplementation((p) => p === bundleGh);
-      vi.spyOn(process, 'cwd').mockReturnValue('/Applications/Papercusp.app/Contents/Resources/sidecar');
+      const bundleGh = `${appBundleCwd}/bin/gh`;
 
-      const spec = buildGithubLoginSpec(home);
+      const spec = buildGithubLoginSpec(home, {
+        cwd: appBundleCwd,
+        exists: (p) => p === bundleGh,
+      });
       const script = spec.args[1] as string;
 
       expect(script).toContain(`"${bundleGh}" auth login`);
+    });
+
+    it('falls back to bare `gh` when nothing resolves (relies on inherited PATH, never crashes)', () => {
+      const spec = buildGithubLoginSpec('/home/u', { cwd: appBundleCwd, exists: () => false });
+      const script = spec.args[1] as string;
+      // `which gh` also runs in this branch on a real box, which may or may not find
+      // something in *this* environment — assert only the documented no-crash contract.
+      expect(typeof script).toBe('string');
+      expect(script).toMatch(/auth login --hostname github\.com/);
     });
   });
 });

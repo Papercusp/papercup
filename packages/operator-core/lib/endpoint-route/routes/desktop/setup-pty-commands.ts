@@ -309,12 +309,32 @@ export function buildOnboardingSetupSpec(
   };
 }
 
-/** GitHub CLI uses `gh auth login` (different arg shape from claude/omp). */
-export function buildGithubLoginSpec(home: string): SpawnSpec {
-  const resolved = (() => {
-    try {
+/**
+ * GitHub CLI uses `gh auth login` (different arg shape from claude/omp).
+ *
+ * `cwd`/`exists` are injectable (mirroring `resolveConciergeScript` above) so the
+ * path-priority order — the actual regression surface of WI-3626 — is unit-testable
+ * without mocking the `node:fs` ESM module (not spy-able: "Cannot redefine property"
+ * under Vitest 4's ESM namespace). Both default to the real `process.cwd()` /
+ * `existsSync` for every production call site.
+ */
+export function buildGithubLoginSpec(
+  home: string,
+  deps: {
+    cwd?: string;
+    exists?: (p: string) => boolean;
+  } = {},
+): SpawnSpec {
+  const cwd = deps.cwd ?? process.cwd();
+  const exists =
+    deps.exists ??
+    ((p: string) => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { existsSync } = require('node:fs') as typeof import('node:fs');
+      return existsSync(p);
+    });
+  const resolved = (() => {
+    try {
       // The Tauri pty child gets NO inherited PATH (empty env), so a bare `gh`
       // resolves against /usr/bin:/bin only. Prefer the STABLE shim at
       // ~/.papercusp/bin/gh (installPapercuspFiles' ensureGhLinked keeps it
@@ -329,8 +349,8 @@ export function buildGithubLoginSpec(home: string): SpawnSpec {
       // rename too. Falls through to the bundle-relative paths for a dev box /
       // an install that predates ensureGhLinked (this run's install pass hasn't
       // relinked yet).
-      for (const p of [joinPath(home, '.papercusp', 'bin', 'gh'), `${process.cwd()}/bin/gh`, `${process.cwd()}/../bin/gh`]) {
-        if (existsSync(p)) return p;
+      for (const p of [joinPath(home, '.papercusp', 'bin', 'gh'), `${cwd}/bin/gh`, `${cwd}/../bin/gh`]) {
+        if (exists(p)) return p;
       }
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { spawnSync } = require('node:child_process') as typeof import('node:child_process');

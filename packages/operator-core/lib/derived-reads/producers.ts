@@ -395,3 +395,40 @@ registerDerivedRead({
     return (await loadCoordHistory({})).items;
   },
 });
+
+// ── learning.releaseReadiness (phase2 P-005) — measured 0.27s / 2.3KB on the
+// Verify stage's GO/NO-GO strip. readReleaseReadiness reruns
+// buildProgramSuccessReport + rubric governance reads (getRubric/listScorecards)
+// on every mount; small payload, pure compute → a clean thin precompute. No args,
+// so the resolver is an unconditional snapshot SELECT. 5-min ttl: release-
+// readiness (six success bars + rubric governance state) moves slowly.
+registerDerivedRead({
+  key: 'learning.releaseReadiness',
+  ttlMs: 5 * 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { readReleaseReadiness } = await import('../sync-resolver/learning-release-readiness-read');
+    return [await readReleaseReadiness()];
+  },
+});
+
+// ── learning.observations (phase2 P-005) — measured 0.22s / 152KB on the
+// Observations browse pane. listIssues + countIssues + per-row map/sort over the
+// whole OBSERVATION lane on every mount; the 152KB is the per-observation `body`.
+// Only the DEFAULT view (no state filter, default limit 200 — the pane's mount)
+// is precomputed via the shared computeLearningObservations; a state filter /
+// custom limit falls through to the live inline compute (snapshots have no arg
+// dimension). 90s ttl (browse feed, invalidated on a new observation file): the
+// routine keeps it ≤1 tick fresh, consistent with the substrate's D-003.
+registerDerivedRead({
+  key: 'learning.observations',
+  ttlMs: 90_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { computeLearningObservations } = await import('../sync-resolver/learning-observations-read');
+    // DEFAULT view: no state filter, default limit (200).
+    return computeLearningObservations({});
+  },
+});

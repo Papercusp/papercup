@@ -2884,36 +2884,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .optional(),
     resolve: async (args) => {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
-      const { listIssues, countIssues } = await import('../issues-engineer');
-      const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
-      const filter = {
-        topic: OBSERVATION_TOPIC,
-        ...(a.state ? { state: a.state } : {}),
-      };
-      const [issues, total] = await Promise.all([
-        listIssues({ ...filter, limit: a.limit ?? 200 }),
-        countIssues(filter),
-      ]);
-      const rows = issues
-        .map((i) => {
-          const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
-          const obs =
-            p.observation && typeof p.observation === 'object' ? (p.observation as Record<string, unknown>) : {};
-          const refs = Array.isArray(obs.refs) ? obs.refs.filter((r): r is string => typeof r === 'string') : [];
-          return {
-            id: i.id,
-            title: i.title,
-            body: i.body ?? null,
-            kind: typeof obs.kind === 'string' ? obs.kind : null,
-            scope: typeof obs.scope === 'string' ? obs.scope : (i.scope ?? null),
-            confidence: typeof obs.confidence === 'string' ? obs.confidence : null,
-            refs,
-            sourceRole: typeof p.sourceRole === 'string' ? p.sourceRole : null,
-            createdAt: i.createdAt,
-          };
-        })
-        .sort((x, y) => (x.createdAt < y.createdAt ? 1 : x.createdAt > y.createdAt ? -1 : 0));
-      return attachListMeta(rows, { total });
+      // PRECOMPUTED (phase2 P-005) — but ONLY the DEFAULT view (no state filter,
+      // default limit 200 — the Observations pane's mount). listIssues +
+      // countIssues + per-row map/sort over the whole OBSERVATION lane was 0.22s /
+      // 152KB on every read; the routine now fills a snapshot. Snapshots have no
+      // arg dimension, so a state filter / custom limit falls through to the live
+      // inline compute (both share computeLearningObservations, so they can't drift).
+      if (a.state === undefined && (a.limit === undefined || a.limit === 200)) {
+        const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+        await import('../derived-reads/producers');
+        return readDerivedSnapshotRows('learning.observations');
+      }
+      const { computeLearningObservations } = await import('./learning-observations-read');
+      return computeLearningObservations(a);
     },
   },
 
@@ -2974,8 +2957,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (the learning.gym / learning.apiary posture). Always a 1-element array.
   'learning.releaseReadiness': {
     resolve: async () => {
-      const { readReleaseReadiness } = await import('./learning-release-readiness-read');
-      return [await readReleaseReadiness()];
+      // PRECOMPUTED (phase2 P-005) — no args, so a plain snapshot SELECT.
+      // readReleaseReadiness reruns blender:success-metrics + rubric governance
+      // reads (0.27s) on every Verify-stage mount; the routine now fills it.
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      return readDerivedSnapshotRows('learning.releaseReadiness');
     },
   },
 

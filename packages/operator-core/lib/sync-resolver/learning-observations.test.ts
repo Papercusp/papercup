@@ -11,6 +11,7 @@ vi.mock('../harness/improvements/read-items', () => ({
 }));
 
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
+import { computeLearningObservations } from './learning-observations-read';
 import { readListTotal } from './list-meta';
 
 const issue = (id: string, createdAt: string) => ({
@@ -33,9 +34,16 @@ beforeEach(() => {
 });
 
 describe('learning.observations — Work Queue pagination contract', () => {
-  it('is registered and carries the authoritative store total on the flat row list', async () => {
+  // Since phase2 P-005 the compute lives in the shared computeLearningObservations
+  // (the default view is served from a precomputed snapshot; see
+  // learning-observations-queries.test.ts for the resolver gate). Pin the
+  // total/sort/args contract against that function directly.
+  it('is registered', () => {
     expect(knownQueryNamesV2()).toContain('learning.observations');
-    const rows = await resolveNamedQueryV2('learning.observations', { limit: 200 });
+  });
+
+  it('carries the authoritative store total on the flat row list, newest-first', async () => {
+    const rows = await computeLearningObservations({ limit: 200 });
 
     expect(listIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation', limit: 200 });
     expect(countIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation' });
@@ -43,7 +51,9 @@ describe('learning.observations — Work Queue pagination contract', () => {
     expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual(['EI-2', 'EI-1']);
   });
 
-  it('clamps an over-large window instead of rejecting the query', async () => {
+  it('clamps an over-large window instead of rejecting the query (non-default → inline)', async () => {
+    // A state filter makes this a NON-default view → the resolver takes the live
+    // inline path AND applies the argsSchema clamp (50000 → 2000) before compute.
     await resolveNamedQueryV2('learning.observations', { state: 'open', limit: 50_000 });
     expect(listIssues).toHaveBeenCalledWith({
       topic: 'papercusp-observation',

@@ -1411,6 +1411,8 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
     if (!entry?.path) return;
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
     if (!potHomeSlug) return;
+    // WI-5168: federated repoKey — see repo-identity.ts.
+    const repoKey = canonicalRepoKey(entry);
 
     const actor = await resolveUsageActor();
     if (!actor?.devicePubkey) return; // gh unauthenticated — no device identity to publish as
@@ -1419,7 +1421,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
 
     const outcome = await runOwnHeadPublishTick({
       potHomeSlug,
-      repoKey: slug,
+      repoKey,
       worktreePath: entry.path,
       branch,
       devicePubkeyBase64: actor.devicePubkey,
@@ -1559,6 +1561,8 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     if (!entry) return;
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
     if (!potHomeSlug) return;
+    // WI-5168: federated repoKey — see repo-identity.ts.
+    const repoKey = canonicalRepoKey(entry);
 
     // G-8 cold-start (live-caught on the P-302 rig, WI-3496): the bare store
     // must EXIST before any git runs against it — bootstrap.ts's documented
@@ -1566,7 +1570,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // Without this, every runGit on a cold device dies `spawn git ENOENT`
     // (missing cwd), and the first store is only ever created by the LATER
     // own-head leg — which then poisons the warm check below forever.
-    const repoPath = await ensurePotGitRepo(potHomeSlug, slug);
+    const repoPath = await ensurePotGitRepo(potHomeSlug, repoKey);
 
     const actor = await resolveUsageActor();
     // Self-identification must NOT ride on gh reachability: resolveUsageActor
@@ -1667,14 +1671,14 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // EI-15333: skip a peer we already know (within the backoff window)
       // definitively refuses this exact repo — never counts as a live
       // attempt (nothing was dialed), same as a registry no-path miss.
-      const backoffKey = noSuchRepoBackoffKey(slug, peerDevicePubkeyBase64);
+      const backoffKey = noSuchRepoBackoffKey(repoKey, peerDevicePubkeyBase64);
       const backoffUntil = noSuchRepoBackoffUntil.get(backoffKey);
       if (backoffUntil !== undefined && backoffUntil > Date.now()) {
         dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:backoff(no-such-repo)`);
         continue;
       }
       const duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
-        repoKey: slug,
+        repoKey,
         peerGithubUserId: actor?.githubUserId,
       });
       if (duplex.destroyed) {
@@ -1783,6 +1787,8 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     if (!entry) return;
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
     if (!potHomeSlug) return;
+    // WI-5168: federated repoKey — see repo-identity.ts.
+    const repoKey = canonicalRepoKey(entry);
 
     const actor = await resolveUsageActor();
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
@@ -1792,7 +1798,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
 
-    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
+    const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
     const keychainId = resolveDeviceKeychainId(actor.githubUserId);
     const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
 
