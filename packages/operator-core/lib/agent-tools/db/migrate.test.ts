@@ -36,6 +36,13 @@ const h = vi.hoisted(() => ({
   recordResourceAction: vi.fn(async () => undefined),
   inWorkspaceTxn: vi.fn(async (_domain: unknown, _owner: unknown, fn: (tx: unknown) => unknown) => fn({})),
   openEscalation: vi.fn(async (_identity: unknown, _input: EscalationInputLike) => ({ msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' })),
+  // EI-18159491440495603: default behavior mirrors the original inline mock (acquire +
+  // run the callback); individual tests override with mockImplementationOnce to throw
+  // a transient connection error before eventually resolving.
+  guardResource: vi.fn(async (_spec: unknown, run: (fence: unknown) => Promise<unknown>) => ({
+    acquired: true,
+    result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
+  })),
 }));
 
 vi.mock('node:child_process', () => ({ spawnSync: h.spawnSync }));
@@ -57,13 +64,15 @@ vi.mock('../locks/su-lock-store', () => ({
 }));
 vi.mock('../locks/in-workspace-txn', () => ({ inWorkspaceTxn: h.inWorkspaceTxn }));
 vi.mock('../locks/resource-lock-guard', () => ({
-  guardResource: async (_spec: unknown, run: (fence: unknown) => Promise<unknown>) => ({
-    acquired: true,
-    result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
-  }),
+  guardResource: h.guardResource,
 }));
 
-import migrateTool, { isLockTimeoutFailure, lockRetryBackoffMs } from './migrate';
+import migrateTool, {
+  isLockTimeoutFailure,
+  lockRetryBackoffMs,
+  isTransientConnectionFailure,
+  connectionRetryBackoffMs,
+} from './migrate';
 
 const CTX = { role: 'operator' } as never;
 const parse = (res: { content: Array<{ text: string }> }) => JSON.parse(res.content[0].text);
@@ -77,8 +86,16 @@ beforeEach(() => {
   h.checkResourceAction.mockReset().mockResolvedValue({ applied: false });
   h.recordResourceAction.mockReset().mockResolvedValue(undefined);
   h.openEscalation.mockReset().mockResolvedValue({ msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' });
+  h.guardResource.mockReset().mockImplementation(async (_spec: unknown, run: (fence: unknown) => Promise<unknown>) => ({
+    acquired: true,
+    result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
+  }));
   delete process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
 });
+
+/** A postgres-js-shaped transient connection error (see node_modules/postgres/src/errors.js's
+ *  `connection()` factory) — `.code` is what isTransientConnectionFailure keys on. */
+const connErr = (code: string) => Object.assign(new Error(`write ${code} 127.0.0.1:6432`), { code });
 
 afterAll(() => {
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
