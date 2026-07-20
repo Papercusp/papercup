@@ -75,13 +75,13 @@ let db: FreshPgDb;
 async function seedIssueInWorkspace(
   id: string,
   workspaceId: string,
-  opts: { status?: string; takenBy?: string | null; createdTs?: number } = {},
+  opts: { status?: string; takenBy?: string | null; createdTs?: number; updatedTs?: number } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts)
     VALUES (${H}, ${id}, 'bug', ${`title ${id}`}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null},
-       ${workspaceId}, ${opts.createdTs ?? 0}, 0)`;
+       ${workspaceId}, ${opts.createdTs ?? 0}, ${opts.updatedTs ?? 0})`;
 }
 
 beforeAll(async () => {

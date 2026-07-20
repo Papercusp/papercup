@@ -1900,12 +1900,21 @@ export async function autoResolveSourceIssueOnFeaturePassed(
   if (!sourceIssueId) return;
   const issue = await getIssue(sourceIssueId);
   if (!issue || ISSUE_TERMINAL_STATUSES.has(issue.state)) return;
-  await setIssueState(
-    sourceIssueId,
-    'resolved',
-    'system:auto-issue-resolve',
-    `Auto-resolved: source feature ${featureId} passed (EI-15461).`,
-  );
+  // work-item-status-full-unify (P-003 writer-flip completeness, caught by the P-008
+  // live-verify): route through the UNIFIED writer instead of a raw setIssueState('resolved').
+  // setWorkItemState folds 'resolved' → the unified terminal 'done' AND stamps
+  // terminal_reason='resolved' (loss-free, consistent with every other resolved→done row) —
+  // whereas the direct setIssueState call stored the legacy 'resolved' token verbatim with a
+  // NULL terminal_reason, and was the last HOT writer still leaking pre-unification vocab into
+  // new rows (~240 fresh 'resolved'-status rows/day at the time of the flip). Fire-and-forget:
+  // the caller's `.catch(() => {})` absorbs the writer's completion/remote/plan-lane guards (a
+  // remote source issue cannot be resolved locally anyway; a genuinely plan-blocked source
+  // issue should not be silently force-terminated).
+  await setWorkItemState(sourceIssueId, 'resolved', {
+    by: 'system:auto-issue-resolve',
+    completionRef: `Auto-resolved: source feature ${featureId} passed (EI-15461).`,
+    harness,
+  });
 }
 
 /** The alias/no-op discriminator every lifecycle verb's result row should carry (EI-7712). */

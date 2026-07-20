@@ -462,10 +462,19 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
     await vi.waitFor(
       async () => {
         const after = await issuesEngineer.getIssue(bug.id);
-        expect(after?.state).toBe('resolved');
+        // work-item-status-full-unify: the auto-resolve routes through the unified writer, so
+        // the source issue folds to the unified terminal 'done' (NOT the legacy 'resolved' token).
+        expect(after?.state).toBe('done');
       },
       { timeout: 5000 },
     );
+    // …and the pre-unification 'resolved' nuance is preserved in terminal_reason (loss-free),
+    // proving the auto-resolve no longer leaks legacy vocab into new rows.
+    const stamp = (
+      await db.sql<{ status: string; terminal_reason: string | null }[]>`
+        SELECT status, terminal_reason FROM harness_shared.work_items WHERE feature_id = ${bug.id}`
+    )[0];
+    expect(stamp).toEqual({ status: 'done', terminal_reason: 'resolved' });
   });
 
   it('a feature transitioning to a NON-passed terminal state (deprecated) does not touch the source issue', async () => {
