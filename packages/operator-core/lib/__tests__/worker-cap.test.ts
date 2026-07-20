@@ -63,7 +63,7 @@ describe('applyWorkerCapEnv', () => {
 
   it('respects a pre-set MAX_FORKS/MAX_THREADS independently of MAX_WORKERS', () => {
     const env: Record<string, string | undefined> = { VITEST_MAX_FORKS: '99' };
-    applyWorkerCapEnv({ cores: 128, load1: 50, env: env as NodeJS.ProcessEnv });
+    applyWorkerCapEnv({ cores: 128, load1: 20, env: env as NodeJS.ProcessEnv });
     expect(env.VITEST_MAX_WORKERS).toBe('32');
     expect(env.VITEST_MAX_FORKS).toBe('99'); // left alone
     expect(env.VITEST_MAX_THREADS).toBe('32');

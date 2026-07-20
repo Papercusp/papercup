@@ -761,6 +761,27 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         );
       },
     },
+    // P-009: broaden chaos coverage beyond the test-runs surface — chaos-click
+    // the OTHER heavy surfaces (harness dock, plans, /adv conversations) so a
+    // slow interaction on ANY major surface trips a check, each with its own
+    // per-surface INP/frame budgets (prefixed measure keys, so the existing
+    // `chaos:*` keys keep their trend history). Routes mirror the /adv tab
+    // params; the live/wdio run validates them.
+    {
+      id: 'chaos-harness-dock',
+      label: 'Chaos — harness dock',
+      run: () => chaosSurfaceCheck(ctx, 'harness-dock', 'harness dock', '/adv?slug=papercup&tab=overview'),
+    },
+    {
+      id: 'chaos-plans',
+      label: 'Chaos — plans',
+      run: () => chaosSurfaceCheck(ctx, 'plans', 'plans', '/adv?slug=papercup&tab=plans'),
+    },
+    {
+      id: 'chaos-conversations',
+      label: 'Chaos — /adv conversations',
+      run: () => chaosSurfaceCheck(ctx, 'conversations', '/adv conversations', '/adv?slug=papercup&tab=conversations'),
+    },
     {
       id: 'interaction-budget',
       label: 'Current slow-interaction budget',
