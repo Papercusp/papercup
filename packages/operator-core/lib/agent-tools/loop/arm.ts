@@ -213,6 +213,21 @@ export default defineTool({
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
     const carry = args.carry ?? 'warm';
+    const resolvedMode = args.mode ?? 'work';
+
+    // WI-5557 TIER 1 — an unattended warm-carry WORK loop with neither dead-man guard set
+    // (maxFires / maxDurationSec) has NOTHING bounding how long it re-wakes the SAME warm
+    // session, so context grows every fire until it hits the ceiling and dies uncleanly
+    // (repro: session fa10eeb7, 52 fires / 7.3h / 364 turns → death→cold-recycle→warm-regrow
+    // cycle owner Avi called "should never happen"). This is purely additive — a response
+    // field + note suffix, no behavior change — so it's safe to land without the TIER 2
+    // engine-side hard net (which needs owner disclosure given its fleet-wide blast radius;
+    // tracked separately). A 'monitor' loop is excluded: it's a leader/supervisor loop that
+    // is, by its own contract, actively watched each wake, not left to silently regrow.
+    const unboundedWarmLoopWarning: string | null =
+      carry === 'warm' && resolvedMode === 'work' && !args.maxDurationSec && !args.maxFires
+        ? 'This is an unattended warm-carry WORK loop with no maxFires/maxDurationSec bound — context carries and grows every fire with nothing to stop it, and an unbounded warm loop can hit the context ceiling and die uncleanly (WI-5557). Consider setting maxFires or maxDurationSec, or self-compacting periodically via session:request-compaction as context grows.'
+        : null;
 
     // WI-2429 fix A — auto-claim the work-item this loop DRIVES, at arm time, so it is
     // HELD from wake 1. Then the per-item work_items:checkpoint death-resilience net
@@ -270,7 +285,7 @@ export default defineTool({
         goal,
         carry,
         continuation: args.continuation ?? 'settle',
-        mode: args.mode ?? 'work',
+        mode: resolvedMode,
         // Only name the item in the wake prompt if we ACTUALLY hold it — a conflicted /
         // not-found candidate must not tell the agent "you hold X".
         workItem: claimedWorkItem,
@@ -287,7 +302,7 @@ export default defineTool({
       maxDurationSec: args.maxDurationSec ?? null,
       carry: args.carry ?? 'warm',
       continuation: args.continuation ?? 'settle',
-      mode: args.mode ?? 'work',
+      mode: resolvedMode,
     });
     const control = await refreshControlAnchorAfterMutation({
       ownerId,

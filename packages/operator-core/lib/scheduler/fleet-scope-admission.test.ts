@@ -23,6 +23,10 @@ const admissionMocks = vi.hoisted(() => ({
   claimFloorsWhereSql: vi.fn(),
   releaseCooldownSec: vi.fn(),
   compileFilter: vi.fn(),
+  // WI-5561: diagnoseFleetScopeIssueFloorMiss's own seam-level dependency — the
+  // real aggregateIssueClaimExclusions (get-next.ts) is mocked here for the same
+  // reason compileFilter is: assert the WIRING, not postgres.js's SQL composition.
+  aggregateIssueClaimExclusions: vi.fn(),
   sql: vi.fn(),
 }));
 
@@ -43,6 +47,7 @@ vi.mock('../work-items', () => ({
 }));
 vi.mock('./get-next', () => ({
   compileFilter: admissionMocks.compileFilter,
+  aggregateIssueClaimExclusions: admissionMocks.aggregateIssueClaimExclusions,
 }));
 vi.mock('../agent-tools/coordination/messages', () => ({
   sendMessage: admissionMocks.sendMessage,
@@ -57,6 +62,7 @@ vi.mock('@papercusp/db-org', () => ({
 import {
   admitWorkItemForFleetTarget,
   diagnoseFleetScopeCooldownMiss,
+  diagnoseFleetScopeIssueFloorMiss,
   fleetScopedMiss,
   readFleetPauseState,
   reconcileFleetScopeClaims,

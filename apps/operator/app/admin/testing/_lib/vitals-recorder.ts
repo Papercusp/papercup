@@ -120,7 +120,7 @@ export function startRecorder(): void {
   // in case it was loaded from localStorage.
   const w = window as unknown as { __papercuspPerfSeq?: number };
   const seedFromEvents = state.events.reduce((max, ev) => {
-    const m = /^(?:ev|lt|ls|cerr)-(\d+)(?:-|$)/.exec(ev.id);
+    const m = /^(?:ev|lt|ls|meas|cerr)-(\d+)(?:-|$)/.exec(ev.id);
     if (!m) return max;
     const n = Number.parseInt(m[1], 10);
     return Number.isFinite(n) && n > max ? n : max;
@@ -202,6 +202,29 @@ export function startRecorder(): void {
     lsObs.observe({ type: 'layout-shift', buffered: true } as PerformanceObserverInit);
     state.observers.push(lsObs);
   } catch { /* not supported */ }
+
+  // Named interaction measures (perf-marks.ts) — the page-relative timings for
+  // budgeted interactions (e.g. plan-popup-open). `buffered: true` replays
+  // measures emitted before the recorder started; the name filter keeps only
+  // our curated registry entries. This is the canonical timing source the
+  // desktop-performance suite + the packaged-binary wdio runner read.
+  try {
+    const measureObs = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (!KNOWN_MEASURE_NAMES.has(entry.name)) continue;
+        addEvent(state, {
+          id: `meas-${nextSeq()}-${entry.name}`,
+          kind: 'measure',
+          route: window.location.pathname,
+          ts: Date.now(),
+          duration: Math.round(entry.duration),
+          target: entry.name,
+        });
+      }
+    });
+    measureObs.observe({ type: 'measure', buffered: true } as PerformanceObserverInit);
+    state.observers.push(measureObs);
+  } catch { /* measure type not supported */ }
 
   // Console errors — useful signal during chaos runs and ambient usage.
   // Only patch once. Tauri webview hooks console.error for native log
