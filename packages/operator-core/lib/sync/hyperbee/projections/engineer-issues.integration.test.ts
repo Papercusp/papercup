@@ -291,7 +291,10 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     // Same fedHlc on both ops ⇒ EQUAL fed_order_key; authorPubkey null on both ⇒
     // the "unknown writer" branch, which falls through to the content digest —
     // exactly the vulnerable branch.
-    const provenance = { ts: 700, fedHlc: '700:00042:tie', origin: 'remote' as const, authorPubkey: null };
+    // authorPubkey: '' is the documented sentinel for "a remote op carries no
+    // source key" (ProvenanceContext) — both ops sharing it puts this on the
+    // "unknown writer" tie branch the test targets.
+    const provenance = { ts: 700, fedHlc: '700:00042:tie', origin: 'remote' as const, authorPubkey: '' };
     const opA = { ...base, state: 'resolved', terminal_owner: 'agent-a', terminal_completion_ref: 'fixed by agent-a' };
     const opB = { ...base, state: 'resolved', terminal_owner: 'agent-b', terminal_completion_ref: 'fixed by agent-b' };
 
