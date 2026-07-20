@@ -569,12 +569,14 @@ describe('buildFleetPlanClaimSpec (#4 — plan-scoped fleet claim spec)', () => 
 // P-010: the states-for-kinds derivation that stops an issue-family drain starving on the
 // default ['todo'] floor (the bug-drain-200k trap, EI-11300).
 describe('claimableStatesForKinds + builder states threading (P-010)', () => {
-  it('issue-family kinds → open; feature-family → undefined (default todo fits); mixed → [todo, open]', () => {
+  it('issue-family kinds → open; feature-family → undefined (unified open floor fits); mixed → [open]', () => {
     expect(claimableStatesForKinds(['bug'])).toEqual(['open']);
     expect(claimableStatesForKinds(['change', 'task'])).toEqual(['open']);
     expect(claimableStatesForKinds(['feature'])).toBeUndefined();
     expect(claimableStatesForKinds(['feature', 'chunk'])).toBeUndefined();
-    expect(claimableStatesForKinds(['feature', 'bug'])).toEqual(['todo', 'open']);
+    // work-item-status-full-unify P-004/P-005: 'open' is the single claimable token for BOTH
+    // families now, so a mixed lane pins ['open'] (was the transitional ['todo','open']).
+    expect(claimableStatesForKinds(['feature', 'bug'])).toEqual(['open']);
   });
 
   it('buildFleetKindClaimSpec pins states:["open"] for a bugs-only drain (the trap), omits it for features', () => {

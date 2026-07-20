@@ -27,6 +27,9 @@ vi.mock('../../work-items', () => ({
   resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
   linkWorkItem: (...a: unknown[]) => linkWorkItem(...a),
   subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
+  // Real constant (not a spy) — complete.ts sources its terminal-state check from this
+  // single source of truth (EI-18127483322976472); mirrors work-items.ts's actual value.
+  SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
 }));
 
 const setWorkItemCheckpoint = vi.fn();

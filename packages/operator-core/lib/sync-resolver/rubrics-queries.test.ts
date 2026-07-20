@@ -2,12 +2,31 @@
 // P-001..P-003): the Rubrics tab's list + per-rubric rollup, the raw scorecard
 // history (full ratings — the click-into-detail view reads the SAME rows), and the
 // per-criterion trend. Store reads (lib/rubrics.ts / lib/scorecards.ts) are mocked
-// at their module boundary so no PG IO runs; the rollup grouping — the only logic
-// that lives IN the resolver — is what these tests pin down.
+// at their module boundary so no PG IO runs.
+//
+// precompute-derived-sync-reads-2026-07-19 (WI-5460): `rubrics.list`'s per-rubric
+// rollup no longer runs on the resolver's read path — it moved to the
+// `rubrics.list` derived-read PRODUCER (derived-reads/producers.ts), and the
+// resolver here just wraps `readDerivedSnapshotRows('rubrics.list')` (see
+// registry.ts's D-003 "a read never computes"). The rollup behavior itself is now
+// pinned in `derived-reads/producers.test.ts`, against the producer's `compute()`
+// directly; this file only pins the resolver's DELEGATION to the snapshot read,
+// mirroring the dev.* precedent in `dev-glances.test.ts` (EI-17139) — a hoisted
+// `vi.mock` is required so the resolver's dynamic `await import(...)` cannot race
+// past a per-test `vi.doMock` and hit the real DB-backed registry.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
 import { TABLE_TO_QUERY_NAMES } from './table-to-query-names';
+
+const { readDerivedSnapshotRowsMock, registerDerivedReadMock } = vi.hoisted(() => ({
+  readDerivedSnapshotRowsMock: vi.fn(async (_key: string) => [] as unknown[]),
+  registerDerivedReadMock: vi.fn(),
+}));
+vi.mock('../derived-reads/registry', () => ({
+  readDerivedSnapshotRows: readDerivedSnapshotRowsMock,
+  registerDerivedRead: registerDerivedReadMock,
+}));
 
 function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1', score10: number | null = 10) {
   return {

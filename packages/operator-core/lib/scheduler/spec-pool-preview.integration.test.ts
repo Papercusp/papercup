@@ -74,7 +74,7 @@ async function seed(
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
        created_ts, updated_ts, source_plan_slug, title, payload)
-    VALUES (${opts.harness ?? H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
+    VALUES (${opts.harness ?? H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'},
        ${opts.takenBy ?? null}, ${WS}, 0, 0, ${opts.plan ?? null}, ${id},
        ${opts.payload ? db.sql.json(opts.payload as postgres.JSONValue) : null})`;
 }
@@ -132,17 +132,17 @@ describe('previewSpecPoolEffect — neutral floors define the pool', () => {
     expect(r.matched).toBe(2); // fences exactly the peer row — 321→3 can never sneak past this count again
   });
 
-  it('honors spec.states (an issue-family drain pool is open, never todo)', async () => {
+  it('honors spec.states (work-item-status-full-unify: `open` is the unified claimable token; `failing` is opt-in re-drive)', async () => {
     await seed('B-open', { kind: 'bug', status: 'open' });
-    await seed('F-todo', { status: 'todo' });
-    const todoOnly = await previewSpecPoolEffect(spec(KIND_ALL), { workspaceId: WS, harness: H });
-    expect(todoOnly.pool).toBe(1); // default ['todo']
-    const both = await previewSpecPoolEffect(spec(KIND_ALL, ['todo', 'open']), {
+    await seed('F-failing', { status: 'failing' });
+    const openOnly = await previewSpecPoolEffect(spec(KIND_ALL), { workspaceId: WS, harness: H });
+    expect(openOnly.pool).toBe(1); // default ['open'] — the open bug, not the re-drive-phase feature
+    const both = await previewSpecPoolEffect(spec(KIND_ALL, ['open', 'failing']), {
       workspaceId: WS,
       harness: H,
     });
     expect(both.pool).toBe(2);
-    expect(both.states).toEqual(['todo', 'open']);
+    expect(both.states).toEqual(['open', 'failing']);
   });
 
   it('scopes by harness when given, and counts workspace-wide when omitted', async () => {

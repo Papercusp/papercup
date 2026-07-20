@@ -88,7 +88,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 }));
 
 vi.mock('../../work-items', () => ({
-  CLAIM_STATES_ALLOWLIST: ['todo', 'open', 'failing'],
+  CLAIM_STATES_ALLOWLIST: ['open', 'failing'],
   claimNextWorkItem: vi.fn(),
   releaseWorkItem: vi.fn(),
   diagnoseClaimNextMiss: vi.fn(),

@@ -84,8 +84,8 @@ const TOOLS: Array<{ name: string; args: ZodTypeAny }> = [
 ];
 
 describe('pull-tool `states` arg is clamped to the claimable allowlist (WI-1912)', () => {
-  it('exposes the expected allowlist (todo/open/failing — floors + terminals excluded)', () => {
-    expect([...CLAIM_STATES_ALLOWLIST]).toEqual(['todo', 'open', 'failing']);
+  it('exposes the expected allowlist (open/failing — feature `todo` retired, floors + terminals excluded)', () => {
+    expect([...CLAIM_STATES_ALLOWLIST]).toEqual(['open', 'failing']);
   });
 
   it('accepts every allowlisted state', () => {
@@ -95,7 +95,7 @@ describe('pull-tool `states` arg is clamped to the claimable allowlist (WI-1912)
     }
   });
 
-  it('accepts an omitted `states` (the ["todo"] default)', () => {
+  it('accepts an omitted `states` (the ["open"] default)', () => {
     for (const { name, args } of TOOLS) {
       const r = args.safeParse({ harness: 'papercusp' });
       expect(r.success, `${name} should accept omitted states`).toBe(true);
@@ -104,9 +104,9 @@ describe('pull-tool `states` arg is clamped to the claimable allowlist (WI-1912)
 
   it('REJECTS floor-protected and terminal states — the WI-1912 widening', () => {
     for (const { name, args } of TOOLS) {
-      for (const bad of ['blocked', 'cursed', 'in_progress', 'passed', 'resolved', 'closed', 'deprecated', 'needs-human']) {
-        const r = args.safeParse({ harness: 'papercusp', states: ['todo', bad] });
-        expect(r.success, `${name} must reject states:['todo','${bad}']`).toBe(false);
+      for (const bad of ['blocked', 'cursed', 'in_progress', 'passed', 'resolved', 'closed', 'deprecated', 'needs-human', 'todo']) {
+        const r = args.safeParse({ harness: 'papercusp', states: ['open', bad] });
+        expect(r.success, `${name} must reject states:['open','${bad}']`).toBe(false);
       }
     }
   });

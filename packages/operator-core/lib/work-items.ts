@@ -1930,7 +1930,7 @@ export interface LifecycleAliasInfo {
  * (`scheduler:get_next`/`claim_next` kept offering it — the M4 DRAIN incident where a foreign
  * fleet's fallback spec picked up an owner-gated "rotate the production credential" item). The
  * writer-flip fixes the ROOT cause: the issue now STORES `blocked`/`needs-human` directly, and
- * the claim floor (status = ANY(['todo','open'])) excludes it by status. These payload flags
+ * the claim floor (status = ANY(['open'])) excludes it by status. These payload flags
  * are now the belt-and-suspenders + the surface the EXISTING consumers still read:
  *   - needs-human → `payload.needsHuman:true` ({@link needsHumanExclusionSql}, EI-7776). Reports
  *     as fully DRAINED in {@link diagnoseClaimNextMiss} — an owner-authority-only item is not

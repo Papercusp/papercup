@@ -36,7 +36,7 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   getNextForBee: vi.fn(async () => null),
   resolveClaimSpecWorkspace: (w: unknown) => w ?? 'default',
 }));
-vi.mock('../../work-items', () => ({ CLAIM_STATES_ALLOWLIST: ['todo', 'open', 'failing'] }));
+vi.mock('../../work-items', () => ({ CLAIM_STATES_ALLOWLIST: ['open', 'failing'] }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
 // EI-16057: the harness-existence gate (checked on every miss) resolves `harness` against
 // the registry — stub it so the miss this test drives falls through to the idle-recipe

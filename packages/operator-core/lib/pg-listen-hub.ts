@@ -64,12 +64,9 @@ let subCount = 0;
 function ensureSql(): postgres.Sql {
   if (!sql) {
     sql = postgres(getHarnessAdminUrl(), {
-      onnotice: () => {},
+      ...longLivedPoolConnectionOptions("listen-hub"),
       max: 1,
       idle_timeout: 0,
-      connection: {
-        application_name: `pcusp:listen-hub:p${process.pid}`.slice(0, 63),
-      },
     });
   }
   return sql;
