@@ -50,7 +50,7 @@ import type { JudgeLlmCall } from './judge';
 import type { GymLlmCall } from './task-generator';
 import { spawnGymOperatorWithRetry } from './operator-ready';
 import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
-import { gatewayLlmEnv, gatewayPort } from '../inference-gateway/spawn-env';
+import { gatewayLlmEnv, gatewayPort, resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
@@ -208,12 +208,37 @@ export async function runOneAutoloopCycle(
   // SDK (PAPERCUSP_ANTHROPIC_URL) AND any claude-CLI subprocess (ANTHROPIC_BASE_URL) at the localhost
   // gateway so every gym LLM call egresses through the bound pool account, exactly like the agents.
   // Flag-OFF → unchanged (direct egress). Respects an explicit pre-set override.
+  // The FULL gateway auto-routing env for the spawned gym-operator (and, by inheritance, its role
+  // subprocesses: director/worker/validator/CURATOR/documenter). Empty unless the gateway is on.
+  let gymSpawnGatewayEnv: Record<string, string> = {};
   if (!FAKE && (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) {
     for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
       // Respect an explicit pre-set override (e.g. a test or a manual GYM_LOOP run).
       if (!process.env[k]) process.env[k] = v;
     }
-    log(`inference-gateway ON → routing judge/proposer LLM calls through http://127.0.0.1:${gatewayPort()}`);
+    // Owner directive 2026-07-20 (WI-5637): PIN the gym to the gateway's AUTO account mode. The thin
+    // gatewayLlmEnv above only sets ANTHROPIC_BASE_URL — enough for the IN-PROCESS judge/proposer SDK
+    // (it reads PAPERCUSP_ANTHROPIC_URL) but NOT for a `claude` CLI role subprocess: without
+    // ANTHROPIC_AUTH_TOKEN the CLI ignores the base URL and auths on its LOCAL ~/.claude login
+    // (scrubLauncherClaudeSessionEnv/boot-spec deliberately point it there, EI-232), which lacks 1M
+    // usage credits → the curator died "API Error: Usage credits required for 1M context". Resolve the
+    // full spawn env with account:'auto' so the gateway auto-selects a CREDITED pool account (+ failover)
+    // and reinjects its OAuth: adds ANTHROPIC_AUTH_TOKEN (CLI sends) + PAPERCUSP_ACCOUNT_ROUTING_MODE=auto.
+    // Merged into the gym-operator spawn env (below) so every role subprocess inherits it. Fail-soft:
+    // resolveSpawnGatewayEnv throws only if the pool has NO allowed claude account — in that case we
+    // fall back to the base-URL-only routing rather than aborting the cycle.
+    try {
+      gymSpawnGatewayEnv = await resolveSpawnGatewayEnv({
+        workspaceId: WS,
+        slug,
+        account: 'auto',
+        backend: 'claude',
+        role: 'gym',
+      });
+    } catch (e) {
+      log(`inference-gateway auto-route unavailable (${(e as Error).message.split('\n')[0]}) — falling back to base-URL routing`);
+    }
+    log(`inference-gateway ON (account=auto) → routing gym LLM calls through http://127.0.0.1:${gatewayPort()}`);
   }
 
   const HEX = randomBytes(4).toString('hex');
@@ -309,7 +334,10 @@ export async function runOneAutoloopCycle(
         cwd: spec.cwd,
         // EI-232: scrub the launcher Claude-Code session's env so real-mode gym
         // agents auth against ~/.claude, not this session's per-session config dir.
-        env: scrubLauncherClaudeSessionEnv({ ...process.env, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' }),
+        // WI-5637: merge the gateway auto-routing env AFTER the scrub so ANTHROPIC_AUTH_TOKEN +
+        // account routing survive (the scrub only strips CLAUDE_* session vars) and the role
+        // subprocesses egress via a credited pool account instead of the local ~/.claude login.
+        env: { ...scrubLauncherClaudeSessionEnv({ ...process.env, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' }), ...gymSpawnGatewayEnv },
         stdio: ['ignore', logFd, logFd],
         detached: true,
       },

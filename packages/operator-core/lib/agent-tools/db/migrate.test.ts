@@ -288,3 +288,99 @@ describe('isLockTimeoutFailure / lockRetryBackoffMs — pure helpers (EI-9417)',
     expect(lockRetryBackoffMs(5)).toBe(30000); // would be 32000 uncapped
   });
 });
+
+describe('db:migrate — connection-drop retry around guardResource (EI-18159491440495603)', () => {
+  beforeEach(() => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('retries a transient CONNECTION_CLOSED throw and succeeds once the connection recovers', async () => {
+    vi.useFakeTimers();
+    h.guardResource
+      .mockImplementationOnce(async () => {
+        throw connErr('CONNECTION_CLOSED');
+      })
+      .mockImplementationOnce(async (_spec: unknown, run: (fence: unknown) => Promise<unknown>) => ({
+        acquired: true,
+        result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
+      }));
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(1000); // backoff after attempt 1
+    const out = parse(await promise);
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+    expect(h.guardResource).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries CONNECTION_DESTROYED and CONNECT_TIMEOUT the same way (all three postgres-js connection-layer codes)', async () => {
+    for (const code of ['CONNECTION_DESTROYED', 'CONNECT_TIMEOUT']) {
+      h.guardResource.mockReset();
+      vi.useFakeTimers();
+      h.guardResource
+        .mockImplementationOnce(async () => {
+          throw connErr(code);
+        })
+        .mockImplementationOnce(async (_spec: unknown, run: (fence: unknown) => Promise<unknown>) => ({
+          acquired: true,
+          result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
+        }));
+      const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+      await vi.advanceTimersByTimeAsync(1000);
+      const out = parse(await promise);
+      expect(out.applied).toBe(true);
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT retry a genuine (non-connection-layer) throw — fails fast, unretried', async () => {
+    h.guardResource.mockImplementation(async () => {
+      throw new Error('boom: something unrelated broke');
+    });
+    await expect(
+      (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    ).rejects.toThrow('boom: something unrelated broke');
+    expect(h.guardResource).toHaveBeenCalledTimes(1);
+  });
+
+  it('exhausts retries after 3 repeated CONNECTION_CLOSED throws and rethrows the last one', async () => {
+    vi.useFakeTimers();
+    h.guardResource.mockImplementation(async () => {
+      throw connErr('CONNECTION_CLOSED');
+    });
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX)
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(1000); // backoff after attempt 1
+    await vi.advanceTimersByTimeAsync(2000); // backoff after attempt 2
+    const err = await promise;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('CONNECTION_CLOSED');
+    expect(h.guardResource).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('isTransientConnectionFailure / connectionRetryBackoffMs — pure helpers (EI-18159491440495603)', () => {
+  it("matches postgres-js's own connection-layer error codes", () => {
+    expect(isTransientConnectionFailure(connErr('CONNECTION_CLOSED'))).toBe(true);
+    expect(isTransientConnectionFailure(connErr('CONNECTION_DESTROYED'))).toBe(true);
+    expect(isTransientConnectionFailure(connErr('CONNECT_TIMEOUT'))).toBe(true);
+  });
+
+  it('does not match a genuine SQL/logic error (no matching .code) or a non-Error value', () => {
+    expect(isTransientConnectionFailure(new Error('plain error, no code'))).toBe(false);
+    expect(isTransientConnectionFailure(Object.assign(new Error('x'), { code: 'SOME_OTHER_CODE' }))).toBe(false);
+    expect(isTransientConnectionFailure('not an error')).toBe(false);
+    expect(isTransientConnectionFailure(null)).toBe(false);
+    expect(isTransientConnectionFailure(undefined)).toBe(false);
+  });
+
+  it('backs off exponentially (1s, 2s, 4s), capped at 8s', () => {
+    expect(connectionRetryBackoffMs(1)).toBe(1000);
+    expect(connectionRetryBackoffMs(2)).toBe(2000);
+    expect(connectionRetryBackoffMs(3)).toBe(4000);
+    expect(connectionRetryBackoffMs(4)).toBe(8000); // would be 8000 anyway, but locks in the cap
+    expect(connectionRetryBackoffMs(5)).toBe(8000); // would be 16000 uncapped
+  });
+});
