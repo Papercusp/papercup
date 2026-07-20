@@ -412,6 +412,41 @@ describe('AdvOverviewTab component', () => {
     expect(screen.queryByText(/Queen — /)).toBeNull(); // ok panels stay out of the way
   });
 
+  it('surfaces the infra-liveness/PSI condition class on the Health tile — the coord-alarm signals ride the SAME snapshot (P-006 audit pin)', () => {
+    // The [infra-liveness] coord alarms (PER-THREAD WEDGE / REAPER WEDGED) are
+    // DERIVED from health.snapshot's panels (liveness-alarm.ts reads
+    // health.panels.*) — so a crit panel here IS the active condition, and the
+    // tile showing warn/crit panels IS the fold. This test pins that with the
+    // real panel summaries so the coverage can't silently regress.
+    healthResult = {
+      data: [
+        {
+          overall: 'crit',
+          panels: {
+            infra: {
+              key: 'infra',
+              label: 'Infra',
+              status: 'crit',
+              summary: 'PER-THREAD WEDGE: PSI memory full avg60 6.6% ≥ 5 — tasks stalled on memory reclaim/swap',
+            },
+            workItems: {
+              key: 'workItems',
+              label: 'Work items',
+              status: 'warn',
+              summary: '2000 items — 1 stuck — REAPER WEDGED',
+            },
+            queen: { key: 'queen', label: 'Mug', status: 'ok', summary: 'looping' },
+          },
+        },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText(/Infra — PER-THREAD WEDGE: PSI memory full/)).toBeTruthy();
+    expect(screen.getByText(/Work items — 2000 items — 1 stuck — REAPER WEDGED/)).toBeTruthy();
+    expect(screen.queryByText(/Mug — looping/)).toBeNull(); // ok panels stay off the tile
+  });
+
   it('renders the learning release-gate verdict + bars from learning.releaseReadiness (owner ask 2026-07-19)', () => {
     readinessResult = {
       data: [

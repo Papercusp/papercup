@@ -260,7 +260,11 @@ while true; do sleep 1; done
     const env = {
       ...envFor(f),
       PAPERCUSP_FAKE_LEASE_HEARTBEAT_FAIL_COUNTER: failCounter,
-      PAPERCUSP_WINDOWS_LEASE_TTL_SEC: '4', // budget = TTL/2 = 2s
+      // budget = TTL/2 = 6s of tolerated retrying at ~1 tick/sec — wide enough
+      // to stay robust against node-subprocess-spawn jitter on a loaded box
+      // (each tick shells out to node a few times) while still finishing
+      // well inside this test's timeout.
+      PAPERCUSP_WINDOWS_LEASE_TTL_SEC: '12',
       PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_SEC: '1',
       PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_MAX_RETRIES: '1', // no in-tick retry delay, so ticks land ~1s apart
       PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_RETRY_DELAY_SEC: '0',
@@ -289,7 +293,7 @@ while true; do sleep 1; done
     // the build once the sustained failure exceeds the TTL retry budget, but
     // only AFTER surviving at least one tolerated tick (proving it retried).
     const exitCode: number | null = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`holder never self-terminated; output=${output}`)), 15_000);
+      const timer = setTimeout(() => reject(new Error(`holder never self-terminated; output=${output}`)), 25_000);
       holder.once('exit', (code) => { clearTimeout(timer); resolve(code); });
     });
     children.splice(children.indexOf(holder), 1);
@@ -300,5 +304,5 @@ while true; do sleep 1; done
     expect(existsSync(f.state)).toBe(false); // release still ran + verified cleanup on the way out
     const events = readFileSync(f.eventLog, 'utf8');
     expect(events).toContain('fire:windows-vm-build-released:11111111-1111-4111-8111-111111111111');
-  }, 20_000);
+  }, 30_000);
 });

@@ -144,8 +144,8 @@ describe('runDrainReconcileOnce', () => {
   describe('re-file cooldown', () => {
     it('comments on a recently-closed same-key issue instead of filing a duplicate', async () => {
       const capture = vi.fn(async () => okCapture());
-      const commentOnRecurrence = vi.fn(async () => ({}));
-      const findByWatchdogKey = vi.fn(async () => [
+      const commentOnRecurrence = vi.fn<NonNullable<RunDrainReconcileDeps['commentOnRecurrence']>>(async () => ({}));
+      const findByWatchdogKey = vi.fn<NonNullable<RunDrainReconcileDeps['findByWatchdogKey']>>(async () => [
         { id: 'EI-prior', state: 'done', updatedAt: new Date(1_000_000 - 5 * 60_000).toISOString() },
       ]);
       const res = await runDrainReconcileOnce({
