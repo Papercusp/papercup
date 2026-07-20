@@ -77,7 +77,7 @@ import { Popover } from "@/app/harness/Popover";
 import { CardStack } from "@papercusp/card-stack";
 import { useColumnFilters, ColumnFilterBar } from "@/app/harness/filters";
 import type { FilterableColumn } from "@papercusp/grid-core";
-import { statusToneColor } from "@/app/harness/theme";
+import { statusToneColor, CATEGORICAL } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
 import { hiveHomeLabel } from "@/lib/hive-label";
@@ -1467,6 +1467,110 @@ interface GymSnapshot {
    * Absent/false ⇒ the data below is genuinely scoped to the requested Hive.
    */
   scopeFallback?: boolean;
+}
+
+/** Stable category color per creative lens (owner ask 2026-07-19d): the deck
+ *  accent follows the CATEGORY, never the stack order. Hash into the theme's
+ *  fixed categorical swatches so a lens keeps its hue across views/renders
+ *  (same scheme SignalsPanel uses for lanes). */
+const CATEGORICAL_HEXES = Object.values(CATEGORICAL).map((c) => c.hex);
+function lensColor(lens: string): string {
+  let h = 0;
+  for (let i = 0; i < lens.length; i++) h = (h * 31 + lens.charCodeAt(i)) | 0;
+  return CATEGORICAL_HEXES[Math.abs(h) % CATEGORICAL_HEXES.length];
+}
+
+/**
+ * Inline 5-star grader that lives ON the idea card (owner ask 2026-07-19d) —
+ * the same grade + feedback the GradePanel popup carried, no popup. Stars fill
+ * to the current grade; clicking a star grades immediately; the small note
+ * affordance reveals an inline feedback input whose Save submits grade + note
+ * together (matching the ?grade= deep-link flow).
+ */
+function CardGradeStars({
+  current,
+  busy,
+  attribution,
+  feedback,
+  noteOpenInit = false,
+  onGrade,
+}: {
+  current: EffectiveGrade | null;
+  busy: boolean;
+  attribution: string | null;
+  feedback: string | null;
+  noteOpenInit?: boolean;
+  onGrade: (grade: number, feedback?: string) => void;
+}) {
+  const [noteOpen, setNoteOpen] = useState(noteOpenInit);
+  const [note, setNote] = useState("");
+  // A star picked while the note editor is open waits for Save (grade + note
+  // submit together); with the editor closed a star click grades immediately.
+  const [pendingGrade, setPendingGrade] = useState<number | null>(null);
+  const shown = pendingGrade ?? current?.grade ?? 0;
+  return (
+    <div className={`pc-learning__stargrade${current ? " is-graded" : " is-ungraded"}`}>
+      <span
+        role="radiogroup"
+        aria-label="Grade this idea"
+        className="pc-learning__stars"
+      >
+        {[1, 2, 3, 4, 5].map((g) => (
+          <button
+            key={g}
+            type="button"
+            role="radio"
+            aria-checked={shown === g}
+            aria-label={`Grade ${g} of 5`}
+            disabled={busy}
+            className={`pc-learning__star${g <= shown ? " is-on" : ""}`}
+            onClick={() => {
+              setPendingGrade(g);
+              if (!noteOpen) onGrade(g);
+            }}
+          >
+            <Star size={15} fill={g <= shown ? "currentColor" : "none"} aria-hidden />
+          </button>
+        ))}
+      </span>
+      <span
+        className="pc-learning__starmeta"
+        title={feedback ? `“${feedback}”` : undefined}
+      >
+        {attribution ?? "ungraded — a grade teaches the generator"}
+      </span>
+      <button
+        type="button"
+        className="pc-learning__starnote"
+        aria-expanded={noteOpen}
+        onClick={() => setNoteOpen((v) => !v)}
+      >
+        {noteOpen ? "hide note" : feedback ? "note ✓" : "+ note"}
+      </button>
+      {noteOpen ? (
+        <span className="pc-learning__stargrade-note">
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Why this grade?"
+            aria-label="Grade feedback"
+          />
+          <button
+            type="button"
+            aria-label="save grade"
+            disabled={busy || shown === 0}
+            onClick={() => {
+              onGrade(shown, note.trim() || undefined);
+              setNoteOpen(false);
+            }}
+          >
+            Save
+          </button>
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function whenLabel(ms: number): string {
@@ -3010,10 +3114,10 @@ function CadenceCard({
   const quiet = cadence.score <= 0;
   const wmMs = cadence.watermarkAt ? Date.parse(cadence.watermarkAt) : NaN;
   const verdict = armed
-    ? "will fire on the next gate tick"
+    ? "ready — the next cycle fires within ~30s"
     : quiet
-      ? "quiet — zero new signal, firing withheld (spend drops to zero)"
-      : "accumulating — fires on threshold or the heartbeat ceiling";
+      ? "quiet — no new signal, so nothing fires (and nothing is spent)"
+      : "collecting signal — fires at the threshold, or on the hourly heartbeat";
   return (
     <div
       className="pc-learning__cadence"
@@ -3024,7 +3128,8 @@ function CadenceCard({
       <span className="pc-learning__cadence-head">
         <Gauge size={12} aria-hidden />
         <strong>
-          signal {Math.round(cadence.score * 10) / 10} / {cadence.threshold}
+          signal {Math.round(cadence.score * 10) / 10} of {cadence.threshold}{" "}
+          needed
         </strong>
         <span
           className="pc-learning__cadence-bar"
@@ -3040,19 +3145,22 @@ function CadenceCard({
         </span>
         <em>{verdict}</em>
       </span>
-      <span className="pc-learning__cadence-lanes">
-        {cadence.lanes
+      <span
+        className="pc-learning__cadence-lanes"
+        title={cadence.lanes
           .filter((l) => l.count > 0)
-          .map((l) => (
-            <span
-              key={l.lane}
-              className="pc-learning__flowchip"
-              title={`${l.count} new ${l.lane.replace(/-/g, " ")} since the last cycle × weight ${l.weight} = ${l.count * l.weight} toward the score.`}
-            >
-              {l.lane.replace(/-/g, " ")} <strong>{l.count}</strong>
-              <em>×{l.weight}</em>
-            </span>
-          ))}
+          .map((l) => `${l.count} ${l.lane.replace(/-/g, " ")} × weight ${l.weight} = ${l.count * l.weight}`)
+          .join("\n")}
+      >
+        {cadence.lanes.some((l) => l.count > 0) ? (
+          <>
+            counting:{" "}
+            {cadence.lanes
+              .filter((l) => l.count > 0)
+              .map((l) => `${l.count} ${l.lane.replace(/-/g, " ")}`)
+              .join(", ")}
+          </>
+        ) : null}
         {cadence.lanes.every((l) => l.count === 0) ? (
           <span className="pc-learning__flowchip" title="No lane has accumulated new signal since the last successful cycle.">
             no new signal in any lane
@@ -3559,7 +3667,7 @@ export function ScoutView({
           </span>
           {item.outcome && item.outcome !== "pending" ? (
             <span
-              className="pc-learning__score"
+              className={`pc-learning__score pc-learning__score--${item.outcome}`}
               title="Outcome from the change feed"
             >
               {item.outcome}
@@ -3567,58 +3675,6 @@ export function ScoutView({
           ) : null}
           <span className="pc-learning__age">
             {!Number.isNaN(when) ? whenLabel(when) : ""}
-          </span>
-          <span
-            className="pc-learning__grade"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => event.stopPropagation()}
-          >
-            {eff ? (
-              <span
-                className="pc-learning__gradechip"
-                title={
-                  eff.feedback
-                    ? `Graded by ${graderLabel(eff.gradedBy, t("brain"))}: “${eff.feedback}”`
-                    : `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`
-                }
-              >
-                ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
-              </span>
-            ) : null}
-            <Popover
-              open={isOpen}
-              onOpenChange={(open) =>
-                void setGradeOpen(open ? item.ideaId : null)
-              }
-              trigger={
-                <button
-                  type="button"
-                  className="pc-learning__notebtn"
-                  aria-label={eff ? "Review idea grade" : "Grade this idea"}
-                  aria-expanded={isOpen}
-                >
-                  {eff ? (
-                    <Star size={12} fill="currentColor" aria-hidden />
-                  ) : (
-                    <MessageSquarePlus size={12} aria-hidden />
-                  )}
-                </button>
-              }
-              tooltipLabel={eff ? "Review this grade" : "Grade this idea"}
-              ariaLabel={`Grade ${item.title ?? item.routedRef}`}
-              contentClassName="pc-learning__gradepopover"
-            >
-              <GradePanel
-                current={eff}
-                busy={saving}
-                onSave={(grade, feedback) => {
-                  void submitGrade(item, grade, feedback).then(
-                    () => void setGradeOpen(null),
-                  );
-                }}
-                onClose={() => void setGradeOpen(null)}
-              />
-            </Popover>
           </span>
         </div>
         <Tooltip label={`Open the routed artifact — ${item.routedRef}`}>
@@ -3630,6 +3686,22 @@ export function ScoutView({
             {item.title ?? item.routedRef}
           </button>
         </Tooltip>
+        {/* Inline star grader ON the card (owner ask 2026-07-19d) — the same
+            grade+note the popup carried, always visible, no popup. */}
+        <CardGradeStars
+          current={eff}
+          busy={saving}
+          attribution={
+            eff ? `★${eff.grade} · ${graderLabel(eff.gradedBy, t("brain"))}` : null
+          }
+          feedback={eff?.feedback ?? null}
+          noteOpenInit={isOpen}
+          onGrade={(grade, feedback) => {
+            void submitGrade(item, grade, feedback).then(
+              () => void setGradeOpen(null),
+            );
+          }}
+        />
         {/* The FULL story rides the card (owner ask 2026-07-19): the pipeline
             trace is always visible — never behind a click-to-reveal. */}
         {renderTrace(item)}
@@ -3663,6 +3735,7 @@ export function ScoutView({
               items={group}
               getKey={(it) => it.ideaId}
               ariaLabel={`${lens} ungraded ideas`}
+              accent={lensColor(lens)}
               // The lens badge rides ON the active card's top edge (CardStack
               // renders it overlapping), so the association is unmistakable.
               header={
@@ -3756,19 +3829,18 @@ export function ScoutView({
         subtitle="what fires a cycle, the recent runs, and where routed ideas went"
       >
       {health.markers.length > 0 ? (
-        <div className="pc-learning__flow" aria-label="Ideas health warnings">
+        <ul className="pc-learning__warnlist" aria-label="Ideas health warnings">
           {health.markers.map((m) => (
-            <span
+            <li
               key={m.key}
-              className={`pc-learning__flowchip pc-learning__flowchip--wd-${m.severity === "bad" ? "bad" : "warn"}`}
-              title={`${m.summary} — instruments the '${m.rubricCriterion}' criterion of the blender-release-readiness rubric.`}
+              className={m.severity === "bad" ? "is-bad" : "is-warn"}
+              title={`Instruments the '${m.rubricCriterion}' criterion of the blender-release-readiness rubric.`}
             >
-              <AlertTriangle size={11} aria-hidden />
-              {m.key.replace(/-/g, " ")}
-              <em>{m.rubricCriterion}</em>
-            </span>
+              <AlertTriangle size={12} aria-hidden />
+              {m.summary}
+            </li>
           ))}
-        </div>
+        </ul>
       ) : null}
 
       {/* Cadence card (learning-tab-visibility P-001): the LIVE firing state —

@@ -9,7 +9,7 @@
  * routes rely on.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   _resetHandleMapForTests,
   _setHandleForTests,
@@ -31,6 +31,27 @@ afterEach(() => {
   _resetHandleMapForTests();
   _resetTrackerForTests();
   _resetBootHistoryForTests();
+});
+
+// See the matching guard in ./in-process-status.test.ts (found live 2026-07-19
+// verifying EI-2634): none of the `getInProcessSubstrateStatus()` calls below pass
+// an explicit isSubstrateOwnerProcessForTest override, so they all implicitly rely on
+// `requestOnlyHost()`'s ambient-env default resolving to "owner". su/agent dev shells
+// on this box run with PAPERCUSP_BACKGROUND_WORKERS=0 set ambient-wide
+// (papercup-*-api.service.d drop-ins), which silently flips every call here onto the
+// request-only-worker branch (empty booted set) — deterministic, not a flake. Clear
+// both vars for the duration of this suite (save+restore).
+const AMBIENT_ENV_KEYS = ['PAPERCUSP_BACKGROUND_WORKERS', 'PAPERCUSP_HONO_PORT'] as const;
+let savedAmbientEnv: Record<string, string | undefined>;
+beforeEach(() => {
+  savedAmbientEnv = Object.fromEntries(AMBIENT_ENV_KEYS.map((k) => [k, process.env[k]]));
+  for (const k of AMBIENT_ENV_KEYS) delete process.env[k];
+});
+afterEach(() => {
+  for (const k of AMBIENT_ENV_KEYS) {
+    if (savedAmbientEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedAmbientEnv[k];
+  }
 });
 
 function fakeHandle(
