@@ -22,6 +22,7 @@
  * client (getOrgPg().sql), not the hub connection.
  */
 import postgres from "postgres";
+import { longLivedPoolConnectionOptions } from "@papercusp/db-org";
 import { getHarnessAdminUrl } from "./embedded-pg-discovery";
 import { getResourceProfile } from "./resource-profile";
 

@@ -76,7 +76,7 @@ export default defineTool({
       .max(20)
       .optional()
       .describe(
-        "claimable states — subset of ['todo','open','failing'] (default ['todo']). 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
+        "claimable states — subset of ['open','failing'] (default ['open'] — the unified claimable token for BOTH families; feature `todo` retired). 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
       ),
     count: z
       .number()

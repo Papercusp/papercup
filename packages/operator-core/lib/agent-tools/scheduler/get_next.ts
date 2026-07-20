@@ -29,7 +29,7 @@ import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
-type ClaimNextStates = ('todo' | 'open' | 'failing')[] | undefined;
+type ClaimNextStates = ('open' | 'failing')[] | undefined;
 import { matchRoutingGateHint } from '../../routing-gate-hints';
 import {
   fleetScopedMiss,
@@ -283,7 +283,7 @@ export default defineTool({
       .max(20)
       .optional()
       .describe(
-        "claimable states — subset of ['todo','open','failing']. Omit to inherit your claim spec's own `states` (drain-claim-spec-hardening-2026-07-13 D-002/EI-11300 — a fleet leader sets it once via scheduler:set_claim_spec, every member inherits it), else ['todo']. Passing this EXPLICITLY always wins over the spec. 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
+        "claimable states — subset of ['open','failing']. Omit to inherit your claim spec's own `states` (drain-claim-spec-hardening-2026-07-13 D-002/EI-11300 — a fleet leader sets it once via scheduler:set_claim_spec, every member inherits it), else ['open']. `open` is the unified claimable token for BOTH families now (feature `todo` retired). Passing this EXPLICITLY always wins over the spec. 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
       ),
     rigAvailable: z
       .boolean()

@@ -438,7 +438,22 @@ const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candid
  * (the anti-ping-pong counter improvements:resolve grades against). Injectable
  * so unit tests observe it without PG.
  */
-export type MarkDispatchedFn = (candidate: ScoredItem) => void | Promise<void>;
+// EI-18123303195363852: the return value is the CLAIM-TOOK-HOLD signal — `true` iff
+// claimIssue actually matched a row (not a silent 0-row no-op). This closes the class
+// behind the dispatch-orphan-rate SLO regression: harness_shared.engineer_issues is a
+// compat VIEW over work_items, and its INSTEAD OF trigger UNCONDITIONALLY RETURN NULLs
+// (0 rows, no throw) for ANY write against an origin='remote' (federated) row (EI-7833,
+// mig 521) — so claimIssue/mergeIssuePayload silently do nothing for a federated item,
+// on every dispatch, forever. classifyImprovement's workItemOrigin==='remote' gate
+// (EI-15659) already keeps such items out of the auto-eligible set going forward, but
+// that is a single, specific instance of a GENERAL failure mode: any reason a claim
+// silently no-ops (this guard, a future guard, a race) must never be followed by firing
+// a durable worker anyway — that is exactly how EI-10524/EI-8914/EI-13241 each
+// re-dispatched every ~30min for days, always at attempt=1 (the counter frozen by the
+// same no-op), replay-deduping at the DBOS layer until the 2h collector marked them
+// "orphaned" with no recorded cause. Verifying the claim before firing turns a silent,
+// endlessly-repeating no-op into a single loud skip.
+export type MarkDispatchedFn = (candidate: ScoredItem) => boolean | Promise<boolean>;
 
 let _markDispatched: MarkDispatchedFn | null = null;
 /** Override the dispatch bookkeeping (tests). Pass null to restore the default. */
@@ -447,11 +462,13 @@ export function setImprovementMarkDispatched(fn: MarkDispatchedFn | null): void 
 }
 
 const defaultMarkDispatched: MarkDispatchedFn = async (candidate) => {
-  await claimIssue(candidate.id, IMPROVEMENT_RUNNER_ASSIGNEE);
+  const claimed = await claimIssue(candidate.id, IMPROVEMENT_RUNNER_ASSIGNEE);
+  if (!claimed) return false;
   await mergeIssuePayload(candidate.id, {
     implementAttempts: (candidate.attempts ?? 0) + 1,
     lastDispatchAt: new Date().toISOString(),
   });
+  return true;
 };
 
 /**
@@ -635,7 +652,21 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     }
     // Bookkeeping FIRST (claim + attempt bump) so a fire that crashes mid-loop
     // still leaves the item in-flight rather than double-dispatchable.
-    await markDispatched(candidate);
+    const claimed = await markDispatched(candidate);
+    if (!claimed) {
+      // EI-18123303195363852: the claim silently no-op'd (0 rows — a federated
+      // origin='remote' row the engineer_issues view guard refuses to touch, EI-7833;
+      // or any other reason a write matched nothing). Firing a worker anyway is
+      // guaranteed-wasted: nothing can ever record its outcome, so it just re-queues
+      // next tick and eventually orphans with no cause. Skip the fire entirely — an
+      // honest, logged no-dispatch beats a silent doomed one.
+      console.warn(
+        `[improvement-implement] claim did not take for ${candidate.id} (0 rows — likely a federated/` +
+          `remote-origin item the engineer_issues view guard refuses to write, or a claim race) — ` +
+          `skipping fire, not dispatching a worker that could never report back`,
+      );
+      continue;
+    }
     // Ledger row BEFORE the fire (P-010): a dispatcher crash between insert and
     // fire leaves a 'pending' row — visible, not silent. The fire's success or
     // failure then drives it: 'ok' (worker in progress, spawned_run_id recorded)

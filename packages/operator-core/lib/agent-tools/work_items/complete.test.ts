@@ -329,6 +329,27 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.completion).toMatchObject({ summary: 'thought I closed it' }); // record still kept
     });
 
+    it('EI-18127483322976472: a change/issue-family close that lands on the UNIFIED terminal (`done`) is recognized as CLOSED — ok:true, no false "NOT terminal" warning', async () => {
+      // Post work-item-status-full-unify (2026-07-19), the issue family's alias layer maps
+      // resolved→'done' (not the old bare 'resolved'/'closed' spellings) — so the terminal
+      // check here MUST recognize 'done' as terminal too, not just the pre-unify names.
+      const changeItem = { id: 'WI-5517', kind: 'change', family: 'issue', state: 'open', harness: 'papercup' };
+      getWorkItem.mockResolvedValue(changeItem);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+        workItem: { ...changeItem, state: 'done' },
+        aliased: true,
+        requestedState: state,
+        appliedState: 'done',
+        aliasNote: `requested state '${state}' has no distinct representation for this family — recorded as 'done' instead.`,
+      }));
+      const r = await one({ id: 'WI-5517', state: 'resolved', completion: { summary: 'fixed the root cause', tests: '5 green' } });
+
+      expect(r.ok).toBe(true); // it DID close — must not be reported as a failed close
+      expect(r.error).toBeUndefined();
+      expect(r.stateWarning).toBeUndefined();
+      expect(r.workItem.state).toBe('done');
+    });
+
     it('a DELIBERATE non-terminal park (needs_human) is NOT a failure — stays ok:true', async () => {
       // The guard against over-correcting: `complete` with a non-close state is a legitimate
       // "I did the work, it now needs a human" call. It must not be reported as a failed close.

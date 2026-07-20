@@ -208,8 +208,8 @@ export async function previewClaimSpecAdmission(args: {
   ];
   const unknownIds = resolved.filter((row) => row.family === null).map((row) => row.id);
 
-  // Mirrors claimFloorsWhereSql's transitional ['todo','open'] default (work-item-status-full-unify).
-  const effectiveStates = args.spec.states ?? ['todo', 'open'];
+  // Mirrors claimFloorsWhereSql's unified ['open'] default (work-item-status-full-unify P-004/P-005).
+  const effectiveStates = args.spec.states ?? ['open'];
   const explain = args.explain ?? (await import('../../work-items')).explainIssueClaimFloors;
   const rows =
     issueIds.length > 0
@@ -358,7 +358,7 @@ export default defineTool({
             'rank.mode is "lexicographic" (each term breaks ties in order) or "weighted" (a single weighted sum — every term then needs a numeric `weight`). ' +
             'rank.terms is an ARRAY of { expr, dir } — NOT { field, order }; expr is a bare item field (e.g. "priority") or a function term (affinity(bee.held_paths,item.paths) | model_fit(bee.model,item) | tag_weight(tags) | redundancy_need); dir is "asc" or "desc". ' +
             'EXAMPLE: { specVersion:"1.0", specId:"bc-general", revision:1, view:{ filter:{ all:[{ field:"kind", op:"in", value:["bug","change"] }] } }, rank:{ mode:"lexicographic", terms:[{ expr:"priority", dir:"asc" }, { expr:"age", dir:"desc" }] } }. ' +
-            "OPTIONAL `states` (drain-claim-spec-hardening-2026-07-13, D-002/EI-11300): a claimable-status subset — same allowlist as scheduler:get_next's own `states` arg (todo|open|failing). Set it ONCE here (e.g. on a `fleet` spec) so every inheriting member's get_next defaults to it instead of the plain ['todo'] floor — the fix for an issue-family drain (bugs/changes are always status=open, never todo) silently starving whenever a member forgets its own per-call override. A member's explicit get_next {states} still wins over this.",
+            "OPTIONAL `states` (drain-claim-spec-hardening-2026-07-13, D-002/EI-11300): a claimable-status subset — same allowlist as scheduler:get_next's own `states` arg (open|failing). `open` is the unified claimable token for BOTH families now (feature `todo` retired, work-item-status-full-unify), and it is the floor default — so an unqualified spec already matches every open bug AND feature; set `states` only to restrict further (e.g. add `failing` for re-drive). A member's explicit get_next {states} still wins over this.",
         ),
     })
     .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {

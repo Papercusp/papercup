@@ -541,21 +541,18 @@ export function resolveMemberBriefText(
  * only narrow + reorder within the global floors, never widen past them).
  */
 /**
- * P-010 (the bug-drain-200k trap): issue-family claim kinds (bug/change/task) live at
- * status `open`, NEVER `todo` — feature/chunk are feature-family, status `todo`. A
- * kind-scoped fleet claim spec left at the default `states:['todo']` therefore matches
- * ZERO open bugs, the exact silent starvation EI-11300 names. Derive the claimable
- * `states` from the kinds instead: include `open` whenever any issue-family kind is
- * present (and `todo` too when a feature-family kind is also present). Returns undefined
- * for a pure feature-family set — the default `['todo']` floor already fits, so there is
- * nothing to pin. Exported for a unit test.
+ * P-010 (the bug-drain-200k trap): a kind-scoped fleet claim spec left at the OLD default
+ * `states:['todo']` matched ZERO open bugs, the exact silent starvation EI-11300 names.
+ * work-item-status-full-unify P-004/P-005: `open` is now the single unified claimable token
+ * for BOTH families (feature `todo`→`open`), so any kind-scoped issue-family lane pins
+ * `['open']`. Returns undefined for a pure feature-family set — the unified `['open']` floor
+ * default already fits, so there is nothing to pin. Exported for a unit test.
  */
 const ISSUE_FAMILY_CLAIM_KINDS = new Set(['bug', 'change', 'task']);
 export function claimableStatesForKinds(kinds: readonly string[]): string[] | undefined {
   const hasIssue = kinds.some((k) => ISSUE_FAMILY_CLAIM_KINDS.has(k));
   if (!hasIssue) return undefined;
-  const hasFeature = kinds.some((k) => !ISSUE_FAMILY_CLAIM_KINDS.has(k));
-  return hasFeature ? ['todo', 'open'] : ['open'];
+  return ['open'];
 }
 
 export function buildFleetKindClaimSpec(fleetSlug: string, kinds: readonly string[]): Record<string, unknown> {
@@ -590,8 +587,8 @@ export function buildFleetPlanClaimSpec(
 ): Record<string, unknown> {
   const planLeaf = { field: 'plan', op: '=', value: planSlug };
   const filter = kinds && kinds.length ? { all: [planLeaf, { field: 'kind', op: 'in', value: [...kinds] }] } : planLeaf;
-  // P-010: only a kind-scoped plan spec derives states (a pure plan lane keeps the default
-  // ['todo'] floor — plan-promoted items vary in status, so don't presume `open` there).
+  // P-010: only a kind-scoped plan spec derives states (a pure plan lane keeps the unified
+  // ['open'] floor default — plan-promoted items vary in status, so don't over-pin here).
   const states = kinds && kinds.length ? claimableStatesForKinds(kinds) : undefined;
   return {
     specVersion: '1.0',

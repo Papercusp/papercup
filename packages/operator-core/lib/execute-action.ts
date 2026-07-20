@@ -970,7 +970,9 @@ async function doCreateFeature(
           ${action.harness_slug}, ${featureId},
           ${action.title.trim()},
           ${action.summary ?? null},
-          'todo', 0,
+          -- work-item-status-full-unify P-004/P-005: fresh feature-family row → unified
+          -- claimable token 'open' (was 'todo'), consistent with the ['open'] claim floor.
+          'open', 0,
           ${action.expected_cost_cents ?? null},
           ${action.goal_id ?? null},
           FALSE,
@@ -998,7 +1000,7 @@ async function doCreateFeature(
       feature_id: featureId,
       harness_slug: action.harness_slug,
       title: action.title.trim(),
-      status: 'todo',
+      status: 'open', // work-item-status-full-unify P-004/P-005: mirrors the INSERT above
     },
   };
 }

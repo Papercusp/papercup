@@ -19,6 +19,7 @@
  */
 
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import type { MergeCursorStore } from './read-merge';
 
@@ -28,7 +29,11 @@ let sharedSql: ReturnType<typeof postgres> | null = null;
 
 function sql(): ReturnType<typeof postgres> {
   if (!sharedSql) {
-    sharedSql = postgres(getHarnessAdminUrl(), { max: 2, prepare: false });
+    sharedSql = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('pg-merge-cursor-store'),
+      max: 2,
+      prepare: false,
+    });
   }
   return sharedSql;
 }

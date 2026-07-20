@@ -66,6 +66,14 @@ const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
   '--bee-index',
   // React Flow / harness chrome geometry knobs that are supplied by the component.
   '--xy-handle-tx',
+  // @papercusp/card-stack's <CardStack accent> sets this via an inline style
+  // on its own deck wrapper (`style={{ '--cs-accent': accent }}`); it cascades
+  // through the DOM to every descendant rendered inside the stack (card heads
+  // in ObservationsPanel/AnalyzePanel/LearningTab, etc.). It's never written
+  // to a static CSS source, so the token scan can't see a definition — every
+  // use already carries a `var(--cs-accent, var(--accent, ...))` fallback for
+  // when no CardStack ancestor supplies it.
+  '--cs-accent',
 ]);
 
 // CSS files to read defined tokens from. Order matters only for debugging;

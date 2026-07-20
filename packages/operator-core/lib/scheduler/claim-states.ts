@@ -23,12 +23,16 @@
  * (which imports it directly, with no path back into the cycle) can depend on safely.
  *
  * The FULL set of statuses a pull-tool caller may request via its `states` arg
- * (scheduler:get_next / work_items:claim_next). Feature family: `todo` (fresh) +
- * `failing` (re-drive); issue family: `open`. Everything else is either a resolver
- * FLOOR (`blocked` — leader-triage-only; `cursed`) or terminal — and a caller-supplied
- * `states` must NOT be able to widen past a floor. The claim-spec validator already
- * rejects a `blocked` filter TERM for exactly this reason (D-002); this allowlist
- * closes the identical hole on the sibling `states` arg (WI-1912: a fleet member
- * passed states:['todo','open','blocked'] and pulled a leader-triage-only item).
+ * (scheduler:get_next / work_items:claim_next). work-item-status-full-unify P-004/P-005:
+ * `open` is the single unified claimable token across BOTH families (the feature `todo`
+ * was retired — migration 638 backfilled the rows, migration 642 rewrote every stored
+ * spec's `states` todo→open, and the writers now emit 'open'). `failing` stays as the
+ * feature re-drive phase token (a build-failed feature the pipeline may re-offer; not yet
+ * folded — that is P-006). Everything else is either a resolver FLOOR (`blocked` —
+ * leader-triage-only; `cursed`) or terminal — and a caller-supplied `states` must NOT be
+ * able to widen past a floor. The claim-spec validator already rejects a `blocked` filter
+ * TERM for exactly this reason (D-002); this allowlist closes the identical hole on the
+ * sibling `states` arg (WI-1912: a fleet member passed states:['todo','open','blocked']
+ * and pulled a leader-triage-only item).
  */
-export const CLAIM_STATES_ALLOWLIST = ['todo', 'open', 'failing'] as const;
+export const CLAIM_STATES_ALLOWLIST = ['open', 'failing'] as const;

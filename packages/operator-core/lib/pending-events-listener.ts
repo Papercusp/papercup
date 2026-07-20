@@ -14,6 +14,7 @@
  */
 
 import postgres from "postgres";
+import { longLivedPoolConnectionOptions } from "@papercusp/db-org";
 import { getHarnessAdminUrl } from "./embedded-pg-discovery";
 import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
@@ -93,7 +94,7 @@ async function ensureStarted(): Promise<void> {
       hubUnsub = await hubListen("pending_events_inserted", onNotify);
     } else {
       listenerSql = postgres(adminUrl(), {
-        onnotice: () => {},
+        ...longLivedPoolConnectionOptions("pending-events-listener"),
         max: 1,
       });
       await listenerSql.listen("pending_events_inserted", onNotify);

@@ -1154,7 +1154,12 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     '$2',
     '$3',
     '$4',
-    `'todo'`,
+    // work-item-status-full-unify P-004/P-005: a fresh feature-family row lands at the
+    // UNIFIED claimable token 'open' (was 'todo'). 'open' is the single claimable status
+    // across both families now, and the narrowed claim floor (['open']) only admits it —
+    // writing 'todo' here would strand every new feature. Paired with the floor narrow so
+    // the create-path and the claim floor stay consistent (no starvation window).
+    `'open'`,
     '0',
     '$5',
     // WI-5343: `::text::jsonb`, NOT a bare `::jsonb` cast — params[5] is already a
@@ -1212,7 +1217,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     harness: input.harness,
     title: input.title,
     summary: input.summary ?? '',
-    state: 'todo',
+    // work-item-status-full-unify P-004/P-005: mirrors the INSERT above — a fresh
+    // feature-family row is at the unified claimable token 'open' (was 'todo').
+    state: 'open',
     // work-item-completion-integrity-2026-07-01 WI-1403: a freshly-inserted row has
     // never taken a terminal transition, so both are unset (the INSERT above doesn't
     // write them — they default to SQL NULL).
@@ -2336,7 +2343,7 @@ export interface ClaimNextFilter {
   assignee: string;
   /** Restrict to one feature-family kind (default: any feature-family). */
   kind?: FeatureFamilyKind;
-  /** Claimable states (default ['todo']). */
+  /** Claimable states (default ['open'] — the unified claimable token, work-item-status-full-unify). */
   states?: string[];
   /**
    * THIS Swarm's id (hive-coordination-model P-002, the co-location lever). When set,
@@ -2386,7 +2393,7 @@ export interface ClaimFloorsOpts {
   harness: string;
   /** The active workspace id (scopes both the row filter and the admission trust leg). */
   workspaceId: string;
-  /** Claimable statuses (default ['todo']). */
+  /** Claimable statuses (default ['open'] — the unified claimable token, work-item-status-full-unify). */
   states?: string[];
   /** THIS Swarm's id — when set, honors per-item swarm_affinity (per-Hive lease). */
   swarmId?: string;
@@ -2428,11 +2435,13 @@ export function releaseCooldownSec(): number {
 }
 
 export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
-  // work-item-status-full-unify (2026-07-19): the claimable-floor DEFAULT is the transitional
-  // union ['todo','open'] — `open` is the unified claimable token (feature `todo`→`open` in the
-  // backfill), and pre-migration this also surfaces drift rows already sitting at `open`. An
-  // explicit opts.states still narrows. Collapses to ['open'] after the cleanup pass.
-  const states = opts.states ?? ['todo', 'open'];
+  // work-item-status-full-unify (2026-07-19) P-004/P-005: the claimable-floor DEFAULT is the
+  // single unified token ['open'] — `open` is the claimable status for BOTH families now
+  // (feature `todo`→`open` applied by migration 638; the create-path + reaper write 'open';
+  // migration 642 rewrote every stored spec's `states` todo→open). The transitional
+  // ['todo','open'] union is retired: no writer produces 'todo' and no row sits at it. An
+  // explicit opts.states still narrows further.
+  const states = opts.states ?? ['open'];
   const cooldown = releaseCooldownSec();
   return sql`
     harness_slug = ${opts.harness}
@@ -3188,7 +3197,8 @@ export interface ClaimMissDiagnosis {
 export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<ClaimMissDiagnosis> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
-  const states = filter.states ?? ['todo'];
+  // work-item-status-full-unify P-004/P-005: default to the unified claimable token ['open'].
+  const states = filter.states ?? ['open'];
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
   // POOL: admissible + unclaimed + claimable-status + placeable-kind, WITHOUT the
   // readiness / affinity / redundancy floors — "is there work here a bee shouldn't idle on".
@@ -3857,7 +3867,12 @@ export async function releaseWorkItem(
            -- here is the releasing holder; an already-free release keeps prior provenance.
            last_released_by = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN taken_by ELSE last_released_by END,
            last_released_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_released_at END,
-           status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
+           -- work-item-status-full-unify P-004/P-005: a stranded mid-flight feature is
+           -- requeued to the unified claimable token 'open' (was 'todo') so it is claimable
+           -- under the narrowed ['open'] floor. FEATURE_NON_REQUEUE_STATES already treats
+           -- both 'open' and legacy 'todo' as non-requeue, so this only fires for genuinely
+           -- mid-flight rows (in_progress/validating/wip/failing).
+           status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'open' ELSE status END,
            updated_ts = ${Date.now()}
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
        -- EI-7588: same atomic compare-and-release guard as the issue-family path above —

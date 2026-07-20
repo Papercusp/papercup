@@ -416,12 +416,14 @@ export async function reclaimStaleWorkItemClaims(
              WHEN d.former_status <> ALL(${nonRequeue}::text[])
                THEN d.former_requeue_count + 1
              ELSE d.former_requeue_count END,
-           -- Mid-flight → todo, or → blocked once the (incremented) counter hits
-           -- the cap (dead-letter). Terminal / blocked / todo rows keep status.
+           -- Mid-flight → open, or → blocked once the (incremented) counter hits
+           -- the cap (dead-letter). Terminal / blocked / already-claimable rows keep status.
+           -- work-item-status-full-unify P-004/P-005: requeue target is the unified claimable
+           -- token 'open' (was 'todo') so a requeued feature is claimable under the ['open'] floor.
            status = CASE
              WHEN d.item_kind IN ('bug', 'change', 'task') THEN d.former_status
              WHEN d.former_status <> ALL(${nonRequeue}::text[])
-               THEN (CASE WHEN d.former_requeue_count + 1 >= ${cap} THEN 'blocked' ELSE 'todo' END)
+               THEN (CASE WHEN d.former_requeue_count + 1 >= ${cap} THEN 'blocked' ELSE 'open' END)
              ELSE d.former_status END,
            updated_ts = ${Date.now()}
       FROM reclaimable d

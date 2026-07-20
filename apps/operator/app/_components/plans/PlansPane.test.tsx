@@ -101,6 +101,7 @@ afterEach(() => {
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
   planListRefresh.mockClear();
+  preloadVditorSpy.mockClear();
 });
 
 /** An ISO timestamp `days` in the past — for the stale (≥14d) threshold. */
@@ -202,5 +203,45 @@ describe('PlansPane', () => {
     fireEvent.click(screen.getByTestId('plans-pane-archive-p-stale'));
     await waitFor(() => expect(toastSpies.error).toHaveBeenCalled());
     expect(toastSpies.success).not.toHaveBeenCalled();
+  });
+
+  /* ── Vditor warm-preload regression guard (WI-5547) ─────────────────────
+   * The "several seconds to load a plan" report: the first plan popup paid the
+   * cold Vditor/Lute WASM init (~600ms) on the click. PlansPane now warms it on
+   * an idle timer after mount. These guard that the warm-up stays (a) DEFERRED
+   * off the render critical path and (b) actually scheduled — so a refactor that
+   * drops the effect, or swaps back to an unreliable requestIdleCallback, reds
+   * here instead of silently regressing the open latency. */
+
+  it('schedules the Vditor preload on idle after mount, not synchronously on the render path', () => {
+    vi.useFakeTimers();
+    try {
+      planListData.value = { plans: [plan({ slug: 'p1' })] };
+      render(<PlansPane />);
+      // Must NOT run during render/mount — that would put the ~600ms WASM warm
+      // back on the critical path it was moved off of.
+      expect(preloadVditorSpy).not.toHaveBeenCalled();
+      // Fires once the idle timer elapses (a plain setTimeout, so fake timers
+      // drive it — a requestIdleCallback swap, which is unreliable in the Tauri
+      // WebKitGTK webview, would never fire here and fail this assertion).
+      act(() => { vi.advanceTimersByTime(2000); });
+      expect(preloadVditorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the pending preload when PlansPane unmounts before it fires', () => {
+    vi.useFakeTimers();
+    try {
+      planListData.value = { plans: [plan({ slug: 'p1' })] };
+      const { unmount } = render(<PlansPane />);
+      unmount();
+      act(() => { vi.advanceTimersByTime(2000); });
+      // No post-unmount work: the effect cleanup clears the timer.
+      expect(preloadVditorSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
