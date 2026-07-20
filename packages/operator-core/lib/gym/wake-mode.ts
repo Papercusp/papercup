@@ -34,7 +34,7 @@
  *
  * Run:  cd apps/operator && npx tsx ../../packages/operator-core/lib/gym/wake-mode-run.ts
  */
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -52,7 +52,7 @@ import { assembleRawTrace } from './collector';
 import { distillTrace } from './distill';
 import { judgeGymRun, type JudgeLlmCall, type GymScore } from './judge';
 import { GYM_JUDGE_RUBRIC_V1 } from './judge-scoring';
-import { waitForOperatorReady } from './operator-ready';
+import { spawnGymOperatorWithRetry } from './operator-ready';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
@@ -430,14 +430,26 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
     if (process.env.GYM_WAKE_CLAUDE_CONFIG_DIR) {
       childEnv.CLAUDE_CONFIG_DIR = process.env.GYM_WAKE_CLAUDE_CONFIG_DIR;
     }
-    operator = spawn(spec.command, spec.args, {
-      cwd: spec.cwd,
-      env: childEnv,
-      stdio: ['ignore', logFd, logFd],
-      detached: true,
-    });
     // EI-368: readiness (DBOS launched) + fail-fast on child death, with boot-log tail.
-    await waitForOperatorReady({ baseUrl: `http://127.0.0.1:${PORT}`, child: operator, timeoutMs: 120_000, logPath: opLogPath });
+    // EI-18157486989132279: retry the boot ONCE, but only on an actual crash —
+    // a transient mid-git-sync-commit read of a half-written shared-tree file
+    // can make the tsx/esbuild transform throw during boot; a respawn a few
+    // seconds later reads past the write. A bare readiness timeout is not
+    // retried (see spawnGymOperatorWithRetry's doc comment).
+    operator = await spawnGymOperatorWithRetry({
+      command: spec.command,
+      args: spec.args,
+      spawnOptions: {
+        cwd: spec.cwd,
+        env: childEnv,
+        stdio: ['ignore', logFd, logFd],
+        detached: true,
+      },
+      baseUrl: `http://127.0.0.1:${PORT}`,
+      timeoutMs: 120_000,
+      logPath: opLogPath,
+      onRetry: (err) => log(`operator boot crashed, retrying once (${err.message.split('\n')[0]}) …`),
+    });
     log('operator ready (DBOS launched)');
 
     // 4. Register the harness (the same public route the other gym runnables use).
