@@ -161,15 +161,27 @@ export function findUnguardedConstraintRename(sqlText) {
  * reslug UPDATE and no guard (so a guarded reslug — or a file with none — is clean).
  */
 export function findUnguardedReslug(sqlText) {
+  // stripSqlBodies replaces string literals with a space, so we detect the RE-SLUG
+  // structurally: an UPDATE on work_items whose SET clause ASSIGNS harness_slug
+  // (not merely a harness_slug in the WHERE). Capture the SET clause up to
+  // WHERE/RETURNING/; and require harness_slug to be assigned inside it.
   const stripped = stripSqlBodies(sqlText);
-  const reslugRe =
-    /UPDATE\s+[\w".]*\bwork_items\b[\s\S]*?SET\b[\s\S]*?\bharness_slug\s*=\s*'[^']+'/gi;
-  const reslugs = stripped.match(reslugRe);
-  if (!reslugs) return [];
+  const re =
+    /UPDATE\s+[\w".]*\bwork_items\b\s+(?:AS\s+\w+\s+)?SET\b([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|;)/gi;
+  const reslugs = [];
+  let m;
+  while ((m = re.exec(stripped)) !== null) {
+    if (/\bharness_slug\s*=/.test(m[1])) {
+      reslugs.push(m[0].replace(/\s+/g, ' ').slice(0, 70));
+    }
+  }
+  if (!reslugs.length) return [];
+  // Collision-safe = de-dup colliders first (a DELETE FROM work_items) OR guard the
+  // UPDATE with NOT EXISTS (mirrors migration 630/631's fix).
   const hasDedupDelete = /DELETE\s+FROM\s+[\w".]*\bwork_items\b/i.test(stripped);
   const guardedUpdate = /NOT\s+EXISTS/i.test(stripped);
   if (hasDedupDelete || guardedUpdate) return [];
-  return reslugs.map((s) => s.replace(/\s+/g, ' ').slice(0, 70));
+  return reslugs;
 }
 
 /**

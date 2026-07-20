@@ -23,7 +23,7 @@ import {
   it,
 } from "vitest";
 import postgres, { type Sql } from "postgres";
-import { createFreshTestDb, type MigratedTestDb } from "@papercusp/test-config";
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { hubListen, listenHubEnabled, _stopHubForTests } from "./pg-listen-hub";
 import { _resetHarnessAdminUrlCacheForTests } from "./embedded-pg-discovery";
 

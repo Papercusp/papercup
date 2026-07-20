@@ -114,4 +114,98 @@ describe('wireOutboxForHarness (Stage 5)', () => {
     });
     expect(returned).toBe(drain);
   });
+
+  describe('WI-1942: bounded retry on a BAILED backfill', () => {
+    // NOTE: these use REAL timers with a tiny injected `backfillRetryMs`, not
+    // `vi.useFakeTimers()`. `wireOutboxForHarness` also calls
+    // `buildHiveRekeyBootDeps` → `getFlag`, which bounds its own (real) network
+    // fallback with a real `setTimeout`-based guard — faking global timers here
+    // would fake THAT guard too and turn its bounded fallback into a genuine
+    // hang. A short real wait sidesteps the interaction entirely.
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it('arms a bounded retry timer on a bail, and it self-stops once a re-attempt stops bailing', async () => {
+      const stop = vi.fn(async () => {});
+      const drain: OutboxDrainHandle = { stop };
+      const start = vi.fn(() => drain);
+
+      // First call bails; second (retried) call succeeds.
+      const backfill = vi
+        .fn()
+        .mockResolvedValueOnce({ skipped: false, enqueued: 0, dropped: 0, bailed: true, candidateTotal: 5000 })
+        .mockResolvedValueOnce({ skipped: false, enqueued: 3, dropped: 0 });
+
+      const { handle } = makeHandle();
+      await wireOutboxForHarness(handle, fakePg, {
+        backfillLocalState: backfill,
+        startOutboxDrain: start,
+        backfillRetryMs: 15,
+      });
+
+      // Only the initial attempt so far.
+      expect(backfill).toHaveBeenCalledTimes(1);
+
+      // Wait past one retry tick: the retry fires, succeeds (non-bailed), and the
+      // timer stops itself — further waiting must NOT call backfill again.
+      await wait(60);
+      expect(backfill).toHaveBeenCalledTimes(2);
+
+      const callsAfterFirstWait = backfill.mock.calls.length;
+      await wait(80);
+      expect(backfill).toHaveBeenCalledTimes(callsAfterFirstWait); // no further retries — timer self-stopped
+    });
+
+    it('registers the retry timer as a close-hook so teardown stops it even if it never succeeded', async () => {
+      const stop = vi.fn(async () => {});
+      const drain: OutboxDrainHandle = { stop };
+      const start = vi.fn(() => drain);
+
+      // Every attempt keeps bailing — the retry must never resolve on its own.
+      const backfill = vi.fn(async () => ({
+        skipped: false,
+        enqueued: 0,
+        dropped: 0,
+        bailed: true,
+        candidateTotal: 5000,
+      }));
+
+      const { handle, runCloseHooks, hookCount } = makeHandle();
+      await wireOutboxForHarness(handle, fakePg, {
+        backfillLocalState: backfill,
+        startOutboxDrain: start,
+        backfillRetryMs: 15,
+      });
+
+      // Both the drain-stop AND the retry-timer-stop are registered as close hooks.
+      expect(hookCount()).toBe(2);
+
+      await wait(60);
+      const callsBeforeTeardown = backfill.mock.calls.length;
+      expect(callsBeforeTeardown).toBeGreaterThanOrEqual(2);
+
+      // Teardown stops the retry timer — no further retry attempts after this,
+      // however much (real) time passes.
+      await runCloseHooks();
+      await wait(80);
+      expect(backfill).toHaveBeenCalledTimes(callsBeforeTeardown);
+    });
+
+    it('does NOT arm a retry timer when the backfill does not bail (existing behavior unchanged)', async () => {
+      const stop = vi.fn(async () => {});
+      const drain: OutboxDrainHandle = { stop };
+      const start = vi.fn(() => drain);
+      const backfill = vi.fn(async () => ({ skipped: false, enqueued: 2, dropped: 0 }));
+
+      const { handle, hookCount } = makeHandle();
+      await wireOutboxForHarness(handle, fakePg, {
+        backfillLocalState: backfill,
+        startOutboxDrain: start,
+        backfillRetryMs: 10,
+      });
+
+      // Only the drain-stop hook — no retry timer armed for a non-bailed result.
+      expect(hookCount()).toBe(1);
+      expect(backfill).toHaveBeenCalledTimes(1);
+    });
+  });
 });

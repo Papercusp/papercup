@@ -287,6 +287,24 @@ module graph is immutable for the whole run — a peer's concurrent edit can no
 longer touch it. The script logs `SPA snapshot frozen at … — IMMUTABLE for
 this run; restart to pick up a newer build.` when it engages.
 
+**The snapshot is immutable — it never re-reads the source after boot, and
+there is no ambient warning for that (EI-17134).** If you boot a `--boot-only`
+instance and THEN edit `apps/operator-vite` source (or rebuild it) expecting a
+later `reload()`/re-check against the SAME instance to pick it up, it silently
+keeps serving the pre-edit bundle forever — a real risk once you know the
+freeze exists, because nothing else in the drive tells you your edit isn't
+live. Before trusting a re-check against an already-booted instance, run the
+freshness helper the script exports:
+
+```bash
+bash "$VERIFY_TAURI_FRESHNESS_CHECK"
+```
+
+Silent + exit 0 = nothing changed since boot, the snapshot is still current.
+A loud warning + exit 1 = the shared dist changed after this instance froze —
+restart (`"$VERIFY_TAURI_STOP"` then re-run the boot script) before trusting
+any further checks; reloading the page will NOT pick up the edit.
+
 **One residual gap:** if `apps/operator-vite/dist/` hasn't been built yet
 (fresh checkout / never ran `npm run build` there), the script logs a WARNING
 and falls through to the shared, watcher-exposed dist as before — build

@@ -22,7 +22,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { getHivePolicy } from '../../../hive-policy-store';
 import { isContentTakenDown } from '../../../hive-moderation';
 import { makePolicyEnforcedApply, type AuthorIdentity } from '../policy-admission';

@@ -16,7 +16,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const WS = 'ws-seed';
 const HOME = 'acme-home';

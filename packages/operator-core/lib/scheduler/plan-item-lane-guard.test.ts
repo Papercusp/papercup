@@ -16,7 +16,11 @@ const planItemsForRowMock = vi.fn((row: unknown) => (row as { items: unknown[] }
 
 vi.mock('../agent-tools/plans/source', () => ({
   getPlanRow: (...args: unknown[]) => getPlanRowMock(...args),
-  planItemsForRow: (...args: unknown[]) => planItemsForRowMock(...args),
+  // planItemsForRow is a genuine single-arg function (row: PlanRow) — spreading
+  // an `unknown[]` into a fixed one-parameter mock impl is what TS2556's about
+  // ("a spread argument must either have a tuple type or be passed to a rest
+  // parameter"); pass the single arg straight through instead of spreading.
+  planItemsForRow: (row: unknown) => planItemsForRowMock(row),
 }));
 
 // Use the REAL resolver — resolveEffectiveStatusForItems is pure and cheap, and

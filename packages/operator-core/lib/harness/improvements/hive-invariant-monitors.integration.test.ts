@@ -17,7 +17,7 @@
  * topic tagging built in).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { teardownTestPg } from '@papercusp/test-config';
+import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import {
   collectStalledFeatureSignals,

@@ -24,7 +24,7 @@ import postgres, { type Sql } from 'postgres';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');

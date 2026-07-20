@@ -7,6 +7,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
 
+// EI-17139: dev.serviceHealth / dev.deployState / dev.gitPipeline mock the
+// derived-reads registry module the resolver dynamically `await import()`s.
+// The original per-test `vi.doMock('../derived-reads/registry', factory)` +
+// `vi.doUnmock` pairing is NOT hoisted — it only takes effect for imports
+// issued AFTER it runs in that test body, which is fine in isolation but is a
+// genuine race under a loaded full-suite run: `vi.doMock` registers into a
+// module registry that is reset (`vi.resetModules()`) between tests, and
+// under heavy scheduling/GC pressure the window between "the mock is
+// registered" and "the resolver's `await import('../derived-reads/registry')`
+// resolves" is not actually guaranteed atomic — losing that race lets the
+// REAL registry.ts load, hit the real DB via `getOrgPg()`, and return live
+// precomputed data instead of the injected fixture (observed: real git shas /
+// real `deployedBehindStaging` counts in a full-suite run, 2026-07-19).
+//
+// Fix: `vi.mock(...)` (unlike `vi.doMock`) is hoisted by Vitest's transform to
+// BEFORE any import in this file — static or dynamic, this file's or a
+// transitively-imported one's — so there is no window in which the resolver's
+// dynamic import could observe the real module. `vi.hoisted` parks the
+// backing mock fns so the hoisted `vi.mock` factory can reference them.
+const { readDerivedSnapshotRowsMock, registerDerivedReadMock } = vi.hoisted(() => ({
+  readDerivedSnapshotRowsMock: vi.fn(async (_key: string) => [] as unknown[]),
+  registerDerivedReadMock: vi.fn(),
+}));
+vi.mock('../derived-reads/registry', () => ({
+  readDerivedSnapshotRows: readDerivedSnapshotRowsMock,
+  registerDerivedRead: registerDerivedReadMock,
+}));
+
 describe('dev.* glance resolvers', () => {
   it('registers all dev.* query names', () => {
     const names = knownQueryNamesV2();
@@ -29,6 +57,8 @@ describe('dev.* glance resolvers', () => {
   describe('resolver projection shapes', () => {
     beforeEach(() => {
       vi.resetModules();
+      readDerivedSnapshotRowsMock.mockReset();
+      registerDerivedReadMock.mockReset();
     });
     afterEach(() => {
       vi.resetModules();
@@ -44,26 +74,22 @@ describe('dev.* glance resolvers', () => {
     // data (WI-5488). Mock at the boundary the resolver actually calls now.
     it('dev.serviceHealth wraps the derived-read dev.serviceHealth snapshot (precomputed, WI-5476)', async () => {
       const services = [{ name: 'operator', up: true, status: 200, latencyMs: 4 }];
-      const readDerivedSnapshotRows = vi.fn(async () => [{ services }]);
-      vi.doMock('../derived-reads/registry', () => ({ readDerivedSnapshotRows, registerDerivedRead: vi.fn() }));
+      readDerivedSnapshotRowsMock.mockImplementation(async () => [{ services }]);
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.serviceHealth', {})) as Array<{ services: unknown[] }>;
       expect(rows).toHaveLength(1);
       expect(rows[0].services).toEqual(services);
-      expect(readDerivedSnapshotRows).toHaveBeenCalledWith('dev.serviceHealth');
-      vi.doUnmock('../derived-reads/registry');
+      expect(readDerivedSnapshotRowsMock).toHaveBeenCalledWith('dev.serviceHealth');
     });
 
     it('dev.deployState wraps the derived-read dev.deployState snapshot as a 1-element array (precomputed, WI-5476)', async () => {
       const snap = { stagingHead: { sha: 'abc' }, deployedBehindStaging: 7, errors: [] };
-      const readDerivedSnapshotRows = vi.fn(async () => [snap]);
-      vi.doMock('../derived-reads/registry', () => ({ readDerivedSnapshotRows, registerDerivedRead: vi.fn() }));
+      readDerivedSnapshotRowsMock.mockImplementation(async () => [snap]);
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.deployState', {})) as unknown[];
       expect(rows).toHaveLength(1);
       expect(rows[0]).toBe(snap);
-      expect(readDerivedSnapshotRows).toHaveBeenCalledWith('dev.deployState');
-      vi.doUnmock('../derived-reads/registry');
+      expect(readDerivedSnapshotRowsMock).toHaveBeenCalledWith('dev.deployState');
     });
 
     it('dev.gitPipeline wraps the derived-read dev.gitPipeline snapshot as a 1-element array (precomputed, P-007)', async () => {
@@ -73,14 +99,12 @@ describe('dev.* glance resolvers', () => {
       // `system:precompute-derived-reads` routine fills it off-read-path). Mock the
       // boundary the resolver actually calls now, mirroring dev.deployState above.
       const snap = { slug: 'papercup', gitSync: { lastStatus: 'synced' }, windows: { day: {}, week: {} }, recent: [] };
-      const readDerivedSnapshotRows = vi.fn(async () => [snap]);
-      vi.doMock('../derived-reads/registry', () => ({ readDerivedSnapshotRows, registerDerivedRead: vi.fn() }));
+      readDerivedSnapshotRowsMock.mockImplementation(async () => [snap]);
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.gitPipeline', {})) as unknown[];
       expect(rows).toHaveLength(1);
       expect(rows[0]).toBe(snap);
-      expect(readDerivedSnapshotRows).toHaveBeenCalledWith('dev.gitPipeline');
-      vi.doUnmock('../derived-reads/registry');
+      expect(readDerivedSnapshotRowsMock).toHaveBeenCalledWith('dev.gitPipeline');
     });
 
     it('dev.pgHealth wraps pgHealth() as a 1-element snapshot', async () => {

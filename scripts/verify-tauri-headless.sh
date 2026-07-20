@@ -216,6 +216,51 @@ log "display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT work=$WORK"
 
 # ── teardown (always runs; scoped to exactly what THIS invocation started) ──
 XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID="" ISOLATED_PG_PID=""
+write_freshness_check_script() {
+  # EI-17134: the frozen SPA snapshot (below, EI-10364) is copied ONCE at boot and
+  # never re-reads the shared dist — by design, so the fleet's `vite build --watch`
+  # can't yank chunks out from under a live run. But that design has NO signal for
+  # the agent: if you edit apps/operator-vite source (or its shared dist) AFTER
+  # booting a --boot-only instance and then reload/re-check against it, you silently
+  # keep exercising the pre-edit bundle forever — no log line, no warning, nothing
+  # distinguishes "my edit isn't live yet" from "my edit is broken". Cost 30+ min of
+  # false-negative debugging once already (EI-13224). This script is that missing
+  # signal: run it any time after boot to detect drift before trusting a re-check.
+  cat > "$WORK/check-freshness.sh" <<FRESH
+#!/usr/bin/env bash
+# Usage: bash "\$VERIFY_TAURI_FRESHNESS_CHECK"  — run BEFORE re-verifying an edit
+# against an already-booted instance. Exits 1 (and warns loudly on stderr) if the
+# shared apps/operator-vite/dist has changed since this instance's SPA snapshot was
+# frozen; exits 0 (silent) if nothing changed since boot.
+SPA_DIST="$SPA_DIST"
+SHARED_SPA_DIST="$SHARED_SPA_DIST"
+if [ -z "\$SPA_DIST" ] || [ ! -f "\$SPA_DIST/.frozen-at" ]; then
+  exit 0  # no snapshot was frozen this run (operator-vite wasn't built at boot) — nothing to check
+fi
+CHANGED="\$(find "\$SHARED_SPA_DIST" -newer "\$SPA_DIST/.frozen-at" -type f 2>/dev/null | head -5)"
+if [ -n "\$CHANGED" ]; then
+  {
+    echo
+    echo "  ┌────────────────────────────────────────────────────────────────────────┐"
+    echo "  │  ⚠️  STALE FROZEN SPA SNAPSHOT (EI-17134 / EI-10364)                    │"
+    echo "  │                                                                        │"
+    echo "  │  \$SHARED_SPA_DIST has changed SINCE this instance's SPA snapshot was"
+    echo "  │  frozen at boot. This instance is IMMUTABLE — it is still serving the"
+    echo "  │  pre-edit bundle from \$SPA_DIST and will NEVER pick up the change,"
+    echo "  │  no matter how many times you reload. Restart the instance to verify"
+    echo "  │  a new edit (VERIFY_TAURI_STOP then re-run verify-tauri-headless.sh)."
+    echo "  │                                                                        │"
+    echo "  │  Changed since freeze (up to 5 shown):"
+    printf '%s\n' "\$CHANGED" | sed 's/^/  │    /'
+    echo "  └────────────────────────────────────────────────────────────────────────┘"
+    echo
+  } >&2
+  exit 1
+fi
+exit 0
+FRESH
+  chmod +x "$WORK/check-freshness.sh"
+}
 write_stop_script() {
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
@@ -329,6 +374,12 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   # copy still leaves our index's chunks present in the snapshot.
   cp -a "$SHARED_SPA_DIST/." "$SPA_DIST/" 2>/dev/null || true
   cp -a "$SHARED_SPA_DIST/index.html" "$SPA_DIST/index.html" 2>/dev/null || true
+  # EI-17134: stamp the freeze moment AFTER the copy completes, so any later edit
+  # to $SHARED_SPA_DIST (a source change, or a rebuild) has a strictly newer mtime.
+  # write_freshness_check_script's generated helper diffs against this marker —
+  # it is the ONLY signal that an already-booted instance is now serving a stale
+  # bundle (this script never re-reads $SHARED_SPA_DIST after this point).
+  date +%s > "$SPA_DIST/.frozen-at" 2>/dev/null || true
   # Best-effort freshness read from the vite-watch heartbeat (EI-5202) so the
   # caller can see WHICH build this snapshot froze — a snapshot is immutable, so
   # picking up a newer edit means restarting the instance, not reloading.
@@ -336,11 +387,16 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   SPA_SHA=""
   [ -f "$SPA_HB" ] && SPA_SHA="$(sed -n 's/.*"gitSha": *"\([0-9a-f]*\)".*/\1/p' "$SPA_HB" 2>/dev/null | head -1)"
   log "SPA snapshot frozen at $SPA_DIST${SPA_SHA:+ (shared build ${SPA_SHA:0:12})} — IMMUTABLE for this run; restart to pick up a newer build."
+  log "  → edited source AFTER this boot? run: bash \"$WORK/check-freshness.sh\" (\$VERIFY_TAURI_FRESHNESS_CHECK) BEFORE trusting a re-check — it warns loudly if the shared bundle drifted (EI-17134)."
 else
   log "WARNING: no built SPA at $SHARED_SPA_DIST (operator-vite not built yet) — NOT freezing a"
   log "         snapshot; the sidecar falls through to the shared dist as before. Build"
   log "         operator-vite first for a genuinely isolated (watcher-proof) module server."
 fi
+# EI-17134: write the freshness-check helper unconditionally (a no-op when no
+# snapshot was frozen — SPA_DIST is empty) so $VERIFY_TAURI_FRESHNESS_CHECK is
+# always a valid, runnable path for the caller, in both branches above.
+write_freshness_check_script
 
 # ── EI-10387: boot a genuinely isolated, throwaway embedded Postgres ────────
 # Opt-in (VERIFY_TAURI_ISOLATED_DB=1). Reuses the SAME primitive
@@ -725,6 +781,11 @@ export VERIFY_TAURI_DISPLAY=$VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_LOG=$VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL
 export VERIFY_TAURI_STOP=$WORK/stop.sh
+export VERIFY_TAURI_FRESHNESS_CHECK=$WORK/check-freshness.sh
+# EI-17134: edited apps/operator-vite source AFTER this boot? Run this BEFORE
+# trusting a re-check/reload against THIS instance — the SPA snapshot is frozen
+# (EI-10364) and will never pick up the edit; this warns loudly if it drifted:
+#   bash "$WORK/check-freshness.sh"
 # tear down when done — NEVER leave this running unattended (WI-2115: a
 # leaked isolated instance/display starves the next run):
 #   "$WORK/stop.sh"

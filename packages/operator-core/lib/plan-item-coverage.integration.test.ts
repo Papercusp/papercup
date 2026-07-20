@@ -22,7 +22,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import type { FleetAssignmentRow } from './fleet/assignments';

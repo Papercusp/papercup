@@ -17,7 +17,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { provisionGymDatabase } from '../gym-db-init';
 import { buildLoopDeps, type LoopTask } from '../loop-deps';
 import { runOptimizationLoop } from '../loop';

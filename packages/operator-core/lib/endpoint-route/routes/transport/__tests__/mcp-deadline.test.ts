@@ -8,7 +8,7 @@
  * post-timeout rejection of the orphaned run never surfaces as unhandled.
  */
 import { describe, it, expect } from 'vitest';
-import { raceDeadline } from '../_mcp-handler';
+import { raceDeadline, effectiveMcpDeadlineMs } from '../_mcp-handler';
 
 describe('raceDeadline (P2-5 MCP deadline)', () => {
   it('returns the run result when it finishes before the deadline', async () => {
@@ -34,5 +34,29 @@ describe('raceDeadline (P2-5 MCP deadline)', () => {
     const r = await raceDeadline(5, failLate, () => 'timeout');
     expect(r).toBe('timeout');
     await new Promise((res) => setTimeout(res, 50)); // let the late rejection fire
+  });
+});
+
+describe('effectiveMcpDeadlineMs (EI-17177)', () => {
+  it('falls back to the flat base deadline when the tool declares no timeoutSec', () => {
+    expect(effectiveMcpDeadlineMs(undefined, 55_000)).toBe(55_000);
+    expect(effectiveMcpDeadlineMs(null, 55_000)).toBe(55_000);
+    expect(effectiveMcpDeadlineMs(0, 55_000)).toBe(55_000);
+  });
+
+  it('keeps the flat base deadline when the tool timeoutSec is UNDER it (no behavior change)', () => {
+    // e.g. a 30s tool — the flat 55s floor still governs, same as before this fix.
+    expect(effectiveMcpDeadlineMs(30, 55_000)).toBe(55_000);
+  });
+
+  it('honors a tool timeoutSec that exceeds the base deadline, plus the buffer', () => {
+    // chat:ask_choice / operator+architect+oracle+agent_chats converse / sentinel-converse
+    // all declare timeoutSec: 600 — must not be cut off at the flat 55s floor.
+    expect(effectiveMcpDeadlineMs(600, 55_000)).toBe(600_000 + 5_000);
+  });
+
+  it('a base deadline <= 0 (P2-5 disabled) stays disabled regardless of timeoutSec', () => {
+    expect(effectiveMcpDeadlineMs(600, 0)).toBe(0);
+    expect(effectiveMcpDeadlineMs(600, -1)).toBe(-1);
   });
 });

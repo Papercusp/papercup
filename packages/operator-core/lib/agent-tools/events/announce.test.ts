@@ -40,6 +40,16 @@ vi.mock('../coordination/presence', () => ({
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: null, note: 'no-handle' })),
 }));
+// EI-17140: events:await's orphan-key guard (a non-pattern, non-announced-gate
+// registration) reads the INSTALLED tier via a real plugin-host warm-up +
+// on-disk manifest scan when this module isn't mocked — genuinely slow I/O
+// that `withBoundedTimeout` (1500ms) legitimately degrades under fleet load,
+// logging a console.warn that trips vitest-fail-on-console (flaky, load-
+// sensitive). Mirrors await.test.ts's hermetic mock of the same module so
+// this suite never performs real I/O for a seam it isn't testing.
+vi.mock('../../events/await/installed-events', () => ({
+  readInstalledUnitEvents: vi.fn(async () => []),
+}));
 vi.mock('../../events/await/store', () => ({
   registerAnnouncement: vi.fn(async (input: { eventKey: string; expectedCondition?: unknown }) => ({
     id: 1,

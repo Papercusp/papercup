@@ -14,7 +14,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 // Pin the encryption key BEFORE the first read/write call sources (and
 // caches) it — otherwise the test would touch ~/.papercusp/db-encryption-key.

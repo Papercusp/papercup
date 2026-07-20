@@ -16,7 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,

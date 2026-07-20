@@ -169,3 +169,50 @@ describe('migration 159 — the work_items UNION view', () => {
     expect(rows).toHaveLength(3);
   });
 });
+
+describe('WI-5493 — engineer_issues_view_dml() payload `||` merge must not array-corrupt a non-object NEW.payload', () => {
+  // Regression for: COALESCE(NEW.payload, '{}'::jsonb) || jsonb_build_object('_ei', v_ei)
+  // silently produced a jsonb ARRAY (["<json-text>", {"_ei": {...}}]) — destroying every
+  // named payload key — whenever NEW.payload was bound as a jsonb STRING SCALAR instead of
+  // an object (the documented postgres-js-jsonb-binding double-encoding quirk exercised via
+  // `to_jsonb(<text>::text)` below, mirroring convert.integration.test.ts).
+
+  it('preserves named payload keys on INSERT with a real jsonb OBJECT (control)', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, body, state, kind, payload)
+      VALUES ('default', 'WI-400', 'obj payload', '', 'open', 'bug', ${db.sql.json({ foo: 'bar', severity: 'major' })})`;
+    const rows = await db.sql<{ payload: unknown }[]>`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = 'WI-400'`;
+    expect(Array.isArray(rows[0]!.payload)).toBe(false);
+    expect(rows[0]!.payload).toMatchObject({ foo: 'bar', severity: 'major' });
+  });
+
+  it('unwraps + preserves named payload keys on INSERT when NEW.payload is a jsonb STRING SCALAR', async () => {
+    const jsonText = JSON.stringify({ foo: 'bar', plan_item: { plan_slug: 'p1', item_id: 'I-1' } });
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, body, state, kind, payload)
+      VALUES ('default', 'WI-401', 'scalar payload', '', 'open', 'bug', to_jsonb(${jsonText}::text))`;
+    const rows = await db.sql<{ payload: unknown }[]>`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = 'WI-401'`;
+    // Pre-fix this was an array (the corruption) and lost every named key.
+    expect(Array.isArray(rows[0]!.payload)).toBe(false);
+    expect(rows[0]!.payload).toMatchObject({ foo: 'bar', plan_item: { plan_slug: 'p1', item_id: 'I-1' } });
+  });
+
+  it('falls back to an empty object (never corrupts) for a non-object, non-string payload shape', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, body, state, kind, payload)
+      VALUES ('default', 'WI-402', 'array payload', '', 'open', 'bug', '["not", "an", "object"]'::jsonb)`;
+    const rows = await db.sql<{ payload: unknown }[]>`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = 'WI-402'`;
+    expect(rows[0]!.payload).toEqual({});
+  });
+
+  it('applies the same guard on the UPDATE path', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, body, state, kind)
+      VALUES ('default', 'WI-403', 'to be updated', '', 'open', 'bug')`;
+    const jsonText = JSON.stringify({ baz: 'qux' });
+    await db.sql`UPDATE harness_shared.engineer_issues SET payload = to_jsonb(${jsonText}::text) WHERE issue_id = 'WI-403'`;
+    const rows = await db.sql<{ payload: unknown }[]>`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = 'WI-403'`;
+    expect(Array.isArray(rows[0]!.payload)).toBe(false);
+    expect(rows[0]!.payload).toMatchObject({ baz: 'qux' });
+  });
+});

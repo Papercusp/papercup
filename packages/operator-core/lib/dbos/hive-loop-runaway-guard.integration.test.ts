@@ -24,7 +24,7 @@
  * frontier readiness + epoch progression are asserted on real PG state.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { teardownTestPg } from '@papercusp/test-config';
+import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 

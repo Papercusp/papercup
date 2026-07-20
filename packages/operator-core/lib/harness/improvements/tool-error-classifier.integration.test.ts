@@ -11,7 +11,7 @@
  * real shape (the bug class P-011 closes), this goes red.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { teardownTestPg } from '@papercusp/test-config';
+import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import {
   classifyToolError,

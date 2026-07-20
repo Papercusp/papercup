@@ -17,7 +17,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { BeekeeperStorePg } from './beekeeper-store-pg';
 import type { InstanceManifest } from './instance-manifest';
 import type { GymScore } from '../gym/judge';

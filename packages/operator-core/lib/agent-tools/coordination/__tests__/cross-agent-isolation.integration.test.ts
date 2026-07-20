@@ -34,7 +34,7 @@ import {
   type ResolvedSubscriber,
   type DeliveryMode,
 } from '@papercusp/coordination/capabilities';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { configureCoordLog, resetCoordLog } from '../log';
 import { readAckedMsgIds, readInbox, sendMessage } from '../messages';
 import { deliverInject, type InjectEvent } from '../fanout-delivery';

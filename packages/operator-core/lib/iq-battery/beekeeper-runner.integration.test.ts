@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps, type BeekeeperStore } from './beekeeper-runner';
 import type { InstanceBootSpec } from './instance-manifest';
 import { FixInjectedBugCases, type CorpusCase } from './corpus';

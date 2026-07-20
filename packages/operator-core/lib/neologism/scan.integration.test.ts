@@ -9,7 +9,7 @@
  * `readPrimitiveNames` smoke (the namespace a coined term must be ABSENT from).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { teardownTestPg } from '@papercusp/test-config';
+import { teardownTestPg } from '@papercusp/test-config/pg';
 import { ALL_FLAG_KEYS } from '@papercusp/flags';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { readCoordTextRows, readPrimitiveNames } from './scan';

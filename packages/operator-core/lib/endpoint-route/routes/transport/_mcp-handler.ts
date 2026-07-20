@@ -2142,16 +2142,20 @@ const handler = createMcpHandler(
               }
               return result;
             };
-            // P2-5 deadline: a tool exceeding MCP_DEADLINE_MS returns a clean error to
-            // the client (no silent tunnel drop); it keeps running + persists for an
-            // idempotent retry to replay.
-            return raceDeadline<McpCallResult>(MCP_DEADLINE_MS, execute, () => ({
+            // P2-5 deadline: a tool exceeding its effective deadline returns a clean
+            // error to the client (no silent tunnel drop); it keeps running + persists
+            // for an idempotent retry to replay. EI-17177: the flat MCP_DEADLINE_MS
+            // (55s) must NOT cut off a tool that legitimately declares a longer
+            // `timeoutSec` (e.g. chat:ask_choice / other human-interaction tools at
+            // 600s) — effectiveMcpDeadlineMs honors the tool's own budget instead.
+            const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
+            return raceDeadline<McpCallResult>(deadlineMs, execute, () => ({
               isError: true,
               content: [{
                 type: 'text' as const,
                 text: idempotencyKey
-                  ? `request_timeout: tool "${toolName}" exceeded ${MCP_DEADLINE_MS}ms (still running server-side; retry with the same _meta.idempotencyKey to replay its result once it completes).`
-                  : `request_timeout: tool "${toolName}" exceeded ${MCP_DEADLINE_MS}ms (still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
+                  ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side; retry with the same _meta.idempotencyKey to replay its result once it completes).`
+                  : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
               }],
             }));
           };
@@ -2408,6 +2412,32 @@ const DEFAULT_KEEPALIVE_MS = Number(process.env.PAPERCUSP_MCP_KEEPALIVE_MS) || 2
 // hanging to maxDuration / a silent tunnel drop. Set UNDER maxDuration (60s). 0
 // disables. Env-tunable (PAPERCUSP_MCP_DEADLINE_MS).
 const MCP_DEADLINE_MS = Number(process.env.PAPERCUSP_MCP_DEADLINE_MS) || 55_000;
+
+// EI-17177: some tools (chat:ask_choice, operator/architect/oracle/agent_chats
+// converse, sentinel-converse — every human-interaction tool) DECLARE a
+// `timeoutSec` far past MCP_DEADLINE_MS (600s) because they legitimately block
+// on a human's reply, not a hang. A margin added past the tool's own declared
+// budget so ITS OWN dispatch-stack AbortController timeout (a clearer,
+// tool-scoped "exceeded timeout of Xs" error) fires first in the normal
+// exceeded-budget case; P2-5 stays the backstop for a tool that ignores its
+// own abort signal and keeps running anyway.
+const MCP_DEADLINE_TOOL_BUFFER_MS = 5_000;
+
+/**
+ * The actual deadline P2-5 races a tool call against: the greater of the flat
+ * MCP_DEADLINE_MS floor and the tool's own declared `timeoutSec` (+ a buffer).
+ * A tool that declares no timeoutSec (or one under the floor) keeps today's
+ * flat 55s behavior unchanged; `baseDeadlineMs <= 0` (P2-5 disabled) always
+ * stays disabled regardless of the tool's timeoutSec. Exported for unit tests.
+ */
+export function effectiveMcpDeadlineMs(
+  toolTimeoutSec: number | null | undefined,
+  baseDeadlineMs: number = MCP_DEADLINE_MS,
+): number {
+  if (!(baseDeadlineMs > 0)) return baseDeadlineMs;
+  if (!toolTimeoutSec || !(toolTimeoutSec > 0)) return baseDeadlineMs;
+  return Math.max(baseDeadlineMs, toolTimeoutSec * 1000 + MCP_DEADLINE_TOOL_BUFFER_MS);
+}
 
 /**
  * Race a tool dispatch against a deadline (P2-5). On expiry, resolve to `onTimeout()`

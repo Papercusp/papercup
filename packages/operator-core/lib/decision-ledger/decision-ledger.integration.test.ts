@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { teardownTestPg } from '@papercusp/test-config';
+import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { AutonomyDecision } from '../autonomy/decider';
 

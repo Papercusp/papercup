@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 import type { SnapshotResult, SnapshotTriggerReason } from '@papercusp/backup';
 

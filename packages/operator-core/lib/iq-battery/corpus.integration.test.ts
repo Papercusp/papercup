@@ -5,7 +5,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, readRepoFile } from '@papercusp/test-config';
+import { readRepoFile } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { seedCorpus, AllCases } from './corpus';
 
 describe('seedCorpus', () => {

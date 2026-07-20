@@ -7,7 +7,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, readRepoFile } from '@papercusp/test-config';
+import { readRepoFile } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { createPgHiveEvalStore } from './store-pg';
 import { readHiveEvalInstanceSummaries } from './trend-read';
 import type { HiveEvalRunRow, HiveEvalScoreRow, InstanceManifest } from './store';

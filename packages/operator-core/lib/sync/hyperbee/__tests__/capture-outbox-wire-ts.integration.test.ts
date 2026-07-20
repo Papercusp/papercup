@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../../..');

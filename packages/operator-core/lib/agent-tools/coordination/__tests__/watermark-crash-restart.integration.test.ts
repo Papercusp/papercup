@@ -42,7 +42,7 @@ import { randomBytes } from 'node:crypto';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import { PgWatermarkStore, ensureCoordWatermarksTable } from '@papercusp/coordination/watermark-store';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 import { configureCoordLog, resetCoordLog, coordLog } from '../log';
 import { readInbox } from '../messages';

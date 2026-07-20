@@ -23,7 +23,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { buildHarnessProjectionApply } from '../projections/register-all';
 import type { OpEnvelope } from '../op-envelope-types';
 import { corpusArray } from './corpus';

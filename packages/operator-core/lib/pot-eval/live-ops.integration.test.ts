@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { readMemberSpawnRows, readMemberRunStats, countHivePlacementsInFlight, readQueenEkg, readBeeEkg } from './live-ops';
 

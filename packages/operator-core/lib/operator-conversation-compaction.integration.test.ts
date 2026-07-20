@@ -30,7 +30,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import type { HaikuTurnResult } from './haiku';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

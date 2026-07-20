@@ -17,7 +17,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, readRepoFile } from '@papercusp/test-config';
+import { readRepoFile } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps } from './beekeeper-runner';
 import { seedCorpus } from './corpus';
 import { BeekeeperStorePg } from './beekeeper-store-pg';

@@ -1337,33 +1337,27 @@ export const ISSUE_STATE_ALIASES: Record<string, string> = {
 export const WORK_ITEM_ID_PATTERN = '^(WI|F|EI)-\\d+$';
 
 /**
- * Normalize a requested lifecycle state onto a family's NATIVE vocabulary
- * (EI-24): the families speak different dialects (feature: todo/validating/
- * passed/failing/deprecated; issue: open/resolved/closed) while callers + the
- * coord-lifecycle docs speak the canonical done/dropped/todo. Cross-dialect
- * aliases translate; an unmappable issue-family state is a typed refusal
- * LISTING the valid states (never a raw engineer_issues_state_check PG error).
- * Feature states pass through un-restricted beyond the aliases — the pipeline
- * owns that vocabulary (hfc.status carries no CHECK).
+ * Normalize a requested lifecycle state onto the UNIFIED work-item enum
+ * (open | wip | blocked | needs-human | done | dropped) for BOTH families
+ * (work-item-status-full-unify, P-003 writer-flip). Legacy per-family spellings + the
+ * canonical/drift dialects fold to unified via {@link FEATURE_STATE_ALIASES} /
+ * {@link ISSUE_STATE_ALIASES}; an unmappable state is a typed refusal LISTING the valid
+ * set (the GAP-5 typo guard). The families no longer store distinct native vocabularies —
+ * both persist the same enum; the passed/resolved vs deprecated/closed nuance is carried in
+ * work_items.terminal_reason. The DBOS pipeline still writes feature PHASE statuses
+ * (scoping/building/…) via raw SQL and bypasses this path (D-004); trusted restores bypass
+ * via setWorkItemState's allowNonCanonical.
  */
 export function normalizeWorkItemState(
   family: WorkItemFamily,
   state: string,
 ): { ok: true; state: string } | { ok: false; valid: readonly string[] } {
   if (family === 'feature') {
-    // P-011 / D-010: validate against the canonical agent-settable set (folding the
-    // canonical lifecycle dialect + known separator/case drift); a truly-unknown state
-    // is rejected with the valid list — the GAP-5 typo guard. The DBOS pipeline writes
-    // phase statuses via raw SQL and bypasses this path entirely (D-004), and trusted
-    // restores bypass via setWorkItemState's allowNonCanonical.
     return normalizeFeatureStateInput(state);
   }
   const mapped = ISSUE_STATE_ALIASES[state] ?? state;
   if (ISSUE_FAMILY_STATES.includes(mapped)) return { ok: true, state: mapped };
-  return {
-    ok: false,
-    valid: [...ISSUE_FAMILY_STATES, 'done', 'dropped', 'todo', 'in_progress', 'wip', 'blocked', 'needs-human'],
-  };
+  return { ok: false, valid: ISSUE_FAMILY_STATES };
 }
 
 /**
@@ -1674,6 +1668,36 @@ export async function setWorkItemState(
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
+  // work-item-status-full-unify (P-003 writer-flip): preserve the collapsed
+  // passed/resolved (→done) vs deprecated/closed (→dropped) nuance in terminal_reason.
+  // When the caller's INPUT was a legacy terminal spelling that folded to a unified
+  // terminal, stamp the reason; a plain unified `done`/`dropped` carries no legacy nuance
+  // (→ NULL, left untouched — the reopen-clear below nulls it on reopen so a later plain
+  // terminal starts clean). Direct base-table UPDATE — mirrors the reopen-clear stamp —
+  // so it covers BOTH the feature (auto-updatable view) and issue (INSTEAD OF trigger)
+  // write paths without threading a new column through either. Best-effort: the lifecycle
+  // write already committed.
+  if (result && isSettledWorkItemState(result.state)) {
+    const reqLower = requestedState.trim().toLowerCase();
+    const terminalReason =
+      reqLower === 'passed' || reqLower === 'resolved' || reqLower === 'deprecated' || reqLower === 'closed'
+        ? reqLower
+        : null;
+    if (terminalReason) {
+      try {
+        const { sql } = getOrgPg();
+        await sql`
+          UPDATE harness_shared.work_items
+             SET terminal_reason = ${terminalReason}
+           WHERE feature_id = ${id}
+             AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})
+             AND terminal_reason IS DISTINCT FROM ${terminalReason}`;
+        (result as { terminalReason?: string | null }).terminalReason = terminalReason;
+      } catch {
+        /* best-effort — the nuance is a preservation nicety, never fail the write over it */
+      }
+    }
+  }
   // P-006 (fleet-deltas-leader-primitives, EI-8973): a REOPEN (settled → non-settled,
   // forced or holder-self) must CLEAR the terminal stamps — a reopened item still
   // carrying terminalOwner/terminalCompletionRef reads as "terminally completed" to
@@ -1706,6 +1730,10 @@ export async function setWorkItemState(
         UPDATE harness_shared.work_items
            SET terminal_owner = NULL,
                terminal_completion_ref = NULL,
+               -- work-item-status-full-unify (P-003): a reopened item is no longer terminal,
+               -- so its collapsed-nuance reason must clear too (else a later plain done/dropped
+               -- would inherit a stale passed/resolved reason).
+               terminal_reason = NULL,
                payload = COALESCE(payload, '{}'::jsonb) || ${history}::text::jsonb,
                updated_ts = ${Date.now()}
          WHERE feature_id = ${id}
@@ -1850,30 +1878,26 @@ export interface LifecycleAliasInfo {
 }
 
 /**
- * EI-9360: issue-family lifecycle requests that mean "durably gated" — the issue-family CHECK
- * has no native representation for these (ISSUE_STATE_ALIASES collapses them to 'open'), so
- * without this fix a caller who correctly marked an item needs_human/blocked got back ok:true
- * with the item STILL in the default claimable pool: `scheduler:get_next`/`claim_next` would
- * keep offering it to any fleet whose claim spec didn't defensively exclude it (observed live
- * in the M4 DRAIN battery — a foreign fleet's fallback claim-spec picked up an owner-gated
- * "rotate the production credential" item). The only prior mitigation was a caller manually
- * chaining a second call — correct, but non-discoverable and easy to forget.
+ * EI-9360 (rewired for work-item-status-full-unify P-003): an issue set to a "durably gated"
+ * lifecycle state gets a belt-and-suspenders self-select exclusion FLAG applied automatically.
  *
- * Two EXISTING self-select exclusion floors already cover this (both wired into the same
- * issue-claim query, work-items.ts's issue-claim SQL) — reused here rather than inventing a
- * third, matched to which one's REPORTING semantics fit the request:
- *   - needs-human dialect → `payload.needsHuman:true` ({@link needsHumanExclusionSql}, EI-7776,
- *     already set by improvements:resolve's `needs-human` outcome). Reports as fully DRAINED
- *     in {@link diagnoseClaimNextMiss} — correct here: an owner-authority-only item is not
- *     queue material AT ALL, no agent will ever complete it by retrying.
- *   - 'blocked' dialect → the WI-2797 self-select claim hold ({@link claimHoldExclusionSql}).
- *     Reports as pending-BUT-gated (drained:false) — correct here: "blocked" more often means
- *     blocked-on-a-dependency, which may clear on its own, not "route to a human forever".
- * Both: excluded from self-select, but still directly claimable BY ID. Best-effort — never
- * fails/blocks the primary lifecycle write.
+ * Pre-unify, the issue family had no native representation for blocked/needs-human
+ * (ISSUE_STATE_ALIASES collapsed them to 'open'), so a caller who correctly marked an item
+ * needs_human/blocked got back ok:true with the item STILL in the claimable pool
+ * (`scheduler:get_next`/`claim_next` kept offering it — the M4 DRAIN incident where a foreign
+ * fleet's fallback spec picked up an owner-gated "rotate the production credential" item). The
+ * writer-flip fixes the ROOT cause: the issue now STORES `blocked`/`needs-human` directly, and
+ * the claim floor (status = ANY(['todo','open'])) excludes it by status. These payload flags
+ * are now the belt-and-suspenders + the surface the EXISTING consumers still read:
+ *   - needs-human → `payload.needsHuman:true` ({@link needsHumanExclusionSql}, EI-7776). Reports
+ *     as fully DRAINED in {@link diagnoseClaimNextMiss} — an owner-authority-only item is not
+ *     queue material at all.
+ *   - blocked → the WI-2797 self-select claim hold ({@link claimHoldExclusionSql} /
+ *     {@link setWorkItemClaimHold}), which also carries the `release{claimHold:false}` un-park
+ *     affordance. Reports as pending-BUT-gated (drained:false).
+ * Applied by APPLIED state (not the old alias-to-'open' event, which no longer fires). Still
+ * directly claimable BY ID. Best-effort — never fails/blocks the primary lifecycle write.
  */
-const NEEDS_HUMAN_ALIAS_REQUESTS = new Set(['needs-human', 'needs_human', 'needshuman', 'needs human', 'need-human']);
-const BLOCKED_ALIAS_REQUESTS = new Set(['blocked']);
 
 /**
  * setWorkItemState wrapped to ALWAYS report the alias/no-op discriminator (EI-7712,
@@ -1904,21 +1928,21 @@ export async function setWorkItemStateWithAliasInfo(
   });
   const appliedState = workItem ? workItem.state : null;
   const aliased = appliedState !== null && appliedState !== requestedState;
-  // EI-9360: a caller who asked for an owner-gate dialect state (blocked/needs-human/…) that
-  // collapsed to 'open' gets the matching exclusion floor applied automatically — see the
-  // NEEDS_HUMAN_ALIAS_REQUESTS / BLOCKED_ALIAS_REQUESTS doc comment above.
+  // EI-9360 (rewired, work-item-status-full-unify P-003): key the durable-gate flags on the
+  // APPLIED state — the issue now STORES blocked/needs-human directly, so the old
+  // alias-to-'open' event no longer fires. Awaited (not fire-and-forget): callers rely on the
+  // note meaning the item is ALREADY durably parked by the time this resolves. See the doc
+  // comment above. Issue-family only (the feature claim floor honors the status directly).
   let autoGateNote: string | null = null;
-  if (workItem && workItem.family === 'issue' && onAliasInfo && onAliasInfo.resolved === 'open') {
-    const req = onAliasInfo.requested.trim().toLowerCase();
-    // Awaited (not fire-and-forget): callers rely on `aliased:true` meaning the item is
-    // ALREADY durably parked by the time this resolves, not eventually.
+  const appliedLower = (appliedState ?? '').trim().toLowerCase();
+  if (workItem && workItem.family === 'issue') {
     try {
-      if (NEEDS_HUMAN_ALIAS_REQUESTS.has(req)) {
+      if (appliedLower === 'needs-human') {
         await mergeIssuePayload(id, { needsHuman: true });
         autoGateNote =
           ' It has been auto-routed to a human (payload.needsHuman) — excluded from claim_next/scheduler:get_next self-selection (reads as drained, not pending) until cleared.';
-      } else if (BLOCKED_ALIAS_REQUESTS.has(req)) {
-        const held = await setWorkItemClaimHold(id, true, { harness: opts.harness, by: opts.by, reason: req });
+      } else if (appliedLower === 'blocked') {
+        const held = await setWorkItemClaimHold(id, true, { harness: opts.harness, by: opts.by, reason: 'blocked' });
         if (held?.applicable) {
           autoGateNote =
             ' It has been auto-parked (claim hold) out of claim_next/scheduler:get_next self-selection until released — see work_items:release{claimHold:false}.';
@@ -1928,18 +1952,19 @@ export async function setWorkItemStateWithAliasInfo(
       /* best-effort — never fail the primary lifecycle write over the auto-gate */
     }
   }
+  // Surface a note when the state was aliased OR an auto-gate flag was applied (the gate can
+  // now fire WITHOUT aliasing, since blocked/needs-human store verbatim post-flip).
+  const note = aliased
+    ? onAliasInfo
+      ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
+      : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`
+    : (autoGateNote ?? undefined);
   return {
     workItem,
     aliased,
     requestedState,
     appliedState,
-    ...(aliased
-      ? {
-          aliasNote: onAliasInfo
-            ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
-            : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`,
-        }
-      : {}),
+    ...(note ? { aliasNote: note } : {}),
   };
 }
 

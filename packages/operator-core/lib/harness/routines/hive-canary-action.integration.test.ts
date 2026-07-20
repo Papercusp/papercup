@@ -14,7 +14,7 @@
  * pattern); the registry write goes through the real operator-state PG path.
  */
 import { afterAll, beforeAll, describe, expect, it, vi, beforeEach } from 'vitest';
-import { teardownTestPg } from '@papercusp/test-config';
+import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 
 const WS = 'ws-canary';

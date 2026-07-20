@@ -47,7 +47,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { TABLE_TO_QUERY_NAMES } from '../table-to-query-names';
 
 const HERE = dirname(fileURLToPath(import.meta.url));

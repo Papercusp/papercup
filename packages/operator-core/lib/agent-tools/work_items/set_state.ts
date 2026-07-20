@@ -1,7 +1,9 @@
 /**
- * work_items:set_state — Lifecycle (D-003). Sets the kind-specific lifecycle state
- * (feature-family → status e.g. todo|in_progress|passed|failing; issue-family →
- * open|resolved|closed). Dispatches to the right kind-table.
+ * work_items:set_state — Lifecycle (D-003). Sets the UNIFIED lifecycle state for BOTH
+ * families (work-item-status-full-unify P-003 writer-flip): open|wip|blocked|needs-human|
+ * done|dropped. Legacy per-family spellings (feature passed/deprecated/todo/…, issue
+ * resolved/closed) still fold to unified via the alias maps, preserving the passed/resolved
+ * vs deprecated/closed nuance in work_items.terminal_reason.
  *
  * Bulk by default (bulk-endpoint-standardization-2026-06-21): set ONE inline
  * ({ id, state }), MANY to the SAME state (ids:[…] + state), or MANY heterogeneous
@@ -36,7 +38,7 @@ const itemSpec = z.object({
     .max(2000)
     .optional()
     .describe(
-      'Completion evidence (summary / commit / coord or plan-item ref) — REQUIRED alongside a terminal state (feature: passed|deprecated; issue: resolved|closed). Prefer work_items:complete for a structured completion record.',
+      'Completion evidence (summary / commit / coord or plan-item ref) — REQUIRED alongside a terminal state (unified done|dropped, or the legacy passed|deprecated|resolved|closed spellings). Prefer work_items:complete for a structured completion record.',
     ),
   force: z
     .boolean()
@@ -50,7 +52,7 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one OR many work-items. Feature-family uses feature statuses; issue-family stores only open|resolved|closed, so blocked/needs-human/in_progress/wip/todo/done/dropped alias to open. EI-9360: issue-family needs-human auto-sets payload.needsHuman; blocked auto-applies the WI-2797 self-select claim hold — both durably exclude the item from claim_next/scheduler:get_next (still directly claimable by id) without a separate call; see aliasNote. Reopening another agent\'s terminal completion is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).',
+    'Set lifecycle state for one OR many work-items. BOTH families store the UNIFIED enum: open|wip|blocked|needs-human|done|dropped (open = the single claimable token; legacy feature passed/deprecated + issue resolved/closed are still accepted and fold to done/dropped, preserving the nuance in terminal_reason). EI-9360: an issue set needs-human auto-sets payload.needsHuman; blocked auto-applies the WI-2797 self-select claim hold — both durably exclude the item from claim_next/scheduler:get_next (still directly claimable by id) without a separate call; see aliasNote. Reopening another agent\'s terminal completion is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).',
   guidance: {
     when: 'Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. needs-human/blocked auto-exclude from self-select (EI-9360) — no extra call needed; un-park blocked via release{claimHold:false}. If already terminally completed, read terminalOwner/ref before any `force:true` reopen.',
     chaining: 'work_items:claim → … → work_items:set_state { state }.',

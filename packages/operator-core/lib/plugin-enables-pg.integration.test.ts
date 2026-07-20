@@ -17,7 +17,7 @@ import { mkdir, writeFile, rm, mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const WS = 'ws-pe';
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, tmp: '' }));

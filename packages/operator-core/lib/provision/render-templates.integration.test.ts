@@ -25,7 +25,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const isLinux = platform() === 'linux';
 

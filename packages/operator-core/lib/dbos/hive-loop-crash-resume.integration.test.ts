@@ -27,7 +27,7 @@ import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, '../..');

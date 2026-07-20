@@ -22,7 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { encodeHlc } from '@papercusp/locks-core';
 import { buildHarnessProjectionApply } from '../projections/register-all';
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from '../read-merge';

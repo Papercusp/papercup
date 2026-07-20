@@ -56,29 +56,38 @@ describe('isRequeueableFeatureState', () => {
 });
 
 describe('normalizeFeatureStateInput', () => {
-  it('passes a canonical family state through unchanged', () => {
-    expect(normalizeFeatureStateInput('in_progress')).toEqual({ ok: true, state: 'in_progress' });
-    expect(normalizeFeatureStateInput('passed')).toEqual({ ok: true, state: 'passed' });
+  // work-item-status-full-unify (P-003 writer-flip): the feature writer now STORES the
+  // unified enum. Legacy feature dialect + phase spellings fold to unified.
+  it('passes a unified in-flight/claimable token through unchanged', () => {
+    expect(normalizeFeatureStateInput('open')).toEqual({ ok: true, state: 'open' });
+    expect(normalizeFeatureStateInput('wip')).toEqual({ ok: true, state: 'wip' });
+    expect(normalizeFeatureStateInput('blocked')).toEqual({ ok: true, state: 'blocked' });
+    expect(normalizeFeatureStateInput('needs-human')).toEqual({ ok: true, state: 'needs-human' });
   });
 
-  it('folds the canonical lifecycle dialect onto the native vocabulary', () => {
-    expect(normalizeFeatureStateInput('done')).toEqual({ ok: true, state: 'passed' });
-    expect(normalizeFeatureStateInput('resolved')).toEqual({ ok: true, state: 'passed' });
-    expect(normalizeFeatureStateInput('dropped')).toEqual({ ok: true, state: 'deprecated' });
-    expect(normalizeFeatureStateInput('closed')).toEqual({ ok: true, state: 'deprecated' });
-    expect(normalizeFeatureStateInput('open')).toEqual({ ok: true, state: 'todo' });
+  it('folds the legacy feature dialect + phase spellings onto the unified enum', () => {
+    expect(normalizeFeatureStateInput('passed')).toEqual({ ok: true, state: 'done' });
+    expect(normalizeFeatureStateInput('done')).toEqual({ ok: true, state: 'done' });
+    expect(normalizeFeatureStateInput('resolved')).toEqual({ ok: true, state: 'done' });
+    expect(normalizeFeatureStateInput('deprecated')).toEqual({ ok: true, state: 'dropped' });
+    expect(normalizeFeatureStateInput('dropped')).toEqual({ ok: true, state: 'dropped' });
+    expect(normalizeFeatureStateInput('closed')).toEqual({ ok: true, state: 'dropped' });
+    expect(normalizeFeatureStateInput('todo')).toEqual({ ok: true, state: 'open' });
+    expect(normalizeFeatureStateInput('failing')).toEqual({ ok: true, state: 'open' });
+    expect(normalizeFeatureStateInput('in_progress')).toEqual({ ok: true, state: 'wip' });
+    expect(normalizeFeatureStateInput('validating')).toEqual({ ok: true, state: 'wip' });
   });
 
-  it('folds separator/case drift variants to canonical so a typo lands in the right state', () => {
-    expect(normalizeFeatureStateInput('in-progress')).toEqual({ ok: true, state: 'in_progress' });
-    expect(normalizeFeatureStateInput('IN_PROGRESS')).toEqual({ ok: true, state: 'in_progress' });
+  it('folds separator/case drift variants to unified so a typo lands in the right state', () => {
+    expect(normalizeFeatureStateInput('in-progress')).toEqual({ ok: true, state: 'wip' });
+    expect(normalizeFeatureStateInput('IN_PROGRESS')).toEqual({ ok: true, state: 'wip' });
     expect(normalizeFeatureStateInput('needs_human')).toEqual({ ok: true, state: 'needs-human' });
     expect(normalizeFeatureStateInput('needs human')).toEqual({ ok: true, state: 'needs-human' });
     expect(normalizeFeatureStateInput('need-human')).toEqual({ ok: true, state: 'needs-human' });
   });
 
   it('trims surrounding whitespace before lookup', () => {
-    expect(normalizeFeatureStateInput('  Done  ')).toEqual({ ok: true, state: 'passed' });
+    expect(normalizeFeatureStateInput('  Passed  ')).toEqual({ ok: true, state: 'done' });
   });
 
   it('rejects a truly-unknown state and reports the valid set', () => {
@@ -89,12 +98,16 @@ describe('normalizeFeatureStateInput', () => {
 
   it('accepts every status the features UI can submit, so the /harness/:slug/features guard (WI-195 C2) can never 400 a real save', () => {
     // Mirror of apps/operator/app/harness/FeatureEditor.tsx VALID_STATUSES. The POST
-    // /features + PATCH /features/:id endpoints now validate body.status through
-    // normalizeFeatureStateInput; if a UI-selectable status were NOT in the family
-    // vocab this guard would reject a legitimate human save. Fails loudly on divergence.
+    // /features + PATCH /features/:id endpoints validate body.status through
+    // normalizeFeatureStateInput. Post-writer-flip these legacy UI spellings FOLD to the
+    // unified enum (e.g. passed→done) rather than round-tripping as identity — the guard
+    // must still ACCEPT every one (ok:true) so a legitimate human save is never 400'd.
+    // (Surfacing the unified vocabulary in the editor itself is P-007.)
     const UI_VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'];
     for (const s of UI_VALID_STATUSES) {
-      expect(normalizeFeatureStateInput(s)).toEqual({ ok: true, state: s });
+      const res = normalizeFeatureStateInput(s);
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(FEATURE_FAMILY_STATES).toContain(res.state);
     }
   });
 });

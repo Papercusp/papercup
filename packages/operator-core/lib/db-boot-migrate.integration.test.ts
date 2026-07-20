@@ -30,7 +30,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 
 // ── shared test-DB + mock holders ────────────────────────────────────────────

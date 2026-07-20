@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { PgPresenceStore, ensureCoordPresenceTable } from '@papercusp/coordination/presence';
 
 let sql: postgres.Sql;

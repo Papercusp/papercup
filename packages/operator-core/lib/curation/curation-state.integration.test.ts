@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const WS = 'ws-curtest';
 const BASE = 900; // stand-in for BASE_INTERVAL_SECONDS (curation-loop mocked to avoid its heavy deps)

@@ -20,7 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const { preregister, verifyPreregistration, computePreregHash } = await import('./prereg');
 const { getPrereg } = await import('./store');

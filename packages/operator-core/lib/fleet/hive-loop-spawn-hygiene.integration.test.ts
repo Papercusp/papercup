@@ -31,7 +31,7 @@ import { spawn as spawnProc } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { teardownTestPg } from '@papercusp/test-config';
+import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const WS = 'ws-spawn-hyg';

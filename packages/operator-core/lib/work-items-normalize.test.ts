@@ -1,13 +1,14 @@
 /**
  * work-items-normalize.test.ts — pure unit coverage for normalizeWorkItemState,
- * the cross-dialect lifecycle mapper (EI-24) that translates the canonical
- * agent-facing lifecycle vocabulary onto each family's native states.
+ * the cross-dialect lifecycle mapper (EI-24) that folds the agent-facing lifecycle
+ * vocabulary onto the ONE unified work-item enum.
  *
- * Regression guard for EI-450: agents drive work-items with the canonical
- * dialect (in_progress/wip/blocked/needs-human), but the issue family's CHECK
- * only knows open/resolved/closed. The "active" states must MAP to `open`, never
- * throw a structural refusal. db-org is mocked defensively so this stays a pure,
- * PG-free unit test (the function itself touches no PG).
+ * work-item-status-full-unify (P-003 writer-flip): BOTH families now normalize to the
+ * unified enum (open | wip | blocked | needs-human | done | dropped). The issue family no
+ * longer collapses the in-flight states to `open` (EI-450 is fixed at the root — there is
+ * no engineer_issues status CHECK, so blocked/wip/needs-human store directly); the feature
+ * family stores unified instead of the legacy feature dialect. db-org is mocked defensively
+ * so this stays a pure, PG-free unit test (the function itself touches no PG).
  */
 import { describe, it, expect, vi } from 'vitest';
 
@@ -19,67 +20,72 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 const { normalizeWorkItemState } = await import('./work-items');
 
 describe('normalizeWorkItemState — issue family', () => {
-  // EI-450: every "active / in-flight" canonical state collapses to `open`
-  // rather than throwing the structural refusal.
-  it.each(['in_progress', 'wip', 'blocked', 'needs-human', 'todo'])(
-    'maps active state %s → open',
-    (state) => {
-      expect(normalizeWorkItemState('issue', state)).toEqual({ ok: true, state: 'open' });
-    },
-  );
-
+  // Writer-flip: the in-flight states now STORE directly (no collapse to `open`).
   it.each([
-    ['done', 'resolved'],
-    ['passed', 'resolved'],
-    ['resolved', 'resolved'],
-    ['dropped', 'closed'],
-    ['deprecated', 'closed'],
-    ['closed', 'closed'],
     ['open', 'open'],
-  ])('maps settled/native state %s → %s', (state, expected) => {
+    ['todo', 'open'],
+    ['wip', 'wip'],
+    ['in_progress', 'wip'],
+    ['blocked', 'blocked'],
+    ['needs-human', 'needs-human'],
+    ['needs_human', 'needs-human'],
+  ])('maps in-flight state %s → %s', (state, expected) => {
     expect(normalizeWorkItemState('issue', state)).toEqual({ ok: true, state: expected });
   });
 
-  it('refuses a genuinely-unknown state, listing the accepted dialect', () => {
+  it.each([
+    ['done', 'done'],
+    ['passed', 'done'],
+    ['resolved', 'done'],
+    ['dropped', 'dropped'],
+    ['deprecated', 'dropped'],
+    ['closed', 'dropped'],
+  ])('maps terminal state %s → %s', (state, expected) => {
+    expect(normalizeWorkItemState('issue', state)).toEqual({ ok: true, state: expected });
+  });
+
+  it('refuses a genuinely-unknown state, listing the unified accepted set', () => {
     const res = normalizeWorkItemState('issue', 'banana');
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('unreachable');
-    // The advertised valid set must include the states it actually accepts —
+    // The advertised valid set must include the unified enum it actually accepts —
     // a drifted list (EI-450's original symptom) is itself the bug.
-    for (const accepted of ['in_progress', 'wip', 'blocked', 'needs-human']) {
+    for (const accepted of ['open', 'wip', 'blocked', 'needs-human', 'done', 'dropped']) {
       expect(res.valid).toContain(accepted);
     }
   });
 });
 
 describe('normalizeWorkItemState — feature family', () => {
-  // P-011 / D-010 (GAP 5): the feature family now validates agent-set states against a
-  // canonical set, folding the canonical lifecycle dialect AND known separator/case drift
-  // variants to canonical. A truly-unknown state is rejected (the typo guard).
+  // Writer-flip: the feature family now stores the UNIFIED enum. Legacy feature dialect +
+  // canonical/drift spellings fold to unified; a truly-unknown state is rejected (the typo guard).
   it.each([
-    ['done', 'passed'],
-    ['resolved', 'passed'],
-    ['dropped', 'deprecated'],
-    ['closed', 'deprecated'],
-    ['open', 'todo'],
+    ['done', 'done'],
+    ['resolved', 'done'],
+    ['passed', 'done'],
+    ['dropped', 'dropped'],
+    ['closed', 'dropped'],
+    ['deprecated', 'dropped'],
+    ['open', 'open'],
+    ['todo', 'open'],
+    ['failing', 'open'],
     ['blocked', 'blocked'],
-    ['in_progress', 'in_progress'],
-    ['validating', 'validating'],
-    ['failing', 'failing'],
     ['wip', 'wip'],
+    ['in_progress', 'wip'],
+    ['validating', 'wip'],
     ['needs-human', 'needs-human'],
     // drift-variant + case normalization
-    ['in-progress', 'in_progress'],
-    ['In_Progress', 'in_progress'],
+    ['in-progress', 'wip'],
+    ['In_Progress', 'wip'],
     ['needs_human', 'needs-human'],
-    ['TODO', 'todo'],
+    ['TODO', 'open'],
   ])('maps %s → %s', (state, expected) => {
     expect(normalizeWorkItemState('feature', state)).toEqual({ ok: true, state: expected });
   });
 
-  it('rejects a truly-unknown feature state with the canonical valid set', () => {
+  it('rejects a truly-unknown feature state with the valid set', () => {
     const res = normalizeWorkItemState('feature', 'some-novel-pipeline-phase');
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.valid).toContain('in_progress');
+    if (!res.ok) expect(res.valid).toContain('wip');
   });
 });

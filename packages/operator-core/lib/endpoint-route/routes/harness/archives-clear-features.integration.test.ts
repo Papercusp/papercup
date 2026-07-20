@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { slugToSchemaName, _resetForTests } from '@papercusp/db-org';
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 import { clearHarnessFeaturesForReset } from './archives';

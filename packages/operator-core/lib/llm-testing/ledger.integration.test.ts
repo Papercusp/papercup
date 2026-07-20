@@ -19,7 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config/pg';
 
 const h = vi.hoisted(() => ({ url: '' }));
 vi.mock('../embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => h.url }));
