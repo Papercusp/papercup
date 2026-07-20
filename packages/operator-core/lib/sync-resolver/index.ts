@@ -2883,6 +2883,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const a = args as { harness?: string; windowMs?: number };
+      // PRECOMPUTED (phase2 P-002, WI-5584) — but ONLY the DEFAULT variant. The
+      // panel mounts with no args, which is a plain snapshot SELECT produced by the
+      // `system:precompute-derived-reads` routine (see derived-reads/producers.ts).
+      // Derived-read snapshots key on (ws, harness_slug, key) with no arg
+      // dimension, so a NON-default view (an explicit harness or windowMs) cannot
+      // be served from the snapshot and falls through to the live inline compute.
+      if (a.harness === undefined && a.windowMs === undefined) {
+        const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+        await import('../derived-reads/producers');
+        return readDerivedSnapshotRows('insights.coordTokens');
+      }
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
       const { loadModelPricingBook, loadCoordTokenBreakdown, loadCoordPollVolume } =

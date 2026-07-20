@@ -13,6 +13,7 @@
  * how expensive the compute is — an expensive producer with a short ttl is the
  * routine's problem to schedule, never the reader's problem to wait for.
  */
+import { withWorkspace } from '@papercusp/db-org';
 import { registerDerivedRead } from './registry';
 
 // ── storage.usage (P-003) — measured 20.0s on the read path ──────────────────
@@ -276,6 +277,53 @@ registerDerivedRead({
         latestScore10,
         avgScore10: scoreN > 0 ? Math.round((scoreSum / scoreN) * 10) / 10 : null,
       };
+    });
+  },
+});
+
+// ── insights.coordTokens (phase2 P-002) — measured 0.5-0.8s / 4.6KB on the
+// Learnings → Tokens subtab's Coordination panel read (WI-5584). Three
+// workspace-scoped rollups recomputed on EVERY read: the model_pricing rate book,
+// the coord-cost breakdown ($ by turn-trigger and by role-class over a 7-day
+// window of harness_shared.agent_usage_samples), and the coord-poll volume (a
+// COUNT + COUNT(DISTINCT) over a 1-day window of harness_shared.tool_invocations
+// — the ~75%-of-all-rows wake-poll aggregate). All three are GROUP BY / COUNT
+// aggregations over the two highest-volume telemetry tables, so the cost scales
+// with fleet activity and lands entirely on a user-facing sync read.
+//
+// Coord cost is fleet-wide, so the resolver's `harness` arg is OPTIONAL and the
+// window defaults are fixed (7d cost / 1d poll). Derived-read snapshots key on
+// (workspace_id, harness_slug, key) with NO arg dimension, so this producer
+// precomputes ONLY the DEFAULT variant (whole-workspace, default windows) — the
+// exact shape the Tokens panel requests on mount. A resolver call that passes an
+// explicit `harness` or `windowMs` is a non-default view and falls through to
+// inline compute (see the gate in sync-resolver/index.ts).
+//
+// 5-minute ttl: these rollups aggregate 1-7 DAY windows, so they barely move
+// minute to minute — a 5-min snapshot is far fresher than the panel needs, and
+// on the routine's 2-min cron it recomputes every ~2-3 ticks rather than every
+// tick, keeping this off the hot compute path. The panel surfaces computedAt via
+// _meta.derivedRead ("as of HH:MM"), and a manual invalidate still forces a live
+// refetch of the non-default views.
+registerDerivedRead({
+  key: 'insights.coordTokens',
+  ttlMs: 5 * 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async ({ workspaceId }) => {
+    const { loadModelPricingBook, loadCoordTokenBreakdown, loadCoordPollVolume } = await import(
+      '../harness-insights/load-token-rollups'
+    );
+    return withWorkspace(workspaceId, async (tx) => {
+      const runQuery = async <T>(query: string, params: unknown[]): Promise<T[]> =>
+        (await tx.unsafe(query, params as never)) as unknown as T[];
+      // Default variant only: no harness_slug, default windows (7d cost / 1d poll).
+      const [pricingBook, coordBreakdown, pollVolume] = await Promise.all([
+        loadModelPricingBook(runQuery),
+        loadCoordTokenBreakdown({ workspace_id: workspaceId, runQuery }),
+        loadCoordPollVolume({ workspace_id: workspaceId, runQuery }),
+      ]);
+      return [{ pricingBook, coordBreakdown, pollVolume }];
     });
   },
 });
