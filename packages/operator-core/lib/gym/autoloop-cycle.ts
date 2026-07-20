@@ -52,6 +52,7 @@ import type { GymLlmCall } from './task-generator';
 import { spawnGymOperatorWithRetry } from './operator-ready';
 import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
 import { gatewayLlmEnv, gatewayPort, resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
+import { activeWorkspaceId } from '../workspace-registry';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
@@ -228,16 +229,34 @@ export async function runOneAutoloopCycle(
     // Merged into the gym-operator spawn env (below) so every role subprocess inherits it. Fail-soft:
     // resolveSpawnGatewayEnv throws only if the pool has NO allowed claude account — in that case we
     // fall back to the base-URL-only routing rather than aborting the cycle.
+    // WI-5637 (account-routing workspace): account routing is an OPERATOR-CREDENTIAL
+    // concern, NOT a data-isolation one. The account pool
+    // (harness_shared.operator_account_pool) is WORKSPACE-SCOPED (per-workspace JSONB,
+    // mig 190) and lives in the OPERATOR's real workspace — NOT the ephemeral gym DATA
+    // workspace WS (='gym-loop-ws'), which has no pool row. The first cut passed WS, so
+    // resolveSpawnGatewayEnv({account:'auto'}) called loadAccountPool('gym-loop-ws'),
+    // found zero allowed claude accounts, and THREW "account route 'auto' has no allowed
+    // claude account in the pool" → the catch left gymSpawnGatewayEnv EMPTY → the curator
+    // subprocess got no ANTHROPIC_AUTH_TOKEN → auth'd on the local ~/.claude login →
+    // "API Error: Usage credits required for long context" (429). Route account selection
+    // against the operator's CREDENTIAL workspace instead: an explicit override, else the
+    // process pin, else the operator's active workspace (papercusp-workspace in the
+    // routine host, where the pool lives). Everything else still scopes to WS.
+    const accountRoutingWs =
+      process.env.GYM_LOOP_ACCOUNT_WORKSPACE?.trim() ||
+      process.env.PAPERCUSP_WORKSPACE_ID?.trim() ||
+      activeWorkspaceId();
     try {
       gymSpawnGatewayEnv = await resolveSpawnGatewayEnv({
-        workspaceId: WS,
+        workspaceId: accountRoutingWs,
         slug,
         account: 'auto',
         backend: 'claude',
         role: 'gym',
       });
+      log(`inference-gateway spawn-route: account workspace='${accountRoutingWs}' → ${Object.keys(gymSpawnGatewayEnv).length} env key(s) injected into role subprocesses`);
     } catch (e) {
-      log(`inference-gateway auto-route unavailable (${(e as Error).message.split('\n')[0]}) — falling back to base-URL routing`);
+      log(`inference-gateway auto-route unavailable for account workspace '${accountRoutingWs}' (${(e as Error).message.split('\n')[0]}) — falling back to base-URL routing; the CURATOR MAY 429 (WI-5637)`);
     }
     log(`inference-gateway ON (account=auto) → routing gym LLM calls through http://127.0.0.1:${gatewayPort()}`);
   }
