@@ -204,6 +204,13 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
    * liveness re-check) — see the WI-5355 comment thread for the full trace.
    * A plain `leave()+join()` DHT rejoin can't fix that: Hyperswarm never even
    * attempts a fresh connection to a peer it still believes is live.
+   *
+   * EI-13317/WI-5481: this NO LONGER gates the severed-link escalation's
+   * eviction (that now evicts unconditionally — see the call site) — a
+   * `false` here just meant "another topic still claims this socket too",
+   * which used to make every claimant refuse to evict and deadlock. It is
+   * kept only to decide whether the diagnostic "force-evicting a shared
+   * socket" log line is worth emitting.
    */
   const isSocketIdleAcrossAllTopics = (socket: unknown): boolean => {
     const set = socketTopics.get(socket as object);
@@ -218,11 +225,14 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
    * `_allConnections` entry. Duck-typed `.destroy()` (the standard
    * Duplex/NoiseSecretStream method Hyperswarm's own duplicate-connection
    * handling uses internally — see `_handleServerConnection`'s
-   * `existing.destroy(...)` in the installed hyperswarm package). Never
-   * touches a socket that still carries a live channel on ANY topic — this
-   * gossip instance's sockets are shared A↔B connections (module header), so
-   * evicting one still serving another healthy topic would be a regression,
-   * not a fix.
+   * `existing.destroy(...)` in the installed hyperswarm package).
+   *
+   * EI-13317/WI-5481: the severed-link escalation now calls this
+   * UNCONDITIONALLY on every socket for the escalating topic, even one still
+   * claimed by another topic — see the call site's shared-socket eviction
+   * deadlock writeup. This helper itself stays a plain, unconditional
+   * destroy+unregister; the "is this safe to evict" judgment lives entirely
+   * at the call site now, not in here.
    */
   const evictIdleZombieSocket = (socket: unknown): void => {
     try {
@@ -481,14 +491,46 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
               // with NO liveness re-check, so a peer Hyperswarm still counts as
               // "connected" (even a dead/zombie socket post-restart) silently
               // blocks every future rediscovery from ever attempting a fresh
-              // connection. Evict any socket that is idle across EVERY topic
-              // this gossip instance manages (never one still serving another
-              // healthy topic — sockets are shared A↔B connections, see the
-              // module header) BEFORE rejoining, so Hyperswarm's own
-              // `_allConnections`/`this.connections` bookkeeping no longer
-              // blocks `_handlePeer` on the next DHT-found event.
+              // connection.
+              //
+              // EI-13317/WI-5481 (shared-socket eviction DEADLOCK — the exact
+              // swarm.ts forceRejoinNow class, reproduced here): the original
+              // guard only evicted a socket idle across EVERY topic THIS gossip
+              // instance manages (`isSocketIdleAcrossAllTopics`) — "never touch
+              // a socket another topic still claims". But one physical peer
+              // socket is muxed across every harness/topic this gossip instance
+              // gossips for (module header), so when it half-opens (live at the
+              // transport layer, dead for gossip) every topic riding it goes
+              // severed at once — and each one's escalation refused to evict
+              // because the OTHERS still claimed the same dead socket. Nobody
+              // evicted it; the connection sat connected-but-dead until the OS
+              // TCP timeout (minutes later, same 341-378s class swarm.ts hit —
+              // see shared-socket-eviction-deadlock-forced-rejoin.mdx). Reaching
+              // this escalation means THIS topic's link is already proven dead
+              // past the repair ladder, and a dead handshake is dead for every
+              // topic muxed over the same socket — so evict unconditionally
+              // (mirrors swarm.ts's forceRejoinNow fix) BEFORE rejoining, so
+              // Hyperswarm's own `_allConnections`/`this.connections`
+              // bookkeeping no longer blocks `_handlePeer` on the next
+              // DHT-found event.
               for (const socket of sockets) {
-                if (isSocketIdleAcrossAllTopics(socket)) evictIdleZombieSocket(socket);
+                // Diagnostic-only: note when we are breaking the shared-socket
+                // deadlock (destroying a socket another topic still claims).
+                // Never let a throwing console block the eviction below (same
+                // VITEST-gating convention as elsewhere in this module).
+                if (!isSocketIdleAcrossAllTopics(socket) && !process.env.VITEST) {
+                  try {
+                    console.error(
+                      `[topic-gossip:${opts.protocol}] force-evicting a peer socket still shared with ` +
+                        `other topics (topic ${topicHex.slice(0, 16)}…) — a forced rejoin means the link ` +
+                        `is proven dead for every muxed topic; breaking the shared-socket eviction ` +
+                        `deadlock (EI-13317/WI-5481).`,
+                    );
+                  } catch {
+                    /* diagnostic-only; swallow */
+                  }
+                }
+                evictIdleZombieSocket(socket);
               }
               // WI-5355 iteration 3: the DHT-level leave()+join() below cannot,
               // by itself, heal a topic whose Protomux CHANNEL was already
