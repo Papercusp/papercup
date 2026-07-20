@@ -16,14 +16,25 @@ import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-m
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '@papercusp/operator-core/lib/harness/issue-types';
 
+// work-item-status-full-unify (2026-07-19): features + issues share ONE lifecycle
+// (open → wip → blocked | needs-human → done | dropped). This type is a READ superset —
+// the unified tokens are what new writes store, but residual pre-backfill rows and
+// federated peers may still carry the legacy per-family spellings, so both are accepted.
 export type FeatureStatus =
+  // unified lifecycle (settable + stored)
+  | 'open'
+  | 'wip'
+  | 'blocked'
+  | 'needs-human'
+  | 'done'
+  | 'dropped'
+  // legacy per-family spellings (recognized on read; folded to unified on write)
   | 'todo'
   | 'in_progress'
   | 'validating'
   | 'passed'
   | 'failing'
-  | 'deprecated'
-  | 'blocked';
+  | 'deprecated';
 
 export interface HarnessFeature {
   id: string;

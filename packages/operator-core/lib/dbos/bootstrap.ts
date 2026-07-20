@@ -355,6 +355,17 @@ export async function startDbos(): Promise<void> {
     // reaping stuck fires). Same process-level rationale; reads git-sync routine health.
     const { startGitSyncStallWatchdog } = await import('../release/git-sync-stall-watchdog');
     startGitSyncStallWatchdog(getOrgPg().sql);
+    // Sibling (WI-5607, EI-13924 follow-up): the ONE class the above two watchdogs cannot
+    // see — a BRIDGED hive whose member git-sync keeps advancing local HEAD every tick while
+    // the bridge writer's egress to GitHub origin is actually stuck. Independent of the
+    // bridge's own divergence classifier (which only fires on structured residues). Kill-
+    // switch: PAPERCUSP_ORIGIN_FRESHNESS_WATCHDOG='0'.
+    try {
+      const { startOriginFreshnessWatchdog } = await import('../release/origin-freshness-watchdog');
+      startOriginFreshnessWatchdog(getOrgPg().sql);
+    } catch (e) {
+      console.warn('[origin-freshness-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
+    }
     // Sibling (WI-757 part b): a federation VM whose swarm join keeps failing (e.g. gh auth
     // lost across a restart) silently stays local-only forever with nothing escalating it.
     // Reads the in-process boot-history ring only — no DB round-trip needed.

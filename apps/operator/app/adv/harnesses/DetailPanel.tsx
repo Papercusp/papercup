@@ -24,14 +24,17 @@ import type { WorkingAgent } from './AdvAgentsPanel';
 import { runOutcome } from './run-outcome';
 import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
 
+// work-item-status-full-unify P-007: the settable feature statuses are the UNIFIED
+// lifecycle tokens (feature `todo`→`open`, `passed`→`done`, `deprecated`→`dropped`;
+// `in_progress`/`validating`→`wip`). Legacy spellings still render on read (see the
+// FeatureStatus superset + theme.ts _STATUS_TABLE) but are no longer offered to set.
 const FEATURE_STATUSES: FeatureStatus[] = [
-  'todo',
-  'in_progress',
-  'validating',
-  'passed',
-  'failing',
+  'open',
+  'wip',
   'blocked',
-  'deprecated',
+  'needs-human',
+  'done',
+  'dropped',
 ];
 
 // Consolidated agent-run row (camelCase Zero export). Since P-023
@@ -738,14 +741,14 @@ function FeatureDetail({
     if (
       !(await confirm({
         title: `Reset ${feature.id}?`,
-        body: `Reset ${feature.id} back to todo and clear its attempts. The worker will pick it up fresh.`,
+        body: `Reset ${feature.id} back to open and clear its attempts. The worker will pick it up fresh.`,
         destructive: true,
         confirmLabel: 'Reset',
       }))
     )
       return;
     const prev = { status: feature.status, attempts: feature.attempts };
-    patchFeature(feature.id, { status: 'todo', attempts: 0 }); // optimistic
+    patchFeature(feature.id, { status: 'open', attempts: 0 }); // optimistic (matches the reset endpoint)
     setWorking('reset');
     try {
       await callJson(`/features/${feature.id}/reset?phase=staging`, { method: 'POST' });

@@ -60,6 +60,15 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   }), [workspaceId]);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
+  // Perf-marks (P-006): begin the harness-dock-open interaction on first mount;
+  // the matching endInteraction fires in onApiReady, when DockWorkspace has
+  // hydrated the PG layout and bound the dockview API. The measure spans dock
+  // mount → dock live (layout load + dockview mount + panel creation) — the
+  // dock-hydration cost.
+  useEffect(() => {
+    beginInteraction(PERF_INTERACTIONS.harnessDockOpen);
+  }, []);
+
   useEffect(() => {
     configureCloseGuard({
       confirm: () =>
@@ -81,6 +90,9 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
 
   const onApiReady = useCallback((api: Parameters<typeof bindDockApi>[0]) => {
     bindDockApi(api);
+    // Dock is live (layout hydrated + API bound) — close the harness-dock-open
+    // measure begun on mount. No-op unless a matching begin ran (measure-once).
+    endInteraction(PERF_INTERACTIONS.harnessDockOpen);
   }, []);
 
   const onApiDispose = useCallback(() => {

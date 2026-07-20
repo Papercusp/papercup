@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import {
   knownQueryNamesV2,
   isRegisteredV2,
@@ -916,6 +916,31 @@ describe('savedPrompts.byScope (quick-panel-saved-prompts-2026-07-13 P-003)', ()
 });
 
 describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15 B-01 / CONTRACT C-1)', () => {
+  // EI-18142363462575751: every test below does `vi.resetModules()` + a fresh
+  // `await import('./index')`, so each one races the REAL resolveNamedQueryV2
+  // dispatcher — including its production `RESOLVER_TIMEOUT_MS` (10s default,
+  // read once from PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS at module import time,
+  // index.ts:5764-5765) — against the mocked-fast resolve() below. On a lightly
+  // loaded box the mocked resolve settles in well under 10s; under this box's
+  // heavy concurrent-fleet load, a fresh ESM re-import + re-execution of this
+  // ~5800-line module can occasionally push even the FAST mocked path past the
+  // real 10s wall-clock ceiling, throwing QueryResolveTimeoutError — a pure
+  // host-load timing flake, not a resolver defect (test_runs: this exact test
+  // failed 4× at 10.0-15.7s and passed dozens of times at well under 10s;
+  // isolated single-test runs never reproduce it). The dispatcher's OWN timeout
+  // *mechanism* is already covered deterministically with fake timers in
+  // libs/generic/sync/src/server/query-registry.test.ts — this describe block
+  // has no business exercising the real wall-clock deadline at all. Widen it
+  // for just these tests so they stop racing production timing under load.
+  const PRIOR_TIMEOUT_ENV = process.env.PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS;
+  beforeAll(() => {
+    process.env.PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS = '120000';
+  });
+  afterAll(() => {
+    if (PRIOR_TIMEOUT_ENV === undefined) delete process.env.PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS;
+    else process.env.PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS = PRIOR_TIMEOUT_ENV;
+  });
+
   beforeEach(() => {
     vi.resetModules();
   });

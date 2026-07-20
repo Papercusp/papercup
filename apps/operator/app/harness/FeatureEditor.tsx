@@ -9,8 +9,14 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 
-const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'] as const;
-type Status = (typeof VALID_STATUSES)[number];
+// work-item-status-full-unify P-007: the SETTABLE feature statuses are the unified
+// lifecycle tokens (feature `todo`→`open`, `passed`→`done`, `deprecated`→`dropped`,
+// `in_progress`/`validating`→`wip`). Legacy spellings are still recognized on read
+// (LEGACY_STATUSES) so the editor can open a residual/federated legacy-status row, but
+// they are not offered as new choices.
+const VALID_STATUSES = ['open', 'wip', 'blocked', 'needs-human', 'done', 'dropped'] as const;
+const LEGACY_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'deprecated'] as const;
+type Status = (typeof VALID_STATUSES)[number] | (typeof LEGACY_STATUSES)[number];
 
 export function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return s; }
@@ -80,7 +86,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
   const [id, setId] = useState(feature?.id ?? '');
   const [title, setTitle] = useState(feature?.title ?? '');
   const [claimsText, setClaimsText] = useState((feature?.claims ?? []).join('\n'));
-  const [status, setStatus] = useState<Status>(feature?.status ?? 'todo');
+  const [status, setStatus] = useState<Status>(feature?.status ?? 'open');
   const [attempts, setAttempts] = useState<number>(feature?.attempts ?? 0);
   const [deprecationReason, setDeprecationReason] = useState<string>(feature?.deprecation_reason ?? '');
   const [saving, setSaving] = useState(false);

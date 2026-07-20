@@ -1288,8 +1288,11 @@ interface InteractionMeasureSpec {
   /** JS statement(s) run first to bring the trigger into view (e.g. select the
    *  Plans sidebar face). Wrapped in try/catch by the runner. Optional. */
   setup?: string;
-  /** CSS selector for the element whose click STARTS the interaction. */
-  triggerSelector: string;
+  /** CSS selector for the element whose click STARTS the interaction. When
+   *  omitted, the `setup` script IS the trigger (e.g. a ?palette=true deep-link
+   *  or a route nav whose mount begins the interaction) — the runner skips the
+   *  click and polls for the measure directly. */
+  triggerSelector?: string;
   /** Max ms to wait for the trigger element to appear (default 8000). */
   triggerTimeoutMs?: number;
   /** Max ms to wait for the measure to be emitted after the click (default 8000). */
