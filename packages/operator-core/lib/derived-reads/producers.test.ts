@@ -196,14 +196,14 @@ describe('derived-reads producers: insights.coordTokens', () => {
   });
 
   it('computes the DEFAULT variant: loaders called with the ctx workspace, NO harness_slug, default windows', async () => {
-    const loadModelPricingBook = vi.fn(async () => [{ modelId: 'opus' }]);
-    const loadCoordTokenBreakdown = vi.fn(async () => ({
+    const loadModelPricingBook = vi.fn(async (_runQuery: unknown) => [{ modelId: 'opus' }]);
+    const loadCoordTokenBreakdown = vi.fn(async (_opts: Record<string, unknown>) => ({
       windowMs: 604800000,
       byTrigger: [],
       triggerAttributionAvailable: false,
       byRoleClass: [{ roleClass: 'fleet', tokens: 10, costUsd: 5, runs: 2 }],
     }));
-    const loadCoordPollVolume = vi.fn(async () => ({ windowMs: 86400000, tools: [], wakePollCalls: 7, wakePollRowSharePct: 75 }));
+    const loadCoordPollVolume = vi.fn(async (_opts: Record<string, unknown>) => ({ windowMs: 86400000, tools: [], wakePollCalls: 7, wakePollRowSharePct: 75 }));
     vi.doMock('../harness-insights/load-token-rollups', () => ({
       loadModelPricingBook,
       loadCoordTokenBreakdown,

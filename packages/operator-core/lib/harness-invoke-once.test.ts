@@ -549,6 +549,47 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
   });
 });
 
+// EI-18133554034909305 "Agent spawns are failing repeatedly (other)": tracked
+// hive/overwatch launches (spawn.ts) hard-400'd on ANY host with no explicit
+// backend config, because resolveSpawnBackendModel's fallthrough default is the
+// literal `'omp -p'` and omp cannot support forced-native-session-id. The fix
+// rescues that unconfigured-default case (spawn.ts falls back to claude-code)
+// but must still hard-fail when omp was an EXPLICIT operator choice — this is
+// the discriminator that decision keys off.
+describe('isOmpBackendExplicitlyConfigured (EI-18133554034909305)', () => {
+  beforeEach(() => {
+    vi.stubEnv('AGENT_CMD', undefined as unknown as string);
+    vi.stubEnv('CLAUDE', undefined as unknown as string);
+    vi.stubEnv('AGENT_ROLE_BACKENDS', undefined as unknown as string);
+  });
+
+  it('is false when nothing is configured (the bare code-level omp default)', () => {
+    expect(isOmpBackendExplicitlyConfigured('mug')).toBe(false);
+  });
+
+  it('is true when AGENT_ROLE_BACKENDS explicitly pins the role to omp', () => {
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ mug: 'omp' }));
+    expect(isOmpBackendExplicitlyConfigured('mug')).toBe(true);
+    // a DIFFERENT role's override doesn't count for this role
+    expect(isOmpBackendExplicitlyConfigured('kettle')).toBe(false);
+  });
+
+  it('is false when AGENT_ROLE_BACKENDS pins the role to a non-omp backend', () => {
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ mug: 'codex' }));
+    expect(isOmpBackendExplicitlyConfigured('mug')).toBe(false);
+  });
+
+  it('is true when AGENT_CMD is explicitly configured', () => {
+    vi.stubEnv('AGENT_CMD', 'omp -p --custom-flag');
+    expect(isOmpBackendExplicitlyConfigured('mug')).toBe(true);
+  });
+
+  it('is true when CLAUDE is explicitly configured (AGENT_CMD unset)', () => {
+    vi.stubEnv('CLAUDE', 'omp -p');
+    expect(isOmpBackendExplicitlyConfigured('mug')).toBe(true);
+  });
+});
+
 describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn (RB-012)', () => {
   beforeEach(() => {
     // Hermetic baseline: the dev box's .env.local carries a real AGENT_MODELS

@@ -89,6 +89,7 @@ const classifyM = vi.mocked(classifyClaimFailure);
 const getWiM = vi.mocked(getWorkItem);
 const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
+const findHostM = vi.mocked(findLiveHost);
 const tool = (await import('./arm')).default;
 
 type Out = { content: { text: string }[] };
@@ -309,5 +310,51 @@ describe('loop:arm — WI-5557 TIER 1: unbounded warm-carry WORK loop warning (a
   it('either dead-man guard set (maxDurationSec) suppresses the warning', async () => {
     const b = body(await call({ maxDurationSec: 3600 }));
     expect(b.unboundedWarmLoopWarning).toBeNull();
+  });
+});
+
+// B (cold-with-carry-activation-2026-07-20): headless loops default to cold carry.
+describe('decideDefaultCarry (pure B decision)', () => {
+  const headless = { bridgeTty: false };
+  const interactive = { bridgeTty: true };
+  it('flag OFF ⇒ warm even for a headless host', () => {
+    expect(decideDefaultCarry(false, headless)).toBe('warm');
+  });
+  it('flag ON + headless host ⇒ cold', () => {
+    expect(decideDefaultCarry(true, headless)).toBe('cold');
+  });
+  it('flag ON + interactive host ⇒ warm (D-005 never-cold-a-human)', () => {
+    expect(decideDefaultCarry(true, interactive)).toBe('warm');
+  });
+  it('flag ON + no live host ⇒ warm (fail-soft)', () => {
+    expect(decideDefaultCarry(true, null)).toBe('warm');
+  });
+});
+
+describe('loop:arm headless carry default (B, through the handler)', () => {
+  beforeEach(() => {
+    findHostM.mockReturnValue(null); // default: no host ⇒ warm
+  });
+  it('a HEADLESS caller with no explicit carry materializes the loop COLD + discloses it', async () => {
+    findHostM.mockReturnValue({ bridgeTty: false } as never);
+    const b = body(await call({}));
+    expect(b.loop.carry).toBe('cold');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'cold' }));
+    expect(b.note).toContain('COLD carry');
+    // a cold loop is not an unbounded-warm loop ⇒ no WI-5557 warning
+    expect(b.unboundedWarmLoopWarning).toBeNull();
+  });
+  it('an INTERACTIVE caller with no explicit carry stays WARM', async () => {
+    findHostM.mockReturnValue({ bridgeTty: true } as never);
+    const b = body(await call({}));
+    expect(b.loop.carry).toBe('warm');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'warm' }));
+    expect(b.note).not.toContain('COLD carry');
+  });
+  it('an EXPLICIT carry:"warm" overrides the headless default', async () => {
+    findHostM.mockReturnValue({ bridgeTty: false } as never);
+    const b = body(await call({ carry: 'warm' }));
+    expect(b.loop.carry).toBe('warm');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'warm' }));
   });
 });

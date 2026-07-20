@@ -61,9 +61,9 @@ describe('filterAndSortEvents', () => {
 });
 
 describe('countEventsByKind', () => {
-  it('returns all five kinds zero-defaulted for an empty input', () => {
+  it('returns every kind zero-defaulted for an empty input', () => {
     expect(countEventsByKind([])).toEqual({
-      interaction: 0, longtask: 0, 'layout-shift': 0, 'console-error': 0, 'unhandled-error': 0,
+      interaction: 0, longtask: 0, 'layout-shift': 0, measure: 0, 'console-error': 0, 'unhandled-error': 0,
     });
   });
 
