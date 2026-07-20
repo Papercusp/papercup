@@ -45,7 +45,14 @@ export type AttentionKind =
   // plan documents only) — the curation digest's `🚧 Blocked` line already
   // scans this exact table (curation `deps.ts readBlockedWorkItems()`) but had
   // no card anywhere to point at, so the signal was chat-text-only.
-  | 'work-item-blocked';
+  | 'work-item-blocked'
+  // EI-147 (decision-owed-source.ts): an AskUserQuestion/ExitPlanMode the
+  // owner answered (a closed `session_pending_gates` 'ask' row) with no
+  // `plans:add-decision`/`ratify-decision` call by that same owner
+  // afterward — a heuristic, mechanically-detected nudge that a decision may
+  // have leaked, never a hard verdict (false positives expected: not every
+  // answered question is plan-worthy).
+  | 'decision-owed';
 
 export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
 
@@ -87,6 +94,11 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
   // never-auto), which is the fail-safe: unblocking is real work, not a triage
   // verdict the Queen could take on the owner's behalf.
   'work-item-blocked': null,
+  // A heuristic nudge, not a governed decision — same fail-safe null as
+  // 'smoke-fail'/'work-item-blocked': it must never enter the auto-dispose
+  // gate (D-009 unmapped -> never-auto). Confirming/recording the actual
+  // decision is separate, deliberate `plans:add-decision` work.
+  'decision-owed': null,
 };
 
 /** The autonomy category for an attention kind — `null` for an ungoverned
@@ -155,6 +167,7 @@ export const ATTENTION_KIND_AUTHORITY: Record<AttentionKind, 'owner' | 'system'>
   'dark-flag-ratification': 'owner', // the CLAUDE.md dark-flag policy requires the OWNER to ratify/flip these specifically
   'blocked-session': 'system', // answering the mirrored ask is queen-eligible in principle, same as 'conversation'
   'work-item-blocked': 'system', // ungoverned alert signal (category null) — mirrors 'smoke-fail'
+  'decision-owed': 'system', // a nudge to the conversing agent, not an owner-authority disposition
 };
 
 /** The gating fields {@link deriveAuthorization} stamps onto an item. */

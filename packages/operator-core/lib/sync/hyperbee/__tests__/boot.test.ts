@@ -2538,6 +2538,110 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     expect(repairEvents()).toHaveLength(3);
     expect(exhaustedEvents()).toHaveLength(1);
   });
+
+  // WI-5481 (live-fed gate stamp=171739): checkRepairConfirmation used to
+  // DELETE the outstanding confirmation unconditionally the moment its grace
+  // window elapsed — even when the sample it judged against had ZERO live
+  // replicator peers. A `connected_never_replicated` repair escalates
+  // straight to a forced topic rejoin (evict the zombie socket + fresh DHT
+  // join), so the very session this confirmation judges is almost always
+  // mid-reconnect (zero peers for a few seconds) right when the grace window
+  // elapses — the confirmation got discarded for good, and NO later pass
+  // ever re-judged the log even once a peer reconnected moments later,
+  // stranding attempt 2/3 forever. This test proves the fix: a zero-peers
+  // sample at judgment time RE-ARMS the confirmation instead of discarding
+  // it, so a later pass that finally observes a live (still-stuck) peer
+  // reaches attempt 2/3 exactly as WI-5340 intends.
+  it('WI-5481: a zero-peers sample at the confirmation-judgment moment re-arms instead of abandoning the ladder (attempt 2/3 still fires once a peer reconnects)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const workspaceId = 'ws-repair-confirm-5481';
+    const harnessSlug = 's-repair-confirm-5481';
+    const keyHex = 'b2'.repeat(32);
+
+    // Every re-opened session is a "stuck" zombie (never advances) whose
+    // peersCount is externally controlled per-session via `livePeers` —
+    // simulating a socket mid-reconnect (0) that later re-attaches (1).
+    let livePeers = 0;
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
+        keyHex: k,
+        length: 1000,
+        contiguousLength: 0,
+        get: async () => {
+          throw new Error('WI-5481 test: simulated stuck zombie — block fetch never resolves');
+        },
+        update: async () => {},
+        prefetch: () => {},
+        has: () => false,
+        close: vi.fn(async () => {}),
+        peersCount: () => livePeers,
+      };
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+      replicationStallGraceMs: 0,
+    });
+    cleanups.push(() => handle.close());
+
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    function repairEvents() {
+      return listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_repair' as BootHistoryKind] });
+    }
+    function confirmationFailedEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair_confirmation_failed' as BootHistoryKind],
+      });
+    }
+
+    // ── Attempt 1: one genuine `frozen` episode, applied with zero peers
+    // already in effect (mirrors the forced-rejoin-just-evicted-the-socket
+    // moment) — drainRepairQueue applies it and stamps the confirmation. ──
+    sampleReplicationLiveness(
+      workspaceId,
+      harnessSlug,
+      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
+      { graceMs: 0 },
+    );
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(1);
+    expect(repairEvents()).toHaveLength(1);
+    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
+
+    // ── Several passes with ZERO live peers (still reconnecting after the
+    // repair's own forced rejoin): the confirmation must be RE-ARMED, not
+    // discarded — no attempt 2 yet, but nothing is lost either. ──
+    expect(livePeers).toBe(0);
+    await handle.mergeNow();
+    await handle.mergeNow();
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(1); // no premature/extra re-attach
+    expect(repairEvents()).toHaveLength(1); // still just attempt 1
+    expect(confirmationFailedEvents()).toHaveLength(0); // never judged while peers==0
+
+    // ── The peer finally reconnects, still stuck (mergedPosition never
+    // advanced) — THE FIX: the next pass judges the still-outstanding
+    // (re-armed) confirmation against a live peer and reaches attempt 2/3,
+    // instead of finding no confirmation at all (the pre-fix bug). ──
+    livePeers = 1;
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(2);
+    expect(repairEvents()).toHaveLength(2);
+    expect(repairEvents()[1]!.message).toContain('attempt 2/3');
+    expect(confirmationFailedEvents()).toHaveLength(1);
+  });
 });
 
 describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {

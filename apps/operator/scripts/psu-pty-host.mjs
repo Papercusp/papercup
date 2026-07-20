@@ -1018,6 +1018,17 @@ function decodeFireIdentity(o) {
   return out;
 }
 
+/** Parse `{ ownerId }` off a raw envelope object, or `{}` when absent/malformed
+ *  (EI-153: the sender's addressed-recipient assertion — see injectIntoHost's
+ *  `ownerId` doc in psu-pty-discovery.ts). Absent on any pre-EI-153 sender or a
+ *  legacy non-envelope payload ⇒ the receiver's identity check below is a no-op
+ *  for that message (unchanged behavior) — mirrors decodeFireIdentity exactly.
+ *  Pure — exported for tests. */
+export function decodeOwnerIdentity(o) {
+  const ownerId = typeof o?.ownerId === 'string' && o.ownerId.length > 0 ? o.ownerId.slice(0, 200) : undefined;
+  return ownerId !== undefined ? { ownerId } : {};
+}
+
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn. Pure — exported for tests. */
 export function decodeControl(payload) {
@@ -1036,10 +1047,12 @@ export function decodeControl(payload) {
         o.mode === 'compact' ||
         o.mode === 'mcp-reconnect')
     ) {
-      if (o.mode === 'raw') return { mode: 'raw', data: String(o.data ?? ''), gated: false };
+      if (o.mode === 'raw')
+        return { mode: 'raw', data: String(o.data ?? ''), gated: false, ...decodeOwnerIdentity(o) };
       // osc = recolor escape bytes for the terminal DISPLAY (not the agent) —
       // ungated + immediate, routed to the host stdout (see the handler sink).
-      if (o.mode === 'osc') return { mode: 'osc', data: String(o.data ?? ''), gated: false };
+      if (o.mode === 'osc')
+        return { mode: 'osc', data: String(o.data ?? ''), gated: false, ...decodeOwnerIdentity(o) };
       // reset (RESET-CONTEXT) / recycle — the cold-auto verbs (su-cold-auto-mode
       // P-004). Both are GATED like a turn (P-006 clean-boundary: fire ONLY at a
       // settled turn, never mid-turn) — the host's idle + agent-busy gates defer
@@ -1047,11 +1060,25 @@ export function decodeControl(payload) {
       // context opens on. reset = in-place `/clear` (drop transcript, keep the
       // process + MCP warm); recycle = kill + respawn the child in this same host.
       // Both also carry the WI-5510 fire identity (decodeFireIdentity) so the
-      // STALE-FIRE GUARD applies to them exactly like a warm turn.
+      // STALE-FIRE GUARD applies to them exactly like a warm turn, and the EI-153
+      // addressed-recipient assertion (decodeOwnerIdentity) so the MISDELIVERY
+      // guard below applies to them too.
       if (o.mode === 'reset')
-        return { mode: 'reset', data: String(o.data ?? ''), gated: true, ...decodeFireIdentity(o) };
+        return {
+          mode: 'reset',
+          data: String(o.data ?? ''),
+          gated: true,
+          ...decodeFireIdentity(o),
+          ...decodeOwnerIdentity(o),
+        };
       if (o.mode === 'recycle')
-        return { mode: 'recycle', data: String(o.data ?? ''), gated: true, ...decodeFireIdentity(o) };
+        return {
+          mode: 'recycle',
+          data: String(o.data ?? ''),
+          gated: true,
+          ...decodeFireIdentity(o),
+          ...decodeOwnerIdentity(o),
+        };
       // carry-respawn (deterministic-context-carry P-018): a clean-boundary
       // RECYCLE whose fresh Claude child receives the deterministic carry as a
       // system-prompt addendum. `data` is the optional successor first prompt.
@@ -1066,6 +1093,7 @@ export function decodeControl(payload) {
           sessionClass: o.sessionClass != null ? String(o.sessionClass).slice(0, 200) : '',
           gated: true,
           ...decodeFireIdentity(o),
+          ...decodeOwnerIdentity(o),
         };
       // compact — RETIRED (P-022): still DECODED so a stale pre-cutover sender's
       // message reaches the handler's loud drop instead of falling through to the
@@ -1076,6 +1104,7 @@ export function decodeControl(payload) {
           data: String(o.data ?? ''),
           focus: o.focus != null ? String(o.focus) : '',
           gated: true,
+          ...decodeOwnerIdentity(o),
         };
       // mcp-reconnect (mcp-transport-resilience P-003, 2026-07-13): drive the
       // claude TUI's /mcp dialog to reconnect a dead HTTP-MCP server IN PLACE
@@ -1084,8 +1113,14 @@ export function decodeControl(payload) {
       // half-typed owner line). `data` = the target server name (default
       // 'papercusp-su' applied by the handler).
       if (o.mode === 'mcp-reconnect')
-        return { mode: 'mcp-reconnect', data: String(o.data ?? ''), gated: true };
-      return { mode: 'turn', data: String(o.data ?? ''), gated: true, ...decodeFireIdentity(o) };
+        return { mode: 'mcp-reconnect', data: String(o.data ?? ''), gated: true, ...decodeOwnerIdentity(o) };
+      return {
+        mode: 'turn',
+        data: String(o.data ?? ''),
+        gated: true,
+        ...decodeFireIdentity(o),
+        ...decodeOwnerIdentity(o),
+      };
     }
   } catch {
     /* not an envelope — fall through to legacy */
