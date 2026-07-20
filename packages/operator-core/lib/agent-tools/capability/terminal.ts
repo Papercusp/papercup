@@ -86,7 +86,7 @@ export default defineTool({
   guidance: {
     when: 'ARBITRARY-COMMAND WINDOW ONLY: open one or more visible desktop terminals for a dev server, REPL, installer, `tail -f`, or another command the user should watch or interact with.',
     notWhen:
-      'Do NOT use this to launch agents: use capability:launch-agent for the general visible/headless/fleet/unfleeted launch, or fleet:launch-on-plan for N agents on a plan. For headless command execution with captured output / exit code, use capability:bash.',
+      'Do NOT use this to launch agents: use capability:launch-agent for the general visible/headless/fleet/unfleeted launch, or fleet:launch-on-plan for N agents on a plan. For headless command execution with captured output / exit code, use capability:bash. Full decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
       'Returns immediately after spawning — it does NOT wait for the commands and has no output channel. Use EITHER `command` (single) or `terminals` (bulk, max 12), not both.',
     seeAlso: [

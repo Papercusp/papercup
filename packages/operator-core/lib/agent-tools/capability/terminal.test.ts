@@ -107,6 +107,15 @@ describe('launch-tool routing guidance', () => {
     expect(terminalTool.guidance?.notWhen).toContain('fleet:launch-on-plan');
     expect(terminalTool.description).not.toContain('desktop fleet of agents');
   });
+
+  // WI-4753: the canonical routing doc must stay linked from every door's
+  // guidance, not just fleet:launch-on-plan's — a recurrence guard so the
+  // cross-link can't silently drop on a future guidance edit.
+  it('cross-links the canonical four-door routing table', () => {
+    expect(terminalTool.guidance?.notWhen).toContain(
+      'launching-agents-which-tool-for-which-door',
+    );
+  });
 });
 
 describe('capability:terminal scheme resolution', () => {

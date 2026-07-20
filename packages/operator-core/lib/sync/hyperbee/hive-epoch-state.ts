@@ -42,6 +42,33 @@ export async function getHiveEpoch(workspaceId: string, potHomeSlug: string, sql
   return coerceEpoch(rec?.value);
 }
 
+/**
+ * WI-4075 / bug-drain: a process-local generation counter per `(workspaceId,
+ * potHomeSlug)`, bumped on every LOCAL `setHiveEpoch` so an in-process cache that reads
+ * the current epoch (the outbox drain's `buildEpochEncryptCapability` — hive-epoch-op-gate.ts,
+ * EI-6945's 5s TTL cache) can invalidate itself IMMEDIATELY instead of trusting the TTL
+ * alone. Without this, a producer that advances the epoch (member-ban / go-private) and
+ * then writes post-boundary content within the same TTL window re-uses the STALE
+ * pre-boundary epoch — at the 0→1 boundary this isn't just wrong-epoch, it hits the
+ * `epoch === BASELINE_EPOCH` plaintext bypass and federates the post-boundary content
+ * UNENCRYPTED, readable by the very member the boundary just revoked (the read-cut
+ * security guarantee this whole module exists to provide). Local advances only — a
+ * REMOTE epoch change on another device isn't covered (cross-process invalidation is out
+ * of v1 scope: the boundary trigger is owner-only, single-producer); the cache's TTL
+ * remains the fallback for that case.
+ */
+const epochGeneration = new Map<string, number>();
+function epochGenerationKey(workspaceId: string, potHomeSlug: string): string {
+  return `${workspaceId}:${potHomeSlug}`;
+}
+/** The current local generation for `(workspaceId, potHomeSlug)` — 0 until the first
+ *  local `setHiveEpoch` call in this process. An in-process cache keys itself off this
+ *  alongside its TTL: a changed generation means "a local epoch advance happened since I
+ *  last read — re-fetch now, don't wait out the TTL." */
+export function getEpochGeneration(workspaceId: string, potHomeSlug: string): number {
+  return epochGeneration.get(epochGenerationKey(workspaceId, potHomeSlug)) ?? 0;
+}
+
 /** Set the hive's epoch to an explicit non-negative int (federates via hive_settings). */
 export async function setHiveEpoch(
   workspaceId: string,
@@ -56,6 +83,8 @@ export async function setHiveEpoch(
     { workspaceId, potHomeSlug, settingKey: EPOCH_SETTING_KEY, value: epoch },
     sql,
   );
+  const genKey = epochGenerationKey(workspaceId, potHomeSlug);
+  epochGeneration.set(genKey, (epochGeneration.get(genKey) ?? 0) + 1);
   return epoch;
 }
 

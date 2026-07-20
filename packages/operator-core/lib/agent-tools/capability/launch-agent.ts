@@ -84,7 +84,7 @@ export default defineTool({
   guidance: {
     when: 'GENERAL AGENT-LAUNCH DOOR: launch, resume, or fork one or many agents — visible or headless, fleet or unfleeted. Use fleet:launch-on-plan instead only for the ergonomic “N agents on this plan” workflow.',
     notWhen:
-      'To run a COMMAND (dev server, build, REPL) rather than an agent: capability:terminal / capability:bash. For N members on a plan with fleet seats + capacity advice in one call, fleet:launch-on-plan is still the ergonomic door.',
+      'To run a COMMAND (dev server, build, REPL) rather than an agent: capability:terminal / capability:bash. For N members on a plan with fleet seats + capacity advice in one call, fleet:launch-on-plan is still the ergonomic door. Full decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
       'A fresh/fork/headless launch returns once spawned; an in-place resume also VERIFIES a live agent registered (EI-11524) — isError + a loud "RESUME UNVERIFIED" note if the window opened but no agent booted (archived transcript / no-op), so a resume never reports phantom success. `resume: { agentId }` resolves that agent\'s latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.',
     seeAlso: [

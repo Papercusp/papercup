@@ -26,7 +26,7 @@ import type { EpochEncryptCapability } from './outbox-drain';
 import type { PendingEpochContent } from './pending-epoch-content';
 import type { EpochKeyProvider } from './hive-epoch-serving';
 import { encryptOpPayload, decryptOpPayload } from './hive-epoch-serving';
-import { BASELINE_EPOCH } from './hive-epoch-state';
+import { BASELINE_EPOCH, getEpochGeneration } from './hive-epoch-state';
 import { EpochKeyUnavailableError } from './hive-epoch-key-provider';
 
 /** Resolve the epoch key for `(potId, epoch)` on THIS peer: owner derives, member
@@ -126,7 +126,21 @@ export interface EpochOpGateDeps {
  * append failure (halt + retry) so a content op is NEVER federated in the clear.
  */
 export function buildEpochEncryptCapability(
-  deps: EpochOpGateDeps & { getCurrentEpoch: () => Promise<number> },
+  deps: EpochOpGateDeps & {
+    getCurrentEpoch: () => Promise<number>;
+    /**
+     * WI-4075: workspace id for the LOCAL epoch-generation invalidation registry
+     * (hive-epoch-state.ts `getEpochGeneration`). Optional for back-compat with callers
+     * that don't need immediate invalidation (unit tests exercising the TTL alone); every
+     * real boot-deps caller passes it. When provided, a LOCAL `setHiveEpoch`/
+     * `advanceHiveEpoch` (the boundary trigger) bumps the generation and this capability
+     * re-reads `getCurrentEpoch` on its very next call regardless of the TTL — closing the
+     * stale-cache window where post-boundary content could federate under the outgoing
+     * epoch, or — at the 0→1 boundary specifically — in the CLEAR (see BASELINE_EPOCH
+     * bypass below).
+     */
+    workspaceId?: string;
+  },
 ): EpochEncryptCapability {
   // EI-6945: `getCurrentEpoch` (getHiveEpoch → getHiveSetting) is an UNCACHED PG
   // SELECT against harness_shared.pot_settings, and `encryptOp` is called ONCE PER
@@ -144,12 +158,19 @@ export function buildEpochEncryptCapability(
   // op briefly encrypted under the outgoing epoch), and this bounds staleness to
   // well under the drain's own poll cadence.
   const EPOCH_CACHE_TTL_MS = 5000;
-  let epochCache: { epoch: number; at: number } | null = null;
+  let epochCache: { epoch: number; at: number; generation: number } | null = null;
   const getCurrentEpochCached = async (): Promise<number> => {
     const now = Date.now();
-    if (epochCache && now - epochCache.at < EPOCH_CACHE_TTL_MS) return epochCache.epoch;
+    // WI-4075: the generation is the IMMEDIATE invalidation signal for a local epoch
+    // advance; the TTL alone is only a safety bound for remote/cross-process staleness.
+    // A cache hit requires BOTH the TTL to still be fresh AND the generation to be
+    // unchanged since it was populated.
+    const generation = deps.workspaceId !== undefined ? getEpochGeneration(deps.workspaceId, deps.potId) : 0;
+    if (epochCache && now - epochCache.at < EPOCH_CACHE_TTL_MS && epochCache.generation === generation) {
+      return epochCache.epoch;
+    }
     const epoch = await deps.getCurrentEpoch();
-    epochCache = { epoch, at: now };
+    epochCache = { epoch, at: now, generation };
     return epoch;
   };
   return {

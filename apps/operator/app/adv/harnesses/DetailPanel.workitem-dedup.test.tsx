@@ -63,6 +63,8 @@ describe('DetailPanel work-item detail subscription', () => {
     render(
       <NuqsTestingAdapter searchParams="?sel=WI-1">
         <DetailPanel
+          panelId={'p1' as never}
+          panelType={'detail' as never}
           params={{ harnessSlug: 'h1' } as never}
           api={{ setTitle: vi.fn() } as never}
         />

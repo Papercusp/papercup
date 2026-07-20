@@ -201,6 +201,46 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(head);
   });
 
+  describe('shallow source worktree (WI-5163: from-repo shallow:true default must not permanently refuse)', () => {
+    const REPO_S = 'repo-ohp-shallow';
+
+    it('a shallow clone is unshallowed before transfer, so publish lands instead of fail-closing forever', async () => {
+      // A real "origin" with enough history that a depth-1 clone is a
+      // genuinely graft-truncated shallow repo (parent unreachable).
+      const originRoot = await mkdtemp(join(tmpdir(), 'hgohp-origin-'));
+      await git(['init', '-q', '-b', BRANCH, originRoot], root);
+      await commitFile(originRoot, 'o1.txt', 'v1', 'o1');
+      await commitFile(originRoot, 'o2.txt', 'v2', 'o2');
+      const originHead = await commitFile(originRoot, 'o3.txt', 'v3', 'o3');
+
+      const shallowWorktree = await mkdtemp(join(tmpdir(), 'hgohp-shallow-'));
+      await git(['clone', '-q', '--depth', '1', '--branch', BRANCH, originRoot, shallowWorktree], root);
+      expect(await git(['rev-parse', '--is-shallow-repository'], shallowWorktree)).toBe('true');
+
+      const dev2 = devicePubkey();
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE,
+        repoKey: REPO_S,
+        worktreePath: shallowWorktree,
+        branch: BRANCH,
+        devicePubkeyBase64: dev2,
+      });
+      expect(out.errors, out.errors.join('; ')).toEqual([]);
+      expect(out.ran).toBe(true);
+      expect(out.changed).toBe(true);
+      expect(out.refused).toBeNull();
+      expect(out.headSha).toBe(originHead);
+      // The clone itself was unshallowed as a side effect of the fix.
+      expect(await git(['rev-parse', '--is-shallow-repository'], shallowWorktree)).toBe('false');
+
+      const repoPath = hiveGitRepoPath(HIVE, REPO_S);
+      expect(await readNamespaceRef(repoPath, dev2, `refs/heads/${BRANCH}`)).toBe(originHead);
+
+      await rm(originRoot, { recursive: true, force: true });
+      await rm(shallowWorktree, { recursive: true, force: true });
+    });
+  });
+
   describe('genesis-publish baseline (WI-5395 follow-on: onboarding a pre-existing repo)', () => {
     // A fresh device + repo key so every publish here is a genuine genesis.
     const REPO_G = 'repo-ohp-genesis';

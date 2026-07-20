@@ -131,6 +131,15 @@ describe('launch-tool routing guidance', () => {
     expect(launchAgent.guidance?.when).toContain('fleet:launch-on-plan');
     expect(launchAgent.guidance?.notWhen).toContain('capability:terminal');
   });
+
+  // WI-4753: the canonical routing doc must stay linked from every door's
+  // guidance, not just fleet:launch-on-plan's — a recurrence guard so the
+  // cross-link can't silently drop on a future guidance edit.
+  it('cross-links the canonical four-door routing table', () => {
+    expect(launchAgent.guidance?.notWhen).toContain(
+      'launching-agents-which-tool-for-which-door',
+    );
+  });
 });
 
 describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {

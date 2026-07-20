@@ -393,6 +393,13 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         resolveKey: ownerResolveKey,
         potId: HIVE_HOME,
         getCurrentEpoch: () => getHiveEpoch(WORKSPACE_ID, HIVE_HOME, dbOwner.adminSql),
+        // WI-4075: without this, the epoch-0 drain a few lines below populates the
+        // capability's 5s TTL cache; the epoch-1 drain right after the ban (well inside
+        // that window) would then re-use the STALE cached epoch 0 == BASELINE_EPOCH and
+        // federate the post-boundary plan in the CLEAR instead of stamping epoch 1 — this
+        // is the real production boundary-trigger path (boot-deps wires the same field),
+        // reproduced here.
+        workspaceId: WORKSPACE_ID,
       });
 
       // ── MEMBER B apply side: the REAL decrypt gate over the REAL member EpochKeyProvider

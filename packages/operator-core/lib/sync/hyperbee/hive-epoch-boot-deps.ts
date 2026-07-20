@@ -198,6 +198,9 @@ export async function buildHiveRekeyBootDeps(opts: {
       resolveKey,
       potId: potHomeSlug,
       getCurrentEpoch: () => getHiveEpoch(opts.workspaceId, potHomeSlug),
+      // WI-4075: enables immediate (not just TTL-bound) cache invalidation on a local
+      // epoch advance — see buildEpochEncryptCapability's doc comment.
+      workspaceId: opts.workspaceId,
     });
     // WI-808: the gate IS installed (applyImpl will be epochGate(enforcedApply)). Records the
     // resolved potHomeSlug — which is the AAD `potId`, so a decrypt-fail's hive=… can be

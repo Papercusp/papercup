@@ -1894,6 +1894,20 @@ export const FLAGS = {
   // precompute routine has not run in yet. NOT dark — see the OFF path in
   // lib/derived-reads/registry.ts (readDerivedSnapshot's `computeFallback`).
   PRECOMPUTE_DERIVED_READS: "papercusp-precompute-derived-reads",
+  // desktop-performance-suite-2026-07-20 P-011: the desktop-perf release gate.
+  // When ON, the green-checkpoint reads the latest persisted desktop-perf run
+  // (harness_shared.desktop_perf_runs, P-010) on a GREEN candidate and, if a
+  // budgeted interaction/route/RSS measure regressed, surfaces a WARN (logs +
+  // broadcasts) — it still ADVANCES the green pin. This is the desktop-UI
+  // sibling of the host perf-gate (perf-gate.ts), but flag-gated here instead of
+  // env-gated (the P-011 requirement: a FLAGS entry, never a process.env gate).
+  // DEFAULT ON (not in DARK_FLAGS): warn-only is safe to ship on — it can never
+  // hold a deploy. It is "warn-not-block until trusted": block-mode (holding the
+  // deploy on a regression) is deliberately NOT shipped yet (policy.block is
+  // hardwired false in desktop-perf-gate.ts); arming it is a future owner-gated
+  // step. Fail-soft: no persisted run / no measures ⇒ a no-op `pass`. OFF ⇒ the
+  // gate reads nothing and passes (kill-switch).
+  DESKTOP_PERF_GATE: "papercusp-desktop-perf-gate",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
