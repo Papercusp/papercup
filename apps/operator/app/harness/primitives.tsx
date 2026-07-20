@@ -11,6 +11,7 @@ import {
   CheckCircle,
   Circle,
   Eye,
+  Dices,
   FileDiff,
   FlaskConical,
   Hammer,
@@ -205,6 +206,10 @@ export const KIND_ICON: Record<WorkItemKindKey, LucideIcon> = {
   bug: Bug,
   change: FileDiff,
   task: ListChecks,
+  // Owner ask 2026-07-19: every kind carries its own icon on every surface
+  // that shows kind (Overview stats tile included).
+  bet: Dices,
+  'research-task': FlaskConical,
 };
 
 /** Work-item kind badge — icon + label chip, colored from the canonical

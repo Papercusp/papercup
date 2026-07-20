@@ -1214,6 +1214,84 @@ async function measureWarmRoute(
   return measureRoute(ctx, route, predicate);
 }
 
+interface InteractionMeasureSpec {
+  /** The perf-marks interaction name — the emitted performance.measure name
+   *  (apps/operator/app/_components/perf/perf-marks.ts PERF_INTERACTIONS). */
+  name: string;
+  /** JS statement(s) run first to bring the trigger into view (e.g. select the
+   *  Plans sidebar face). Wrapped in try/catch by the runner. Optional. */
+  setup?: string;
+  /** CSS selector for the element whose click STARTS the interaction. */
+  triggerSelector: string;
+  /** Max ms to wait for the trigger element to appear (default 8000). */
+  triggerTimeoutMs?: number;
+  /** Max ms to wait for the measure to be emitted after the click (default 8000). */
+  settleTimeoutMs?: number;
+}
+
+interface InteractionMeasureResult {
+  ok: boolean;
+  measuredMs: number;
+  detail: string;
+}
+
+/**
+ * Drive a REAL user interaction in the Tauri shell and read its page-relative
+ * `performance.measure` (perf-marks.ts). Unlike a warm-ROUTE settle, this clicks
+ * the actual trigger so the in-app beginInteraction/endInteraction hooks fire —
+ * the timing is immune to the eval-clock confound (EI-18128922194224210). One
+ * self-contained script: setup → wait-for-trigger → clear stale measure → click
+ * → poll for the measure → clean up. Reusable across interactions (P-005/P-006).
+ */
+async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpec): Promise<InteractionMeasureResult> {
+  const triggerTimeoutMs = spec.triggerTimeoutMs ?? 8_000;
+  const settleTimeoutMs = spec.settleTimeoutMs ?? 8_000;
+  const nameJson = JSON.stringify(spec.name);
+  const script = `
+    (async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      ${spec.setup ? `try { ${spec.setup} } catch (e) { return { stage: 'setup', error: String((e && e.message) || e) }; }` : ''}
+      const triggerDeadline = Date.now() + ${triggerTimeoutMs};
+      let trigger = null;
+      while (Date.now() < triggerDeadline) {
+        trigger = document.querySelector(${JSON.stringify(spec.triggerSelector)});
+        if (trigger) break;
+        await sleep(150);
+      }
+      if (!trigger) return { stage: 'trigger', error: 'trigger not found: ' + ${JSON.stringify(spec.triggerSelector)} };
+      try { if (performance.clearMeasures) performance.clearMeasures(${nameJson}); } catch (e) {}
+      trigger.click();
+      const settleDeadline = Date.now() + ${settleTimeoutMs};
+      let measuredMs = null;
+      while (Date.now() < settleDeadline) {
+        const entries = performance.getEntriesByName(${nameJson}, 'measure');
+        if (entries.length > 0) { measuredMs = Math.round(entries[entries.length - 1].duration); break; }
+        await sleep(100);
+      }
+      // Best-effort cleanup: drop the popup deep-link so the modal doesn't linger
+      // for the next check.
+      try {
+        const u = new URL(location.href);
+        if (u.searchParams.has('pplan')) {
+          u.searchParams.delete('pplan');
+          history.pushState({}, '', u.pathname + u.search + u.hash);
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }
+      } catch (e) {}
+      if (measuredMs === null) return { stage: 'settle', error: 'no ' + ${nameJson} + ' measure within ' + ${settleTimeoutMs} + 'ms' };
+      return { measuredMs };
+    })()
+  `;
+  const res = await runTauriEvalResultJson<{ measuredMs?: number; stage?: string; error?: string }>(
+    ctx,
+    script,
+    triggerTimeoutMs + settleTimeoutMs + 10_000,
+  );
+  if (!res.ok || !res.value) return { ok: false, measuredMs: 0, detail: describeCommandFailure(res) };
+  if (typeof res.value.measuredMs === 'number') return { ok: true, measuredMs: res.value.measuredMs, detail: '' };
+  return { ok: false, measuredMs: 0, detail: `${res.value.stage ?? 'unknown'}: ${res.value.error ?? 'no measure'}` };
+}
+
 async function measureRoute(
   ctx: SuiteContext,
   route: string,

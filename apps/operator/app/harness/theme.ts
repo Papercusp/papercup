@@ -164,6 +164,11 @@ const _WORK_ITEM_KIND_TABLE = {
   bug:             { solid: '#ef4444', bg: 'rgba(239,68,68,0.15)',   text: '#fca5a5', label: 'Bug' },
   change:          { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Change' },
   task:            { solid: '#94a3b8', bg: 'rgba(148,163,184,0.14)', text: '#cbd5e1', label: 'Task' },
+  // Owner ask 2026-07-19: bet + research-task are real wire kinds (work-items.ts)
+  // that previously fell through to the neutral fallback — own hue + label so
+  // every KindPill surface (Overview stats, Work items table, Detail) shows them.
+  bet:             { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)',  text: '#d8b4fe', label: 'Bet' },
+  'research-task': { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',  text: '#6ee7b7', label: 'Research' },
 } as const;
 
 export const WORK_ITEM_KIND = new Proxy(_WORK_ITEM_KIND_TABLE as Record<string, StatusMeta>, {
