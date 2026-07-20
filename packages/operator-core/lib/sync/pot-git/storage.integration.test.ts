@@ -147,3 +147,24 @@ describe('pot-git storage (real bare repo)', () => {
     await deleteNamespaceRef(repoPath, devB, 'refs/heads/cas'); // no throw
   });
 });
+
+describe('defaultRunGit timeoutMs override (github-bridge-ingress-timeout-too-short-2026-07-20, EI-18189246091367226)', () => {
+  it('a custom timeoutMs kills the process at that budget, not the 60s default', async () => {
+    // `hash-object --stdin` blocks reading stdin forever (we never write/close
+    // it) — a controlled, deterministic "hang" to prove the override actually
+    // shortens the kill budget instead of waiting out the 60s default.
+    const start = Date.now();
+    const res = await defaultRunGit(['hash-object', '--stdin'], '/tmp', { timeoutMs: 300 });
+    const elapsedMs = Date.now() - start;
+    expect(res.code).toBe(-1);
+    expect(res.stderr).toContain('timed out');
+    // Killed near the 300ms budget (SIGTERM at 300ms; well under the 60s default).
+    expect(elapsedMs).toBeLessThan(15_000);
+  }, 20_000);
+
+  it('omitting timeoutMs still resolves promptly for a fast command (default unaffected)', async () => {
+    const res = await defaultRunGit(['--version'], '/tmp');
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain('git version');
+  });
+});
