@@ -29,10 +29,14 @@
  * standalone `?? operatorHomeHarnessSlug()` seed-gym-routine.ts env-slug script was RETIRED
  * (per-hive-learning-loops-2026-06-14 P-022 / D-003).
  */
+import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { blueprintRetirement, type BlueprintRetirementInfo } from '@papercusp/orchestrator/blueprint';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { checkFireGate, recordFire } from '../../autoloop';
 import { listAutoloopsForWorkspace, setAutoloop } from '../../gym/control-plane';
+import { resolveProject } from '../../harness-core';
+import { getEffectiveBlueprint } from '../../blueprint/project-to-pg';
 import {
   GYM_AUTOLOOP_BUDGET_FLOOR_USD,
   runGymAutoloopTick,
@@ -85,6 +89,28 @@ const defaultRunCycle: GymCycleRunFn = async (req) => {
   return { spentUsd: r.spentUsd, breakerTripped: r.breakerTripped, cycles: r.cycles, accepts: r.accepts, skipped: r.skipped };
 };
 
+/**
+ * WI-5645 (no-retirement-launch-guard) live wiring: does this harness's effective
+ * blueprint (or any ancestor in its `extends` chain) resolve to RETIRED? Mirrors
+ * `getEffectiveBlueprint`'s use in `resolveHarnessDispatchGate` (dbos/orchestrator-loop.ts)
+ * — the same PG-cache-first, lazy-project-on-miss read, so this and the DBOS
+ * per-feature dispatcher never disagree about a given harness's retirement.
+ * Best-effort: an unresolvable project/blueprint returns null (not-retired) so a
+ * bad slug never stalls the gym tick — the tick core's `isBlueprintRetired` dep
+ * already fails open on a thrown error.
+ */
+async function isHarnessBlueprintRetired(workspaceId: string, slug: string): Promise<BlueprintRetirementInfo | null> {
+  const { sql } = getOrgPg();
+  const project = await resolveProject(slug, workspaceId);
+  if (!project) return null;
+  const bp = await getEffectiveBlueprint(sql as never, {
+    workspaceId,
+    harnessSlug: slug,
+    blueprintPath: join(project.path, '.papercusp', 'blueprint.yaml'),
+  });
+  return bp ? blueprintRetirement(bp) : null;
+}
+
 /** Budget floor (USD): env override PAPERCUSP_GYM_BUDGET_FLOOR_USD, else the tick default. */
 export function gymBudgetFloorUsd(): number {
   const raw = process.env.PAPERCUSP_GYM_BUDGET_FLOOR_USD;
@@ -125,6 +151,10 @@ registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
         const { checkHiveSingleRunner } = await import('../../hive-single-runner');
         return (await checkHiveSingleRunner(ctx.workspaceId, slug)).run;
       },
+      // WI-5645: refuse to fire a gym cycle against a harness whose effective
+      // blueprint (or an ancestor) is retired — the hard cost guard for the exact
+      // scenario EI-18177667809538623 hit (spend via a retired ancestor blueprint).
+      isBlueprintRetired: (slug) => isHarnessBlueprintRetired(ctx.workspaceId, slug),
       // P-030 (B-09): settle elapsed post-acceptance champion-outcome windows each tick.
       finalizeOutcomes: () =>
         finalizePendingChampionOutcomes(sql, { workspaceId: ctx.workspaceId, log: (m) => console.log(`[gym-cycle] ${m}`) }),
@@ -156,6 +186,9 @@ registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
     console.log(
       `[gym-cycle] idle — ${outcome.reason}` +
         (outcome.gateBlocked.length ? ` (fire-gate withheld: ${outcome.gateBlocked.join(', ')})` : '') +
+        (outcome.retiredBlocked?.length
+          ? ` (retired-blueprint withheld: ${outcome.retiredBlocked.map((r) => r.harnessSlug).join(', ')})`
+          : '') +
         ` (${outcome.eligibleCount} eligible autoloop(s))`,
     );
   } else if (outcome.action === 'ran') {

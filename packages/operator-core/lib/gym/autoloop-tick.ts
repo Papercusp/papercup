@@ -35,6 +35,7 @@
  * with zero PG / zero LLM / no docker (autoloop-tick.test.ts).
  */
 import type { GymAutoloopConfig, SetAutoloopInput } from './control-plane';
+import type { BlueprintRetirementInfo } from '@papercusp/orchestrator/blueprint';
 
 /** Below this remaining budget an autoloop is not worth (or safe) firing. */
 export const GYM_AUTOLOOP_BUDGET_FLOOR_USD = 0.5;
@@ -199,6 +200,17 @@ export interface GymTickDeps {
    */
   isHiveRunner?(harnessSlug: string): Promise<boolean>;
   /**
+   * WI-5645 (no-retirement-launch-guard): does this autoloop's harness resolve to
+   * a RETIRED blueprint (itself or any ancestor in its `extends` chain)? Live
+   * wiring reads the harness's effective blueprint (`getEffectiveBlueprint`) and
+   * `blueprintRetirement()`. Mirrors `isHiveRunner`'s optional-predicate shape:
+   * unwired ⇒ no filter (the hermetic unit-test contract is unchanged); a check
+   * failure fails OPEN (never stall the loop on an unresolvable gate — same
+   * rationale as the fire-gate / hive-runner checks below), so this is a
+   * best-effort cost guard, not a hard dependency.
+   */
+  isBlueprintRetired?(harnessSlug: string): Promise<BlueprintRetirementInfo | null>;
+  /**
    * P-030 (B-09): finalize due post-acceptance champion-outcome windows
    * (live wiring: finalizePendingChampionOutcomes — cheap SQL, no LLM).
    * Optional; returns the finalized count. Failures log, never fail the tick.
@@ -212,13 +224,18 @@ export interface GymTickOutcome {
   action: 'idle' | 'ran' | 'error';
   /** Why an idle tick did nothing. 'not-hive-runner' (P-020): eligible autoloops
    *  existed but every one belongs to a SHARED Hive another node is the elected
-   *  single runner for, so THIS node stood down. */
-  reason?: 'no-eligible-autoloop' | 'fire-gate-backoff' | 'not-hive-runner';
+   *  single runner for, so THIS node stood down. 'blueprint-retired' (WI-5645):
+   *  eligible autoloops existed but every one's harness resolves to a RETIRED
+   *  blueprint (itself or an ancestor). */
+  reason?: 'no-eligible-autoloop' | 'fire-gate-backoff' | 'not-hive-runner' | 'blueprint-retired';
   harnessSlug?: string;
   /** How many autoloops were eligible this tick (before the fire-gate walk). */
   eligibleCount: number;
   /** Eligible slugs withheld by the fire-gate (in LRU order, up to the chosen one). */
   gateBlocked: string[];
+  /** WI-5645: eligible slugs withheld because their blueprint (or an ancestor) is
+   *  retired — `{ slug, ...retirementInfo }` rows, for observability. */
+  retiredBlocked?: Array<{ harnessSlug: string } & BlueprintRetirementInfo>;
   /** The routed-idea directions handed to the cycle (observability). */
   candidateDirections?: string[];
   result?: GymCycleResult;
@@ -322,6 +339,48 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
     if (filtered.length === 0) {
       // Candidates existed, but every one belongs to a Hive another node runs.
       return { action: 'idle', reason: 'not-hive-runner', eligibleCount: 0, gateBlocked: [], ...reclaimExtra };
+    }
+    eligiblePool = filtered;
+  }
+
+  // WI-5645 (no-retirement-launch-guard): drop candidates whose harness resolves to
+  // a RETIRED blueprint (itself or any ancestor) — this is the hard cost guard that
+  // stops a gym autoloop from spending against e.g. `external-bench` (which
+  // `extends: coding-factory`, retired) the way EI-18177667809538623 did. Same
+  // fail-open shape as the hive-runner gate above: a check error keeps the
+  // candidate rather than starving the loop. Unwired ⇒ no filter (hermetic
+  // unit-test contract unchanged).
+  const retiredBlocked: Array<{ harnessSlug: string } & BlueprintRetirementInfo> = [];
+  if (deps.isBlueprintRetired && eligiblePool.length > 0) {
+    const verdicts = await Promise.all(
+      eligiblePool.map(async (c) => {
+        try {
+          return await deps.isBlueprintRetired!(c.harnessSlug);
+        } catch (e) {
+          log(`blueprint-retirement check failed for ${c.harnessSlug} — allowing: ${e instanceof Error ? e.message : e}`);
+          return null; // fail-open: never stall the loop on an unresolvable check
+        }
+      }),
+    );
+    const filtered = eligiblePool.filter((c, i) => {
+      const verdict = verdicts[i];
+      if (verdict) {
+        retiredBlocked.push({ harnessSlug: c.harnessSlug, ...verdict });
+        const detail = [verdict.at, verdict.reason].filter(Boolean).join(' — ');
+        log(`skipping retired-blueprint autoloop ${c.harnessSlug}${detail ? `: ${detail}` : ''}`);
+      }
+      return !verdict;
+    });
+    if (filtered.length === 0) {
+      // Candidates existed, but every one's harness resolves to a retired blueprint.
+      return {
+        action: 'idle',
+        reason: 'blueprint-retired',
+        eligibleCount: 0,
+        gateBlocked: [],
+        retiredBlocked,
+        ...reclaimExtra,
+      };
     }
     eligiblePool = filtered;
   }

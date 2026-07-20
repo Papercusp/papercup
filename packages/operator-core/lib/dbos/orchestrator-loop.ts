@@ -70,7 +70,12 @@ import {
   dispatchAuditorLane,
 } from '@papercusp/orchestrator';
 import type { AuditorSpawnFn, CreateEscalationFn, HarnessConfig } from '@papercusp/orchestrator';
-import { blueprintRetirement, type BlueprintDispatch, type BlueprintRetirementInfo } from '@papercusp/orchestrator/blueprint';
+import {
+  blueprintRetirement,
+  describeBlueprintRetirement,
+  type BlueprintDispatch,
+  type BlueprintRetirementInfo,
+} from '@papercusp/orchestrator/blueprint';
 import { getEffectiveBlueprint } from '../blueprint/project-to-pg';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { backgroundWorkspaceIds } from '../workspace-registry';
@@ -460,6 +465,8 @@ export interface HarnessDispatchGate {
    * gate in this function; a bad slug must never strand work).
    */
   blueprintRetirement: BlueprintRetirementInfo | null;
+  /** The resolved blueprint id `blueprintRetirement` (when non-null) applies to. */
+  blueprintId: string | null;
 }
 
 /**
@@ -523,7 +530,7 @@ async function resolveHarnessDispatchGate(
 ): Promise<HarnessDispatchGate> {
   try {
     const project = await resolveProject(slug, workspaceId);
-    if (!project) return { cap: 1, overCostCap: false, readiness: NEEDS_WORK, blueprintRetirement: null };
+    if (!project) return { cap: 1, overCostCap: false, readiness: NEEDS_WORK, blueprintRetirement: null, blueprintId: null };
     const stateDir = join(project.path, '.papercusp');
     const logDir = join(stateDir, 'logs');
     // Effective config from the blueprint (⊕ workspace-PG instance overrides), not
@@ -547,9 +554,9 @@ async function resolveHarnessDispatchGate(
       fleetCap: getCachedRateLimitConfig().maxSimultaneousAgents,
     });
     const overCostCap = evaluateCostCap(effectiveCfg, logDir, stateDir).overCap;
-    return { cap, overCostCap, readiness, blueprintRetirement: retirement };
+    return { cap, overCostCap, readiness, blueprintRetirement: retirement, blueprintId: effectiveBlueprint?.id ?? null };
   } catch {
-    return { cap: 1, overCostCap: false, readiness: NEEDS_WORK, blueprintRetirement: null };
+    return { cap: 1, overCostCap: false, readiness: NEEDS_WORK, blueprintRetirement: null, blueprintId: null };
   }
 }
 
@@ -783,11 +790,13 @@ export async function dispatchOneHarness(
     // P-006 (D-005): the gate is blueprint-driven — cap/costCap/readiness come
     // from the harness's effective blueprint `dispatch:` policy, refined by the
     // per-install config.
-    const { cap, overCostCap, readiness, blueprintRetirement: retirement } = await resolveHarnessDispatchGate(
-      pg,
-      slug,
-      workspaceId,
-    );
+    const {
+      cap,
+      overCostCap,
+      readiness,
+      blueprintRetirement: retirement,
+      blueprintId: dispatchBlueprintId,
+    } = await resolveHarnessDispatchGate(pg, slug, workspaceId);
     const slots = overCostCap || retirement ? 0 : Math.max(0, cap - liveCount);
     const { toStart, stuck, capped } = computeFrontier(features, planPriority, owned, slots, readiness);
     if (overCostCap) console.log(`[dbos-orchestrator] ${slug} over maxCostUsd — skipping new pipelines`);
@@ -796,7 +805,8 @@ export async function dispatchOneHarness(
     // autoloop (gym or otherwise) from spending on it.
     if (retirement) {
       console.warn(
-        `[dbos-orchestrator] ${slug} skipping new pipelines — ${describeBlueprintRetirement(retirement, slug)}`,
+        `[dbos-orchestrator] ${slug} skipping new pipelines — ` +
+          describeBlueprintRetirement(retirement, dispatchBlueprintId ?? slug),
       );
     }
     if (stuck) {

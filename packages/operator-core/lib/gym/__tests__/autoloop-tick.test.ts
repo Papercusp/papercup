@@ -515,3 +515,61 @@ describe('runGymAutoloopTick — P-020 isHiveRunner single-runner filter', () =>
     expect(out.harnessSlug).toBe('alpha');
   });
 });
+
+// ---------------------------------------------------------------------------
+// WI-5645 (no-retirement-launch-guard): refuse to fire a cycle against a
+// harness whose effective blueprint (or an ancestor) is retired — the hard
+// cost guard for the exact scenario EI-18177667809538623 hit ($14.51+ spent
+// via `external-bench`, which `extends: coding-factory`, retired).
+// ---------------------------------------------------------------------------
+describe('runGymAutoloopTick — WI-5645 isBlueprintRetired guard', () => {
+  it('runs an eligible autoloop when its blueprint is NOT retired', async () => {
+    const { deps, rec } = makeDeps([autoloop({ harnessSlug: 'alpha' })], {
+      isBlueprintRetired: async () => null,
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('alpha');
+    expect(rec.cycleReqs).toHaveLength(1);
+  });
+
+  it('stands down (blueprint-retired) when the only candidate resolves to a retired blueprint', async () => {
+    const { deps, rec } = makeDeps([autoloop({ harnessSlug: 'gymloopharness' })], {
+      isBlueprintRetired: async () => ({ retired: true, at: '2026-06-24', reason: 'dormant' }),
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('idle');
+    expect(out.reason).toBe('blueprint-retired');
+    expect(out.retiredBlocked).toEqual([{ harnessSlug: 'gymloopharness', retired: true, at: '2026-06-24', reason: 'dormant' }]);
+    expect(rec.cycleReqs).toEqual([]); // no cycle fired — no spend
+  });
+
+  it('keeps only the non-retired candidates (one retired, one eligible)', async () => {
+    const { deps, rec } = makeDeps(
+      [autoloop({ harnessSlug: 'external-bench-run' }), autoloop({ harnessSlug: 'healthy' })],
+      { isBlueprintRetired: async (slug) => (slug === 'external-bench-run' ? { retired: true } : null) },
+    );
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('healthy');
+    expect(rec.cycleReqs.map((r) => r.harnessSlug)).toEqual(['healthy']);
+  });
+
+  it('FAILS OPEN per candidate: a check error keeps the candidate (never stalls the loop)', async () => {
+    const { deps } = makeDeps([autoloop({ harnessSlug: 'alpha' })], {
+      isBlueprintRetired: async () => {
+        throw new Error('blueprint resolution outage');
+      },
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran'); // fail-open → candidate retained → cycle runs
+    expect(out.harnessSlug).toBe('alpha');
+  });
+
+  it('unwired (no isBlueprintRetired) ⇒ no filter — standalone behaviour unchanged', async () => {
+    const { deps } = makeDeps([autoloop({ harnessSlug: 'alpha' })]); // no override
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('alpha');
+  });
+});
