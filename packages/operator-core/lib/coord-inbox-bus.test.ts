@@ -105,26 +105,39 @@ describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', 
       .mockRejectedValueOnce(new Error('write CONNECTION_DESTROYED localhost:15968'))
       .mockResolvedValueOnce(undefined);
 
-    const { onCoordInbox } = await import('./coord-inbox-bus');
+    const { onCoordInbox, _coordInboxTestSeam } = await import('./coord-inbox-bus');
     onCoordInbox(vi.fn());
 
     await vi.advanceTimersByTimeAsync(0); // attempt 1 fails
+    // Deterministically settle the in-flight ensureStarted() attempt via the
+    // module's own test seam before asserting on it. A single
+    // advanceTimersByTimeAsync(0) tick is a real-wall-clock race under heavy
+    // CPU contention: ensureStarted() chains several await hops (initCursor's
+    // DB peek, then listen()) before the retry catch handler runs, and a
+    // loaded test:affected run (load1 > 40) can leave one of those hops
+    // unflushed when the assertion fires, reading listen() as "0 calls".
+    // Awaiting the seam's `ready` (== ensureStarted, memoized on the
+    // in-flight startPromise) blocks on the SAME promise chain instead of a
+    // fixed-time guess, so it is immune to scheduling delays.
+    await _coordInboxTestSeam.ready();
     expect(listen).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(499);
     expect(listen).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(1); // 500ms backoff elapses → retry succeeds
+    await _coordInboxTestSeam.ready(); // settle the retry attempt too (same race)
     expect(listen).toHaveBeenCalledTimes(2);
   });
 
   it('unsubscribing while a retry is pending cancels it — no leaked reconnect for an empty bus', async () => {
     listen.mockRejectedValue(new Error('still down'));
 
-    const { onCoordInbox } = await import('./coord-inbox-bus');
+    const { onCoordInbox, _coordInboxTestSeam } = await import('./coord-inbox-bus');
     const unsubscribe = onCoordInbox(vi.fn());
 
     await vi.advanceTimersByTimeAsync(0); // attempt 1 fails, retry scheduled
+    await _coordInboxTestSeam.ready(); // deterministic settle — see note above
     expect(listen).toHaveBeenCalledTimes(1);
 
     unsubscribe();
@@ -136,9 +149,10 @@ describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', 
   it('a well-formed first start never schedules a retry', async () => {
     listen.mockResolvedValueOnce(undefined);
 
-    const { onCoordInbox } = await import('./coord-inbox-bus');
+    const { onCoordInbox, _coordInboxTestSeam } = await import('./coord-inbox-bus');
     onCoordInbox(vi.fn());
     await vi.advanceTimersByTimeAsync(0);
+    await _coordInboxTestSeam.ready(); // deterministic settle — see note above
 
     expect(listen).toHaveBeenCalledTimes(1);
 

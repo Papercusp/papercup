@@ -30,6 +30,7 @@ const {
   findTranscriptMock,
   newestTranscriptMock,
   buildOwnerRespawnMock,
+  writePresenceMock,
 } = vi.hoisted(() => ({
   estimateMock: vi.fn(),
   specMock: vi.fn(),
