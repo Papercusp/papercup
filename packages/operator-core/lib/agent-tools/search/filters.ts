@@ -116,10 +116,19 @@ export async function resolveSearchFilters(
   if (args.session === 'self') {
     const { resolveSelfSession } = await import('../../search/self-session');
     selfSession = await resolveSelfSession(callerOwnerId);
-    sessionId = selfSession?.sessionId ?? undefined;
+    // session:'self' recall must span the caller's WHOLE respawn chain, not a
+    // single native session: a cold carry-respawn scatters the agent's history
+    // across MANY transcripts under ONE coord owner (WI-5644). Owner-scope it
+    // via the owner column (session_turns attributes every transcript to the
+    // coord ownerId) and NEVER pin filters.sessionId to one native id — pinning
+    // to the resolved session silently dropped all pre-respawn turns, which are
+    // exactly the pre-compaction history this sugar promises to recover.
+    if (callerOwnerId) owners.add(callerOwnerId);
+    sessionId = undefined;
     if (selfSession && opts?.liveTailSelf !== false) {
-      // Read-time freshness (D-002): force-tail the caller's own file so the
-      // last minutes are indexed before we search. One file — bounded + cheap.
+      // Read-time freshness (D-002): force-tail the caller's CURRENT transcript
+      // (resolveSelfSession now returns the newest/live one) so the last minutes
+      // are indexed before we search. One file — bounded + cheap.
       try {
         const { ingestFileNow } = await import('../../search/session-ingest');
         await ingestFileNow(selfSession.filePath, {
@@ -129,11 +138,6 @@ export async function resolveSearchFilters(
       } catch {
         /* fail-soft: the 2-min tick covers it */
       }
-    }
-    if (!selfSession && !owners.size && callerOwnerId) {
-      // Couldn't pin the file (e.g. an omp session without a resume uuid) —
-      // degrade to "my turns" via the owner column.
-      owners.add(callerOwnerId);
     }
   }
 

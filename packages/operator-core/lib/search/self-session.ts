@@ -158,21 +158,25 @@ export async function resolveSelfSession(
     command === 'omp' ? 'omp' : command === 'codex' ? 'codex' : 'claude';
 
   if (kind === 'claude') {
-    const roots = [
-      join(home, '.papercusp', 'session-claude', ownerId, 'projects'),
-      // Non-isolated interactive sessions land in the global dir.
-      ...(uuid ? [join(home, '.claude', 'projects')] : []),
-    ];
-    for (const root of roots) {
-      const files = await listJsonlUnder(root);
-      if (!files.length) continue;
-      if (uuid) {
-        const hit = files.find((f) => basename(f, '.jsonl') === uuid);
-        if (hit) return { sourceKind: 'claude', sessionId: uuid, filePath: hit };
-        continue;
-      }
-      const newest = await newestOf(files);
+    // The per-owner isolation dir holds ONLY this owner's sessions, so the
+    // NEWEST transcript is the current live one — authoritative even across
+    // cold carry-respawns, which mint a FRESH native session id each relaunch
+    // while the recorded --session-id (discovery args) and adv_sessions id go
+    // STALE (WI-5644 / cold-carry-self-recall-2026-07-20). Pinning the stale
+    // uuid here resolved `session:'self'` to the ORIGINAL transcript (or null
+    // when that file had been archive-reaped), so self-recall silently missed
+    // ALL post-respawn history. A file's mtime never goes stale; prefer it.
+    const isoFiles = await listJsonlUnder(join(home, '.papercusp', 'session-claude', ownerId, 'projects'));
+    if (isoFiles.length) {
+      const newest = await newestOf(isoFiles);
       if (newest) return { sourceKind: 'claude', sessionId: basename(newest, '.jsonl'), filePath: newest };
+    }
+    // A non-isolated interactive session shares ~/.claude/projects across
+    // owners, so THERE the recorded uuid is the only safe disambiguator.
+    if (uuid) {
+      const globalFiles = await listJsonlUnder(join(home, '.claude', 'projects'));
+      const hit = globalFiles.find((f) => basename(f, '.jsonl') === uuid);
+      if (hit) return { sourceKind: 'claude', sessionId: uuid, filePath: hit };
     }
     return null;
   }
