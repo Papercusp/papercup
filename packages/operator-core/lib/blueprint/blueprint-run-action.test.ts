@@ -104,24 +104,23 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     expect(fired[0].kickoff).toContain('demo');
   });
 
-  // WI-5645 (no-retirement-launch-guard): the no-blueprint `codingFallback()` default
-  // resolves to the now-RETIRED `coding-factory` — EI-18177667809538623's actual root
-  // chokepoint (a per-run substrate with no blueprint silently fell back here). A hard
-  // block would regress "still fires" (the documented behavior-preserving default for
-  // every blueprint-less harness), so this chokepoint only WARNS loudly — it must
-  // still fire. Uses the REAL (non-stripped) `loadBuiltinBlueprint('coding-factory')`
-  // via `codingFallback()`, not the file's `coding`/`withDecider` test fixture.
-  it("mode='run' falls back to the coding decider ('director') when no blueprint resolves, WARNING it's retired (WI-5645)", async () => {
+  // Owner-directed 2026-07-20 (EI-18177667809538623 follow-up): the no-blueprint `codingFallback()`
+  // default was REPOINTED from the RETIRED `coding-factory` (director spine) to the LIVE `coding-solo`
+  // (single-agent, decider `worker`), so a blueprint-less harness (e.g. `papercup`) never silently
+  // runs dead legacy code. It still fires (the behavior-preserving default is preserved — repoint,
+  // not removal), and it no longer emits the retirement warning because the fallback is now a live
+  // blueprint. Uses the REAL `loadBuiltinBlueprint('coding-solo')` via `codingFallback()`.
+  it("mode='run' falls back to the LIVE coding-solo decider ('worker') when no blueprint resolves, with NO retirement warning", async () => {
     const fired: Array<Parameters<DeciderFireFn>[0]> = [];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    setBlueprintResolver(async () => null); // harness has no blueprint → retired coding-factory fallback
+    setBlueprintResolver(async () => null); // harness has no blueprint → live coding-solo fallback
     setBlueprintRunFire((input) => { fired.push(input); });
 
     await handleBlueprintRun(ctx({ payloadTemplate: { mode: 'run' } }));
 
     expect(fired).toHaveLength(1); // still fires — this chokepoint never blocks
-    expect(fired[0].role).toBe('director'); // built-in coding spine.decider
-    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('RETIRED') && String(c[0]).includes('codingFallback'))).toBe(true);
+    expect(fired[0].role).toBe('worker'); // live coding-solo spine.decider (was coding-factory 'director')
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('RETIRED'))).toBe(false); // fallback is live now
     warnSpy.mockRestore();
   });
 
