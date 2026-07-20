@@ -32,7 +32,13 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
-import { loadBuiltinBlueprint, isProgramSpine, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import {
+  loadBuiltinBlueprint,
+  isProgramSpine,
+  blueprintRetirement,
+  describeBlueprintRetirement,
+  type Blueprint,
+} from '@papercusp/orchestrator/blueprint';
 import { resolveProjectDir } from '../spawn-config';
 import { loopbackFetch } from '../loopback-fetch';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from '../harness/routines/system-actions';
