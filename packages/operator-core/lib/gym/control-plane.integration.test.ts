@@ -22,7 +22,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { getAutoloop, setAutoloop, getPrompts, setPrompt, recordProposal, listProposals, GYM_PROMPT_KEYS } = await import('./control-plane');
+const { getAutoloop, setAutoloop, getPrompts, setPrompt, recordProposal, listProposals, autoDecideRunProposals, GYM_PROMPT_KEYS } = await import('./control-plane');
 const AGENT_ROLE = (GYM_PROMPT_KEYS as readonly string[]).find((k) => k !== 'judge')!; // a valid non-judge editable role
 
 const WS = 'ws-cp';
@@ -62,6 +62,27 @@ beforeAll(async () => {
       PRIMARY KEY (workspace_id, harness_slug, role)
     )`);
   await rootSql.unsafe(`
+    CREATE TABLE harness_shared.gym_champion_outcomes (
+      proposal_id text PRIMARY KEY,
+      workspace_id text NOT NULL, harness_slug text NOT NULL,
+      role text NOT NULL, variant_id text, cycle integer NOT NULL DEFAULT 0,
+      accepted_at bigint NOT NULL,
+      baseline_dev_anchor_delta double precision, baseline_cost_delta double precision,
+      baseline_probe_status text,
+      baseline_runs integer NOT NULL DEFAULT 0, baseline_succeeded integer NOT NULL DEFAULT 0,
+      baseline_failed integer NOT NULL DEFAULT 0,
+      post_window_ends_at bigint NOT NULL,
+      post_runs integer, post_succeeded integer, post_failed integer,
+      success_rate_delta double precision,
+      verdict text NOT NULL DEFAULT 'pending', evaluated_at bigint
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.spawned_agents (
+      workspace_id text NOT NULL, harness_slug text NOT NULL,
+      child_role text NOT NULL, status text NOT NULL,
+      started_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  await rootSql.unsafe(`
     CREATE TABLE harness_shared.gym_proposals (
       id text PRIMARY KEY,
       workspace_id text NOT NULL, harness_slug text NOT NULL,
@@ -78,7 +99,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.gym_autoloop_config, harness_shared.harness_prompt_overrides, harness_shared.gym_proposals`;
+  await rootSql`TRUNCATE harness_shared.gym_autoloop_config, harness_shared.harness_prompt_overrides, harness_shared.gym_proposals, harness_shared.gym_champion_outcomes, harness_shared.spawned_agents`;
 });
 
 describe('setAutoloop / getAutoloop (PG)', () => {
@@ -156,5 +177,80 @@ describe('recordProposal (PG)', () => {
     expect(v1.map((p) => p.id)).toEqual(['b', 'a']); // cycle DESC, only v1
     const pending = await listProposals(rootSql, { workspaceId: WS, harnessSlug: HS, status: 'pending' });
     expect(pending).toHaveLength(3); // all pending
+  });
+});
+
+describe('autoDecideRunProposals — autonomous promotion (owner mandate 2026-07-19)', () => {
+  const RUN_START = 1_800_000_000_000;
+  const NOW = RUN_START + 60_000;
+  const seed = (over: {
+    id: string;
+    createdAt: number;
+    devAnchorDelta: number | null;
+    status?: string;
+    proposedMd?: string;
+  }) =>
+    rootSql`
+      INSERT INTO harness_shared.gym_proposals
+        (id, workspace_id, harness_slug, cycle, variant_id, role, proposed_md,
+         dev_anchor_delta, status, created_at)
+      VALUES
+        (${over.id}, ${WS}, ${HS}, 1, ${over.id}, ${AGENT_ROLE},
+         ${over.proposedMd ?? `P ${over.id}`}, ${over.devAnchorDelta},
+         ${over.status ?? 'pending'}, ${over.createdAt})`;
+
+  it('accepts the winner (prompt promoted + outcome window opened), rejects the rest, leaves pre-run rows alone', async () => {
+    await seed({ id: 'old-pending', createdAt: RUN_START - 10_000, devAnchorDelta: 9 }); // BEFORE the run
+    await seed({ id: 'winner', createdAt: RUN_START + 1, devAnchorDelta: 0.05, proposedMd: 'CHAMPION MD' });
+    await seed({ id: 'loser', createdAt: RUN_START + 2, devAnchorDelta: -0.02 });
+    await seed({ id: 'no-delta', createdAt: RUN_START + 3, devAnchorDelta: null });
+
+    const res = await autoDecideRunProposals(rootSql, {
+      workspaceId: WS,
+      harnessSlug: HS,
+      sinceMs: RUN_START,
+      now: NOW,
+    });
+    expect(res).toEqual({ accepted: 1, rejected: 2 });
+
+    const byId = new Map(
+      (await rootSql<{ id: string; status: string; decided_at: string | null }[]>`
+        SELECT id, status, decided_at FROM harness_shared.gym_proposals`).map((r) => [r.id, r]),
+    );
+    expect(byId.get('winner')!.status).toBe('accepted');
+    expect(byId.get('loser')!.status).toBe('rejected');
+    expect(byId.get('no-delta')!.status).toBe('rejected');
+    // A row recorded BEFORE this run is not this run's to decide.
+    expect(byId.get('old-pending')!.status).toBe('pending');
+
+    // The winning challenger's prompt IS the new champion (the same atomic
+    // write the human accept performed).
+    const promo = await rootSql<{ prompt_md: string }[]>`
+      SELECT prompt_md FROM harness_shared.harness_prompt_overrides
+       WHERE workspace_id = ${WS} AND harness_slug = ${HS} AND role = ${AGENT_ROLE}`;
+    expect(promo).toHaveLength(1);
+    expect(promo[0]!.prompt_md).toBe('CHAMPION MD');
+
+    // Acceptance opened the post-acceptance outcome-tracking window.
+    const outcome = await rootSql<{ proposal_id: string; verdict: string }[]>`
+      SELECT proposal_id, verdict FROM harness_shared.gym_champion_outcomes`;
+    expect(outcome).toHaveLength(1);
+    expect(outcome[0]!.proposal_id).toBe('winner');
+    expect(outcome[0]!.verdict).toBe('pending');
+  });
+
+  it('is idempotent — a second sweep finds nothing pending and decides nothing', async () => {
+    await seed({ id: 'winner', createdAt: RUN_START + 1, devAnchorDelta: 1 });
+    await autoDecideRunProposals(rootSql, { workspaceId: WS, harnessSlug: HS, sinceMs: RUN_START, now: NOW });
+    const again = await autoDecideRunProposals(rootSql, { workspaceId: WS, harnessSlug: HS, sinceMs: RUN_START, now: NOW });
+    expect(again).toEqual({ accepted: 0, rejected: 0 });
+  });
+
+  it('never touches already-decided rows in the window', async () => {
+    await seed({ id: 'decided', createdAt: RUN_START + 1, devAnchorDelta: 5, status: 'rejected' });
+    const res = await autoDecideRunProposals(rootSql, { workspaceId: WS, harnessSlug: HS, sinceMs: RUN_START, now: NOW });
+    expect(res).toEqual({ accepted: 0, rejected: 0 });
+    const rows = await rootSql<{ status: string }[]>`SELECT status FROM harness_shared.gym_proposals WHERE id = 'decided'`;
+    expect(rows[0]!.status).toBe('rejected');
   });
 });

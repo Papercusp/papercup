@@ -53,6 +53,33 @@ function shortOwnerLabel(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
 }
 
+/**
+ * B (cold-with-carry-activation-2026-07-20, owner-directed): the arm-time carry
+ * DEFAULT when the caller passes no explicit `carry`. A HEADLESS session
+ * (host.bridgeTty===false ⇒ sessionClassForHost 'claude-headless') defaults to
+ * 'cold' — an unattended AUTO loop should shed its transcript to its carry-note
+ * each wake, not re-wake the SAME warm session until context overflows and dies
+ * uncleanly (WI-5557 / the fa10eeb7 warm-to-974k-death incident). An INTERACTIVE /
+ * human-present session ALWAYS stays warm (D-005 never-cold-a-human).
+ *
+ * Flag-gated (HEADLESS_LOOPS_COLD_BY_DEFAULT, default ON) and FAIL-SOFT: any
+ * resolution failure — flag store down, no live host discovery record — yields
+ * 'warm' (the historical default), so this can only ADD cold on a CONFIDENTLY
+ * headless session, never surprise-cold anything. Layered under SU_COLD_AUTO: even
+ * a cold-armed loop only actually colds when that master gate is on AND a carry-note
+ * exists (decideColdWake), so this is a DEFAULT change, not a new cold path.
+ */
+async function resolveDefaultCarry(ownerId: string): Promise<'warm' | 'cold'> {
+  try {
+    if (!(await getFlag(FLAGS.HEADLESS_LOOPS_COLD_BY_DEFAULT, 'system'))) return 'warm';
+    const host = findLiveHost(ownerId);
+    if (host && sessionClassForHost(host) === 'claude-headless') return 'cold';
+  } catch {
+    /* fail-soft to the historical warm default */
+  }
+  return 'warm';
+}
+
 export default defineTool({
   name: 'loop:arm',
   profile: 'engineer',
@@ -112,7 +139,7 @@ export default defineTool({
       .enum(['warm', 'cold'])
       .optional()
       .describe(
-        "Loop lifecycle (su-cold-auto-mode-2026-07-03, D-001 opt-in). 'warm' (DEFAULT) = today's behaviour — each fire re-wakes THIS same warm session in place, context carried. 'cold' = the opt-in fresh-context lifecycle for an UNATTENDED AUTO loop: each fire RESETs the session to its carry-note (a periodic RECYCLE every Nth wake) instead of a warm turn, so the transcript never grows unbounded. Cold requires a carry-note anchor and stays inert until the cold-auto master gate is enabled (Phase 3). NEVER use 'cold' for an interactive/human-present session (D-005).",
+        "Loop lifecycle (su-cold-auto-mode-2026-07-03). DEFAULT (cold-with-carry-activation-2026-07-20): a HEADLESS/unattended session defaults to 'cold', an INTERACTIVE session to 'warm' — pass this only to OVERRIDE that default. 'warm' = each fire re-wakes THIS same warm session in place, context carried (an unbounded warm loop can hit the ceiling and die — WI-5557). 'cold' = the fresh-context lifecycle for an UNATTENDED AUTO loop: each fire RESETs the session to its carry-note (a periodic RECYCLE every Nth wake) instead of a warm turn, so the transcript never grows unbounded. Cold requires a carry-note anchor and the cold-auto master gate (decideColdWake). NEVER use 'cold' for an interactive/human-present session (D-005).",
       ),
     continuation: z
       .enum(['settle', 'gated'])
@@ -213,7 +240,11 @@ export default defineTool({
     // softText fields (P-002): never bounced on length — clamp to cap here.
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
-    const carry = args.carry ?? 'warm';
+    // B (cold-with-carry-activation-2026-07-20): an unspecified carry now RESOLVES a
+    // default — 'cold' for an unattended headless session, 'warm' otherwise (see
+    // resolveDefaultCarry). An explicit args.carry always wins. `carry` from here on
+    // is the RESOLVED value, threaded into materializeLoop + the kickoff + response.
+    const carry = args.carry ?? (await resolveDefaultCarry(ownerId));
     const resolvedMode = args.mode ?? 'work';
 
     // WI-5557 TIER 1 — an unattended warm-carry WORK loop with neither dead-man guard set
@@ -301,7 +332,7 @@ export default defineTool({
       costCapCents: args.costCapCents ?? null,
       maxFires: args.maxFires ?? null,
       maxDurationSec: args.maxDurationSec ?? null,
-      carry: args.carry ?? 'warm',
+      carry,
       continuation: args.continuation ?? 'settle',
       mode: resolvedMode,
     });
@@ -371,7 +402,7 @@ export default defineTool({
               harness,
               intervalSec: args.intervalSec,
               goal,
-              carry: args.carry ?? 'warm',
+              carry,
               continuation: args.continuation ?? 'settle',
               mode: resolvedMode,
               costCapCents: args.costCapCents ?? null,

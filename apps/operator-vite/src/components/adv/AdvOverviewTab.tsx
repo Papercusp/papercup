@@ -765,7 +765,8 @@ export default function AdvOverviewTab() {
         .pc-overview__tile-state { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); padding: 6px 0; }
         .pc-overview__tile-state[data-error='true'] { color: #fca5a5; }
         /* Plan rows */
-        .pc-overview__plan { display: flex; flex-direction: column; gap: 4px; }
+        /* Flex on INNER spans only — WebKitGTK ignores flex on <button>. */
+        .pc-overview__plan { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
         .pc-overview__plan-head { display: flex; align-items: baseline; gap: 8px; }
         .pc-overview__plan-title {
           flex: 1; min-width: 0;
@@ -782,10 +783,11 @@ export default function AdvOverviewTab() {
           transition: width 240ms ease;
         }
         /* Generic list rows (needs-you / agents / activity) */
-        .pc-overview__row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+        .pc-overview__row { display: flex; align-items: center; gap: 7px; min-width: 0; width: 100%; }
         /* Clickable rows (plans / agents / activity deep-links) — a quiet
            button reset that keeps the row layout, plus a soft hover. */
         .pc-overview__rowbtn {
+          display: block;
           border: none;
           background: transparent;
           font: inherit;

@@ -496,6 +496,13 @@ const invoke = defineTool({
     // keeps route registration side-effect-free; the cost is a one-time async import.
     const { spawnInvokeOnce } = await import('../../../dbos/orchestrator-runner');
     const env: Record<string, string> = suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {};
+    // Carry the omp→claude-code tracked-launch rescue (above) through to the
+    // ACTUAL spawned child: buildInvokeOnce (via spawnInvokeOnce's extraEnv)
+    // independently re-resolves the backend from scratch and would otherwise
+    // land back on the same unconfigured omp default this route just rescued
+    // itself from, spawning the wrong CLI under the native session id it minted
+    // for claude.
+    if (backendFallbackForSpawnEnv) env.PAPERCUSP_SPAWN_BACKEND = backendFallbackForSpawnEnv;
     // Instance-config env-transport parity (cloud-deployment P-008): spawnInvokeOnce
     // attaches HARNESS_CONFIG_JSON only when the spawn env names the install
     // (HARNESS_SLUG + PAPERCUSP_WORKSPACE_ID — buildPipelineExtraEnv stamps them on the
