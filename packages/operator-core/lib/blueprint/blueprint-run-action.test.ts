@@ -107,6 +107,40 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     expect(fired[0].role).toBe('director'); // built-in coding spine.decider
   });
 
+  // WI-5645 (no-retirement-launch-guard): the no-blueprint `codingFallback()` default
+  // resolves to the now-RETIRED `coding-factory` — EI-18177667809538623's actual root
+  // chokepoint (a per-run substrate with no blueprint silently fell back here). A hard
+  // block would regress the "still fires" contract of the test directly above (the
+  // documented behavior-preserving default for every blueprint-less harness), so this
+  // chokepoint only WARNS loudly — it must still fire.
+  it('WI-5645: warns loudly (but still fires) when the codingFallback default is retired', async () => {
+    const fired: Array<Parameters<DeciderFireFn>[0]> = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setBlueprintResolver(async () => null); // harness has no blueprint → retired coding-factory fallback
+    setBlueprintRunFire((input) => { fired.push(input); });
+
+    await handleBlueprintRun(ctx({ payloadTemplate: { mode: 'run' } }));
+
+    expect(fired).toHaveLength(1); // still fires — this chokepoint never blocks
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('RETIRED') && String(c[0]).includes('codingFallback'))).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('WI-5645: does NOT warn when the resolved blueprint is not retired', async () => {
+    const fired: Array<Parameters<DeciderFireFn>[0]> = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // withDecider() spreads the retired coding-factory fixture — clear `retired`
+    // explicitly so this assertion isolates the "not retired" case.
+    setBlueprintResolver(async () => ({ ...withDecider('auditor'), retired: undefined }));
+    setBlueprintRunFire((input) => { fired.push(input); });
+
+    await handleBlueprintRun(ctx({ payloadTemplate: { mode: 'run' } }));
+
+    expect(fired).toHaveLength(1);
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('RETIRED'))).toBe(false);
+    warnSpy.mockRestore();
+  });
+
   it("mode='run' WITHHOLDS the fire when the backoff gate denies (P-009 / D-009)", async () => {
     const fired: Array<Parameters<DeciderFireFn>[0]> = [];
     setBlueprintResolver(async () => withDecider('director'));

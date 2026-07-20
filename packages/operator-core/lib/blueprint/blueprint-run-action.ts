@@ -510,7 +510,27 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
   }
 
   const resolve = _resolver ?? resolveBlueprint;
-  const bp = (await resolve(installSlug, workspaceId)) ?? codingFallback();
+  const resolved = await resolve(installSlug, workspaceId);
+  const bp = resolved ?? codingFallback();
+  // WI-5645 (no-retirement-launch-guard): LOUD WARNING, not a block, when this fire
+  // is about to run against a retired blueprint (itself or via `extends` — e.g. the
+  // EI-18177667809538623 external-bench ⟶ coding-factory shape, or the no-blueprint
+  // `codingFallback()` default itself, which is `coding-factory`). Deliberately NOT
+  // refused here: `codingFallback()` is the documented behavior-preserving default
+  // for every blueprint-less harness (blueprint-run-action.test.ts pins that it still
+  // fires), so a hard block at this chokepoint risks silently halting dispatch for an
+  // unknown, possibly large, set of live harnesses that have no `.papercusp/blueprint.yaml`
+  // at all — a bigger, undiagnosed regression than the spend this guards against. The
+  // orchestrator-loop.ts dispatch gate + the gym autoloop tick (this WI's other two
+  // chokepoints) DO hard-block; this one only makes the fallback's retirement visible.
+  const retirement = blueprintRetirement(bp);
+  if (retirement) {
+    console.warn(
+      `[blueprint-run] ${installSlug}: firing decider against a RETIRED blueprint — ` +
+        `${describeBlueprintRetirement(retirement, bp.id)}` +
+        (resolved ? '' : ' (via the no-blueprint codingFallback() default)'),
+    );
+  }
   const mode = typeof payloadTemplate?.mode === 'string' ? payloadTemplate.mode : 'run';
 
   if (mode === 'work-item') {
