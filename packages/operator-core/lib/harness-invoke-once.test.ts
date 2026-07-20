@@ -23,6 +23,7 @@ import {
   applyRoleModel,
   buildInvokeOnce,
   inferBackendFromModelSpec,
+  isOmpBackendExplicitlyConfigured,
   resolveSpawnBackendModel,
   roleBackendOverride,
   type InvokeOnceSpec,

@@ -65,10 +65,21 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
+// B (cold-with-carry-activation-2026-07-20): findLiveHost drives the headless carry
+// default. Mock it (default null ⇒ warm, so the WI-1471 identity tests are unchanged)
+// with the REAL sessionClassForHost logic so per-test hosts classify correctly.
+vi.mock('../../events/await/psu-pty-discovery', () => ({
+  findLiveHost: vi.fn(() => null),
+  sessionClassForHost: (host: { bridgeTty?: boolean } | null | undefined) =>
+    host?.bridgeTty === false ? 'claude-headless' : 'claude-interactive',
+}));
+
 import { materializeLoop, buildLoopWakePrompt, detectDrivenWorkItemId } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
+import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { decideDefaultCarry } from './arm';
 
 const materializeM = vi.mocked(materializeLoop);
 const buildPromptM = vi.mocked(buildLoopWakePrompt);

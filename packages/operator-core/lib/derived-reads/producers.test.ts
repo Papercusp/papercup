@@ -165,3 +165,70 @@ describe('derived-reads producers: rubrics.list', () => {
     expect(out[0]?.scorecardCount).toBe(968); // the true total, not 500 (cappedRead.length)
   });
 });
+
+// insights.coordTokens producer (phase2 P-002 / WI-5584). The compute wires the
+// three load-token-rollups loaders inside a workspace-routed transaction and
+// returns the SAME `[{ pricingBook, coordBreakdown, pollVolume }]` shape the
+// resolver used to build inline. The only invariant worth pinning here (beyond
+// the loaders, tested at their own boundary): it precomputes the DEFAULT variant
+// — no harness_slug, default windows — because a snapshot keyed on
+// (ws, harness_slug, key) can only ever hold that one view.
+async function loadCoordTokensProducer() {
+  vi.resetModules();
+  vi.doMock('@papercusp/db-org', () => ({
+    // route the callback with a stub tx; loaders are mocked so tx is untouched.
+    withWorkspace: async (_ws: string, fn: (tx: unknown) => Promise<unknown>) => fn({ unsafe: async () => [] }),
+  }));
+  const registry = await import('./registry');
+  registry.__clearDerivedReadRegistryForTest();
+  await import('./producers');
+  const producer = registry.listDerivedReadProducers().find((p) => p.key === 'insights.coordTokens');
+  if (!producer) throw new Error('insights.coordTokens producer not registered');
+  return producer;
+}
+
+describe('derived-reads producers: insights.coordTokens', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => {
+    vi.doUnmock('../harness-insights/load-token-rollups');
+    vi.doUnmock('@papercusp/db-org');
+    vi.resetModules();
+  });
+
+  it('computes the DEFAULT variant: loaders called with the ctx workspace, NO harness_slug, default windows', async () => {
+    const loadModelPricingBook = vi.fn(async () => [{ modelId: 'opus' }]);
+    const loadCoordTokenBreakdown = vi.fn(async () => ({
+      windowMs: 604800000,
+      byTrigger: [],
+      triggerAttributionAvailable: false,
+      byRoleClass: [{ roleClass: 'fleet', tokens: 10, costUsd: 5, runs: 2 }],
+    }));
+    const loadCoordPollVolume = vi.fn(async () => ({ windowMs: 86400000, tools: [], wakePollCalls: 7, wakePollRowSharePct: 75 }));
+    vi.doMock('../harness-insights/load-token-rollups', () => ({
+      loadModelPricingBook,
+      loadCoordTokenBreakdown,
+      loadCoordPollVolume,
+    }));
+
+    const producer = await loadCoordTokensProducer();
+    expect(producer.scope).toBe('workspace');
+    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as Array<Record<string, unknown>>;
+
+    // Same one-row shape the resolver's inline path produced.
+    expect(out).toHaveLength(1);
+    expect(out[0]!.pricingBook).toEqual([{ modelId: 'opus' }]);
+    expect(out[0]!.coordBreakdown).toMatchObject({ byRoleClass: [{ roleClass: 'fleet' }] });
+    expect(out[0]!.pollVolume).toMatchObject({ wakePollCalls: 7 });
+
+    // DEFAULT variant only: workspace from ctx, NO harness_slug, windowMs unset
+    // (loaders apply their own 7d/1d defaults).
+    expect(loadCoordTokenBreakdown).toHaveBeenCalledTimes(1);
+    const breakdownArgs = loadCoordTokenBreakdown.mock.calls[0]![0] as Record<string, unknown>;
+    expect(breakdownArgs.workspace_id).toBe('ws-test');
+    expect(breakdownArgs.harness_slug).toBeUndefined();
+    expect(breakdownArgs.windowMs).toBeUndefined();
+    const pollArgs = loadCoordPollVolume.mock.calls[0]![0] as Record<string, unknown>;
+    expect(pollArgs.workspace_id).toBe('ws-test');
+    expect(pollArgs.windowMs).toBeUndefined();
+  });
+});
