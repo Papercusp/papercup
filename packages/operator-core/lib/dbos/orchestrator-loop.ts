@@ -70,7 +70,7 @@ import {
   dispatchAuditorLane,
 } from '@papercusp/orchestrator';
 import type { AuditorSpawnFn, CreateEscalationFn, HarnessConfig } from '@papercusp/orchestrator';
-import type { BlueprintDispatch } from '@papercusp/orchestrator/blueprint';
+import { blueprintRetirement, type BlueprintDispatch, type BlueprintRetirementInfo } from '@papercusp/orchestrator/blueprint';
 import { getEffectiveBlueprint } from '../blueprint/project-to-pg';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { backgroundWorkspaceIds } from '../workspace-registry';
@@ -450,6 +450,16 @@ export interface HarnessDispatchGate {
   overCostCap: boolean;
   /** Dispatchable statuses (`dispatch.readiness`; legacy NEEDS_WORK when undeclared). */
   readiness: ReadonlySet<string>;
+  /**
+   * WI-5645 (no-retirement-launch-guard): non-null when the harness's effective
+   * blueprint (or any ancestor in its `extends` chain) is retired — the launch
+   * eligibility verdict `blueprintRetirement()` reads off the resolved blueprint.
+   * A retired harness gets ZERO new-pipeline slots (same lever as `overCostCap`),
+   * so no autoloop (gym or otherwise) can spend against it. `null` when eligible
+   * or when the blueprint couldn't be resolved (fail-open — matches every other
+   * gate in this function; a bad slug must never strand work).
+   */
+  blueprintRetirement: BlueprintRetirementInfo | null;
 }
 
 /**
@@ -513,19 +523,22 @@ async function resolveHarnessDispatchGate(
 ): Promise<HarnessDispatchGate> {
   try {
     const project = await resolveProject(slug, workspaceId);
-    if (!project) return { cap: 1, overCostCap: false, readiness: NEEDS_WORK };
+    if (!project) return { cap: 1, overCostCap: false, readiness: NEEDS_WORK, blueprintRetirement: null };
     const stateDir = join(project.path, '.papercusp');
     const logDir = join(stateDir, 'logs');
     // Effective config from the blueprint (⊕ workspace-PG instance overrides), not
     // config.json (deprecate-harness-config-json-2026-06-06).
     const cfg = await readEffectiveHarnessConfig(slug, workspaceId, project.path);
-    const dispatch = await getEffectiveBlueprint(pg as never, {
+    const effectiveBlueprint = await getEffectiveBlueprint(pg as never, {
       workspaceId,
       harnessSlug: slug,
       blueprintPath: join(stateDir, 'blueprint.yaml'),
-    })
-      .then((bp) => bp?.dispatch ?? null)
-      .catch(() => null);
+    }).catch(() => null);
+    const dispatch = effectiveBlueprint?.dispatch ?? null;
+    // WI-5645: the resolved blueprint already carries its ancestor chain's
+    // `retired` (extends deep-merges it), so one read here covers every
+    // extends-derived harness (e.g. external-bench ⟶ coding-factory) too.
+    const retirement = effectiveBlueprint ? blueprintRetirement(effectiveBlueprint) : null;
     const { cap, readiness, effectiveCfg } = resolveDispatchPolicy({
       dispatch,
       cfg,
@@ -534,9 +547,9 @@ async function resolveHarnessDispatchGate(
       fleetCap: getCachedRateLimitConfig().maxSimultaneousAgents,
     });
     const overCostCap = evaluateCostCap(effectiveCfg, logDir, stateDir).overCap;
-    return { cap, overCostCap, readiness };
+    return { cap, overCostCap, readiness, blueprintRetirement: retirement };
   } catch {
-    return { cap: 1, overCostCap: false, readiness: NEEDS_WORK };
+    return { cap: 1, overCostCap: false, readiness: NEEDS_WORK, blueprintRetirement: null };
   }
 }
 
@@ -770,10 +783,22 @@ export async function dispatchOneHarness(
     // P-006 (D-005): the gate is blueprint-driven — cap/costCap/readiness come
     // from the harness's effective blueprint `dispatch:` policy, refined by the
     // per-install config.
-    const { cap, overCostCap, readiness } = await resolveHarnessDispatchGate(pg, slug, workspaceId);
-    const slots = overCostCap ? 0 : Math.max(0, cap - liveCount);
+    const { cap, overCostCap, readiness, blueprintRetirement: retirement } = await resolveHarnessDispatchGate(
+      pg,
+      slug,
+      workspaceId,
+    );
+    const slots = overCostCap || retirement ? 0 : Math.max(0, cap - liveCount);
     const { toStart, stuck, capped } = computeFrontier(features, planPriority, owned, slots, readiness);
     if (overCostCap) console.log(`[dbos-orchestrator] ${slug} over maxCostUsd — skipping new pipelines`);
+    // WI-5645: refuse new pipeline starts against a retired blueprint (or a
+    // blueprint extending one) — the launch-eligibility guard that stops an
+    // autoloop (gym or otherwise) from spending on it.
+    if (retirement) {
+      console.warn(
+        `[dbos-orchestrator] ${slug} skipping new pipelines — ${describeBlueprintRetirement(retirement, slug)}`,
+      );
+    }
     if (stuck) {
       console.warn(
         `[dbos-orchestrator] ${slug} frontier STUCK — work remains but nothing is ready ` +
