@@ -84,7 +84,13 @@ describe('queryNamesForTriggerEvent', () => {
 
   it('handles *Consolidated tables', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_features_consolidated.changed')).toEqual(
-      expect.arrayContaining(['featuresConsolidated.bySlug', 'featuresConsolidated.byPlanSlug']),
+      // P-007: the on-demand single-feature detail read must be busted alongside
+      // bySlug so an open Detail pane live-refreshes its Description.
+      expect.arrayContaining([
+        'featuresConsolidated.bySlug',
+        'featuresConsolidated.detail',
+        'featuresConsolidated.byPlanSlug',
+      ]),
     );
     expect(queryNamesForTriggerEvent('harness_shared.agent_runs_consolidated.changed')).toEqual(
       expect.arrayContaining(['agentRunsConsolidated.bySlug', 'agentRunsConsolidated.recent']),

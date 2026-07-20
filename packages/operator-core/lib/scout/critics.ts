@@ -149,18 +149,37 @@ export async function runCritic(
 ): Promise<CriticRawScores> {
   const { system, user } = buildCriticPrompt(idea, nearestPriors, ctx);
   const thinkingBudgetTokens = ctx.thinkingBudgetTokens ?? 1024;
-  const res = await deps.llmCall({
-    model: ctx.model ?? DEFAULT_CRITIC_MODEL,
-    system,
-    messages: [{ role: 'user', content: user }],
-    responseFormat: 'json',
-    thinkingBudgetTokens,
-    // Headroom for SERVER-SIDE thinking (claude-5-family models emit it against
-    // this budget even though thinkingBudgetTokens is client-side fiction — see
-    // ideators.ts): a tight cap truncates the JSON mid-object → parseLlmJson null
-    // → feasibility 0 → every idea silently REVIEWED, never kept (EI-13119 class).
-    maxTokens: thinkingBudgetTokens + 8192,
-  });
+  let res: Awaited<ReturnType<ScoutLlmCall>>;
+  try {
+    res = await deps.llmCall({
+      model: ctx.model ?? DEFAULT_CRITIC_MODEL,
+      system,
+      messages: [{ role: 'user', content: user }],
+      responseFormat: 'json',
+      thinkingBudgetTokens,
+      // Headroom for SERVER-SIDE thinking (claude-5-family models emit it against
+      // this budget even though thinkingBudgetTokens is client-side fiction — see
+      // ideators.ts): a tight cap truncates the JSON mid-object → parseLlmJson null
+      // → feasibility 0 → every idea silently REVIEWED, never kept (EI-13119 class).
+      maxTokens: thinkingBudgetTokens + 8192,
+    });
+  } catch (err) {
+    // WI-4475: critiqueIdeas now fans every idea's critic call out CONCURRENTLY
+    // (see below) instead of one-at-a-time, so a single rate-limited/failed call
+    // must never abort the whole batch — it did before this catch existed, which
+    // is what made one bad critic call throw the entire cycle (recorded as
+    // "Scout cycle timed out ... phase critique" even though healthy accounts
+    // existed — the failure was a THROWN batch, not a stuck account). Same
+    // fail-safe shape as the unparseable-JSON path below: feasibility 0 forbids
+    // 'keep', novelty ceiling stays intact, the idea surfaces as
+    // reviewed/rejected instead of silently vanishing or nuking its siblings.
+    return {
+      conceptualNovelty: 1,
+      feasibility: 0,
+      rationale: `critic call failed: ${err instanceof Error ? err.message : String(err)}`,
+      costUsd: 0,
+    };
+  }
   const parsed = parseLlmJson(res) as Record<string, unknown> | null;
   if (parsed == null) {
     // Fail safe: an unparseable critic cannot smuggle an idea through to KEEP —
@@ -220,10 +239,19 @@ export async function critiqueIdeas(
   deps: { llmCall: ScoutLlmCall },
   opts: CritiqueOptions = {},
 ): Promise<CritiqueResult> {
-  const critiques: ScoredIdea[] = [];
-  for (const idea of ideas) {
-    critiques.push(await critiqueIdea(idea, corpus, deps, opts));
-  }
+  // WI-4475 (bug-drain-200k): this used to be a plain `for...of` loop with an
+  // `await` per idea — N ideas meant N SEQUENTIAL LLM round-trips summed into the
+  // SAME 600s scout-cycle deadline. That serialization, not a broken account
+  // failover, is what produced "Scout cycle timed out after 600000ms during
+  // phase critique" on ticks whose poolSnapshotAtFire (WI-5436) showed healthy
+  // accounts available — the failover mechanism was never the defect; the phase
+  // just never gave it the chance to matter. Fan the calls out concurrently
+  // instead (mirrors runIdeators' Promise.all roster fan-out): wall time is now
+  // bounded by the SLOWEST single critique, not their sum. runCritic's catch
+  // above keeps one failed call from crashing the batch.
+  const critiques: ScoredIdea[] = await Promise.all(
+    ideas.map((idea) => critiqueIdea(idea, corpus, deps, opts)),
+  );
   const buckets = bucketByCritique(
     critiques.map((c) => ({ id: c.idea.id, novelty: c.novelty, feasibility: c.feasibility })),
     opts.bucket,

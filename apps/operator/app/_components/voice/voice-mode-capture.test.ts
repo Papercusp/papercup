@@ -494,7 +494,7 @@ describe('shouldSkipVoicemodeWhisperOnThisRuntime', () => {
 // these cover the user-facing semantics — return-to-idle, queue-clear (no
 // overlap), mode-off stop, and clean resume.
 describe('barge-in (TTS interruption)', () => {
-  const synth = () => (globalThis as { window: { speechSynthesis: { speak: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> } } }).window.speechSynthesis;
+  const synth = () => (globalThis as unknown as { window: { speechSynthesis: { speak: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> } } }).window.speechSynthesis;
 
   it('cancel while speaking returns to idle and clears the speaking role', async () => {
     const mod = await loadVoiceMode();

@@ -911,6 +911,36 @@ describe('runGreenCheckpoint', () => {
     expect(await revParse(repo, 'ready')).toBe(c2);
   });
 
+  // P-011 (desktop-performance-suite): the desktop-perf gate runs post-runGreen /
+  // pre-advance, same call-site shape as perf/delta-gate.
+  it('P-011: a desktop-perf BLOCK holds the green pin even when the candidate is green', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.desktopPerfGate = async (candidate) => {
+      calls.push('desktopPerfGate');
+      return { action: 'block', summary: `desktop-perf BLOCK ${candidate.slice(0, 7)}` };
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: false, green: true, reason: 'desktop-perf-held' });
+    expect(await revParse(repo, 'ready')).toBe(c1); // pin NOT advanced
+    expect(calls).toContain('desktopPerfGate');
+    expect(calls).not.toContain('advance');
+    expect(calls).toContain('escalate');
+  });
+
+  it('P-011: a desktop-perf WARN surfaces (broadcast) but still advances — default-warn', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps } = stubDeps(true);
+    deps.desktopPerfGate = async () => ({ action: 'warn', summary: 'desktop-perf WARN — regressed but advancing' });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced' });
+    expect(await revParse(repo, 'ready')).toBe(c2); // advanced despite the warn
+  });
+
   // EI-11118 (cupboard-public-release P-009 durable fix): the Cupboard prod-hygiene
   // gate runs post-runGreen / pre-advance, same call-site shape as perf/delta-gate.
   it('EI-11118: a cupboard-hygiene BLOCK holds the green pin even when the candidate is green', async () => {

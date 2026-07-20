@@ -17,6 +17,7 @@ import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import FeatureEditor from '../../harness/FeatureEditor';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
 import type { WorkingAgent } from './AdvAgentsPanel';
@@ -189,9 +190,32 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
 
   const kind = useMemo(() => resolveSelectionKind(selectedId), [selectedId]);
 
+  // P-007: featuresConsolidated.bySlug no longer carries the per-row `summary`
+  // (dropped at the sync boundary — the grid never renders it). Fetch the selected
+  // feature's FULL detail on demand (its own tiny 1-row query, not a fork of the
+  // list key), so the Description prose shows the full summary. Enabled only while
+  // a feature is actually selected. Mirrors the workItems.byHarness/.detail split.
+  const featureDetailWorkspaceId = useWorkspaceId();
+  const featureDetailQuery = useSyncQuery<{ featureId: string; summary?: string | null }>({
+    queryName: 'featuresConsolidated.detail',
+    args: { harnessSlug: slug, featureId: selectedId, workspaceId: featureDetailWorkspaceId },
+    enabled: Boolean(slug) && kind === 'feature' && Boolean(selectedId),
+  });
+  const featureDetailSummary =
+    !featureDetailQuery.loading && featureDetailQuery.data?.[0]?.featureId === selectedId
+      ? (featureDetailQuery.data[0].summary ?? undefined)
+      : undefined;
   const feature = useMemo(
-    () => (kind === 'feature' ? (features ?? []).find((f) => f.id === selectedId) ?? null : null),
-    [kind, features, selectedId],
+    () => {
+      if (kind !== 'feature') return null;
+      const listFeature = (features ?? []).find((f) => f.id === selectedId) ?? null;
+      if (!listFeature) return null;
+      // Prefer the on-demand detail summary; the list row's summary is now absent.
+      return featureDetailSummary !== undefined
+        ? { ...listFeature, summary: featureDetailSummary }
+        : listFeature;
+    },
+    [kind, features, selectedId, featureDetailSummary],
   );
   const issue = useMemo(
     () => (kind === 'issue' ? (issues ?? []).find((i) => i.id === selectedId) ?? null : null),
