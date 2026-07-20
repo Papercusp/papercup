@@ -126,7 +126,7 @@ export interface DurableVariantRow {
 export async function readDurableCycleHistory(sql: Sql, scope: DurableAnalyticsScope): Promise<CycleHistoryRow[]> {
   const rows = await sql<{ cycle: number; parent_id: string | null; candidate_id: string | null; decision: string | null }[]>`
     SELECT cycle, parent_id, candidate_id, decision
-      FROM harness_gym.gym_cycles
+      FROM harness_gym_durable.gym_cycles
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
      ORDER BY cycle`;
   return rows.map((r) => ({ cycle: Number(r.cycle), parentId: r.parent_id, candidateId: r.candidate_id, decision: r.decision }));
@@ -136,7 +136,7 @@ export async function readDurableCycleHistory(sql: Sql, scope: DurableAnalyticsS
 export async function readDurableVariants(sql: Sql, scope: DurableAnalyticsScope): Promise<DurableVariantRow[]> {
   const rows = await sql<Record<string, unknown>[]>`
     SELECT variant_id, parent_id, label, status, diff_from_parent, proposer_rationale
-      FROM harness_gym.gym_variants
+      FROM harness_gym_durable.gym_variants
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
      ORDER BY variant_id`;
   return rows.map((r) => ({
@@ -153,10 +153,10 @@ export async function readDurableVariants(sql: Sql, scope: DurableAnalyticsScope
 export async function readDurableScoredTrainRows(sql: Sql, scope: DurableAnalyticsScope, rubricHash: string): Promise<ScoredTrainRow[]> {
   const rows = await sql<{ variant_id: string; task_id: string; composite: number }[]>`
     SELECT r.variant_id, r.task_id, s.composite
-      FROM harness_gym.gym_runs r
-      JOIN harness_gym.gym_tasks t
+      FROM harness_gym_durable.gym_runs r
+      JOIN harness_gym_durable.gym_tasks t
         ON t.workspace_id = r.workspace_id AND t.harness_slug = r.harness_slug AND t.task_id = r.task_id AND t.pool = 'train'
-      JOIN harness_gym.gym_scores s
+      JOIN harness_gym_durable.gym_scores s
         ON s.workspace_id = r.workspace_id AND s.harness_slug = r.harness_slug AND s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
      WHERE r.workspace_id = ${scope.workspaceId} AND r.harness_slug = ${scope.harnessSlug}`;
   return rows.map((r) => ({ variantId: r.variant_id, taskId: r.task_id, composite: Number(r.composite) }));

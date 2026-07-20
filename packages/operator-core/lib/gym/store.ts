@@ -203,7 +203,7 @@ export async function copyRunAnalyticsToDurable(
   await dst.begin(async (tx) => {
     for (const r of tasks) {
       await tx`
-        INSERT INTO harness_gym.gym_tasks (workspace_id, harness_slug, task_id, pool, spec, intent, repo_url, repo_commit, generated_by, created_at)
+        INSERT INTO harness_gym_durable.gym_tasks (workspace_id, harness_slug, task_id, pool, spec, intent, repo_url, repo_commit, generated_by, created_at)
         VALUES (${ws}, ${hs}, ${r.task_id as string}, ${r.pool as string}, ${(r.spec ?? null) as string | null}, ${(r.intent ?? null) as string | null},
                 ${(r.repo_url ?? null) as string | null}, ${(r.repo_commit ?? null) as string | null}, ${(r.generated_by ?? null) as string | null},
                 ${(r.created_at ?? new Date()) as Date})
@@ -212,7 +212,7 @@ export async function copyRunAnalyticsToDurable(
     }
     for (const r of variants) {
       await tx`
-        INSERT INTO harness_gym.gym_variants (workspace_id, harness_slug, variant_id, parent_id, label, prompt_overrides, diff_from_parent, proposer_rationale, status, created_at)
+        INSERT INTO harness_gym_durable.gym_variants (workspace_id, harness_slug, variant_id, parent_id, label, prompt_overrides, diff_from_parent, proposer_rationale, status, created_at)
         VALUES (${ws}, ${hs}, ${r.variant_id as string}, ${(r.parent_id ?? null) as string | null}, ${r.label as string},
                 ${jsonbPassthrough(r.prompt_overrides, '{}')}::text::jsonb, ${(r.diff_from_parent ?? null) as string | null},
                 ${(r.proposer_rationale ?? null) as string | null}, ${(r.status ?? 'candidate') as string}, ${(r.created_at ?? new Date()) as Date})
@@ -222,7 +222,7 @@ export async function copyRunAnalyticsToDurable(
     }
     for (const r of runs) {
       await tx`
-        INSERT INTO harness_gym.gym_runs (workspace_id, harness_slug, run_id, variant_id, task_id, cycle, repeat, terminal_state, started_at, finished_at, elapsed_ms)
+        INSERT INTO harness_gym_durable.gym_runs (workspace_id, harness_slug, run_id, variant_id, task_id, cycle, repeat, terminal_state, started_at, finished_at, elapsed_ms)
         VALUES (${ws}, ${hs}, ${r.run_id as string}, ${r.variant_id as string}, ${r.task_id as string}, ${Number(r.cycle ?? 0)}, ${Number(r.repeat ?? 0)},
                 ${(r.terminal_state ?? null) as string | null}, ${(r.started_at ?? null) as Date | null}, ${(r.finished_at ?? null) as Date | null},
                 ${r.elapsed_ms == null ? null : Number(r.elapsed_ms)})
@@ -232,7 +232,7 @@ export async function copyRunAnalyticsToDurable(
     }
     for (const r of scores) {
       await tx`
-        INSERT INTO harness_gym.gym_scores (workspace_id, harness_slug, run_id, judge_model, rubric_hash, judge_temp, weights, d1, d2, d3, composite, rationale, scored_at)
+        INSERT INTO harness_gym_durable.gym_scores (workspace_id, harness_slug, run_id, judge_model, rubric_hash, judge_temp, weights, d1, d2, d3, composite, rationale, scored_at)
         VALUES (${ws}, ${hs}, ${r.run_id as string}, ${r.judge_model as string}, ${r.rubric_hash as string}, ${r.judge_temp == null ? null : Number(r.judge_temp)},
                 ${jsonbPassthrough(r.weights, '{}')}::text::jsonb, ${Number(r.d1 ?? 0)}, ${Number(r.d2 ?? 0)}, ${Number(r.d3 ?? 0)}, ${Number(r.composite ?? 0)},
                 ${(r.rationale ?? null) as string | null}, ${(r.scored_at ?? new Date()) as Date})
@@ -241,7 +241,7 @@ export async function copyRunAnalyticsToDurable(
     }
     for (const r of cycles) {
       await tx`
-        INSERT INTO harness_gym.gym_cycles (workspace_id, harness_slug, cycle_id, cycle, parent_id, candidate_id, decision, gate_results, budget_spent_usd, created_at)
+        INSERT INTO harness_gym_durable.gym_cycles (workspace_id, harness_slug, cycle_id, cycle, parent_id, candidate_id, decision, gate_results, budget_spent_usd, created_at)
         VALUES (${ws}, ${hs}, ${r.cycle_id as string}, ${Number(r.cycle ?? 0)}, ${(r.parent_id ?? null) as string | null}, ${(r.candidate_id ?? null) as string | null},
                 ${(r.decision ?? null) as string | null}, ${jsonbPassthrough(r.gate_results, null)}::text::jsonb, ${r.budget_spent_usd == null ? null : Number(r.budget_spent_usd)},
                 ${(r.created_at ?? new Date()) as Date})
@@ -307,8 +307,8 @@ export async function compareDurableVariants(
   const rows = await sql<{ task_id: string; a: number | null; b: number | null }[]>`
     WITH scored AS (
       SELECT r.task_id, r.variant_id, s.composite
-        FROM harness_gym.gym_runs r
-        JOIN harness_gym.gym_scores s
+        FROM harness_gym_durable.gym_runs r
+        JOIN harness_gym_durable.gym_scores s
           ON s.workspace_id = r.workspace_id AND s.harness_slug = r.harness_slug
          AND s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
        WHERE r.workspace_id = ${scope.workspaceId} AND r.harness_slug = ${scope.harnessSlug}

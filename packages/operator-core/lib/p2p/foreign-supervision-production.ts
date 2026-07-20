@@ -72,7 +72,11 @@ export function productionOriginLastSeenAt(
 ): SupervisionDeps['originLastSeenAt'] {
   return async (originGithubUserId: number) => {
     const sql = opts.sql ?? getOrgPg().sql;
-    const rows = await queryFederatedPresenceRows(sql, {
+    // postgres-js's Sql<{}> call-signature doesn't structurally match the
+    // generic tagged-template shape queryFederatedPresenceRows declares —
+    // the SAME mismatch its other production caller (listFederatedPresence,
+    // federated-presence.ts) already casts around.
+    const rows = await queryFederatedPresenceRows(sql as never, {
       workspaceId: opts.workspaceId,
       potSlug: opts.potHomeSlug,
     });

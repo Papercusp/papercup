@@ -31,10 +31,24 @@
  *   - Long replay window. Default `exp` is 24h; for short-lived spawns
  *     pass a smaller `ttlSec`.
  *
- * Coarse revocation: UPDATE the row in operator_secrets with a new
- * value and bump the in-process cache (or restart the operator). Every
- * in-flight signed URL fails its next call. Use sparingly — the
- * orchestrator will need to re-spawn anything affected.
+ * Coarse revocation: rotate via `rotateSpawnSigningKey()` (the
+ * `/admin/spawn-signing/rotate` route — `remediate:true` by default, so it
+ * also auto-relaunches the sessions it just invalidated, WI-3194). Every
+ * in-flight signed URL fails its next call. Use sparingly — anything not
+ * auto-remediated needs a manual re-spawn.
+ *
+ * ⚠ A PLAIN OPERATOR RESTART DOES **NOT** ROTATE THIS KEY (WI-4447,
+ * verified 2026-07-20). The key lives in `operator_secrets`, a durable PG
+ * row read fresh by `loadOrCreateKey()` on every process start — a
+ * restarted process reloads the SAME value, so every previously-signed URL
+ * keeps verifying. Restarting merely resets this process's local
+ * `verifiedSpawns()` tracker (used only for rotation-strand vs. unverified
+ * *classification* of a failure that already happened for some other
+ * reason) — it is not itself a source of signature failures. Only an
+ * explicit call to `rotateSpawnSigningKey()` changes `value_b64`. Bumping
+ * the in-process cache after a manual PG UPDATE (outside this module) is
+ * the one case restarting the operator is a valid *substitute* for — don't
+ * read that as "restarting revokes."
  *
  * Spec: see also docs/endpoint-system/superuser-mode.mdx and the
  * spawn-mcp.ts side in libs/papercusp/packages/orchestrator (the

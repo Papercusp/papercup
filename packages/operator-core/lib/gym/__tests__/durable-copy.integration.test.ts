@@ -120,7 +120,7 @@ describe('durable run-analytics copy (migration 650)', () => {
     // jsonb round-trips (not double-encoded): the candidate's worker overlay is a real object.
     const [ov] = await dst<{ worker: string | null }[]>`
       SELECT prompt_overrides->>'worker' AS worker
-        FROM harness_gym.gym_variants
+        FROM harness_gym_durable.gym_variants
        WHERE workspace_id = 'ws1' AND harness_slug = 'h1' AND variant_id = 'cand-c0'`;
     expect(ov.worker).toContain('Re-read the spec.');
 
