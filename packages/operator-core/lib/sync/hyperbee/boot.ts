@@ -1774,7 +1774,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // path below, and the cross-restart chronic-zombie path.
   function escalateToForcedRejoin(logKeyHex: string, kind: string, eventMessage: string): void {
     const now = Date.now();
-    if (now - lastRejoinEscalationMs < REJOIN_ESCALATION_COOLDOWN_MS) return;
+    if (now - lastRejoinEscalationMs < REJOIN_ESCALATION_COOLDOWN_MS) {
+      // WI-5639 (bug-drain-200k): this early-return used to be completely
+      // silent — a genuinely NEW stall that arrives within the harness-wide
+      // cooldown window of an EARLIER, unrelated rejoin gets no forced-rejoin
+      // (by design: the cooldown assumes the earlier rejoin already covers
+      // it), but nothing recorded that the skip happened. That left a
+      // structurally unanswerable question during soak-SLA-miss triage:
+      // "did this stall's prompt escalation actually get skipped by the
+      // cooldown, or did it never reach here at all?" console.info (not
+      // .warn/.error) for the same reason the success log below is
+      // unguarded — meant to be always-on/grep-able, not test-suppressed.
+      console.info(
+        `[replication-liveness] repair-exhausted: forced-rejoin SKIPPED (cooldown ` +
+          `${Math.round((REJOIN_ESCALATION_COOLDOWN_MS - (now - lastRejoinEscalationMs)) / 1000)}s ` +
+          `remaining) log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${kind} — ` +
+          `assuming the earlier rejoin within this window already covers this stall`,
+      );
+      return;
+    }
     lastRejoinEscalationMs = now;
     recordBootEvent(opts.workspaceId, opts.harnessSlug, 'replication_repair_exhausted', eventMessage);
     // console.info (not .error/.warn) — matches the repair-on-detect success
