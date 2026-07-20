@@ -124,7 +124,11 @@ export function AnalyzePanel({
               label={cycleSummary(c)}
               defaultOpen={i === 0}
             >
-              <CycleDetail cycle={c} />
+              {/* P-007: the full artifacts load on demand — this body only mounts
+                  when the disclosure is open (Radix Collapsible unmounts closed
+                  cycles), so its own single-cycle sync query fires per expand
+                  instead of learning.analyze shipping all 8 pipelines up-front. */}
+              <CycleDetailLoader cycleId={c.cycleId} />
             </LearningDisclosure>
           ))}
         </div>
@@ -305,6 +309,30 @@ function groupIdeasByLens<T extends { lens?: string | null } | null | undefined>
   return [...groups.entries()].sort(
     (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
   );
+}
+
+/** P-007: on-demand loader for one cycle's FULL artifacts. Mounts only when its
+ *  parent disclosure is open (Radix unmounts closed cycles), so this single-cycle
+ *  sync query fires per expand — learning.analyze itself ships only the summary. */
+function CycleDetailLoader({ cycleId }: { cycleId: string }) {
+  const sync = useSyncQuery<AnalyzeCycle>({
+    queryName: "learning.analyzeCycle",
+    args: { cycleId },
+    staleTime: 30_000,
+  });
+  const cycle = sync.data?.[0];
+  if (sync.error) {
+    return (
+      <LearningVisualError
+        title="This cycle's artifacts failed to load"
+        onRetry={() => sync.invalidate()}
+      />
+    );
+  }
+  if (!cycle) {
+    return <p className="pc-learning__quietempty">Loading cycle artifacts…</p>;
+  }
+  return <CycleDetail cycle={cycle} />;
 }
 
 function CycleDetail({ cycle }: { cycle: AnalyzeCycle }) {

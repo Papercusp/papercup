@@ -64,3 +64,58 @@ describe('drainSentinelOutput', () => {
     await expect(drainSentinelOutput()).resolves.toEqual([]);
   });
 });
+
+// WI-5174: a settled deep-delegation answer whose Sentinel-pane write fails
+// (no dock — the normal desktop case) falls back to notifyOperatorHindsight,
+// which appends the answer to the chat thread as TEXT ONLY. This drain is the
+// local-mode (Kokoro/whisper) counterpart of voice-mode.ts's full-agent-only
+// drainHindsightOnConnect, so those answers get spoken too.
+describe('drainHindsightForSpeech', () => {
+  it('hits the drain=1 endpoint and prefixes each headline for speech', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [{ headline: 'papercusp harness is green.' }] }),
+    });
+    await expect(drainHindsightForSpeech()).resolves.toEqual([
+      'While you were away: papercusp harness is green.',
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agent-mcp/operator-hindsight?drain=1', {
+      method: 'GET',
+    });
+  });
+
+  it('strips the machine-readable [deep-answer WI-NNN] marker before speaking', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [{ headline: '[deep-answer WI-5174] papercusp harness is green.' }],
+      }),
+    });
+    await expect(drainHindsightForSpeech()).resolves.toEqual([
+      'While you were away: papercusp harness is green.',
+    ]);
+  });
+
+  it('filters malformed / empty items', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [{ headline: '' }, { headline: 42 }, {}, null] }),
+    });
+    await expect(drainHindsightForSpeech()).resolves.toEqual([]);
+  });
+
+  it('returns [] on a non-ok response', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 });
+    await expect(drainHindsightForSpeech()).resolves.toEqual([]);
+  });
+
+  it('returns [] on malformed JSON', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => { throw new Error('bad json'); } });
+    await expect(drainHindsightForSpeech()).resolves.toEqual([]);
+  });
+
+  it('returns [] when fetch itself rejects', async () => {
+    fetchMock.mockRejectedValue(new Error('offline'));
+    await expect(drainHindsightForSpeech()).resolves.toEqual([]);
+  });
+});

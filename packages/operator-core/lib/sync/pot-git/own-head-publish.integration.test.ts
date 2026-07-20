@@ -214,7 +214,11 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
       const originHead = await commitFile(originRoot, 'o3.txt', 'v3', 'o3');
 
       const shallowWorktree = await mkdtemp(join(tmpdir(), 'hgohp-shallow-'));
-      await git(['clone', '-q', '--depth', '1', '--branch', BRANCH, originRoot, shallowWorktree], root);
+      // `file://` (not a bare local path) forces git's smart-protocol clone
+      // path — a same-filesystem local-path clone silently IGNORES --depth
+      // (git's --local optimization hardlinks the whole .git dir) and would
+      // produce a non-shallow clone, defeating this test's whole premise.
+      await git(['clone', '-q', '--depth', '1', '--branch', BRANCH, `file://${originRoot}`, shallowWorktree], root);
       expect(await git(['rev-parse', '--is-shallow-repository'], shallowWorktree)).toBe('true');
 
       const dev2 = devicePubkey();

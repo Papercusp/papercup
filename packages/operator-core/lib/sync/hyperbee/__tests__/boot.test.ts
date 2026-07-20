@@ -2409,7 +2409,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     // deliberate, expected `console.error(...)` (advance-past-unreadable-op),
     // same rationale as the other spies in this file. Mock it so this
     // intentional log doesn't trip vitest-fail-on-console.
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const workspaceId = 'ws-repair-confirm-5340';
     const harnessSlug = 's-repair-confirm-5340';
     const keyHex = 'a1'.repeat(32);
