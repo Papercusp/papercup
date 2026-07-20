@@ -668,6 +668,10 @@ export async function bootSingleHarness(
     bootHarness?: (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>;
     /** Remote handles are wired in their owning process; skip main-process send-side loops. */
     skipSendSideWiring?: boolean;
+    /** Override the replication-liveness stall grace (ms). Default: env
+     *  PAPERCUSP_REPLICATION_STALL_GRACE_MS if set, else bootHarnessSubstrate's
+     *  own DEFAULT_REPLICATION_STALL_GRACE_MS (180s, unchanged in production). */
+    replicationStallGraceMs?: number;
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
@@ -751,6 +755,24 @@ export async function bootSingleHarness(
   const timeoutMs =
     opts.timeoutMs ??
     (Number.isFinite(envBootTimeout) && envBootTimeout > 0 ? envBootTimeout : 30_000);
+  // EI-13317/WI-5481 rig-isolation follow-up: the connected_never_replicated
+  // (zombie-socket) DETECTION grace (replication-liveness.ts's
+  // DEFAULT_LIVENESS_GRACE_MS, threaded through boot.ts's
+  // REPLICATION_STALL_GRACE_MS into sampleReplicationLiveness) defaults to 180s —
+  // structurally larger than replication_soak's 90s SLA, so whenever the zombie
+  // path actually triggers during a kill/restart cycle the soak fails by
+  // construction, REGARDLESS of how promptly EI-13317's forced-rejoin escalation
+  // fires afterward (live-evidenced: gate run 20260720-054709, cycles 3/4 both
+  // legs FAIL, "204s"/"217s connected-but-dead" before the episode even fires —
+  // the escalation itself is prompt, the DETECTION isn't). Same operator-tunable
+  // pattern as the WI-1892 boot timeout above: env-only override, PRODUCTION
+  // DEFAULT UNCHANGED (180s) unless explicitly set — this exists so the local
+  // rig (bin/local-matrix.sh) can test a shorter grace without touching the
+  // production constant.
+  const envGraceMs = Number(process.env.PAPERCUSP_REPLICATION_STALL_GRACE_MS);
+  const replicationStallGraceMs =
+    opts.replicationStallGraceMs ??
+    (Number.isFinite(envGraceMs) && envGraceMs > 0 ? envGraceMs : undefined);
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
   // WI-1892: keep a reference to the RAW boot promise (not the raced one) so a
   // boot that outlives the timeout can be ADOPTED instead of zombified — see the
@@ -773,6 +795,7 @@ export async function bootSingleHarness(
       harnessSlug,
       swarmBinding,
       mergeCursorStore,
+      replicationStallGraceMs,
       // WI-752 late-join re-wire: the presence step no-ops against a swarm-less
       // handle and is then marked wired, so a join that only succeeds via the
       // retry left presence-gossip dead for the process lifetime (tower bg-host,
