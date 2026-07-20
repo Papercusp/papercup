@@ -36,7 +36,7 @@ import { emitPipelineEvent } from '../../../events/pipeline-events';
 import { recordAdvSession, markAdvSessionEnded } from '../../../adv-sessions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { operatorApiBase } from '../../../operator-api-base';
-import { resolveSpawnBackendModel } from '../../../harness-invoke-once';
+import { resolveSpawnBackendModel, isOmpBackendExplicitlyConfigured } from '../../../harness-invoke-once';
 import {
   backendFeatureGuard,
   interactiveBackendFromSpawnBackend,
@@ -264,8 +264,13 @@ const invoke = defineTool({
       : [];
     const spawnModelPin =
       typeof (body as any)?.spawnModel === 'string' ? ((body as any).spawnModel as string).trim() : '';
-    const routeBackendModel = resolveSpawnBackendModel(role, spawnModelPin || undefined, undefined);
-    const routeBackend = routeBackendModel.backend;
+    let routeBackendModel = resolveSpawnBackendModel(role, spawnModelPin || undefined, undefined);
+    let routeBackend = routeBackendModel.backend;
+    // Set below only when the omp→claude-code tracked-launch rescue (D-fix
+    // EI-18133554034909305) applies, so the actual spawned child (buildInvokeOnce,
+    // via spawnInvokeOnce's extraEnv) resolves the SAME backend the tracked-session
+    // guard below decided on — not just this route's own bookkeeping.
+    let backendFallbackForSpawnEnv: string | null = null;
     // Per-hive override (domain-generic-hive-architecture-2026-06-18 P-012/P-013/D-013):
     // the loopback invoke route is the single chokepoint for the HTTP-based autonomous
     // spawns (queen via bpkind=hive, overwatch, launch blueprints) — all of which carry a

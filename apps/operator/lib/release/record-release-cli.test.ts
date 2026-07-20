@@ -101,6 +101,76 @@ describe('formatCompletenessAlert — non-blocking, names every missing slot (WI
   });
 });
 
+describe('computeMobileRegression — a cut that LOSES a phone build its predecessor had (WI-5583)', () => {
+  const gui = (platform: string) => ({ product: 'gui' as const, platform });
+  const android = { product: 'mobile' as const, platform: 'android-universal' };
+  const ios = { product: 'mobile' as const, platform: 'ios-arm64' };
+
+  it('catches the exact 0.0.12 gap: prior shipped android+ios, this cut ships neither', () => {
+    const { dropped } = computeMobileRegression(
+      [gui('linux-x86_64'), gui('darwin-universal'), gui('windows-x86_64')], // 0.0.12: desktop only
+      [gui('linux-x86_64'), android, ios], // 0.0.11: had both phones
+    );
+    expect(dropped).toEqual(['android-universal', 'ios-arm64']);
+  });
+
+  it('reports only the platform actually dropped, not the one still present', () => {
+    const { dropped } = computeMobileRegression([android], [android, ios]);
+    expect(dropped).toEqual(['ios-arm64']);
+  });
+
+  it('is silent once the drop settles — a mobile-less cut after a mobile-less predecessor does not re-fire', () => {
+    // 0.0.13 (no mobile) vs 0.0.12 (no mobile) → nothing regressed.
+    const { dropped } = computeMobileRegression([gui('linux-x86_64')], [gui('linux-x86_64')]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('a mobile ADDITION is not a regression (gaining a phone build never warns)', () => {
+    const { dropped } = computeMobileRegression([android, ios], [android]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('no predecessor (first release ever) is not a regression', () => {
+    const { dropped } = computeMobileRegression([gui('linux-x86_64')], []);
+    expect(dropped).toEqual([]);
+  });
+
+  it('ignores desktop churn entirely — dropping a desktop platform is the completeness check’s job, not this one', () => {
+    const { dropped } = computeMobileRegression([gui('linux-x86_64'), android, ios], [
+      gui('linux-x86_64'),
+      gui('windows-x86_64'),
+      android,
+      ios,
+    ]);
+    expect(dropped).toEqual([]); // windows dropped, but mobile intact → no mobile regression
+  });
+});
+
+describe('formatMobileRegressionAlert — non-blocking, names the dropped phone build (WI-5583)', () => {
+  it('is empty when nothing regressed (a cut that kept its mobile builds prints no alert)', () => {
+    expect(formatMobileRegressionAlert('0.0.13', 'alpha', '0.0.12', [])).toBe('');
+  });
+
+  it('names the version, the predecessor, each dropped platform, and says it is NOT a rejection', () => {
+    const alert = formatMobileRegressionAlert('0.0.12', 'alpha', '0.0.11', [
+      'android-universal',
+      'ios-arm64',
+    ]);
+    expect(alert).toContain('MOBILE REGRESSION: 0.0.12 (alpha)');
+    expect(alert).toContain('0.0.11');
+    expect(alert).toContain('Android');
+    expect(alert).toContain('iOS (arm64)');
+    expect(alert).toContain('NOT a rejection');
+  });
+
+  it('still renders without a known predecessor version', () => {
+    const alert = formatMobileRegressionAlert('0.0.12', 'alpha', null, ['android-universal']);
+    expect(alert).toContain('MOBILE REGRESSION: 0.0.12 (alpha)');
+    expect(alert).toContain('the previous release');
+    expect(alert).toContain('Android');
+  });
+});
+
 describe('classifyArtifact — real filenames from real cuts, not invented ones', () => {
   it('maps the linux artifacts', () => {
     expect(classifyArtifact('Papercusp GUI_0.0.8_amd64.deb')).toEqual({

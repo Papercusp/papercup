@@ -1008,6 +1008,24 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       cleanups.push(() => errorSpy.mockRestore());
 
+      // boot.ts's escalateToForcedRejoin logs this EXACT line (console.info)
+      // the moment it actually calls swarmHandle.forceRejoin() — spying on it
+      // gives the zombie override a precise, non-racy signal for "has the
+      // REAL production escalation fired yet", instead of guessing off a
+      // connection-event COUNT. A naive count is unsound: Hyperswarm can (and
+      // in a flaky run of this exact test, DID) emit more than one
+      // 'connection' event for the same logical peer pair from ordinary
+      // dial/hole-punch racing, unrelated to any forceRejoin — so "the 2nd
+      // connection" is not a reliable proxy for "the forced-rejoin
+      // connection". Gating on the actual escalation log removes the race.
+      let forceRejoinFired = false;
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation((...args: unknown[]) => {
+        if (String(args[0] ?? '').includes('repair-exhausted: forcing topic rejoin')) {
+          forceRejoinFired = true;
+        }
+      });
+      cleanups.push(() => infoSpy.mockRestore());
+
       // ── env-route getOrgPg (identical pattern to the sibling repros above) ──
       const orgDb: OrgTestDb = await createOrgTestDb();
       const prev = {

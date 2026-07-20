@@ -146,6 +146,28 @@ export function roleBackendOverride(role: string): AgentBackend | undefined {
   }
 }
 
+/**
+ * True when `role`'s resolved 'omp' backend traces to an EXPLICIT operator
+ * choice — a per-role `AGENT_ROLE_BACKENDS` override, or a globally configured
+ * `AGENT_CMD`/`CLAUDE` command — rather than the bare code-level literal
+ * default (`applyBackendSwap`'s `'omp -p'` fallback, applied only when NOTHING
+ * is configured). Only meaningful to call once the caller already knows the
+ * role resolved to 'omp': if either env var were set to a non-omp command the
+ * resolution would not have landed on 'omp' in the first place, so "is set"
+ * alone is sufficient here without re-parsing its content.
+ *
+ * Used by the tracked hive/overwatch launch guard (spawn.ts, EI-18133554034909305
+ * "Agent spawns are failing repeatedly") to decide whether a
+ * forced-native-session-id failure should hard-fail (an intentional operator
+ * choice deserves a loud, honest error) or be silently rescued by falling back
+ * to claude-code (the unconfigured "just fell through to the generic default"
+ * case — which is what EVERY tracked launch hit on a host with no explicit
+ * backend config, since OMP structurally cannot support a forced session id).
+ */
+export function isOmpBackendExplicitlyConfigured(role: string): boolean {
+  return roleBackendOverride(role) === 'omp' || Boolean(process.env.AGENT_CMD) || Boolean(process.env.CLAUDE);
+}
+
 /** Reasoning-effort levels the `claude --effort` flag accepts. */
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
