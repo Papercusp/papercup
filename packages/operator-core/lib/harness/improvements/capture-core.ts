@@ -64,7 +64,9 @@ export interface CaptureImprovementInput {
   severity?: IssueSeverity;
   /** Optional sub-area topic, e.g. coord-dx, db-tooling. */
   subTopic?: string;
-  /** 'operator' (default) or 'harness:<slug>'. Determines per-Hive scope (P-010). */
+  /** Omit → files under the workspace platform Pot; or 'harness:<slug>' for a specific Pot.
+   *  An omitted/'operator'/workspace-global scope auto-homes to the platform Pot in
+   *  createIssue (pot-membership-enforcement P-005). Determines per-Hive scope (P-010). */
   scope?: string;
   foundDuring?: string;
   /** Repo-relative paths the improvement touches — feeds the protected-path gate. */

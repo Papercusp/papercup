@@ -511,7 +511,7 @@ export interface CreateIssueInput {
   body?: string;
   severity?: IssueSeverity;
   source?: IssueSource;
-  scope?: string; // default 'operator'
+  scope?: string; // omit → workspace platform Pot; or 'harness:<slug>'. 'operator'/global auto-homes to the platform Pot (createIssue, P-005).
   foundDuring?: string;
   topics?: string[];
   createdBy?: string;

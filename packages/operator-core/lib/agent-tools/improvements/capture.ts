@@ -102,7 +102,13 @@ export default defineTool({
         body: hardText(LIMITS.CONTENT).optional().describe('repro / context / the correct-state, especially for a bug'),
         severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
         subTopic: z.string().min(1).max(40).optional().describe('optional sub-area topic, e.g. coord-dx, db-tooling'),
-        scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),
+        scope: z
+          .string()
+          .max(80)
+          .optional()
+          .describe(
+            "Pot scope. OMIT (recommended) → the item files under the workspace platform Pot; pass 'harness:<slug>' to scope it to a specific Pot. (An omitted/'operator'/workspace-global scope auto-homes to the platform Pot — you do NOT need to pass 'harness:papercusp' by hand.)",
+          ),
         // EI-10943: was `z.string().max(120)` — a HARD reject. Overrunning it bounced the
         // WHOLE capture (the finding is lost, and the agent gets the entire args schema
         // dumped back at it) over a provenance LABEL the tool only stores and echoes, into
