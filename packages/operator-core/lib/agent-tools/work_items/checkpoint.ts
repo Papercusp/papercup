@@ -136,8 +136,7 @@ export default defineTool({
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. NOT an edit channel ' +
       'for the item: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +
-      'tool surface reports them missing). Not for an item ASSIGNED to a peer — that fails `not_holder`; leave a ' +
-      'work_items:comment instead, or work_items:claim it first if you are taking it over.',
+      "tool surface reports them missing). Not for a peer's item — claim it first, or leave a work_items:comment.",
     chaining:
       'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a claim held ' +
       'through long purely-local tool use can go presence-stale and be reclaimed (no separate heartbeat verb).',

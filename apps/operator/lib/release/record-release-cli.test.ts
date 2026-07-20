@@ -6,8 +6,10 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   buildRunOpts,
   classifyArtifact,
+  computeMobileRegression,
   computeReleaseCompleteness,
   formatCompletenessAlert,
+  formatMobileRegressionAlert,
   releaseTag,
   scanArtifacts,
   scanMobileArtifactSources,

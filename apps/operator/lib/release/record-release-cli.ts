@@ -222,7 +222,11 @@ export async function warnMobileRegressions(sql: postgres.Sql, scope: Scope): Pr
   // next element — the same "immediately-previous same-channel release" the record
   // path compares against.
   const byChannel = new Map<string, ReleaseRow[]>();
-  for (const r of rows) (byChannel.get(r.channel) ?? byChannel.set(r.channel, []).get(r.channel)!).push(r);
+  for (const r of rows) {
+    const list = byChannel.get(r.channel) ?? [];
+    list.push(r);
+    byChannel.set(r.channel, list);
+  }
   let count = 0;
   for (const channelRows of byChannel.values()) {
     for (let i = 0; i < channelRows.length - 1; i++) {
@@ -790,6 +794,10 @@ export async function regenerateOnly(scope: Scope, outDir: string): Promise<numb
     // page after an incremental upload must still SURFACE what remains absent per
     // version, so a partial release is never silently normalized. NON-BLOCKING.
     await warnIncompleteReleases(sql, scope);
+    // Same for a mobile regression (WI-5583) — a cut that lost a phone build its
+    // predecessor had stays surfaced on every regenerate until it is confirmed or
+    // the artifacts are recorded. NON-BLOCKING.
+    await warnMobileRegressions(sql, scope);
     return 0;
   } finally {
     await sql.end({ timeout: 5 });
