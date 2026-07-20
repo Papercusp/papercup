@@ -102,6 +102,12 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     requeue_count integer NOT NULL DEFAULT 0,
     terminal_owner text,
     terminal_completion_ref text,
+    -- work-item-status-full-unify (mig 638): preserves the passed/resolved (→done) and
+    -- deprecated/closed (→dropped) nuance across the status-vocab collapse. Base-table
+    -- column only (the compat views auto-reflect it); the P-003 writer stamps it on a
+    -- legacy-spelled terminal and the reopen-clear nulls it — a fixture missing it made
+    -- that whole UPDATE throw (silently swallowed), leaving terminal_owner uncleared.
+    terminal_reason text,
     last_released_by text,
     last_released_at timestamptz,
     _search tsvector GENERATED ALWAYS AS (

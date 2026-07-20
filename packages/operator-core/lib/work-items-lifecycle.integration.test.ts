@@ -313,7 +313,10 @@ describe('P-006 reopen clears terminal stamps into payload.reopenHistory', () =>
     expect(history[0]).toMatchObject({
       by: 'agC',
       force: false,
-      prevState: 'resolved',
+      // work-item-status-full-unify: the completer wrote 'resolved', which folds to the
+      // unified terminal 'done' on the base table — so the reopen archives the STORED
+      // prior state ('done'), not the legacy spelling the caller typed.
+      prevState: 'done',
       terminalOwner: 'agC',
       terminalCompletionRef: 'agC finished it',
     });
