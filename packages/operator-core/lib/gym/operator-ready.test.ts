@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
-import { bootLogTail, waitForOperatorReady } from './operator-ready';
+import { bootLogTail, waitForOperatorReady, spawnGymOperatorWithRetry } from './operator-ready';
 
 /** Minimal stand-in for the spawned operator process. */
 function fakeChild(exitCode: number | null = null): ChildProcess & { die: (code: number, signal?: NodeJS.Signals) => void } {

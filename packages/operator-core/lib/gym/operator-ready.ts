@@ -57,6 +57,8 @@ export interface SpawnGymOperatorWithRetryOpts {
   maxAttempts?: number;
   /** Called just before a retry, with the failure that triggered it. */
   onRetry?: (err: Error, attempt: number) => void;
+  /** Test seam — defaults to node:child_process's `spawn`. */
+  spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 }
 
 /**
@@ -77,9 +79,10 @@ export interface SpawnGymOperatorWithRetryOpts {
  */
 export async function spawnGymOperatorWithRetry(opts: SpawnGymOperatorWithRetryOpts): Promise<ChildProcess> {
   const maxAttempts = opts.maxAttempts ?? 2;
+  const spawnFn = opts.spawnFn ?? nodeSpawn;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const child = nodeSpawn(opts.command, opts.args, opts.spawnOptions);
+    const child = spawnFn(opts.command, opts.args, opts.spawnOptions);
     try {
       await waitForOperatorReady({
         baseUrl: opts.baseUrl,
