@@ -994,7 +994,7 @@ export default function AdvOverviewTab() {
         <OverviewTile
           icon={<FileText size={14} aria-hidden />}
           title="Operator report"
-          accent="#38bdf8"
+          accent="#c084fc"
           loading={reportsQ.loading && !reportsQ.data}
           error={reportsQ.error ? String((reportsQ.error as Error).message ?? reportsQ.error) : null}
           empty={!reportsQ.data || reportsQ.data.length === 0}

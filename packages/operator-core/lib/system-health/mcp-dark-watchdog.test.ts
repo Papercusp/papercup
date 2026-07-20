@@ -151,9 +151,24 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
     ).toBe(false);
   });
 
-  it('presence NEVER seen: staleness measured from host start', () => {
-    const v = evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: null }), INOW);
-    expect(v.dark).toBe(true);
+  it('presence NEVER seen ⇒ NOT dark — no evidence it is a papercusp agent (false-positive fix 2026-07-20)', () => {
+    // A session that never registered a single coord_presence beat has never
+    // made a papercusp MCP call. It is either not a papercusp-tool session at all
+    // (a manual/debug session run through the psu-pty wrapper — live case
+    // su-3fa86771) or dark-from-birth (unhealable by /mcp, recovered on relaunch).
+    // Either way it must NOT enter the heal ladder, or /mcp is re-injected every
+    // window forever. Holds even when the pty is IN USE and the host is old.
+    const inUseOldNullBeat = interactiveDark({
+      loopActive: false,
+      loopIntervalSec: null,
+      hostLastActivityMs: INOW - 1 * M, // actively in use
+      hostStartedMs: INOW - 6 * 60 * M, // well past grace
+      presenceHeartbeatMs: null, // NEVER registered
+    });
+    expect(evaluateInteractiveMcpDark(inUseOldNullBeat, INOW).dark).toBe(false);
+    // Same guard for the armed-loop branch (defensive — an armed loop implies a
+    // prior loop:arm MCP call, so a real one always has a beat).
+    expect(evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: null }), INOW).dark).toBe(false);
   });
 });
 

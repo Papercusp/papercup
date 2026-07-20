@@ -378,8 +378,28 @@ export function evaluateInteractiveMcpDark(
 
   // Host too young (or unknown age): the session may simply not have tool-called yet.
   if (s.hostStartedMs == null || nowMs - s.hostStartedMs < graceMs) return { dark: false, reason: null };
-  // Presence never seen ⇒ measure staleness from host start (it SHOULD have called by now).
-  const staleMs = s.presenceHeartbeatMs == null ? nowMs - s.hostStartedMs : nowMs - s.presenceHeartbeatMs;
+  // NEVER-REGISTERED guard (mcp-dark false-positive fix, 2026-07-20): a session
+  // with NO coord_presence beat has never made a single papercusp MCP call, so
+  // there is ZERO positive evidence it is a papercusp agent whose transport DIED
+  // — it is equally (and in practice usually) a session that legitimately does
+  // not use papercusp tools: a manual/debug session run THROUGH the psu-pty
+  // wrapper (live case su-3fa86771 — a `--chrome`/strace claude-debug session
+  // whose /mcp dialog never lists papercusp-su at all). The old branch measured
+  // staleness from host-start ("it SHOULD have called by now"), so such a session
+  // is PERMANENTLY dark and the heal ladder re-injects `/mcp` every heal-window
+  // FOREVER — the owner-visible "agents keep getting /mcp" spam. And the heal can
+  // never succeed: the `/mcp` macro only RECONNECTS a server the running session
+  // already declares, so it fails every pass ("cursor never reached
+  // 'papercusp-su' in 40 downs"). A genuinely dark-FROM-BIRTH papercusp session
+  // is the same unhealable-by-`/mcp` shape (server not loaded) and is instead
+  // recovered by the config-repair on its next relaunch/resume
+  // (ensureInteractiveClaudeConfig) — not by /mcp-spamming a live one. An
+  // ARMED-loop session always has ≥1 beat (the loop:arm call itself is an MCP
+  // call that registers presence), so this guard never suppresses the real
+  // transport-death target — a session that WAS calling (has a beat) and whose
+  // beat is now stale. Require a REAL (however stale) beat before "dark".
+  if (s.presenceHeartbeatMs == null) return { dark: false, reason: null };
+  const staleMs = nowMs - s.presenceHeartbeatMs;
 
   if (s.loopActive) {
     // An armed loop pins the expected MCP cadence: every wake makes tool calls,
