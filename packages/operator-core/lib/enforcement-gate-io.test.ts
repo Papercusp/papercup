@@ -34,10 +34,19 @@ function unflushedBrief(): CarryBrief {
   });
 }
 
-beforeEach(() => __resetRefusalMarkers());
+beforeEach(() => {
+  __resetRefusalMarkers();
+  // Hermetic against host load (WI-5582): runFlushGate races the inner work against
+  // a bounded-timeout budget (default 4s). On an event-loop-starved green-checkpoint
+  // host that 4s wall clock once beat the instant mocked inner work, degrading the
+  // verdict to `clear` and emitting the bounded-timeout console.warn — a gate flake.
+  // Raise the budget far past any plausible starvation so the deadline never fires.
+  process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS = '600000';
+});
 afterEach(() => {
   __resetRefusalMarkers();
   delete process.env.PAPERCUSP_FLUSH_GATE;
+  delete process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS;
 });
 
 describe('refusal markers', () => {

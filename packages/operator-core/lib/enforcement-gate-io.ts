@@ -25,6 +25,24 @@ import type { CarryBrief } from './carry-brief';
  *  riding a seam that must not slow down or fail because of it. */
 export const FLUSH_GATE_BUDGET_MS = 4_000;
 
+/** The effective bounded-timeout budget. Defaults to {@link FLUSH_GATE_BUDGET_MS};
+ *  PAPERCUSP_FLUSH_GATE_BUDGET_MS (a positive integer ms) overrides it without a
+ *  redeploy — mirroring {@link flushGateEnabled}. Two callers want a larger budget:
+ *  (1) a load-storm host where a spuriously-fired 4s deadline would fail-OPEN a real
+ *  agent's flush gate (the very WI-3818 stall this bound guards against), and (2) a
+ *  unit test, where an event-loop-starved gate host once beat the 4s wall clock before
+ *  the instant mocked inner work resolved — degrading to `clear` and emitting the
+ *  bounded-timeout console.warn (a green-checkpoint flake, WI-5582). An invalid or
+ *  non-positive value falls back to the default. */
+export function flushGateBudgetMs(): number {
+  const raw = (process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS ?? '').trim();
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return FLUSH_GATE_BUDGET_MS;
+}
+
 /** How long an owner's per-boundary refusal marker stands. A retry within this
  *  window that STILL has tripwires is "the agent still won't flush" ⇒ mechanical
  *  fallback. Long enough to span a loop wake (60s) and an agent's own re-read;
@@ -174,7 +192,7 @@ export async function runFlushGate(input: {
   if (!flushGateEnabled()) return clear;
   const { value } = await withBoundedTimeout(runFlushGateInner(input), {
     fallback: clear,
-    timeoutMs: FLUSH_GATE_BUDGET_MS,
+    timeoutMs: flushGateBudgetMs(),
     label: `flush-gate:${input.boundary}`,
   });
   return value;

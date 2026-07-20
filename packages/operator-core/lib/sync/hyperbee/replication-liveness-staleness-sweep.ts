@@ -188,17 +188,11 @@ async function defaultDeps(): Promise<StalenessSweepDeps> {
  * same VITEST-without-deps safety gate as the orphan sweep.
  */
 export async function runReplicationLivenessStalenessSweepOnce(
-  workspaceId: string,
   opts: StalenessSweepOptions = {},
   deps?: StalenessSweepDeps,
 ): Promise<StalenessSweepResult> {
   if (process.env.VITEST && !deps) {
     return { checked: 0, resolvedIds: [], errors: 0 };
-  }
-  if (!deps) {
-    if (!(await getFlag(FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE, `replication-liveness-staleness-sweep:${workspaceId}`))) {
-      return { checked: 0, resolvedIds: [], errors: 0 };
-    }
   }
 
   let d: StalenessSweepDeps;
@@ -217,6 +211,11 @@ export async function runReplicationLivenessStalenessSweepOnce(
 
   const nowMs = Date.now();
   const activeCache = new Map<string, number | null>();
+  // Per-target-workspace flag check (cached) — a multi-tenant sweep must respect each
+  // target workspace's OWN owner ratification, never a single external caller-supplied
+  // workspace (there isn't one: the target workspace comes from each EI's own stamped
+  // body, exactly like orphan-sweep's harnessExists target).
+  const flagCache = new Map<string, boolean>();
   const resolvedIds: string[] = [];
   let errors = 0;
 
@@ -224,6 +223,22 @@ export async function runReplicationLivenessStalenessSweepOnce(
     const target = parseStallEiTarget(issue.body);
     if (!target) continue; // malformed/foreign body — never touched
     const kind = parseStallEiKind(issue.body);
+
+    if (!deps) {
+      let enabled = flagCache.get(target.workspaceId);
+      if (enabled === undefined) {
+        try {
+          enabled = await getFlag(
+            FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE,
+            `replication-liveness-staleness-sweep:${target.workspaceId}`,
+          );
+        } catch {
+          enabled = false; // fail closed on a flag-read error
+        }
+        flagCache.set(target.workspaceId, enabled);
+      }
+      if (!enabled) continue;
+    }
 
     // Orphan-sweep's job, not ours: a nonexistent harness is skipped here either way
     // (it either already resolved via orphan-sweep, or will on its next pass).
