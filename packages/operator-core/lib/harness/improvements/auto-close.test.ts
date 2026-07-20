@@ -71,7 +71,7 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
   });
 
   it('accepts every eligible source and rejects an unlisted one', () => {
-    for (const src of ['red-test', 'repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift']) {
+    for (const src of ['red-test', 'repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift', 'perf-regression']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(true);
     }
     // service-down is deliberately excluded: its P-004 freshness gate SKIPS collection

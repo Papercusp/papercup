@@ -26,15 +26,6 @@ import { listHandoffs, listHandoffsPaginated } from '../../../agent-tools/coordi
 import { coordLog } from '../../../agent-tools/coordination/log';
 import { type CoordEnvelope } from '../../../agent-tools/coordination/envelope';
 
-/**
- * Read every message envelope from the coord event log, no filtering.
- * Routes through `coordLog` (the PG-backed CoordEventLog) rather than the
- * old direct `coord/messages/*.jsonl` read — coord-channels-pg-port P-009.
- */
-async function readAllMessages(): Promise<CoordEnvelope[]> {
-  return coordLog.readLines('messages');
-}
-
 export interface HistoryItem {
   ts: string;
   msg_id: string;
@@ -151,16 +142,35 @@ export async function loadCoordHistory(args: {
   return { items: truncated ? filtered.slice(0, limit) : filtered, total: filtered.length, truncated };
 }
 
+// EI-18138089781782660: same anti-pattern as loadCoordHistory before it was
+// fixed — this used to read the WHOLE coord corpus (readAllMessages() with no
+// LIMIT, listEscalations({})/listHandoffs({}) with no status filter, each an
+// unbounded full-surface event replay) on every call, then filter down to the
+// human-directed subset in JS. Cost grew unboundedly with total coord volume
+// even though the human-facing inbox is typically tiny. Now every per-surface
+// fetch is the same BOUNDED storage read loadCoordHistory uses: messages go
+// through `readLinesBounded` (limit pushed to SQL); escalations go through
+// `listEscalationsPaginated({ status: 'open' })`, which folds status server
+// side (no `resolved == null` JS filter needed) AND already pages deep enough
+// to avoid the WI-4181 zombie-open class; handoffs go through
+// `listHandoffsPaginated` (same bounded/folded primitive as loadCoordHistory).
 export async function loadCoordInbox(): Promise<HistoryItem[]> {
-  const [msgs, escs, hs] = await Promise.all([readAllMessages(), listEscalations({}), listHandoffs({})]);
+  const [msgs, { escalations }, { handoffs }] = await Promise.all([
+    coordLog.readLinesBounded('messages', { limit: PUSHDOWN_CAP }),
+    // listEscalationsPaginated/listHandoffsPaginated clamp maxRecords to 500
+    // internally regardless — pass 500 explicitly rather than PUSHDOWN_CAP
+    // (1000) to avoid implying a wider window than these primitives honor.
+    listEscalationsPaginated({ status: 'open', maxRecords: 500 }),
+    listHandoffsPaginated({ maxRecords: 500 }),
+  ]);
   const items: HistoryItem[] = [];
   for (const m of msgs) {
     if (Array.isArray(m.to) && m.to.includes('human')) items.push(toHistoryItem('message', m));
   }
-  for (const e of escs) {
-    if (e.resolved == null) items.push(toHistoryItem('escalation', e));
+  for (const e of escalations) {
+    items.push(toHistoryItem('escalation', e));
   }
-  for (const h of hs) {
+  for (const h of handoffs) {
     if (Array.isArray(h.record.to) && h.record.to.includes('human')) items.push(toHistoryItem('handoff', h.record));
   }
   return items.sort((a, b) => b.ts.localeCompare(a.ts) || b.msg_id.localeCompare(a.msg_id));

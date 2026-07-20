@@ -9,6 +9,7 @@ import {
   ClipboardList,
   HeartPulse,
   GraduationCap,
+  Rocket,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import FleetRateControl from './FleetRateControl';
@@ -511,6 +512,10 @@ export default function AdvOverviewTab() {
   );
   const agentRows = useMemo(() => selectAgentRows(roster), [roster]);
   const workItemStats = useMemo(() => summarizeWorkItemStats(statsQ.data ?? []), [statsQ.data]);
+  const deployTile = useMemo(
+    () => deriveDeployTile(pipelineQ.data?.[0], Date.now()),
+    [pipelineQ.data],
+  );
   const health = healthQ.data?.[0];
   const unhealthy = useMemo(() => selectUnhealthyPanels(health), [health]);
   const readiness = readinessQ.data?.[0];
@@ -720,6 +725,46 @@ export default function AdvOverviewTab() {
               </span>
             </div>
           ))}
+        </OverviewTile>
+
+        {/* Deploy pipeline (P-001): staging tip → green pin → live :3070, the
+            gate verdict (+ judging/idle from the producer's systemd probe), and
+            the deploy gap — the owner's "is my change live yet?" at a glance. */}
+        <OverviewTile
+          icon={<Rocket size={14} aria-hidden />}
+          title="Deploy"
+          count={deployTile?.failingCount || undefined}
+          accent={deployTile?.verdict === 'red' ? '#f87171' : deployTile?.verdict === 'green' ? '#4ade80' : '#94a3b8'}
+          loading={pipelineQ.loading && !pipelineQ.data}
+          error={pipelineQ.error ? String((pipelineQ.error as Error).message ?? pipelineQ.error) : null}
+          empty={!deployTile}
+          emptyLabel="No pipeline snapshot yet"
+          onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.deploy)}
+        >
+          {deployTile && (
+            <>
+              <div className="pc-overview__row">
+                <span
+                  className="pc-overview__row-dot"
+                  data-bar={deployTile.verdict === 'green' ? 'pass' : deployTile.verdict === 'red' ? 'fail' : undefined}
+                  aria-hidden
+                />
+                <span className="pc-overview__row-title" title={deployTile.gateLine}>
+                  {deployTile.gateLine}
+                </span>
+                {deployTile.runLine && <span className="pc-overview__row-tag">{deployTile.runLine}</span>}
+              </div>
+              {deployTile.refs.map((r) => (
+                <div key={r.key} className="pc-overview__row">
+                  <span className="pc-overview__row-actor pc-overview__row-actor--wide">{r.label}</span>
+                  <span className="pc-overview__row-title" title={`${r.label} ${r.sha}`}>
+                    {r.sha}
+                  </span>
+                  {r.tag && <span className="pc-overview__row-tag">{r.tag}</span>}
+                </div>
+              ))}
+            </>
+          )}
         </OverviewTile>
 
         {/* Health headline (owner ask 2026-07-19): overall verdict + the
@@ -948,6 +993,8 @@ export default function AdvOverviewTab() {
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }
+        /* Deploy tile ref labels ("live :3070") need more room than coord actors. */
+        .pc-overview__row-actor--wide { min-width: 56px; max-width: 80px; }
         .pc-overview__row-title {
           flex: 1; min-width: 0;
           font-size: 12px; color: var(--fg-dim, #b9d4e8);

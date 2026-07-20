@@ -65,6 +65,8 @@ let activityResult: { data?: unknown[]; loading?: boolean } = { data: [], loadin
 let statsResult: { data?: unknown[]; loading?: boolean } = { data: [], loading: false };
 let healthResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
 let readinessResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
+// P-001: the Deploy tile's dev.gitPipeline snapshot (1-element array).
+let pipelineResult: { data?: unknown[]; loading?: boolean } = { data: undefined, loading: false };
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
@@ -91,6 +93,8 @@ vi.mock('@papercusp/sync', () => ({
         return { ...healthResult, error: null };
       case 'learning.releaseReadiness':
         return { ...readinessResult, error: null };
+      case 'dev.gitPipeline':
+        return { ...pipelineResult, error: null };
       default:
         return { data: undefined, loading: false, error: null };
     }
@@ -188,6 +192,7 @@ describe('AdvOverviewTab component', () => {
     statsResult = { data: [], loading: false };
     healthResult = { data: undefined, loading: false };
     readinessResult = { data: undefined, loading: false };
+    pipelineResult = { data: undefined, loading: false };
   });
 
   afterEach(() => {
@@ -195,7 +200,7 @@ describe('AdvOverviewTab component', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the seven tiles, the top-bar rate control, and the empty states', async () => {
+  it('renders the eight tiles, the top-bar rate control, and the empty states', async () => {
     render(<AdvOverviewTab />);
     expect(screen.getByTestId('fleet-rate-control')).toBeTruthy();
     expect(screen.getByText('Plans')).toBeTruthy();
@@ -203,6 +208,7 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('Agents')).toBeTruthy();
     expect(screen.getByText('Activity')).toBeTruthy();
     expect(screen.getByText('Work items')).toBeTruthy();
+    expect(screen.getByText('Deploy')).toBeTruthy();
     expect(screen.getByText('Health')).toBeTruthy();
     expect(screen.getByText('Learning')).toBeTruthy();
     expect(screen.getByText('No active plans')).toBeTruthy();
@@ -210,6 +216,7 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('No live agents')).toBeTruthy();
     expect(screen.getByText('No recent agent activity')).toBeTruthy();
     expect(screen.getByText('No work items')).toBeTruthy();
+    expect(screen.getByText('No pipeline snapshot yet')).toBeTruthy();
     expect(screen.getByText('No health snapshot yet')).toBeTruthy();
     expect(screen.getByText('No release-readiness report yet')).toBeTruthy();
     // WI-5517: the roster MUST be the pill's own query with IDENTICAL args (one

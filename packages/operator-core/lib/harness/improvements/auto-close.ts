@@ -76,6 +76,20 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // the operator restarted and boot-apply caught up) — the exact condition this EI was
   // filed to auto-resolve instead of leaving self-cleared criticals polluting the queue.
   'migration-drift',
+  // EI-18143028205990222 class: perf-regression-rig.ts's `consider()` re-derives EVERY
+  // metric (loop-lag-p95, conn-saturation, dispatch-orphan-rate, coord-open-escalations,
+  // adv-tab-switch-median, adv-fcp) from a LIVE query/read each tick — none of them cache
+  // or latch a stale verdict — so a quiet tick reliably means the metric has dropped back
+  // under budget, the same reasoning as `migration-drift` above. Without this, a SLO
+  // breach whose root cause is already fixed elsewhere (e.g. dispatch-orphan-rate reading
+  // a trailing 24h window full of PRE-FIX orphan rows — verified zero new orphans for 4h+
+  // after durable-spawn.ts's EI-18118495431535177 fix landed) has NO path back to closed:
+  // the collector keeps re-deriving the same true-but-stale elevated number every tick
+  // until the window ages the old rows out (hours), and nothing ever retires the EI in
+  // the meantime — every future transient perf-regression breach would hit the same dead
+  // end. dispatchOrphanRate/connSaturationPct/etc. dropping below budget on a later tick
+  // is exactly the "signal absent from known-open keys" condition this sweep exists for.
+  'perf-regression',
 ]);
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */
