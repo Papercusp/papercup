@@ -48,6 +48,38 @@
  * period: if the SAME watchdogKey's most-recently-updated issue was closed more
  * recently than the cooldown, the recurrence is posted as a COMMENT on that
  * issue (visible, reopens the conversation) instead of minting a duplicate.
+ *
+ * COOLDOWN WIDENED TO 3h (2026-07-20, EI-18154505642725023 follow-up): the 30min
+ * cooldown above cut the storm's rate but did not stop it recurring. Live
+ * evidence post-fix: papercusp's outbox undrained-count DID fall steadily
+ * (16578 -> 12154 -> 10494 -> 9337 over ~5h, a live-measured ~24 rows/min drain
+ * rate), i.e. the backlog is genuinely, continuously self-healing, NOT stalled
+ * -- but at that rate a 10-16k backlog takes several HOURS to clear, so the
+ * 30min window kept elapsing and re-filing a fresh issue every ~50min-1h50m
+ * even though nothing new or actionable had happened since the last close.
+ * Root cause of the SLOW-not-stalled drain (confirmed live via journalctl on
+ * the substrate-primary bg-host, 2026-07-20 ~05:00 EDT): individual outbox
+ * rows occasionally hit the WI-3896 ROW STAGE TIMEOUT class on their
+ * epoch-encrypt stage (45s no-settle, outbox-drain.ts's ROW_STAGE_TIMEOUT_MS)
+ * -- and because papercusp's own bg-host process only lives ~30-90min between
+ * recycles here, the in-memory rowTimeoutCounts consecutive-failure counter
+ * (needs 3 IN THE SAME PROCESS to reach ROW_QUARANTINE_THRESHOLD) routinely
+ * resets before a genuinely-slow row gets durably quarantined, so it can
+ * re-block the head of the ORDER BY id queue across several restarts before a
+ * lucky retry clears it. This throttles throughput without ever tripping
+ * outbox-drain.ts's OWN zero-progress detector (drain_backlog_stalled -- the
+ * drain IS moving, just slowly) -- this reconcile is the only thing that sees
+ * it, and it was seeing it every ~30min. 3h is comfortably above the observed
+ * natural full-drain timescale for a papercusp-scale (10-16k row) backlog at
+ * the measured rate, so a backlog that is genuinely still shrinking stays
+ * quiet across the whole recovery instead of re-triggering an
+ * agent-investigation every cooldown window; a backlog that is NOT shrinking
+ * (or a fresh, unrelated stall) still gets filed once the (now longer)
+ * cooldown elapses. The real throughput fix (persisting rowTimeoutCounts
+ * across restarts, or bounding queue-head poison rows some other way) is a
+ * separate, higher-risk change to outbox-drain.ts itself -- out of scope
+ * here; this only stops the SYMPTOM (repeat ticket noise) from costing an
+ * agent-investigation every recurrence while that fix is pending.
  */
 import type { SubstrateDrainStat } from './load-drain-stats';
 import type { InProcessSubstrateStatus } from './in-process-status';
@@ -63,13 +95,16 @@ const ZERO_DRAIN: SubstrateDrainStat = { undrainedCount: 0, oldestUndrainedAgeMs
 /**
  * Minimum time since a same-watchdogKey issue was last updated (i.e. closed) before
  * a NEW stall observation for that same (workspace, harness) may mint a fresh issue.
- * Default 30min: short enough that a genuinely NEW multi-hour stall episode still
- * gets its own tracked issue promptly, long enough to absorb the 5min-tick ×
- * few-minutes-to-close flapping pattern that produced the 2026-07-20 storm (see
- * doc comment above). Tunable via `RunDrainReconcileDeps.refileCooldownMs` (tests
- * pass 0 to disable it and keep exercising the always-refile path).
+ * Default 3h (raised 2026-07-20 from 30min — see the "COOLDOWN WIDENED TO 3h" doc
+ * comment above): long enough to cover the observed natural full-drain timescale of
+ * a papercusp-scale (10-16k row) backlog at its live-measured ~24 rows/min
+ * self-healing drain rate, so a backlog that is genuinely still shrinking (not
+ * stalled) doesn't re-trigger a fresh agent-investigation every recurrence tick;
+ * still short enough that a genuinely NEW, unrelated multi-hour stall episode gets
+ * its own tracked issue promptly. Tunable via `RunDrainReconcileDeps.refileCooldownMs`
+ * (tests pass 0 to disable it and keep exercising the always-refile path).
  */
-export const DEFAULT_REFILE_COOLDOWN_MS = 30 * 60_000;
+export const DEFAULT_REFILE_COOLDOWN_MS = 3 * 60 * 60_000;
 
 /** The subset of EngineerIssue this module needs for the cooldown check. */
 interface RecentWatchdogIssue {
@@ -134,7 +169,18 @@ function bodyFor(f: DrainStallFlag): string {
     `Likely causes: the per-harness outbox drain is wedged / the harness never joined its ` +
     `topic / a workspace mis-route (see substrate-outbox-backstop-gc). This was caught by ` +
     `the federation-drain reconcile (WI-254) BEFORE the 48h backstop-GC would drop the rows. ` +
-    `Verdict: ${f.severity}.`
+    `Verdict: ${f.severity}.\n\n` +
+    `TRIAGE FIRST (2026-07-20, EI-18154505642725023): for harness=papercusp specifically, ` +
+    `check whether the undrained count is DECREASING across repeated reads (dev:pg_query \`SELECT ` +
+    `count(*) FROM harness_shared.substrate_outbox WHERE drained_at IS NULL AND harness_slug=` +
+    `'papercusp' AND workspace_id='${f.workspaceId}'\` a few minutes apart) before assuming a wedge — ` +
+    `a live-confirmed root cause is the WI-3896 ROW STAGE TIMEOUT class on individual rows' ` +
+    `epoch-encrypt stage (outbox-drain.ts), which throttles-but-doesn't-stop the drain because the ` +
+    `bg-host process here recycles too often (~30-90min) for the in-memory 3-consecutive-timeout ` +
+    `quarantine counter to reliably trip. If the count is falling, this is that KNOWN, self-healing, ` +
+    `just-slow condition — no action needed beyond closing with the observed rate; do not re-diagnose ` +
+    `from scratch (see run-drain-reconcile.ts's module doc comment for the full analysis). Only ` +
+    `escalate/investigate further if the count is FLAT or GROWING across repeated reads.`
   );
 }
 

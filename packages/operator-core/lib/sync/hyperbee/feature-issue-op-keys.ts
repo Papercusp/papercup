@@ -386,6 +386,14 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     // integration.test.ts).
     terminal_owner: strOrNull(row.terminal_owner),
     terminal_completion_ref: strOrNull(row.terminal_completion_ref),
+    // work-item-status-full-unify-2026-07-19 (P-009, owner hard-req D-001): the
+    // pre-collapse terminal nuance (passed/resolved → done, deprecated/closed →
+    // dropped) lives in terminal_reason on the base table (mig 638). The CDC
+    // capture stamps it onto the wire (mig 640 — to_jsonb here for features), but
+    // it was DROPPED at this mapper, so a `done`/`dropped` item federated A→B
+    // landed with terminal_reason NULL — the resolved-vs-closed nuance lost across
+    // the wire, exactly what D-001 forbids. Carry it (column-completeness guard).
+    terminal_reason: strOrNull(row.terminal_reason),
   };
 }
 

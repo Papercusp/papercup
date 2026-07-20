@@ -169,7 +169,7 @@ describe('runDrainReconcileOnce', () => {
       const capture = vi.fn(async () => okCapture());
       const commentOnRecurrence = vi.fn(async () => ({}));
       const findByWatchdogKey = vi.fn(async () => [
-        { id: 'EI-prior', state: 'done', updatedAt: new Date(1_000_000 - 60 * 60_000).toISOString() },
+        { id: 'EI-prior', state: 'done', updatedAt: new Date(1_000_000 - 4 * 60 * 60_000).toISOString() },
       ]);
       const res = await runDrainReconcileOnce({
         loadDrainStats: async () => new Map([['ws::flapping', { undrainedCount: 9, oldestUndrainedAgeMs: 9 * 60_000 }]]),
@@ -177,7 +177,7 @@ describe('runDrainReconcileOnce', () => {
         capture,
         findByWatchdogKey,
         commentOnRecurrence,
-        nowMs: 1_000_000, // prior closed 60min ago — past the default 30min cooldown
+        nowMs: 1_000_000, // prior closed 4h ago — past the default 3h cooldown
         log: () => {},
       });
       expect(capture).toHaveBeenCalledTimes(1);

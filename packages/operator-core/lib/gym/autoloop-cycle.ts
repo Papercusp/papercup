@@ -49,6 +49,7 @@ import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
 import type { JudgeLlmCall } from './judge';
 import type { GymLlmCall } from './task-generator';
 import { waitForOperatorReady } from './operator-ready';
+import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
 import { gatewayLlmEnv, gatewayPort } from '../inference-gateway/spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -56,6 +57,16 @@ import { getFlag } from '@papercusp/flags/server';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
 const FAKE_AGENT = join(__dirname, 'fixtures/fake-agent.mjs');
+
+// EI-18154750714519366: the gym-operator's default port used to be the FIXED 3976 — on a busy
+// box where a routine cycle (or a leftover process) already holds it, a concurrent manual
+// verification cycle's waitForOperatorReady silently passes against that OTHER operator (a
+// different ephemeral gym DB) while gymSql polls the freshly-provisioned DB, producing a
+// spurious "relation dbos.workflow_status does not exist" instead of a clear port-collision
+// error. Probe an actually-free ephemeral port instead (mirrors the p2p-perf-tier3 chaos
+// suites' findFreeBasePort — same collision class, same fix). An explicit GYM_LOOP_PORT / opts.port
+// still wins outright (manual pinning, e.g. two intentionally-concurrent cycles on distinct ports).
+const GYM_LOOP_PORT_RANGE = { rangeStart: 39_000, rangeEnd: 40_000 } as const;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -127,7 +138,8 @@ export interface RunOneAutoloopCycleOptions {
    * ACCUMULATION there (autoloop-tick.ts). Default true (CLI compatibility).
    */
   manageAutoloopRow?: boolean;
-  /** Gym-operator HTTP port (default env GYM_LOOP_PORT / 3976). */
+  /** Gym-operator HTTP port. Default: env GYM_LOOP_PORT if set, else a probed-free ephemeral port
+   *  (GYM_LOOP_PORT_RANGE) — never a fixed default, so concurrent cycles never collide. */
   port?: number;
   /** Real-mode agent command (default env GYM_LOOP_AGENT_CMD / claude sonnet). */
   agentCmd?: string;
@@ -165,7 +177,11 @@ export async function runOneAutoloopCycle(
   process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
 
   const FAKE = opts.fake ?? process.env.GYM_LOOP_FAKE === '1';
-  const PORT = opts.port ?? Number(process.env.GYM_LOOP_PORT ?? 3976);
+  // Explicit pin (opts.port or GYM_LOOP_PORT) always wins; otherwise probe a genuinely-free
+  // ephemeral port so concurrent/manual cycles on this box never collide (see
+  // GYM_LOOP_PORT_RANGE above for the full rationale — EI-18154750714519366).
+  const explicitPort = opts.port ?? (process.env.GYM_LOOP_PORT !== undefined ? Number(process.env.GYM_LOOP_PORT) : undefined);
+  const PORT = explicitPort ?? (await findFreeBasePort({ count: 1, ...GYM_LOOP_PORT_RANGE }));
   const WS = opts.workspaceId ?? process.env.GYM_LOOP_WORKSPACE ?? 'gym-loop-ws';
   const MAX_CYCLES = Math.max(1, opts.maxCycles ?? Number(process.env.GYM_LOOP_MAX_CYCLES ?? 1));
   const REPEATS = Math.max(1, opts.repeats ?? Number(process.env.GYM_LOOP_REPEATS ?? 1));
@@ -217,6 +233,7 @@ export async function runOneAutoloopCycle(
   let ok = false;
   const report: Record<string, unknown> = {
     mode: FAKE ? 'fake (zero-LLM)' : 'real',
+    port: PORT,
     maxCycles: MAX_CYCLES,
     repeats: REPEATS,
     budgetUsd: BUDGET_USD,
