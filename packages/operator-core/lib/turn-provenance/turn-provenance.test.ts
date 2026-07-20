@@ -247,6 +247,27 @@ describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notificati
     expect(detectMachineSurface('a system notification about not caring about user input')).toBe(false);
     expect(detectMachineSurface('')).toBe(false);
   });
+
+  // EI-18112745557098348: a native Claude Code background-task completion can
+  // arrive as a BARE <task-notification> block with NO banner around it — the
+  // banner-only check fell through to owner-interactive for this shape.
+  const BARE_TASK_NOTIFICATION =
+    '<task-notification>\n<task-id>bz4fgnaxv</task-id>\n<status>completed</status>\n<summary>Background command completed (exit code 0)</summary>\n</task-notification>';
+
+  it('detectMachineSurface: matches a bare <task-notification> tag with no banner', () => {
+    expect(detectMachineSurface(BARE_TASK_NOTIFICATION)).toBe(true);
+    expect(detectMachineSurface('  ' + BARE_TASK_NOTIFICATION)).toBe(true); // leading pad tolerated
+    // Not head-anchored elsewhere in the text — an owner quoting the tag
+    // mid-message is not itself proof; only a turn that STARTS with it is.
+    expect(detectMachineSurface('please look at this: ' + BARE_TASK_NOTIFICATION)).toBe(false);
+  });
+
+  it('classify: a bare <task-notification> turn with no envelope/ledger match → machine-surface, NOT owner', () => {
+    const res = classify(BARE_TASK_NOTIFICATION, [], { nowMs: NOW, ttlMs: TTL });
+    expect(res.verdict).toBe('machine-surface');
+    expect(res.verdict).not.toBe('owner-interactive');
+    expect(res.reason).toMatch(/MACHINE-GENERATED SURFACE/);
+  });
 });
 
 describe('ledger write/read/GC', () => {

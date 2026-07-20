@@ -7,15 +7,19 @@
  * via an in-process bus that mirrors `flag-bus.ts`:
  *
  *   PUT → writeRateLimitConfig() → persist PG → applyCached() (push the cap into the governor's
- *   global gate immediately) → publish() (so any other in-process subscriber re-applies).
+ *   global gate immediately) → publish() (so any other in-process subscriber re-applies) →
+ *   pg_notify() (so every OTHER operator process re-reads PG and re-applies too, EI-18106936190883400).
  *
  * The governor (libs/papercusp-shared) reads the cap through the `setGlobalConcurrencyCap` host
  * seam — it never imports this module (lower lib). The orchestrator dispatch ceiling +
  * pty-bridge read `getCachedRateLimitConfig()` directly (same process). On the dev box the Hono
- * host, the DBOS orchestrator loop, and the agent spawns all live in ONE operator process, so an
- * in-process bus suffices; PG LISTEN/NOTIFY is the documented multi-process extension.
+ * host, the DBOS orchestrator loop, and the agent spawns for ONE port all live in ONE operator
+ * process — but :3070 (release) and :3170 (staging) are TWO SEPARATE processes sharing the same
+ * PG, so an in-process bus alone silently let their `cached` copies diverge; every process now
+ * also LISTENs on NOTIFY_CHANNEL and resyncs from PG on any peer's write.
  */
 import { getChannel } from '@papercusp/sse';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   setGlobalConcurrencyCap,
   setGlobalConcurrencyFloor,
@@ -26,6 +30,7 @@ import {
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { getResourceProfile } from './resource-profile';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
+import { createNotifyBus } from './pg-notify-bus';
 
 /** P-021: a provider's runtime cold-start floor override (subscription buckets get no header headroom,
     so this static floor is their only rpm gate). Absent fields keep the baked DEFAULT_FLOORS value. */
@@ -139,6 +144,21 @@ export function clampRateLimitConfig(input: Partial<RateLimitConfig> | null | un
 }
 
 const CHANNEL = 'rate-limit-config-changes';
+/**
+ * PG NOTIFY channel for CROSS-PROCESS propagation (EI-18106936190883400). The in-process
+ * bus above (CHANNEL / getRateLimitBus) only fans out within ONE Node process — but this
+ * dev box (:3070 release + :3170 staging) and any clustered deploy (httpWorkers > 1) run
+ * MULTIPLE operator processes against the SAME PG-backed config. A write handled by one
+ * process updated ONLY that process's `cached` + its own governor's global gate; every
+ * OTHER process's `cached` (and therefore the cap it actually ENFORCES) silently kept the
+ * value from its own last boot/write forever. That is exactly the reported divergence: the
+ * editable input (a caller's fresh `readRateLimitConfig()` PG read) and the enforcing layer
+ * (another process's stale `getCachedRateLimitConfig()`, feeding its governor) permanently
+ * disagreeing. This was the module's own documented TODO ("PG LISTEN/NOTIFY is the
+ * documented multi-process extension") — every process now NOTIFYs its peers on write and
+ * LISTENs to resync from PG (the single source of truth) on any peer's write.
+ */
+const NOTIFY_CHANNEL = 'papercusp_rate_limit_config_changed';
 let cached: RateLimitConfig = { ...DEFAULT_RATE_LIMIT_CONFIG };
 let booted = false;
 
@@ -179,6 +199,15 @@ export async function initRateLimitConfig(): Promise<void> {
   booted = true;
   // Re-apply on any in-process publish (e.g. a PUT handled on another request in this process).
   getRateLimitBus().onPublish(({ event }) => applyCached(event.config));
+  // Cross-process resync (see NOTIFY_CHANNEL doc above): another operator process's write
+  // NOTIFYs this one — re-read the persisted value from PG (the source of truth) rather than
+  // trusting our own possibly-stale `cached`. Best-effort: a resync failure just leaves the
+  // prior cached value in place (never throws, never blocks the notify bus).
+  createNotifyBus(NOTIFY_CHANNEL, 'rate-limit-config').subscribe(() => {
+    readOperatorState<Partial<RateLimitConfig>>('operator_rate_limit_config')
+      .then((stored) => applyCached(clampRateLimitConfig(stored ?? {})))
+      .catch((err) => console.error('[rate-limit-config] cross-process resync failed:', err));
+  });
   const stored = await readOperatorState<Partial<RateLimitConfig>>('operator_rate_limit_config').catch(() => null);
   applyCached(clampRateLimitConfig(stored ?? {}));
 }
@@ -195,6 +224,14 @@ export async function writeRateLimitConfig(input: Partial<RateLimitConfig>): Pro
   await writeOperatorState('operator_rate_limit_config', cfg);
   applyCached(cfg); // update THIS process immediately (no wait for the publish round-trip)
   getRateLimitBus().publish({ type: 'rate_limit_config_changed', config: cfg, ts: Date.now() });
+  // Wake every OTHER operator process sharing this PG (see NOTIFY_CHANNEL doc above) so their
+  // `cached` — and therefore their governor's actually-enforced cap — converges too. Best-effort:
+  // the value is already durably persisted, so a notify failure never blocks the write; the next
+  // boot (or any other write) still converges it.
+  const { sql } = getOrgPg();
+  await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, '')`.catch((err: unknown) => {
+    console.error('[rate-limit-config] cross-process notify failed:', err);
+  });
   return cfg;
 }
 

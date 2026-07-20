@@ -163,6 +163,19 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).not.toContain('OWNER (interactive)');
   });
 
+  it('bare <task-notification> tag, NO banner (no envelope, no match) → MACHINE-GENERATED SURFACE, never OWNER (EI-18112745557098348)', () => {
+    writeRow();
+    const ctx = contextOf(
+      runHook({
+        prompt:
+          '<task-notification>\n<task-id>bz4fgnaxv</task-id>\n<status>completed</status>\n<summary>Background command completed (exit code 0)</summary>\n</task-notification>',
+      }),
+    );
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).toContain('NOT typed by the human owner');
+    expect(ctx).not.toContain('OWNER (interactive)');
+  });
+
   it('an envelope MID-TEXT is quoted content — classifies OWNER, not unverified', () => {
     writeRow();
     const ctx = contextOf(

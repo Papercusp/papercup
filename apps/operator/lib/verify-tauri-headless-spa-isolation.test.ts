@@ -60,7 +60,13 @@ describe('EI-10364 — verify-tauri-headless isolates the SPA module server', ()
     // shared dist) leave the SPA layer un-isolated; this catches both.
     expect(src).not.toMatch(/PAPERCUSP_SPA_DIST=["']?\$\{?SHARED_SPA_DIST/);
     expect(src).not.toMatch(/PAPERCUSP_SPA_DIST=["']?[^"'\s]*apps\/operator-vite\/dist/);
-    expect(src).not.toMatch(/SPA_DIST="\$SHARED_SPA_DIST"/);
+    // `\b` anchors this to a STANDALONE `SPA_DIST=` assignment. Without it, the
+    // pattern also matches a SUBSTRING of the legitimate freshness-check line
+    // `SHARED_SPA_DIST="$SHARED_SPA_DIST"` (EI-17134) — SHARED_SPA_DIST ends in
+    // SPA_DIST — a false positive that has nothing to do with what the sidecar
+    // serves. The boundary still catches the real naive non-fix (a bare
+    // `SPA_DIST="$SHARED_SPA_DIST"` pinning the private snapshot at the shared dist).
+    expect(src).not.toMatch(/\bSPA_DIST="\$SHARED_SPA_DIST"/);
     // The pin must resolve to the frozen snapshot variable.
     expect(src).toMatch(/SPA_ENV_LINE="PAPERCUSP_SPA_DIST=\\"\$SPA_DIST\\""/);
   });
