@@ -246,6 +246,84 @@ export function deriveDeployTile(
   return { verdict, gateLine, runLine, failingCount: g.failingTests.length, refs };
 }
 
+// ── usage.spend envelope + accounts.pool rows: the Spend tile's two reads
+//    (overview-tab-expansion-2026-07-20 P-003). ────────────────────────────────
+export interface OverviewSpendEnvelope {
+  h1: { spendUsd: number; calls: number };
+  h24: { spendUsd: number; calls: number };
+}
+export interface OverviewAccountRow {
+  id: string;
+  label?: string;
+  provider: string;
+  available: boolean;
+  usageWalled: boolean;
+  edgeThrottled: boolean;
+  rate: { pausedUntil: number; utilization?: number; utilization7d?: number };
+}
+
+export interface SpendTileModel {
+  /** "$1.23 1h · $18.40 24h" */
+  headline: string;
+  /** Accounts not currently able to serve (walled / paused / edge-throttled). */
+  unavailable: number;
+  rows: Array<{
+    id: string;
+    label: string;
+    /** 5h-window gateway utilization %, null until observed. */
+    utilPct: number | null;
+    /** 7d-window %, null until observed (title detail). */
+    util7dPct: number | null;
+    /** 'walled' | 'edge' | 'paused' | 'ok' — worst-first. */
+    state: 'walled' | 'edge' | 'paused' | 'ok';
+  }>;
+}
+
+/** "$1.23" / "$0.0042" / "$0" — same compact-spend rules as FleetRateControl. */
+function fmtUsd(spendUsd: number | undefined): string {
+  if (spendUsd === undefined || !Number.isFinite(spendUsd) || spendUsd <= 0) return '$0';
+  if (spendUsd < 0.01) return `$${spendUsd.toFixed(4)}`;
+  return `$${spendUsd.toFixed(2)}`;
+}
+
+/**
+ * Derive the Spend tile (P-003): 1h/24h spend headline + per-account gateway
+ * utilization, most-burned first (unknown-utilization accounts last). Pure.
+ */
+export function deriveSpendTile(
+  spend: OverviewSpendEnvelope | undefined,
+  accounts: readonly OverviewAccountRow[] | undefined,
+  nowMs: number,
+  limit = TILE_LIMIT - 1,
+): SpendTileModel | null {
+  if (!spend && (!accounts || accounts.length === 0)) return null;
+  const headline = spend ? `${fmtUsd(spend.h1.spendUsd)} 1h · ${fmtUsd(spend.h24.spendUsd)} 24h` : '—';
+  const rows = (accounts ?? [])
+    .map((a) => {
+      const util = a.rate?.utilization;
+      const util7d = a.rate?.utilization7d;
+      const paused = (a.rate?.pausedUntil ?? 0) > nowMs;
+      const state: SpendTileModel['rows'][number]['state'] = a.usageWalled
+        ? 'walled'
+        : a.edgeThrottled
+          ? 'edge'
+          : paused
+            ? 'paused'
+            : 'ok';
+      return {
+        id: a.id,
+        label: a.label || a.id,
+        utilPct: typeof util === 'number' && Number.isFinite(util) ? Math.round(util * 100) : null,
+        util7dPct: typeof util7d === 'number' && Number.isFinite(util7d) ? Math.round(util7d * 100) : null,
+        state,
+      };
+    })
+    .sort((a, b) => (b.utilPct ?? -1) - (a.utilPct ?? -1))
+    .slice(0, limit);
+  const unavailable = (accounts ?? []).filter((a) => !a.available).length;
+  return { headline, unavailable, rows };
+}
+
 // ── one `dev.coordFeed` row (the fields this tile reads). ────────────────────
 interface CoordFeedRow {
   ts: string;
@@ -442,6 +520,13 @@ export default function AdvOverviewTab() {
     fmsg: parseAsString,
     fsys: parseAsString,
   });
+  // Spend tile → the LeftSidebar Accounts tab (P-003). ONE useQueryStates batch:
+  // lsb (rail open) + lst (rail tab) written same-tick race through the custom
+  // nuqs adapter if issued as two hooks (see LeftSidebar's own setRail note).
+  const [, setRailParams] = useQueryStates({ lsb: parseAsBoolean, lst: parseAsString });
+  const openAccounts = async () => {
+    await setRailParams({ lsb: true, lst: 'accounts' });
+  };
   const openPlan = async (slug: string) => {
     await setActiveTab(OVERVIEW_TILE_TARGETS.plans);
     await setPlanSlug(slug);
@@ -518,6 +603,19 @@ export default function AdvOverviewTab() {
     args: {},
     staleTime: 15_000,
   });
+  // Spend (P-003): the 1h/24h spend envelope + the SAME accounts.pool read the
+  // sidebar Accounts tab holds (identical args ⇒ shared cache entry).
+  const spendQ = useSyncQuery<OverviewSpendEnvelope>({
+    queryName: 'usage.spend',
+    args: {},
+    staleTime: 30_000,
+  });
+  // No `args` key — matches the sidebar AccountsTab's own subscription exactly so
+  // the two share one cache entry (an `args:{}` here would key a second one).
+  const accountsQ = useSyncQuery<OverviewAccountRow>({
+    queryName: 'accounts.pool',
+    staleTime: 30_000,
+  });
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);
@@ -552,6 +650,10 @@ export default function AdvOverviewTab() {
   const deployTile = useMemo(
     () => deriveDeployTile(pipelineQ.data?.[0], Date.now()),
     [pipelineQ.data],
+  );
+  const spendTile = useMemo(
+    () => deriveSpendTile(spendQ.data?.[0], accountsQ.data, Date.now()),
+    [spendQ.data, accountsQ.data],
   );
   const health = healthQ.data?.[0];
   const unhealthy = useMemo(() => selectUnhealthyPanels(health), [health]);

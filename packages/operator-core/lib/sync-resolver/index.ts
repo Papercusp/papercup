@@ -5650,6 +5650,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [estimateBenchLaunch({ taskSetId, cap })];
     },
   },
+  // usage.spend — the 1h + 24h LLM spend/calls headline for the Overview Spend
+  // tile (overview-tab-expansion-2026-07-20 P-003). A single envelope row
+  // { h1:{spendUsd,calls}, h24:{spendUsd,calls} } over summarizeUsage (the SAME
+  // aggregation the FleetRateControl wire's 1h read uses — one cost-honest
+  // pipeline, two windows). Push-refreshed via the agent_usage_samples
+  // append-heavy sweep (no per-row notify storm); the tile's staleTime is the
+  // freshness floor between sweeps.
+  'usage.spend': {
+    resolve: async () => {
+      const { summarizeUsage } = await import('../agent-usage-telemetry');
+      const [h1, h24] = await Promise.all([
+        summarizeUsage(60 * 60 * 1000),
+        summarizeUsage(24 * 60 * 60 * 1000),
+      ]);
+      return [
+        {
+          h1: { spendUsd: h1.spendUsd, calls: h1.calls },
+          h24: { spendUsd: h24.spendUsd, calls: h24.calls },
+        },
+      ];
+    },
+  },
+
   // accounts.pool — the Queen's Claude Max account pool as a live read-model for
   // the Accounts tab (accounts-pool-tab-2026-06-15 P-001). One row per pool
   // account: the union of accounts:list + accounts:status (id/label/credentialRef/

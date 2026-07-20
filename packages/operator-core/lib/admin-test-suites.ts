@@ -981,6 +981,47 @@ function fail(
   return { status: 'fail', expected, actual, details };
 }
 
+/**
+ * Chaos-click one heavy surface for 5s and assert its INP/frame budgets (P-009).
+ * Shares runChaosRecorder + the DESKTOP_PERF_BUDGETS chaos thresholds with the
+ * original test-runs check, but emits PER-SURFACE measure keys
+ * (`chaos:<surfaceKey>:*`) so each surface has its own trend line and the
+ * original `chaos:*` keys keep their history. `clicks > 0` guards a surface that
+ * never hydrated (nothing to click ⇒ the surface is broken, a real failure).
+ */
+async function chaosSurfaceCheck(
+  ctx: SuiteContext,
+  surfaceKey: string,
+  label: string,
+  route: string,
+): Promise<Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'>> {
+  const summary = await runChaosRecorder(ctx, route, 5_000);
+  const pass =
+    summary.clicks > 0 &&
+    summary.maxInp <= DESKTOP_PERF_BUDGETS.chaosInpMaxMs &&
+    summary.p95Inp <= DESKTOP_PERF_BUDGETS.chaosInpP95Ms &&
+    summary.errors === 0 &&
+    summary.reloads === 0 &&
+    summary.frameDrops <= DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops &&
+    summary.maxFrameMs <= DESKTOP_PERF_BUDGETS.chaosMaxFrameMs;
+  return statusResult(
+    pass,
+    `Chaos-clicking the ${label} surface for 5s stays within budgets (p95 INP <=${DESKTOP_PERF_BUDGETS.chaosInpP95Ms}ms, max INP <=${DESKTOP_PERF_BUDGETS.chaosInpMaxMs}ms, <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops} severe frame drops, max frame <=${DESKTOP_PERF_BUDGETS.chaosMaxFrameMs}ms), with no errors or reloads.`,
+    `${summary.clicks} clicks · p95=${summary.p95Inp}ms · max=${summary.maxInp}ms · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`,
+    [
+      `route: ${route}`,
+      `recorder routes: ${summary.routes.join(', ') || '(none)'}`,
+      `duration=${summary.durationMs}ms · longTasks=${summary.longTasks}`,
+    ],
+    [
+      budgetMeasure(`chaos:${surfaceKey}:inp-p95`, summary.p95Inp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpP95Ms),
+      budgetMeasure(`chaos:${surfaceKey}:inp-max`, summary.maxInp, 'ms', DESKTOP_PERF_BUDGETS.chaosInpMaxMs),
+      budgetMeasure(`chaos:${surfaceKey}:max-frame`, summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
+      budgetMeasure(`chaos:${surfaceKey}:frame-drops`, summary.frameDrops, 'count', DESKTOP_PERF_BUDGETS.chaosMaxFrameDrops),
+    ],
+  );
+}
+
 /** A not-exercised check: 'skip' collapses to 'pass' in the run rollup, so it
  *  never reds the suite. Used for interactions the long-lived admin shell can't
  *  re-trigger (dock mounts once; a conversation needs a specific chat) — the

@@ -22,6 +22,7 @@ import {
   normalizeRedTestPath,
   redTestSignalsFromRows,
   debounceRedTestSignals,
+  isLikelyTransientTransformFailure,
   isServiceHealthStale,
   serviceDownCollectorResult,
   DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
@@ -989,6 +990,81 @@ describe('debounceRedTestSignals (EI-10102): a file being actively edited across
     const checkEdited = vi.fn(async (path: string) => path === 'edited.test.ts');
     const kept = await debounceRedTestSignals([editedFile, settledFile], checkEdited);
     expect(kept.map((s) => s.key)).toEqual(['settled.test.ts']);
+  });
+
+  describe('isLikelyTransientTransformFailure (EI-18145972782668210)', () => {
+    it('matches esbuild transform-crash signatures', () => {
+      expect(isLikelyTransientTransformFailure('Transform failed with 1 error:\nfoo.ts:12:3: ERROR: Expected ")" but found "opts"')).toBe(true);
+      expect(isLikelyTransientTransformFailure('SyntaxError: Unexpected token, expected ","')).toBe(true);
+      expect(isLikelyTransientTransformFailure('Unexpected token (14:2)')).toBe(true);
+      expect(isLikelyTransientTransformFailure('Unterminated string literal')).toBe(true);
+    });
+
+    it('does NOT match a real assertion failure — this debounce must never mask genuine test breaks', () => {
+      expect(isLikelyTransientTransformFailure('expected [ \'work_items:checkpoint\' ] to deeply equal []')).toBe(false);
+      expect(isLikelyTransientTransformFailure('AssertionError: expected 3 to equal 4')).toBe(false);
+    });
+
+    it('does NOT match an unrelated resolution error (a missing import is often a REAL break, not a torn read)', () => {
+      expect(isLikelyTransientTransformFailure('Cannot find module \'./foo\' from \'bar.ts\'')).toBe(false);
+    });
+
+    it('is null/undefined-safe', () => {
+      expect(isLikelyTransientTransformFailure(null)).toBe(false);
+      expect(isLikelyTransientTransformFailure(undefined)).toBe(false);
+    });
+  });
+
+  describe('debounceRedTestSignals — transform-class failures from an UNCOMMITTED concurrent edit (EI-18145972782668210)', () => {
+    const transformFailureSig = (over: Partial<WatchdogSignal> = {}) =>
+      redTestSig({
+        body: 'Watchdog signal (red-test): a.test.ts (vitest) failed 3× in the last 6h.\n\nLast failure tail:\nTransform failed with 1 error:\na.ts:5:2: ERROR: Expected ")" but found "opts"',
+        ...over,
+      });
+
+    it('drops a transform-class failure when NOT git-edited but the file parses cleanly RIGHT NOW (a torn read of an uncommitted peer write)', async () => {
+      const checkParsesCleanly = vi.fn(async (_path: string) => true);
+      const kept = await debounceRedTestSignals([transformFailureSig()], async () => false, undefined, checkParsesCleanly);
+      expect(kept).toEqual([]);
+      expect(checkParsesCleanly).toHaveBeenCalledWith('a.test.ts');
+    });
+
+    it('keeps a transform-class failure when the file STILL does not parse cleanly (a real, still-broken file)', async () => {
+      const kept = await debounceRedTestSignals([transformFailureSig()], async () => false, undefined, async () => false);
+      expect(kept).toHaveLength(1);
+    });
+
+    it('never applies the re-parse check to a non-transform (assertion) failure, even if checkParsesCleanly would say true', async () => {
+      const checkParsesCleanly = vi.fn(async () => true);
+      const assertionSig = redTestSig({ body: 'expected [ \'work_items:checkpoint\' ] to deeply equal []' });
+      const kept = await debounceRedTestSignals([assertionSig], async () => false, undefined, checkParsesCleanly);
+      expect(kept).toHaveLength(1);
+      expect(checkParsesCleanly).not.toHaveBeenCalled();
+    });
+
+    it('fails OPEN when checkParsesCleanly throws — a re-parse hiccup never silently swallows a real signal', async () => {
+      const kept = await debounceRedTestSignals(
+        [transformFailureSig()],
+        async () => false,
+        undefined,
+        async () => {
+          throw new Error('esbuild unavailable');
+        },
+      );
+      expect(kept).toHaveLength(1);
+    });
+
+    it('keeps the signal when no checkParsesCleanly is wired at all (backward-compatible default)', async () => {
+      const kept = await debounceRedTestSignals([transformFailureSig()], async () => false);
+      expect(kept).toHaveLength(1);
+    });
+
+    it('the git-commit debounce (EI-10102) still wins first — a committed edit drops the signal without even calling checkParsesCleanly', async () => {
+      const checkParsesCleanly = vi.fn(async () => false);
+      const kept = await debounceRedTestSignals([transformFailureSig()], async () => true, undefined, checkParsesCleanly);
+      expect(kept).toEqual([]);
+      expect(checkParsesCleanly).not.toHaveBeenCalled();
+    });
   });
 });
 

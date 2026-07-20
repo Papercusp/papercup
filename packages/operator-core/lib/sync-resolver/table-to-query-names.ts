@@ -369,7 +369,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'scheduler.running',
     'evals.benchRunLive',
   ],
-  'harness_shared.agent_usage_samples': ['evals.benchRunLive'],
+  // usage.spend (overview-tab-expansion P-003): the Overview Spend tile's 1h/24h
+  // headline rides the same append-heavy sweep as benchRunLive — synthesized
+  // `.changed` per tick, never per-row notify on this high-write telemetry log.
+  'harness_shared.agent_usage_samples': ['evals.benchRunLive', 'usage.spend'],
   'harness_shared.bench_runs': ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive'],
   'harness_shared.bench_run_tasks': ['evals.benchRun', 'evals.benchRunLive'],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
