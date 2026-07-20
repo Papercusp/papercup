@@ -644,6 +644,30 @@ describe('design primitive lint', () => {
       },
     );
   });
+
+  // NEW rule (EI-18135716653974462, 2026-07-20) — WARN-ONLY per this file's own
+  // warn-first rollout convention: ~130 pre-existing sites already set
+  // display:(inline-)flex/grid directly on a <button> (most a harmless
+  // icon+text row that happens to still read fine under WebKitGTK's block
+  // fallback), so flipping straight to enforce:true would red the whole
+  // fleet's gate over unaudited debt. This surfaces every offender loudly —
+  // seed an allowlist for the audited-safe ones, migrate any genuinely broken
+  // ones to the inner-span pattern (see AdvOverviewTab.tsx), then flip
+  // enforce:true so a NEW instance of the class can never ship silently
+  // again.
+  it('flags display:flex/grid set directly on a <button> selector (WebKitGTK ignores it)', () => {
+    warnOrFail(
+      'display:flex/grid on a <button> selector',
+      unexpectedFlexOrGridOnButtonSelectors(),
+      {
+        enforce: false,
+        hint:
+          'WebKitGTK (the Tauri desktop webview) ignores flex/grid set on the <button> ' +
+          'element itself — move the layout onto an inner <span>/<div> and reset the ' +
+          '<button> to display:block (see AdvOverviewTab.tsx / WI-5581 / EI-18135716653974462).',
+      },
+    );
+  });
 });
 
 // ── Warn-first lint rollout (catch-test-lags-migration-at-the-author #4, Part B) ───────
