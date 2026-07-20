@@ -295,8 +295,8 @@ describe('reclaimStaleWorkItemClaims', () => {
     await sql`UPDATE harness_shared.harness_features_consolidated
                  SET taken_at = NULL WHERE feature_id = 'F-015'`;
     const r = await reclaimStaleWorkItemClaims(sql);
-    expect(r.released[0]).toMatchObject({ feature_id: 'F-015', reason: 'dead', new_status: 'todo', action: 'requeued' });
-    expect(await statusOf('F-015')).toMatchObject({ status: 'todo', taken_by: null });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-015', reason: 'dead', new_status: 'open', action: 'requeued' });
+    expect(await statusOf('F-015')).toMatchObject({ status: 'open', taken_by: null });
   });
 
   it('a NULL-taken_at claim held by a LIVE holder is NOT freed (no anchor must not over-reclaim)', async () => {
@@ -316,18 +316,18 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect(r.released[0]).toMatchObject({
       feature_id: 'F-007',
       former_status: 'in_progress',
-      new_status: 'todo',
+      new_status: 'open',
       action: 'requeued',
       requeue_count: 1,
     });
-    expect(await statusOf('F-007')).toMatchObject({ status: 'todo', requeue_count: 1, taken_by: null });
+    expect(await statusOf('F-007')).toMatchObject({ status: 'open', requeue_count: 1, taken_by: null });
   });
 
   it('a `validating` row is also requeued (any non-terminal, non-blocked state)', async () => {
     await seedItem('F-007b', 'opspawn-dead-val', 30, 'validating');
     await markKnown('opspawn-dead-val');
     const r = await reclaimStaleWorkItemClaims(sql);
-    expect(r.released[0]).toMatchObject({ former_status: 'validating', new_status: 'todo', action: 'requeued' });
+    expect(r.released[0]).toMatchObject({ former_status: 'validating', new_status: 'open', action: 'requeued' });
   });
 
   it('the requeue counter increments each sweep until the cap, then DEAD-LETTERS to blocked (P-002, D-007)', async () => {

@@ -49,6 +49,9 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   // EI-13520: real fn returns null (no cooldown-diagnosis signal) by default — these tests
   // don't exercise the cooldown-attribution path, only fleetScopedMiss's existing shapes.
   diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
+  // WI-5561: real fn returns null (no issue-floor-breakdown signal) by default — these tests
+  // don't exercise the issue-floor-breakdown path, only fleetScopedMiss's existing shapes.
+  diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
   fleetScopedMiss: (
     scope: any,
     quarantinedIds: string[],
@@ -56,6 +59,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
       pausedReason?: string | null;
       cooldownDiag?: { cooldownExcluded: number; earliestExpiryMs: number | null } | null;
       claimableAwaitsCancelled?: number;
+      issueBreakdown?: unknown;
     },
   ) => ({
     ok: false,
@@ -64,13 +68,16 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
         ? `paused: ${opts.pausedReason ?? ''}`
         : opts?.cooldownDiag
           ? `cooldown-only miss; ${opts.cooldownDiag.cooldownExcluded} excluded`
-          : 'scoped miss; no generic fallback',
+          : opts?.issueBreakdown
+            ? 'floor-gated miss (WI-5561); see excludedBreakdownSummary'
+            : 'scoped miss; no generic fallback',
     fleetScope: { fleet: scope.fleetSlug, source: scope.record.source },
     quarantinedIds,
     windDown: true,
     ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
     ...(opts?.pausedReason !== undefined ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(opts?.cooldownDiag ? { cooldownOnly: true } : {}),
+    ...(opts?.issueBreakdown ? { excludedBreakdown: opts.issueBreakdown } : {}),
   }),
 }));
 
