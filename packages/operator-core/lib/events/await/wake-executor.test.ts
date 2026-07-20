@@ -249,6 +249,27 @@ describe('wakeTurnText', () => {
     expect(base).not.toContain('⟦ambient⟧');
   });
 
+  // EI-16648: an always-armed inbox-wake (`coord:inbox-wake:<owner>`) can be
+  // CONSUMED late — a continuously-busy recipient's OWN periodic coord:inbox
+  // polling may already have surfaced + handled the quoted message before the
+  // injected wake turn is drained. So an inbox-wake key gets a self-identifying
+  // reconciliation NOTE telling the woken agent to reconcile against coord:inbox
+  // before re-doing possibly-already-handled mail; every OTHER key is untouched.
+  it('EI-16648: an inbox-wake key stamps the reconcile-against-coord:inbox note', () => {
+    const t = wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc' }));
+    expect(t).toContain('coord:inbox-wake:su-abc'); // base wake still present
+    expect(t).toContain('NOTE (inbox-wake)');
+    expect(t).toContain('reconcile against coord:inbox');
+    expect(t).toContain('do NOT re-do handled mail');
+    expect(t).not.toContain('\n'); // still a single collapsed line
+  });
+
+  it('EI-16648: a non-inbox-wake key is byte-identical — NO reconcile note', () => {
+    const t = wakeTurnText(work()); // default eventKey 'lock:grant:t-1'
+    expect(t).not.toContain('NOTE (inbox-wake)');
+    expect(t).not.toContain('reconcile against coord:inbox');
+  });
+
   // GAP 1 (likely bug): a timeout-fire payload `{timeout:true}` coalesced with a
   // sibling has its headline payload replaced by `{coalesced,count,events,latest}`
   // (coalesceDeliveries) — the top-level `timeout` marker is GONE. wakeTurnText

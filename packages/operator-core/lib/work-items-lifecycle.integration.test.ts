@@ -226,8 +226,10 @@ describe('work_item change fan-out — notify_kind mapping + actor exclusion', (
       /already terminally completed/,
     );
     // The rejection must not have mutated the row.
+    // work-item-status-full-unify: the issue terminal `resolved` folds to the unified `done`
+    // on write (terminal_reason='resolved' preserves the nuance) — the row is still terminal.
     const still = await wi.getWorkItem(bug.id, 'papercup');
-    expect(still?.state).toBe('resolved');
+    expect(still?.state).toBe('done');
   });
 
   it('reopening a peer\'s terminal completion SUCCEEDS with force:true', async () => {
@@ -263,13 +265,13 @@ describe('P-006 held-open guard — non-holder terminal transitions refuse', () 
   it('the HOLDER closing their own held item passes the guard', async () => {
     const bug = await heldBug('leader-1');
     const done = await wi.setWorkItemState(bug.id, 'resolved', { by: 'leader-1', completionRef: 'holder closes' });
-    expect(done?.state).toBe('resolved');
+    expect(done?.state).toBe('done'); // work-item-status-full-unify: issue `resolved`→unified `done`
   });
 
   it('force:true overrides the hold (leader/reaper escape hatch)', async () => {
     const bug = await heldBug('leader-1');
     const done = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agX', completionRef: 'forced', force: true });
-    expect(done?.state).toBe('resolved');
+    expect(done?.state).toBe('done'); // work-item-status-full-unify: issue `resolved`→unified `done`
   });
 
   it('a NON-terminal transition by a non-holder is NOT gated (the hold only guards closing)', async () => {
@@ -494,7 +496,7 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
     await wi.autoResolveSourceIssueOnFeaturePassed(featureId, 'papercup');
 
     const after = await issuesEngineer.getIssue(bug.id);
-    expect(after?.state).toBe('resolved');
+    expect(after?.state).toBe('done'); // work-item-status-full-unify: issue `resolved`→unified `done`
     expect(after?.terminalCompletionRef).toBe('closed as duplicate');
   });
 
