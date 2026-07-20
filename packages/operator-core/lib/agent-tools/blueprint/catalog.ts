@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
+  blueprintRetirement,
   builtinBlueprintPath,
   isProgramSpine,
   loadBlueprintFromFile,
