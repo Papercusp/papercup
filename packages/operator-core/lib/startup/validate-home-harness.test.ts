@@ -33,12 +33,17 @@ import * as workspaceRegistry from '../workspace-registry';
 import * as harnessRegistry from '../harness-registry';
 
 describe('validateHomeHarnessResolution', () => {
+  const ORIGINAL_ENV_VALUE = process.env.PAPERCUSP_POT_HOME_SLUG;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCUSP_POT_HOME_SLUG;
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    if (ORIGINAL_ENV_VALUE === undefined) delete process.env.PAPERCUSP_POT_HOME_SLUG;
+    else process.env.PAPERCUSP_POT_HOME_SLUG = ORIGINAL_ENV_VALUE;
   });
 
   it('should pass when home harness slug resolves to a registered project', async () => {
@@ -90,6 +95,35 @@ describe('validateHomeHarnessResolution', () => {
 
     await expect(validateHomeHarnessResolution()).rejects.toThrow(
       /fire-paths.*404/
+    );
+  });
+
+  // EI-18189651437540304: a hermetic no-home-hive operator instance (e.g. the gym's
+  // spawned gym-operator, boot-spec.ts) EXPLICITLY blanks PAPERCUSP_POT_HOME_SLUG to
+  // declare "no home harness at all" — this must be a silent no-op, not a validation
+  // failure against the legacy-default slug ('papercusp', which of course isn't
+  // registered in an isolated hermetic workspace).
+  it('is a no-op when PAPERCUSP_POT_HOME_SLUG is explicitly set to the empty string', async () => {
+    process.env.PAPERCUSP_POT_HOME_SLUG = '';
+
+    await expect(validateHomeHarnessResolution()).resolves.toBeUndefined();
+
+    // Never even asked operatorHomeHarnessSlug()/resolveProject() to resolve anything —
+    // the whole check is skipped, not merely tolerant of a null resolution.
+    expect(homeHarness.operatorHomeHarnessSlug).not.toHaveBeenCalled();
+    expect(harnessCore.resolveProject).not.toHaveBeenCalled();
+  });
+
+  it('still validates (and can still fail) when the env var is simply UNSET — only an explicit empty string is a no-op', async () => {
+    // process.env.PAPERCUSP_POT_HOME_SLUG is deleted by the outer beforeEach (unset,
+    // not ''), so operatorHomeHarnessSlug()'s own legacy-default fallback still governs
+    // and validation still runs.
+    vi.mocked(homeHarness.operatorHomeHarnessSlug).mockReturnValue('papercusp');
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue('some-workspace');
+    vi.mocked(harnessCore.resolveProject).mockResolvedValue(null);
+
+    await expect(validateHomeHarnessResolution()).rejects.toThrow(
+      /does not resolve to a registered project/
     );
   });
 });
