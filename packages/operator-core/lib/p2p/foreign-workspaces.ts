@@ -47,6 +47,14 @@ export interface ForeignWorkspace {
    *  admission's range anchor. Null (pre-470 / refused clone) = no anchor:
    *  full-history judgment, the fail-closed direction. */
   baseSha: string | null;
+  /** epoch ms — mig 467 `created_at`. The claim/registration floor P-104's
+   *  H12 liveness deps seed `lastConfirmedAt` from absent a session-activity
+   *  heartbeat (P-407). */
+  createdAt: number;
+  /** epoch ms — mig 467 `updated_at`, bumped on bind-to-active (P-104) and
+   *  every state transition (setForeignWorkspaceState / setForeignWorkspaceBaseSha).
+   *  The best available "last confirmed" floor until a real heartbeat lands. */
+  updatedAt: number;
 }
 
 interface Row {
@@ -62,6 +70,18 @@ interface Row {
   state: string;
   park_reason: string | null;
   base_sha?: string | null;
+  created_at?: string | number | Date;
+  updated_at?: string | number | Date;
+}
+
+/** Coerce a postgres-js timestamptz value (Date, ISO string, or epoch-ms
+ *  number depending on the driver's parse config) to epoch ms. */
+function toEpochMs(v: string | number | Date | undefined): number {
+  if (v == null) return 0;
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === 'number') return v;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? 0 : t;
 }
 
 function fromRow(r: Row): ForeignWorkspace {
@@ -78,6 +98,8 @@ function fromRow(r: Row): ForeignWorkspace {
     state: r.state as ForeignWorkspaceState,
     parkReason: r.park_reason,
     baseSha: r.base_sha ?? null,
+    createdAt: toEpochMs(r.created_at),
+    updatedAt: toEpochMs(r.updated_at),
   };
 }
 

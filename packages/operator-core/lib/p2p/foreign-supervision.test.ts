@@ -71,6 +71,8 @@ const row = (over: Partial<ForeignWorkspace> = {}): ForeignWorkspace => ({
   state: 'active',
   parkReason: null,
   baseSha: 'abc',
+  createdAt: NOW - 5_000,
+  updatedAt: NOW - 5_000,
   ...over,
 });
 
