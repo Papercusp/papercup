@@ -72,12 +72,14 @@ beforeAll(async () => {
   src = postgres(srcUrl.toString(), { max: 2, onnotice: () => {}, prepare: false });
   dst = postgres(dstUrl.toString(), { max: 2, onnotice: () => {}, prepare: false });
 
-  await applyGymSchema(src);
+  // A multi-statement migration via applyGymSchema / .unsafe() trips postgres-js's
+  // UNSAFE_TRANSACTION guard on a pooled (max>1) connection, so apply BOTH schemas on
+  // dedicated max:1 connections; the max:2 src/dst pools then serve the parallel copy + reads.
+  const srcMig = postgres(srcUrl.toString(), { max: 1, onnotice: () => {}, prepare: false });
+  try { await applyGymSchema(srcMig); } finally { await srcMig.end({ timeout: 5 }); }
 
-  // Apply migration 650 on a dedicated max:1 connection: a multi-statement DDL batch via
-  // .unsafe() trips postgres-js's UNSAFE_TRANSACTION guard on a pooled (max>1) connection.
-  // The GRANTs target harness_app / harness_zero — create them so the real migration applies
-  // verbatim (the test role owns the tables and bypasses the RLS it enables).
+  // The migration GRANTs to harness_app / harness_zero — create them so the real migration
+  // applies verbatim (the test role owns the tables and bypasses the RLS it enables).
   const mig = postgres(dstUrl.toString(), { max: 1, onnotice: () => {}, prepare: false });
   try {
     await mig.unsafe(`DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
