@@ -64,6 +64,8 @@ function wsFor(clonePath: string, over: Partial<ForeignWorkspace> = {}): Foreign
     state: 'active',
     parkReason: null,
     baseSha: null,
+    createdAt: 0,
+    updatedAt: 0,
     ...over,
   };
 }

@@ -54,6 +54,7 @@ import {
   type PipelineTestDigestHook,
   type PipelineLeaseHeartbeatHook,
 } from './orchestrator-workflow';
+import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 
 type RunnerCall = {
   role: string;
@@ -122,6 +123,16 @@ const input = (over: Partial<PipelineInput> = {}): PipelineInput => ({
   harnessSlug: 'sheets',
   featureId: 'F-1',
   workspaceId: 'ws-1',
+  // This suite exercises the engine's FULL director→NEXT_*→validator→DONE + hook
+  // vocabulary, so it needs the rich `coding-factory` spine — whose decider role
+  // is `director`, which the fakeRunner above drives via directorOutputs. The
+  // production no-spine fallback codingSpine() was repointed coding-factory→
+  // coding-solo on 2026-07-20 (decider `worker`, DONE/ESCALATE/IDLE); relying on
+  // that default silently starved every assertion here (featurePipelineWorkflow
+  // returned last=IDLE — the decider calls no longer matched role==='director').
+  // Pin the factory spine so a production fallback repoint can't change what the
+  // engine is tested against. (WI-5660)
+  spine: loadBuiltinBlueprint('coding-factory').blueprint.spine,
   ...over,
 });
 

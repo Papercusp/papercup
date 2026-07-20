@@ -30,6 +30,8 @@ const fakeWs = (over: Partial<ForeignWorkspace> = {}): ForeignWorkspace => ({
   state: 'provisioning',
   parkReason: null,
   baseSha: 'abc',
+  createdAt: 0,
+  updatedAt: 0,
   ...over,
 });
 

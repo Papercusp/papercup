@@ -45,6 +45,8 @@ function memRegistry() {
       state: 'provisioning',
       parkReason: null,
       baseSha: null,
+      createdAt: 0,
+      updatedAt: 0,
     } satisfies ForeignWorkspace,
   });
   const park = async (offerId: string, reason: string) => {

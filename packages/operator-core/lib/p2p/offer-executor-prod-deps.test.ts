@@ -95,6 +95,8 @@ describe('launchForeignSession (WI-1937 D-001, option B)', () => {
       state: 'provisioning',
       parkReason: null,
       baseSha: null,
+      createdAt: 0,
+      updatedAt: 0,
     },
     clonePath: '/tmp/foreign/offer-42/repo',
     presenceLabel: 'foreign:peer-fleet:offer-42',
