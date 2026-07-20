@@ -133,8 +133,57 @@ export function planCanaryTick(
   return { overdue: candidates, queueId: canaryIdFor(nowMs), suppressed: [] };
 }
 
+export interface CanarySlaPlan {
+  /**
+   * Canary ids breaching the FAST completion SLA: created more than `slaMinutes`
+   * ago, still non-terminal, and not yet SLA-reported. These get an EARLY-WARNING
+   * bug — distinct from the daily 6h `overdue` report — so a dark completion driver
+   * is surfaced in ~30min instead of ~24h.
+   */
+  breaching: string[];
+  /** Suppressed because the harness's Hive is owner-paused (see planCanaryTick). */
+  suppressed: string[];
+}
+
+/**
+ * Pure planning for the FAST SLA sweep (EI-18170 recurrence-guard). The daily
+ * `planCanaryTick` only fires once/day with a 6h deadline, so a canary the loop
+ * never touches is invisible for up to ~24h AND only if the daily routine itself
+ * runs. This complementary sweep runs every ~15min and flags any canary older than
+ * `slaMinutes` (default 30) that is still non-terminal and not yet SLA-reported.
+ *
+ * Deliberately independent of `planCanaryTick`:
+ *  - a SEPARATE stamp (`canary_sla_reported`, not `canary_reported`) so the fast
+ *    early-warning and the daily 6h report dedup independently and neither
+ *    suppresses the other;
+ *  - it does NOT queue and does NOT deprecate — deprecation stays the daily
+ *    check's single responsibility (EI-8524), so an early SLA warning never kills
+ *    a canary that might still complete before the 6h deadline.
+ * Same pause-awareness as the daily check (EI-7420): an owner pause is an intended
+ * state, not a loop failure, so suppress (and never stamp) while paused.
+ */
+export function planCanarySlaCheck(
+  rows: CanaryFeatureRow[],
+  opts: { slaMinutes?: number; nowMs?: number; isPaused?: boolean } = {},
+): CanarySlaPlan {
+  const slaMinutes = opts.slaMinutes ?? 30;
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoff = nowMs - slaMinutes * 60_000;
+  const candidates = rows
+    .filter((r) => r.payload !== null && r.payload !== undefined)
+    .filter((r) => r.payload?.canary === true)
+    .filter((r) => r.payload?.canary_sla_reported !== true)
+    .filter((r) => !isCanaryTerminal(r.status))
+    .filter((r) => Number(r.created_ts) < cutoff)
+    .map((r) => r.feature_id);
+  if (opts.isPaused) {
+    return { breaching: [], suppressed: candidates };
+  }
+  return { breaching: candidates, suppressed: [] };
+}
+
 /** Forensics for one missed canary: DBOS pipeline rows + nursery rows + fire-state. */
-async function gatherForensics(slug: string, featureId: string, workspaceId: string): Promise<string> {
+export async function gatherForensics(slug: string, featureId: string, workspaceId: string): Promise<string> {
   const { sql } = getOrgPg();
   const parts: string[] = [];
   try {
@@ -337,5 +386,102 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
     }
   } catch (e) {
     console.error(`[hive-canary] failed to queue ${installSlug}/${plan.queueId}: ${e instanceof Error ? e.message : e}`);
+  }
+});
+
+/**
+ * `system:hive-canary-sla` — the FAST completion-SLA sweep (EI-18170 recurrence
+ * guard). Runs every ~15min (seed-hive-canary-sla-routine.ts) and fires an
+ * early-warning bug the moment today's canary breaches its completion SLA
+ * (default 30min), INDEPENDENT of any Mug/Queen wake — closing the detector gap
+ * that let F-CANARY-20260720 sit open+untouched with no standing alarm (the only
+ * prior detector was the daily 6h CHECK, so a dark completion driver was invisible
+ * for up to ~24h and only if the daily routine itself ran).
+ *
+ * Mirrors the daily action's self-gate + Hive-pause resolution, but is a
+ * pure EARLY WARNING: it does NOT queue a canary and does NOT deprecate — it only
+ * reports (with a DISTINCT watchdogKey + the `canary_sla_reported` stamp) so the
+ * daily 6h detector's report/deprecate lifecycle (EI-8524) is untouched.
+ */
+registerSystemAction('hive-canary-sla', async (ctx: SystemActionCtx) => {
+  const { installSlug, workspaceId, payloadTemplate } = ctx;
+  const slaMinutes = Number(payloadTemplate?.slaMinutes) || 30;
+
+  // Self-gate: no registered canary harness → clean no-op (routine stays ACTIVE).
+  try {
+    const reg = await loadHarnessRegistry(workspaceId);
+    if (!reg.projects.some((p) => p.slug === installSlug)) {
+      console.log(`[hive-canary-sla] harness "${installSlug}" not registered in ${workspaceId} — skipping (self-gate)`);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[hive-canary-sla] registry unreadable — skipping: ${e instanceof Error ? e.message : e}`);
+    return;
+  }
+
+  const { sql } = getOrgPg();
+  const rows = await sql<CanaryFeatureRow[]>`
+    SELECT feature_id, status, created_ts, payload
+      FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+       AND item_kind = 'feature' AND payload IS NOT NULL AND payload->>'canary' = 'true'
+     ORDER BY created_ts DESC LIMIT 30`;
+
+  // Pause-aware (EI-7420): resolve the Hive this harness belongs to and honor an
+  // owner pauseNewWork — an intentional pause is not a broken loop.
+  let isPaused = false;
+  try {
+    const reg = await loadHarnessRegistry(workspaceId);
+    const potHomeSlug = reg.projects.find((p) => p.slug === installSlug)?.hive_slug ?? installSlug;
+    const steering = await getOwnerSteering(workspaceId, potHomeSlug, sql);
+    isPaused = isPausedNow(steering, Date.now());
+  } catch (e) {
+    console.warn(`[hive-canary-sla] pause-check failed for ${installSlug} — treating as unpaused: ${e instanceof Error ? e.message : e}`);
+  }
+
+  const plan = planCanarySlaCheck(rows, { slaMinutes, isPaused });
+  if (plan.suppressed.length > 0) {
+    console.log(`[hive-canary-sla] ${installSlug}: suppressed ${plan.suppressed.length} SLA breach(es) — Hive is owner-paused (pauseNewWork): ${plan.suppressed.join(', ')}`);
+  }
+
+  // Report each SLA breach (cap 3/tick) with forensics. Distinct watchdogKey +
+  // stamp from the daily detector so the two never dedup into each other.
+  for (const fid of plan.breaching.slice(0, 3)) {
+    const forensics = await gatherForensics(installSlug, fid, workspaceId);
+    const res = await captureImprovement({
+      title: `Hive canary ${installSlug}/${fid} breached its ${slaMinutes}min completion SLA`,
+      kind: 'bug',
+      severity: 'major',
+      body:
+        `The daily canary feature ${fid} in harness ${installSlug} has been non-terminal and untouched for ` +
+        `more than ${slaMinutes}min — the autonomous hive completion driver has likely gone dark ` +
+        `(create/queue half OK, but no cup spawned to claim + complete it). This is the FAST early-warning ` +
+        `SLA sweep (EI-18170); the daily 6h CHECK will independently report + deprecate if it is still ` +
+        `un-terminal at its deadline.\n\nForensics:\n${forensics}`,
+      foundDuring: 'hive-canary-sla routine',
+      dedupScope: 'open',
+      watchdogKey: `hive-canary-sla:${installSlug}:${fid}`,
+    });
+    // Stamp canary_sla_reported (distinct from canary_reported) — one SLA report
+    // per canary, idempotent across replays. Do NOT change status: deprecation
+    // stays the daily check's single responsibility (EI-8524), and leaving the
+    // canary open lets it still complete (turning the alarm into a near-miss).
+    const updateResult = await sql<{ feature_id: string }[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = CASE
+               WHEN payload IS NULL THEN '{"canary": true, "canary_sla_reported": true}'::jsonb
+               ELSE payload || '{"canary_sla_reported": true}'::jsonb
+             END,
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND feature_id = ${fid}
+       RETURNING feature_id`;
+    if (updateResult.length === 0) {
+      console.warn(`[hive-canary-sla] ${installSlug}/${fid} stamp UPDATE failed — row not found`);
+    } else {
+      console.warn(
+        `[hive-canary-sla] ${installSlug}/${fid} BREACHED its ${slaMinutes}min SLA — ` +
+          (res.created ? `filed ${res.issue?.id ?? 'improvement'}` : `report deduped (${res.reason ?? 'duplicate'})`),
+      );
+    }
   }
 });
