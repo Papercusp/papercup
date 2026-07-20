@@ -448,7 +448,7 @@ describe('systemd user-manager exit/kill guard (EI-13135)', () => {
     ['systemctl --user start exit.target', 'systemctl --user start exit.target'],
     ['systemctl --user halt', 'systemctl --user halt'],
     ['systemctl --user poweroff', 'systemctl --user poweroff'],
-    ['loginctl terminate-user', 'loginctl terminate-user marsh-office'],
+    ['loginctl terminate-user', 'loginctl terminate-user someuser'],
     ['loginctl kill-user', 'loginctl kill-user 1000'],
     ['systemctl stop user@<uid>.service', 'systemctl stop user@1000.service'],
     ['systemctl kill user@<uid>.service', 'systemctl kill user@1000.service'],

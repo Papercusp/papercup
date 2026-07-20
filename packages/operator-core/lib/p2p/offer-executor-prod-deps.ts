@@ -9,7 +9,7 @@
  * lives next to what it wires INTO (capability-envelope/policy.ts,
  * fleet/operator-spawn.ts) rather than inside the pure execution engine.
  *
- * D-001 UPDATE (p2p-public-release-remaining-lanes-2026-07-16, owner Avi,
+ * D-001 UPDATE (p2p-public-release-remaining-lanes-2026-07-16, owner,
  * 2026-07-17 — supersedes the 2026-07-09 sequencing note this used to carry):
  * the deny-all `ROLE_ENVELOPES['foreign-session']` entry `applyCapabilityEnvelope`
  * below used to verify is RETIRED (capability-envelope/policy.ts HISTORY note).

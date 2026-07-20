@@ -1,6 +1,6 @@
 /**
  * WI-1937 unit tests for offer-executor-prod-deps.ts's `applyCapabilityEnvelope`
- * port. D-001 (p2p-public-release-remaining-lanes-2026-07-16, owner Avi,
+ * port. D-001 (p2p-public-release-remaining-lanes-2026-07-16, owner,
  * 2026-07-17) RETIRED the deny-all capability-envelope gate this used to
  * verify — a foreign session's only v1 security layer is now the trust chain
  * upstream of execution, not this port. These tests pin the new contract: the

@@ -160,7 +160,7 @@ describe('ensureOnboardingComplete (the first-run wizard blocks every interactiv
  */
 describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch on a TTY prompt)', () => {
   const read = () => JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-  const cwd = '/home/marsh-office/.papercusp-workspaces/clones/fresh-clone';
+  const cwd = '/home/someuser/.papercusp-workspaces/clones/fresh-clone';
 
   it('adds a full trust entry for a cwd with NO prior projects[] entry at all', () => {
     seedHome(home); // seeds a .claude.json with mcpServers but no `projects` key

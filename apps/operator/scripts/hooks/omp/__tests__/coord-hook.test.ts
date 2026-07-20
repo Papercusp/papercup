@@ -503,7 +503,7 @@ describe('systemdExitCommandOp (EI-13135, command-position systemd exit/kill mat
     ['systemctl --user start exit.target', 'systemctl --user start exit.target', 'systemctl --user exit'],
     ['systemctl --user halt', 'systemctl --user halt', 'systemctl --user halt/poweroff'],
     ['systemctl --user poweroff', 'systemctl --user poweroff', 'systemctl --user halt/poweroff'],
-    ['loginctl terminate-user', 'loginctl terminate-user marsh-office', 'loginctl terminate-user/kill-user'],
+    ['loginctl terminate-user', 'loginctl terminate-user someuser', 'loginctl terminate-user/kill-user'],
     ['loginctl kill-user', 'loginctl kill-user 1000', 'loginctl terminate-user/kill-user'],
     ['systemctl stop user@<uid>.service', 'systemctl stop user@1000.service', 'systemctl stop/kill user@<uid>.service'],
     ['systemctl kill user@<uid>.service', 'systemctl kill user@1000.service', 'systemctl stop/kill user@<uid>.service'],

@@ -443,6 +443,43 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
     expect(guard.recordConnection).toHaveBeenCalledTimes(1);
     expect(socket.destroy).not.toHaveBeenCalled();
   });
+
+  it('forceRejoin destroys a peer socket even when another topic still shares it (EI-13317/WI-5481 deadlock break)', async () => {
+    const { swarm, state, emit } = fakeSwarm();
+    const first = fakeStore();
+    const second = fakeStore();
+    const guard = {
+      firewall: () => false,
+      isBannedKey: () => false,
+      isBannedIp: () => false,
+      banKey: () => {},
+      banIp: () => {},
+      recordConnection: vi.fn(async () => ({ allow: true })),
+    };
+    // Two harness topics on ONE shared swarm — the live-fed rig muxes several
+    // harnesses (hello-world-pot + hello-world + papercusp) over a single peer
+    // connection this way.
+    const h1 = await joinHarnessSwarm({ store: first.store, topic: topic32(), swarm, guard });
+    await joinHarnessSwarm({ store: second.store, topic: Buffer.alloc(32, 2), swarm, guard });
+
+    // One physical socket connects — BOTH topics' handlers claim it, so it is
+    // shared (isSocketIdleAcrossAllTopics === false for either topic).
+    const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: '203.0.113.55' } };
+    emit('connection', socket, { publicKey: Buffer.from('55'.repeat(32), 'hex') });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(socket.destroy).not.toHaveBeenCalled(); // a healthy shared connection is left alone
+
+    // Topic 1 forces a rejoin (its link is proven dead past the repair ladder).
+    // Even though topic 2 still claims the SAME socket, it MUST be evicted:
+    // a dead handshake is dead for every muxed topic, and the old
+    // idle-across-all-topics guard deadlocked here (each topic waited for the
+    // others to evict; nobody did), leaving the link connected-but-dead until
+    // the OS TCP timeout ~6 min later (past the 90s replication_soak SLA).
+    await h1.forceRejoin();
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
+    // and it did fire the actual leave()+join() rejoin
+    expect(state.leaves.length).toBe(1);
+  });
 });
 
 describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {

@@ -94,6 +94,8 @@ beforeEach(() => {
   appMocks.useNavShortcuts.mockClear();
   appMocks.useRegisterPluginPanels.mockClear();
   appMocks.confirm.mockClear();
+  perfMarks.begin.mockClear();
+  perfMarks.end.mockClear();
 });
 
 afterEach(cleanup);
@@ -148,6 +150,16 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
 
     lastDockProps().onApiDispose?.();
     expect(appMocks.bindDockApi).toHaveBeenCalledWith(null);
+  });
+
+  it('emits the harness-dock-open perf interaction across mount → api-ready (P-006)', () => {
+    render(<HarnessDock layoutName="default" />);
+    // begins on mount; the measure is still open until the dock hydrates.
+    expect(perfMarks.begin).toHaveBeenCalledWith('harness-dock-open');
+    expect(perfMarks.end).not.toHaveBeenCalled();
+    // ends when DockWorkspace binds the API (layout hydrated).
+    lastDockProps().onApiReady?.({ id: 'dock-api' });
+    expect(perfMarks.end).toHaveBeenCalledWith('harness-dock-open');
   });
 
   it('destroys iframe-backed panels when the shared workspace removes a panel', () => {

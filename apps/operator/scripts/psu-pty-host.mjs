@@ -781,6 +781,14 @@ export function makeAgentBusyGate({
 // under this sentinel instead of colliding with the old `!drillId` early-return.
 const NON_DRILL_REARM_KEY = '__non-drill__';
 
+// WI-5623: anti-spin backstop for the production carry-respawn re-poll loop. A
+// production respawn re-polls the busy-gate across successive windows until the
+// agent idles (deliver) or the carry goes stale (CARRY_RESPAWN_MAX_AGE_MS is the
+// REAL bound — reached first in the live host, where each waitAtPrompt costs a
+// full busy cap). This cap only guards a degenerate test/clock where waitAtPrompt
+// returns instantly, so it can never spin. Drills are always one-shot.
+const PRODUCTION_REARM_MAX_ATTEMPTS = 64;
+
 export function makeCarryRearmController({
   acquireInject, // () => Promise<release()>  — the host's gated-inject mutex
   waitIdle = null, // optional human-keystroke gate (bridged tty only)
@@ -825,30 +833,58 @@ export function makeCarryRearmController({
         : { mode: 'carry-respawn', reason: 'busy-gate-expired', capMs };
       emitEvent(queuedKind, extra);
       void (async () => {
-        const release = await acquireInject();
+        // WI-5623: a DRILL is a one-shot test — it re-arms ONCE then drops
+        // (unchanged, EI-12754). A PRODUCTION (non-drill) carry-respawn is a
+        // MUST-DELIVER: the session called session:request-compaction and runs
+        // to the hard context wall if it never compacts. An autonomous/headless
+        // session rarely presents the 1.5s idle window inside a SINGLE busy-gate
+        // window, so a single retry meant 0% delivery (every production respawn
+        // dropped 'busy-gate-expired'). Instead it RE-POLLS across successive
+        // windows — RELEASING the inject mutex between attempts so coord/loop
+        // wakes to this session are never wedged — until the agent idles
+        // (deliver), the carry goes stale (CARRY_RESPAWN_MAX_AGE_MS — the real
+        // bound, reached first in the live host), or the anti-spin cap is hit.
+        const maxAttempts = isDrill ? 1 : PRODUCTION_REARM_MAX_ATTEMPTS;
         try {
-          if (waitIdle) await waitIdle();
-          const atPrompt = await waitAtPrompt(capMs);
-          if (atPrompt.deferred) {
-            // The re-armed attempt ALSO found the agent mid-turn past the cap —
-            // terminal, loud, never a second re-arm.
-            emitEvent(droppedKind, { ...extra, rearmed: true });
-            return;
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const release = await acquireInject();
+            let deferred = false;
+            try {
+              if (waitIdle) await waitIdle();
+              const atPrompt = await waitAtPrompt(capMs);
+              deferred = !!atPrompt.deferred;
+              if (!deferred) {
+                // EI-18109211232286833: re-check staleness right before the cut —
+                // a lot of wall-clock may have passed across these waits, so a
+                // message fresh at schedule() time can cross the threshold.
+                if (isStale(msg)) {
+                  emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
+                  return;
+                }
+                await recycle(msg.data, {
+                  systemPromptAddendum: msg.systemPromptAddendum ?? '',
+                  drillId,
+                  sessionClass: msg.sessionClass ?? '',
+                });
+                return;
+              }
+            } finally {
+              // Release BETWEEN attempts — never hold the gated-inject mutex
+              // across the re-poll, or this session's wakes would wedge for the
+              // whole (potentially many-window) wait.
+              release();
+            }
+            // Deferred: the agent stayed mid-turn past the cap. A now-stale carry
+            // is not worth delivering; otherwise a production respawn loops to the
+            // next window, a drill falls out after its one shot.
+            if (isStale(msg)) {
+              emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
+              return;
+            }
           }
-          // EI-18109211232286833: re-check staleness HERE, not just on the
-          // first attempt — this retry can itself run for up to `capMs`
-          // (2x the live-inject cap by default), so a message that was still
-          // fresh when schedule() was first called can cross the staleness
-          // threshold during the re-arm's own wait.
-          if (isStale(msg)) {
-            emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
-            return;
-          }
-          await recycle(msg.data, {
-            systemPromptAddendum: msg.systemPromptAddendum ?? '',
-            drillId,
-            sessionClass: msg.sessionClass ?? '',
-          });
+          // A drill's single shot deferred, or a production respawn exhausted the
+          // anti-spin cap without ever idling — terminal, loud.
+          emitEvent(droppedKind, { ...extra, rearmed: true });
         } catch (error) {
           emitEvent(droppedKind, {
             ...extra,
@@ -857,7 +893,6 @@ export function makeCarryRearmController({
             detail: String(error?.message ?? error).slice(0, 200),
           });
         } finally {
-          release();
           pending.delete(key);
         }
       })();
