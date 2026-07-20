@@ -1,9 +1,0 @@
-[Desktop Entry]
-Categories=Office;Finance;
-Comment=Prediction-market auto-bettor (paper-first).
-Exec=oddsmith-desktop
-StartupWMClass=oddsmith-desktop
-Icon=oddsmith-desktop
-Name=Oddsmith
-Terminal=false
-Type=Application
