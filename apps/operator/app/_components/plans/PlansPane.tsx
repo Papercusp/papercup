@@ -38,6 +38,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { preloadVditor } from '@/app/_components/MarkdownEditor';
+import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import {
   bucketOf,
   setPlanArchived,
@@ -327,7 +328,13 @@ export default function PlansPane() {
                 <button
                   type="button"
                   className={`plans-pane__row${accent}`}
-                  onClick={() => void setPopupPlan(plan.slug)}
+                  onClick={() => {
+                    // Time the real "open a plan" interaction (WI-5547): this
+                    // start mark is consumed when the plan body renders in
+                    // Vditor (PlanEditor.handleParsed → endInteraction).
+                    beginInteraction(PERF_INTERACTIONS.planPopupOpen);
+                    void setPopupPlan(plan.slug);
+                  }}
                   data-testid={`plans-pane-row-${plan.slug}`}
                 >
                   <span className="plans-pane__row-main">

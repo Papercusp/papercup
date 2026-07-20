@@ -406,7 +406,7 @@ describe('reclaimStaleWorkItemClaims', () => {
     await seedSpawn('opspawn-dead-bee', {}, 'failed', 1);
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released).toHaveLength(1);
-    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE1', reason: 'spawn-exit', new_status: 'todo' });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE1', reason: 'spawn-exit', new_status: 'open' });
     expect((await statusOf('F-SE1')).taken_by).toBeNull();
   });
 
@@ -414,7 +414,7 @@ describe('reclaimStaleWorkItemClaims', () => {
     await seedItem('F-SE2', 'opspawn-1900-run', 1, 'in_progress');
     await seedSpawn('s-bee-x', { sessionOwner: 's-bee-x', runId: 'opspawn-1900-run' }, 'cancelled', 1);
     const r = await reclaimStaleWorkItemClaims(sql);
-    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE2', reason: 'spawn-exit', new_status: 'todo' });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE2', reason: 'spawn-exit', new_status: 'open' });
   });
 
   it('spawn-exit: bounded to recent — a spawn terminal >1h ago does NOT force-free a within-grace claim', async () => {
@@ -437,7 +437,7 @@ describe('reclaimStaleWorkItemClaims', () => {
     await seedItem('F-ST2', 'su-alive-stalled2', 30, 'in_progress', 0, 30);
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-stalled2', now())`;
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
-    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST2', reason: 'stalled', new_status: 'todo', action: 'requeued' });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST2', reason: 'stalled', new_status: 'open', action: 'requeued' });
     expect((await statusOf('F-ST2')).taken_by).toBeNull();
   });
 

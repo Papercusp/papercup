@@ -28,6 +28,7 @@ import {
   MarkdownPreview,
   type MarkdownEditorToolbar,
 } from '@/app/_components/MarkdownEditor';
+import { endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import type { PlanItem } from './plans-api';
 import { attachPlanRefClickHandler, decoratePlanDom, decoratePromotedBlock, decoratePlanItemBadges, decoratePlanItemTestBadges, attachFeatureBadgeClickHandler, type PromotedFeature } from './plan-renderers';
 import {
@@ -111,6 +112,11 @@ export default function PlanEditor({
 
   const handleParsed = useCallback(
     (root: HTMLElement) => {
+      // Close the "open a plan" interaction timing the instant the plan body
+      // is rendered (WI-5547 / desktop-performance-suite P-001). No-op unless a
+      // matching beginInteraction ran (only the Plans-face popup click sets it),
+      // so this is inert in PlanDetail's other mount contexts.
+      endInteraction(PERF_INTERACTIONS.planPopupOpen);
       decoratePlanDom(root, items);
       if (promotedFeaturesRef.current?.length) {
         decoratePromotedBlock(root, promotedFeaturesRef.current);

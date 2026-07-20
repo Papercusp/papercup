@@ -8,16 +8,24 @@
  * `visibilitychange`.
  */
 
-export type PerfEventKind = 'interaction' | 'longtask' | 'layout-shift' | 'console-error' | 'unhandled-error';
+import { PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
+
+export type PerfEventKind =
+  | 'interaction'
+  | 'longtask'
+  | 'layout-shift'
+  | 'measure'
+  | 'console-error'
+  | 'unhandled-error';
 
 export interface PerfEvent {
   id: string;
   kind: PerfEventKind;
   route: string;
   ts: number;          // Date.now()
-  /** ms — duration for interaction/longtask, score*1000 for layout-shift, 0 for errors */
+  /** ms — duration for interaction/longtask/measure, score*1000 for layout-shift, 0 for errors */
   duration: number;
-  /** CSS-ish selector for the interaction target, or error message */
+  /** CSS-ish selector for the interaction target, the measure/interaction name, or error message */
   target: string;
   /** For interactions: the event type (click, keydown, …) */
   eventType?: string;
@@ -28,6 +36,13 @@ export interface PerfEvent {
 const LS_KEY = 'papercusp.testing.perf-events.v1';
 const MAX_EVENTS = 250;
 const FLUSH_INTERVAL_MS = 5_000;
+
+/** The named user-timing measures we RECORD (from perf-marks.ts). Filtering to
+ *  the curated interaction registry keeps the buffer free of a third party's
+ *  ad-hoc performance.measure() noise — only our budgeted interactions land. */
+const KNOWN_MEASURE_NAMES: ReadonlySet<string> = new Set<string>(
+  Object.values(PERF_INTERACTIONS),
+);
 
 interface RecorderState {
   events: PerfEvent[];

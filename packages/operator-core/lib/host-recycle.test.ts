@@ -225,6 +225,111 @@ describe('gracefulHostRecycle', () => {
     });
   });
 
+  // EI-16949: whenever the real substrate teardown is SKIPPED (either the
+  // WI-3795 isSaturated race-avoidance or the EI-9649 skipSubstrateTeardown
+  // opt-out), the pure-JS replication-liveness registry cleanup must still
+  // run — otherwise a latched stall alarm's durable EI is orphaned forever
+  // (no future process ever resamples that dead host's logKeyHex). See
+  // dropAllReplicationLivenessTracking (boot-all.ts) for the orphaned-EI leak
+  // this closes.
+  describe('EI-16949 — dropReplicationTracking runs whenever the real substrate teardown is skipped', () => {
+    it('calls dropReplicationTracking when isSaturated() reads true (WI-3795 skip)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const isSaturated = vi.fn(() => true);
+      const dropReplicationTracking = vi.fn(() => Promise.resolve(['ws/harness']));
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate, isSaturated, dropReplicationTracking });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(dropReplicationTracking).toHaveBeenCalledTimes(1);
+      expect(closeSubstrate).not.toHaveBeenCalled();
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      warnSpy.mockRestore();
+    });
+
+    it('calls dropReplicationTracking when skipSubstrateTeardown is true (EI-9649 skip)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const dropReplicationTracking = vi.fn(() => Promise.resolve(['ws/harness']));
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        dropReplicationTracking,
+      });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(dropReplicationTracking).toHaveBeenCalledTimes(1);
+      expect(closeSubstrate).not.toHaveBeenCalled();
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT call dropReplicationTracking when closeSubstrate runs normally (no skip)', async () => {
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const dropReplicationTracking = vi.fn(() => Promise.resolve([]));
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate, dropReplicationTracking });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(closeSubstrate).toHaveBeenCalledTimes(1);
+      expect(dropReplicationTracking).not.toHaveBeenCalled();
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    });
+
+    it('a dropReplicationTracking failure is best-effort and never blocks the recycle', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const dropReplicationTracking = vi.fn(() => Promise.reject(new Error('boom')));
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        dropReplicationTracking,
+      });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(dropReplicationTracking).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      warnSpy.mockRestore();
+    });
+
+    it('defaults to the real dropAllReplicationLivenessTracking when unconfigured (no behavior change when unconfigured)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      // No dropReplicationTracking override — exercises the real default
+      // (dropAllReplicationLivenessTracking), which is a safe, PG/native-free
+      // no-op here since no harness handle is booted in this test process.
+      gracefulHostRecycle({ server, exit, closeSubstrate, skipSubstrateTeardown: true });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(closeSubstrate).not.toHaveBeenCalled();
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      warnSpy.mockRestore();
+    });
+  });
+
   // EI-10702: skipSubstrateTeardown did NOT prevent the Napi::Error/SIGABRT
   // (exit 134). The WI-3849 coredumps proved the abort is thrown during Node's
   // ENV TEARDOWN on process.exit() by a native addon (onnxruntime-node/node-pty/
