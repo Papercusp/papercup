@@ -19,6 +19,17 @@
 // a subprocess or stubbing `os.loadavg`); `applyWorkerCapEnv` is the side-effecting
 // call site each script uses at startup.
 
+// scripts/affected-tests.mjs's own pre-existing flake-absorber (EI-9103) already
+// treats `load1 > 40` as "this 128-core box is loaded enough to plausibly flake
+// tests" — an empirically-tuned number, not derived from the core count. Express
+// the adaptive-shrink activation line as the SAME ratio (40/128 ≈ 0.3125) so it
+// kicks in at the load level this codebase has already observed causing real
+// flakiness, rather than waiting until load1 exceeds the full core count (which
+// the WI-5621 incident's own reported loadavg of 58-105 on 128 cores never did —
+// a naive "load1 > cores" line would have left this fix inert for the exact
+// incident it exists to address).
+const OVERSUBSCRIBED_AT_RATIO = 0.3125;
+
 /**
  * @param {{ cores: number, load1?: number }} input
  *   `cores` — availableParallelism() (or equivalent). `load1` — the 1-minute
@@ -28,18 +39,20 @@
  */
 export function computeWorkerCap({ cores, load1 }) {
   const base = Math.min(32, Math.max(8, Math.floor(cores / 4)));
-  if (typeof load1 !== 'number' || !Number.isFinite(load1) || load1 <= cores) {
-    // Load not known, or the host isn't already oversubscribed — the static
-    // per-suite cap (proven safe since WI-3792) is unchanged.
+  const threshold = cores * OVERSUBSCRIBED_AT_RATIO;
+  if (typeof load1 !== 'number' || !Number.isFinite(load1) || load1 <= threshold) {
+    // Load not known, or the host isn't yet at the empirically-flaky level —
+    // the static per-suite cap (proven safe since WI-3792) is unchanged.
     return base;
   }
-  // The host is ALREADY running more runnable work than it has cores for
-  // (other concurrent test:affected/test:file invocations, the fleet's agent
-  // processes, etc). A NEW run piling on the full static cap just adds fuel —
-  // shrink proportionally to how oversubscribed we already are, floored at 4
-  // (a suite must still get at least a few workers to make forward progress;
-  // below that, wall-clock blows up worse than the contention it avoids).
-  const oversubscription = load1 / cores; // > 1 by construction here
+  // The host is ALREADY at (or past) the load level known to cause test
+  // flakiness on this box (other concurrent test:affected/test:file
+  // invocations, the fleet's agent processes, etc). A NEW run piling on the
+  // full static cap just adds fuel — shrink proportionally to how far past
+  // that line we already are, floored at 4 (a suite must still get at least a
+  // few workers to make forward progress; below that, wall-clock blows up
+  // worse than the contention it avoids).
+  const oversubscription = load1 / threshold; // > 1 by construction here
   const shrunk = Math.floor(base / oversubscription);
   return Math.max(4, shrunk);
 }

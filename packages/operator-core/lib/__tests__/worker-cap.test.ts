@@ -21,21 +21,20 @@ describe('computeWorkerCap', () => {
     expect(computeWorkerCap({ cores: 4 })).toBe(8); // min(32, max(8, 1)) = 8
   });
 
-  it('leaves the static cap unchanged when the host is not yet oversubscribed', () => {
-    expect(computeWorkerCap({ cores: 128, load1: 50 })).toBe(32); // load1 < cores
-    expect(computeWorkerCap({ cores: 128, load1: 128 })).toBe(32); // exactly at the line
+  it('leaves the static cap unchanged below the empirically-flaky load line (~40 on 128 cores)', () => {
+    expect(computeWorkerCap({ cores: 128, load1: 30 })).toBe(32); // below the ~40 line
+    expect(computeWorkerCap({ cores: 128, load1: 40 })).toBe(32); // right at the line
   });
 
-  it('shrinks proportionally once load1 exceeds the core count', () => {
-    // load1=256 on 128 cores → 2x oversubscribed → base(32)/2 = 16
-    expect(computeWorkerCap({ cores: 128, load1: 256 })).toBe(16);
-    // load1=384 on 128 cores → 3x oversubscribed → base(32)/3 = 10 (floored)
-    expect(computeWorkerCap({ cores: 128, load1: 384 })).toBe(10);
+  it('shrinks proportionally past the empirically-flaky line — covers the actual WI-5621 incident range (loadavg 58-105 on 128 cores)', () => {
+    // threshold = 128 * 0.3125 = 40
+    expect(computeWorkerCap({ cores: 128, load1: 58 })).toBe(22); // 58/40=1.45 → 32/1.45=22
+    expect(computeWorkerCap({ cores: 128, load1: 86 })).toBe(14); // 86/40=2.15 → 32/2.15=14
+    expect(computeWorkerCap({ cores: 128, load1: 105 })).toBe(12); // 105/40=2.625 → 32/2.625=12
   });
 
   it('floors the shrunk cap at 4 so a run can still make forward progress', () => {
-    // Wildly oversubscribed (matches the WI-5621 observed 60-100+ loadavg
-    // territory scaled up) — must never shrink to 0 or a negative/absurd value.
+    // Wildly oversubscribed — must never shrink to 0 or a negative/absurd value.
     expect(computeWorkerCap({ cores: 128, load1: 5000 })).toBe(4);
   });
 
@@ -48,7 +47,7 @@ describe('computeWorkerCap', () => {
 describe('applyWorkerCapEnv', () => {
   it('sets VITEST_MAX_WORKERS/FORKS/THREADS from the computed cap', () => {
     const env: Record<string, string | undefined> = {};
-    const cap = applyWorkerCapEnv({ cores: 128, load1: 50, env: env as NodeJS.ProcessEnv });
+    const cap = applyWorkerCapEnv({ cores: 128, load1: 20, env: env as NodeJS.ProcessEnv });
     expect(cap).toBe('32');
     expect(env.VITEST_MAX_WORKERS).toBe('32');
     expect(env.VITEST_MAX_FORKS).toBe('32');

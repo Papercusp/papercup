@@ -439,7 +439,7 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
     await db.sql`
       INSERT INTO harness_shared.harness_features_consolidated
         (harness_slug, feature_id, title, status, item_kind, metadata, workspace_id, created_ts, updated_ts)
-      VALUES ('papercup', ${featureId}, 'promoted feature', 'todo', 'feature',
+      VALUES ('papercup', ${featureId}, 'promoted feature', 'open', 'feature',
               ${JSON.stringify({ sourceIssueId })}::text::jsonb, 'default', ${Date.now()}, ${Date.now()})`;
   }
 

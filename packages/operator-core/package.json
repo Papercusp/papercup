@@ -48,6 +48,7 @@
     "@papercusp/seed-bundle": "*",
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",
+    "esbuild": "^0.27.3",
     "fractional-indexing": "^3.2.0",
     "phonemizer": "^1.2.1",
     "rrule": "^2.8.1"
