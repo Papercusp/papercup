@@ -9,6 +9,7 @@
  */
 
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from './resource-profile';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
@@ -622,7 +623,11 @@ function validateFloating(f: FloatingGroup): void {
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
   if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('dock-layouts'),
+      max: sharedUtilityPoolMax(),
+      prepare: false,
+    });
   }
   return pool;
 }
