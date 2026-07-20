@@ -275,6 +275,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
 
   it('returns a fast retryable timeout miss when the claim exceeds the budget, not a 300s hang', async () => {
     vi.useFakeTimers();
+    // withBoundedTimeout logs a console.warn when it degrades; the warn is EXPECTED here (it is
+    // the fail-fast firing), so capture it explicitly rather than let vitest-fail-on-console trip.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Simulate the pool-contention stall: the atomic claim never resolves within the budget.
     getNextM.mockImplementation(() => new Promise(() => {}));
     const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
@@ -296,12 +299,19 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(b.message).toContain('300s');
     // A transient timeout is NOT a drained lane — windDown must never be set for it.
     expect(b.windDown).toBeUndefined();
+    // The bounded-timeout deadline fired (the fail-fast) — assert it explicitly.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:claim exceeded'));
+    warnSpy.mockRestore();
   });
 
   it('re-surfaces a genuine underlying claim error loudly — never swallowed as a silent miss', async () => {
+    // The degrade-warn is expected on the error path too (buildBoundedTimeout logs before
+    // re-surfacing) — capture it so vitest-fail-on-console does not trip on the expected warn.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getNextM.mockRejectedValue(new Error('pool exhausted: boom'));
     await expect(
       getNextTool.handler({ harness: 'papercusp' } as never, {} as never),
     ).rejects.toThrow(/pool exhausted: boom/);
+    warnSpy.mockRestore();
   });
 });
