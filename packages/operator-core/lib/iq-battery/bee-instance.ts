@@ -45,8 +45,12 @@ export interface SpawnOnceResult {
 
 /** The host effects `runInstance` needs, injected for testability. */
 export interface BeeRunDeps {
-  /** Launch one bee with the case prompt as its brief; resolve once the child is launched. */
-  spawn(input: { brief: string; runInput: BeekeeperRunInput }): Promise<SpawnOnceResult>;
+  /** Launch one bee with the case prompt as its brief; resolve once the child is launched.
+   *  `timeoutMs` (EI-172) is the CALLER'S actual per-spawn kill budget (the runner's
+   *  `--timeout-ms`/`BeeRunConfig.timeoutMs`) — forward it to the spawn path so a heavy
+   *  case's bee is killed on the RUNNER's budget, not the orchestrator's fixed 600s
+   *  `INVOKE_TIMEOUT_MS` default. */
+  spawn(input: { brief: string; runInput: BeekeeperRunInput; timeoutMs?: number }): Promise<SpawnOnceResult>;
   /** The bee's current spawned_agents status, or null if the row isn't visible yet. */
   pollStatus(spawnId: string): Promise<string | null>;
   /** Total solver $cost for the run so far (agent_usage_samples), for the handle + spend cap. */
@@ -91,7 +95,9 @@ export function makeBeeRunInstance(cfg: BeeRunConfig, deps: BeeRunDeps) {
     // AIMD governor halves the effective concurrency in parallel, so each relaunch lands at a
     // lower cap — the owner's hit-limit → lower-cap → relaunch → converge loop.
     for (let attempt = 0; ; attempt++) {
-      const res = await deps.spawn({ brief: input.case.prompt, runInput: input });
+      // EI-172: forward the RUNNER's own timeout budget to the actual spawn/kill path — without
+      // this the bee is killed by the orchestrator's fixed 600s default regardless of --timeout-ms.
+      const res = await deps.spawn({ brief: input.case.prompt, runInput: input, timeoutMs: cfg.timeoutMs });
       if (!res.ok || !res.spawnId) {
         throw new Error(`runInstance: spawn rejected for case ${input.case.id}: ${res.error ?? 'unknown'}`);
       }
@@ -260,7 +266,7 @@ export function liveBeeRunDeps(args: {
   planSlug?: string | null;
 }): BeeRunDeps {
   return {
-    async spawn({ brief, runInput }) {
+    async spawn({ brief, runInput, timeoutMs }) {
       const res = await spawnAgentInHarness({
         workspaceId: args.workspaceId,
         harness: args.harness,
@@ -270,6 +276,9 @@ export function liveBeeRunDeps(args: {
         parentRole: 'apiary-runner',
         planSlug: args.planSlug ?? null,
         extras: [`APIARY_CASE=${runInput.case.id}`, `APIARY_REPEAT=${runInput.repeat}`],
+        // EI-172: without this, every bee gets the orchestrator's fixed 600s
+        // INVOKE_TIMEOUT_MS default regardless of the runner's --timeout-ms.
+        ...(timeoutMs ? { timeoutMs } : {}),
       });
       return { ok: res.ok, spawnId: res.spawnId, error: res.error };
     },

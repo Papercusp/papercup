@@ -110,6 +110,13 @@ describe('makeBeeRunInstance — terminal mapping', () => {
     const run = makeBeeRunInstance(CFG, fakeDeps({ attempts: [{ poll: [null, null, 'done'] }] }));
     expect((await run(INPUT)).instanceId).toBe('s-bee-1');
   });
+
+  it('EI-172: forwards the RUNNER\'s own timeoutMs to deps.spawn — not just its own await/poll loop', async () => {
+    const spawn = vi.fn(async () => ({ ok: true, spawnId: 's-bee-1', error: null }));
+    const run = makeBeeRunInstance(CFG, { ...fakeDeps({ attempts: [{ poll: ['done'] }] }), spawn });
+    await run(INPUT);
+    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: CFG.timeoutMs }));
+  });
 });
 
 describe('makeBeeRunInstance — rate-limit relaunch loop (the owner hit-limit → relaunch)', () => {

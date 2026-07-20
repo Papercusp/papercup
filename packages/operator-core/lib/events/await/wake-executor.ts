@@ -1096,7 +1096,7 @@ async function injectPsuHostWake(
   const fireNumber = loopMarker?.wakeCount;
   const routineId = loopMarker?.routineId;
   const injectWarm = async (): Promise<WakeOutcome | null> => {
-    const ok = await injectPsuHost(sock, { mode: 'turn', data: warmText, fireNumber, routineId });
+    const ok = await injectPsuHost(sock, { mode: 'turn', data: warmText, fireNumber, routineId, ownerId: d.subscriberId });
     return ok ? { kind: 'delivered', channel: 'psu-socket-inject' } : null;
   };
 
@@ -1169,6 +1169,7 @@ async function injectPsuHostWake(
       data: coldText,
       fireNumber: coldFireCount,
       routineId,
+      ownerId: d.subscriberId,
     });
     if (ok) {
       return {

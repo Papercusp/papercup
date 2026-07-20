@@ -599,7 +599,7 @@ export async function recolorViaPty(
   if (!osc) return false;
   const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
   if (!host) return false;
-  return injectIntoHost(host.sock, { mode: 'osc', data: osc });
+  return injectIntoHost(host.sock, { mode: 'osc', data: osc, ownerId });
 }
 
 /**
@@ -625,6 +625,6 @@ export async function mcpReconnectViaPty(
   const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
   if (!host) return 'no-host';
   if (!hostSupports(host, 'mcp-reconnect')) return 'no-cap';
-  const ok = await injectIntoHost(host.sock, { mode: 'mcp-reconnect', data: serverName });
+  const ok = await injectIntoHost(host.sock, { mode: 'mcp-reconnect', data: serverName, ownerId });
   return ok ? 'sent' : 'send-failed';
 }
