@@ -310,3 +310,36 @@ describe('refreshDerivedReads', () => {
     expect(compute).toHaveBeenCalledOnce();
   });
 });
+
+describe('refreshDerivedReads producer ordering (WI-5471)', () => {
+  it('runs producers shortest-ttl-FIRST so a heavy long-walk never head-of-line-blocks the liveness ones', async () => {
+    // Registration order is deliberately the WORST case (heaviest/longest-ttl first),
+    // to prove the pass reorders rather than relying on how producers happen to be
+    // declared — this is exactly the storage.usage-registered-first hazard.
+    const order: string[] = [];
+    const mk = (key: string, ttlMs: number) =>
+      registerDerivedRead({
+        key,
+        ttlMs,
+        producerVersion: 1,
+        scope: 'workspace',
+        compute: vi.fn().mockImplementation(() => {
+          order.push(key);
+          return Promise.resolve([key]);
+        }),
+      });
+    mk('storage.usage', 30 * 60_000); // heavy, long ttl — must run LAST
+    mk('dev.serviceHealth', 90_000); // liveness — must run FIRST
+    mk('plans.lint', 6 * 60 * 60_000); // heaviest, longest ttl — dead last
+    mk('dev.gitPipeline', 90_000);
+    sqlResults = [[], [], [], []]; // one INSERT per producer (force skips the SELECT)
+
+    await refreshDerivedReads({ workspaceId: 'ws-test', harnessSlug: 'h', force: true });
+
+    // ascending by ttl; the two 90s producers precede the 30m and 6h walks
+    expect(order.indexOf('dev.serviceHealth')).toBeLessThan(order.indexOf('storage.usage'));
+    expect(order.indexOf('dev.gitPipeline')).toBeLessThan(order.indexOf('storage.usage'));
+    expect(order.indexOf('storage.usage')).toBeLessThan(order.indexOf('plans.lint'));
+    expect(order.at(-1)).toBe('plans.lint');
+  });
+});
