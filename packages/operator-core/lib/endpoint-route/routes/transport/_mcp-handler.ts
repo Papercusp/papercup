@@ -2177,7 +2177,48 @@ const handler = createMcpHandler(
         const builtin = getCatalog().find((t) => t.name === toolName);
         if (builtin) {
           const bearer = bearerFromExtra(extra);
-          const r = await dispatch({ toolName, args, bearer });
+          // WI-4760: this branch used to `await dispatch(...)` completely
+          // unbounded — unlike the projected path above (P2-5, line ~2151),
+          // it had NO per-call deadline at all, so a wedged nested call inside
+          // ANY builtin tool's handler (a hung DB query, a stuck subprocess, a
+          // blocked fetch) held the whole MCP request — and the calling
+          // agent's turn — open indefinitely while the rest of the operator
+          // stayed fully responsive (confirmed 2026-07-13: direct systemd +
+          // checkpoint-log reads returned <1s during an >80s hang on this
+          // exact path). Race it against the same effective deadline the
+          // projected path uses so a hang here surfaces as a clean, attributed
+          // timeout instead of a silent multi-minute stall.
+          // Legacy (principal-gated) ToolDefinition has no per-tool `timeoutSec`
+          // (that field only exists on the newer RoleToolDefinition/ProjectedTool
+          // shape) — fall back to the same flat floor the projected path uses
+          // when a tool declares nothing.
+          const legacyDeadlineMs = effectiveMcpDeadlineMs(null);
+          const r = await raceDeadline(
+            legacyDeadlineMs,
+            () => dispatch({ toolName, args, bearer }),
+            () => {
+              // Attribution/telemetry: the legacy path has no idempotent
+              // replay store (unlike the projected path), so log enough to
+              // find + fix the wedge instead of promising a safe retry.
+
+              console.warn(
+                `[mcp-legacy-deadline] tool "${toolName}" exceeded ${legacyDeadlineMs}ms on the legacy ` +
+                  `bearer-only dispatch path (no spawn ctx) — still running server-side; it is NOT ` +
+                  `cancelled and has no idempotent replay here, so investigate the handler for a missing ` +
+                  `timeout/abort on its own I/O (DB query, subprocess, fetch).`,
+              );
+              return {
+                ok: false as const,
+                error: {
+                  code: 'request_timeout',
+                  message:
+                    `tool "${toolName}" exceeded ${legacyDeadlineMs}ms on the legacy dispatch path ` +
+                    `(still running server-side, not cancelled; this path has no idempotency-key replay, ` +
+                    `so re-check current state via the matching *:get/*:list before deciding whether to retry).`,
+                },
+              };
+            },
+          );
           if (!r.ok) {
             return {
               isError: true,
