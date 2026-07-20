@@ -47,7 +47,7 @@ describe('learning.observations — Work Queue pagination contract', () => {
 
     expect(listIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation', limit: 200 });
     expect(countIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation' });
-    expect(readListTotal(rows as Array<Record<string, unknown>>)).toBe(725);
+    expect(readListTotal(rows as unknown as Array<Record<string, unknown>>)).toBe(725);
     expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual(['EI-2', 'EI-1']);
   });
 

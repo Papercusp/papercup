@@ -55,7 +55,7 @@ describe('resolveLocalGithubIdentity — identity cache (P-005)', () => {
 
   it('a rotated token (re-auth) is a cache MISS — never serves a stale identity', async () => {
     const getUser = vi
-      .fn<[], Promise<{ id: number; login: string }>>()
+      .fn<() => Promise<{ id: number; login: string }>>()
       .mockResolvedValueOnce({ id: 7, login: 'bob' })
       .mockResolvedValueOnce({ id: 9, login: 'carol' });
     const r1 = await resolveLocalGithubIdentity({ getToken: async () => ({ kind: 'ok', token: 'tok-A' }), getUser, _cache: true });

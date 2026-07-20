@@ -1918,7 +1918,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
           return stub;
         }
         return openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), device, {
-          repoKey: slug,
+          repoKey,
           peerGithubUserId: actor.githubUserId,
         });
       },
@@ -2007,6 +2007,8 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     if (!entry) return void (await decline('no_registry_entry'));
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
     if (!potHomeSlug) return void (await decline('no_hive_home'));
+    // WI-5168: federated repoKey — see repo-identity.ts.
+    const repoKey = canonicalRepoKey(entry);
 
     const actor = await resolveUsageActor();
     // gh unauthenticated — no device identity to sign/integrate as

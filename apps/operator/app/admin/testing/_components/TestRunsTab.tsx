@@ -217,6 +217,13 @@ export default function TestRunsTab() {
 
       {error ? <div className="pc-test-card is-bad" style={{ padding: 16 }}>Error: {error}</div> : null}
 
+      {selectedSuite === 'desktop-performance' ? (
+        // P-010: persisted per-run measures with deltas. Refetches when a run
+        // finishes (finishedAt changes) so a fresh desktop-performance run's
+        // measures appear without a manual refresh.
+        <DesktopPerfTrendPanel refreshSignal={snapshot?.finishedAt ?? 0} />
+      ) : null}
+
       {suiteCards.filter((suite) => suite.results.length > 0 || suite.summary).map((suite) => (
         <SuiteResultsCard
           key={suite.id}
