@@ -305,12 +305,18 @@ export function setReplicationStallEpisodeReporterForTests(
  * confirm current status). Production default: auto-resolve the matching open
  * EI via a LAZY dynamic import (same pattern as defaultEpisodeReporter).
  */
+// EI-16949: kept as a plain `=> void` (not `void | Promise<void>`) — see the
+// matching note on `onRecovery` above. `reportRecovery` below wraps whatever
+// this returns in `Promise.resolve(...)`, so a Promise-returning production
+// reporter (`defaultRecoveryReporter`) already works fine through this seam
+// without widening the type; widening it broke the void-bivariance exemption
+// for every non-void test callback passed to `setReplicationStallRecoveryReporterForTests`.
 let episodeRecoveredReporter:
-  | ((recovery: ReplicationStallEpisode) => void | Promise<void>)
+  | ((recovery: ReplicationStallEpisode) => void)
   | null = null;
 
 export function setReplicationStallRecoveryReporterForTests(
-  fn: ((recovery: ReplicationStallEpisode) => void | Promise<void>) | null,
+  fn: ((recovery: ReplicationStallEpisode) => void) | null,
 ): void {
   episodeRecoveredReporter = fn;
 }

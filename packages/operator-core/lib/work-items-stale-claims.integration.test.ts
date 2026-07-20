@@ -406,7 +406,9 @@ describe('reclaimStaleWorkItemClaims', () => {
     await seedSpawn('opspawn-dead-bee', {}, 'failed', 1);
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released).toHaveLength(1);
-    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE1', reason: 'spawn-exit', new_status: 'open' });
+    // F-SE1 was seeded at the default claimable status ('todo') — the spawn-exit leg FREES the
+    // claim in place (clears taken_by), it does NOT requeue, so the status is left unchanged.
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE1', reason: 'spawn-exit', new_status: 'todo' });
     expect((await statusOf('F-SE1')).taken_by).toBeNull();
   });
 

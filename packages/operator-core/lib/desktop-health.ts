@@ -190,12 +190,10 @@ export async function resolveDesktopIpcDiscovery(): Promise<EndpointIpcDiscovery
   return readEndpointIpcDiscovery();
 }
 
-/** Connect to the operator IPC unix socket; success = the channel is alive. */
-async function realIpcConnectable(timeoutMs = 2000): Promise<boolean> {
-  const disc = await resolveDesktopIpcDiscovery();
-  if (!disc?.socketPath) return false;
+/** One connect attempt to the operator IPC unix socket; success = the channel is alive. */
+function attemptIpcConnect(socketPath: string, timeoutMs: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    const sock = net.connect(disc.socketPath);
+    const sock = net.connect(socketPath);
     let settled = false;
     const done = (v: boolean) => {
       if (settled) return;
@@ -218,6 +216,35 @@ async function realIpcConnectable(timeoutMs = 2000): Promise<boolean> {
     });
   });
 }
+
+/**
+ * Connect to the operator IPC unix socket; success = the channel is alive.
+ *
+ * Retries ONCE after a short delay before reporting unreachable (EI-18131725582506957):
+ * a routine, sanctioned `dev:restart { target:'staging' }` (or its ~2min coalesced
+ * auto-fire — CLAUDE.md § two-port model, WI-4221) tears down and re-execs the target
+ * operator process in a window typically well under `RETRY_DELAY_MS`. Without a retry,
+ * a service-health probe tick that lands inside that window sees a refused/absent
+ * socket and — since `diffHealth` transitions on a SINGLE bad tick with no debounce —
+ * immediately broadcasts a false "desktop DOWN" and auto-files a major `service-down`
+ * watchdog bug, even though the operator (and the desktop) were never actually down for
+ * any observer outside that exact probe instant. Confirmed live: EI-18131725582506957
+ * fired at 03:16:00Z reporting "ipc socket unreachable"; the resolved target socket
+ * (staging :3170, pid 2046101) was independently verified connectable moments later
+ * with no intervening action — a same-tick restart-window flap, not a real outage. A
+ * genuinely dead/wedged operator still fails both attempts and correctly alerts.
+ */
+async function realIpcConnectable(timeoutMs = 2000): Promise<boolean> {
+  const disc = await resolveDesktopIpcDiscovery();
+  if (!disc?.socketPath) return false;
+  if (await attemptIpcConnect(disc.socketPath, timeoutMs)) return true;
+  await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+  return attemptIpcConnect(disc.socketPath, timeoutMs);
+}
+
+/** Delay before the single retry in {@link realIpcConnectable} — comfortably bridges a
+ *  routine operator restart's stop→re-exec window without materially slowing a real-down verdict. */
+const RETRY_DELAY_MS = 1000;
 
 async function realRecentErrorCount(windowMs: number): Promise<number> {
   const since = Date.now() - windowMs;
