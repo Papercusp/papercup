@@ -16,6 +16,7 @@ import { RootSyncProvider } from '@/app/_components/RootSyncProvider';
 import { OperatorConversationProvider } from '@/app/_components/OperatorConversationProvider';
 import { PostHogProvider } from '@/app/_components/PostHogProvider';
 import WslOnboardingGate from '@/app/_components/WslOnboardingGate';
+import { useWslGateBlocking } from '@/app/_components/useWslGateBlocking';
 import GlobalShortcutDispatcher from '@/app/_components/GlobalShortcutDispatcher';
 import GlobalNavShortcuts from '@/app/_components/GlobalNavShortcuts';
 import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
@@ -183,6 +184,15 @@ function RootComponent() {
   const pathname = usePathname() ?? '';
   const chromeless = isChromelessPath(pathname);
 
+  // WI-2749 item #2: LeftSidebar (z-index 1290) and PresenceRail (z-index
+  // 900) are position:fixed siblings mounted BEFORE <WslOnboardingGate> in
+  // this tree, so they render OVER the gate's zIndex:60 overlay during
+  // Windows WSL onboarding — real bleed-through, not a DOM/innerText
+  // false-positive. Skip mounting them while the gate is blocking; see
+  // useWslGateBlocking's doc comment for why this is read-only / cannot
+  // duplicate the gate's own install/import/bootstrap side effects.
+  const wslGateBlocking = useWslGateBlocking();
+
   return (
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
@@ -241,14 +251,18 @@ function RootComponent() {
               <GlobalAppShortcuts />
               <GlobalVoiceShortcuts />
               <GlobalSearchDialog />
-              {!chromeless && <PresenceRail />}
+              {!chromeless && !wslGateBlocking && <PresenceRail />}
               {/* Left sidebar — Swarm / Voice / Hives (left-sidebar-tauri-
                   2026-06-07). Inside NuqsAdapter (its open/tab/selection state
                   is URL-backed) + RootSyncProvider (its panels use
-                  useSyncQuery); docked via body.has-left-sidebar. */}
-              <Suspense fallback={null}>
-                <LeftSidebar />
-              </Suspense>
+                  useSyncQuery); docked via body.has-left-sidebar. Skipped
+                  while the WSL onboarding gate is blocking (WI-2749 item
+                  #2) — see useWslGateBlocking. */}
+              {!wslGateBlocking && (
+                <Suspense fallback={null}>
+                  <LeftSidebar />
+                </Suspense>
+              )}
               <TestingRouteTransition>
                 <WslOnboardingGate>
                   <OperatorConversationProvider>
