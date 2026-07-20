@@ -177,6 +177,67 @@ export async function warnIncompleteReleases(sql: postgres.Sql, scope: Scope): P
   return incomplete.length;
 }
 
+/**
+ * A prominent, unmissable alert when a cut LOSES a mobile platform its predecessor
+ * carried (WI-5583). Mobile is never REQUIRED (a desktop-only cut is complete), so
+ * absolute absence prints nothing — but a REGRESSION (0.0.11 shipped Android+iOS,
+ * 0.0.12 shipped neither) is a concrete drop worth a conscious confirmation, and
+ * `computeReleaseCompleteness` deliberately ignores mobile, so it never surfaced.
+ * NON-BLOCKING by design — same as the desktop alert: make the omission a CHOICE,
+ * not a stop. Empty string when nothing regressed.
+ */
+export function formatMobileRegressionAlert(
+  version: string,
+  channel: string,
+  previousVersion: string | null,
+  dropped: string[],
+): string {
+  if (dropped.length === 0) return '';
+  const rule = '  ══════════════════════════════════════════════════════════════════';
+  const prevLabel = previousVersion ? ` ${previousVersion}` : ' the previous release';
+  const lines: string[] = ['', rule, `  ⚠  MOBILE REGRESSION: ${version} (${channel})`, rule];
+  lines.push(`  ${prevLabel.trim()} shipped mobile apps this cut does NOT carry:`);
+  for (const p of dropped) lines.push(`    ✗ MOBILE  · ${PLATFORM_LABEL[p] ?? p}`);
+  lines.push('');
+  lines.push('  This is NOT a rejection. But CONFIRM the drop is intentional (e.g. the');
+  lines.push('  mobile leg was skipped this cut) — or the mobile artifacts were built but');
+  lines.push('  not recorded: re-run with --mobile-root pointing at the phone build, or');
+  lines.push('  confirm they exist on disk. (Mobile filenames carry no version, so a');
+  lines.push('  backfill records whatever bytes are present AS this version — make sure');
+  lines.push('  they are THIS cut, not a stale prior build.)');
+  lines.push(rule);
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
+ * Print a mobile-regression alert for EVERY recorded release that dropped a mobile
+ * platform its immediate same-channel predecessor carried. Sibling of
+ * warnIncompleteReleases — runs on --regenerate so a silent mobile drop stays
+ * surfaced until it is confirmed or the artifacts are recorded. NON-BLOCKING.
+ */
+export async function warnMobileRegressions(sql: postgres.Sql, scope: Scope): Promise<number> {
+  const rows = await listReleases(sql, scope.workspaceId); // newest cut first, all channels
+  // Group by channel, then walk newest→older so each release's predecessor is the
+  // next element — the same "immediately-previous same-channel release" the record
+  // path compares against.
+  const byChannel = new Map<string, ReleaseRow[]>();
+  for (const r of rows) (byChannel.get(r.channel) ?? byChannel.set(r.channel, []).get(r.channel)!).push(r);
+  let count = 0;
+  for (const channelRows of byChannel.values()) {
+    for (let i = 0; i < channelRows.length - 1; i++) {
+      const cur = channelRows[i];
+      const prev = channelRows[i + 1];
+      const { dropped } = computeMobileRegression(cur.artifacts, prev.artifacts);
+      if (dropped.length === 0) continue;
+      if (count === 0) console.warn(`\n[record-release] mobile regression(s) — a cut lost a phone build its predecessor had:`);
+      console.warn(formatMobileRegressionAlert(cur.version, cur.channel, prev.version, dropped));
+      count++;
+    }
+  }
+  return count;
+}
+
 /** `desktop-v0.0.9-alpha` — the object-key directory a cut's artifacts live under. */
 export function releaseTag(version: string, channel: string): string {
   return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
@@ -628,6 +689,28 @@ export async function run(opts: RecordOpts): Promise<number> {
     if (!completeness.complete) {
       console.warn(formatCompletenessAlert(opts.version, opts.channel, completeness.missing));
       console.warn(`  Scanned roots:\n${opts.bundleDirs.map((d) => `    ${d}`).join('\n')}`);
+    }
+
+    // Mobile is never part of the required desktop set (a desktop-only cut is
+    // "complete"), so computeReleaseCompleteness can't see a mobile drop — 0.0.12
+    // silently shipped without the Android/iOS 0.0.11 carried (WI-5583). Compare
+    // against the immediately-previous same-channel release (the exact predicate
+    // previousCutAt uses: a different version, cut before this one) and warn loudly
+    // on a REGRESSION. NON-BLOCKING — a deliberate mobile skip is legal.
+    const priorReleases = await listReleases(sql, opts.scope.workspaceId, opts.channel);
+    const previousRelease = priorReleases.find(
+      (r) => r.version !== opts.version && r.cutAt < opts.cutAt,
+    );
+    const mobileReg = computeMobileRegression(artifacts, previousRelease?.artifacts ?? []);
+    if (mobileReg.dropped.length > 0) {
+      console.warn(
+        formatMobileRegressionAlert(
+          opts.version,
+          opts.channel,
+          previousRelease?.version ?? null,
+          mobileReg.dropped,
+        ),
+      );
     }
 
     const row: ReleaseRow = {

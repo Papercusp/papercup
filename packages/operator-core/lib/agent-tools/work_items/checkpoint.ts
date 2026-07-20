@@ -128,8 +128,7 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
     'Writes are verify-read and fail loudly on an invisible write (checkpoint_verify_failed); a plain replace that shrinks ' +
-    "a substantial checkpoint >50% returns a non-blocking `shrinkWarning`. Requires holding the item — an item assigned to " +
-    "someone else fails per-item with `not_holder` (EI-18132462898750489); it never silently overwrites a peer's state.",
+    "a substantial checkpoint >50% returns a non-blocking `shrinkWarning`. Requires holding the item (fails `not_holder` on a peer's).",
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next ' +
