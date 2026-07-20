@@ -217,7 +217,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Both the live tail and the paged bootstrap read this table. In-place
   // choice-card answers mutate an existing row's tools JSON, so invalidating
   // only the live-tail query leaves a reload hydrated from a stale page.
-  'harness_shared.operator_turns': ['operatorTurns.byConversation', 'operatorTurns.page'],
+  // operatorReports.latest (overview-tab-expansion P-004): a new <report> turn
+  // refreshes the Overview's Operator-report tile on the same write.
+  'harness_shared.operator_turns': ['operatorTurns.byConversation', 'operatorTurns.page', 'operatorReports.latest'],
   'harness_shared.operator_prompt_user': ['operatorConfig.byWorkspace'],
   'harness_shared.operator_preferences': ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
   'harness_shared.operator_standing_candidates': ['operatorStandingApprovals.byWorkspace'],

@@ -5650,6 +5650,40 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [estimateBenchLaunch({ taskSetId, cap })];
     },
   },
+  // operatorReports.latest — the newest operator `<report>` turns for the Overview
+  // "Operator report" tile (overview-tab-expansion-2026-07-20 P-004). REUSE-FIRST:
+  // a thin projection over the report-cards substrate (operator_turns.report jsonb,
+  // mig 160, via readRecentOperatorReports — the SAME read the attention inbox's
+  // operator-report source uses; 48h window, newest first, no mirror table). Each
+  // row: turn identity + parsed title/excerpt + createdAt, EXPLICITLY the operator's
+  // narrative account — the other Overview tiles read ground-truth state (D-002).
+  'operatorReports.latest': {
+    resolve: async () => {
+      const [{ readRecentOperatorReports }, { parseReportBlock }] = await Promise.all([
+        import('../attention/operator-report-source'),
+        import('@papercusp/chat-protocol'),
+      ]);
+      const rows = await readRecentOperatorReports({ limit: 5 });
+      return rows
+        .flatMap((r) => {
+          const rep = parseReportBlock(r.report);
+          if (!rep) return [];
+          const firstPlan = rep.plans?.[0];
+          return [
+            {
+              turnId: r.turnId,
+              conversationId: r.conversationId,
+              createdAt: r.createdAt,
+              title: rep.title ?? (r.text ? r.text.slice(0, 120) : 'Operator report'),
+              excerpt: firstPlan?.summary ?? firstPlan?.title ?? (r.text ? r.text.slice(0, 200) : null),
+              planCount: rep.plans?.length ?? 0,
+            },
+          ];
+        })
+        .slice(0, 3);
+    },
+  },
+
   // usage.spend — the 1h + 24h LLM spend/calls headline for the Overview Spend
   // tile (overview-tab-expansion-2026-07-20 P-003). A single envelope row
   // { h1:{spendUsd,calls}, h24:{spendUsd,calls} } over summarizeUsage (the SAME
