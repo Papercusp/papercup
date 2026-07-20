@@ -2632,15 +2632,24 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     expect(confirmationFailedEvents()).toHaveLength(0); // never judged while peers==0
 
     // ── The peer finally reconnects, still stuck (mergedPosition never
-    // advanced) — THE FIX: the next pass judges the still-outstanding
-    // (re-armed) confirmation against a live peer and reaches attempt 2/3,
-    // instead of finding no confirmation at all (the pre-fix bug). ──
+    // advanced) — THE FIX: this pass judges the still-outstanding (re-armed)
+    // confirmation against a live peer, finds it stuck, and enqueues attempt
+    // 2 (queued for the NEXT drain, same as WI-5340's own attempt-2 pattern:
+    // "drained on the NEXT pass purely because checkRepairConfirmation
+    // enqueued it last pass"). Pre-fix, no confirmation would exist here at
+    // all (already discarded on the very first zero-peers judgment), so this
+    // event would never fire. ──
     livePeers = 1;
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(1); // attempt 2 enqueued, not yet drained
+    expect(repairEvents()).toHaveLength(1);
+    expect(confirmationFailedEvents()).toHaveLength(1);
+
+    // ── Drained on this next pass — attempt 2/3 lands. ──
     await handle.mergeNow();
     expect(sessions).toHaveLength(2);
     expect(repairEvents()).toHaveLength(2);
     expect(repairEvents()[1]!.message).toContain('attempt 2/3');
-    expect(confirmationFailedEvents()).toHaveLength(1);
   });
 });
 

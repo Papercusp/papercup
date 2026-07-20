@@ -245,6 +245,56 @@ describe('control wire protocol (v1)', () => {
       mode: 'raw', data: '\x03', gated: false,
     });
   });
+
+  // EI-153: the addressed-recipient assertion ({ownerId}) a sender rides on the
+  // envelope so the RECEIVING host can refuse a message meant for a different
+  // agent (see injectIntoHost's `ownerId` doc + the server handler's misdelivery
+  // guard). Round-trip through encode/decode for every mode — unlike fire
+  // identity (loop-wake-only), ownerId is a universal misdelivery guard so every
+  // mode carries it.
+  it('turn envelope round-trips ownerId (EI-153)', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello', ownerId: 'su-aaa' }));
+    expect(d).toEqual({ mode: 'turn', data: 'hello', gated: true, ownerId: 'su-aaa' });
+  });
+  it('reset/recycle/carry-respawn/raw/osc/mcp-reconnect envelopes round-trip ownerId (EI-153)', () => {
+    expect(decodeControl(encodeControl({ mode: 'reset', data: 'note', ownerId: 'su-bbb' }))).toEqual({
+      mode: 'reset', data: 'note', gated: true, ownerId: 'su-bbb',
+    });
+    expect(decodeControl(encodeControl({ mode: 'recycle', data: 'note', ownerId: 'su-bbb' }))).toEqual({
+      mode: 'recycle', data: 'note', gated: true, ownerId: 'su-bbb',
+    });
+    expect(
+      decodeControl(
+        JSON.stringify({ v: 1, mode: 'carry-respawn', data: 'p', systemPromptAddendum: 'c', ownerId: 'su-ccc' }),
+      ),
+    ).toEqual({
+      mode: 'carry-respawn', data: 'p', systemPromptAddendum: 'c', drillId: '', sessionClass: '',
+      gated: true, ownerId: 'su-ccc',
+    });
+    expect(decodeControl(encodeControl({ mode: 'raw', data: '\x03', ownerId: 'su-ddd' }))).toEqual({
+      mode: 'raw', data: '\x03', gated: false, ownerId: 'su-ddd',
+    });
+    expect(decodeControl(encodeControl({ mode: 'osc', data: '\x1b]11;#000\x07', ownerId: 'su-eee' }))).toEqual({
+      mode: 'osc', data: '\x1b]11;#000\x07', gated: false, ownerId: 'su-eee',
+    });
+    expect(decodeControl(encodeControl({ mode: 'mcp-reconnect', data: 'papercusp-su', ownerId: 'su-fff' }))).toEqual({
+      mode: 'mcp-reconnect', data: 'papercusp-su', gated: true, ownerId: 'su-fff',
+    });
+  });
+  it('a pre-EI-153 sender (no ownerId) decodes with the field unset — no regression', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
+    expect('ownerId' in d).toBe(false);
+  });
+  it('a malformed ownerId (wrong type, empty string) is dropped, not passed through', () => {
+    const d = decodeControl(JSON.stringify({ v: 1, mode: 'turn', data: 'x', ownerId: '' }));
+    expect('ownerId' in d).toBe(false);
+    const d2 = decodeControl(JSON.stringify({ v: 1, mode: 'turn', data: 'x', ownerId: 42 }));
+    expect('ownerId' in d2).toBe(false);
+  });
+  it('the legacy non-envelope payload never carries an ownerId', () => {
+    const d = decodeControl('just some text');
+    expect('ownerId' in d).toBe(false);
+  });
 });
 
 describe('makeStaleFireGuard (WI-5510 — delivery-side dead-man switch against a superseded fire)', () => {

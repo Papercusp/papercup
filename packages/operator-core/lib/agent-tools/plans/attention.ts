@@ -49,6 +49,7 @@ import {
   darkFlagRatificationToAttention,
   blockedSessionToAttention,
   blockedWorkItemToAttention,
+  decisionOwedToAttention,
 } from "../../attention/adapters";
 import {
   planItemsToAttention,
@@ -784,6 +785,36 @@ export default defineTool({
                       : null,
                   }),
                   occurredAt: toIsoOrNull(r.updated_ts),
+                });
+              }
+            } catch {
+              /* best-effort */
+            }
+          })(),
+
+          // 16. Possibly-unrecorded owner decisions (EI-147) — a closed
+          //     session_pending_gates 'ask' row with no plans:add-decision /
+          //     ratify-decision call by the same owner afterward. A
+          //     mechanical, no-LLM-judgment heuristic (decision-owed-source.ts);
+          //     Alert tier — a nudge to review, never a governed decision.
+          (async () => {
+            try {
+              const { readDecisionsOwed } = await import("../../attention/decision-owed-source");
+              const { activeWorkspaceId } = await import("../../workspace-registry");
+              const owed = await readDecisionsOwed({ workspaceId: activeWorkspaceId() });
+              for (const d of owed) {
+                if (harnessFilter && d.harnessSlug && d.harnessSlug !== harnessFilter) continue;
+                items.push({
+                  ...decisionOwedToAttention({
+                    sessionId: d.sessionId,
+                    refId: d.refId,
+                    client: d.client,
+                    question: d.question,
+                    ownerAgentId: d.ownerId,
+                    harnessSlug: resolveHarness(d.harnessSlug, null),
+                    closedAt: d.closedAt,
+                  }),
+                  occurredAt: toIsoOrNull(tsOf(d.closedAt)),
                 });
               }
             } catch {
