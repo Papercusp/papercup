@@ -7,8 +7,14 @@
  * replay it). Pins: fast path passes through, slow path times out, 0 disables, and a
  * post-timeout rejection of the orphaned run never surfaces as unhandled.
  */
-import { describe, it, expect } from 'vitest';
-import { raceDeadline, effectiveMcpDeadlineMs } from '../_mcp-handler';
+import { describe, it, expect, vi } from 'vitest';
+import { raceDeadline, effectiveMcpDeadlineMs, dispatchLegacyWithDeadline } from '../_mcp-handler';
+
+const dispatchMock = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, dispatch: dispatchMock };
+});
 
 describe('raceDeadline (P2-5 MCP deadline)', () => {
   it('returns the run result when it finishes before the deadline', async () => {
@@ -58,5 +64,52 @@ describe('effectiveMcpDeadlineMs (EI-17177)', () => {
   it('a base deadline <= 0 (P2-5 disabled) stays disabled regardless of timeoutSec', () => {
     expect(effectiveMcpDeadlineMs(600, 0)).toBe(0);
     expect(effectiveMcpDeadlineMs(600, -1)).toBe(-1);
+  });
+});
+
+describe('dispatchLegacyWithDeadline (WI-4760)', () => {
+  it('passes through a fast legacy dispatch unchanged', async () => {
+    dispatchMock.mockResolvedValueOnce({ ok: true, response: { data: 'fine' } });
+    const r = await dispatchLegacyWithDeadline({ toolName: 'legacytest:fast', args: {}, bearer: 'b' }, 1000);
+    expect(r).toEqual({ ok: true, response: { data: 'fine' } });
+    expect(dispatchMock).toHaveBeenCalledWith({ toolName: 'legacytest:fast', args: {}, bearer: 'b' });
+  });
+
+  it('a wedged legacy dispatch (no per-call timeout of its own) times out cleanly instead of hanging the caller', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      dispatchMock.mockImplementationOnce(
+        () => new Promise(() => {}), // never resolves — this is the WI-4760 hang
+      );
+      const r = await dispatchLegacyWithDeadline({ toolName: 'legacytest:hang', args: {}, bearer: 'b' }, 10);
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('request_timeout');
+      expect(r.error?.message).toMatch(/legacytest:hang.*exceeded 10ms/);
+      // Attribution/telemetry (the ticket's second requirement): the wedge is
+      // logged with the tool name so it can be found + fixed.
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('legacytest:hang'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a legacy dispatch REJECTING after the deadline never surfaces as an unhandled rejection', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      dispatchMock.mockImplementationOnce(
+        () => new Promise((_, rej) => setTimeout(() => rej(new Error('late boom')), 25)),
+      );
+      const r = await dispatchLegacyWithDeadline({ toolName: 'legacytest:late-fail', args: {}, bearer: 'b' }, 5);
+      expect(r.error?.code).toBe('request_timeout');
+      await new Promise((res) => setTimeout(res, 50)); // let the late rejection fire; vitest fails on unhandled
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('defaults to the flat MCP_DEADLINE_MS floor when no baseDeadlineMs is given (legacy tools declare no timeoutSec)', async () => {
+    dispatchMock.mockResolvedValueOnce({ ok: true, response: { data: 'ok' } });
+    const r = await dispatchLegacyWithDeadline({ toolName: 'legacytest:default', args: {}, bearer: 'b' });
+    expect(r).toEqual({ ok: true, response: { data: 'ok' } });
   });
 });

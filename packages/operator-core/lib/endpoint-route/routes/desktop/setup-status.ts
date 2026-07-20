@@ -226,7 +226,7 @@ export async function collectSetupStatus() {
   // Per-component breakdown for the Agent Runtime step.
   const agentRuntime = { claude: claudeOk, codex: codexOk, omp: ompOk };
 
-  return { statuses, agentRuntime };
+  return { statuses, agentRuntime, modelEgress };
 }
 
 export default defineTool({

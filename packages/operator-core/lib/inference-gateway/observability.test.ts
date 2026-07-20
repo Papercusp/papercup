@@ -1,7 +1,7 @@
 /** Tests for the gateway rate-observability read-model (P-014). */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { projectHeadroom, fetchGatewayHeadroom, gatewayWholesaleThrottled, readmitGatewayAccounts } from './observability';
+import { projectHeadroom, fetchGatewayHeadroom, gatewayWholesaleThrottled, isWholesaleThrottled, readmitGatewayAccounts } from './observability';
 import type { GatewayStats } from './gateway';
 
 const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
@@ -226,6 +226,22 @@ test('gatewayWholesaleThrottled — default path (no injected fetchImpl) is a NO
   // the real gateway and the test flaps the deploy gate.
   const throttled = await gatewayWholesaleThrottled();
   assert.equal(throttled, false);
+});
+
+// isWholesaleThrottled (WI-3186) — the pure predicate gatewayWholesaleThrottled delegates to,
+// factored out so a caller that already has a projected headroom (e.g. the desktop
+// setup-status probe re-using a headroom read for its own purposes) doesn't need a second
+// /stats round-trip to get the same decision.
+test('isWholesaleThrottled — mirrors gatewayWholesaleThrottled on an already-projected headroom', () => {
+  const now = Date.now();
+  assert.equal(isWholesaleThrottled(projectHeadroom(baseStats({ pausedUntil: now + 60_000 }), now)), true);
+  assert.equal(
+    isWholesaleThrottled(
+      projectHeadroom(baseStats({ unified: { window: '5h', utilization: 0.4, resetAt: now + 60_000, rejected: false } }), now),
+    ),
+    false,
+  );
+  assert.equal(isWholesaleThrottled({ reachable: false }), false, 'unreachable is conservative-false');
 });
 
 // readmitGatewayAccounts — the accounts:reset-rate → live-gateway poke (EI-8797 residual: the store

@@ -19,15 +19,16 @@ vi.mock('./InlinePtyTerminal', () => ({
 
 import { StepAgents } from './StepAgents';
 
-/* fetch router. statusBody → setup-status.agentRuntime; setup-pty-commands →
+/* fetch router. statusBody → setup-status.agentRuntime/modelEgress; setup-pty-commands →
  * ptyCommands (or a non-ok when ptyFails). */
 let agentRuntime: Record<string, boolean>;
+let modelEgress: { enabled: boolean; throttled: boolean; retryAfterSec: number | null } | null;
 let ptyFails: boolean;
 function installFetch() {
   const fn = vi.fn(async (url: string) => {
     const u = String(url);
     if (u.includes('/api/desktop/setup-status')) {
-      return new Response(JSON.stringify({ agentRuntime }), { status: 200 });
+      return new Response(JSON.stringify({ agentRuntime, modelEgress }), { status: 200 });
     }
     if (u.includes('/api/desktop/setup-pty-commands')) {
       if (ptyFails) return new Response('err', { status: 500 });
@@ -42,6 +43,7 @@ function installFetch() {
 beforeEach(() => {
   tauriNative = false;
   agentRuntime = { claude: false, codex: false, omp: false };
+  modelEgress = null;
   ptyFails = false;
 });
 afterEach(() => {
@@ -100,6 +102,25 @@ describe('StepAgents (SetupWizard agent-backend step)', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Install Agent Runtime/i }));
     expect(await screen.findByText(/Couldn't start the installer/i)).toBeTruthy();
     expect(screen.queryByTestId('pty-terminal')).toBeNull();
+  });
+
+  it('WI-3186: surfaces an actionable rate-limit banner when signed in but the gateway is wholesale-throttled', async () => {
+    agentRuntime = { claude: true, codex: false, omp: false };
+    modelEgress = { enabled: true, throttled: true, retryAfterSec: 125 };
+    installFetch();
+    render(<StepAgents />);
+    await screen.findByText('Ready.');
+    expect(await screen.findByText(/Signed in, but your account is rate-limited right now\./i)).toBeTruthy();
+    expect(screen.getByText(/clear in about 3 min/i)).toBeTruthy();
+  });
+
+  it('WI-3186: no rate-limit banner when the gateway is off or healthy', async () => {
+    agentRuntime = { claude: true, codex: false, omp: false };
+    modelEgress = { enabled: true, throttled: false, retryAfterSec: null };
+    installFetch();
+    render(<StepAgents />);
+    await screen.findByText('Ready.');
+    expect(screen.queryByText(/rate-limited right now/i)).toBeNull();
   });
 
   it('toggles the manual-install commands block', async () => {

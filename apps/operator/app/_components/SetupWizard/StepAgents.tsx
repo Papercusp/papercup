@@ -10,6 +10,12 @@ interface AgentRuntime {
   omp: boolean;
 }
 
+interface ModelEgressStatus {
+  enabled: boolean;
+  throttled: boolean;
+  retryAfterSec: number | null;
+}
+
 interface SpawnSpec {
   command: string;
   args: string[];
@@ -24,6 +30,7 @@ interface PtyCommands {
 
 export function StepAgents() {
   const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
+  const [modelEgress, setModelEgress] = useState<ModelEgressStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
   const [installSpec, setInstallSpec] = useState<SpawnSpec | null>(null);
@@ -41,8 +48,9 @@ export function StepAgents() {
     try {
       const r = await fetch('/api/desktop/setup-status', { cache: 'no-store' });
       if (r.ok) {
-        const j = (await r.json()) as { agentRuntime?: AgentRuntime };
+        const j = (await r.json()) as { agentRuntime?: AgentRuntime; modelEgress?: ModelEgressStatus };
         if (j.agentRuntime) setRuntime(j.agentRuntime);
+        setModelEgress(j.modelEgress ?? null);
       }
     } finally {
       setLoading(false);
@@ -190,6 +198,28 @@ export function StepAgents() {
                 </span>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* WI-3186: a signed-in CLI (the checks above) proves LOGIN, not that a real model
+          call can go through right now — a packaged single-account install has no gateway
+          failover, so its account commonly exhausts its window. Surface that explicitly
+          instead of leaving the user to hit a raw {gateway:true,error:{type:'rate_limit_error'}}
+          body the first time something actually calls the model. */}
+      {!loading && modelEgress?.throttled && (
+        <div className="pc-step__progress" data-status="missing" style={{ marginTop: 10 }}>
+          <div className="pc-step__progress-dot" />
+          <div className="pc-step__progress-text">
+            <strong>Signed in, but your account is rate-limited right now.</strong>
+            <span>
+              Every model call is currently throttled
+              {modelEgress.retryAfterSec != null && modelEgress.retryAfterSec > 0
+                ? ` — it should clear in about ${Math.ceil(modelEgress.retryAfterSec / 60)} min`
+                : ''}
+              . This happens once a single account's usage window is used up; no action is
+              needed here — Papercusp resumes automatically once it resets.
+            </span>
           </div>
         </div>
       )}
