@@ -858,6 +858,38 @@ const replicationStallOrphanSweepWorkflow = idempotentRegisterWorkflow('replicat
 );
 DBOS.registerScheduled(replicationStallOrphanSweepWorkflow, { name: 'replicationStallOrphanSweep', crontab: '0 25 4 * * *' });
 
+// Daily (04:40 UTC, in the 04:xx GC cluster, offset from the orphan sweep above): the
+// WIDER, flag-gated staleness sweep for still-registered-but-abandoned harnesses
+// (WI-5563 proposal #1 — the orphan sweep above only covers a renamed/deleted target;
+// this covers a target harness that still exists but has recorded no activity for a
+// long window). Default OFF (FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE,
+// owner-authority) — the sweep itself checks the flag per target workspace and is a
+// pure no-op everywhere until the owner enables it. Never throws → can't poison the
+// scheduler. Shed under load.
+async function replicationLivenessStalenessSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('replication-liveness-staleness-sweep')) return;
+    try {
+      const { runReplicationLivenessStalenessSweepOnce } = await import('../sync/hyperbee/replication-liveness-staleness-sweep');
+      const r = await runReplicationLivenessStalenessSweepOnce();
+      if (r.resolvedIds.length > 0) {
+        console.log(
+          `[replication-liveness-staleness-sweep] resolved ${r.resolvedIds.length} stale stall EI(s) ` +
+            `(checked ${r.checked}${r.errors > 0 ? `, ${r.errors} resolve error(s)` : ''})`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[replication-liveness-staleness-sweep] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'replication-liveness-staleness-sweep' });
+}
+const replicationLivenessStalenessSweepWorkflow = idempotentRegisterWorkflow('replicationLivenessStalenessSweep', () =>
+  DBOS.registerWorkflow(replicationLivenessStalenessSweepTick, {
+    name: 'replicationLivenessStalenessSweep', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(replicationLivenessStalenessSweepWorkflow, { name: 'replicationLivenessStalenessSweep', crontab: '0 40 4 * * *' });
+
 // Every 2min (offset :30s — off the :00 minute-tick stampede): session-transcript
 // ingest (session-search-scope-2026-07-05 P-003). Tails claude/omp/codex JSONL +
 // agent_chats_consolidated transcripts into harness_shared.session_turns — the
