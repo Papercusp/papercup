@@ -79,6 +79,14 @@ vi.mock('./PlanPopupModal', () => ({
 // init on the click. Spy on the preload so this wiring cannot silently regress.
 const { preloadVditorSpy } = vi.hoisted(() => ({ preloadVditorSpy: vi.fn(() => Promise.resolve()) }));
 vi.mock('@/app/_components/MarkdownEditor', () => ({ preloadVditor: preloadVditorSpy }));
+// P-001: a row click STARTS the plan-popup-open interaction timing. Spy the hook
+// so the wiring (click → beginInteraction) cannot silently regress.
+const { beginInteractionSpy } = vi.hoisted(() => ({ beginInteractionSpy: vi.fn() }));
+vi.mock('@/app/_components/perf/perf-marks', () => ({
+  beginInteraction: beginInteractionSpy,
+  endInteraction: vi.fn(),
+  PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
+}));
 
 import PlansPane from './PlansPane';
 

@@ -1431,9 +1431,12 @@ interface GymProposal {
   harnessSlug: string;
   cycle: number;
   role: string;
+  variantId?: string | null;
   rationale: string | null;
   devAnchorDelta: number | null;
   costDelta: number | null;
+  probeStatus?: string | null;
+  proposedMd?: string | null;
   status: string; // pending | accepted | rejected | superseded
   createdAt: number;
   decidedAt: number | null;
@@ -1704,13 +1707,14 @@ function GymView({
           the tooltip. */}
       <p
         className="pc-learning__sectionsub pc-learning__gymhow"
-        title={`Path 1 — ${t("scout")} routing: every fused idea carries a routeHint from the recombine step; small, cheaply testable (prompt-shaped) ideas route to the gym rail as challenger candidates + QD-archive niche seeds. Unhinted ideas default to the improvement rail; plans/benchmarks have their own rails. Path 2 — the autoloop: a per-${t("pot", { lower: true })} config (enabled + an explicit budget cap — no cap, no unattended runs); a 30-min routine round-robins enabled ${t("pot", { plural: true, lower: true })} and runs one budget-bounded challenger-vs-champion cycle, accumulating spend until the budget floor stops it. Proposals never auto-promote — accept/reject is yours.`}
+        title={`Path 1 — ${t("scout")} routing: every fused idea carries a routeHint from the recombine step; small, cheaply testable (prompt-shaped) ideas route to the gym rail as challenger candidates + QD-archive niche seeds. Unhinted ideas default to the improvement rail; plans/benchmarks have their own rails. Path 2 — the autoloop: a per-${t("pot", { lower: true })} config (enabled + an explicit budget cap — no cap, no unattended runs); a 30-min routine round-robins enabled ${t("pot", { plural: true, lower: true })} and runs one budget-bounded challenger-vs-champion cycle, accumulating spend until the budget floor stops it. Winning challengers (positive benchmark delta) auto-promote to champion at end of run — owner mandate 2026-07-19; losers auto-reject; every decision stays in the ledger.`}
       >
         Two ways in: {t("scout")} routes small, cheaply testable ideas here
         (challengers + archive niche seeds), and each enabled, budgeted{" "}
         {t("pot", { lower: true })} autoloop runs challenger-vs-champion cycles
-        (~every 30 min) until its budget is spent. Nothing promotes itself —
-        you accept or reject every challenger.
+        (~every 30 min) until its budget is spent. Fully autonomous: a
+        challenger that beats the champion on the benchmark is promoted
+        automatically — the ledger below is the audit trail.
       </p>
 
       {scopeFallback ? (
@@ -1823,11 +1827,80 @@ function GymView({
                             </span>
                           </>
                         }
-                        renderCard={(p) => (
-                          <ul className="pc-learning__list pc-learning__gymcard">
-                            <GymProposalRow p={p} />
-                          </ul>
-                        )}
+                        renderCard={(p) => {
+                          const delta = deltaLabel(p.devAnchorDelta);
+                          const statusColor = statusToneColor(p.status);
+                          return (
+                            <div className="pc-learning__ideacard">
+                              <div className="pc-learning__ideacard-head">
+                                <span
+                                  className="pc-learning__chip"
+                                  style={{ color: statusColor, borderColor: statusColor }}
+                                >
+                                  {p.status === "accepted" ? (
+                                    <CheckCircle2 size={10} aria-hidden />
+                                  ) : p.status === "rejected" ? (
+                                    <XCircle size={10} aria-hidden />
+                                  ) : (
+                                    <Clock size={10} aria-hidden />
+                                  )}
+                                  {p.status === "accepted" ? "champion" : p.status}
+                                </span>
+                                <span className="pc-learning__chip" title="Gym cycle number">
+                                  cycle {p.cycle}
+                                </span>
+                                <span className="pc-learning__age">
+                                  {whenLabel(p.createdAt)}
+                                  {p.decidedAt
+                                    ? ` · decided ${whenLabel(p.decidedAt)}`
+                                    : ""}
+                                </span>
+                              </div>
+                              <strong className="pc-learning__gymtitle">
+                                {p.rationale ?? p.variantId ?? p.id}
+                              </strong>
+                              <div className="pc-learning__gymdeltas">
+                                <span
+                                  className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
+                                  title="Judge-score change vs the current champion — positive means the challenger did better"
+                                >
+                                  {delta.label} benchmark
+                                </span>
+                                {p.costDelta != null ? (
+                                  <span
+                                    className={`pc-learning__delta pc-learning__delta--${p.costDelta > 0 ? "bad" : p.costDelta < 0 ? "good" : "flat"}`}
+                                    title="Per-task cost change vs the champion"
+                                  >
+                                    {p.costDelta > 0 ? "+" : ""}
+                                    {p.costDelta.toFixed(2)} cost
+                                  </span>
+                                ) : null}
+                                {p.probeStatus ? (
+                                  <span
+                                    className="pc-learning__chip"
+                                    title="Regression-probe verdict — did the challenger still catch the planted failures?"
+                                  >
+                                    probes: {p.probeStatus}
+                                  </span>
+                                ) : null}
+                                <span
+                                  className="pc-learning__chip pc-learning__chip--idea"
+                                  title="The gym harness that ran this experiment"
+                                >
+                                  {p.harnessSlug}
+                                </span>
+                              </div>
+                              {p.proposedMd ? (
+                                <pre
+                                  className="pc-learning__gymprompt"
+                                  title="The challenger prompt (first lines)"
+                                >
+                                  {p.proposedMd}
+                                </pre>
+                              ) : null}
+                            </div>
+                          );
+                        }}
                       />
                     </section>
                   ))}
@@ -1850,44 +1923,67 @@ function GymView({
                   Scout-seeded quality-diversity niches
                 </span>
               </div>
-              <ul className="pc-learning__list">
-                {archiveSeeds.map((s) => (
-                  <li
-                    key={`${s.harnessSlug}:${s.nicheKey}`}
-                    className="pc-learning__row pc-learning__row--gym"
-                    title={s.rationale ?? undefined}
-                  >
-                    <span
-                      className="pc-learning__sev"
-                      style={{ background: "var(--accent, #7dd3fc)" }}
-                      aria-hidden
-                    />
-                    <span className="pc-learning__id">{s.candidateId}</span>
-                    <span className="pc-learning__title">
-                      {s.rationale || (
-                        <em className="pc-learning__muted">(no rationale)</em>
-                      )}
-                    </span>
-                    <span className="pc-learning__meta">
-                      <span
-                        className="pc-learning__chip pc-learning__chip--idea"
-                        title="The MAP-Elites niche this seed holds (scope | domain | risk)"
-                      >
-                        {s.nicheKey}
-                      </span>
-                      <span
-                        className="pc-learning__chip"
-                        title="Seed fitness prior — higher holds the niche against challengers"
-                      >
-                        fit {s.fitness.toFixed(2)}
-                      </span>
-                      <span className="pc-learning__age">
-                        {whenLabel(s.updatedAt)}
-                      </span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <div className="pc-learning__lensstacks">
+                <section
+                  className="pc-learning__lensgroup"
+                  aria-label="Archive niche seeds"
+                >
+                  <CardStack
+                    items={archiveSeeds}
+                    getKey={(seed) => `${seed.harnessSlug}:${seed.nicheKey}`}
+                    ariaLabel="Archive niche seeds"
+                    accent={lensColor("niche seeds")}
+                    header={
+                      <>
+                        <span className="pc-cardstack__header-label">
+                          niche seeds
+                        </span>
+                        <span className="pc-cardstack__header-count">
+                          {archiveSeeds.length}
+                        </span>
+                      </>
+                    }
+                    renderCard={(seed) => (
+                      <div className="pc-learning__ideacard">
+                        <div className="pc-learning__ideacard-head">
+                          <span
+                            className="pc-learning__chip pc-learning__chip--idea"
+                            title="The MAP-Elites niche this seed holds (scope | domain | risk)"
+                          >
+                            {seed.nicheKey}
+                          </span>
+                          <span
+                            className="pc-learning__chip"
+                            title="The seed's fitness score in its niche"
+                          >
+                            fitness {seed.fitness.toFixed(2)}
+                          </span>
+                          <span className="pc-learning__age">
+                            {whenLabel(seed.updatedAt)}
+                          </span>
+                        </div>
+                        <strong className="pc-learning__gymtitle">
+                          {seed.rationale ?? seed.candidateId}
+                        </strong>
+                        <div className="pc-learning__gymdeltas">
+                          <span
+                            className="pc-learning__chip"
+                            title="The seeded candidate id"
+                          >
+                            {seed.candidateId}
+                          </span>
+                          <span
+                            className="pc-learning__chip pc-learning__chip--idea"
+                            title="The gym harness whose archive holds this niche"
+                          >
+                            {seed.harnessSlug}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  />
+                </section>
+              </div>
             </>
           ) : null}
         </>

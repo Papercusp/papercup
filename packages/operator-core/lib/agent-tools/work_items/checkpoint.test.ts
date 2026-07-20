@@ -364,6 +364,57 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
   });
 
+  describe('EI-18132462898750489: ownership guard — no silent overwrite of a peer\'s held item', () => {
+    it('refuses a checkpoint write when the item is assigned to a DIFFERENT agent (not_holder)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-5557', harness: 'papercup', assignee: 'su-a7d08fd3-ba65-45d3-a07f-a335b9004454' });
+      const r = await one({ id: 'WI-5557', checkpoint: 'trying to write on a peer\'s item' }, {
+        ...baseCtx,
+        uiClientId: 'su-2e534e59-ceb6-48b5-87b8-3b362f652725',
+      });
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('not_holder');
+      expect(r.error).toContain('su-a7d08fd3-ba65-45d3-a07f-a335b9004454');
+    });
+
+    it('refuses a CLEAR (blank checkpoint) on an item assigned to someone else too', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-5557', harness: 'papercup', assignee: 'someone-else' });
+      const r = await one({ id: 'WI-5557' }, { ...baseCtx, uiClientId: 'not-the-holder' });
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('not_holder');
+    });
+
+    it('allows the write when the item is assigned to the CALLER itself', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup', assignee: 'opspawn-bee-1' });
+      setWorkItemCheckpoint.mockResolvedValue('my own progress');
+      const r = await one({ id: 'WI-7', checkpoint: 'my own progress' });
+      expect(r.ok).toBe(true);
+    });
+
+    it('allows the write when the item is UNASSIGNED (about to be claimed)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup', assignee: null });
+      setWorkItemCheckpoint.mockResolvedValue('note before claiming');
+      const r = await one({ id: 'WI-7', checkpoint: 'note before claiming' });
+      expect(r.ok).toBe(true);
+    });
+
+    it('a mixed batch fails only the peer-held item; the caller\'s own item still writes', async () => {
+      getWorkItem.mockImplementation(async (id: string) =>
+        id === 'WI-MINE'
+          ? { id: 'WI-MINE', harness: 'papercup', assignee: 'opspawn-bee-1' }
+          : { id: 'WI-THEIRS', harness: 'papercup', assignee: 'someone-else' },
+      );
+      setWorkItemCheckpoint.mockResolvedValue('progress');
+      const out = await env({ items: [{ id: 'WI-MINE', checkpoint: 'progress' }, { id: 'WI-THEIRS', checkpoint: 'nope' }] });
+      expect(out.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
+        ['WI-MINE', true],
+        ['WI-THEIRS', false],
+      ]);
+      expect(out.results[1].error).toContain('not_holder');
+    });
+  });
+
   describe('EI-9325: shrinkWarning nudge on a suspicious plain-replace shrink', () => {
     it('warns when a plain replace shrinks a substantial prior checkpoint by more than half', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });

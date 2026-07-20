@@ -11,10 +11,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
+// Perf-marks: spy the interaction-timing hooks so the "close the plan-popup-open
+// timing on body render" wiring (P-001) is asserted, keeping the real registry.
+const { endInteractionSpy } = vi.hoisted(() => ({ endInteractionSpy: vi.fn() }));
+vi.mock('@/app/_components/perf/perf-marks', () => ({
+  endInteraction: endInteractionSpy,
+  beginInteraction: vi.fn(),
+  PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
+}));
 // Vditor-backed; stub both surfaces to plain DOM that echoes the key props.
+// MarkdownPreview fires onParsed via a ref callback (mimicking the real "after
+// Vditor.preview" call) so handleParsed's decorators + the endInteraction hook run.
 vi.mock('@/app/_components/MarkdownEditor', () => ({
-  MarkdownPreview: ({ value, outline }: { value: string; outline: unknown }) => (
-    <div data-testid="preview" data-outline={String(outline)}>{value}</div>
+  MarkdownPreview: ({ value, outline, onParsed }: { value: string; outline: unknown; onParsed?: (root: HTMLElement) => void }) => (
+    <div
+      data-testid="preview"
+      data-outline={String(outline)}
+      ref={(node) => { if (node) onParsed?.(node); }}
+    >{value}</div>
   ),
   MarkdownEditor: ({
     value,
@@ -51,7 +65,7 @@ vi.mock('./plan-renderers-ir', () => ({
 
 import PlanEditor from './PlanEditor';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); endInteractionSpy.mockClear(); });
 
 describe('PlanEditor (decorated plan markdown surface)', () => {
   it('renders the static preview in read-only mode (default)', () => {
@@ -66,6 +80,14 @@ describe('PlanEditor (decorated plan markdown surface)', () => {
   it('passes the outline prop through to the preview', () => {
     render(<PlanEditor value="x" slug="p" outline="right" />);
     expect(screen.getByTestId('preview').getAttribute('data-outline')).toBe('right');
+  });
+
+  it('ends the plan-popup-open interaction timing when the plan body renders (P-001 wiring)', () => {
+    // handleParsed (fired on each Vditor.preview parse) closes the interaction
+    // started by the PlansPane row click. The measure is a no-op unless a matching
+    // begin ran, so this call is safe here — we only assert the wiring fires.
+    render(<PlanEditor value="# Hello plan" slug="p" />);
+    expect(endInteractionSpy).toHaveBeenCalledWith('plan-popup-open');
   });
 
   it('renders the editor surface when readOnly is false', () => {

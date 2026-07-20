@@ -29,6 +29,7 @@ import {
 } from '@/app/admin/plans/plans-api';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
+import { requestDockPanelOpen } from '@/app/adv/harnesses/open-dock-panel';
 import { useLexicon } from '@/lib/useLexicon';
 
 /**
@@ -496,7 +497,13 @@ export default function AdvOverviewTab() {
           error={rosterQ.error ? String((rosterQ.error as Error).message ?? rosterQ.error) : null}
           empty={agentRows.length === 0}
           emptyLabel="No live agents"
-          onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.agents)}
+          onOpen={() => {
+            // Owner ask 2026-07-19: the Working tab may not have the agents
+            // panel in its persisted layout — request it (ensure + focus)
+            // alongside the tab switch, else the click lands on nothing.
+            requestDockPanelOpen('adv:agents');
+            void setActiveTab(OVERVIEW_TILE_TARGETS.agents);
+          }}
         >
           {agentRows.map((a) => {
             const label = agentDisplayLabel(a.label, lex);
