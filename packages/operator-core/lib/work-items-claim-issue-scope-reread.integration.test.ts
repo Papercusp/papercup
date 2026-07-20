@@ -18,8 +18,13 @@
  * throw — so a fault is loud, not disguised as "retry".
  *
  * This proves against real Postgres (testcontainer; Docker required):
- *   • the fix PRIMITIVE — `getIssueInWorkspace(ws, id)` reads the EXACT workspace passed,
- *     finding a row that the scope-re-deriving `getIssue(id)` would miss (the leak mechanism);
+ *   • the fix PRIMITIVE — `getIssueInWorkspace(ws, id)` reads the EXACT workspace passed;
+ *   • a legacy-DUPLICATE-id scenario where bare `getIssue(id)` can still return the WRONG
+ *     (ambient-workspace, stale) twin instead of the just-claimed row (see the 2026-07-20
+ *     note in the first test: `getIssue` was SUBSEQUENTLY hardened by EI-15486 to be
+ *     ambient-independent for a single unambiguous row, so it no longer MISSES outright —
+ *     but for a duplicate id it still prefers the ambient workspace over recency, which is
+ *     the residual reason the claim-reread path must stay pinned to `getIssueInWorkspace`);
  *   • END-TO-END — with the claim's captured workspace DRIFTED away from `getIssue`'s
  *     re-derived scope, `claimNextWorkItem` still returns the claimed item (not a false miss)
  *     and the row is claimed exactly once. This test FAILS against the pre-fix `getIssue` re-read.
@@ -75,12 +80,12 @@ let db: FreshPgDb;
 async function seedIssueInWorkspace(
   id: string,
   workspaceId: string,
-  opts: { status?: string; takenBy?: string | null; createdTs?: number; updatedTs?: number } = {},
+  opts: { status?: string; takenBy?: string | null; createdTs?: number; updatedTs?: number; harnessSlug?: string } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'bug', ${`title ${id}`}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null},
+    VALUES (${opts.harnessSlug ?? H}, ${id}, 'bug', ${`title ${id}`}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null},
        ${workspaceId}, ${opts.createdTs ?? 0}, ${opts.updatedTs ?? 0})`;
 }
 
@@ -105,18 +110,45 @@ beforeEach(async () => {
 afterEach(() => setFlagOverridesForTest({}));
 
 describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriving', () => {
-  it('getIssueInWorkspace reads the EXACT workspace; bare getIssue (re-derived scope) misses a cross-workspace row', async () => {
+  it('getIssueInWorkspace reads the EXACT workspace regardless of ambient scope drift', async () => {
     // The issue lives in CLAIM_WS; the module-internal scope (flag OFF) is 'default'.
     await seedIssueInWorkspace('EI-scope', CLAIM_WS);
 
-    // The scope-re-deriving read looks in 'default' and MISSES — this null is exactly what
-    // leaked the claim + misreported a race in the pre-fix claim path.
-    expect(await ie.getIssue('EI-scope')).toBeNull();
-
-    // The workspace-exact read (the fix) finds the row regardless of the derived scope.
+    // The workspace-exact read (the EI-6480 fix) finds the row regardless of the derived scope.
     const exact = await ie.getIssueInWorkspace(CLAIM_WS, 'EI-scope');
     expect(exact?.id).toBe('EI-scope');
     expect(exact?.kind).toBe('bug');
+
+    // NOTE (2026-07-20): bare `getIssue` was SUBSEQUENTLY hardened by EI-15486 to be
+    // ambient-independent — it now resolves an issue's ACTUAL workspace by id
+    // (`resolveIssueWorkspace`) instead of trusting a bare `issuesScopeWorkspace()`
+    // derivation, so it no longer exhibits the original "re-derived scope looks in the
+    // wrong workspace and misses" symptom for a SINGLE unambiguous row: it finds this
+    // row too, in any workspace. That is a strict improvement over the old miss, so this
+    // is no longer a `toBeNull()` regression assertion — see the next test for the
+    // narrower case (a legacy duplicate id across workspaces) where the two reads still
+    // genuinely disagree and `getIssueInWorkspace` remains the one the atomic
+    // claim-then-reread path must use.
+    expect((await ie.getIssue('EI-scope'))?.id).toBe('EI-scope');
+  });
+
+  it('a legacy DUPLICATE issue id (EI-7808: same issue_id, distinct physical harness_slug rows) across workspaces still needs getIssueInWorkspace: getIssue can prefer a stale ambient-workspace twin over the just-claimed row', async () => {
+    // `work_items`'s PK is (harness_slug, feature_id) — NOT workspace-scoped — so two rows
+    // sharing an issue_id can only coexist with DIFFERENT physical harness_slug values (the
+    // EI-7808 legacy-dupe shape, e.g. '' beside 'papercup'), same as production. A stale twin
+    // sits under the ambient workspace ('default', flag OFF) — e.g. a pre-migration leftover —
+    // while the row that was JUST atomically claimed lives in CLAIM_WS with a newer updated_ts.
+    // `resolveIssueWorkspace` prioritizes an AMBIENT workspace match over recency (ORDER BY
+    // (workspace_id = ambient) DESC, updated_at DESC), so bare `getIssue` picks the wrong
+    // (stale, differently-assigned) twin here — exactly the silent-wrong-row hazard
+    // `getIssueInWorkspace(claimedWs, id)` (the EI-6480 fix, pinned to the SAME workspace the
+    // atomic UPDATE just claimed in) avoids.
+    await seedIssueInWorkspace('EI-dup', 'default', { takenBy: 'stale-twin', updatedTs: 1, harnessSlug: '' });
+    await seedIssueInWorkspace('EI-dup', CLAIM_WS, { takenBy: 'w1', updatedTs: 1_000_000 });
+
+    expect((await ie.getIssue('EI-dup'))?.assignee).toBe('stale-twin');
+    const exact = await ie.getIssueInWorkspace(CLAIM_WS, 'EI-dup');
+    expect(exact?.assignee).toBe('w1');
   });
 
   it('remote-origin issue rows surface provenance and refuse local set_state with a truthful error', async () => {

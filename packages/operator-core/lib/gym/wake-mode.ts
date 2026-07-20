@@ -354,7 +354,12 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
     // prior gym run left behind before Ryuk could reap it.
     await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
     log('provisioning gym DB …');
-    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_wake').start();
+    // max_connections=500: same as autoloop-cycle/blueprint-cycle — the gym operator's many
+    // pools + agents exceed PG's default 100 → `sorry, too many clients already` (WI-5630).
+    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE)
+      .withDatabase('papercusp_wake')
+      .withCommand(['postgres', '-c', 'max_connections=500'])
+      .start();
     const { databaseUri: gymUri } = await provisionGymDatabase({
       maintenanceUri: pgContainer.getConnectionUri(),
       dbName: DB_NAME,

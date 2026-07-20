@@ -230,7 +230,14 @@ export async function runOneAutoloopCycle(
     // any orphaned container a crashed prior gym run left behind before Ryuk could reap it.
     await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
     log('provisioning gym DB …');
-    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_loop').start();
+    // max_connections=500: the gym-operator opens MANY pools per process (org + per-harness
+    // + cache/listeners ≈ 69/proc) and the CLI's gymSql + spawned role agents add more, which
+    // blows past PG's default max_connections=100 → `sorry, too many clients already`, killing
+    // the pipeline before any proposal is recorded (WI-5630). Mirrors blueprint-cycle.ts.
+    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE)
+      .withDatabase('papercusp_loop')
+      .withCommand(['postgres', '-c', 'max_connections=500'])
+      .start();
     ({ databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME }));
     gymSql = postgres(gymUri, { max: 4, onnotice: () => {}, prepare: false });
     // Control plane (proposals/autoloop/QD) → caller's client, else a DSN we open, else the gym DB.
