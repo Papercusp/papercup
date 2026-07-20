@@ -261,7 +261,7 @@ export default defineTool({
     // (maxFires / maxDurationSec) has NOTHING bounding how long it re-wakes the SAME warm
     // session, so context grows every fire until it hits the ceiling and dies uncleanly
     // (repro: session fa10eeb7, 52 fires / 7.3h / 364 turns → death→cold-recycle→warm-regrow
-    // cycle owner Avi called "should never happen"). This is purely additive — a response
+    // cycle the owner called "should never happen"). This is purely additive — a response
     // field + note suffix, no behavior change — so it's safe to land without the TIER 2
     // engine-side hard net (which needs owner disclosure given its fleet-wide blast radius;
     // tracked separately). A 'monitor' loop is excluded: it's a leader/supervisor loop that

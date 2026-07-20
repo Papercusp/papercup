@@ -356,16 +356,22 @@ const RECYCLE_CARRY_RETRY_BACKOFF_MS =
  *  per-attempt). A `session:request-compaction` carry-respawn never carries
  *  `routineId`/`fireNumber` (WI-5510's stale-fire guard is a structural no-op
  *  for it — loop-fire wakes are the only sender that stamps those fields), so
- *  a single message held stale-long by the busy-gate (+ its one carryRearm
- *  re-arm, up to 2× TURN_INJECT_BUSY_CAP_MS) previously delivered an outdated
- *  carry document with no staleness check at all — the live instance of the
- *  EI-15777 wake-churn family this guards against (see isCarryRespawnStale).
- *  Generous default: a carry-respawn is deliberately a rare, human-scale event
- *  (a deliberate compaction, not a tight polling loop), so 10 minutes is well
- *  past any legitimate busy-gate wait while still catching a message that sat
- *  stale through a pathologically long turn plus its re-arm. */
+ *  a single message held stale-long by the busy-gate re-arm previously delivered
+ *  an outdated carry document with no staleness check at all — the live instance
+ *  of the EI-15777 wake-churn family this guards against (see isCarryRespawnStale).
+ *  WI-5623: a PRODUCTION carry-respawn now RE-POLLS across successive busy-gate
+ *  windows (makeCarryRearmController) instead of dropping after one retry — an
+ *  autonomous/headless session is near-continuously busy and rarely presents the
+ *  1.5s idle window inside a single window, so a pending respawn must SURVIVE long
+ *  enough to catch the session's next idle/recycle boundary (fleet bug-drain
+ *  members recycle their window ~every 22-33min). The old 10-min cap dropped every
+ *  such respawn just before that boundary (0/22 delivered), so the default is now
+ *  30 minutes — past the fleet recycle cadence, still bounding a genuinely stale
+ *  carry (the successor re-orients via coord:orient { afterCompaction }, so a
+ *  modestly-old carry is fine; a >30-min-busy session is pathological and
+ *  stale-drops to the hard-wall watchdog). Env-overridable. */
 const CARRY_RESPAWN_MAX_AGE_MS =
-  Number(process.env.PAPERCUSP_PSU_PTY_CARRY_STALE_MS) || 600_000;
+  Number(process.env.PAPERCUSP_PSU_PTY_CARRY_STALE_MS) || 1_800_000;
 
 /** Orphan watchdog poll (WI-3141). A bridged interactive host exists ONLY to
  *  bridge the user's terminal to the agent under psu's own pty; once its

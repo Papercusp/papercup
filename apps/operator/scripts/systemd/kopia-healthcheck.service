@@ -3,4 +3,4 @@ Description=Kopia healthcheck — alert if no recent snapshot
 
 [Service]
 Type=oneshot
-ExecStart=/home/marsh-office/.config/kopia/healthcheck.sh
+ExecStart=%h/.config/kopia/healthcheck.sh

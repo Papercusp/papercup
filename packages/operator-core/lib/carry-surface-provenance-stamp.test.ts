@@ -46,7 +46,7 @@ describe('applyOwnerTurnAutoVerify (cold-carry-system-hardening-2026-07-19 P-005
   };
 
   it('auto-verifies manual [owner:…] tags when the current turn is owner-typed; lint clears when nothing else', () => {
-    const lint = lintOf('[owner:Jane2026-07-19 "Don\'t do the cut yet"] HOLD ruled — no cut until GO.');
+    const lint = lintOf('[owner:Jane 2026-07-19 "Don\'t do the cut yet"] HOLD ruled — no cut until GO.');
     expect(lint?.matches[0].kind).toBe('manual-owner-tag');
     const out = applyOwnerTurnAutoVerify(lint, OWNER_TURN);
     expect(out.ownerTagsAutoVerified).toBe(1);
@@ -55,7 +55,7 @@ describe('applyOwnerTurnAutoVerify (cold-carry-system-hardening-2026-07-19 P-005
 
   it('keeps non-owner-tag matches: only the manual tags are auto-verified', () => {
     const lint = lintOf(
-      ['[owner:Jane2026-07-19] the ruling', 'the owner said to ship it dark'].join('\n'),
+      ['[owner:Jane 2026-07-19] the ruling', 'the owner said to ship it dark'].join('\n'),
     );
     expect(lint?.matches).toHaveLength(2);
     const out = applyOwnerTurnAutoVerify(lint, OWNER_TURN);
@@ -65,20 +65,20 @@ describe('applyOwnerTurnAutoVerify (cold-carry-system-hardening-2026-07-19 P-005
   });
 
   it('a machine-injected turn auto-verifies NOTHING (the WI-3532 protection stands)', () => {
-    const lint = lintOf('[owner:Jane2026-07-19] the ruling');
+    const lint = lintOf('[owner:Jane 2026-07-19] the ruling');
     expect(applyOwnerTurnAutoVerify(lint, LOOP_TURN)).toEqual({ lint, ownerTagsAutoVerified: 0 });
     expect(applyOwnerTurnAutoVerify(lint, null)).toEqual({ lint, ownerTagsAutoVerified: 0 });
   });
 
   it('an OLD-dated tag is NOT auto-verified by today\'s owner turn (fold #3 — no manufactured provenance)', () => {
-    const lint = lintOf('[owner:Jane2026-07-16 "ship it dark"] standing order');
+    const lint = lintOf('[owner:Jane 2026-07-16 "ship it dark"] standing order');
     const out = applyOwnerTurnAutoVerify(lint, OWNER_TURN); // turn date 2026-07-19
     expect(out.ownerTagsAutoVerified).toBe(0);
     expect(out.lint?.matches[0].kind).toBe('manual-owner-tag');
   });
 
   it('a turn ref with no parseable date verifies nothing (conservative)', () => {
-    const lint = lintOf('[owner:Jane2026-07-19] the ruling');
+    const lint = lintOf('[owner:Jane 2026-07-19] the ruling');
     const noDate: CurrentTurnStamp = { ref: '[turn:abc]', verdict: 'owner-typed', origin: null };
     expect(applyOwnerTurnAutoVerify(lint, noDate)).toEqual({ lint, ownerTagsAutoVerified: 0 });
   });

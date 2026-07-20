@@ -111,7 +111,7 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
     denyCapabilities: ['capability:fs-write', 'capability:bash'],
   },
   // FOREIGN-SESSION — HISTORY (p2p-public-release-remaining-lanes-2026-07-16
-  // D-001, owner Avi, 2026-07-17): the WI-1937 step 7 DENY-ALL entry that
+  // D-001, owner, 2026-07-17): the WI-1937 step 7 DENY-ALL entry that
   // lived here (`denyCapabilities: ['*']`) is RETIRED, not tightened. Owner's
   // verbatim call: "we don't want os OR app level containment. ship v1
   // without the app level containment and without the sandbox. We already

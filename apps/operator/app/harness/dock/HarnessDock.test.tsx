@@ -66,6 +66,14 @@ vi.mock('../useConfirmDialog', () => ({
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'default' }));
 vi.mock('@papercusp/sync', () => ({ fetchSyncQuery: vi.fn(async () => []) }));
 
+// P-006 perf-marks wiring: spy begin/end, keep the real PERF_INTERACTIONS names.
+const perfMarks = vi.hoisted(() => ({ begin: vi.fn(), end: vi.fn() }));
+vi.mock('@/app/_components/perf/perf-marks', async (orig) => ({
+  ...(await orig<typeof import('@/app/_components/perf/perf-marks')>()),
+  beginInteraction: perfMarks.begin,
+  endInteraction: perfMarks.end,
+}));
+
 import { HarnessDock } from './HarnessDock';
 
 function lastDockProps() {
