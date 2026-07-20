@@ -46,3 +46,47 @@ export async function drainSentinelOutput(): Promise<string[]> {
     return [];
   }
 }
+
+/** The chat-thread marker a settled deep-delegation answer carries (mirrors
+ *  papercup-deep-watch.ts's DEEP_ANSWER_PREFIX) — reads badly aloud, so it is
+ *  stripped before speaking; the chat thread keeps the raw headline verbatim
+ *  (this only affects what gets spoken, never what's persisted). */
+const DEEP_ANSWER_MARKER = /^\[deep-answer[^\]]*\]\s*/i;
+
+/**
+ * Phase E voice-OUT (WI-5174): drain "while you were away" hindsight
+ * notifications (a settled deep-delegation answer, or another async
+ * completion) in local mode, pre-formatted for speech.
+ *
+ * The realtime-engine (EL Conv-AI / OpenAI Realtime) path already surfaces
+ * these via `drainHindsightOnConnect` in voice-mode.ts — but that seam feeds
+ * `realtimeSession.sendSystem`, so it only exists while a full-agent session
+ * is live. Local engines (Kokoro/whisper — the default desktop voice config
+ * since operator-chat-sidebar-revival made converse the primary brain) never
+ * called it, so when a deep-delegation answer's Sentinel-pane write failed
+ * (`no-dock` — the normal desktop case, no zellij dock running) and it fell
+ * back to `notifyOperatorHindsight`, the answer landed in the chat thread as
+ * TEXT ONLY: leg 2 of that fallback appends a system turn straight to PG,
+ * bypassing every code path that calls `speak()` (WI-5174, owner-repro
+ * 2026-07-17). Polling this — the same way the webview already polls the
+ * Sentinel FIFO above — closes that gap for local-mode voice.
+ */
+export async function drainHindsightForSpeech(): Promise<string[]> {
+  try {
+    const res = await fetch('/api/agent-mcp/operator-hindsight?drain=1', { method: 'GET' });
+    if (!res.ok) return [];
+    const data = (await res.json().catch(() => null)) as { items?: unknown } | null;
+    const items = Array.isArray(data?.items) ? data.items : [];
+    return items
+      .map((it) =>
+        it && typeof it === 'object' && typeof (it as { headline?: unknown }).headline === 'string'
+          ? (it as { headline: string }).headline
+          : '',
+      )
+      .map((headline) => headline.replace(DEEP_ANSWER_MARKER, '').trim())
+      .filter((s) => s.length > 0)
+      .map((s) => `While you were away: ${s}`);
+  } catch {
+    return [];
+  }
+}

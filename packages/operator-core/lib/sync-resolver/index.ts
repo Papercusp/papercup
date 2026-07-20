@@ -167,7 +167,6 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
       featureId: s.featureId,
       startedAt: s.startedAt,
       heartbeatAt: s.heartbeatAt,
-      durationMs: s.durationMs,
       spawnStatus: s.status,
       exitCode: s.exitCode,
       errorMessage: s.errorMessage,
@@ -186,6 +185,19 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
   const heartbeatMs = sql`(extract(epoch from ${spawn.heartbeatAt}) * 1000)::bigint`;
   const tsExpr = sql<number>`(coalesce(${t.ts}, ${startedMs}))::float8`;
 
+  // Wire projection slimmed to the fields the two consumers actually render
+  // (precompute-sync-reads-phase2 P-007). The runs GRID (useHarnessRuns →
+  // HarnessAgentRun) renders runId/role/ts/sizeBytes/running/lastEventTs/costUsd/
+  // featureId; the Detail pane's per-feature run list additionally uses
+  // spawnStatus/exitCode/errorMessage/sessionId (run-outcome chip + resume
+  // button). NOTHING renders durationMs, the 5 token fields, backend, model,
+  // costIsEstimate, createdTs, or updatedTs — and those come from the LEGACY
+  // `t` store (agent_runs_consolidated, writer retired 2026-06-06, ~17 rows),
+  // so for the ~1968 spawn-only rows in the 2000-row window each shipped as
+  // literal `:null` padding. On papercusp that dropped the bySlug payload from
+  // ~1.44MB by removing ~10 fields × 2000 rows of mostly-null keys. errorMessage
+  // (the one genuinely heavy field, capped 1000 by P-004) is RENDERED for the
+  // selected feature's runs so it stays.
   const q = db
     .select({
       harnessSlug: sql<string>`coalesce(${t.harnessSlug}, ${spawn.harnessSlug})`.as('harnessSlug'),
@@ -194,12 +206,7 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
       featureId: sql<string | null>`coalesce(${t.featureId}, ${spawn.featureId})`.as('featureId'),
       ts: tsExpr.as('ts'),
       sizeBytes: sql<number>`(coalesce(${t.sizeBytes}, 0))::float8`.as('sizeBytes'),
-      durationMs: sql<number>`(coalesce(${t.durationMs}, ${spawn.durationMs}, 0))::float8`.as('durationMs'),
       costUsd: t.costUsd,
-      inputTokens: t.inputTokens,
-      outputTokens: t.outputTokens,
-      cacheReadTokens: t.cacheReadTokens,
-      cacheCreationTokens: t.cacheCreationTokens,
       // Liveness: the spawn engine is the authority when a spawn row exists
       // (a finished spawn beats a stale consolidated running=true).
       running: sql<boolean>`case
@@ -207,17 +214,11 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
         else coalesce(${t.running}, false)
       end`.as('running'),
       lastEventTs: sql<number | null>`(coalesce(${heartbeatMs}, ${t.lastEventTs}))::float8`.as('lastEventTs'),
-      createdTs: sql<number>`(coalesce(${t.createdTs}, ${startedMs}))::float8`.as('createdTs'),
-      updatedTs: sql<number>`(coalesce(${t.updatedTs}, ${heartbeatMs}))::float8`.as('updatedTs'),
-      backend: t.backend,
-      model: t.model,
-      costIsEstimate: t.costIsEstimate,
       spawnStatus: spawn.spawnStatus,
       exitCode: spawn.exitCode,
       // Tooltip-sufficient truncation (whole-app-sync-payload-audit-2026-07-19 P-004):
       // errorMessage is rendered ONLY as the failed/cancelled/reaped outcome-chip
-      // tooltip (run-outcome.ts) — a tooltip never needs a full message, and across
-      // ~3k non-null rows this field was ~1.46MB of the list payload. Cap at 1000
+      // tooltip (run-outcome.ts) — a tooltip never needs a full message. Cap at 1000
       // chars: the max observed was 2431, so this clips only the long tail while the
       // chip + exit code stay fully intact.
       errorMessage: sql<string | null>`left(${spawn.errorMessage}, 1000)`.as('errorMessage'),

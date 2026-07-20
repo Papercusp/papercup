@@ -333,6 +333,16 @@ jobs:
       - name: Lint MDX compiles
         run: npm run lint:mdx
 
+      # GitHub user-vs-org identity drift guard (WI-4978): `papercupai` is a
+      # GitHub User (personal admin login), not an org — `Papercusp` is the real
+      # org that owns the canonical repos. A doc that calls papercupai an "org"
+      # is the exact confusion that shipped a broken first-party publish gate
+      # (papercusp-registry's FIRST_PARTY_ORG hardcoded to the non-existent
+      # 'papercupai' org, 404-ing for every publisher). GATING — regex scan of
+      # tracked docs; the canonical explanation lives once in distribution.mdx.
+      - name: Lint GitHub identity terminology
+        run: npm run lint:github-identity-terms
+
       # Shell syntax guard (EI-13192): a concurrent shared-tree edit interleave
       # corrupted a .sh script (duplicated lines / a truncated assignment) and
       # git-sync auto-committed it before anyone ran `bash -n` by hand to notice.

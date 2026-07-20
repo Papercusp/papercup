@@ -211,49 +211,80 @@ export async function recombineProposals(
 ): Promise<RecombineResult> {
   const survivors = scored.filter((s) => s.verdict !== 'reject');
   const groups = planRecombinations(survivors, opts);
+
+  // WI-4475 (bug-drain-200k): this used to be a plain `for...of` loop with an
+  // `await` per group — the same serialization defect as critiqueIdeas
+  // (critics.ts): G groups meant G SEQUENTIAL LLM round-trips summed into the
+  // same 600s scout-cycle deadline, which is what actually produced "Scout cycle
+  // timed out after 600000ms during phase recombine" even on ticks whose
+  // poolSnapshotAtFire (WI-5436) showed healthy accounts available — the account
+  // failover was never broken, the phase just never gave it a chance to matter.
+  // Fan the calls out concurrently instead (mirrors runIdeators' Promise.all
+  // roster fan-out); a failed/rejected call is caught PER GROUP so it lands in
+  // `dropped` like a validation failure instead of aborting every other group's
+  // recombination.
+  const results = await Promise.all(
+    groups.map(
+      async (
+        group,
+      ): Promise<{ ok: true; base: Partial<Proposal> } | { ok: false; sourceIdeaIds: string[]; errors: string[] }> => {
+        const sourceIdeaIds = group.members.map((m) => m.idea.id);
+        const addressesPatternRefs = [
+          ...new Set(group.members.flatMap((m) => m.idea.addressesPatternRefs ?? [])),
+        ];
+        const seededByRefs = [
+          ...new Set(group.members.flatMap((m) => m.idea.seededByRefs ?? [])),
+        ];
+        const { system, user } = buildRecombinePrompt(group, opts);
+        const thinkingBudgetTokens = opts.thinkingBudgetTokens ?? 2048;
+        let res: Awaited<ReturnType<typeof deps.llmCall>>;
+        try {
+          res = await deps.llmCall({
+            model: opts.model ?? DEFAULT_RECOMBINE_MODEL,
+            system,
+            messages: [{ role: 'user', content: user }],
+            responseFormat: 'json',
+            thinkingBudgetTokens,
+            // Server-side thinking headroom (EI-13119 class — see ideators.ts).
+            maxTokens: thinkingBudgetTokens + 8192,
+          });
+        } catch (err) {
+          return {
+            ok: false,
+            sourceIdeaIds,
+            errors: [`recombine call failed: ${err instanceof Error ? err.message : String(err)}`],
+          };
+        }
+        const parsed = parseProposal(parseLlmJson(res));
+        const base: Partial<Proposal> = parsed
+          ? {
+              framing: parsed.framing,
+              mechanism: parsed.mechanism,
+              whyNew: parsed.whyNew,
+              bet: parsed.bet,
+              cheapExperiment: parsed.cheapExperiment,
+              sourceIdeaIds,
+              addressesPatternRefs,
+              ...(seededByRefs.length ? { seededByRefs } : {}),
+              ...(parsed.routeHint ? { routeHint: parsed.routeHint } : {}),
+            }
+          : { sourceIdeaIds, addressesPatternRefs, ...(seededByRefs.length ? { seededByRefs } : {}) };
+
+        const v = validateProposal(base);
+        if (v.ok) return { ok: true, base };
+        return { ok: false, sourceIdeaIds, errors: v.errors };
+      },
+    ),
+  );
+
   const proposals: Proposal[] = [];
   const dropped: { sourceIdeaIds: string[]; errors: string[] }[] = [];
   let n = 0;
-
-  for (const group of groups) {
-    const sourceIdeaIds = group.members.map((m) => m.idea.id);
-    const addressesPatternRefs = [
-      ...new Set(group.members.flatMap((m) => m.idea.addressesPatternRefs ?? [])),
-    ];
-    const seededByRefs = [
-      ...new Set(group.members.flatMap((m) => m.idea.seededByRefs ?? [])),
-    ];
-    const { system, user } = buildRecombinePrompt(group, opts);
-    const thinkingBudgetTokens = opts.thinkingBudgetTokens ?? 2048;
-    const res = await deps.llmCall({
-      model: opts.model ?? DEFAULT_RECOMBINE_MODEL,
-      system,
-      messages: [{ role: 'user', content: user }],
-      responseFormat: 'json',
-      thinkingBudgetTokens,
-      // Server-side thinking headroom (EI-13119 class — see ideators.ts).
-      maxTokens: thinkingBudgetTokens + 8192,
-    });
-    const parsed = parseProposal(parseLlmJson(res));
-    const base: Partial<Proposal> = parsed
-      ? {
-          framing: parsed.framing,
-          mechanism: parsed.mechanism,
-          whyNew: parsed.whyNew,
-          bet: parsed.bet,
-          cheapExperiment: parsed.cheapExperiment,
-          sourceIdeaIds,
-          addressesPatternRefs,
-          ...(seededByRefs.length ? { seededByRefs } : {}),
-          ...(parsed.routeHint ? { routeHint: parsed.routeHint } : {}),
-        }
-      : { sourceIdeaIds, addressesPatternRefs, ...(seededByRefs.length ? { seededByRefs } : {}) };
-
-    const v = validateProposal(base);
-    if (v.ok) {
-      proposals.push({ id: `SP-${String(++n).padStart(3, '0')}`, ...base } as Proposal);
+  for (const r of results) {
+    if (r.ok) {
+      proposals.push({ id: `SP-${String(++n).padStart(3, '0')}`, ...r.base } as Proposal);
     } else {
-      dropped.push({ sourceIdeaIds, errors: v.errors });
+      dropped.push({ sourceIdeaIds: r.sourceIdeaIds, errors: r.errors });
     }
   }
   return { proposals, dropped };

@@ -38,7 +38,7 @@ import {
   speak,
   type VoiceState,
 } from './voice-mode';
-import { routeVoiceToSentinelPane, drainSentinelOutput } from './voice-sentinel-bridge';
+import { routeVoiceToSentinelPane, drainSentinelOutput, drainHindsightForSpeech } from './voice-sentinel-bridge';
 import { submitVoiceTurn } from './voice-converse-handler';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
@@ -339,6 +339,16 @@ export function VoiceAppBridge(): null {
         if (says.length === 0) return;
         const { speak } = await import('./voice-mode');
         for (const line of says) speak(line, 'system:operator', 'polite');
+      })();
+      // WI-5174: local-mode counterpart of voice-mode.ts's
+      // drainHindsightOnConnect (full-agent-only — see drainHindsightForSpeech's
+      // docstring). Same gating (mode on, no full-agent session) as the
+      // Sentinel FIFO poll above.
+      void (async () => {
+        const lines = await drainHindsightForSpeech();
+        if (lines.length === 0) return;
+        const { speak } = await import('./voice-mode');
+        for (const line of lines) speak(line, 'system:operator', 'polite');
       })();
     }, 1500);
     return () => {

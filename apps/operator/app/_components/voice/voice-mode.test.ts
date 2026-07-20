@@ -152,7 +152,7 @@ describe('voice-mode', () => {
     const origRevoke = g.URL?.revokeObjectURL;
     try {
       // synthViaAdapter uses fetch → blob → URL.createObjectURL → new Audio().play().
-      const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => ({}) }) as any);
+      const fetchSpy = vi.fn(async (..._args: unknown[]) => ({ ok: true, blob: async () => ({}) }) as any);
       g.fetch = fetchSpy;
       // Augment the real URL (adding statics) — never REPLACE it, or `new URL()`
       // elsewhere in this file breaks with "URL is not a constructor".
