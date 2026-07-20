@@ -387,6 +387,44 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('win-rate')).toBeTruthy();
   });
 
+  it('renders the Deploy tile from dev.gitPipeline: gate line, judging tag, refs, and the git deep-link (P-001)', async () => {
+    pipelineResult = {
+      data: [
+        {
+          gitSync: { headSha: 'aaaa111122223333', lastSyncedAtMs: Date.now() - 60_000 },
+          gate: {
+            consecutiveReds: 2,
+            stalled: false,
+            verdictStale: false,
+            verdictObservedAtMs: Date.now() - 8 * 60_000,
+            lastGreenAtMs: Date.now() - 60 * 60_000,
+            failingTests: ['x.test.ts', 'y.test.ts', 'z.test.ts'],
+          },
+          activeRun: { active: true, candidate: '06a0eb9577dead', elapsedSec: 300 },
+          deploy: {
+            stagingHead: { sha: 'aaaa111122223333' },
+            greenPin: { sha: 'bbbb444455556666' },
+            deployed: { sha: 'cccc777788889999' },
+            deployedAtMs: Date.now() - 3 * 60 * 60_000,
+            greenPinBehindStaging: 4,
+            deployedBehindGreenPin: 1,
+          },
+        },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getByText(/gate RED — 3 failing/)).toBeTruthy();
+    expect(screen.getByText(/judging 06a0eb95/)).toBeTruthy();
+    expect(screen.getByText('aaaa1111')).toBeTruthy();
+    expect(screen.getByText('bbbb4444')).toBeTruthy();
+    expect(screen.getByText('cccc7777')).toBeTruthy();
+    expect(screen.getByText('+4 unjudged')).toBeTruthy();
+    expect(screen.getByText('1 behind green')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Deploy' }));
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('git'));
+  });
+
   it('shows the Agents loading state while advRoster.list is in flight', () => {
     rosterResult = { data: undefined, loading: true };
     render(<AdvOverviewTab />);

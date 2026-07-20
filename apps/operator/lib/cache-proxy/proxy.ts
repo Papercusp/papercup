@@ -12,7 +12,7 @@
  * WHAT THIS IS NOT: an account substitution. This proxy forwards the client's ORIGINAL
  * credentials verbatim (Authorization / x-api-key, anthropic-version, anthropic-beta, …). The
  * upstream sees the same identity, the same org, the same billing as a direct call. The ONLY
- * difference is the body rewrite. [owner:Avi 2026-07-19 "cant we also make the default-account
+ * difference is the body rewrite. [owner 2026-07-19 "cant we also make the default-account
  * take advantage of these features too... the caching is org scoped"]
  *
  * WHY NOT REUSE THE GATEWAY: the gateway owns account-pool selection and 503s when no pool

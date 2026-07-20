@@ -25,7 +25,7 @@
 /** Anthropic hard limit — a 5th `cache_control` marker in one request is a 400. */
 export const ANTHROPIC_MAX_BREAKPOINTS = 4;
 
-/** The extended cache tier [owner:Avi 2026-07-19 "just enable 1h everywhere"]. Accepted values
+/** The extended cache tier [owner 2026-07-19 "just enable 1h everywhere"]. Accepted values
  *  are '5m' (default when absent) and '1h'. 1h writes cost 2× base input vs 1.25× for 5m, and
  *  read at the same ~0.1×, so the tier pays for itself after ~3 reads — the fleet's measured
  *  median session takes 63 requests. */
