@@ -10,7 +10,7 @@
  * live :3070), and teardown (kill operator, drop DB, rm scratch) runs in `finally`.
  * Bounded: the fake agent is instant, so the whole run is seconds.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -26,7 +26,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-spec';
-import { waitForOperatorReady } from './operator-ready';
+import { spawnGymOperatorWithRetry } from './operator-ready';
 import { collectTrace } from './collector';
 import { distillTrace } from './distill';
 
@@ -100,30 +100,41 @@ async function main(): Promise<void> {
     });
     logFd = openSync(opLogPath, 'w');
     log(`booting gym-operator on :${PORT} (log → ${opLogPath}) …`);
-    operator = spawn(spec.command, spec.args, {
-      cwd: spec.cwd,
-      // EI-232: scrub the launcher Claude-Code session's env so a real-mode gym
-      // agent (should this smoke ever be pointed at one) auths against
-      // ~/.claude, not this session's per-session config dir. This runnable is
-      // fake-agent-only today (agentCmd above is always FAKE_AGENT), so the
-      // leak is currently dormant here — scrubbed anyway for consistency with
-      // every other gym runnable's spawn.
-      env: scrubLauncherClaudeSessionEnv({
-        ...process.env,
-        ...spec.env,
-        PAPERCUSP_FLEET_SANDBOX: '0',
-        PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0',
-        NODE_ENV: 'production',
-        // Autoloop OFF — the smoke starts the pipeline EXPLICITLY (deterministic) via
-        // the admin route + superuser token (the real gym wiring), not the 30s tick.
-        PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none',
-      }),
-      stdio: ['ignore', logFd, logFd],
-      detached: true, // own process group → teardown kills the whole npx→node tree
-    });
-
     // EI-368: readiness (DBOS launched) + fail-fast on child death, with boot-log tail.
-    await waitForOperatorReady({ baseUrl: `http://127.0.0.1:${PORT}`, child: operator, timeoutMs: 120_000, logPath: opLogPath });
+    // EI-18157486989132279: retry the boot ONCE, but only on an actual crash —
+    // a transient mid-git-sync-commit read of a half-written shared-tree file
+    // can make the tsx/esbuild transform throw during boot; a respawn a few
+    // seconds later reads past the write. A bare readiness timeout is not
+    // retried (see spawnGymOperatorWithRetry's doc comment).
+    operator = await spawnGymOperatorWithRetry({
+      command: spec.command,
+      args: spec.args,
+      spawnOptions: {
+        cwd: spec.cwd,
+        // EI-232: scrub the launcher Claude-Code session's env so a real-mode gym
+        // agent (should this smoke ever be pointed at one) auths against
+        // ~/.claude, not this session's per-session config dir. This runnable is
+        // fake-agent-only today (agentCmd above is always FAKE_AGENT), so the
+        // leak is currently dormant here — scrubbed anyway for consistency with
+        // every other gym runnable's spawn.
+        env: scrubLauncherClaudeSessionEnv({
+          ...process.env,
+          ...spec.env,
+          PAPERCUSP_FLEET_SANDBOX: '0',
+          PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0',
+          NODE_ENV: 'production',
+          // Autoloop OFF — the smoke starts the pipeline EXPLICITLY (deterministic) via
+          // the admin route + superuser token (the real gym wiring), not the 30s tick.
+          PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none',
+        }),
+        stdio: ['ignore', logFd, logFd],
+        detached: true, // own process group → teardown kills the whole npx→node tree
+      },
+      baseUrl: `http://127.0.0.1:${PORT}`,
+      timeoutMs: 120_000,
+      logPath: opLogPath,
+      onRetry: (err) => log(`operator boot crashed, retrying once (${err.message.split('\n')[0]}) …`),
+    });
     log('operator ready (DBOS launched)');
 
     // 4. Register the harness (scaffolds harness_<slug> + registry).

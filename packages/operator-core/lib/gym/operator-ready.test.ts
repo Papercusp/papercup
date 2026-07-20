@@ -105,6 +105,77 @@ describe('waitForOperatorReady', () => {
   });
 });
 
+describe('spawnGymOperatorWithRetry', () => {
+  it('retries ONCE when the operator crashes during boot, then succeeds on respawn (EI-18157486989132279)', async () => {
+    let ready = false;
+    const base = await serve((path) => {
+      if (path === '/api/health/ready') return ready ? { status: 200, body: '{"ok":true}' } : { status: 503 };
+      return { status: 404 };
+    });
+    const children: ReturnType<typeof fakeChild>[] = [];
+    const spawnFn = () => {
+      const c = fakeChild();
+      children.push(c);
+      return c;
+    };
+    const retries: string[] = [];
+    const p = spawnGymOperatorWithRetry({
+      command: 'irrelevant',
+      args: [],
+      spawnOptions: {},
+      baseUrl: base,
+      timeoutMs: 5_000,
+      pollMs: 15,
+      spawnFn,
+      onRetry: (err) => retries.push(err.message),
+    });
+    // Let the first attempt start polling, then simulate the transient crash.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(children.length).toBe(1);
+    children[0].die(1);
+    // Give the retry a beat to respawn, then let the SECOND attempt become ready.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(children.length).toBe(2);
+    ready = true;
+    const result = await p;
+    expect(result).toBe(children[1]);
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatch(/exited during boot \(code=1/);
+  });
+
+  it('does NOT retry a bare readiness timeout (the operator never died)', async () => {
+    const base = await serve(() => ({ status: 503 })); // never becomes ready
+    const children: ReturnType<typeof fakeChild>[] = [];
+    const spawnFn = () => {
+      const c = fakeChild();
+      children.push(c);
+      return c;
+    };
+    await expect(
+      spawnGymOperatorWithRetry({ command: 'x', args: [], spawnOptions: {}, baseUrl: base, timeoutMs: 60, pollMs: 15, spawnFn }),
+    ).rejects.toThrow(/not ready on/);
+    expect(children.length).toBe(1); // no respawn for a timeout, not a crash
+  });
+
+  it('gives up after the retry also crashes (bounded to maxAttempts)', async () => {
+    const base = await serve(() => ({ status: 503 }));
+    const children: ReturnType<typeof fakeChild>[] = [];
+    const spawnFn = () => {
+      const c = fakeChild();
+      children.push(c);
+      return c;
+    };
+    const p = spawnGymOperatorWithRetry({ command: 'x', args: [], spawnOptions: {}, baseUrl: base, timeoutMs: 5_000, pollMs: 15, spawnFn });
+    await new Promise((r) => setTimeout(r, 40));
+    children[0].die(1);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(children.length).toBe(2);
+    children[1].die(1);
+    await expect(p).rejects.toThrow(/exited during boot \(code=1/);
+    expect(children.length).toBe(2); // never a third attempt
+  });
+});
+
 describe('bootLogTail', () => {
   it('returns the last N lines and is safe on a missing file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gym-ready-'));
