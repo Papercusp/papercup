@@ -465,6 +465,22 @@ export function injectIntoHost(
      * behavior) — exactly like every other pre-existing optional field here. */
     fireNumber?: number;
     routineId?: string;
+    /** EI-153: the coord ownerId the SENDER believes it is addressing (i.e. the
+     * ownerId it passed to findLiveHost() to resolve `sock`) — a caller-supplied
+     * identity assertion, NOT re-derived here. Riding it on the envelope lets the
+     * RECEIVING host (which alone knows its own true ownerId) reject a delivery
+     * addressed to someone else instead of blindly running whatever text arrives
+     * on its socket — defense-in-depth against a leg-independent mis-route (a
+     * swapped subscriberId, a stale/reused host object, …) that a socket-path-only
+     * check (findLiveHost's own ownerId match, EI-151) cannot catch, because that
+     * check only guards WHICH file gets read, not what the caller believed when it
+     * built the envelope. Omitted ⇒ the receiving host's identity check is a no-op
+     * (unchanged behavior) — every existing caller that omits it keeps working
+     * exactly as before; new/updated callers should always pass it when the
+     * intended recipient ownerId is known (it always is — it's the same ownerId
+     * findLiveHost was just called with).
+     */
+    ownerId?: string;
   },
   timeoutMs = 2000,
 ): Promise<boolean> {
@@ -478,6 +494,7 @@ export function injectIntoHost(
     sessionClass?: string;
     fireNumber?: number;
     routineId?: string;
+    ownerId?: string;
   } = {
     v: 1,
     mode: msg.mode,
@@ -489,6 +506,7 @@ export function injectIntoHost(
   if (msg.sessionClass !== undefined) envelope.sessionClass = msg.sessionClass;
   if (msg.fireNumber !== undefined) envelope.fireNumber = msg.fireNumber;
   if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
+  if (msg.ownerId !== undefined) envelope.ownerId = msg.ownerId;
   const payload = JSON.stringify(envelope);
   if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) return Promise.resolve(false);
 
@@ -552,7 +570,7 @@ export async function interruptViaPty(
   const data = key === 'esc' ? '\x1b' : '\x03';
   let host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
-    const ok = await injectIntoHost(host.sock, { mode: 'raw', data });
+    const ok = await injectIntoHost(host.sock, { mode: 'raw', data, ownerId });
     if (ok) return true;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
     // first host object: a live psu host may have rebound its control socket.
