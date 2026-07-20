@@ -38,6 +38,7 @@ const h = vi.hoisted(() => ({
   speak: vi.fn(),
   cancelAllSpeech: vi.fn(),
   routeToSentinel: vi.fn(() => Promise.resolve(true)),
+  drainHindsight: vi.fn(() => Promise.resolve([] as string[])),
   fullAgentEngine: 'off' as string,
   // FLAGS.TESTING: false = shipped config (converse-primary, dock hidden);
   // true = the dev dock path (pane-primary). P-007/D-001.
@@ -76,6 +77,9 @@ vi.mock('./voice-sentinel-bridge', () => ({
   routeVoiceToSentinelPane: h.routeToSentinel,
   // Phase D voice-OUT polling — kept inert so the bridge's 1.5s interval is a no-op.
   drainSentinelOutput: vi.fn(() => Promise.resolve([])),
+  // Phase E voice-OUT polling (WI-5174) — same inert default; the dedicated
+  // describe block below overrides this per-test to exercise the drain.
+  drainHindsightForSpeech: h.drainHindsight,
 }));
 // The pane dev path is gated on FLAGS.TESTING (P-007/D-001): default OFF
 // (the shipped converse-primary config); the dev-pane suite flips it on.
@@ -115,6 +119,8 @@ beforeEach(() => {
   h.speak.mockClear();
   h.routeToSentinel.mockClear();
   h.routeToSentinel.mockReturnValue(Promise.resolve(true));
+  h.drainHindsight.mockClear();
+  h.drainHindsight.mockReturnValue(Promise.resolve([]));
   h.fullAgentEngine = 'off';
   h.testingFlag = false;
   // Reset the module-level converse seam so no provider is "mounted" by default
@@ -198,6 +204,63 @@ describe('VoiceAppBridge — converse-primary routing (shipped config)', () => {
     await utter('anyone there');
     expect(sentinelCalled()).toBe(false); // dev path off — pane never tried
     expect(h.speak).not.toHaveBeenCalled(); // no false ack
+  });
+});
+
+// WI-5174: a settled deep-delegation answer (or another async "while you were
+// away" completion) must be SPOKEN in local-mode voice, not just appended to
+// the chat thread as text. drainHindsightForSpeech is the local-mode
+// counterpart of voice-mode.ts's full-agent-only drainHindsightOnConnect.
+describe('VoiceAppBridge — local-mode hindsight drain (WI-5174)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('speaks a drained hindsight line while local voice mode is active', async () => {
+    h.drainHindsight.mockReturnValue(
+      Promise.resolve(['While you were away: papercusp harness is green.']),
+    );
+    mount();
+    setMode(ALWAYS_ON);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(h.speak).toHaveBeenCalledWith(
+      'While you were away: papercusp harness is green.',
+      'system:operator',
+      'polite',
+    );
+  });
+
+  it('does not poll hindsight while a full-agent engine owns the session', async () => {
+    h.drainHindsight.mockReturnValue(
+      Promise.resolve(['While you were away: should not be spoken.']),
+    );
+    mount();
+    setMode({ ...ALWAYS_ON, micOwnedByFullAgent: true });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(h.drainHindsight).not.toHaveBeenCalled();
+    expect(h.speak).not.toHaveBeenCalledWith(
+      expect.stringContaining('should not be spoken'),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('does not poll hindsight while voice mode is off', async () => {
+    h.drainHindsight.mockReturnValue(
+      Promise.resolve(['While you were away: should not be spoken.']),
+    );
+    mount(); // stays 'off'
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(h.drainHindsight).not.toHaveBeenCalled();
   });
 });
 

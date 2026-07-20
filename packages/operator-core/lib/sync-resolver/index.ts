@@ -4178,6 +4178,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // learning.analyzeCycle — the ON-DEMAND single-cycle detail (P-007,
+  // precompute-sync-reads-phase2). learning.analyze now ships only collapsed
+  // cycle SUMMARIES (counts + verdicts + spend); this serves the FULL stage
+  // artifacts (ideas / scored / proposals / ideator slots) for the ONE cycle
+  // whose Analyze disclosure is expanded. Returns a 0-or-1-element array.
+  'learning.analyzeCycle': {
+    argsSchema: z.object({ cycleId: z.string().min(1) }),
+    resolve: async (args) => {
+      const { cycleId } = args as { cycleId: string };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readAnalyzeCycle } = await import('./learning-analyze-read');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => {
+          const cycle = await readAnalyzeCycle(tx, ws, cycleId);
+          return cycle ? [cycle] : [];
+        });
+      } catch (err) {
+        console.warn('[learning.analyzeCycle] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   // ── learning.frontier — the Learning tab's Frontier lane-status grid
   // (learning-tab-visibility-2026-07-18 P-003/P-004). One row per workspace-
   // singleton learning loop: liveness from the SAME shared reader

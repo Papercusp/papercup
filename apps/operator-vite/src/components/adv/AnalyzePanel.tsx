@@ -25,6 +25,7 @@ import { Workflow, RefreshCw, CheckCircle2, CircleDashed } from "lucide-react";
 import type {
   AnalyzeSnapshot,
   AnalyzeCycle,
+  AnalyzeCycleSummary,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-analyze-read";
 import { CardStack } from "@papercusp/card-stack";
 import { Tooltip } from "@/app/harness/Tooltip";
@@ -44,15 +45,16 @@ function cycleWhen(at: string | null): string {
   return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-/** Compact funnel summary for the cycle disclosure label. */
-function cycleSummary(c: AnalyzeCycle): string {
-  const kept = c.scored.filter((s) => s?.verdict === "keep").length;
-  const moon = c.scored.filter((s) => s?.verdict === "moonshot").length;
+/** Compact funnel summary for the cycle disclosure label (P-007: computed from
+ *  the lightweight cycle SUMMARY — counts + verdicts — not the full artifacts). */
+function cycleSummary(c: AnalyzeCycleSummary): string {
+  const kept = c.verdicts.filter((v) => v === "keep").length;
+  const moon = c.verdicts.filter((v) => v === "moonshot").length;
   const parts = [
-    `${c.ideas.length} ideas`,
-    c.scored.length > 0 ? `${kept} keep · ${moon} moonshot` : null,
-    `${c.proposals.length} fusions`,
-    `${c.routed.length} routed`,
+    `${c.ideasCount} ideas`,
+    c.verdicts.length > 0 ? `${kept} keep · ${moon} moonshot` : null,
+    `${c.proposalsCount} fusions`,
+    `${c.routedCount} routed`,
   ].filter(Boolean);
   const spend = c.tick?.spendUsd;
   return `${cycleWhen(c.at)} — ${parts.join(" → ")}${spend != null ? ` · $${spend.toFixed(2)}` : ""}`;

@@ -2404,6 +2404,12 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
   // driven by mergeOnePass's own per-log sample), with `dropReplicationLogState`
   // NEVER called anywhere in this test.
   it('WI-5340: a re-attach that does NOT restore ingest reaches attempt 2/3 (and the cap) via the post-repair confirmation window alone — no dropReplicationLogState re-arm', async () => {
+    // The simulated stuck-zombie `get` below throws on every read, which after
+    // 3 consecutive failures trips read-merge's WI-2003 quarantine path — a
+    // deliberate, expected `console.error(...)` (advance-past-unreadable-op),
+    // same rationale as the other spies in this file. Mock it so this
+    // intentional log doesn't trip vitest-fail-on-console.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const workspaceId = 'ws-repair-confirm-5340';
     const harnessSlug = 's-repair-confirm-5340';
     const keyHex = 'a1'.repeat(32);

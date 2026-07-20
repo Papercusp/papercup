@@ -151,34 +151,6 @@ export async function runOwnHeadPublishTick(
     return { ran: true, changed: false, branch, headSha, priorSha, refused: null, errors };
   }
 
-  // WI-5163: a SHALLOW source worktree (from-repo's `shallow:true` smoke
-  // default) transfers ONLY the graft-truncated history via the ref-less
-  // fetch below — the bare store gets no `.git/shallow` marker of its own, so
-  // checkPublishGuard's `rev-list --objects` walk hits a commit whose parent
-  // was never transferred and fail-closes (correct guard behavior, but the
-  // net effect is this device can NEVER publish its own head — every tick
-  // refuses forever, silently). Detect + unshallow the SOURCE worktree first
-  // so the objects transferred are always full, walkable history. Best-effort:
-  // an unshallow failure (e.g. no network / no remote) is recorded and the
-  // tick falls through to the pre-existing fail-closed behavior, unchanged.
-  const shallowCheck = await runGit(['rev-parse', '--is-shallow-repository'], input.worktreePath);
-  if (shallowCheck.code === 0 && shallowCheck.stdout.trim() === 'true') {
-    const remotesRes = await runGit(['remote'], input.worktreePath);
-    const remoteName =
-      (remotesRes.code === 0
-        ? remotesRes.stdout
-            .split('\n')
-            .map((l) => l.trim())
-            .find(Boolean)
-        : undefined) ?? 'origin';
-    const unshallow = await runGit(['fetch', '--quiet', '--unshallow', remoteName], input.worktreePath);
-    if (unshallow.code !== 0) {
-      errors.push(
-        `source worktree is shallow and could not be unshallowed (remote '${remoteName}'): ${unshallow.stderr.trim().slice(0, 500)}`,
-      );
-    }
-  }
-
   // Ref-less object transfer: ODB + FETCH_HEAD only — no ref is created, so
   // upload-pack advertises nothing new until the guard below allows the write.
   const fetch = await runGit(['fetch', '--quiet', input.worktreePath, branchRef], repoPath);

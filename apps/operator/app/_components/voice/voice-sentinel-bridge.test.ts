@@ -3,7 +3,7 @@
  * P-004 — this seam is the webview's live utterance path and had zero coverage).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { routeVoiceToSentinelPane, drainSentinelOutput } from './voice-sentinel-bridge';
+import { routeVoiceToSentinelPane, drainSentinelOutput, drainHindsightForSpeech } from './voice-sentinel-bridge';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);

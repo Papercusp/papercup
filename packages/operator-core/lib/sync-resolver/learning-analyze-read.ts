@@ -62,8 +62,28 @@ export interface AnalyzeCycle {
   routed: AnalyzeRoutedRef[];
 }
 
+/** The COLLAPSED cycle-disclosure summary the Analyze list needs — enough for
+ *  the funnel label (counts + verdicts + spend) WITHOUT the heavy per-cycle
+ *  artifact arrays. The full ideas/scored/proposals for ONE cycle are fetched
+ *  on demand via `learning.analyzeCycle` when its disclosure is expanded
+ *  (precompute-sync-reads-phase2 P-007): closed cycles stay unmounted in the
+ *  UI, so shipping all 8 full pipelines up-front (~348KB, only 1 ever rendered)
+ *  was pure waste. */
+export interface AnalyzeCycleSummary {
+  cycleId: string;
+  at: string | null;
+  ideasCount: number;
+  proposalsCount: number;
+  routedCount: number;
+  /** Just the verdict strings per scored idea — enough for the keep/moonshot
+   *  funnel label; the full scored objects (scores + critics' notes) ride the
+   *  on-demand single-cycle read. */
+  verdicts: string[];
+  tick: ScoutTickEconomics | null;
+}
+
 export interface AnalyzeSnapshot {
-  cycles: AnalyzeCycle[];
+  cycles: AnalyzeCycleSummary[];
   generatedAt: string;
 }
 
@@ -75,61 +95,52 @@ function asArray<T>(v: unknown): T[] {
   return Array.isArray(v) ? (v as T[]) : [];
 }
 
-export async function readAnalyzeSnapshot(sql: Sql, workspaceId: string): Promise<AnalyzeSnapshot> {
-  const generatedAt = new Date().toISOString();
+function rowAt(r: Record<string, unknown>): string | null {
+  return r.created_at instanceof Date
+    ? r.created_at.toISOString()
+    : r.created_at
+      ? String(r.created_at)
+      : null;
+}
 
-  let rows: Array<Record<string, unknown>> = [];
-  try {
-    rows = (await sql`
-      SELECT cycle_id, created_at, ideas, scored, proposals, ideator_slots
-        FROM harness_shared.scout_cycle_stage_artifacts
-       WHERE workspace_id = ${workspaceId}
-       ORDER BY created_at DESC
-       LIMIT ${ANALYZE_CYCLE_LIMIT}
-    `) as Array<Record<string, unknown>>;
-  } catch (err) {
-    // Migration 623 not applied on this substrate ⇒ the explain-empty state.
-    if (!isUndefinedTable(err)) {
-      console.warn('[learning.analyze] artifacts read failed:', err instanceof Error ? err.message : err);
-    }
-    return { cycles: [], generatedAt };
-  }
-
-  const cycles: AnalyzeCycle[] = rows.map((r) => ({
-    cycleId: String(r.cycle_id ?? ''),
-    at: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at ? String(r.created_at) : null,
-    ideas: asArray<Idea>(r.ideas),
-    scored: asArray<ScoredIdea>(r.scored),
-    proposals: asArray<Proposal>(r.proposals),
-    ideatorSlots: asArray<AnalyzeIdeatorSlot>(r.ideator_slots),
-    tick: null,
-    routed: [],
-  }));
-  const cycleIds = cycles.map((c) => c.cycleId).filter((c) => c.length > 0);
-  if (cycleIds.length === 0) return { cycles, generatedAt };
-
-  // Tick-economics join (best-effort — scout_ticks may lag/miss on a substrate).
+/** Tick-economics for one or more cycles (best-effort — scout_ticks may
+ *  lag/miss on a substrate). Returns a cycleId→economics map. */
+async function tickEconomicsByCycle(
+  sql: Sql,
+  workspaceId: string,
+  cycleIds: string[],
+): Promise<Map<string, ScoutTickEconomics>> {
+  const byCycle = new Map<string, ScoutTickEconomics>();
+  if (cycleIds.length === 0) return byCycle;
   try {
     const tickRows = (await sql`
       SELECT * FROM harness_shared.scout_ticks
        WHERE workspace_id = ${workspaceId}
          AND detail->>'cycleId' IN ${sql(cycleIds)}
     `) as Array<Record<string, unknown>>;
-    const byCycle = new Map<string, ScoutTickEconomics>();
     for (const row of tickRows) {
       const econ = normalizeTickEconomics(row);
       if (econ.cycleId) byCycle.set(econ.cycleId, econ);
     }
-    for (const c of cycles) c.tick = byCycle.get(c.cycleId) ?? null;
   } catch (err) {
     if (!isUndefinedTable(err)) {
       console.warn('[learning.analyze] tick join failed:', err instanceof Error ? err.message : err);
     }
   }
+  return byCycle;
+}
 
-  // Routed-ledger join (best-effort): what each cycle's fusions became. The
-  // ledger's idea_id carries a `${cycleId}:` prefix (scorecard-blender-pipeline
-  // P-003) — strip it so rows key by the in-cycle Proposal.id.
+/** Routed-ledger rows per cycle (best-effort): what each cycle's fusions
+ *  became. The ledger's idea_id carries a `${cycleId}:` prefix
+ *  (scorecard-blender-pipeline P-003) — strip it so rows key by the in-cycle
+ *  Proposal.id. Returns a cycleId→refs map. */
+async function routedRefsByCycle(
+  sql: Sql,
+  workspaceId: string,
+  cycleIds: string[],
+): Promise<Map<string, AnalyzeRoutedRef[]>> {
+  const byCycle = new Map<string, AnalyzeRoutedRef[]>();
+  if (cycleIds.length === 0) return byCycle;
   try {
     const routedRows = (await sql`
       SELECT cycle_id, idea_id, rail, routed_ref, title
@@ -137,7 +148,6 @@ export async function readAnalyzeSnapshot(sql: Sql, workspaceId: string): Promis
        WHERE workspace_id = ${workspaceId}
          AND cycle_id IN ${sql(cycleIds)}
     `) as Array<Record<string, unknown>>;
-    const byCycle = new Map<string, AnalyzeRoutedRef[]>();
     for (const row of routedRows) {
       const cid = typeof row.cycle_id === 'string' ? row.cycle_id : '';
       if (!cid) continue;
@@ -151,12 +161,106 @@ export async function readAnalyzeSnapshot(sql: Sql, workspaceId: string): Promis
       });
       byCycle.set(cid, bucket);
     }
-    for (const c of cycles) c.routed = byCycle.get(c.cycleId) ?? [];
   } catch (err) {
     if (!isUndefinedTable(err)) {
       console.warn('[learning.analyze] routed join failed:', err instanceof Error ? err.message : err);
     }
   }
+  return byCycle;
+}
 
-  return { cycles, generatedAt };
+export async function readAnalyzeSnapshot(sql: Sql, workspaceId: string): Promise<AnalyzeSnapshot> {
+  const generatedAt = new Date().toISOString();
+
+  let rows: Array<Record<string, unknown>> = [];
+  try {
+    // P-007: read the artifact columns to COUNT + extract verdicts server-side,
+    // but do NOT ship the full ideas/scored/proposals arrays — the collapsed
+    // disclosure label only needs counts + verdicts + spend. (Kept in the SELECT
+    // because the count/verdict derivation needs them; they never leave here.)
+    rows = (await sql`
+      SELECT cycle_id, created_at, ideas, scored, proposals
+        FROM harness_shared.scout_cycle_stage_artifacts
+       WHERE workspace_id = ${workspaceId}
+       ORDER BY created_at DESC
+       LIMIT ${ANALYZE_CYCLE_LIMIT}
+    `) as Array<Record<string, unknown>>;
+  } catch (err) {
+    // Migration 623 not applied on this substrate ⇒ the explain-empty state.
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.analyze] artifacts read failed:', err instanceof Error ? err.message : err);
+    }
+    return { cycles: [], generatedAt };
+  }
+
+  const summaries: AnalyzeCycleSummary[] = rows.map((r) => ({
+    cycleId: String(r.cycle_id ?? ''),
+    at: rowAt(r),
+    ideasCount: asArray<Idea>(r.ideas).length,
+    proposalsCount: asArray<Proposal>(r.proposals).length,
+    routedCount: 0,
+    verdicts: asArray<ScoredIdea>(r.scored).map((s) => String(s?.verdict ?? '')),
+    tick: null,
+  }));
+  const cycleIds = summaries.map((c) => c.cycleId).filter((c) => c.length > 0);
+  if (cycleIds.length === 0) return { cycles: summaries, generatedAt };
+
+  const [tickByCycle, routedByCycle] = await Promise.all([
+    tickEconomicsByCycle(sql, workspaceId, cycleIds),
+    routedRefsByCycle(sql, workspaceId, cycleIds),
+  ]);
+  for (const c of summaries) {
+    c.tick = tickByCycle.get(c.cycleId) ?? null;
+    c.routedCount = routedByCycle.get(c.cycleId)?.length ?? 0;
+  }
+
+  return { cycles: summaries, generatedAt };
+}
+
+/** ON-DEMAND single-cycle read (P-007) — the FULL stage artifacts (ideas,
+ *  scored, proposals, ideator slots) + tick economics + routed refs for ONE
+ *  cycle, fetched when its Analyze disclosure is expanded. Returns null when the
+ *  cycle is absent / the artifacts table is missing (the panel keeps the label). */
+export async function readAnalyzeCycle(
+  sql: Sql,
+  workspaceId: string,
+  cycleId: string,
+): Promise<AnalyzeCycle | null> {
+  let rows: Array<Record<string, unknown>> = [];
+  try {
+    rows = (await sql`
+      SELECT cycle_id, created_at, ideas, scored, proposals, ideator_slots
+        FROM harness_shared.scout_cycle_stage_artifacts
+       WHERE workspace_id = ${workspaceId}
+         AND cycle_id = ${cycleId}
+       LIMIT 1
+    `) as Array<Record<string, unknown>>;
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.analyzeCycle] artifacts read failed:', err instanceof Error ? err.message : err);
+    }
+    return null;
+  }
+  const r = rows[0];
+  if (!r) return null;
+
+  const cycle: AnalyzeCycle = {
+    cycleId: String(r.cycle_id ?? ''),
+    at: rowAt(r),
+    ideas: asArray<Idea>(r.ideas),
+    scored: asArray<ScoredIdea>(r.scored),
+    proposals: asArray<Proposal>(r.proposals),
+    ideatorSlots: asArray<AnalyzeIdeatorSlot>(r.ideator_slots),
+    tick: null,
+    routed: [],
+  };
+  if (!cycle.cycleId) return cycle;
+
+  const [tickByCycle, routedByCycle] = await Promise.all([
+    tickEconomicsByCycle(sql, workspaceId, [cycle.cycleId]),
+    routedRefsByCycle(sql, workspaceId, [cycle.cycleId]),
+  ]);
+  cycle.tick = tickByCycle.get(cycle.cycleId) ?? null;
+  cycle.routed = routedByCycle.get(cycle.cycleId) ?? [];
+  return cycle;
 }
