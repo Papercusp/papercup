@@ -522,6 +522,18 @@ export async function drainOutboxOnce(
      WHERE workspace_id = ${handle.workspaceId}
        AND harness_slug = ${handle.harnessSlug}
        AND drained_at IS NULL
+       -- mig 645 (WI-3896 follow-up): a PERSISTED-quarantined poison row is
+       -- excluded at the SQL level too — not just the post-fetch
+       -- `opts.quarantinedIds` check below — so it stops occupying a `batch`
+       -- slot on every single pass forever (the live incident: a growing
+       -- `engineer_issues` backlog for papercusp where a handful of ancient
+       -- quarantined rows sat at the head of `ORDER BY id` and were
+       -- re-fetched-then-skipped on every pass, wasting throughput that real
+       -- candidates behind them needed). Read RESILIENTLY via to_jsonb (same
+       -- pattern as op_hlc above) so an outbox provisioned before migration 645
+       -- degrades to "column absent -> NULL -> not excluded" instead of the
+       -- drain crashing on a missing quarantined_at column.
+       AND (to_jsonb(substrate_outbox.*) ->> 'quarantined_at') IS NULL
      ORDER BY id
      LIMIT ${batch}`);
 

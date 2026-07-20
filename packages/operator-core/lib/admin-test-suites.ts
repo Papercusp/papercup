@@ -1505,6 +1505,29 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
   return { ok: false, measuredMs: 0, detail: `${res.value.stage ?? 'unknown'}: ${res.value.error ?? 'no measure'}` };
 }
 
+/**
+ * Read the latest page-relative `performance.measure` for a named interaction
+ * WITHOUT clearing or re-triggering. For interactions the long-lived shell
+ * cannot re-drive on demand — the harness dock hydrates once per session, and a
+ * conversation load needs a specific chat open — this reports the value already
+ * recorded on the timeline (the fresh-binary wdio harness drives them cold).
+ * ok:false with a detail when no measure has been emitted this session.
+ */
+async function readLatestInteractionMeasure(
+  ctx: SuiteContext,
+  name: string,
+): Promise<InteractionMeasureResult> {
+  const nameJson = JSON.stringify(name);
+  const res = await runTauriEvalResultJson<{ measuredMs?: number | null }>(
+    ctx,
+    `(() => { try { const e = performance.getEntriesByName(${nameJson}, 'measure'); const last = e[e.length - 1]; return { measuredMs: last ? Math.round(last.duration) : null }; } catch (err) { return { measuredMs: null }; } })()`,
+    10_000,
+  );
+  if (!res.ok || !res.value) return { ok: false, measuredMs: 0, detail: describeCommandFailure(res) };
+  if (typeof res.value.measuredMs === 'number') return { ok: true, measuredMs: res.value.measuredMs, detail: '' };
+  return { ok: false, measuredMs: 0, detail: 'no measure on the performance timeline' };
+}
+
 async function measureRoute(
   ctx: SuiteContext,
   route: string,

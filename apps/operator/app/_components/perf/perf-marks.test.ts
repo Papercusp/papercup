@@ -34,6 +34,35 @@ describe('PERF_INTERACTIONS registry', () => {
   it('names the plan-popup-open interaction', () => {
     expect(PERF_INTERACTIONS.planPopupOpen).toBe('plan-popup-open');
   });
+
+  it('names the P-006 broadened interactions with stable kebab values', () => {
+    // These string values are the contract between the emitting hooks
+    // (begin/endInteraction call sites) and DESKTOP_PERF_BUDGETS.interactions
+    // keys + the desktopPerformanceChecks measure keys. Pinned so a rename can't
+    // silently sever the wiring.
+    expect(PERF_INTERACTIONS.commandPaletteOpen).toBe('command-palette-open');
+    expect(PERF_INTERACTIONS.inboxListSettle).toBe('inbox-list-settle');
+    expect(PERF_INTERACTIONS.conversationThreadLoad).toBe('conversation-thread-load');
+    expect(PERF_INTERACTIONS.harnessDockOpen).toBe('harness-dock-open');
+  });
+
+  it('every P-006 interaction begins + ends like plan-popup-open (shared substrate)', () => {
+    for (const name of [
+      PERF_INTERACTIONS.commandPaletteOpen,
+      PERF_INTERACTIONS.inboxListSettle,
+      PERF_INTERACTIONS.conversationThreadLoad,
+      PERF_INTERACTIONS.harnessDockOpen,
+    ]) {
+      resetTimeline();
+      // no-op unless a matching begin ran — safe on shared render paths
+      expect(endInteraction(name)).toBeNull();
+      beginInteraction(name);
+      const d = endInteraction(name);
+      expect(d).not.toBeNull();
+      expect(d).toBeGreaterThanOrEqual(0);
+      expect(performance.getEntriesByName(name, 'measure')).toHaveLength(1);
+    }
+  });
 });
 
 describe('begin/endInteraction', () => {

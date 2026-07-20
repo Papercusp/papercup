@@ -187,7 +187,10 @@ registerDerivedRead({
   scope: 'workspace',
   compute: async () => {
     const { gitPipelineSnapshot } = await import('../git-pipeline-stats');
-    return [await gitPipelineSnapshot()];
+    // includeActiveRun (overview-tab-expansion P-001): the "judging vs idle" systemd
+    // probe runs HERE, in the background precompute, so the Overview Deploy tile gets
+    // it while live gitPipelineSnapshot() callers stay fork-free.
+    return [await gitPipelineSnapshot(undefined, { includeActiveRun: true })];
   },
 });
 

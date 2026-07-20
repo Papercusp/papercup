@@ -259,6 +259,23 @@ export interface GitPipelineSnapshotOpts {
   };
 }
 
+/** PURE (P-001): map a checkActiveCheckpointRun probe result onto the snapshot's
+ *  `activeRun` shape (systemd timestamp → epoch ms; absent fields → null). */
+export function mapActiveRun(r: {
+  active: boolean;
+  candidate?: string | null;
+  started_at?: string | null;
+  elapsed_sec?: number | null;
+}): NonNullable<GitPipelineSnapshot['activeRun']> {
+  const startedAtMs = r.started_at ? Date.parse(r.started_at) : NaN;
+  return {
+    active: r.active,
+    candidate: r.candidate ?? null,
+    startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
+    elapsedSec: r.elapsed_sec ?? null,
+  };
+}
+
 /** Compute the full pipeline snapshot for `slug` (defaults to the operator's own). */
 export async function gitPipelineSnapshot(
   slug: string = DEFAULT_SLUG,
@@ -378,6 +395,20 @@ export async function gitPipelineSnapshot(
     firstRedAtMs: num(gateHealth.firstRedAt),
   });
 
+  // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in
+  // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:
+  // a probe failure yields null (not probed), never a broken snapshot.
+  let activeRun: GitPipelineSnapshot['activeRun'] = null;
+  if (opts.includeActiveRun) {
+    try {
+      const probe =
+        opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
+      activeRun = mapActiveRun(probe(deploy.integrationRoot));
+    } catch {
+      activeRun = null;
+    }
+  }
+
   return {
     slug,
     generatedAtMs: Date.now(),
@@ -435,5 +466,6 @@ export async function gitPipelineSnapshot(
     windows: { day, week },
     recent,
     deploy,
+    activeRun,
   };
 }
