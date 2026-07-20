@@ -204,4 +204,101 @@ exit "$rc"
     expect(events).toContain('announce:windows-vm-build-released:11111111-1111-4111-8111-111111111111');
     expect(events).toContain('fire:windows-vm-build-released:11111111-1111-4111-8111-111111111111');
   }, 20_000);
+
+  // WI-5600 (2026-07-20): a SINGLE transient heartbeat mcp-call failure (a
+  // real-world "fetch failed") used to kill the whole build outright. These
+  // two tests prove the retry-before-terminate behavior in both directions.
+
+  it('tolerates a transient heartbeat failure without killing the build', async () => {
+    const f = fixture();
+    const failCounter = join(f.dir, 'heartbeat-fail-counter');
+    writeFileSync(failCounter, '2'); // two failed mcp calls, then success — resolved within one tick's in-tick retries
+    const env = {
+      ...envFor(f),
+      PAPERCUSP_FAKE_LEASE_HEARTBEAT_FAIL_COUNTER: failCounter,
+      PAPERCUSP_WINDOWS_LEASE_TTL_SEC: '30', // budget=15s — never trips for a 2-call blip
+      PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_SEC: '1',
+      PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_MAX_RETRIES: '3',
+      PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_RETRY_DELAY_SEC: '0',
+    };
+    const holder = spawn(
+      'bash',
+      ['-c', String.raw`
+set -euo pipefail
+source "$1"
+cleanup() { status=$?; trap - EXIT; windows_build_lease_release; exit "$status"; }
+trap cleanup EXIT
+trap 'exit 143' TERM
+windows_build_lease_acquire 'user@127.0.0.1' 2223 papercup-build-release 'holder build' 120
+echo READY
+while true; do sleep 1; done
+`, 'holder', leaseLib],
+      { env, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    children.push(holder);
+    await waitForOutput(holder, 'READY');
+
+    // Give the transient-failure tick (and its in-tick retries) time to run,
+    // then confirm the build was NOT killed and the lease is still held.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(holder.exitCode).toBe(null);
+    expect(existsSync(f.state)).toBe(true);
+
+    holder.kill('SIGTERM');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('holder did not exit after TERM')), 8_000);
+      holder.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+    children.splice(children.indexOf(holder), 1);
+    expect(existsSync(f.state)).toBe(false);
+  }, 20_000);
+
+  it('terminates when heartbeat failures persist beyond the lease TTL retry budget', async () => {
+    const f = fixture();
+    const failCounter = join(f.dir, 'heartbeat-fail-counter');
+    writeFileSync(failCounter, '1000'); // sustained failure — never recovers
+    const env = {
+      ...envFor(f),
+      PAPERCUSP_FAKE_LEASE_HEARTBEAT_FAIL_COUNTER: failCounter,
+      PAPERCUSP_WINDOWS_LEASE_TTL_SEC: '4', // budget = TTL/2 = 2s
+      PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_SEC: '1',
+      PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_MAX_RETRIES: '1', // no in-tick retry delay, so ticks land ~1s apart
+      PAPERCUSP_WINDOWS_LEASE_HEARTBEAT_RETRY_DELAY_SEC: '0',
+    };
+    const holder = spawn(
+      'bash',
+      ['-c', String.raw`
+set -euo pipefail
+source "$1"
+cleanup() { status=$?; trap - EXIT; windows_build_lease_release; exit "$status"; }
+trap cleanup EXIT
+trap 'exit 143' TERM
+windows_build_lease_acquire 'user@127.0.0.1' 2223 papercup-build-release 'holder build' 120
+echo READY
+while true; do sleep 1; done
+`, 'holder', leaseLib],
+      { env, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    children.push(holder);
+    let output = '';
+    holder.stdout.on('data', (c) => { output += c.toString(); });
+    holder.stderr.on('data', (c) => { output += c.toString(); });
+    await waitForOutput(holder, 'READY');
+
+    // No external SIGTERM here — the heartbeat loop itself must self-terminate
+    // the build once the sustained failure exceeds the TTL retry budget, but
+    // only AFTER surviving at least one tolerated tick (proving it retried).
+    const exitCode: number | null = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`holder never self-terminated; output=${output}`)), 15_000);
+      holder.once('exit', (code) => { clearTimeout(timer); resolve(code); });
+    });
+    children.splice(children.indexOf(holder), 1);
+
+    expect(output).toContain('will keep retrying next tick'); // at least one tick was tolerated first
+    expect(output).toContain('lease is genuinely at risk of loss; terminating');
+    expect(exitCode).toBe(143);
+    expect(existsSync(f.state)).toBe(false); // release still ran + verified cleanup on the way out
+    const events = readFileSync(f.eventLog, 'utf8');
+    expect(events).toContain('fire:windows-vm-build-released:11111111-1111-4111-8111-111111111111');
+  }, 20_000);
 });
