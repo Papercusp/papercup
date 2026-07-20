@@ -103,6 +103,26 @@ describe('resolveImprovement — fixed (the verify-and-mark-done back-edge, clos
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/not found/);
   });
+
+  it('setIssueState returning null (federated/remote-owned issue, EI-7833 view lockout) routes to a human instead of a FALSE "fixed" success', async () => {
+    // Root cause of the auto-implement dispatch storm: a federated (origin='remote')
+    // issue's engineer_issues view UPDATE is silently no-op'd (setIssueState → null),
+    // which the old code swallowed via `state: updated?.state ?? 'resolved'` and
+    // reported ok:true/'fixed' anyway — the issue never actually left the open queue.
+    const d = deps(issue({ id: 'EI-remote', origin: 'remote' }));
+    d.setIssueState = async () => null;
+    const r = await resolveImprovement(
+      { id: 'EI-remote', outcome: 'fixed', summary: 'fixed it', testsRun: 'vitest green', by: 'worker-1' },
+      d,
+    );
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'open', routedToHuman: true });
+    expect(d.rec.payloads).toEqual([{ id: 'EI-remote', patch: { needsHuman: true } }]);
+    expect(d.rec.released).toEqual(['EI-remote']);
+    expect(d.rec.closes).toEqual([{ id: 'EI-remote', outcome: 'needs-human', by: 'worker-1' }]);
+    // the verification evidence comment still landed, plus the routing explanation
+    expect(d.rec.comments[0].body).toMatch(/vitest green/);
+    expect(d.rec.comments[1].body).toMatch(/federated/);
+  });
 });
 
 describe('resolveImprovement — non-terminal states actually resolve (EI-6953/6954/6938 regression)', () => {

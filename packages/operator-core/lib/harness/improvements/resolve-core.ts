@@ -124,9 +124,11 @@ export async function resolveImprovement(
   // Drive the item's open dispatch-ledger rows terminal (P-010 / B-04) — called
   // on every SUCCESSFUL resolve path below. Best-effort: a ledger failure must
   // never fail the resolve itself (the orphan collector sweeps stragglers).
-  const closeLedger = async () => {
+  // `outcomeOverride` lets the 'fixed' path re-close as 'needs-human' when the
+  // underlying setIssueState write didn't actually happen (see below).
+  const closeLedger = async (outcomeOverride?: ResolveOutcome) => {
     try {
-      await deps.closeDispatches(input.id, { outcome: input.outcome, by });
+      await deps.closeDispatches(input.id, { outcome: outcomeOverride ?? input.outcome, by });
     } catch (e) {
       console.warn(`[improvements:resolve] dispatch-ledger close failed for ${input.id}:`, e instanceof Error ? e.message : e);
     }
@@ -166,6 +168,34 @@ export async function resolveImprovement(
     // (tests ran, evidence recorded above) — reuse that same evidence string as the
     // gate's completionRef so a real fix is never indistinguishable from a dedup flip.
     const updated = await deps.setIssueState(input.id, 'resolved', by, evidence);
+    if (!updated) {
+      // Root cause of the auto-implement dispatch storm (found while investigating
+      // EI-18117747280304049 / filed as the federated-hive-sync-overwrite bug):
+      // setIssueState returns null when the underlying harness_shared.work_items
+      // row could not actually be written — the most common cause is a FEDERATED
+      // issue (origin='remote'): the engineer_issues view's INSTEAD OF trigger
+      // (EI-7833, mig 521/641) deliberately no-ops a local mutation of a
+      // remote-owned row rather than clobbering it. Before this check, that honest
+      // null was silently swallowed (`state: updated?.state ?? 'resolved'`) and the
+      // caller reported ok:true/'fixed' anyway: the dispatch ledger closed as
+      // genuinely fixed, but harness_shared.work_items never changed — the issue
+      // stayed open with its stale remote snapshot and re-dispatched on every
+      // subsequent cadence tick FOREVER (each retry hitting this exact same
+      // no-op). Route it to the human tier instead: no amount of retrying this
+      // path can ever resolve a remote-owned issue locally.
+      await deps.commentIssue(
+        input.id,
+        `⤴ Verified above, but could NOT mark this issue resolved locally: it is federated ` +
+          `(origin='remote', owned by its authoring peer's core) and the local engineer_issues ` +
+          `view refuses to mutate a remote-owned row. Routing to a human — retrying this path ` +
+          `will never succeed; it needs to resolve on the owning peer, or a human must reconcile it.`,
+        by,
+      );
+      await deps.mergeIssuePayload(input.id, { needsHuman: true });
+      await deps.releaseIssue(input.id);
+      await closeLedger('needs-human');
+      return { ok: true, id: input.id, outcome: 'needs-human', state: issue.state, routedToHuman: true };
+    }
     // Advance the idea lifecycle to 'applied' (self-learning P-031) — the decay
     // sweep then grades it verified/recurred from signature recurrence (P-013).
     // Permissive on the prior state: a legacy item without a lifecycle gets one
@@ -174,7 +204,7 @@ export async function resolveImprovement(
       ideaLifecycle: updateIdeaLifecycle(lifecycleOf(issue) ?? initializeIdeaLifecycle(), 'applied'),
     });
     await closeLedger();
-    return { ok: true, id: input.id, outcome: 'fixed', state: updated?.state ?? 'resolved' };
+    return { ok: true, id: input.id, outcome: 'fixed', state: updated.state };
   }
 
   if (input.outcome === 'needs-human') {

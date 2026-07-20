@@ -17,7 +17,7 @@
  * only, so this never reaches a browser chunk.
  */
 import postgres from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, longLivedPoolConnectionOptions } from '@papercusp/db-org';
 import {
   createInvalidationBus,
   type SyncEvent as LibSyncEvent,
@@ -107,8 +107,16 @@ export function bridgeTriggerEvent(
 const bus = createInvalidationBus({
   // Dedicated single LISTEN connection on the embedded-PG admin URL.
   listen: createPgListenSource({
+    // EI-18122461766429683: tagged + zombie-safe — this untagged, unreaped singleton
+    // (one per operator-host process, never closed on an abrupt kill/restart) was a
+    // major contributor to the server-wide PG connection-saturation crit.
     open: () =>
-      postgres(getHarnessAdminUrl(), { max: 1, idle_timeout: 0, connect_timeout: 30 }),
+      postgres(getHarnessAdminUrl(), {
+        ...longLivedPoolConnectionOptions('sync-sse-listen'),
+        max: 1,
+        idle_timeout: 0,
+        connect_timeout: 30,
+      }),
     channel: CHANNEL,
     // caching-layer-tag-eca P-017 — cold-bust on (re)connect. Fires on the initial
     // LISTEN AND every reconnect (postgres-js re-issues LISTEN after a dropped
