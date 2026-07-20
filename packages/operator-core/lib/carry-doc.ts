@@ -86,6 +86,11 @@ export interface CarryDocAsk {
   id: string;
   question: string;
   askedAtMs: number | null;
+  /** WI-5682: standing-fact key(s) whose decided conclusion strongly overlaps this
+   *  question — i.e. the ask MAY re-litigate an already-decided directive (the
+   *  "directive downgraded to a question, carried forever as undecided" failure).
+   *  Absent when nothing overlaps. Annotates, never drops the ask. */
+  possiblyDecidedBy?: string[];
 }
 
 export interface CarryDocTailTurn {
@@ -282,6 +287,61 @@ async function defaultGetAsks(ownerId: string, workspaceId: string): Promise<Car
   }
 }
 
+/** WI-5682: significant-token set for the ask↔fact overlap check — lowercased
+ *  words ≥4 chars (hyphen/underscore kept, so `papercusp-workspace` stays one
+ *  token) minus common filler. Deterministic (no LLM/embeddings — the carry doc
+ *  is assembled LLM-free by design). */
+const ASK_FACT_STOPWORDS = new Set([
+  'that', 'this', 'with', 'from', 'into', 'your', 'have', 'been', 'will', 'would',
+  'should', 'could', 'than', 'then', 'them', 'some', 'more', 'most', 'only', 'just',
+  'over', 'under', 'about', 'still', 'like', 'also', 'each', 'does', 'they', 'their',
+  'what', 'when', 'which', 'were', 'where', 'here', 'there', 'these', 'those', 'being',
+  'want', 'need', 'needs', 'make', 'made', 'used', 'using', 'onto', 'them', 'else',
+]);
+
+function significantTokens(s: string): Set<string> {
+  const out = new Set<string>();
+  for (const t of s.toLowerCase().match(/[a-z0-9][a-z0-9_-]{3,}/g) ?? []) {
+    if (!ASK_FACT_STOPWORDS.has(t)) out.add(t);
+  }
+  return out;
+}
+
+/** Minimum distinct significant tokens an ask must share with a fact before the
+ *  ask is flagged as "may already be decided" — conservative to avoid crying
+ *  wolf on a genuinely-open question. */
+const MIN_ASK_FACT_OVERLAP = 4;
+
+/**
+ * WI-5682: flag any carried open owner-ask that RE-LITIGATES an already-decided
+ * standing fact — the exact failure that let `conv-mrssq5xh` ("fold in the 55
+ * bugs?") ride the carry as an open question for days AFTER the owner had already
+ * directed the move + a fact recorded it. A decided directive re-surfaced as an
+ * undecided question is a continuity bug; here we make the carry doc SURFACE the
+ * collision so a successor verifies against the fact instead of blindly treating
+ * the ask as open. Conservative keyword overlap; ANNOTATES, never drops an ask.
+ */
+export function flagAsksAgainstFacts(
+  asks: CarryDocAsk[],
+  facts: Array<{ key: string; body: string }>,
+): CarryDocAsk[] {
+  if (!facts.length || !asks.length) return asks;
+  const factTokens = facts.map((f) => ({ key: f.key, toks: significantTokens(f.body) }));
+  return asks.map((a) => {
+    const qToks = significantTokens(a.question);
+    if (qToks.size === 0) return a;
+    const hits: Array<{ key: string; shared: number }> = [];
+    for (const f of factTokens) {
+      let shared = 0;
+      for (const t of qToks) if (f.toks.has(t)) shared += 1;
+      if (shared >= MIN_ASK_FACT_OVERLAP) hits.push({ key: f.key, shared });
+    }
+    if (!hits.length) return a;
+    hits.sort((x, y) => y.shared - x.shared);
+    return { ...a, possiblyDecidedBy: hits.slice(0, 2).map((h) => h.key) };
+  });
+}
+
 /** Read the verbatim tail from the caller's transcript, mapped to tail turns.
  *  Every USER turn gets the mechanical owner-vs-agent stamp (D-003): the
  *  recorded ⟦turn-origin:…⟧ envelope is durable in the transcript, so
@@ -339,7 +399,10 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   const planItems = await getPlanItems(ownerId, ws).catch(() => [] as CarryDocPlanItem[]);
 
   const getAsks = opts.getAsksFn ?? defaultGetAsks;
-  const asks = await getAsks(ownerId, ws).catch(() => [] as CarryDocAsk[]);
+  const rawAsks = await getAsks(ownerId, ws).catch(() => [] as CarryDocAsk[]);
+  // WI-5682: flag any open owner-ask that re-litigates a decided standing fact,
+  // so a successor verifies against the fact instead of carrying it as undecided.
+  const asks = flagAsksAgainstFacts(rawAsks, brief.facts);
 
   const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
   const tail = (await getTail().catch(() => [] as CarryDocTailTurn[])).slice(-CARRY_DOC_MAX_TAIL_TURNS);
@@ -589,7 +652,14 @@ function renderPlanState(items: CarryDocPlanItem[]): string | null {
 
 function renderAsks(asks: CarryDocAsk[]): string | null {
   if (asks.length === 0) return null;
-  const lines = asks.map((a) => `- #${a.id}: ${cap(a.question, ASK_CAP)}`);
+  const lines = asks.map((a) => {
+    const flag = a.possiblyDecidedBy?.length
+      ? `\n    ⚠ MAY ALREADY BE DECIDED — cross-check standing fact(s) ${a.possiblyDecidedBy
+          .map((k) => `\`${k}\``)
+          .join(', ')} before treating this as open (a decided directive re-surfaced as a question is the WI-5682 continuity bug; verify, don't blindly re-ask).`
+      : '';
+    return `- #${a.id}: ${cap(a.question, ASK_CAP)}${flag}`;
+  });
   return `## Open owner asks (BLOCKING — do not self-answer)\n${lines.join('\n')}`;
 }
 

@@ -20,10 +20,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const listRecentProposalsForWorkspace = vi.fn();
 const listAutoloopsForWorkspace = vi.fn();
 const listScoutArchiveSeeds = vi.fn();
+const listRecentCyclesForWorkspace = vi.fn();
 vi.mock('../gym/control-plane', () => ({
   listRecentProposalsForWorkspace: (...a: unknown[]) => listRecentProposalsForWorkspace(...a),
   listAutoloopsForWorkspace: (...a: unknown[]) => listAutoloopsForWorkspace(...a),
   listScoutArchiveSeeds: (...a: unknown[]) => listScoutArchiveSeeds(...a),
+  listRecentCyclesForWorkspace: (...a: unknown[]) => listRecentCyclesForWorkspace(...a),
 }));
 
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
@@ -39,6 +41,7 @@ beforeEach(() => {
   listRecentProposalsForWorkspace.mockReset().mockResolvedValue([]);
   listAutoloopsForWorkspace.mockReset().mockResolvedValue([]);
   listScoutArchiveSeeds.mockReset().mockResolvedValue([]);
+  listRecentCyclesForWorkspace.mockReset().mockResolvedValue([]);
 });
 
 describe('learning.gym — per-Hive lens (P-041)', () => {
@@ -68,19 +71,38 @@ describe('learning.gym — per-Hive lens (P-041)', () => {
     expect(listScoutArchiveSeeds).toHaveBeenCalledWith({ tag: 'tx' }, { workspaceId: 'ws-test' });
   });
 
-  it('returns the 1-element { proposals, autoloops, archiveSeeds } snapshot', async () => {
+  it('returns the 1-element { proposals, autoloops, archiveSeeds, cycles } snapshot', async () => {
     listRecentProposalsForWorkspace.mockResolvedValue([{ id: 'p1' }]);
     listAutoloopsForWorkspace.mockResolvedValue([{ harnessSlug: 'my-hive' }]);
     listScoutArchiveSeeds.mockResolvedValue([{ candidateId: 'SP-002' }]);
+    listRecentCyclesForWorkspace.mockResolvedValue([{ harnessSlug: 'my-hive', cycle: 1 }]);
     const rows = (await resolveNamedQueryV2('learning.gym', { hive: 'my-hive' })) as Array<{
       proposals: unknown[];
       autoloops: unknown[];
       archiveSeeds: unknown[];
+      cycles: unknown[];
     }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].proposals).toEqual([{ id: 'p1' }]);
     expect(rows[0].autoloops).toEqual([{ harnessSlug: 'my-hive' }]);
     expect(rows[0].archiveSeeds).toEqual([{ candidateId: 'SP-002' }]);
+    expect(rows[0].cycles).toEqual([{ harnessSlug: 'my-hive', cycle: 1 }]);
+  });
+
+  it('threads the hive through to the recent-cycles reader too (WI-5685)', async () => {
+    await resolveNamedQueryV2('learning.gym', { hive: 'my-hive' });
+    expect(listRecentCyclesForWorkspace).toHaveBeenCalledWith(
+      { tag: 'tx' },
+      { workspaceId: 'ws-test', limit: 20, harnessSlug: 'my-hive' },
+    );
+  });
+
+  it('recent-cycles read failure degrades to [] (WI-5685) — never fails the snapshot', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    listRecentCyclesForWorkspace.mockRejectedValue(new Error('no durable tables'));
+    const rows = (await resolveNamedQueryV2('learning.gym', {})) as Array<{ cycles: unknown[] }>;
+    expect(rows[0].cycles).toEqual([]);
+    warn.mockRestore();
   });
 
   it('archive-seed read failure degrades to [] (WI-5412) — never fails the snapshot', async () => {
@@ -136,17 +158,30 @@ describe('learning.gym — workspace-wide fallback when the Hive-scoped read is 
   });
 
   it('stays empty (no fallback call) when BOTH the Hive-scoped AND the workspace-wide reads are empty', async () => {
-    // All three readers stay [] on every call — nothing anywhere to fall back to.
+    // All four readers stay [] on every call — nothing anywhere to fall back to.
     const rows = (await resolveNamedQueryV2('learning.gym', { hive: 'papercusp' })) as Array<{
       proposals: unknown[];
       autoloops: unknown[];
       archiveSeeds: unknown[];
+      cycles: unknown[];
       scopeFallback?: boolean;
     }>;
-    expect(rows[0]).toEqual({ proposals: [], autoloops: [], archiveSeeds: [] });
+    expect(rows[0]).toEqual({ proposals: [], autoloops: [], archiveSeeds: [], cycles: [] });
     expect(rows[0].scopeFallback).toBeUndefined();
     // 2 calls: the scoped attempt + the fallback attempt (both come back empty).
     expect(listRecentProposalsForWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back + flags scopeFallback when the workspace has only CYCLES (WI-5685: a run whose candidate lost mints no proposal)', async () => {
+    listRecentCyclesForWorkspace
+      .mockResolvedValueOnce([]) // hive-scoped: nothing under this Hive's slug
+      .mockResolvedValueOnce([{ harnessSlug: 'gymloopharness', cycle: 1, decision: 'reject' }]);
+    const rows = (await resolveNamedQueryV2('learning.gym', { hive: 'papercusp' })) as Array<{
+      cycles: unknown[];
+      scopeFallback?: boolean;
+    }>;
+    expect(rows[0].cycles).toEqual([{ harnessSlug: 'gymloopharness', cycle: 1, decision: 'reject' }]);
+    expect(rows[0].scopeFallback).toBe(true);
   });
 
   it('never falls back with no hive arg (already unscoped)', async () => {

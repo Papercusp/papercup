@@ -1457,11 +1457,26 @@ interface GymArchiveSeed {
   updatedAt: number;
   harnessSlug: string;
 }
+/** WI-5685: one completed gym cycle from the durable run-analytics — the record
+ *  of a RUN having happened, independent of whether it minted a proposal (a
+ *  losing candidate mints none, which used to make the whole run invisible). */
+interface GymRecentCycle {
+  harnessSlug: string;
+  cycle: number;
+  parentId: string | null;
+  candidateId: string | null;
+  decision: string | null; // 'accept' | 'reject' | null
+  runCount: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
 interface GymSnapshot {
   proposals: GymProposal[];
   autoloops: GymAutoloop[];
   /** Scout-seeded MAP-Elites niches (WI-5412 item 4) — absent on older server snapshots. */
   archiveSeeds?: GymArchiveSeed[];
+  /** Recent completed cycles (WI-5685) — absent on older server snapshots. */
+  cycles?: GymRecentCycle[];
   /**
    * WI-5420: true when the requested Hive's own gym-scoped read came back
    * empty and the server fell back to the workspace-wide rollup below (real
@@ -1631,7 +1646,8 @@ function GymView({
   const scopedNoExperiments =
     Boolean(scopedSnap) &&
     (scopedSnap?.proposals?.length ?? 0) === 0 &&
-    (scopedSnap?.archiveSeeds?.length ?? 0) === 0;
+    (scopedSnap?.archiveSeeds?.length ?? 0) === 0 &&
+    (scopedSnap?.cycles?.length ?? 0) === 0;
   const needWide =
     hiveReady &&
     Boolean(hive) &&
@@ -1648,11 +1664,13 @@ function GymView({
     needWide &&
     Boolean(wideSnap) &&
     ((wideSnap?.proposals?.length ?? 0) > 0 ||
-      (wideSnap?.archiveSeeds?.length ?? 0) > 0);
+      (wideSnap?.archiveSeeds?.length ?? 0) > 0 ||
+      (wideSnap?.cycles?.length ?? 0) > 0);
   const snap = useWide ? wideSnap : scopedSnap;
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
+  const cycles = snap?.cycles ?? [];
   // WI-5420: the server fell back to the workspace-wide rollup because this
   // Hive's own gym-scoped read was empty — say so, don't silently reattribute
   // another harness's experiments to this Hive. `useWide` is the client-side
@@ -1781,13 +1799,80 @@ function GymView({
           title="Gym unavailable"
           onRetry={() => sync.invalidate()}
         />
-      ) : proposals.length === 0 && archiveSeeds.length === 0 ? (
+      ) : proposals.length === 0 && archiveSeeds.length === 0 && cycles.length === 0 ? (
         <LearningVisualEmpty
           icon={Dumbbell}
           title="No gym experiments in this workspace yet"
         />
       ) : (
         <>
+          {/* WI-5685: the RUN ledger — every completed cycle, newest first,
+              whether or not it minted a proposal (a losing candidate mints
+              none; without this the owner sees "nothing recent" right after a
+              full run finishes). */}
+          {cycles.length > 0 ? (
+            <>
+              <div className="pc-learning__sectionhead">
+                <h2>Recent runs</h2>
+              </div>
+              <div className="pc-learning__gymcycles" aria-label="Recent gym runs">
+                {cycles.map((c) => {
+                  const decided = c.decision === "accept" || c.decision === "promote";
+                  const decisionColor = statusToneColor(
+                    decided ? "accepted" : c.decision ? "rejected" : "pending",
+                  );
+                  return (
+                    <div
+                      key={`${c.harnessSlug}:${c.cycle}`}
+                      className="pc-learning__ideacard"
+                      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+                    >
+                      <span
+                        className="pc-learning__chip"
+                        style={{ color: decisionColor, borderColor: decisionColor }}
+                        title={
+                          decided
+                            ? "The challenger beat the champion and was promoted"
+                            : c.decision
+                              ? "The challenger lost to the champion — champion retained"
+                              : "No recorded decision for this cycle"
+                        }
+                      >
+                        {decided ? (
+                          <CheckCircle2 size={10} aria-hidden />
+                        ) : c.decision ? (
+                          <XCircle size={10} aria-hidden />
+                        ) : (
+                          <Clock size={10} aria-hidden />
+                        )}
+                        {decided ? "promoted" : c.decision ? "champion held" : "no decision"}
+                      </span>
+                      <span className="pc-learning__chip" title="Gym harness">
+                        {c.harnessSlug}
+                      </span>
+                      <span className="pc-learning__chip" title="Cycle number">
+                        cycle {c.cycle}
+                      </span>
+                      <span className="pc-learning__muted" title="Challenger vs champion">
+                        {c.candidateId ?? "—"} vs {c.parentId ?? "—"}
+                      </span>
+                      <span className="pc-learning__muted" title="Agent runs scored in this cycle">
+                        {c.runCount} run{c.runCount === 1 ? "" : "s"}
+                      </span>
+                      {c.finishedAt ? (
+                        <span
+                          className="pc-learning__age"
+                          title={new Date(c.finishedAt).toLocaleString()}
+                        >
+                          {whenLabel(c.finishedAt)}
+                        </span>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : null}
           {proposals.length > 0 ? (
             <>
               <div className="pc-learning__sectionhead">

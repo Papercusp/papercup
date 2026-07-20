@@ -3914,6 +3914,29 @@
   padding: 0 18px 18px;
 }
 
+/* Read mode (D-007): when PlanDetail lives inside a `.pc-plans__main` scroller
+   (the /admin two-pane, the Create dock's main view, and PlanPopupModal — whose
+   body carries both `pc-plans__main` + `plan-popup__body`), the markdown preview
+   must lay out at its NATURAL height and let that ancestor own the overflow.
+   Otherwise the `flex:1` chain (scope → editor → preview) pins the preview to the
+   ~130px of pane height left over after the header/actions/tabs/now-hero strips,
+   and the preview's own `overflow:auto` then shows a single-screen SLIVER of a
+   multi-screen plan with dead space below — the "plan is cut off" bug (verified
+   live in the popup: preview clientHeight 129 vs scrollHeight 9375).
+   Scoped to `.pc-plans__main` on purpose: PlanEditorPanel (the create:plan-editor
+   dock panel) mounts PlanDetail WITHOUT that scroller and depends on the preview
+   scrolling internally, so it must keep the pinned behavior. Edit mode is
+   untouched either way — it renders `.pc-md-editor-host`, not `.pc-md-preview`,
+   so the `:has()` guards never match it. */
+.pc-plans__main .pc-plan-editor-scope:has(.pc-md-preview),
+.pc-plans__main .pc-plan-editor:has(.pc-md-preview) {
+  flex: 0 0 auto;
+}
+.pc-plans__main .pc-plan-editor .pc-md-preview {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
 .pc-jump {
   position: relative;
   margin: 0 18px 8px;

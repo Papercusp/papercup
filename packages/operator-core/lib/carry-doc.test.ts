@@ -19,6 +19,7 @@ import {
   REORIENT_BANNER,
   CARRY_DOC_MAX_TAIL_TURNS,
   CARRY_DOC_MAX_PLAN_ITEMS,
+  flagAsksAgainstFacts,
   type CarryDoc,
   type CarryDocPlanItem,
   type CarryDocAsk,
@@ -43,6 +44,42 @@ function brief(over: Partial<CarryBrief> = {}): CarryBrief {
     ...over,
   };
 }
+
+describe('flagAsksAgainstFacts (WI-5682 — decided-directive-re-asked guard)', () => {
+  it('flags an open ask that re-litigates a decided standing fact', () => {
+    const asks: CarryDocAsk[] = [{
+      id: 'conv-mrssq5xh',
+      question:
+        "Fleet-drain scope decision: 55 open bugs live under harness_slug='operator:papercusp-workspace' outside the papercusp drain lane — fold them in?",
+      askedAtMs: NOW,
+    }];
+    const facts = [{
+      key: 'work-item-pot-binding-integrity',
+      body:
+        'operator:papercusp-workspace is NOT a real pot; MOVE those work-items to the papercusp pot; 37 open bugs orphaned under harness_slug.',
+    }];
+    const [flagged] = flagAsksAgainstFacts(asks, facts);
+    expect(flagged.possiblyDecidedBy).toEqual(['work-item-pot-binding-integrity']);
+  });
+
+  it('does NOT flag a genuinely unrelated open question', () => {
+    const asks: CarryDocAsk[] = [{
+      id: 'conv-x',
+      question: 'Should we bump the gateway timeout for the nightly bench run?',
+      askedAtMs: NOW,
+    }];
+    const facts = [{
+      key: 'work-item-pot-binding-integrity',
+      body: 'operator:papercusp-workspace is not a real pot; move work-items to the papercusp pot.',
+    }];
+    expect(flagAsksAgainstFacts(asks, facts)[0].possiblyDecidedBy).toBeUndefined();
+  });
+
+  it('is a no-op with no facts (never invents a collision)', () => {
+    const asks: CarryDocAsk[] = [{ id: 'c', question: 'anything at all in here', askedAtMs: null }];
+    expect(flagAsksAgainstFacts(asks, [])).toEqual(asks);
+  });
+});
 
 describe('buildCarryDoc (seam-driven assembly)', () => {
   const base = {

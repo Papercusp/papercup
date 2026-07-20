@@ -3217,14 +3217,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
-      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace, listScoutArchiveSeeds } = await import(
+      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace, listScoutArchiveSeeds, listRecentCyclesForWorkspace } = await import(
         '../gym/control-plane'
       );
       const ws = activeWorkspaceId();
       const harnessSlug = a.hive || undefined;
       const fetchSnapshot = (slug: string | undefined) =>
         routeWithWorkspace(async (tx) => {
-          const [proposals, autoloops, archiveSeeds] = await Promise.all([
+          const [proposals, autoloops, archiveSeeds, cycles] = await Promise.all([
             listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50, ...(slug ? { harnessSlug: slug } : {}) }),
             listAutoloopsForWorkspace(tx, { workspaceId: ws, ...(slug ? { harnessSlug: slug } : {}) }),
             // WI-5412 item 4: the Scout-seeded MAP-Elites niches — where the
@@ -3234,8 +3234,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
               console.warn('[learning.gym] archive-seed read failed:', err instanceof Error ? err.message : err);
               return [];
             }),
+            // WI-5685: recent completed CYCLES from the durable run-analytics. A
+            // cycle whose candidate loses mints NO proposal, so without this leg
+            // a finished gym run is invisible here ("I was expecting runs from
+            // today"). Best-effort like archiveSeeds: degrades to absent.
+            listRecentCyclesForWorkspace(tx, { workspaceId: ws, limit: 20, ...(slug ? { harnessSlug: slug } : {}) }).catch((err) => {
+              console.warn('[learning.gym] recent-cycles read failed:', err instanceof Error ? err.message : err);
+              return [];
+            }),
           ]);
-          return { proposals, autoloops, archiveSeeds };
+          return { proposals, autoloops, archiveSeeds, cycles };
         });
       const scoped = await fetchSnapshot(harnessSlug);
       // "Empty" = no EXPERIMENTS (challenger proposals + Scout-seeded archive
@@ -3244,10 +3252,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // proposals, which used to (a) keep this fallback from firing and (b) trip
       // the GymView's own `proposals===0 && archiveSeeds===0` empty state — so
       // the workspace's 3 real proposals sat unseen behind "No gym experiments"
-      // (owner report 2026-07-19). The view's emptiness test uses these same two
-      // lists; keep the two in lockstep.
+      // (owner report 2026-07-19). The view's emptiness test uses these same
+      // lists (proposals + archiveSeeds + cycles since WI-5685); keep the two
+      // in lockstep.
       const scopedIsEmpty =
-        scoped.proposals.length === 0 && scoped.archiveSeeds.length === 0;
+        scoped.proposals.length === 0 && scoped.archiveSeeds.length === 0 && scoped.cycles.length === 0;
       // (WI-5420) The per-Hive lens above assumes a Hive's HOME slug IS the
       // gym's harness_slug — true for a gym that ran through the per-hive
       // autoloop (system:gym-cycle), but NOT for one run any other way (e.g. a
@@ -3264,7 +3273,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       if (harnessSlug && scopedIsEmpty) {
         const fallback = await fetchSnapshot(undefined);
         const fallbackHasData =
-          fallback.proposals.length > 0 || fallback.archiveSeeds.length > 0;
+          fallback.proposals.length > 0 || fallback.archiveSeeds.length > 0 || fallback.cycles.length > 0;
         if (fallbackHasData) {
           return [{ ...fallback, scopeFallback: true }];
         }

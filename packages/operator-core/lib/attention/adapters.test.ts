@@ -26,6 +26,7 @@ import {
   darkFlagRatificationToAttention,
   blockedSessionToAttention,
   blockedWorkItemToAttention,
+  decisionOwedToAttention,
 } from './adapters';
 import { dropDuplicateNeedsHumanWorkItems, dropDuplicateBlockedWorkItems } from './sources';
 import { isAutonomyCategory } from '../autonomy/categories';
@@ -566,6 +567,61 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
   });
 });
 
+describe('decisionOwedToAttention (EI-147 — possibly-unrecorded owner decisions)', () => {
+  it('is an Alert (never a Decision) — a heuristic nudge, not a governed verdict', () => {
+    const a = decisionOwedToAttention({
+      sessionId: 'sess-1',
+      refId: 'toolu_9',
+      client: 'claude',
+      question: 'co-locate the Queen with the Hive?',
+      ownerAgentId: 'su-abc',
+      harnessSlug: 'papercusp',
+      closedAt: '2026-07-20T12:00:00.000Z',
+    });
+    expect(a.kind).toBe('decision-owed');
+    expect(a.tier).toBe('alert');
+    expect(a.needsHuman).toBe(false);
+    expect(a.category).toBeNull();
+    expect(a.title).toBe('co-locate the Queen with the Hive?');
+    expect(a.body).toContain('sess-1');
+    expect(a.body).toContain('plans:add-decision');
+    expect(a.ownerAgentId).toBe('su-abc');
+    expect(a.id).toBe('decision-owed:sess-1:toolu_9');
+    expect(a.ref).toEqual({ kind: 'decision-owed', sessionId: 'sess-1', refId: 'toolu_9' });
+  });
+
+  it('falls back to a generic title when the question is blank', () => {
+    const a = decisionOwedToAttention({
+      sessionId: 'sess-2',
+      refId: 'toolu_1',
+      client: 'codex',
+      question: null,
+      ownerAgentId: null,
+      harnessSlug: null,
+      closedAt: '2026-07-20T12:00:00.000Z',
+    });
+    expect(a.title).toContain('codex session');
+    expect(a.ownerAgentId).toBeNull();
+  });
+
+  it('id is kind-prefixed, ref.kind matches, needsHuman === (tier === decision), category agrees with attentionCategory', () => {
+    const a = decisionOwedToAttention({
+      sessionId: 's',
+      refId: 'r',
+      client: 'claude',
+      question: 'q',
+      ownerAgentId: null,
+      harnessSlug: null,
+      closedAt: '2026-07-20T12:00:00.000Z',
+    });
+    expect(a.id.startsWith(`${a.kind}:`)).toBe(true);
+    expect(a.ref.kind).toBe(a.kind);
+    expect(a.needsHuman).toBe(a.tier === 'decision');
+    expect(a.triageState).toBe('untriaged');
+    expect(a.category).toBe(attentionCategory(a.kind));
+  });
+});
+
 describe('P-005e — dropDuplicateNeedsHumanWorkItems (D-008 dedupe canonicalization)', () => {
   it('drops a work-item-needs-human row whose id an improvement item already covers', () => {
     const items: AttentionItem[] = [
@@ -706,6 +762,7 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
     'dark-flag-ratification',
     'blocked-session',
     'work-item-blocked',
+    'decision-owed',
   ];
 
   it('the kind to category map covers every AttentionKind (no kind silently uncategorized)', () => {

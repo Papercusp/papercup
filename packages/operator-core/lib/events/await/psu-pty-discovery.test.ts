@@ -287,7 +287,7 @@ describe('recolorViaPty (fleet-color-schemes live recolor)', () => {
 
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(1);
-    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'osc', data: osc });
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'osc', data: osc, ownerId });
   });
 });
 
@@ -325,8 +325,8 @@ describe('interruptViaPty (Phase 4 pty-force leg)', () => {
 
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(2);
-    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03' });
-    expect(JSON.parse(recv[1])).toEqual({ v: 1, mode: 'raw', data: '\x1b' });
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03', ownerId });
+    expect(JSON.parse(recv[1])).toEqual({ v: 1, mode: 'raw', data: '\x1b', ownerId });
   });
 
   // EI-12460: interruptViaPty previously gave up on the FIRST socket-write miss —
@@ -375,7 +375,7 @@ describe('interruptViaPty (Phase 4 pty-force leg)', () => {
     expect(await firstAttempt).toBe(true);
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(1);
-    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03' });
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03', ownerId });
   });
 });
 
@@ -530,7 +530,7 @@ describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /m
 
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(1);
-    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'mcp-reconnect', data: 'papercusp-su' });
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'mcp-reconnect', data: 'papercusp-su', ownerId });
   });
 });
 

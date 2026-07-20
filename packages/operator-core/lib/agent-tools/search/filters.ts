@@ -118,12 +118,21 @@ export async function resolveSearchFilters(
     selfSession = await resolveSelfSession(callerOwnerId);
     // session:'self' recall must span the caller's WHOLE respawn chain, not a
     // single native session: a cold carry-respawn scatters the agent's history
-    // across MANY transcripts under ONE coord owner (WI-5644). Owner-scope it
-    // via the owner column (session_turns attributes every transcript to the
-    // coord ownerId) and NEVER pin filters.sessionId to one native id — pinning
-    // to the resolved session silently dropped all pre-respawn turns, which are
-    // exactly the pre-compaction history this sugar promises to recover.
+    // across MANY transcripts (WI-5644). So owner-scope it — NEVER pin
+    // filters.sessionId to one native id (that silently dropped all pre-respawn
+    // turns, the exact pre-compaction history this sugar promises to recover).
+    //
+    // WI-5681: session_turns.owner is keyed by the transcript's ISOLATION-DIR
+    // owner (session-ingest derives it from the file path `/session-claude/<x>/`),
+    // which DIVERGES from the caller's current coord ownerId after a
+    // carry-respawn/identity rebind (the isolation dir is named by the coord id
+    // AT LAUNCH). Owner-scoping by callerOwnerId ALONE then matched ZERO rows —
+    // the regression that made this sugar return nothing for a respawned session.
+    // Add BOTH the coord id AND the resolved transcript's isolation-dir owner, so
+    // the filter matches what ingest actually wrote regardless of drift.
     if (callerOwnerId) owners.add(callerOwnerId);
+    const isoOwner = selfSession?.filePath.match(/\/session-claude\/([^/]+)\//)?.[1];
+    if (isoOwner) owners.add(isoOwner);
     sessionId = undefined;
     if (selfSession && opts?.liveTailSelf !== false) {
       // Read-time freshness (D-002): force-tail the caller's CURRENT transcript

@@ -378,6 +378,64 @@ describe('hostThroughPty real round-trip', () => {
     },
     20_000,
   );
+
+  it(
+    'EI-153: REFUSES a control envelope addressed to a DIFFERENT ownerId — never runs it — then still serves a correctly-addressed one',
+    async () => {
+      const ownerId = `su-itest-misdeliver-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+
+      const childCode =
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),4000);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        advSessionId: 4243,
+        io,
+        bridgeTty: false,
+        onExit: () => undefined,
+      });
+
+      try {
+        await sleep(400);
+        expect(existsSync(sock)).toBe(true);
+
+        // Addressed to a DIFFERENT agent — the host must refuse to run it, no
+        // matter that the socket write itself succeeds (same-UID trust boundary
+        // only guards WHO can connect, not WHOM the message is for).
+        await envelopeInject(sock, { mode: 'raw', data: 'should-not-land\n', ownerId: 'su-someone-else' });
+        await sleep(500);
+        expect(captured()).not.toContain('ECHO:should-not-land');
+        const events = readFileSync(eventLog, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+        const rejected = events.find(
+          (e) => e.kind === 'control-payload-rejected' && e.reason === 'ownerId-mismatch',
+        );
+        expect(rejected).toMatchObject({ expected: ownerId, got: 'su-someone-else', mode: 'raw' });
+
+        // The host itself is otherwise unharmed: a correctly-addressed (or
+        // unaddressed, pre-EI-153-shaped) message still lands normally.
+        await envelopeInject(sock, { mode: 'raw', data: 'should-land\n', ownerId });
+        await sleep(500);
+        expect(captured()).toContain('ECHO:should-land');
+      } finally {
+        // The child self-exits on its own 4s timeout — just wait for host resolution.
+        await done.catch(() => undefined);
+      }
+    },
+    20_000,
+  );
 });
 
 describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mode P-004b)', () => {

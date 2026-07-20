@@ -49,11 +49,31 @@ export interface ResolveSelfSessionOptions {
   home?: string;
   loadActiveSessions?: (ownerId: string) => Promise<ActiveSessionRow[]>;
   codexHomeForSession?: (id: number) => string;
+  /** WI-5681 coord-id-drift bridge: read a live hosted process's environment
+   *  (Linux `/proc/<pid>/environ`). Injectable so the drift path is unit-testable
+   *  without a real process. Default reads /proc; returns null on any miss. */
+  readProcEnviron?: (pid: number) => Promise<Record<string, string> | null>;
 }
 
 /** Mirror of psu-pty-discovery's sanitizeKey (kept trivial on purpose). */
 function sanitizeKey(ownerId: string): string {
   return String(ownerId || 'unknown').replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+/** Read a process's env from Linux `/proc/<pid>/environ` (NUL-separated
+ *  KEY=VALUE). Fail-soft: any error (non-Linux, dead pid, EPERM) → null. */
+async function readProcEnvironDefault(pid: number): Promise<Record<string, string> | null> {
+  try {
+    const raw = await readFile(`/proc/${pid}/environ`, 'utf8');
+    const env: Record<string, string> = {};
+    for (const kv of raw.split('\0')) {
+      const eq = kv.indexOf('=');
+      if (eq > 0) env[kv.slice(0, eq)] = kv.slice(eq + 1);
+    }
+    return env;
+  } catch {
+    return null;
+  }
 }
 
 async function listJsonlUnder(root: string): Promise<string[]> {
@@ -130,13 +150,20 @@ export async function resolveSelfSession(
   const home = opts.home ?? HOME;
   const activeSessions = await (opts.loadActiveSessions ?? defaultActiveSessions)(ownerId);
 
-  // 1. The psu-pty discovery record → hosted CLI + a session uuid when present.
+  // 1. The psu-pty discovery record → hosted CLI + a session uuid when present,
+  //    plus the live process pids (the WI-5681 coord-id-drift bridge).
   let command: string | null = null;
   let uuid: string | null = null;
+  const livePids: number[] = [];
   try {
     const raw = await readFile(join(home, '.papercusp', 'psu-pty', `${sanitizeKey(ownerId)}.json`), 'utf8');
-    const rec = JSON.parse(raw) as { command?: string; args?: unknown };
+    const rec = JSON.parse(raw) as { command?: string; args?: unknown; pid?: unknown; ptyPid?: unknown };
     command = typeof rec.command === 'string' ? rec.command : null;
+    // ptyPid is the hosted CLI itself (its env carries CLAUDE_CONFIG_DIR); pid is
+    // the wrapper — try the CLI first.
+    for (const p of [rec.ptyPid, rec.pid]) {
+      if (typeof p === 'number' && Number.isInteger(p) && p > 0) livePids.push(p);
+    }
     if (Array.isArray(rec.args)) {
       for (const a of rec.args) if (typeof a === 'string' && UUID_RE.test(a)) { uuid = a; break; }
     }
@@ -170,6 +197,26 @@ export async function resolveSelfSession(
     if (isoFiles.length) {
       const newest = await newestOf(isoFiles);
       if (newest) return { sourceKind: 'claude', sessionId: basename(newest, '.jsonl'), filePath: newest };
+    }
+    // WI-5681 coord-id-drift bridge: after a carry-respawn / identity rebind the
+    // isolation dir is named by the coord id AT LAUNCH (session-launch-dirs keys
+    // it that way), which can diverge from the CURRENT coord id — so the dir
+    // above is empty and self-recall silently misses EVERYTHING (the exact
+    // failure: `session:'self'` degraded to a 0-hit owner search for a respawned
+    // leader whose id drifted su-d838f112 → su-791667d4). The LIVE hosted process
+    // still carries the real CLAUDE_CONFIG_DIR in its own environment; read it
+    // (Linux /proc, fail-soft) and take the newest transcript there. Only a dir
+    // under a session-claude isolation root is trusted (never the shared
+    // ~/.claude, which would cross-contaminate owners).
+    const readEnviron = opts.readProcEnviron ?? readProcEnvironDefault;
+    for (const pid of livePids) {
+      const env = await readEnviron(pid);
+      const dir = env?.CLAUDE_CONFIG_DIR;
+      if (dir && dir.includes('/session-claude/')) {
+        const driftFiles = await listJsonlUnder(join(dir, 'projects'));
+        const newest = await newestOf(driftFiles);
+        if (newest) return { sourceKind: 'claude', sessionId: basename(newest, '.jsonl'), filePath: newest };
+      }
     }
     // A non-isolated interactive session shares ~/.claude/projects across
     // owners, so THERE the recorded uuid is the only safe disambiguator.

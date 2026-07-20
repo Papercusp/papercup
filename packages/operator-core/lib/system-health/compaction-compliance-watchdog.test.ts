@@ -405,6 +405,7 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
       mode: 'carry-respawn',
       data: 'answer the open owner message',
       systemPromptAddendum: 'deterministic carry',
+      ownerId: 'hot',
     });
   });
 

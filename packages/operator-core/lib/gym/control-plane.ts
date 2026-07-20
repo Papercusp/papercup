@@ -307,6 +307,59 @@ export async function listScoutArchiveSeeds(
   }));
 }
 
+/** One completed gym cycle from the durable run-analytics (harness_gym_durable),
+ *  with timing derived from its runs — `gym_cycles` itself carries no timestamp
+ *  column, so recency comes from min(started_at)/max(finished_at) over the
+ *  cycle's gym_runs (WI-5685: a cycle whose candidate LOSES mints no proposal,
+ *  so without this read a completed run is invisible to the Learning tab). */
+export interface GymRecentCycleRow {
+  harnessSlug: string;
+  cycle: number;
+  parentId: string | null;
+  candidateId: string | null;
+  /** 'accept' | 'reject' | null (null = no recorded decision). */
+  decision: string | null;
+  runCount: number;
+  /** epoch ms of the earliest run start in the cycle; null when the cycle has no runs. */
+  startedAt: number | null;
+  /** epoch ms of the latest run finish in the cycle; null when the cycle has no runs. */
+  finishedAt: number | null;
+}
+
+/** Recent completed cycles across the workspace's gym harnesses, freshest first.
+ *  (P-041) `harnessSlug` narrows to a single Hive's gym for the per-Hive lens. */
+export async function listRecentCyclesForWorkspace(
+  sql: Sql,
+  q: { workspaceId: string; harnessSlug?: string; limit?: number },
+): Promise<GymRecentCycleRow[]> {
+  const limit = Math.min(Math.max(q.limit ?? 20, 1), 100);
+  const toMs = (v: unknown): number | null =>
+    v == null ? null : v instanceof Date ? v.getTime() : new Date(String(v)).getTime();
+  const rows = (await sql`
+    SELECT c.harness_slug, c.cycle, c.parent_id, c.candidate_id, c.decision,
+           count(r.run_id)::int AS run_count,
+           min(r.started_at) AS started_at,
+           max(r.finished_at) AS finished_at
+      FROM harness_gym_durable.gym_cycles c
+      LEFT JOIN harness_gym_durable.gym_runs r
+        ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug AND r.cycle = c.cycle
+     WHERE c.workspace_id = ${q.workspaceId}
+       ${q.harnessSlug ? sql`AND c.harness_slug = ${q.harnessSlug}` : sql``}
+     GROUP BY c.harness_slug, c.cycle, c.parent_id, c.candidate_id, c.decision
+     ORDER BY max(r.finished_at) DESC NULLS LAST, c.cycle DESC
+     LIMIT ${limit}`) as Row[];
+  return rows.map((r) => ({
+    harnessSlug: String(r.harness_slug ?? ''),
+    cycle: Number(r.cycle ?? 0),
+    parentId: r.parent_id == null ? null : String(r.parent_id),
+    candidateId: r.candidate_id == null ? null : String(r.candidate_id),
+    decision: r.decision == null ? null : String(r.decision),
+    runCount: Number(r.run_count ?? 0),
+    startedAt: toMs(r.started_at),
+    finishedAt: toMs(r.finished_at),
+  }));
+}
+
 export interface DecideResult {
   ok: boolean;
   reason?: string;

@@ -99,3 +99,62 @@ describe('resolveSelfSession — claude cold-carry respawn chain (WI-5644)', () 
     expect(resolved).toEqual({ sourceKind: 'claude', sessionId: CURRENT, filePath: join(proj, `${CURRENT}.jsonl`) });
   });
 });
+
+describe('resolveSelfSession — coord-id drift across a carry-respawn (WI-5681)', () => {
+  const CURRENT_TXN = 'cdeb9be0-0e7d-40db-bd29-7426f2d19b36'; // live transcript basename
+
+  it('bridges to the isolation dir via the live process CLAUDE_CONFIG_DIR when the coord id drifted', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+    roots.push(home);
+    const coordId = 'su-current-coord'; // what coord:whoami returns NOW
+    const launchId = 'su-launch-time-iso'; // the id that NAMES the isolation dir (frozen at launch)
+    // The transcript lives under the LAUNCH-time id's isolation dir, NOT the coord id's.
+    const proj = join(home, '.papercusp', 'session-claude', launchId, 'projects', '-home-marsh-proj');
+    await mkdir(proj, { recursive: true });
+    const txnPath = join(proj, `${CURRENT_TXN}.jsonl`);
+    await writeFile(txnPath, '{}\n');
+    // The discovery record is keyed by the CURRENT coord id and carries the live pids.
+    const ptyDir = join(home, '.papercusp', 'psu-pty');
+    await mkdir(ptyDir, { recursive: true });
+    await writeFile(
+      join(ptyDir, `${coordId}.json`),
+      JSON.stringify({ command: 'claude', pid: 111, ptyPid: 222, args: [] }),
+    );
+
+    const isoConfigDir = join(home, '.papercusp', 'session-claude', launchId);
+    const resolved = await resolveSelfSession(coordId, {
+      home,
+      loadActiveSessions: async () => [],
+      // What /proc/<ptyPid>/environ carries: the live CLI's real CLAUDE_CONFIG_DIR.
+      readProcEnviron: async (pid) => (pid === 222 ? { CLAUDE_CONFIG_DIR: isoConfigDir } : null),
+    });
+
+    // Pre-fix: the coord-id dir is empty and no uuid pins it → null (the 0-hit
+    // "could not be pinned" degrade). It must bridge via the live process env.
+    expect(resolved).toEqual({ sourceKind: 'claude', sessionId: CURRENT_TXN, filePath: txnPath });
+  });
+
+  it('never cross-contaminates: ignores a CLAUDE_CONFIG_DIR outside a session-claude root', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+    roots.push(home);
+    const coordId = 'su-current-coord';
+    // A shared ~/.claude config dir holds OTHER owners' sessions — never trust it
+    // for the drift bridge.
+    const sharedDir = join(home, '.claude');
+    await mkdir(join(sharedDir, 'projects', '-home-x'), { recursive: true });
+    await writeFile(join(sharedDir, 'projects', '-home-x', 'peer.jsonl'), '{}\n');
+    const ptyDir = join(home, '.papercusp', 'psu-pty');
+    await mkdir(ptyDir, { recursive: true });
+    await writeFile(
+      join(ptyDir, `${coordId}.json`),
+      JSON.stringify({ command: 'claude', pid: 111, ptyPid: 222, args: [] }),
+    );
+
+    const resolved = await resolveSelfSession(coordId, {
+      home,
+      loadActiveSessions: async () => [],
+      readProcEnviron: async () => ({ CLAUDE_CONFIG_DIR: sharedDir }),
+    });
+    expect(resolved).toBeNull();
+  });
+});
