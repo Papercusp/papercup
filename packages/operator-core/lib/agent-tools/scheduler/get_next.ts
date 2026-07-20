@@ -58,6 +58,48 @@ export const IDLE_PULL_MISS_ADVICE =
   'The wake is a HINT that work may exist, never a claim: scheduler:get_next stays the AUTHORITATIVE claim on the wake turn; ' +
   'if it misses again, re-register the same await and end your turn again.';
 
+/**
+ * EI-18167154191955470: internal budget for the get_next DB path. During a fleet-drain cold
+ * wake, a routine scheduler:get_next hung with ZERO response/progress for the full 300s MCP
+ * idle timeout and was aborted by the client; an immediate retry of the identical call
+ * succeeded (a floor-gated miss) in ~2s. The signature of PG pool contention: a query stuck
+ * waiting on a pool connection blocks silently — no error, no progress — until a connection
+ * frees. This budget bounds the heaviest DB legs (the atomic claim + the miss-diagnosis
+ * fan-out) so such a stall returns a FAST, clean, retryable error WELL under the 300s idle
+ * abort instead of the observed silent-hang failure mode. 30s is ~15x the normal ~2s latency
+ * (so it never false-fires on a healthy-but-busy call) and 10x under the idle abort (so the
+ * client NEVER hard-aborts first). The underlying pool-saturation root cause is tracked
+ * separately (EI-18147753127456018); this closes the bad-failure-mode half.
+ */
+export const GET_NEXT_BUDGET_MS = 30_000;
+
+/**
+ * The fast, self-describing miss the tool returns when its DB path exceeds GET_NEXT_BUDGET_MS,
+ * instead of hanging until the MCP client's 300s idle-timeout abort (EI-18167154191955470).
+ * Distinct `error: 'timeout'` + `retryable: true` so a caller can distinguish it from a genuine
+ * "no claimable work" miss and simply retry — a prior incident's immediate retry succeeded in ~2s.
+ */
+export function getNextTimeoutResult(budgetMs = GET_NEXT_BUDGET_MS): {
+  ok: false;
+  error: 'timeout';
+  retryable: true;
+  budgetMs: number;
+  message: string;
+} {
+  return {
+    ok: false,
+    error: 'timeout',
+    retryable: true,
+    budgetMs,
+    message:
+      `scheduler:get_next exceeded its ${budgetMs}ms internal budget (likely transient PG pool ` +
+      `contention) and returned a fast error instead of hanging until the MCP client's 300s ` +
+      `idle-timeout abort (EI-18167154191955470). This is a RETRYABLE transient — the claim path ` +
+      `is unchanged and a prior incident's immediate retry succeeded in ~2s. Retry now; if it ` +
+      `persists, the account/PG pool may be saturated (see accounts:status / dev:rate_governor_status).`,
+  };
+}
+
 /** WI-4413: pull the ids a claim spec NAMES (the leader-tranche shape) out of its view filter. */
 export function specNamedIds(spec: unknown): string[] {
   const view = (spec as { view?: { filter?: { all?: unknown[] } } } | undefined)?.view;
@@ -351,24 +393,51 @@ export default defineTool({
     // preference, so the kill-switch may disable scheduler steering but cannot widen a
     // member into the generic backlog.
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
-    const res = await getNextForBee({
-      cupId: ident.ownerId,
-      // WI-1564: MUST match the partition scheduler:set_claim_spec writes
-      // (same resolveClaimSpecWorkspace helper) — a reader left on 'default'
-      // while the queen writes the workspace partition (or a federated spec
-      // arrives under the booted workspace) silently falls back to
-      // DEFAULT_CLAIM_SPEC and the steer never lands.
-      workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-      harness: args.harness,
-      heldPaths: args.heldPaths,
-      states: args.states,
-      rigAvailable: args.rigAvailable,
-      ignoreStoredSpec: !specOn && !reconciliation.scope,
-      // P-006 (fleet-leader-frictions-six-improvements-2026-07-10, WI-3763): this is
-      // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
-      // view is empty" signal a fleet leader wants pushed, so opt in.
-      checkIdleDrainOnMiss: true,
-    });
+    // EI-18167154191955470: the atomic claim is the heaviest single DB op in this path — an
+    // UPDATE ... FOR UPDATE SKIP LOCKED that must acquire both a pool connection and a row lock,
+    // the most likely place to block under PG pool saturation. Bound it so a stall fails FAST
+    // with a clean, retryable error instead of the observed failure mode: a silent 300s hang,
+    // aborted by the MCP client idle-timeout, whose immediate retry then succeeded in ~2s.
+    // NOTE (see withBoundedTimeout's own doc): this is a Promise.race and does NOT cancel the
+    // query, so a claim UPDATE that commits in the background AFTER the deadline is a possible
+    // orphan — but that orphan is self-healing (reconcileFleetScopeClaims + the lease reclaim
+    // run at the TOP of the very next get_next sweep it) AND it already existed under today's
+    // 300s hang; we only fail faster. A real throw is re-surfaced loudly, never a silent miss.
+    const claim = await withBoundedTimeout(
+      getNextForBee({
+        cupId: ident.ownerId,
+        // WI-1564: MUST match the partition scheduler:set_claim_spec writes
+        // (same resolveClaimSpecWorkspace helper) — a reader left on 'default'
+        // while the queen writes the workspace partition (or a federated spec
+        // arrives under the booted workspace) silently falls back to
+        // DEFAULT_CLAIM_SPEC and the steer never lands.
+        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+        harness: args.harness,
+        heldPaths: args.heldPaths,
+        states: args.states,
+        rigAvailable: args.rigAvailable,
+        ignoreStoredSpec: !specOn && !reconciliation.scope,
+        // P-006 (fleet-leader-frictions-six-improvements-2026-07-10, WI-3763): this is
+        // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
+        // view is empty" signal a fleet leader wants pushed, so opt in.
+        checkIdleDrainOnMiss: true,
+      }),
+      // fallback:null is a type-correct member of getNextForBee's return (`... | null`) and is
+      // NEVER read — we branch on `claim.degraded` before ever touching `claim.value`.
+      { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:claim' },
+    );
+    // A genuine underlying error surfaces loudly (preserving today's behavior where a thrown
+    // getNextForBee propagates), never degraded into a false "no claimable work" miss.
+    if (claim.degraded && claim.reason === 'error') {
+      throw new Error(claim.errorMessage ?? 'scheduler:get_next claim failed');
+    }
+    // Budget exceeded: return the fast, retryable timeout miss instead of hanging to the abort.
+    if (claim.degraded) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(getNextTimeoutResult()) }],
+      };
+    }
+    const res = claim.value;
     // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to
     // DEFAULT_CLAIM_SPEC (plain oldest-first) — it can silently draw owner-deferred work
     // (a paused/de-scoped category) a curated spec would have excluded. Advisory only (the
@@ -454,13 +523,30 @@ export default defineTool({
     // never be able to break the claim path it is only annotating.
     const missDiagnosis = res || reconciliation.scope || invalidHarnessKnownSlugs
       ? { error: '' as string, diagnosis: undefined, floors: undefined }
-      : await buildMissDiagnosis({
-          ownerId: ident.ownerId,
-          workspaceId: ident.workspaceId,
-          harness: args.harness,
-          states: args.states,
-          rigAvailable: args.rigAvailable,
-        });
+      : (
+          // EI-18167154191955470: the miss diagnosis fans out to several unbounded PG reads
+          // (getClaimSpecRecord / getActiveClaimsForBee / diagnoseClaimNextMiss / …) — bound it
+          // too so a pool stall HERE can't reproduce the 300s hang. buildMissDiagnosis already
+          // fails soft to the STATIC message, so the timeout fallback is exactly that static miss.
+          await withBoundedTimeout(
+            buildMissDiagnosis({
+              ownerId: ident.ownerId,
+              workspaceId: ident.workspaceId,
+              harness: args.harness,
+              states: args.states,
+              rigAvailable: args.rigAvailable,
+            }),
+            {
+              fallback: {
+                error: 'no claimable work-item matched your spec within the floors',
+                diagnosis: undefined,
+                floors: undefined,
+              },
+              timeoutMs: 15_000,
+              label: 'scheduler:get_next:missDiagnosis',
+            },
+          )
+        ).value;
     // EI-13520: a genuine (non-paused) scoped miss may be a release-cooldown artifact,
     // not a real scope/spec problem — check before reporting a bare fleetScopedMiss so
     // the caller (and the leader they'd otherwise flag a false spec bug to) gets the

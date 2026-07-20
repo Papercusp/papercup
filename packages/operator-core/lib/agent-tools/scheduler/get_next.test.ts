@@ -9,7 +9,7 @@
  * `states` arg re-opened the identical hole at the tool boundary. These tests
  * pin the clamp: `states` accepts only CLAIM_STATES_ALLOWLIST members.
  */
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 
 const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
@@ -81,7 +81,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   }),
 }));
 
-import getNextTool from './get_next';
+import getNextTool, { GET_NEXT_BUDGET_MS } from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 
@@ -249,5 +249,59 @@ describe('scheduler:get_next harness-existence gate (EI-16057)', () => {
     const b = JSON.parse(out.content[0]!.text);
     expect(b.error).not.toBe('invalid_input');
     expect(getNextM).toHaveBeenCalledOnce();
+  });
+});
+
+// EI-18167154191955470: a routine scheduler:get_next hung with ZERO response/progress for the
+// full 300s MCP idle timeout (the signature of PG pool contention — a query stuck waiting on a
+// pool connection blocks silently, no error) and was aborted by the client; an immediate retry
+// succeeded in ~2s. The DB path (chiefly the atomic claim) is now bounded so such a stall returns
+// a FAST, clean, retryable error WELL under the idle abort. These pin the two behaviors: fail
+// FAST (never a silent hang) and fail LOUD (a real error is never swallowed into a false miss).
+describe('scheduler:get_next bounds the claim path against a silent hang (EI-18167154191955470)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns a fast retryable timeout miss when the claim exceeds the budget, not a 300s hang', async () => {
+    vi.useFakeTimers();
+    // Simulate the pool-contention stall: the atomic claim never resolves within the budget.
+    getNextM.mockImplementation(() => new Promise(() => {}));
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      content: Array<{ text: string }>;
+    }>;
+    // Advance past the internal budget so the bounded-timeout deadline fires; without the bound
+    // this promise would never settle (the hang the bug reported).
+    await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
+    const out = await p;
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      budgetMs: GET_NEXT_BUDGET_MS,
+    });
+    expect(typeof b.message).toBe('string');
+    // The message must point the caller at the real failure (idle-timeout abort) + the retry.
+    expect(b.message).toContain('300s');
+    // A transient timeout is NOT a drained lane — windDown must never be set for it.
+    expect(b.windDown).toBeUndefined();
+  });
+
+  it('re-surfaces a genuine underlying claim error loudly — never swallowed as a silent miss', async () => {
+    getNextM.mockRejectedValue(new Error('pool exhausted: boom'));
+    await expect(
+      getNextTool.handler({ harness: 'papercusp' } as never, {} as never),
+    ).rejects.toThrow(/pool exhausted: boom/);
   });
 });
