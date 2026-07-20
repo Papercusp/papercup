@@ -394,7 +394,7 @@ async function writeToPg(
     -- completion-integrity pair and share the same fed_apply_wins tie-break).
     -- P-009/D-001 (work-item-status-full-unify): terminal_reason joins the digest
     -- for the SAME reason — two different completions of one item can converge to
-    -- an IDENTICAL status/taken_by (e.g. both `done`) while carrying DIFFERENT
+    -- an IDENTICAL status/taken_by (e.g. both 'done') while carrying DIFFERENT
     -- terminal_reason (passed vs plain-done, resolved vs plain-done). Omitting it
     -- would make the tie branch's "equal digest ⇒ identical content ⇒ no-op"
     -- invariant FALSE for those ops, so a racing peer could silently overwrite the

@@ -266,7 +266,10 @@ async function writeToPg(
       fed_hlc       = EXCLUDED.fed_hlc,
       updated_ts    = EXCLUDED.updated_ts,
       terminal_owner = EXCLUDED.terminal_owner,
-      terminal_completion_ref = EXCLUDED.terminal_completion_ref
+      terminal_completion_ref = EXCLUDED.terminal_completion_ref,
+      -- P-009/D-001 (work-item-status-full-unify): the terminal nuance
+      -- (resolved→done / closed→dropped) must converge like status itself.
+      terminal_reason = EXCLUDED.terminal_reason
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
@@ -293,15 +296,22 @@ async function writeToPg(
     -- (observed live: a completion's terminalCompletionRef matched the caller's own
     -- text exactly, but terminalOwner was stamped as an unrelated peer who had
     -- earlier briefly held the same item).
+    -- P-009/D-001: terminal_reason joins the digest for the SAME reason as the
+    -- terminal_owner pair above — two completions can converge to an identical
+    -- status (e.g. both `done`) while carrying a different terminal_reason
+    -- (resolved vs plain-done), so excluding it would let a racing peer silently
+    -- overwrite the correct terminal nuance under the "equal digest ⇒ no-op" tie.
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
                           EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text,
-                          EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref)),
+                          EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref,
+                          EXCLUDED.terminal_reason)),
             work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
             md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
                           work_items.status, work_items.taken_by, work_items.payload::text,
-                          work_items.terminal_owner, work_items.terminal_completion_ref)))
+                          work_items.terminal_owner, work_items.terminal_completion_ref,
+                          work_items.terminal_reason)))
   `;
 }
 
