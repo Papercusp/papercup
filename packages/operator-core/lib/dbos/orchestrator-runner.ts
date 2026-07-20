@@ -662,7 +662,11 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, id
     // Surface it: an unresolved harness and an agent that exits empty are otherwise
     // indistinguishable upstream (both → "invoke failed exit=1 empty=true").
     console.error(`[dbos-invoke] role=${role} resolveProject NULL — unknown harness slug=${harnessSlug} ws=${workspaceId ?? '(none)'}`);
-    return { output: '', exitCode: 1 };
+    // TERMINAL, not transient (WI-5630): an unresolvable harness can never succeed
+    // on retry. Flag it so the workflow STOPS the pipeline cleanly rather than
+    // throw → 3× step retry → 10× DBOS recovery, each attempt spawning a real agent
+    // subprocess that burns gym budget and orphans ephemeral test-PG connections.
+    return { output: '', exitCode: 1, unresolvedHarness: true };
   }
   // P-070 usage ledger (best-effort, never throws): a worker run starting is
   // `feature_worked_start`; ANY role run ending is `agent_run_completed` and a

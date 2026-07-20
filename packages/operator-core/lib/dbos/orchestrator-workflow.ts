@@ -87,7 +87,21 @@ export type PipelineInvokeRunner = (
   /** Complete KEY=value extras for this agent run (e.g. FEATURE_ID=, VAL_ID=). */
   extras: string[],
   workspaceId?: string,
-) => Promise<{ output: string; exitCode: number }>;
+) => Promise<{
+  output: string;
+  exitCode: number;
+  /**
+   * TERMINAL (not transient): the harness no longer resolves — `resolveProject`
+   * returned null because the harness was never registered, was torn down
+   * (a gym throwaway `gymbaseline*` whose ephemeral registration is gone), or
+   * the pipeline's captured workspace no longer resolves it. Distinct from a
+   * plain `exitCode:1` empty result (crash / usage-limit / auth), which IS worth
+   * retrying: an unresolvable harness can NEVER succeed on retry, so the workflow
+   * must STOP cleanly instead of throw→retry-storm→ERROR (each retry spawns a
+   * real agent subprocess that burns budget + orphans DB connections). WI-5630.
+   */
+  unresolvedHarness?: boolean;
+}>;
 
 // ── Injected pipeline hooks (runner + optional seams) — globalThis-backed ──────
 // The operator injects these at boot (wireOrchestratorInvokeRunner → the setters
@@ -322,6 +336,10 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
           maxAttempts: Number(process.env.PAPERCUSP_DECIDE_RL_MAX_ATTEMPTS) || undefined,
           maxTotalWaitMs: Number(process.env.PAPERCUSP_DECIDE_RL_MAX_WAIT_MS) || undefined,
         });
+        // TERMINAL, not transient (WI-5630): the harness no longer resolves. Return
+        // the sentinel WITHOUT throwing so DBOS does not retry (3× step + 10×
+        // recovery) an invoke that can never succeed — the loop below stops cleanly.
+        if (r.unresolvedHarness) return r;
         if (r.exitCode !== 0 || !r.output.trim()) {
           throw new Error(`decide invoke failed (exit=${r.exitCode}, empty=${!r.output.trim()})`);
         }
@@ -329,6 +347,17 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
       },
       { name: `decide-${turn}`, retriesAllowed: true, maxAttempts: 3, intervalSeconds: 5, backoffRate: 2 },
     );
+
+    if (decision.unresolvedHarness) {
+      // The harness is gone (a torn-down gym `gymbaseline*` throwaway, or a
+      // captured workspace that no longer resolves it). Stop the pipeline cleanly:
+      // no terminal outcome → no finalization, no ERROR. The dispatcher re-scans
+      // for a real harness; a dead gym throwaway simply ends here without poisoning
+      // the surrounding gym cycle (an ERRORed run can abort the cycle before any
+      // proposal is recorded). WI-5630.
+      lastVerb = 'HARNESS_UNRESOLVED';
+      break;
+    }
 
     const action = deriveNext(spine, parseDecisionFor(spineVerbs, decision.output), input.featureId);
 
@@ -410,7 +439,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     }
 
     // dispatch: run the role as an idempotent agent run (checkpointed).
-    await DBOS.runStep(
+    const dispatch = await DBOS.runStep(
       () =>
         runner()(
           input.harnessSlug,
@@ -422,6 +451,13 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
         ),
       { name: `invoke-${action.role}-${turn}` },
     );
+    if (dispatch.unresolvedHarness) {
+      // Harness vanished between decide and this dispatch (a gym throwaway torn
+      // down mid-pipeline). Stop cleanly rather than loop into another failing
+      // decide next turn. WI-5630.
+      lastVerb = 'HARNESS_UNRESOLVED';
+      break;
+    }
     lastVerb = action.role.toUpperCase();
   }
 

@@ -9,7 +9,7 @@
  *     (work-stealing, D-007): competing consumers each grab a different, most-starved item.
  *   • observe (`rd`) reads claimability WITHOUT taking.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -318,5 +320,72 @@ describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 clas
     expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'w1' }, 'default')).toBeNull();
     const peerRow = (await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-peer-remote'`)[0];
     expect(peerRow.taken_by).toBeNull();
+  });
+});
+
+// work-item-status-full-unify (P-008, WI-5627): the WHOLE POINT of the status
+// collapse — a single unified claimable token ('open') spans BOTH families, so ONE
+// unqualified claim spec (no `kind` narrowing) drains a feature AND a bug that both
+// read 'open'. Pre-unification, features used 'todo' and issues used 'open', so a
+// claimer that floored on one vocabulary silently skipped the other family. These
+// tests are the regression guard for that (claim floor ['open'] — work-items.ts:3224),
+// plus the terminal_reason mapping that keeps the collapse loss-free + reversible.
+describe('unified status vocab — one open token, both families claimable (P-008)', () => {
+  // claimNextWorkItem's tier-3 issue-family fall-through is gated behind
+  // SCHEDULER_ISSUES_CLAIMABLE (default-ON in prod; pin it so the fresh-DB flag store
+  // can't leave the issue tier inert and mask a real cross-family regression).
+  beforeEach(() => setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true }));
+  afterEach(() => setFlagOverridesForTest({}));
+
+  it('ONE unqualified claim spec drains BOTH a feature and a bug that both read `open`', async () => {
+    // A feature (harness_features_consolidated leg) and a bug (issue leg) — DIFFERENT
+    // families, SAME 'open' status. Older created_ts wins first (oldest-first, D-007).
+    await seedFeature('F-open-feat', { status: 'open', createdTs: 100 });
+    await seedIssue('WI-open-bug', { kind: 'bug', status: 'open', createdTs: 200 });
+
+    // No `kind` filter ⇒ the unqualified spec. Two claims drain the whole pool.
+    const first = await wi.claimNextWorkItem({ harness: H, assignee: 'w1' });
+    const second = await wi.claimNextWorkItem({ harness: H, assignee: 'w1' });
+
+    // BOTH ids drained by ONE unqualified spec — proves the single 'open' token spans
+    // both families (the unification's headline behaviour).
+    const ids = [first?.id, second?.id].sort();
+    expect(ids).toEqual(['F-open-feat', 'WI-open-bug']);
+    // …and BOTH families were actually crossed (not two rows of one family).
+    const families = [first?.family, second?.family].sort();
+    expect(families).toEqual(['feature', 'issue']);
+    // The pool is now genuinely drained.
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
+  });
+
+  it('terminal_reason preserves the pre-unification spelling across the fold (loss-free)', async () => {
+    async function reasonOf(id: string) {
+      const r = (await db.sql<{ status: string; terminal_reason: string | null }[]>`
+        SELECT status, terminal_reason FROM harness_shared.work_items WHERE feature_id = ${id}`)[0];
+      return r;
+    }
+
+    // Issue-family legacy terminals: resolved→done, closed→dropped — reason = raw spelling.
+    await seedIssue('WI-resolved', { kind: 'bug', status: 'open' });
+    await wi.setWorkItemState('WI-resolved', 'resolved', { by: 'agA', completionRef: 'fixed it' });
+    expect(await reasonOf('WI-resolved')).toEqual({ status: 'done', terminal_reason: 'resolved' });
+
+    await seedIssue('WI-closed', { kind: 'bug', status: 'open' });
+    await wi.setWorkItemState('WI-closed', 'closed', { by: 'agA', completionRef: 'wont fix' });
+    expect(await reasonOf('WI-closed')).toEqual({ status: 'dropped', terminal_reason: 'closed' });
+
+    // Feature-family legacy terminals: passed→done, deprecated→dropped.
+    await seedFeature('F-passed', { kind: 'feature', status: 'open' });
+    await wi.setWorkItemState('F-passed', 'passed', { by: 'agA', completionRef: 'shipped' });
+    expect(await reasonOf('F-passed')).toEqual({ status: 'done', terminal_reason: 'passed' });
+
+    await seedFeature('F-deprecated', { kind: 'feature', status: 'open' });
+    await wi.setWorkItemState('F-deprecated', 'deprecated', { by: 'agA', completionRef: 'cut' });
+    expect(await reasonOf('F-deprecated')).toEqual({ status: 'dropped', terminal_reason: 'deprecated' });
+
+    // A PLAIN unified terminal carries no legacy nuance ⇒ terminal_reason stays NULL.
+    await seedIssue('WI-plain-done', { kind: 'bug', status: 'open' });
+    await wi.setWorkItemState('WI-plain-done', 'done', { by: 'agA', completionRef: 'done' });
+    expect(await reasonOf('WI-plain-done')).toEqual({ status: 'done', terminal_reason: null });
   });
 });
