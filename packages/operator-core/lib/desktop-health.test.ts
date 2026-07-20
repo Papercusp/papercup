@@ -20,7 +20,14 @@ vi.mock('node:os', async (orig) => {
 });
 import { tmpdir } from 'node:os';
 
-import { probeDesktop, apiPortForTarget, resolveDesktopIpcDiscovery, type DesktopSignals, type LiveBridge } from './desktop-health';
+import {
+  probeDesktop,
+  apiPortForTarget,
+  resolveDesktopIpcDiscovery,
+  realIpcConnectable,
+  type DesktopSignals,
+  type LiveBridge,
+} from './desktop-health';
 import { writeEndpointIpcDiscovery, endpointIpcDiscoveryPath } from './endpoint-ipc-discovery';
 
 const BRIDGE: LiveBridge = { port: 43379, token: 'tok', pid: 4242 };
@@ -243,5 +250,72 @@ describe('resolveDesktopIpcDiscovery (EI-7760: don\'t trust the racy last-writer
     await mkdir(join(h.home, '.papercusp'), { recursive: true });
     await writeFile(join(h.home, '.papercusp', 'desktop-build-target.json'), '{ not json', 'utf8');
     expect(await resolveDesktopIpcDiscovery()).toBeNull();
+  });
+});
+
+// EI-18131725582506957: a routine operator restart (dev:restart{target:'staging'}, or its
+// ~2min coalesced auto-fire) tears the IPC socket down and re-execs it, typically well
+// under a second. A probe tick landing in that window must not immediately report the
+// desktop DOWN — realIpcConnectable retries once after a short delay before giving up.
+describe('realIpcConnectable (EI-18131725582506957: restart-window false-DOWN)', () => {
+  const savedPort = process.env.PAPERCUSP_HONO_PORT;
+  let servers: net.Server[] = [];
+
+  beforeEach(async () => {
+    h.home = await mkdtemp(join(tmpdir(), 'desktop-health-ipc-'));
+  });
+
+  afterEach(async () => {
+    const home = h.home;
+    h.home = '';
+    await rm(home, { recursive: true, force: true });
+    if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+    else process.env.PAPERCUSP_HONO_PORT = savedPort;
+    await Promise.all(servers.map((s) => new Promise((r) => s.close(() => r(undefined)))));
+    servers = [];
+  });
+
+  async function pointBuildTargetAt(socketPath: string, port = 3170) {
+    await mkdir(join(h.home, '.papercusp'), { recursive: true });
+    await writeFile(join(h.home, '.papercusp', 'desktop-build-target.json'), JSON.stringify({ name: 'staging', port }), 'utf8');
+    process.env.PAPERCUSP_HONO_PORT = String(port);
+    await writeEndpointIpcDiscovery(socketPath);
+  }
+
+  function listenOn(socketPath: string): Promise<net.Server> {
+    return new Promise((resolve, reject) => {
+      const srv = net.createServer((sock) => sock.end());
+      srv.once('error', reject);
+      srv.listen(socketPath, () => resolve(srv));
+    });
+  }
+
+  it('recovers when the socket comes back up before the retry — no false DOWN across a restart blip', async () => {
+    const sockPath = join(h.home, 'restarting.sock');
+    await pointBuildTargetAt(sockPath);
+    // Nothing listening yet (first attempt must fail) — start the "restarted operator"
+    // listening shortly after, well inside the retry delay.
+    setTimeout(() => {
+      listenOn(sockPath).then((s) => servers.push(s));
+    }, 15);
+    const up = await realIpcConnectable(200, 50);
+    expect(up).toBe(true);
+  });
+
+  it('still reports unreachable when nothing ever comes back up (a genuinely dead operator)', async () => {
+    const sockPath = join(h.home, 'never-comes-up.sock');
+    await pointBuildTargetAt(sockPath);
+    const up = await realIpcConnectable(100, 20);
+    expect(up).toBe(false);
+  });
+
+  it('is up immediately (no retry delay paid) when the socket is already live', async () => {
+    const sockPath = join(h.home, 'already-live.sock');
+    await pointBuildTargetAt(sockPath);
+    servers.push(await listenOn(sockPath));
+    const started = Date.now();
+    const up = await realIpcConnectable(500, 5000); // huge retryDelayMs — must NOT be paid
+    expect(up).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });
