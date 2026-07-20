@@ -139,11 +139,12 @@ export function scanTextForSecrets(path: string, content: string): SecretFinding
 const FIXTURE_FILES: ReadonlySet<string> = new Set([
   'packages/operator-core/lib/sync/pot-git/secrets-guard.test.ts',
   // Sibling guard: the Claude Code PreToolUse secrets hook embeds credential
-  // SHAPES as detection patterns + self-test fixtures (e.g. a literal
-  // `-----BEGIN RSA PRIVATE KEY-----` on its PEM self-test case, line ~175). Its
-  // blob wedged the papercusp own-head publish plane 2026-07-20 (identical class
-  // to the .test.ts above) — a real-issued key never lives in a secrets
-  // detector's own fixture set, so exempting it costs no real-secret recall.
+  // SHAPES as detection patterns + self-test fixtures (its PEM self-test case
+  // is a bare private-key header literal — deliberately NOT reproduced here, so
+  // this scanner's own source stays clean). That blob wedged the papercusp
+  // own-head publish plane 2026-07-20 (identical class to the .test.ts above) —
+  // a real-issued key never lives in a secrets detector's own fixture set, so
+  // exempting it costs no real-secret recall.
   'apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs',
 ]);
 

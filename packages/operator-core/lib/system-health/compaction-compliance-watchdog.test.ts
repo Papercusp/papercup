@@ -75,6 +75,7 @@ vi.mock('../compaction-usage', () => ({
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
   setCompactionLimit: setLimitMock,
+  writePresence: writePresenceMock,
 }));
 vi.mock('../agent-tools/coordination/escalations', () => ({
   openEscalation: openEscalationMock,
@@ -122,6 +123,7 @@ import {
   staleCutoversForProcessStart,
   resetStaleCutoverEscalationsForTests,
   startCompactionComplianceWatchdog,
+  discoverPresencelessLoopOwners,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,
@@ -148,9 +150,20 @@ function fakeSql(opts: {
     string,
     Array<{ work_item_id: string; acquired_ms: string; last_activity_ms: string; checkpoint_updated_ms: string | null }>
   >;
+  /** EI-18127246030401689: active-loop owners with no coord_presence row. */
+  presenceGaps?: Array<{ owner_id: string; workspace_id: string | null }>;
+  /** owner_id → label, from harness_shared.fleet_membership_events. */
+  fleetLabels?: Record<string, string>;
 }) {
   return ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join(' ');
+    if (q.includes('harness_shared.routines') && q.includes('target_owner_id')) {
+      return Promise.resolve(opts.presenceGaps ?? []);
+    }
+    if (q.includes('fleet_membership_events')) {
+      const label = opts.fleetLabels?.[String(values[0])];
+      return Promise.resolve(label ? [{ owner_label: label }] : []);
+    }
     if (q.includes('compaction_limit IS NULL')) return Promise.resolve(opts.unseeded ?? []);
     if (q.includes('compaction_limit IS NOT NULL')) return Promise.resolve(opts.seeded ?? []);
     if (q.includes('spawned_agents')) {
@@ -198,6 +211,7 @@ beforeEach(() => {
   resetContextUsageCacheForTests(); // P-013 gauge cache + flag mirror
   resetImplausibleReadingsForTests(); // EI-10434 sanity-clamp warn dedup
   resetStaleCutoverEscalationsForTests(); // EI-16190 pre-cutover-process dedup
+  writePresenceMock.mockResolvedValue(undefined);
   // The watchdog narrates seeds/over-limit crossings on the console by design;
   // silence it so vitest-fail-on-console doesn't flag the expected output.
   vi.spyOn(console, 'log').mockImplementation(() => {});

@@ -1298,6 +1298,57 @@ export async function reconcileRemoteHandlesAfterSidecarRestart(
   return { rebooted, failed };
 }
 
+/**
+ * EI-16949 (WI-183-orphan-class): drop EVERY booted handle's replication-liveness
+ * REGISTRY tracking (auto-resolving any durable EI a latched stall alarm had
+ * filed) WITHOUT touching the native Hypercore/Hyperswarm teardown at all.
+ *
+ * `closeAllBootedHarnesses()` normally does this as a side effect of each
+ * handle's `.close()` (boot.ts calls `dropReplicationLiveness` first thing) —
+ * but `gracefulHostRecycle` (host-recycle.ts) deliberately SKIPS calling
+ * `closeAllBootedHarnesses()` entirely when the event loop is under pressure
+ * (WI-3795) or for a memory-watchdog recycle (EI-9649), to avoid starting the
+ * native substrate close that can throw an uncaught Napi::Error/SIGABRT below
+ * the JS layer. That skip is correct for the native teardown, but it ALSO
+ * skipped this pure-JS/PG registry cleanup as an unintended side effect — so
+ * any harness with a currently-latched replication-liveness alarm (e.g. the
+ * `papercusp` dev harness's OWN merge loop, which restarts routinely under
+ * `papercup-staging-sync.timer`'s 5-minute freshness cadence) left its durable
+ * EI open FOREVER: the only path that could ever auto-resolve it (a live
+ * process re-sampling the SAME logKeyHex as healthy) can never run once this
+ * process exits, and the drop-on-close path that WOULD have resolved it was
+ * the very thing just skipped. Observed live: 173 open `[replication-liveness]`
+ * EIs (2026-07-19), the single largest class in the papercusp bug backlog,
+ * the majority against `harness=papercusp` itself.
+ *
+ * This function is the safe subset of `closeAllBootedHarnesses()` — registry
+ * bookkeeping + a best-effort durable-EI resolve write, no native calls at
+ * all — so `gracefulHostRecycle` can call it EVEN WHEN it skips the real
+ * substrate teardown, closing the orphaned-EI leak without reintroducing the
+ * crash risk the skip exists to avoid. Awaits every handle's resolve writes
+ * (bounded by the caller's own shutdown budget) so they get a real chance to
+ * land before the process exits. Best-effort per-handle: one harness's
+ * failure never blocks the rest. Does NOT clear `handles`/wiring state — the
+ * caller is about to exit the process anyway (or, in a non-shutdown test
+ * call, the handles remain live and bootable as normal).
+ */
+export async function dropAllReplicationLivenessTracking(): Promise<string[]> {
+  const { dropReplicationLiveness } = await import('./replication-liveness');
+  const entries = Array.from(handles.values());
+  const dropped: string[] = [];
+  await Promise.all(
+    entries.map(async (h) => {
+      try {
+        await dropReplicationLiveness(h.workspaceId, h.harnessSlug);
+        dropped.push(key(h.workspaceId, h.harnessSlug));
+      } catch {
+        // best-effort — one harness's failure never blocks the rest
+      }
+    }),
+  );
+  return dropped;
+}
+
 /** Tear down every cached handle. For test cleanup + process shutdown. */
 export async function closeAllBootedHarnesses(): Promise<number> {
   const entries = Array.from(handles.entries());

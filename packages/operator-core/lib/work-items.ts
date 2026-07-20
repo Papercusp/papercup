@@ -2759,6 +2759,25 @@ export function claimHoldExclusionSql(
 }
 
 /**
+ * JS-form counterpart of {@link claimHoldExclusionSql} — for an ALREADY-LOADED row
+ * (event-emission guards, placement gather), the single source of truth for "is this
+ * row deliberately parked out of self-select via `payload._claimHold`" (WI-2797).
+ * Text-compare (`String(...) === 'true'`) mirrors the SQL `->>` extraction, matching
+ * both the boolean `true` {@link setWorkItemClaimHold} writes and a legacy string
+ * `'true'`. Canonical home for this predicate — `../fleet/placement-gather`'s
+ * `isClaimHoldParked` re-exports this; `work-items-events.ts`'s claimable-event guard
+ * uses it directly (EI-18128621906886568: that guard used to check only `assignee` +
+ * claimable-state, so a claim-hold-parked row with no live assignee still fired
+ * `work-item:claimable` on every release/requeue/unblock — waking the whole fleet on
+ * work that was never actually claimable, and inviting an "inadvertent re-claim" via
+ * the still-open claim-BY-ID path).
+ */
+export function isClaimHoldParked(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  return String((payload as Record<string, unknown>)._claimHold) === 'true';
+}
+
+/**
  * The OBSERVATION-LANE self-select EXCLUSION floor for issue-family claims. A
  * `payload.lane:'observation'` row is a turn-end-reflection / rubric scorecard filed via
  * `improvements:capture { lane:'observation' }` (D-005): by DESIGN it "never enters the work

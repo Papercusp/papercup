@@ -1359,7 +1359,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (logKey) {
           admitted.delete(logKey);
           replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
-          dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
+          void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
           pubkeyToLogKey.delete(pk);
           admittedIdentities.delete(logKey);
           recordBootEvent(
@@ -1515,7 +1515,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const identity = admittedIdentities.get(logKey);
       admitted.delete(logKey);
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
-      dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
+      void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
       admittedIdentities.delete(logKey);
       // Clean up the pubkey→logKey reverse mapping.
       if (identity?.devicePubkey) {
@@ -3199,7 +3199,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const revokedLog = admitted.get(logKey);
       admitted.delete(logKey);
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
-      dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
+      void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
       pubkeyToLogKey.delete(devicePubkey);
       admittedIdentities.delete(logKey);
       // WI-1856 (G9): the Hypercore SESSION `openRemoteLog` opened for this peer
@@ -4154,7 +4154,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // P-004 (WI-1840): drop this harness's replication-liveness tracking so a
       // closed handle never reads as 'sampling_stale' on a status surface.
       try {
-        dropReplicationLiveness(opts.workspaceId, opts.harnessSlug);
+        await dropReplicationLiveness(opts.workspaceId, opts.harnessSlug);
       } catch {
         /* best-effort */
       }

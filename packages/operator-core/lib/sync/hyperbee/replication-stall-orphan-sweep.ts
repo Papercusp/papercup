@@ -77,7 +77,7 @@ export interface OrphanSweepResult {
 }
 
 async function defaultDeps(): Promise<OrphanSweepDeps> {
-  const [{ listIssues, setIssueState }, { harnessExistsInWorkspace }, { REPLICATION_LIVENESS_TOPIC, RECOVERY_OWNER }] =
+  const [{ listIssues, setIssueState }, { harnessExistsInWorkspace }, { REPLICATION_LIVENESS_TOPIC }] =
     await Promise.all([
       import('../../issues-engineer'),
       import('../../device-harnesses'),
@@ -93,11 +93,10 @@ async function defaultDeps(): Promise<OrphanSweepDeps> {
       return issues.map((i) => ({ id: i.id, body: i.body }));
     },
     harnessExists: harnessExistsInWorkspace,
+    // A distinct resolver identity (not replication-stall-ei.ts's RECOVERY_OWNER)
+    // so "closed because the target no longer exists" stays attributable/greppable
+    // separately from a real recovery sample.
     resolve: async (id, note) => {
-      // RECOVERY_OWNER (not ORPHAN_SWEEP_OWNER) would also be reasonable, but a
-      // distinct identity here makes "closed because the target no longer
-      // exists" greppable/attributable separately from a real recovery sample.
-      void RECOVERY_OWNER; // (kept for readability of the destructure; unused directly)
       await setIssueState(id, 'resolved', ORPHAN_SWEEP_OWNER, note);
     },
   };

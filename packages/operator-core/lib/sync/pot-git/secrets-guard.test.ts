@@ -103,9 +103,9 @@ describe('secrets-guard rules', () => {
     // scanTextForSecrets stays path-agnostic so the rule tests above still fire.
     const fixturePath = 'packages/operator-core/lib/sync/pot-git/secrets-guard.test.ts';
     expect(isFixtureFile(fixturePath)).toBe(true);
-    // Sibling secrets-detector hook: its PEM self-test literal
-    // (`-----BEGIN RSA PRIVATE KEY-----`) wedged the papercusp own-head publish
-    // plane 2026-07-20 — same class, exempted by exact path.
+    // Sibling secrets-detector hook: its bare PEM private-key header self-test
+    // literal wedged the papercusp own-head publish plane 2026-07-20 — same
+    // class, exempted by exact path.
     expect(isFixtureFile('apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs')).toBe(true);
     expect(isFixtureFile('packages/operator-core/lib/sync/pot-git/own-head-publish.ts')).toBe(false);
     const loaded = `k="${AKIA}"\n${GH}`; // real shapes that WOULD flag anywhere else

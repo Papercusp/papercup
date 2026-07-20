@@ -42,7 +42,7 @@
  */
 
 import { mkdirSync } from 'node:fs';
-import { closeAllBootedHarnesses } from './sync/hyperbee/boot-all';
+import { closeAllBootedHarnesses, dropAllReplicationLivenessTracking } from './sync/hyperbee/boot-all';
 import { markShuttingDown } from './shutdown-state';
 import { isLoopElevated } from './event-loop-lag-monitor';
 import { papercuspPath } from './papercusp-root';
@@ -95,6 +95,16 @@ export interface GracefulRecycleOpts {
    * paths keep their existing `isSaturated`-gated behavior unchanged).
    */
   skipSubstrateTeardown?: boolean;
+  /**
+   * EI-16949: test seam — defaults to `dropAllReplicationLivenessTracking`
+   * (boot-all.ts). Called whenever the REAL substrate teardown is skipped
+   * (`skipSubstrateTeardown` or `isSaturated()`), so the pure-JS/PG
+   * replication-liveness registry cleanup (which auto-resolves any durable EI
+   * a latched stall alarm filed) still runs even though the risky native
+   * close does not — see dropAllReplicationLivenessTracking's own doc for the
+   * orphaned-EI leak this closes.
+   */
+  dropReplicationTracking?: () => Promise<unknown>;
   /**
    * EI-10702: once the HTTP drain is done, exit via a NO-CLEANUP hard termination
    * (SIGKILL to self) instead of `process.exit(code)`. `process.exit()` runs Node's
