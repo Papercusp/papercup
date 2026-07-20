@@ -216,10 +216,10 @@ describe('work_items:list admissibleOnly — claimable selector matches the clai
     await seedFeature('F-remote-gated', { origin: 'remote', auditVerdict: null });
     await seedFeature('F-remote-admitted', { origin: 'remote', auditVerdict: 'admit' });
 
-    const full = await wi.listWorkItems({ harness: H, state: 'todo' });
+    const full = await wi.listWorkItems({ harness: H, state: 'open' });
     expect(full.map((r) => r.id).sort()).toEqual(['F-local', 'F-remote-admitted', 'F-remote-gated']);
 
-    const admissibleOnly = await wi.listWorkItems({ harness: H, state: 'todo', admissibleOnly: true });
+    const admissibleOnly = await wi.listWorkItems({ harness: H, state: 'open', admissibleOnly: true });
     expect(admissibleOnly.map((r) => r.id).sort()).toEqual(['F-local', 'F-remote-admitted']);
   });
 });
@@ -258,10 +258,10 @@ describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 clas
     await seedIssue('WI-local', { origin: 'local' });
     await seedIssue('WI-remote', { origin: 'remote' });
 
-    const full = await wi.listWorkItems({ harness: H, kind: 'bug', state: 'todo' });
+    const full = await wi.listWorkItems({ harness: H, kind: 'bug', state: 'open' });
     expect(full.map((r) => r.id).sort()).toEqual(['WI-local', 'WI-remote']);
 
-    const admissibleOnly = await wi.listWorkItems({ harness: H, kind: 'bug', state: 'todo', admissibleOnly: true });
+    const admissibleOnly = await wi.listWorkItems({ harness: H, kind: 'bug', state: 'open', admissibleOnly: true });
     expect(admissibleOnly.map((r) => r.id)).toEqual(['WI-local']);
   });
 

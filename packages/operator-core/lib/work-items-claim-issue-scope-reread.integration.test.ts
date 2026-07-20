@@ -120,7 +120,7 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
   });
 
   it('remote-origin issue rows surface provenance and refuse local set_state with a truthful error', async () => {
-    await seedIssueInWorkspace('WI-remote', 'default', { status: 'todo' });
+    await seedIssueInWorkspace('WI-remote', 'default', { status: 'open' });
     await db.sql`
       UPDATE harness_shared.work_items
          SET origin = 'remote'
@@ -142,7 +142,7 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
       SELECT status, terminal_owner
         FROM harness_shared.work_items
        WHERE workspace_id = 'default' AND feature_id = 'WI-remote'`;
-    expect(rows[0]).toEqual({ status: 'todo', terminal_owner: null });
+    expect(rows[0]).toEqual({ status: 'open', terminal_owner: null });
   });
 
   it('claim_next SERVES an open issue even when the captured claim scope has drifted from getIssue’s re-derived scope (no leaked claim, no false miss)', async () => {

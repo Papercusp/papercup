@@ -192,7 +192,7 @@ function featureRow(fid: string): HarnessFeatureRow {
     feature_id: fid,
     title: fid,
     summary: '',
-    status: 'todo',
+    status: 'open',
     attempts: 0,
     claims: 0,
     notes: null,

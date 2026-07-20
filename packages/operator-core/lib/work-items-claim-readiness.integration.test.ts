@@ -115,7 +115,7 @@ describe('claimNextWorkItem readiness — feature blocker (P-005, F1)', () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
     await seedFeature('F-blocked', { status: 'open', createdTs: 200 });
     await blockByFeature('F-blocked', 'F-blocker');
-    // F-blocker is 'wip' (not claimable here — not 'todo'); F-blocked is the only 'todo'
+    // F-blocker is 'wip' (not claimable here — not 'open'); F-blocked is the only 'open'
     // candidate, but its blocker is non-terminal ⇒ nothing should be claimed.
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
   });
