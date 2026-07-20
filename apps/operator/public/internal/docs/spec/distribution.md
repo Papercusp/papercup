@@ -225,9 +225,18 @@ Names are scoped: @\<owner>/\<package>, where `owner` is a verified GitHub user 
 
 To publish under `@avi/foo`, the publisher must prove ownership of GitHub user `avi` via OAuth at publish time. The marketplace verifies via GitHub's token-introspection API and stores the verified login on the package row (`publishedBy: 'avi'`).
 No bare names. `papercusp install foo` is rejected; the user must spell the full namespace. This eliminates a whole class of typo-squatting.
-Reserved namespaces: `@papercusp/*` for first-party packages, gated by a hard-coded membership list (currently: members of the `papercupai` GitHub org). Plus reserved single-word namespaces blocked from claim: `examples`, `test`, `internal`, `system`, `admin`, `root`, `public`, `private`, `papercup`, `cli`, `sdk`, `api`, `ui` — these are reserved at the marketplace server. New first-party reservations are added by patch-version bumps to the spec.
+Reserved namespaces: `@papercusp/*` for first-party packages, gated by a hard-coded membership list (currently: members of the `Papercusp` GitHub organization — see the canonical identity note below; `papercupai` is a person, not an org, and cannot be an org-membership target). Plus reserved single-word namespaces blocked from claim: `examples`, `test`, `internal`, `system`, `admin`, `root`, `public`, `private`, `papercup`, `cli`, `sdk`, `api`, `ui` — these are reserved at the marketplace server. New first-party reservations are added by patch-version bumps to the spec.
 `publishedBy` is immutable. The verified GitHub login stamped on a published version is permanent for that row, even if the user later renames their GitHub account. The marketplace tracks renames separately (a `github_login_rename` audit table) so the spec can answer "who originally published this?" deterministically. Renames don't affect ownership of packages — those follow the GitHub identity (`user.id`, not `user.login`).
 Namespace transfer. An owner can transfer `@me/foo` to `@you/foo` via `papercusp transfer @me/foo @you`. Both parties must approve via OAuth-signed challenges within 7 days; on completion, the marketplace inserts a `namespace_transfers` audit row with both verified logins, and future publishes go to the new owner. Existing version rows keep their `publishedBy` (immutable). The CLI shows "transferred from @me to @you on `<date>`" on the package detail page.
+
+Canonical GitHub identity (read this once, link to it elsewhere — don't re-describe it):{' '}
+papercupai is a GitHub User account (created 2026-04-25) — the maintainer's personal admin login,
+used to sign in and administer the project. Papercusp is a separate GitHub Organization
+(created 2026-05-28) that owns the canonical repositories (`Papercusp/papercup`, `Papercusp/papercusp-registry`, …);
+papercupai has active admin membership in it. The two are related but distinct identities — a GitHub
+user cannot itself be an "org", so any check or doc that talks about "the papercupai org" is describing
+an identity that doesn't exist and is a drift bug (see WI-4978). When first-party/org-membership semantics are meant,
+the org is always Papercusp; when a personal-account/admin-login is meant, it's papercupai.
 
 Two trust tiers
 

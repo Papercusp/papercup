@@ -1426,11 +1426,26 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
       branch,
       devicePubkeyBase64: actor.devicePubkey,
       genesisBaselineSha,
+      workspaceId,
     });
     if (outcome.refused) {
       console.warn(
         `[git-sync] ${slug}: own-head publish REFUSED — ${describePublishRefusal(outcome.refused)}; ` +
-          `head ${outcome.headSha?.slice(0, 12)} NOT published (namespace ref unchanged, nothing servable)`,
+          `head ${outcome.headSha?.slice(0, 12)} NOT published (namespace ref unchanged, nothing servable). ` +
+          `Recovery (WI-5591, no restart needed): if this is a false positive, insert a row into ` +
+          `harness_shared.secrets_guard_path_exemptions for the offending path(s) — the next tick will retry.`,
+      );
+    }
+    if (outcome.exemptedFindings.length > 0) {
+      // WI-5591 audit trail: a runtime path exemption suppressed finding(s) this
+      // tick — always logged (whether or not the publish ultimately admitted) so
+      // an exemption's use is never silent.
+      console.warn(
+        `[git-sync] ${slug}: own-head publish — ${outcome.exemptedFindings.length} secret-scanner finding(s) ` +
+          `suppressed by a runtime path exemption: ${outcome.exemptedFindings
+            .slice(0, 5)
+            .map((f) => `${f.path}:${f.line} [${f.rule}]`)
+            .join('; ')}`,
       );
     }
     if (outcome.errors.length) {
@@ -1448,6 +1463,10 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
         branch: outcome.branch,
         sha: outcome.headSha,
         refused: outcome.refused?.refusalCode ?? null,
+        // WI-5591: count of findings suppressed by a runtime path exemption
+        // this tick — a health check reading `refused` alone would otherwise
+        // stay blind to an exemption quietly keeping the plane un-wedged.
+        exemptedFindingsCount: outcome.exemptedFindings.length,
       },
     });
   } catch (e) {

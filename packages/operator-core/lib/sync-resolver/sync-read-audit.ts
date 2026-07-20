@@ -1,0 +1,275 @@
+/**
+ * sync-read-audit.ts — the repeatable sync-read audit harness + its recurrence
+ * guard (precompute-sync-reads-phase2 P-008).
+ *
+ * THE METHODOLOGY GAP THIS CLOSES
+ * -------------------------------
+ * Two rounds of audit found fat/slow sync reads (rubrics.list-class compute;
+ * workItems.byHarness 3.79MB, agentRunsConsolidated 1.44MB, featuresConsolidated
+ * 907KB, learning.analyze 370KB payloads) only because someone measured by hand.
+ * Nothing systematically enumerates EVERY registered queryName and measures its
+ * payload + latency, so a newly-fattened read silently ships to the desktop until
+ * a human notices the lag. This module is that systematic instrument.
+ *
+ * TWO HALVES, by design (the invoke-in-CI trap):
+ *   1. A HERMETIC guard (sync-read-audit.test.ts) — enumerate the registry,
+ *      auto-detect which queries REQUIRE args (argsSchema rejects `{}`), and FAIL
+ *      when an arg-requiring query has no fixture or the allowlist rots. O(1) per
+ *      entry, NO I/O. This deliberately does NOT invoke resolvers: an older
+ *      "dispatch every entry against real PG" breadth test repeatedly blew the
+ *      green gate under load (index.ts getRegistryEntryV2 note — timeout bumped
+ *      10s→30s→120s then past it at ~123 entries). Structural inspection catches
+ *      the coverage-rot class without that cost.
+ *   2. A LIVE audit (`measureSyncReadPayloadsViaRest`) — run ON DEMAND against a
+ *      RUNNING operator's rest-query endpoint (`GET /api/zero-harness/rest-query`),
+ *      because a payload-SIZE budget is only meaningful against POPULATED data (an
+ *      empty testcontainer measures ~0 bytes and catches nothing). Measuring the
+ *      live operator also sidesteps the in-process resolver-invocation cost that
+ *      wedged the gate. This returns the ranked report + budget VIOLATIONS so an
+ *      agent/human can re-audit in one call after any sync-read change.
+ *
+ * Re-run the live audit: see measureSyncReadPayloadsViaRest below — point it at
+ * :3170 (staging, carries your staging edits after dev:restart) or :3070 with the
+ * superuser token, pass a harness/workspace, and read `.violations`.
+ */
+
+/** Desktop budgets (plan P-008). A user-facing sync read should compute fast and
+ *  ship small; over either without an allowlist entry is a regression. */
+export const PAYLOAD_BUDGET_BYTES = 250_000; // 250KB parsed into the webview
+export const LATENCY_BUDGET_MS = 150; // compute time on the operator
+
+/** Representative args for the queries whose argsSchema REQUIRES them (the
+ *  "58 need args" set). Keyed by queryName. Values target the papercusp harness /
+ *  papercusp-workspace tenant — the populated substrate the audit runs against.
+ *  The hermetic test FAILS if a registered arg-requiring query is missing here,
+ *  so this map cannot silently fall behind the registry. Extend it (don't work
+ *  around it) when you add an arg-requiring sync query.
+ *
+ *  `null` = intentionally UNMEASURABLE in a generic audit (needs a per-run id
+ *  that does not exist as a stable fixture — e.g. a specific run/session/cycle
+ *  id). Listed so coverage is explicit; the live audit skips these. */
+export type QueryFixture = Record<string, unknown> | null;
+
+/** The args most harness/workspace-scoped reads need. The coverage guard tries
+ *  THIS automatically for any arg-requiring query without an explicit fixture —
+ *  so the ~common `*.byHarness` / `*.byWorkspace` / `*.byHive` reads are covered
+ *  with zero hand-authoring, and only queries needing a per-run id (detail /
+ *  byFeature / byConversation / …) require an explicit entry (usually `null`). */
+export const DEFAULT_HARNESS_ARGS: Record<string, unknown> = {
+  harnessSlug: 'papercusp',
+  workspaceId: 'papercusp-workspace',
+};
+
+/** EXPLICIT fixtures — only where DEFAULT_HARNESS_ARGS does NOT satisfy the
+ *  argsSchema. `null` = intentionally UNMEASURABLE in a generic audit (needs a
+ *  per-run id with no stable fixture — a specific run/feature/cycle/conversation
+ *  id); listed so coverage is explicit and the live audit skips it. A non-null
+ *  entry supplies the specific args the query requires. Extend this (don't work
+ *  around the guard) when you add an arg-requiring sync query the default misses. */
+export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
+  // ── measurable with specific (non-default) args ──
+  'workItems.byHarness': { harnessSlug: 'papercusp', limit: 500 },
+  'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
+  'agentRunsConsolidated.recent': { harnessSlug: 'papercusp' },
+  'featuresConsolidated.byPlanSlug': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
+
+  // ── needs a per-run id → skipped by the live audit (null) ──
+  'workItems.detail': null, // a specific work-item id
+  'featuresConsolidated.detail': null, // a specific featureId
+  'featureTimeline.byFeature': null, // a specific featureId
+  'learning.analyzeCycle': null, // a specific cycleId (from learning.analyze)
+  'agentChats.detail': null,
+  'agentDetail.byOwner': null,
+  'chunkPlans.byFeature': null,
+  'conversations.agentChatDetail': null,
+  'conversations.deliberationDetail': null,
+  'conversations.messageDetail': null,
+  'conversations.questionDetail': null,
+  'designSketches.byFeature': null,
+  'dockLayouts.byName': null,
+  'evals.benchRun': null,
+  'evals.benchRunLive': null,
+  'evals.coordTrace': null,
+  'evals.report': null,
+  'featureAudit.byHarness': null, // needs a featureId despite the name
+  'featureDebugNotes.byHarness': null,
+  'featureNotes.byHarness': null,
+  'hiveFromRepo.progress': null,
+  'operatorTurns.byConversation': null,
+  'operatorTurns.page': null,
+  'planItems.byPlan': null,
+  'plansDrafts.bySlug': null,
+  'projectSpecRevisions.byProject': null,
+  'snapshotsConsolidated.bySlug': null,
+  'userActions.byKind': null,
+};
+
+/** An accepted over-budget read: WHY it is allowed + WHEN to re-review. A bounded
+ *  list whose per-row waste is already removed (its size is row COUNT × minimal
+ *  fields) can legitimately exceed the byte budget — but it must be JUSTIFIED
+ *  here, not silently ignored. The hermetic test asserts each entry names a real
+ *  query + carries a reason; the live audit only flags NON-allowlisted breaches. */
+export interface SyncReadAllowlistEntry {
+  maxBytes?: number;
+  maxMs?: number;
+  reason: string;
+  /** ISO date to re-examine whether this can now meet budget. */
+  reviewBy: string;
+}
+
+export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
+  'agentRunsConsolidated.bySlug': {
+    maxBytes: 1_100_000,
+    reason:
+      'Bounded run-history list (RUNS_LIST_CAP=2000). P-007 already dropped the 10 never-rendered fields; the residual ~1.01MB is 2000 rows × the minimal rendered set (+ errorMessage, rendered as the outcome-chip tooltip). Further cut needs a per-feature on-demand run split.',
+    reviewBy: '2026-09-01',
+  },
+  'featuresConsolidated.bySlug': {
+    maxBytes: 500_000,
+    reason:
+      'Bounded feature list. P-007 dropped the heavy per-row summary at the sync boundary (detail on demand); the residual ~466KB is 1181 rows × ~11 light rendered fields. Row count, not per-row waste.',
+    reviewBy: '2026-09-01',
+  },
+  'workItems.byHarness': {
+    maxBytes: 450_000,
+    reason:
+      'Bounded work-items grid (limit 500). P-006 dropped the heavy per-row summary (detail on demand); the residual is the grid page × light fields (id/title/state/assignee/counts). Row count, not per-row waste.',
+    reviewBy: '2026-09-01',
+  },
+};
+
+/** One measured query. */
+export interface SyncReadMeasurement {
+  name: string;
+  bytes: number;
+  ms: number;
+  rows: number | null;
+  overBudget: boolean;
+  allowlisted: boolean;
+  error?: string;
+}
+
+export interface SyncReadAuditReport {
+  measured: SyncReadMeasurement[]; // sorted by bytes desc
+  /** Over-budget queries NOT covered by an allowlist entry — the regressions. */
+  violations: SyncReadMeasurement[];
+  skipped: string[]; // fixture === null (unmeasurable generically)
+  budgetBytes: number;
+  budgetMs: number;
+}
+
+/** True when the query's argsSchema REQUIRES a non-empty args object (i.e. it
+ *  cannot be resolved with `{}`). Pure schema validation — no I/O. `entry` is a
+ *  registry entry ({ argsSchema?: { safeParse } }). No argsSchema ⇒ no args. */
+export function queryRequiresArgs(entry: { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined): boolean {
+  const schema = entry?.argsSchema;
+  if (!schema || typeof schema.safeParse !== 'function') return false;
+  return schema.safeParse({}).success === false;
+}
+
+type SchemaLike = { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } };
+
+/** Resolve the fixture to measure a query with — the recurrence-guard core.
+ *  Precedence: an EXPLICIT SYNC_QUERY_FIXTURES entry (incl. `null` = skip) wins;
+ *  else if the query needs args and DEFAULT_HARNESS_ARGS satisfies its argsSchema,
+ *  use the default; else if the query needs NO args, use `{}`; else it needs an
+ *  explicit entry the map doesn't yet have (`needsExplicit`). Pure — no I/O. */
+export function resolveFixture(
+  name: string,
+  entry: SchemaLike | undefined,
+): { fixture: QueryFixture } | { needsExplicit: true } {
+  if (Object.prototype.hasOwnProperty.call(SYNC_QUERY_FIXTURES, name)) {
+    return { fixture: SYNC_QUERY_FIXTURES[name] };
+  }
+  if (!queryRequiresArgs(entry)) return { fixture: {} };
+  if (entry?.argsSchema?.safeParse?.(DEFAULT_HARNESS_ARGS).success) return { fixture: DEFAULT_HARNESS_ARGS };
+  return { needsExplicit: true };
+}
+
+/** Build the full name→fixture map for a live audit, resolving each name through
+ *  resolveFixture. Names that still need an explicit entry are OMITTED (the
+ *  hermetic coverage test fails on those, so a live run never hits an unresolved
+ *  one). `getEntry` is the registry accessor (getRegistryEntryV2). */
+export function buildLiveFixtureMap(
+  names: string[],
+  getEntry: (name: string) => SchemaLike | undefined,
+): Record<string, QueryFixture> {
+  const map: Record<string, QueryFixture> = {};
+  for (const name of names) {
+    const r = resolveFixture(name, getEntry(name));
+    if ('fixture' in r) map[name] = r.fixture;
+  }
+  return map;
+}
+
+/** Evaluate one measured (bytes, ms) against the budget + allowlist. */
+export function evaluateBudget(name: string, bytes: number, ms: number): { overBudget: boolean; allowlisted: boolean } {
+  const allow = SYNC_READ_ALLOWLIST[name];
+  const byteCeil = allow?.maxBytes ?? PAYLOAD_BUDGET_BYTES;
+  const msCeil = allow?.maxMs ?? LATENCY_BUDGET_MS;
+  const overBudget = bytes > byteCeil || ms > msCeil;
+  return { overBudget, allowlisted: Boolean(allow) };
+}
+
+/**
+ * LIVE audit — measure every registered queryName that has a (non-null) fixture
+ * against a RUNNING operator's rest-query endpoint. This is the re-runnable
+ * "audit harness": call it after any sync-read change to get the ranked payload
+ * report + budget violations. Not part of the CI green gate (needs a live,
+ * populated operator); run on demand.
+ *
+ *   const names = knownQueryNamesV2();
+ *   const fixtures = buildLiveFixtureMap(names, getRegistryEntryV2);
+ *   const report = await measureSyncReadPayloadsViaRest({
+ *     baseUrl: 'http://127.0.0.1:3170',           // :3170 staging (your edits) / :3070
+ *     token: fs.readFileSync(os.homedir()+'/.papercusp/superuser-token','utf8').trim(),
+ *     fixtures,
+ *   });
+ *   report.violations // → the fat reads that need attention
+ *
+ * `fixtures` is name→(args | null); a `null` fixture is SKIPPED (unmeasurable
+ * generically). `fetchImpl` is injectable for tests; defaults to global fetch. */
+export async function measureSyncReadPayloadsViaRest(opts: {
+  baseUrl: string;
+  token: string;
+  fixtures: Record<string, QueryFixture>;
+  fetchImpl?: typeof fetch;
+}): Promise<SyncReadAuditReport> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const measured: SyncReadMeasurement[] = [];
+  const skipped: string[] = [];
+
+  for (const [name, fixture] of Object.entries(opts.fixtures)) {
+    if (fixture === null) {
+      skipped.push(name);
+      continue;
+    }
+    const url = `${opts.baseUrl}/api/zero-harness/rest-query?name=${encodeURIComponent(name)}&args=${encodeURIComponent(JSON.stringify(fixture))}`;
+    const started = Date.now();
+    try {
+      const res = await doFetch(url, { headers: { Authorization: `Bearer ${opts.token}` } });
+      const text = await res.text();
+      const ms = Date.now() - started;
+      if (!res.ok) {
+        measured.push({ name, bytes: text.length, ms, rows: null, overBudget: false, allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]), error: `HTTP ${res.status}` });
+        continue;
+      }
+      let rows: number | null = null;
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        const arr = Array.isArray(parsed) ? parsed : (parsed as { rows?: unknown[] })?.rows;
+        rows = Array.isArray(arr) ? arr.length : null;
+      } catch {
+        /* non-JSON body — keep rows null, still measure bytes */
+      }
+      const { overBudget, allowlisted } = evaluateBudget(name, text.length, ms);
+      measured.push({ name, bytes: text.length, ms, rows, overBudget, allowlisted });
+    } catch (err) {
+      measured.push({ name, bytes: 0, ms: Date.now() - started, rows: null, overBudget: false, allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]), error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  measured.sort((a, b) => b.bytes - a.bytes);
+  const violations = measured.filter((m) => m.overBudget && !m.allowlisted);
+  return { measured, violations, skipped, budgetBytes: PAYLOAD_BUDGET_BYTES, budgetMs: LATENCY_BUDGET_MS };
+}

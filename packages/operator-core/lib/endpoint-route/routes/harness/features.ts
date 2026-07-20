@@ -362,7 +362,12 @@ const updateFeature = defineTool({
     // (The projects→spec-revision project_manager hook that enqueued a `pm_due`
     // pending_events row on a transition into 'passed' was retired with the PM
     // feature — D-020 / P-015.)
-    const transitionedToPassed = updates.status === 'passed' && existing.status !== 'passed';
+    // work-item-status-full-unify P-007: the success terminal is the unified `done`
+    // (feature `passed`→`done`, nuance preserved in work_items.terminal_reason). Detect a
+    // transition INTO the success terminal tolerantly across both spellings — keying on the
+    // legacy `passed` alone went dead after P-003 folded `passed`→`done` at the write edge.
+    const isSuccessTerminal = (s: string | null | undefined) => s === 'done' || s === 'passed';
+    const transitionedToPassed = isSuccessTerminal(updates.status) && !isSuccessTerminal(existing.status);
 
     if (transitionedToPassed) {
       // `onFeaturePassed` is a FROZEN typed fire-point (plugin-system-hive-port
@@ -383,7 +388,9 @@ const updateFeature = defineTool({
           const wi = await wiMod.getWorkItem(id, project.slug);
           if (!wi) return;
           const m = await import('../../../work-items-events');
-          await m.emitWorkItemSettledEvents({ ...wi, state: 'passed' });
+          // wi.state is already the unified success terminal (`done`) as just written; emit
+          // the settled events on the item's real state rather than forcing the legacy `passed`.
+          await m.emitWorkItemSettledEvents(wi);
         })
         .catch(() => {});
     }

@@ -49,6 +49,7 @@ import {
   type PublishGuardCaps,
   type PublishGuardResult,
 } from './publish-guard';
+import type { SecretFinding } from './secrets-guard';
 
 export interface OwnHeadPublishTickInput {
   /** Hive home slug — the bare-store directory key (storage.ts G-1). */
@@ -256,5 +257,5 @@ export async function runOwnHeadPublishTick(
       errors.push(`WORK_REF alias write failed (branch ref published): ${e instanceof Error ? e.message : e}`);
     }
   }
-  return { ran: true, changed: true, branch, headSha, priorSha, refused: null, errors };
+  return { ran: true, changed: true, branch, headSha, priorSha, refused: null, exemptedFindings: guard.exemptedFindings, errors };
 }

@@ -21,11 +21,12 @@
  * first time the user opens it, keeping it off the first-paint path of
  * every page.
  */
-import { Component, Suspense, useMemo, type ReactNode } from 'react';
+import { Component, Suspense, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useSearchParams } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
 import { lazyWithRetry } from '@papercusp/operator-core/lib/lazy-with-retry';
+import { beginInteraction, PERF_INTERACTIONS } from './perf/perf-marks';
 import { useShortcutAction } from '../../lib/hotkeys';
 import { buildRegistryPaletteItems } from '@papercusp/operator-core/lib/commands/shims/palette-shim';
 import { useServerCapabilityCommands } from './use-server-capabilities';
@@ -60,6 +61,18 @@ export default function GlobalCommandPalette() {
   const [open, setOpen] = useQueryState('palette', parseAsBoolean.withDefault(false));
   const searchParams = useSearchParams();
   const workspace = searchParams?.get('ws') ?? 'default';
+
+  // Perf-marks (P-006): begin the command-palette-open interaction the moment
+  // `open` transitions false→true, from ANY open path (⌘K/Ctrl+P, a click, or a
+  // URL/agent ?palette=true deep-link). The matching endInteraction fires when
+  // the lazy CommandPalette chunk mounts, so the measure spans the dynamic-import
+  // + first-render cost. Single source (not the toggle handler) so it can't
+  // double-fire and reset the start mark.
+  const prevOpenRef = useRef(false);
+  useEffect(() => {
+    if (open && !prevOpenRef.current) beginInteraction(PERF_INTERACTIONS.commandPaletteOpen);
+    prevOpenRef.current = open;
+  }, [open]);
 
   // Toggle on the registry's `palette.toggle` combo. `enableOnFormTags`
   // matches the registry def so the palette opens even while focus is in

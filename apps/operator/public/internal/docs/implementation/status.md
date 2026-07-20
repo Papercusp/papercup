@@ -24,7 +24,7 @@ renames to keep in mind when reading:
 * The `papercuspai.com` marketplace described in the "After all of the above"
   table was superseded by the in-app **Cupboard** (`apps/operator-public`).
 
-The reference runtime lives in this monorepo (`papercupai/papercup`). Phase numbering matches the spec sections; some phases were split into a/b for separable shipping.
+The reference runtime lives in this monorepo (`Papercusp/papercup`). Phase numbering matches the spec sections; some phases were split into a/b for separable shipping.
 
 ## Phase status
 

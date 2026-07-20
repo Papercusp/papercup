@@ -48,6 +48,21 @@ export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
     // Matches PERF_INTERACTIONS.planPopupOpen in
     // apps/operator/app/_components/perf/perf-marks.ts.
     'plan-popup-open': 1500,
+    // The broader real-interaction budgets (P-006). Each key mirrors a
+    // PERF_INTERACTIONS entry; the driven interaction reads its named measure
+    // and asserts it here. Budgets are user-perceived-latency ceilings — lower
+    // is better; a value over budget is a regression to catch, not a hard cap.
+    // Command palette: first open pays the lazy cmdk+Radix chunk load, so the
+    // ceiling is generous vs. a warm re-open.
+    'command-palette-open': 400,
+    // Inbox filter → virtualized list re-scope + settle: a bounded list op that
+    // should feel instant.
+    'inbox-list-settle': 300,
+    // Open a conversation → agent_chats detail resolves + transcript renders. A
+    // network+render load path, so a route-scale ceiling.
+    'conversation-thread-load': 1500,
+    // Harness dock hydration: PG layout load + dockview mount + panel creation.
+    'harness-dock-open': 1500,
   },
 };
 
