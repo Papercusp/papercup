@@ -8,6 +8,7 @@ import {
   addFailureStrayPaths,
   discoverSubmodulesRecursive,
   isIndexLockFailure,
+  isTransientStatFailure,
   clearStaleIndexLock,
   type RunGit,
 } from './run-git-sync';
@@ -153,6 +154,18 @@ describe('runGitSync (real git, no submodule)', () => {
       "error: 'other/nested/' does not have a commit checked out\nfatal: adding files failed";
     expect(addFailureStrayPaths(out)).toEqual(['.papercusp/.vitest-tmpdir/green-oQOrHU', 'other/nested']);
     expect(addFailureStrayPaths('nothing wrong here')).toEqual([]);
+  });
+
+  it('isTransientStatFailure matches the git ENOENT-race fatal (and only it)', () => {
+    expect(
+      isTransientStatFailure(
+        "fatal: unable to stat 'apps/operator/app/_components/chat/curator-card-drill-in.test.ts.tmp.210675.fe78c436a08e': No such file or directory",
+      ),
+    ).toBe(true);
+    // a DIFFERENT fatal must not false-positive into the wrong retry path
+    expect(isTransientStatFailure("error: 'x/' does not have a commit checked out")).toBe(false);
+    expect(isTransientStatFailure("fatal: Unable to create '/x/repo/.git/index.lock': File exists")).toBe(false);
+    expect(isTransientStatFailure('')).toBe(false);
   });
 
   it('P-004 flag-ON (loadRoster supplied): peels a per-agent commit (intent + Co-Authored-By) before the catch-all', async () => {
@@ -804,6 +817,53 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
     expect(out.status).toBe('error'); // NOT 'conflict' — nothing for a merge-resolver to merge
     if (out.status === 'error') expect(out.errors[0].message).toMatch(/merge failed \(no conflicted paths\)/);
+  });
+
+  it('EI-18094449017685490: a transient ENOENT on `git add -A` (concurrent atomic-write race) is retried, not surfaced as an error', async () => {
+    let addAttempts = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' }; // no oversized
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' }; // dirty
+      if (j.startsWith('add')) {
+        addAttempts++;
+        // vanishes on the first two attempts (a concurrent atomic-write race), lands on the third
+        if (addAttempts < 3) {
+          return {
+            code: 128,
+            stderr: "fatal: unable to stat 'some/file.tmp.210675.abc': No such file or directory",
+          };
+        }
+        return { code: 0 };
+      }
+      if (j.startsWith('commit')) return { code: 0 };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      return { code: 0, stdout: '' };
+    });
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    expect(out.status).toBe('synced'); // NOT stranded on the transient race
+    expect(addAttempts).toBe(3); // the original attempt + 2 retries before it resolved
+  });
+
+  it('EI-18094449017685490: exhausting the transient-ENOENT retry budget still surfaces a real error (never a silent strand)', async () => {
+    let addAttempts = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      if (j.startsWith('add')) {
+        addAttempts++;
+        return { code: 128, stderr: "fatal: unable to stat 'some/file.tmp.210675.abc': No such file or directory" };
+      }
+      return { code: 0, stdout: '' };
+    });
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    expect(out.status).toBe('error'); // a REAL, persistent failure still surfaces loudly
+    if (out.status === 'error') expect(out.errors[0].message).toMatch(/git add -A failed/i);
+    expect(addAttempts).toBe(4); // 1 original + TRANSIENT_STAT_FAILURE_MAX_RETRIES(3) retries, then give up
   });
 
   it('P-004: a detached HEAD syncs to its OWN remote default (origin/HEAD → main), not cfg.branch', async () => {

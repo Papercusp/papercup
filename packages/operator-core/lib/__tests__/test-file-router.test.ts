@@ -7,6 +7,7 @@ import {
   evaluateMatch,
   groupRoutes,
   listedFiles,
+  looksLikeSilentCollectionFailure,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive itself must
@@ -166,5 +167,79 @@ describe('aggregateGroupResults — no group may be silently abandoned (EI-13535
   it('a single clean group (the common case) still reports ok/passed correctly', () => {
     const summary = aggregateGroupResults([okGroup(2, 2, 2)]);
     expect(summary).toMatchObject({ ok: true, requested: 2, matched: 2, executed: 2, anyFailed: false });
+  });
+});
+
+// EI-18099113673609528: Vitest 4's default/verbose reporter drops ALL per-suite error detail
+// when >=2 requested files fail to COLLECT (a transform/parse error) in the same run — the
+// caller is left with only the bare "Test Files N failed (N) / Tests no tests" summary lines
+// and nothing else. Fixtures below are the literal shapes observed against real vitest 4.1.8
+// output (single collection failure DOES print a "Failed Suites" block; two simultaneous ones
+// print neither that block nor any "FAIL " line).
+describe('looksLikeSilentCollectionFailure (EI-18099113673609528)', () => {
+  const SINGLE_FAILURE_WITH_DETAIL = `
+ RUN  v4.1.8 /repo
+
+ ❯ lib/bad.test.tsx (0 test)
+
+⏰⏰⏰⏰⏰⏰ Failed Suites 1 ⏰⏰⏰⏰⏰⏰⏰
+
+ FAIL  lib/bad.test.tsx [ lib/bad.test.tsx ]
+Error: Transform failed with 1 error:
+lib/bad.test.tsx:3:0: ERROR: Unterminated string literal
+
+ Test Files  1 failed (1)
+      Tests  no tests
+`;
+
+  const TWO_SIMULTANEOUS_FAILURES_NO_DETAIL = `
+ RUN  v4.1.8 /repo
+
+ ❯ lib/bad1.test.tsx (0 test)
+ ❯ lib/bad2.test.tsx (0 test)
+
+ Test Files  2 failed (2)
+      Tests  no tests
+`;
+
+  it('flags the silent-failure signature: N>=2 failed, zero per-suite detail', () => {
+    expect(looksLikeSilentCollectionFailure(TWO_SIMULTANEOUS_FAILURES_NO_DETAIL)).toBe(true);
+  });
+
+  it('does NOT flag a single collection failure — Vitest prints the Failed Suites block for it', () => {
+    expect(looksLikeSilentCollectionFailure(SINGLE_FAILURE_WITH_DETAIL)).toBe(false);
+  });
+
+  it('does NOT flag a normal green run', () => {
+    expect(looksLikeSilentCollectionFailure(' Test Files  2 passed (2)\n      Tests  5 passed (5)\n')).toBe(false);
+  });
+
+  it('does NOT flag a run with per-test assertion detail (a real, diagnosable failure) — captured verbatim from a real vitest 4.1.8 run', () => {
+    const withAssertionDetail = `
+ RUN  v4.1.8 /repo
+
+ ❯ lib/a.test.ts (1 test | 1 failed) 14ms
+     × fails on purpose 12ms
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+`;
+    expect(looksLikeSilentCollectionFailure(withAssertionDetail)).toBe(false);
+  });
+
+  it('does NOT flag a single collection failure mixed with passing files (only one zero-test file)', () => {
+    const oneCollectionFailureAmongPasses = `
+ ❯ lib/bad.test.tsx (0 test)
+ ✓ lib/good.test.tsx (3 tests) 9ms
+
+⏰⏰⏰⏰⏰⏰ Failed Suites 1 ⏰⏰⏰⏰⏰⏰⏰
+
+ FAIL  lib/bad.test.tsx [ lib/bad.test.tsx ]
+Error: Transform failed with 1 error:
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  3 passed (3)
+`;
+    expect(looksLikeSilentCollectionFailure(oneCollectionFailureAmongPasses)).toBe(false);
   });
 });

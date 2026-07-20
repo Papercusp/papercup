@@ -711,6 +711,19 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
              : filter.includeChildren
                ? sql`TRUE`
                : sql`(parent_id IS NULL OR parent_id = '')`
+         }
+         AND ${
+           filter.admissibleOnly
+             ? sql`(
+                 ${autoPickableWhereSql(sql, ws)}
+                 -- WI-5512: mirror listWorkItems' admissibleOnly branch (WI-5343) here too —
+                 -- this COUNT must apply the same claim-hold/plan-lane floors as the LIST it
+                 -- pairs with, or "N of TOTAL" undercounts-as-overcounts (numerator honest,
+                 -- denominator not).
+                 AND ${claimHoldExclusionSql(sql, 'payload')}
+                 AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
+               )`
+             : sql`TRUE`
          }`;
     total += rows[0]?.n ?? 0;
   }
@@ -724,6 +737,11 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
       state: (filter.state as IssueState) || undefined,
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
+      // WI-5512: countWorkItems' issue-family call never threaded this through, even
+      // though countIssues itself already supports it (issueAdmissibleWhereSql) and
+      // listWorkItems' issue branch already passes it — same count-vs-list parity gap
+      // as the feature-family fix above, same fix.
+      admissibleOnly: filter.admissibleOnly,
       excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
     });
   }
@@ -1580,26 +1598,44 @@ export async function setWorkItemState(
   // this item's own `state` column, and its linked plan-item's `effectiveStatus`
   // (payload.plan_item back-pointer; see scheduler/plan-item-lane-guard.ts, the
   // SAME check work_items:claim_next / scheduler:get_next already enforce at
-  // claim time). Unblocking (`blocked` -> anything else) without checking the
-  // plan layer first is exactly how a plan-supervised gate gets skipped: a real
-  // work-item was unblocked off `externalBlockers: null` while its plan item
-  // was still `blocked` on five unresolved drill legs, and the cup it spawned
-  // flipped a live hive ahead of the gate whose entire purpose was to precede
-  // that flip (reverted within 5 minutes, but only because the completion made
-  // the contradiction visible after the fact). Refuse unless forced; fails OPEN
-  // (planItemLaneBlockReason itself fails open on any lookup error, and a
-  // non-'blocked' prior state or a non-feature family skips this read entirely
-  // — the common case pays nothing extra).
-  if (!opts.force && wi.state === 'blocked' && state !== 'blocked') {
+  // claim time). Skipping the plan layer is exactly how a plan-supervised gate
+  // gets skipped: a real work-item was unblocked off `externalBlockers: null`
+  // while its plan item was still `blocked` on five unresolved drill legs, and
+  // the cup it spawned flipped a live hive ahead of the gate whose entire
+  // purpose was to precede that flip (reverted within 5 minutes, but only
+  // because the completion made the contradiction visible after the fact).
+  // Fails OPEN (planItemLaneBlockReason itself fails open on any lookup error,
+  // and a non-triggering prior/next state pair skips this read entirely — the
+  // common case pays nothing extra).
+  //
+  // EI-13715 fast-follow #3: the ORIGINAL guard only fired on `isUnblockingTransition`
+  // (blocked -> anything else) — it said nothing about an item that was unblocked
+  // EARLIER (never literally 'blocked' at this moment: 'todo'/'in_progress') and is
+  // now being COMPLETED (work_items:complete, todo -> done/resolved/…) while its
+  // linked plan-item is STILL effectively blocked/needs-human (the WI-3503 shape).
+  // That gap left work_items:complete free to terminalize an item whose plan gate
+  // was never re-checked at the second transition, silently leaving the
+  // contradiction for a later reader instead of warning at completion time.
+  // `isCompletingTransition` closes it: fire on ANY transition INTO a settled/
+  // terminal state when the PRIOR state was not already settled, independent of
+  // whether that prior state was literally 'blocked'. work_items:complete has no
+  // `force` arg (WI-4530), so the refusal always points callers at
+  // work_items:set_state { force: true } instead.
+  const isUnblockingTransition = wi.state === 'blocked' && state !== 'blocked';
+  const isCompletingTransition = !isSettledWorkItemState(wi.state) && isSettledWorkItemState(state);
+  if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
     const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
     const block = await planItemLaneBlockReason(wi).catch(() => null);
     if (block && block.effectiveStatus !== 'done' && block.effectiveStatus !== 'dropped') {
+      const verb = isUnblockingTransition ? 'unblocking' : 'completing';
+      const stateDesc = isUnblockingTransition ? `is blocked, and its` : `is not settled, and its`;
       throw new Error(
-        `work_item '${id}' is blocked, and its linked plan-item ${block.planSlug}#${block.itemId} is STILL ` +
-          `effectively '${block.effectiveStatus}' (${block.reason}) — unblocking it into '${state}' now would race ` +
+        `work_item '${id}' ${stateDesc} linked plan-item ${block.planSlug}#${block.itemId} is STILL ` +
+          `effectively '${block.effectiveStatus}' (${block.reason}) — ${verb} it into '${state}' now would race ` +
           `ahead of that plan gate. Verify the plan item's blockers are actually resolved first ` +
           `(plans:get-item { slug: '${block.planSlug}', item: '${block.itemId}' }); if they are (or the plan is ` +
-          `wrong), override with work_items:set_state { id: '${id}', state: '${state}', force: true }.`,
+          `wrong), override with work_items:set_state { id: '${id}', state: '${state}', force: true } ` +
+          `— NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530).`,
       );
     }
   }

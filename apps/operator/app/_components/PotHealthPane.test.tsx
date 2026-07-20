@@ -116,8 +116,19 @@ describe('PotHealthPane (WI-4778)', () => {
   beforeEach(() => {
     h.queries = {};
     h.queryNames = [];
+    // Pin the clock to the fixture's NOW (WI-5506): compactAge() defaults to
+    // the REAL Date.now() at render time, not a mocked clock — under a fast
+    // run the gap between module-load NOW and this test's render/assert stays
+    // under a rounding boundary (e.g. 40s->41s), but under heavy fleet load
+    // enough wall-clock time can pass to tip a relative-age assertion over
+    // that boundary and flake. Freezing time removes the whole class of
+    // wall-clock-vs-fixed-NOW flakes for every relative-age assertion here.
+    vi.useFakeTimers({ now: NOW });
   });
-  afterEach(() => cleanup());
+  afterEach(() => {
+    vi.useRealTimers();
+    cleanup();
+  });
 
   it('reads the three REUSED sync queries — no parallel data path', () => {
     seedSnapshot();

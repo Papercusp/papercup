@@ -462,7 +462,8 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
       effectiveStatus: 'blocked',
     });
     const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB', force: true });
-    expect(after?.state).toBe('todo');
+    // work-item-status-full-unify: 'todo' normalizes to the unified claimable token 'open'.
+    expect(after?.state).toBe('open');
   });
 
   it('ALLOWS the unblock when the plan lane has CLEARED (guard returns null)', async () => {
@@ -476,7 +477,7 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
     await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
     planItemLaneBlockReasonMock.mockResolvedValueOnce(null); // lane clear
     const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' });
-    expect(after?.state).toBe('todo');
+    expect(after?.state).toBe('open');
   });
 
   it('ALLOWS the unblock when the plan-item is already terminal (done/dropped) — stale residue, not a live gate', async () => {
@@ -495,7 +496,7 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
       effectiveStatus: 'done',
     });
     const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' });
-    expect(after?.state).toBe('todo');
+    expect(after?.state).toBe('open');
   });
 
   it('does NOT consult the plan-lane guard for a non-plan-linked item (no back-pointer)', async () => {
@@ -503,7 +504,7 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
     await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
     planItemLaneBlockReasonMock.mockClear();
     const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' });
-    expect(after?.state).toBe('todo');
+    expect(after?.state).toBe('open');
     // The guard still gets CALLED (it's the caller's job to check the back-pointer,
     // not this test's) — but with no back-pointer it fails open to null, so the
     // real assertion is simply that the transition succeeded unblocked.
@@ -526,6 +527,136 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
     // never left 'todo' -> 'in_progress': the guard only fires on blocked -> non-blocked.
     await expect(
       wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agA' }),
+    ).resolves.toBeTruthy();
+  });
+
+  // EI-13715 fast-follow #3 (WI-5492): item #3 from the original report, left
+  // unimplemented by the original ticket — work_items:complete on an item whose
+  // plan effectiveStatus is blocked should warn AT COMPLETION TIME, not leave the
+  // contradiction for a later reader. These pin `isCompletingTransition`: the item
+  // was unblocked EARLIER (never literally 'blocked' at this moment — 'todo' here)
+  // and is now being completed (todo -> resolved/passed/…) while its linked
+  // plan-item is still effectively blocked/needs-human — the exact WI-3503 shape.
+  it('REJECTS completing (todo -> resolved) an item whose plan-item is still effectively blocked, even though the item was never literally blocked itself', async () => {
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'plan-linked bug',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    expect(bug.state).toBe('open');
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked (needs-human)',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+    });
+    // One assertion, one call: mockResolvedValueOnce only covers a SINGLE call — a second
+    // wi.setWorkItemState call here would fall through to the default (null / lane-clear)
+    // mock and silently SUCCEED, corrupting the state this test then asserts on. The
+    // rejection message names both the still-blocked plan-item AND the real override verb
+    // (work_items:complete has no `force` arg), so both are checked in one regex.
+    await expect(
+      wi.setWorkItemState(bug.id, 'resolved', { harness: 'papercup', by: 'agB', completionRef: 'fixed' }),
+    ).rejects.toThrow(/a-plan#P-9.*STILL.*effectively 'blocked'.*work_items:set_state.*force: true/s);
+    // Rejected write must not half-apply.
+    expect((await wi.getWorkItem(bug.id, 'papercup'))?.state).toBe('open');
+  });
+
+  it('ALLOWS the completion with { force: true } — a deliberate override', async () => {
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'plan-linked bug',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+    });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      harness: 'papercup',
+      by: 'agB',
+      completionRef: 'fixed',
+      force: true,
+    });
+    // work-item-status-full-unify: issue-family 'resolved' normalizes to unified 'done'.
+    expect(after?.state).toBe('done');
+  });
+
+  it('ALLOWS the completion when the plan lane has CLEARED (guard returns null)', async () => {
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'plan-linked bug',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce(null); // lane clear
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      harness: 'papercup',
+      by: 'agB',
+      completionRef: 'fixed',
+    });
+    expect(after?.state).toBe('done');
+  });
+
+  it('ALLOWS the completion when the plan-item is already terminal (done/dropped) — stale residue, not a live gate', async () => {
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'plan-linked bug',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is already done',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'done',
+    });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      harness: 'papercup',
+      by: 'agB',
+      completionRef: 'fixed',
+    });
+    expect(after?.state).toBe('done');
+  });
+
+  it('does NOT gate the completion of a non-plan-linked item (no back-pointer)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'plain bug', harness: 'papercup', createdBy: 'agA' });
+    planItemLaneBlockReasonMock.mockClear();
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      harness: 'papercup',
+      by: 'agB',
+      completionRef: 'fixed',
+    });
+    expect(after?.state).toBe('done');
+    // Guard still gets CALLED (it fails open to null with no back-pointer) — the
+    // real assertion is simply that completion succeeded unblocked.
+  });
+
+  it('does NOT gate a transition between two non-terminal states even when the plan-item is blocked', async () => {
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'plan-linked bug',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    planItemLaneBlockReasonMock.mockResolvedValue({
+      reason: 'still blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+    });
+    // open -> in_progress: neither state is settled, so isCompletingTransition is false.
+    await expect(
+      wi.setWorkItemState(bug.id, 'in_progress', { harness: 'papercup', by: 'agA' }),
     ).resolves.toBeTruthy();
   });
 });
@@ -1176,6 +1307,62 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     expect(list.some((w) => w.id === item.id)).toBe(true);
     expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-z' }))?.id).toBe(item.id);
+  });
+});
+
+// WI-5512: countWorkItems' feature-family COUNT query never applied admissibleOnly at
+// all (not even G2 autoPickableWhereSql) — so a caller pairing listWorkItems({
+// admissibleOnly:true }) for the claimable rows with countWorkItems({ ...same filter })
+// for the "N of TOTAL" header got a numerator that correctly excludes claim-held /
+// plan-lane-reserved rows and a denominator that didn't (undercounts-as-overcounts).
+// Also threads admissibleOnly into countWorkItems' countIssues() call, which the
+// underlying function already supported but countWorkItems never passed through.
+describe('WI-5512 — countWorkItems mirrors listWorkItems\' admissibleOnly floors (list/count parity)', () => {
+  it('countWorkItems { admissibleOnly: true } EXCLUDES a _claimHold feature row from the total', async () => {
+    await wi.createWorkItem({
+      kind: 'feature', title: 'held feature (count)', harness: 'papercup', createdBy: 'agA',
+      payload: { _claimHold: true },
+    });
+    await wi.createWorkItem({ kind: 'feature', title: 'free feature (count)', harness: 'papercup', createdBy: 'agA' });
+
+    const admissibleCount = await wi.countWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    const plainCount = await wi.countWorkItems({ harness: 'papercup', kind: 'feature' });
+    expect(admissibleCount).toBe(1);
+    expect(plainCount).toBe(2);
+    // The count must equal the length of the equivalently-filtered list — the whole
+    // point of the count/list pairing this bug broke.
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(admissibleCount).toBe(list.length);
+  });
+
+  it('countWorkItems { admissibleOnly: true } EXCLUDES a feature row reserved to a LIVE plan lane from the total', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
+                 VALUES ('default', 'papercup', 'wi-5512-plan', 'active')`;
+    await wi.createWorkItem({
+      kind: 'feature', title: 'lane feature (count)', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'wi-5512-plan', item_id: 'P-1' } },
+    });
+    await wi.createWorkItem({ kind: 'feature', title: 'unlaned feature (count)', harness: 'papercup', createdBy: 'agA' });
+
+    const admissibleCount = await wi.countWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    const plainCount = await wi.countWorkItems({ harness: 'papercup', kind: 'feature' });
+    expect(admissibleCount).toBe(1);
+    expect(plainCount).toBe(2);
+  });
+
+  it('countWorkItems { admissibleOnly: true } also EXCLUDES a _claimHold ISSUE-family (bug) row from the total', async () => {
+    await wi.createWorkItem({
+      kind: 'bug', title: 'held bug (count)', harness: 'papercup', createdBy: 'agA',
+      payload: { _claimHold: true },
+    });
+    await wi.createWorkItem({ kind: 'bug', title: 'free bug (count)', harness: 'papercup', createdBy: 'agA' });
+
+    const admissibleCount = await wi.countWorkItems({ harness: 'papercup', kind: 'bug', admissibleOnly: true });
+    const plainCount = await wi.countWorkItems({ harness: 'papercup', kind: 'bug' });
+    expect(admissibleCount).toBe(1);
+    expect(plainCount).toBe(2);
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'bug', admissibleOnly: true });
+    expect(admissibleCount).toBe(list.length);
   });
 });
 

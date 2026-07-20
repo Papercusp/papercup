@@ -144,6 +144,39 @@ export function evaluateMatch({ routes, matched, listStatus }) {
  * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean }[]} groupResults
  * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean }}
  */
+/**
+ * EI-18099113673609528: Vitest 4's default (and verbose) reporter silently drops ALL per-suite
+ * error detail — no "Failed Suites" section, no per-file `FAIL` line, no stack, no message —
+ * when TWO OR MORE requested files fail to even COLLECT (a transform/parse/top-level-throw
+ * error, not a normal assertion failure) in the same run. A single collection failure still
+ * prints a full "Failed Suites" block with the underlying error; add a second simultaneous one
+ * and the whole block vanishes, leaving only the bare summary lines:
+ *
+ *   Test Files  2 failed (2)
+ *        Tests  no tests
+ *
+ * Reproduced directly against vitest 4.1.8 (two sibling files each with a deliberately
+ * unterminated template literal, run together) — confirmed upstream reporter behavior, not a
+ * flag/config issue in this repo (no custom reporter is configured; `--reporter=verbose` shows
+ * the SAME empty output). Detects that exact silent-failure signature so the caller can recover
+ * by re-running the files individually (where the same collection error DOES print in full).
+ *
+ * @param {string} output combined stdout+stderr of a `vitest run` invocation
+ * @returns {boolean} true when the run failed with zero per-suite/per-test error detail
+ */
+export function looksLikeSilentCollectionFailure(output) {
+  if (!/Test Files\s+\d+ failed/.test(output)) return false;
+  // A "Failed Suites"/"Failed Tests" block means Vitest DID print the underlying error for at
+  // least one file — the single-collection-failure case, which is unaffected by this bug.
+  if (/Failed Suites|Failed Tests/.test(output)) return false;
+  // Each file whose collection failed renders as "❯ <file> (0 test)" in the tree with nothing
+  // beneath it (a normal per-test failure instead renders "(N test | M failed)" plus a `×` line
+  // per failing test — real detail). Two or more zero-test files with no Failed-Suites block is
+  // exactly the reproduced silent-failure signature (a single one always gets its own block).
+  const zeroTestFiles = (output.match(/❯\s*\S+\s*\(0 test\)/g) ?? []).length;
+  return zeroTestFiles >= 2;
+}
+
 export function aggregateGroupResults(groupResults) {
   const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
@@ -251,11 +284,17 @@ export function main(argv = process.argv.slice(2)) {
     }
 
     const exact = matched.map((file) => relative(group.cwd, file));
+    // Captured (not `stdio:'inherit'`) so the EI-18099113673609528 silent-collection-failure
+    // signature can be detected below; forwarded verbatim so nothing is lost for a live TTY.
+    // 256MB matches scripts/affected-tests.mjs's captured-output maxBuffer — spawnSync's 1MB
+    // default would read a large suite's output as an ENOBUFS-killed-child failure.
     const result = spawnSync(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...vitestArgs],
-      { cwd: group.cwd, env: process.env, stdio: 'inherit' },
+      { cwd: group.cwd, env: process.env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
     );
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) {
       console.error(`TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`);
       groupResults.push({
@@ -271,6 +310,23 @@ export function main(argv = process.argv.slice(2)) {
     const groupFailed = result.status !== 0;
     if (groupFailed) {
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
+      // EI-18099113673609528: >=2 files + zero per-suite detail is Vitest 4's silent
+      // simultaneous-collection-failure reporter gap — re-run each file alone (where the same
+      // failure DOES print in full) so the caller isn't left with an undiagnosable "N failed / no
+      // tests" and nothing else.
+      if (exact.length > 1 && looksLikeSilentCollectionFailure(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
+        console.error(
+          `TEST_FILE_DETAIL_RECOVERY cwd=${cwdLabel} Vitest printed zero per-suite error detail for ${exact.length} failed files (known Vitest 4 reporter gap when >=2 files fail collection at once) — re-running each file individually to surface the actual error:`,
+        );
+        for (const file of exact) {
+          console.error(`\n>>> re-running ${file} alone for detail`);
+          spawnSync('npx', ['vitest', 'run', ...configArgs, file, ...vitestArgs], {
+            cwd: group.cwd,
+            env: process.env,
+            stdio: 'inherit',
+          });
+        }
+      }
     }
     groupResults.push({
       requested: verdict.requested,

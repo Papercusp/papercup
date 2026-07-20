@@ -429,6 +429,27 @@ export function isIndexLockFailure(output: string): boolean {
   return /Unable to create '[^']*index\.lock': File exists/i.test(output);
 }
 
+/** The `git add -A` fatal for a path that vanished between git's tree-walk
+ *  enumeration and its stat call ("fatal: unable to stat '<path>': No such file or
+ *  directory") — a benign race with ANY process in this heavily-concurrent fleet
+ *  that writes atomically (write `<file>.tmp.<pid>.<hash>` sibling, then
+ *  rename/remove over the real file): git enumerates the tmp sibling right before
+ *  the writer renames/removes it, so the subsequent stat 404s even though the file
+ *  legitimately existed a moment earlier. The window is a handful of milliseconds
+ *  wide (EI-18094449017685490), so a bounded immediate retry resolves it instead of
+ *  stranding the whole tick's commit on one transient, already-gone path. Exported
+ *  for unit testing (a git wording change must fail a test, not silently disable
+ *  the retry below). */
+export function isTransientStatFailure(output: string): boolean {
+  return /fatal: unable to stat '[^']*': No such file or directory/i.test(output);
+}
+
+/** Bounded retry budget for {@link isTransientStatFailure} — the race window is a
+ *  few ms wide (one process's write-tmp+rename), so this is generous, not a
+ *  long-poll. Exported so the unit test doesn't hardcode a magic number twice. */
+export const TRANSIENT_STAT_FAILURE_MAX_RETRIES = 3;
+const TRANSIENT_STAT_FAILURE_RETRY_DELAY_MS = 150;
+
 /** A lock YOUNGER than this is treated as live contention (git rewrites the lock
  *  file as it builds the new index, so an in-flight writer keeps the mtime fresh);
  *  older = the writer is dead and the lock is an orphan. git-sync ticks run ~2min
@@ -792,6 +813,26 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         o.log(
           `[git-sync] ${repoPath}: 'git add -A' FAILED on embedded/uncommitted repo(s) [${stray.join(', ')}] — excluding + retrying so the rest of the tree still commits (previously: silent strand)`,
         );
+        addRes = await runGit(buildAddArgs(stray), repoPath);
+      }
+      // TRANSIENT-ENOENT SELF-HEAL (EI-18094449017685490): git's tree-walk
+      // enumerated a path an instant before some other process's atomic
+      // write-tmp+rename made it vanish. This is NOT a stray embedded repo and NOT
+      // a held index lock — it's a benign, fast-resolving race, so retry the exact
+      // same add a bounded few times (immediate; the writer's rename completes in
+      // milliseconds) rather than failing the whole tick's commit on one
+      // already-gone temp file.
+      for (
+        let attempt = 1;
+        addRes.code !== 0 &&
+        isTransientStatFailure(`${addRes.stdout}\n${addRes.stderr}`) &&
+        attempt <= TRANSIENT_STAT_FAILURE_MAX_RETRIES;
+        attempt++
+      ) {
+        o.log(
+          `[git-sync] ${repoPath}: 'git add -A' hit a transient ENOENT (a concurrent atomic-write race enumerated a path that vanished before stat) — retrying (attempt ${attempt}/${TRANSIENT_STAT_FAILURE_MAX_RETRIES})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, TRANSIENT_STAT_FAILURE_RETRY_DELAY_MS));
         addRes = await runGit(buildAddArgs(stray), repoPath);
       }
       // STALE-LOCK SELF-HEAL (2026-07-04): a dead git process's orphaned index.lock

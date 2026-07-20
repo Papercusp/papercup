@@ -181,9 +181,9 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       RETURN OLD;
     END IF;
     -- WI-5493: normalize NEW.payload to a real jsonb OBJECT before it is ever
-    -- merged with `||` below — a non-object payload (e.g. the postgres-js
-    -- double-encoded string-scalar binding quirk) otherwise silently
-    -- array-corrupts the merge, destroying every named key.
+    -- merged with the || operator below — a non-object payload (e.g. the
+    -- postgres-js double-encoded string-scalar binding quirk) otherwise
+    -- silently array-corrupts the merge, destroying every named key.
     v_payload := COALESCE(NEW.payload, '{}'::jsonb);
     IF jsonb_typeof(v_payload) IS DISTINCT FROM 'object' THEN
       BEGIN

@@ -2,7 +2,7 @@
  * getInProcessSubstrateStatus tests.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { getInProcessSubstrateStatus, resolveEffectiveBootedHandles } from '../in-process-status';
 import {
   _resetHandleMapForTests,
@@ -26,29 +26,11 @@ afterEach(() => {
 // sets this) implicitly relies on `isSubstrateOwnerProcess`'s default —
 // `requestOnlyHost()` reading AMBIENT `process.env.PAPERCUSP_BACKGROUND_WORKERS` /
 // `PAPERCUSP_HONO_PORT` (background-workers.ts) — resolving to "this IS the
-// substrate owner". That holds in a bare CI runner, but NOT on this dev box: su/agent
-// shells run with `PAPERCUSP_BACKGROUND_WORKERS=0` in their ambient environment
-// (papercup-*-api.service.d drop-ins), which silently flips every "plain" call above
-// onto the request-only-worker branch — bootedCount:0 / empty harnesses / reachedSubstrateOwner:false
-// instead of the healthy-with-handles result the test names describe. Not a flake:
-// 16/32 tests in this file (+ the sibling integration-smoke.test.ts) fail
-// DETERMINISTICALLY, every run, in any shell that has that var set — which is every
-// fleet agent's normal `npm run test:affected`, easily mistaken for a regression from
-// an unrelated change. Make the suite hermetic: clear both vars before each test
-// (save+restore, mirroring the local pattern the "request-only secondary default"
-// describe already uses for the cases that need them SET).
-const AMBIENT_ENV_KEYS = ['PAPERCUSP_BACKGROUND_WORKERS', 'PAPERCUSP_HONO_PORT'] as const;
-let savedAmbientEnv: Record<string, string | undefined>;
-beforeEach(() => {
-  savedAmbientEnv = Object.fromEntries(AMBIENT_ENV_KEYS.map((k) => [k, process.env[k]]));
-  for (const k of AMBIENT_ENV_KEYS) delete process.env[k];
-});
-afterEach(() => {
-  for (const k of AMBIENT_ENV_KEYS) {
-    if (savedAmbientEnv[k] === undefined) delete process.env[k];
-    else process.env[k] = savedAmbientEnv[k];
-  }
-});
+// substrate owner". `libs/test-config/src/setup-hermetic-env.ts` (every vitest file's
+// first setupFile) now scrubs both vars before any test file loads, so this file no
+// longer needs its own save/scrub/restore — see that file for the full history
+// (EI-2634: 16/32 tests here + the sibling integration-smoke.test.ts failed
+// deterministically in any su/psu shell before the central scrub landed).
 
 function fakeHandle(
   workspaceId: string,
