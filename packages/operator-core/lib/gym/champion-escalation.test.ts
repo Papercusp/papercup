@@ -103,4 +103,40 @@ describe('escalateChampionToQueenFrontier — writer edge', () => {
     expect(captured[0].lane).toBe('improvement');
     expect(captured[0].title).toContain('scoper@papercusp');
   });
+
+  it("retries under the platform Pot when the harness scope is refused as 'pot_not_found' (P-005 vs gym throwaway harnesses)", async () => {
+    const captured: CaptureImprovementInput[] = [];
+    const fakeResult: CaptureImprovementResult = {
+      ok: true,
+      created: true,
+      kind: 'change',
+      possibleDuplicates: [],
+    };
+    const potErr = Object.assign(new Error("pot 'gymloopharness' is not a real Pot in workspace 'papercusp-workspace'"), {
+      code: 'pot_not_found',
+    });
+    const captureImprovement = vi.fn(async (input: CaptureImprovementInput) => {
+      if (input.scope !== undefined) throw potErr;
+      captured.push(input);
+      return fakeResult;
+    });
+    const result = await escalateChampionToQueenFrontier(base, { captureImprovement });
+    expect(result).toBe(fakeResult);
+    expect(captureImprovement).toHaveBeenCalledTimes(2);
+    // The retry drops ONLY the scope (→ platform Pot); the harness identity survives in
+    // the title/body/payload so the champion signal stays fully attributable.
+    expect(captured).toHaveLength(1);
+    expect(captured[0].scope).toBeUndefined();
+    expect(captured[0].title).toContain('scoper@papercusp');
+    expect((captured[0].payloadExtra as { championEscalation: { harnessSlug: string } }).championEscalation.harnessSlug).toBe('papercusp');
+  });
+
+  it('does NOT retry on a non-pot failure (the writer error propagates)', async () => {
+    const boom = new Error('pg down');
+    const captureImprovement = vi.fn(async () => {
+      throw boom;
+    });
+    await expect(escalateChampionToQueenFrontier(base, { captureImprovement })).rejects.toBe(boom);
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
 });
