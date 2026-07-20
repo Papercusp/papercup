@@ -284,7 +284,10 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
       VALUES
         (${installSlug}, ${plan.queueId}, ${title},
          'Trivial daily canary feature — the autonomous loop must carry it to DONE untouched.',
-         'todo', 0, 'feature', ${canaryOrder}, '{"canary": true}'::jsonb, FALSE, ${workspaceId}, ${now}, ${now}, ${now})
+         -- work-item-status-full-unify P-007: born at the unified claimable token 'open' (was
+         -- 'todo') — this raw INSERT bypasses the alias-fold, and a 'todo' canary sits OUTSIDE
+         -- the ['open'] claim floor (P-004), so the autoloop would never pick it up → false red.
+         'open', 0, 'feature', ${canaryOrder}, '{"canary": true}'::jsonb, FALSE, ${workspaceId}, ${now}, ${now}, ${now})
       ON CONFLICT (harness_slug, feature_id) DO NOTHING
       RETURNING feature_id`;
     if (inserted.length > 0) {

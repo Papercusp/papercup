@@ -413,7 +413,12 @@ async function sendOne(
           message:
             'coord:send addressed agent(s) not in the roster — nothing was sent. ' +
             'Use the short handle from [coord+N]/inbox, the su- prefix, or the full ownerId ' +
-            '(coord:presence lists them); a substring of a live ownerId also resolves.',
+            '(coord:presence lists them); a substring of a live ownerId also resolves.' +
+            (msg.related_msg_id
+              ? ' Just closing the loop on a message from someone whose session has ended? ' +
+                'coord:ack { msg_id } never requires the original sender to still be in the ' +
+                'roster — use it instead of a manual related_msg_id reply.'
+              : ''),
           ...(trulyUnknown.length ? { unknown_recipients: trulyUnknown } : {}),
           ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
         };

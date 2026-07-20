@@ -464,10 +464,12 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
            item_kind, needs_human_review, workspace_id, ts, created_ts, updated_ts)
         VALUES (${SLUG}, ${fid}, ${'Toy feature ' + fid + ': add a marker file'},
                 ${'Touch nothing after filing: the autoloop must pick this up, run the pipeline to DONE, and free its slot. The change itself is trivial — add/append a marker file in the repo root and commit it.'},
-                'todo', 0, 'feature', FALSE, ${WS}, ${now}, ${now}, ${now})
+                'open', 0, 'feature', FALSE, ${WS}, ${now}, ${now}, ${now})
         ON CONFLICT (harness_slug, feature_id) DO NOTHING`;
     }
-    log(`queued ${featureIds.join(', ')} (status todo) — touching nothing from here`);
+    // work-item-status-full-unify P-007: 'open' is the unified claimable token (was 'todo');
+    // a 'todo' feature sits outside the ['open'] claim floor so the autoloop never picks it up.
+    log(`queued ${featureIds.join(', ')} (status open) — touching nothing from here`);
 
     // 7. TOUCH NOTHING. Observe (read-only) until every feature passes and its
     //    pipeline settles, sampling the resources oracle as we go.

@@ -798,4 +798,5 @@ export function _resetServiceHealthState(): void {
   lastHealth = {};
   lastResults = [];
   lastResultsAt = null;
+  desktopDownStreak = 0;
 }

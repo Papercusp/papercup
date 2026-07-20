@@ -343,6 +343,46 @@ describe('emitClaimReleasedEvent (P-105)', () => {
     const keys = emit.mock.calls.map((c) => c[0].key).sort();
     expect(keys).toEqual(['claim:released:WI-37', 'work-item:claimable']);
   });
+
+  // EI-18146409983480148: a "wait for an external condition to clear" item (a still-stale
+  // watchdog metric, a pending decay window) gets re-claimed/re-investigated/re-released by
+  // a rotating cast of agents every few minutes — each release used to re-wake EVERY live
+  // `work-item:claimable` awaiter for zero new information (observed: 3 broad wakes on one
+  // item in <30min). The targeted claim:released:<id> key must still fire unconditionally.
+  it('EI-18146409983480148: a second release of the SAME item within the throttle window suppresses the broad co-fire (claim:released:<id> still fires)', async () => {
+    const { emitClaimReleasedEvent } = await import('./work-items-events');
+    const emit1 = typedEmit();
+    emitClaimReleasedEvent(wi({ id: 'WI-40', state: 'open', assignee: null }), { emit: emit1 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit1.mock.calls.map((c) => c[0].key).sort()).toEqual(['claim:released:WI-40', 'work-item:claimable']);
+
+    const emit2 = typedEmit();
+    emitClaimReleasedEvent(wi({ id: 'WI-40', state: 'open', assignee: null }), { emit: emit2 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit2.mock.calls.map((c) => c[0].key)).toEqual(['claim:released:WI-40']);
+  });
+
+  it('EI-18146409983480148: the release throttle is PER-ITEM — a different id still co-fires normally', async () => {
+    const { emitClaimReleasedEvent } = await import('./work-items-events');
+    emitClaimReleasedEvent(wi({ id: 'WI-42', state: 'open', assignee: null }), { emit: typedEmit() });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const emit = typedEmit();
+    emitClaimReleasedEvent(wi({ id: 'WI-43', state: 'open', assignee: null }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit.mock.calls.map((c) => c[0].key).sort()).toEqual(['claim:released:WI-43', 'work-item:claimable']);
+  });
+
+  it('EI-18146409983480148: __resetClaimableReleaseThrottleForTests clears the throttle so a reused id fires again', async () => {
+    const { emitClaimReleasedEvent, __resetClaimableReleaseThrottleForTests } = await import('./work-items-events');
+    emitClaimReleasedEvent(wi({ id: 'WI-44', state: 'open', assignee: null }), { emit: typedEmit() });
+    await new Promise((r) => setTimeout(r, 0));
+    __resetClaimableReleaseThrottleForTests();
+    const emit = typedEmit();
+    emitClaimReleasedEvent(wi({ id: 'WI-44', state: 'open', assignee: null }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit.mock.calls.map((c) => c[0].key).sort()).toEqual(['claim:released:WI-44', 'work-item:claimable']);
+  });
 });
 
 describe('emitWorkItemBlockedEvent', () => {

@@ -15,6 +15,8 @@ import {
   BG_HOST_STALE_MS,
   SUPERVISED_PROCESSES,
   supervisedProcesses,
+  applyDesktopDebounce,
+  DESKTOP_DOWN_CONFIRM_TICKS,
   type ProbeResult,
 } from './service-health';
 import { collectServiceDownSignals } from './harness/improvements/watchdog';
@@ -75,6 +77,72 @@ describe('diffHealth', () => {
     const present: ProbeResult = { name: 'desktop', up: false, present: true, status: null, latencyMs: 1 };
     const { transitions } = diffHealth({ desktop: true }, [present]);
     expect(transitions).toEqual([{ name: 'desktop', to: 'down' }]);
+  });
+});
+
+// EI-18144960689849695: desktop flapped DOWN→recovered 500+ times since
+// 2026-07-04 even after the two prior desktop-flap fixes (EI-7760 racy
+// singleton, EI-18131725582506957 single ipc-connect retry) — the remaining
+// cause is diffHealth's own single-bad-tick-no-debounce design. Require
+// DESKTOP_DOWN_CONFIRM_TICKS consecutive bad ticks before `desktop` is
+// reported down to any consumer; a single good tick clears the streak.
+describe('applyDesktopDebounce (EI-18144960689849695 — desktop flap damping)', () => {
+  const down = (note = 'ipc socket unreachable'): ProbeResult => ({
+    name: 'desktop',
+    up: false,
+    present: true,
+    status: null,
+    latencyMs: 1,
+    note,
+  });
+  const up: ProbeResult = { name: 'desktop', up: true, present: true, status: null, latencyMs: 1, note: 'up' };
+  const absent: ProbeResult = { name: 'desktop', up: false, present: false, status: null, latencyMs: 1 };
+  const other: ProbeResult = { name: 'operator', up: true, status: 200, latencyMs: 1 };
+
+  it('a single bad tick is SUPPRESSED (reported up, annotated) below the confirm threshold', () => {
+    const { results, nextStreak } = applyDesktopDebounce([down(), other], 0);
+    expect(nextStreak).toBe(1);
+    expect(nextStreak).toBeLessThan(DESKTOP_DOWN_CONFIRM_TICKS);
+    const d = results.find((r) => r.name === 'desktop')!;
+    expect(d.up).toBe(true);
+    expect(d.note).toMatch(/unconfirmed down \(streak 1\/2\)/);
+    expect(d.note).toMatch(/ipc socket unreachable/); // original detail preserved
+    // untouched entries pass through unchanged
+    expect(results.find((r) => r.name === 'operator')).toEqual(other);
+  });
+
+  it('reports genuinely DOWN once the streak reaches the confirm threshold', () => {
+    const first = applyDesktopDebounce([down()], 0);
+    const second = applyDesktopDebounce([down()], first.nextStreak);
+    expect(second.nextStreak).toBe(DESKTOP_DOWN_CONFIRM_TICKS);
+    const d = second.results.find((r) => r.name === 'desktop')!;
+    expect(d.up).toBe(false);
+    expect(d.note).toBe('ipc socket unreachable'); // unmodified once confirmed
+  });
+
+  it('a single good tick immediately clears an in-progress streak (fast-recover, slow-alarm)', () => {
+    const { nextStreak: afterOneBad } = applyDesktopDebounce([down()], 0);
+    expect(afterOneBad).toBe(1);
+    const { results, nextStreak } = applyDesktopDebounce([up], afterOneBad);
+    expect(nextStreak).toBe(0);
+    expect(results.find((r) => r.name === 'desktop')).toEqual(up); // pass-through, no rewrite
+  });
+
+  it('a legitimately-absent desktop (present:false) resets the streak and passes through untouched', () => {
+    const { results, nextStreak } = applyDesktopDebounce([absent], 2);
+    expect(nextStreak).toBe(0);
+    expect(results.find((r) => r.name === 'desktop')).toEqual(absent);
+  });
+
+  it('no desktop entry in the batch → streak resets, results untouched', () => {
+    const { results, nextStreak } = applyDesktopDebounce([other], 3);
+    expect(nextStreak).toBe(0);
+    expect(results).toEqual([other]);
+  });
+
+  it('does not touch non-desktop entries even while desktop is being debounced', () => {
+    const { results } = applyDesktopDebounce([other, down()], 0);
+    expect(results.find((r) => r.name === 'operator')).toEqual(other);
   });
 });
 

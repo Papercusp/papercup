@@ -253,7 +253,52 @@ export function emitClaimReleasedEvent(
   // P-007: a released item is back in the pool — co-fire the canonical claimable
   // key (the guard drops rows that released into a non-claimable end state).
   // EI-15019: skip the co-fire when the caller says this round-trip is internal-only.
-  if (deps.announceClaimable !== false) emitWorkItemClaimableEvent(wi, 'released', deps);
+  // EI-18146409983480148: some items have a legitimate "release again, a future
+  // holder/auto-close will pick it up once an external condition clears" disposition
+  // (a still-stale watchdog metric, a pending decay window) — a rotating cast of
+  // agents re-claims, re-investigates, and re-releases the SAME item every few
+  // minutes, and every release re-wakes EVERY live `work-item:claimable` awaiter
+  // for zero new information (observed: 3 broad wakes on one item in <30min). The
+  // targeted `claim:released:<id>` key above still fires unconditionally — an
+  // agent awaiting THIS specific id is never starved; only the broad pool-wide
+  // co-fire is throttled per item.
+  if (deps.announceClaimable !== false && shouldFireClaimableRelease(wi.id)) {
+    emitWorkItemClaimableEvent(wi, 'released', deps);
+  }
+}
+
+/** In-process per-item throttle for the broad `work-item:claimable` co-fire on a
+ *  voluntary release (EI-18146409983480148) — see emitClaimReleasedEvent. A
+ *  rate-limiter, not a durable record: best-effort/in-process only (resets on
+ *  restart), bounded eviction on overflow rather than swept every call. A missed
+ *  throttle just costs one extra wake; a false-positive throttle never loses a
+ *  claim — the item stays fully claimable by id or a fresh scheduler:get_next
+ *  pull (its own claim-eligibility floors are unaffected, see releaseCooldownSec
+ *  in work-items.ts for the separate SAME-releaser re-claim cooldown this is not). */
+const CLAIMABLE_RELEASE_THROTTLE_MS = Math.max(
+  0,
+  Number(process.env.PAPERCUSP_CLAIMABLE_RELEASE_THROTTLE_MS ?? 5 * 60_000),
+);
+const CLAIMABLE_RELEASE_THROTTLE_MAX_ENTRIES = 5000;
+const lastClaimableReleaseFireAt = new Map<string, number>();
+
+function shouldFireClaimableRelease(id: string): boolean {
+  if (CLAIMABLE_RELEASE_THROTTLE_MS <= 0) return true;
+  const now = Date.now();
+  const last = lastClaimableReleaseFireAt.get(id);
+  if (last !== undefined && now - last < CLAIMABLE_RELEASE_THROTTLE_MS) return false;
+  if (lastClaimableReleaseFireAt.size >= CLAIMABLE_RELEASE_THROTTLE_MAX_ENTRIES) {
+    const cutoff = now - CLAIMABLE_RELEASE_THROTTLE_MS * 4;
+    for (const [k, t] of lastClaimableReleaseFireAt) if (t < cutoff) lastClaimableReleaseFireAt.delete(k);
+  }
+  lastClaimableReleaseFireAt.set(id, now);
+  return true;
+}
+
+/** Test-only: clear the in-process release throttle so tests reusing an item id
+ *  across cases don't cross-contaminate. Not exported from the package surface. */
+export function __resetClaimableReleaseThrottleForTests(): void {
+  lastClaimableReleaseFireAt.clear();
 }
 
 /**

@@ -282,7 +282,7 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
         `INSERT INTO harness_shared.work_items (
            harness_slug, feature_id, title, summary, status, attempts,
            item_kind, needs_design, needs_human_review, ts, created_ts, updated_ts
-         ) VALUES ($1, $2, $3, $4, 'todo', 0, 'feature', FALSE, FALSE, $5, $6, $7)
+         ) VALUES ($1, $2, $3, $4, 'open', 0, 'feature', FALSE, FALSE, $5, $6, $7)
          ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
         [member, featureId, title, spec, now, now, now],
       );

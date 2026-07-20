@@ -347,6 +347,31 @@ describe('AdvOverviewTab component', () => {
     expect(screen.getByText('4 open · 14 all')).toBeTruthy();
     expect(screen.getByText('Change')).toBeTruthy();
     expect(screen.getByText('2 open · 2 all')).toBeTruthy();
+    // no deltas → no 24h headline row and no +/− suffixes
+    expect(screen.queryByText(/24h/)).toBeNull();
+  });
+
+  it('renders the 24h burn-down headline + per-kind +N/−N suffixes from workItems.delta24h (P-002)', () => {
+    statsResult = {
+      data: [
+        { kind: 'bug', state: 'open', n: 4, terminal: false },
+        { kind: 'change', state: 'open', n: 2, terminal: false },
+      ],
+      loading: false,
+    };
+    deltaResult = {
+      data: [
+        { kind: 'bug', opened: 3, closed: 9 },
+        { kind: 'task', opened: 0, closed: 2 },
+      ],
+      loading: false,
+    };
+    render(<AdvOverviewTab />);
+    // headline sums ALL kinds (bug 3/9 + task 0/2), not just rendered rows
+    expect(screen.getByText('+3 opened · −11 closed')).toBeTruthy();
+    expect(screen.getByText('4 open · 4 all · +3/−9')).toBeTruthy();
+    // a kind with no delta keeps the plain tag
+    expect(screen.getByText('2 open · 2 all')).toBeTruthy();
   });
 
   it('shows only warn/crit health panels, crit first; an all-ok snapshot reads healthy (owner ask 2026-07-19)', () => {
