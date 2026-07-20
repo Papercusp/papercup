@@ -48,12 +48,19 @@ describe('EI-13537 — dev-operator-ifneeded warns on a stale/misconfigured reus
   it('warns (stderr) when the probe reports dbosEnabled:true — background workers unexpectedly ON', () => {
     const reuseBranch = src.match(/if in_use; then([\s\S]*?)\nfi/)?.[1];
     expect(reuseBranch).toBeTruthy();
+    // The `case "$health" in` probe classifies a dbosEnabled:true bind as a
+    // squatter (sets `squatter=1`); the warn-and-act response lives in the
+    // subsequent `if [ "$squatter" = "1" ]; then … fi` block (EI-18175101264082617
+    // moved the action out of the case so the squatter is actively terminated,
+    // not merely logged).
     expect(reuseBranch).toMatch(/\*'"dbosEnabled":true'\*\)/);
     expect(reuseBranch).toMatch(/WARNING:.*dbosEnabled=true/);
     // Every warning line must go to stderr (>&2), not stdout — it must not be
     // mistaken for the normal "reusing" status line Tauri's beforeDevCommand
-    // output parses.
-    const warningBlock = reuseBranch!.match(/case "\$health" in([\s\S]*?)\n\s*esac/)?.[1];
+    // output parses. Extract the whole squatter-handling block, anchoring its
+    // end on the outer `else` (uniquely the one followed by the reuse-path
+    // comment), so it is robust to the exact indentation of the nested branch.
+    const warningBlock = reuseBranch!.match(/if \[ "\$squatter" = "1" \]; then([\s\S]*?)\n\s*else\n\s*#/)?.[1];
     expect(warningBlock).toBeTruthy();
     const echoLines = warningBlock!.match(/^\s*echo .*$/gm) ?? [];
     expect(echoLines.length).toBeGreaterThan(0);

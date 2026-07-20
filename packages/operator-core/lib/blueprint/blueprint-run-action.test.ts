@@ -30,7 +30,15 @@ import { setLaunchBlueprintFire, type LaunchFireFn } from './launch-blueprint';
 import { setNegativeSpaceScanDeps } from '../blueprint-steps/ops/negative-space-scan';
 import { HarnessEndpointUnavailableError } from '../harness-ops/transport';
 
-const coding = loadBuiltinBlueprint('coding-factory').blueprint;
+// WI-5645: `retired: undefined` here is deliberate — this fixture is reused across
+// this file purely for decider-dispatch MECHANICS (which role fires, gate/backoff
+// behavior), unrelated to retirement, and coding-factory itself is now the RETIRED
+// built-in. Without stripping it, every `withDecider(...)`-built blueprint would
+// trip the new retirement warning in `handleBlueprintRun` and fail the repo's
+// fail-on-unexpected-console-warn test convention across unrelated tests. The
+// dedicated "falls back to the coding decider" test below explicitly exercises the
+// REAL (non-stripped) retired coding-factory fallback and asserts the warning.
+const coding = { ...loadBuiltinBlueprint('coding-factory').blueprint, retired: undefined };
 const withDecider = (role: string): Blueprint => ({ ...coding, spine: { ...coding.spine, decider: role } });
 
 const ctx = (over: Partial<SystemActionCtx> = {}): SystemActionCtx => ({
@@ -96,24 +104,14 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     expect(fired[0].kickoff).toContain('demo');
   });
 
-  it("mode='run' falls back to the coding decider ('director') when no blueprint resolves", async () => {
-    const fired: Array<Parameters<DeciderFireFn>[0]> = [];
-    setBlueprintResolver(async () => null); // harness has no blueprint → coding fallback
-    setBlueprintRunFire((input) => { fired.push(input); });
-
-    await handleBlueprintRun(ctx({ payloadTemplate: { mode: 'run' } }));
-
-    expect(fired).toHaveLength(1);
-    expect(fired[0].role).toBe('director'); // built-in coding spine.decider
-  });
-
   // WI-5645 (no-retirement-launch-guard): the no-blueprint `codingFallback()` default
   // resolves to the now-RETIRED `coding-factory` — EI-18177667809538623's actual root
   // chokepoint (a per-run substrate with no blueprint silently fell back here). A hard
-  // block would regress the "still fires" contract of the test directly above (the
-  // documented behavior-preserving default for every blueprint-less harness), so this
-  // chokepoint only WARNS loudly — it must still fire.
-  it('WI-5645: warns loudly (but still fires) when the codingFallback default is retired', async () => {
+  // block would regress "still fires" (the documented behavior-preserving default for
+  // every blueprint-less harness), so this chokepoint only WARNS loudly — it must
+  // still fire. Uses the REAL (non-stripped) `loadBuiltinBlueprint('coding-factory')`
+  // via `codingFallback()`, not the file's `coding`/`withDecider` test fixture.
+  it("mode='run' falls back to the coding decider ('director') when no blueprint resolves, WARNING it's retired (WI-5645)", async () => {
     const fired: Array<Parameters<DeciderFireFn>[0]> = [];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     setBlueprintResolver(async () => null); // harness has no blueprint → retired coding-factory fallback
@@ -122,6 +120,7 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     await handleBlueprintRun(ctx({ payloadTemplate: { mode: 'run' } }));
 
     expect(fired).toHaveLength(1); // still fires — this chokepoint never blocks
+    expect(fired[0].role).toBe('director'); // built-in coding spine.decider
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('RETIRED') && String(c[0]).includes('codingFallback'))).toBe(true);
     warnSpy.mockRestore();
   });
@@ -129,12 +128,10 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
   it('WI-5645: does NOT warn when the resolved blueprint is not retired', async () => {
     const fired: Array<Parameters<DeciderFireFn>[0]> = [];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // withDecider() spreads the retired coding-factory fixture — clear `retired`
-    // explicitly so this assertion isolates the "not retired" case.
-    setBlueprintResolver(async () => ({ ...withDecider('auditor'), retired: undefined }));
+    setBlueprintResolver(async () => withDecider('auditor')); // the file's fixture — retired: undefined
     setBlueprintRunFire((input) => { fired.push(input); });
 
-    await handleBlueprintRun(ctx({ payloadTemplate: { mode: 'run' } }));
+    await handleBlueprintRun(ctx());
 
     expect(fired).toHaveLength(1);
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('RETIRED'))).toBe(false);
