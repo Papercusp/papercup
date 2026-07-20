@@ -226,7 +226,7 @@ export async function stageKnowledgePackCandidate(
       (signature, title, draft_text, kind, scopes, recurrence_count,
        source_item_ids, created_by)
     VALUES
-      (${signature}, ${input.title}, ${input.draftText},
+      (${signature}, ${truncateCandidateTitle(input.title)}, ${input.draftText},
        ${input.kind ?? 'feedback'}, ${JSON.stringify(input.scopes)}::text::jsonb,
        ${input.recurrenceCount}, ${JSON.stringify(input.sourceItemIds ?? [])}::text::jsonb,
        ${input.createdBy ?? 'recurrence-escalation'})
@@ -315,6 +315,23 @@ function truncateSlugAtWordBoundary(slug: string, maxLen: number): string {
   const cut = slug.slice(0, maxLen);
   const lastDash = cut.lastIndexOf('-');
   return (lastDash > 0 ? cut.slice(0, lastDash) : cut).replace(/-+$/g, '');
+}
+
+export const CANDIDATE_TITLE_MAX_LEN = 200;
+
+/**
+ * Cap a candidate's owner-facing queue title at a WORD boundary with an
+ * ellipsis (the raw `sampleTitle` feeding staging is an incident item's own
+ * title — arbitrarily long and previously stored verbatim, the scoped-out
+ * half of EI-18121665970916886). Applied at the staging funnel so every
+ * caller inherits it; dedup is on the signature, never the title.
+ */
+export function truncateCandidateTitle(title: string, maxLen = CANDIDATE_TITLE_MAX_LEN): string {
+  const t = title.trim();
+  if (t.length <= maxLen) return t;
+  const cut = t.slice(0, maxLen - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:—-]+$/g, '')}…`;
 }
 
 /** Kebab-case an item id from the title, unique against `taken` (suffix -2, -3, …). */

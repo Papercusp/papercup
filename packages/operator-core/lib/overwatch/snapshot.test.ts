@@ -12,8 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  lastSystemHealth: vi.fn(),
-  runSystemHealthTick: vi.fn(),
+  resolveSystemHealth: vi.fn(),
   activeWorkspaceId: vi.fn(() => 'ws-1'),
   resolvePotHomeSlug: vi.fn((): string | null => 'papercup-hive'),
   getOverwatchStarted: vi.fn(),
@@ -27,8 +26,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../system-health', () => ({
-  lastSystemHealth: h.lastSystemHealth,
-  runSystemHealthTick: h.runSystemHealthTick,
+  resolveSystemHealth: h.resolveSystemHealth,
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: h.activeWorkspaceId }));
 vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: h.resolvePotHomeSlug }));
@@ -74,52 +72,39 @@ beforeEach(() => {
 });
 
 describe('getOverwatchSnapshot', () => {
-  it('reuses a FRESH cached SystemHealth (no recompute) and maps it via the B-03 mapper', async () => {
+  // D-006 (one aggregation, two consumers) + the SWR/cold/shared-snapshot cache
+  // logic now live in `resolveSystemHealth` (system-health/compute) and are covered
+  // by compute.test.ts (`resolveSystemHealth` describe). Here we assert only the
+  // BRIEF GLUE: map whatever health the shared resolver returns, and fail-soft to
+  // the neutral empty brief when it returns null / throws.
+  it('maps the SystemHealth returned by resolveSystemHealth via the B-03 mapper', async () => {
     const health = healthFixture('hive-x', Date.now());
-    h.lastSystemHealth.mockReturnValue(health);
+    h.resolveSystemHealth.mockResolvedValue(health);
 
     const out = await getOverwatchSnapshot();
 
-    expect(h.runSystemHealthTick).not.toHaveBeenCalled();
+    expect(h.resolveSystemHealth).toHaveBeenCalledWith('ws-1', expect.any(Number));
     expect(h.mapSystemHealthToBrief).toHaveBeenCalledWith(health, 'hive-x');
     expect(h.withAnomalies).toHaveBeenCalledWith({ mapped: true });
     expect(out).toEqual({ mapped: true, anomalies: [] });
   });
 
-  it('serves the STALE cache INSTANTLY + refreshes in the background (stale-while-revalidate)', async () => {
-    const stale = healthFixture('hive-old', Date.now() - 10 * 60_000);
-    h.lastSystemHealth.mockReturnValue(stale);
-    h.runSystemHealthTick.mockResolvedValue(healthFixture('hive-new', Date.now()));
-
-    const out = await getOverwatchSnapshot();
-
-    // A background refresh is kicked (fire-and-forget; the open pane updates over SSE)…
-    expect(h.runSystemHealthTick).toHaveBeenCalledTimes(1);
-    // …but the brief is mapped from the STALE cache and returned WITHOUT awaiting a
-    // re-aggregation — the pane opens instantly, no spinner.
-    expect(h.mapSystemHealthToBrief).toHaveBeenCalledWith(stale, 'hive-old');
-    expect(out).toEqual({ mapped: true, anomalies: [] });
-  });
-
-  it('blocks ONLY on a cold cache (first read after boot) — then maps the fresh tick', async () => {
-    h.lastSystemHealth.mockReturnValue(null);
-    const fresh = healthFixture('hive-new', Date.now());
-    h.runSystemHealthTick.mockResolvedValue(fresh);
-
-    await getOverwatchSnapshot();
-
-    expect(h.runSystemHealthTick).toHaveBeenCalledTimes(1);
-    expect(h.mapSystemHealthToBrief).toHaveBeenCalledWith(fresh, 'hive-new');
-  });
-
-  it('fail-softs to the neutral empty brief when health is unreadable (tick throws)', async () => {
-    h.lastSystemHealth.mockReturnValue(null);
-    h.runSystemHealthTick.mockRejectedValue(new Error('boom'));
+  it('fail-softs to the neutral empty brief when resolveSystemHealth returns null', async () => {
+    h.resolveSystemHealth.mockResolvedValue(null);
 
     const out = await getOverwatchSnapshot();
 
     expect(h.mapSystemHealthToBrief).not.toHaveBeenCalled();
     // emptyOverwatchBrief('papercup-hive') — the env home slug, since no health.
+    expect(out).toMatchObject({ potSlug: 'papercup-hive', anomalies: [] });
+  });
+
+  it('fail-softs to the neutral empty brief when resolveSystemHealth throws (unreadable health)', async () => {
+    h.resolveSystemHealth.mockRejectedValue(new Error('boom'));
+
+    const out = await getOverwatchSnapshot();
+
+    expect(h.mapSystemHealthToBrief).not.toHaveBeenCalled();
     expect(out).toMatchObject({ potSlug: 'papercup-hive', anomalies: [] });
   });
 });

@@ -135,6 +135,7 @@
     "test:affected:integration": "node scripts/affected-tests.mjs --integration",
     "test:all": "node scripts/affected-tests.mjs --all",
     "test:all:integration": "node scripts/affected-tests.mjs --all --integration",
+    "perf:desktop": "cd tools/perf-test/wdio && mkdir -p results && npm test 2>&1 | tee \"results/run-$(date -u +%Y%m%dT%H%M%SZ).log\"",
     "test:doctor": "node scripts/test-doctor.mjs",
     "doctor": "node scripts/test-doctor.mjs",
     "test:flake-soak": "bash scripts/flake-soak.sh",

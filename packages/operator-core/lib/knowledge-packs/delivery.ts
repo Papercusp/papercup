@@ -22,7 +22,7 @@
  * with fakes, zero PG/LLM/fs.
  */
 import { FLEET_LESSONS_PACK_ID } from './candidates-shared';
-import type { KnowledgePack } from './pack-format';
+import { filterByDomains, type KnowledgePack } from './pack-format';
 import type { ApplyInstallResult, InstallReview, UpgradePlanResult } from './manage';
 
 export interface DeliveryHive {
@@ -37,6 +37,8 @@ export interface DeliveryTickDeps {
   listHives: () => Promise<DeliveryHive[]>;
   /** The hive's muted-pack ids (`knowledge-packs:disabled`). */
   disabledPacks: (potSlug: string) => Promise<string[]>;
+  /** The hive's declared topical domains (`knowledge-packs:domains`); undefined ⇒ untagged items only. */
+  declaredDomains: (potSlug: string) => Promise<string[] | undefined>;
   plan: (potSlug: string, pack: KnowledgePack) => Promise<UpgradePlanResult>;
   apply: (potSlug: string, pack: KnowledgePack, review: InstallReview) => Promise<ApplyInstallResult>;
 }
@@ -68,6 +70,7 @@ async function realDeps(workspaceId: string): Promise<DeliveryTickDeps> {
         .map((p) => ({ slug: p.slug, remote: (p as { remote_hive?: boolean }).remote_hive === true }));
     },
     disabledPacks: (potSlug) => manage.disabledPacksFor(workspaceId, potSlug),
+    declaredDomains: (potSlug) => manage.declaredDomainsFor(workspaceId, potSlug),
     plan: (potSlug, pack) => manage.planPackUpgrade({ potSlug, pack }),
     apply: (potSlug, pack, review) =>
       manage.applyPackInstall({
@@ -119,12 +122,23 @@ export async function runFleetLessonsDeliveryTick(
         result.hivesSkipped += 1; // the per-hive opt-out — muted packs are never written
         continue;
       }
-      const plan = await d.plan(hive.slug, pack);
+      // Domain targeting (EI-18121672688225947): tagged items reach only hives
+      // declaring a matching domain; untagged items are unaffected. Filter the
+      // pack ONCE and hand the same filtered view to plan AND apply, so the
+      // upgrade planner never proposes an item apply would then be given.
+      const declared = await d.declaredDomains(hive.slug).catch(() => undefined);
+      const eligibleItems = filterByDomains(pack.items, declared);
+      if (eligibleItems.length === 0) {
+        result.hivesSkipped += 1; // every item is domain-tagged elsewhere
+        continue;
+      }
+      const packForHive = { manifest: pack.manifest, items: eligibleItems };
+      const plan = await d.plan(hive.slug, packForHive);
       if (plan.newItems.items.length === 0) {
         result.hivesSkipped += 1; // fully current (or everything present)
         continue;
       }
-      const applied = await d.apply(hive.slug, pack, plan.newItems);
+      const applied = await d.apply(hive.slug, packForHive, plan.newItems);
       result.hivesDelivered += 1;
       result.installed += applied.installed;
       result.skipped += applied.skipped;

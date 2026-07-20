@@ -1864,7 +1864,7 @@ function GymView({
                                   className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
                                   title="Judge-score change vs the current champion — positive means the challenger did better"
                                 >
-                                  {delta.label} benchmark
+                                  {delta.text} benchmark
                                 </span>
                                 {p.costDelta != null ? (
                                   <span

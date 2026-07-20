@@ -364,6 +364,28 @@ export async function uninstallPack(
 
 export const DISABLED_PACKS_SETTING = 'knowledge-packs:disabled';
 
+/**
+ * The hive's declared topical domains (EI-18121672688225947) — opt-in targeting
+ * for domain-tagged pack items. Unset/never-set returns undefined (distinct
+ * from an explicit empty list only in intent; both mean "untagged items only").
+ */
+export const DECLARED_DOMAINS_SETTING = 'knowledge-packs:domains';
+
+export async function declaredDomainsFor(
+  workspaceId: string,
+  potSlug: string,
+): Promise<string[] | undefined> {
+  try {
+    const { getHiveSetting } = await import('../hive-settings-store');
+    const rec = await getHiveSetting(workspaceId, potSlug, DECLARED_DOMAINS_SETTING);
+    const v: unknown = rec?.value ?? null;
+    if (!Array.isArray(v)) return undefined;
+    return v.filter((s): s is string => typeof s === 'string');
+  } catch {
+    return undefined;
+  }
+}
+
 export async function disabledPacksFor(workspaceId: string, potSlug: string): Promise<string[]> {
   try {
     const { getHiveSetting } = await import('../hive-settings-store');

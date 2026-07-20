@@ -69,15 +69,25 @@ function shortOwnerLabel(id: string): string {
  * a cold-armed loop only actually colds when that master gate is on AND a carry-note
  * exists (decideColdWake), so this is a DEFAULT change, not a new cold path.
  */
+/** The PURE B decision (exported for unit test): given the flag state and the loop
+ *  owner's live host, the arm-time carry default. 'cold' ONLY when the flag is on
+ *  AND the host classifies headless (sessionClassForHost 'claude-headless',
+ *  i.e. bridgeTty===false); 'warm' otherwise (flag off, interactive, or no host). */
+export function decideDefaultCarry(
+  flagOn: boolean,
+  host: Parameters<typeof sessionClassForHost>[0],
+): 'warm' | 'cold' {
+  if (!flagOn) return 'warm';
+  return host && sessionClassForHost(host) === 'claude-headless' ? 'cold' : 'warm';
+}
+
 async function resolveDefaultCarry(ownerId: string): Promise<'warm' | 'cold'> {
   try {
-    if (!(await getFlag(FLAGS.HEADLESS_LOOPS_COLD_BY_DEFAULT, 'system'))) return 'warm';
-    const host = findLiveHost(ownerId);
-    if (host && sessionClassForHost(host) === 'claude-headless') return 'cold';
+    const flagOn = await getFlag(FLAGS.HEADLESS_LOOPS_COLD_BY_DEFAULT, 'system');
+    return decideDefaultCarry(flagOn, findLiveHost(ownerId));
   } catch {
-    /* fail-soft to the historical warm default */
+    return 'warm'; // fail-soft to the historical warm default
   }
-  return 'warm';
 }
 
 export default defineTool({
@@ -387,7 +397,15 @@ export default defineTool({
           : ` ⚠ Did NOT auto-claim ${workItemClaim.id} (${workItemClaim.reason}); the loop is armed regardless — claim it yourself if this loop drives it.`
       : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
-    const note = baseNote + claimNote + warningNote;
+    // B (cold-with-carry-activation-2026-07-20): disclose when the headless default
+    // kicked in, so the arming agent knows its loop will go COLD (transcript reset to
+    // the carry-note each wake) and must keep loop:checkpoint fresh — and how to
+    // override if it wants warm.
+    const coldDefaultNote =
+      args.carry == null && carry === 'cold'
+        ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
+        : '';
+    const note = baseNote + claimNote + warningNote + coldDefaultNote;
 
     return {
       content: [

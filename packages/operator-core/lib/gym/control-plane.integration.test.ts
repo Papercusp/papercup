@@ -11,7 +11,7 @@
  *    test, not `??`);
  *  - full round-trip via getAutoloop; null for an unknown harness.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
@@ -183,6 +183,22 @@ describe('recordProposal (PG)', () => {
 describe('autoDecideRunProposals — autonomous promotion (owner mandate 2026-07-19)', () => {
   const RUN_START = 1_800_000_000_000;
   const NOW = RUN_START + 60_000;
+  // This minimal harness carries no engineer_issues table, so the accept
+  // path's BEST-EFFORT champion-escalation capture warns (accept unaffected —
+  // exactly its fail-soft contract). Expected here; assert it stays that warn.
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      const msg = String(args[0]);
+      const expectedFailSoft =
+        msg.includes('champion-escalation capture failed') ||
+        msg.includes('[change-ledger] FAILED to record');
+      if (!expectedFailSoft) {
+        throw new Error(`unexpected console.warn: ${args.map(String).join(' ')}`);
+      }
+    });
+  });
+  afterEach(() => warnSpy.mockRestore());
   const seed = (over: {
     id: string;
     createdAt: number;

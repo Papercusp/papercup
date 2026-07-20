@@ -18,6 +18,7 @@ import {
   autoAdoptPendingCandidates,
   bumpPatchVersion,
   candidateItemId,
+  truncateCandidateTitle,
   materializeCandidateIntoPack,
   renderCandidateLearningFile,
   reviewCandidateForAutoAdopt,
@@ -375,5 +376,26 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
     const result = await autoAdoptPendingCandidates({ maxPerRun: 0 }, { list } as never);
     expect(result).toEqual({ reviewed: 0, adopted: 0, dismissed: 0, failed: 0 });
     expect(list).not.toHaveBeenCalled();
+  });
+});
+
+describe('truncateCandidateTitle', () => {
+  it('short titles pass through untouched', () => {
+    expect(truncateCandidateTitle('A short title')).toBe('A short title');
+  });
+
+  it('long titles cut at a word boundary with an ellipsis, trailing punctuation stripped', () => {
+    const long = `${'word '.repeat(50)}tail`; // 254 chars
+    const cut = truncateCandidateTitle(long);
+    expect(cut.length).toBeLessThanOrEqual(200);
+    expect(cut.endsWith('…')).toBe(true);
+    expect(cut).not.toMatch(/ …$/);
+    expect(cut).not.toMatch(/wor…$/); // never mid-word
+  });
+
+  it('one unbroken word falls back to a hard cut', () => {
+    const cut = truncateCandidateTitle('x'.repeat(300), 20);
+    expect(cut.length).toBeLessThanOrEqual(20);
+    expect(cut.endsWith('…')).toBe(true);
   });
 });

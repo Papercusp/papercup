@@ -23,6 +23,7 @@
 import { getMemoryBackend } from '../memory/backend';
 import { hiveScopeKey } from '../memory/hive-scope';
 import {
+  filterByDomains,
   filterByShapes,
   memoryTextOf,
   provenanceOf,
@@ -48,6 +49,11 @@ export interface SeedPackInput {
   pack: KnowledgePack;
   /** Project shapes from detection; undefined ⇒ `any`-only (D-008/OQ-3). */
   shapes?: readonly AppliesTo[];
+  /**
+   * The hive's declared topical domains (`knowledge-packs:domains` setting);
+   * undefined ⇒ domain-tagged items are skipped (untagged items unaffected).
+   */
+  domains?: readonly string[];
   /** Stamped as metadata.created_by. Default 'system' (creation-time seed). */
   createdBy?: string;
 }
@@ -61,6 +67,8 @@ export interface SeedPackResult {
   ids: string[];
   /** Items excluded by the shape filter (not an error). */
   skippedByShape: number;
+  /** Items excluded by the domain filter (not an error). */
+  skippedByDomain: number;
   /** Items whose write failed (logged; never aborts the batch). */
   failed: number;
   error?: string;
@@ -108,6 +116,7 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
     seeded: 0,
     ids: [] as string[],
     skippedByShape: 0,
+    skippedByDomain: 0,
     failed: 0,
   };
   const undoFor = (ids: string[]) => async () => {
@@ -121,8 +130,10 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
     return { ...base, ok: false, error: `memory_unavailable: ${avail.reason}`, undo: async () => {} };
   }
 
-  const items = filterByShapes(pack.items, input.shapes);
-  const skippedByShape = pack.items.length - items.length;
+  const byShape = filterByShapes(pack.items, input.shapes);
+  const items = filterByDomains(byShape, input.domains);
+  const skippedByShape = pack.items.length - byShape.length;
+  const skippedByDomain = byShape.length - items.length;
   const ids: string[] = [];
   let failed = 0;
 
@@ -166,6 +177,7 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
     seeded: ids.length,
     ids,
     skippedByShape,
+    skippedByDomain,
     failed,
     ...(failed > 0 ? { error: `${failed} write(s) failed` } : {}),
     undo: undoFor(ids),

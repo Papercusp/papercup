@@ -64,6 +64,16 @@ export interface LearningItem {
   kind: LearningKind;
   /** Project shapes this learning seeds for. Default ['any']. */
   appliesTo: AppliesTo[];
+  /**
+   * Topical domains this learning is relevant to (open kebab-case vocabulary,
+   * e.g. 'replication', 'distributed-systems') — the second, orthogonal axis
+   * to the closed shape axis above (EI-18121672688225947). Absent ⇒ untagged:
+   * the item seeds/delivers everywhere, exactly as before the field existed.
+   * Tagged items reach only hives that DECLARE a matching domain
+   * (`knowledge-packs:domains` hive setting) — conservative beats
+   * wrongly-seeded, mirroring the D-008 repo-less posture for shapes.
+   */
+  domains?: string[];
   /** The learning body (markdown; stored verbatim as the memory text). */
   text: string;
 }
@@ -202,7 +212,18 @@ export function parseLearningFile(
     appliesTo = [...new Set(arr)] as AppliesTo[];
   }
 
-  return { item: { id, title, kind, appliesTo, text } };
+  let domains: string[] | undefined;
+  if (fm.domains !== undefined) {
+    const arr = Array.isArray(fm.domains) ? fm.domains : [fm.domains];
+    if (arr.length === 0) return { error: `${id}: domains must not be empty when present` };
+    const bad = arr.filter((d) => typeof d !== 'string' || !isKebab(d));
+    if (bad.length > 0) {
+      return { error: `${id}: domains must be kebab-case strings: ${bad.map(String).join(', ')}` };
+    }
+    domains = [...new Set(arr as string[])];
+  }
+
+  return { item: { id, title, kind, appliesTo, ...(domains ? { domains } : {}), text } };
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -233,6 +254,24 @@ export function filterByShapes(
   const known: readonly AppliesTo[] = (shapes ?? []).filter((s) => s !== 'any');
   return items.filter(
     (it) => it.appliesTo.includes('any') || it.appliesTo.some((a) => known.includes(a)),
+  );
+}
+
+/**
+ * Which items seed/deliver for a hive with the given DECLARED domains
+ * (EI-18121672688225947)? Untagged items always pass — the field is opt-in
+ * per item, so existing packs behave exactly as before. Domain-tagged items
+ * pass only on intersection with the hive's declaration; a hive that declares
+ * nothing (undefined/empty) receives untagged items only — conservative beats
+ * wrongly-seeded, mirroring filterByShapes' repo-less posture.
+ */
+export function filterByDomains(
+  items: readonly LearningItem[],
+  declared?: readonly string[],
+): LearningItem[] {
+  const has = new Set(declared ?? []);
+  return items.filter(
+    (it) => !it.domains || it.domains.length === 0 || it.domains.some((d) => has.has(d)),
   );
 }
 

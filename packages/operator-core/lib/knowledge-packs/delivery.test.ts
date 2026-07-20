@@ -37,6 +37,7 @@ const deps = (over: Partial<DeliveryTickDeps> = {}): DeliveryTickDeps => ({
   loadPack: async () => pack,
   listHives: async () => [{ slug: 'hive-1' }, { slug: 'hive-2' }],
   disabledPacks: async () => [],
+  declaredDomains: async () => undefined,
   plan: async (slug) => ({
     packId: 'fleet-lessons',
     installedVersions: [],

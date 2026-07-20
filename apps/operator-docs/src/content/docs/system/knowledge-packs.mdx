@@ -68,6 +68,7 @@ that instead (see [Built-in packs](#built-in-packs-three-of-them)).
 | The `fleet-lessons` pack | **shared root** `workspacesRoot()/shared/knowledge-packs/fleet-lessons/` — workspace-INDEPENDENT, so every workspace resolves the same pack (candidates are fleet-global). Resolution order: builtin → shared → installed; a stray per-workspace copy is shadowed, not merged |
 | A pot's live learnings | mem0 rows, scope `pot:<home-slug>` |
 | Pack mute state | pot setting `knowledge-packs:disabled` (federated hive_settings) |
+| Domain targeting | item frontmatter `domains: [...]` (open kebab-case vocabulary) + pot setting `knowledge-packs:domains` — a domain-tagged item seeds/delivers only to pots declaring an intersecting domain; untagged items are unaffected and a pot with no declaration receives untagged items only (`filterByDomains`, conservative like the repo-less shape posture) |
 | Seeding | `pot:create` step 6b (flag `KNOWLEDGE_PACKS`, default ON; undo-stacked, best-effort) |
 | Pre-turn injection | `buildMemoryContextBlock` — pot pool resolved member→pot via the registry's `hive_slug`; token-budgeted (~4k default, `PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS`), priority user > harness > pot-organic > pot-pack; muted packs filtered |
 | Runtime recall scope | `memory:search` default fan-out is **confined to the session's pot subtree** (P-018, `narrowHarnessSlugsToSessionHive`, `lib/memory/pot-scope.ts`). A pot-scoped agent never cross-recalls sibling pots' harness pools. Workspace-spanning sessions (`harness='*'`) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by `FLAGS.SCOPED_SUPERUSER_CLAMP`; fail-open (flag read error → full fan-out retained). `memory:list` is unaffected (it only adds explicitly-passed pot pools). |
@@ -79,7 +80,7 @@ priority above (D-010, `domain-generic-pot-architecture`):
 
 | Pack | Seeded for | Shape |
 | --- | --- | --- |
-| `papercusp-default` | the global fallback (no blueprint `knowledge.pack`, no explicit arg) — 32 learnings | shape-conditional |
+| `papercusp-default` | the global fallback (no blueprint `knowledge.pack`, no explicit arg) — 38 learnings | shape-conditional |
 | `coding` | a coding pot (`extends: coding`) | shape-conditional items (`ui\|service\|library\|cli\|any`) — generic engineering discovery rules |
 | `work` | a work pot (`extends: work`) | fully `any` (repo-less) — coordination discipline + rubric-judged deliverables |
 
@@ -87,6 +88,15 @@ priority above (D-010, `domain-generic-pot-architecture`):
 bindings; project specifics belong in the per-pot override and a separate
 project pack. Because a coding pot defaults to `coding` and a work pot to
 `work`, `papercusp-default` is **not** seeded for those blueprints.
+
+**Curation is single-source** (EI-18121649240446176): `sync-map.json` next to
+the packs declares that `papercusp-default` mirrors ALL of `coding` and `work`
+mirrors a named subset of shared discipline items. Edit the canonical
+`coding/` copy, then `npm run gen:knowledge-packs`; `pack-sync.test.ts` reds
+the gate on any drift, and deliberately diverging an item is a one-line
+sync-map edit. Item files may also carry `domains: [...]` (see the
+domain-targeting row above) — the axis is opt-in per item, so untagged packs
+behave exactly as before it existed.
 
 ## Candidate-promotion loop (fleet → pack) — auto-adopt behind a transferability bar
 

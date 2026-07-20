@@ -50,6 +50,7 @@ vi.mock('../../../operator-api-base', () => ({
 }));
 vi.mock('../../../harness-invoke-once', () => ({
   resolveSpawnBackendModel: vi.fn(),
+  isOmpBackendExplicitlyConfigured: vi.fn(() => false),
 }));
 vi.mock('../../../backend-feature-capabilities', () => ({
   backendFeatureGuard: vi.fn(() => ({ supported: true })),

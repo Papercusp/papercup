@@ -368,7 +368,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     it('refuses a checkpoint write when the item is assigned to a DIFFERENT agent (not_holder)', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-5557', harness: 'papercup', assignee: 'su-a7d08fd3-ba65-45d3-a07f-a335b9004454' });
       const r = await one({ id: 'WI-5557', checkpoint: 'trying to write on a peer\'s item' }, {
-        ...baseCtx,
+        ...(baseCtx as Record<string, unknown>),
         uiClientId: 'su-2e534e59-ceb6-48b5-87b8-3b362f652725',
       });
       expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
@@ -379,7 +379,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     it('refuses a CLEAR (blank checkpoint) on an item assigned to someone else too', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-5557', harness: 'papercup', assignee: 'someone-else' });
-      const r = await one({ id: 'WI-5557' }, { ...baseCtx, uiClientId: 'not-the-holder' });
+      const r = await one({ id: 'WI-5557' }, { ...(baseCtx as Record<string, unknown>), uiClientId: 'not-the-holder' });
       expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
       expect(r.ok).toBe(false);
       expect(r.error).toContain('not_holder');

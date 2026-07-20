@@ -21,15 +21,35 @@ This is the only path that exercises the real Tauri build — Playwright doesn't
 ## Running
 
 ```bash
-# 1. Build the packaged desktop binary
-pnpm --filter @papercusp/desktop build
+# 1. Build the packaged desktop binary (RELEASE — see the note below).
+#    The desktop app is the in-repo `papercusp-desktop` submodule:
+cd papercusp-desktop && npm run build     # tauri build → src-tauri/target/release/papercusp-desktop
 
-# 2. Run wdio against the binary
-cd tools/perf-test/wdio
-npm test
+# 2. Run every spec against the binary, capturing a per-run log:
+npm run perf:desktop                       # from the repo root
+
+#    …or run wdio directly:
+cd tools/perf-test/wdio && npm test
 ```
 
-`wdio.conf.ts` spawns `tauri-driver` on port 4445, drives the binary via WebDriver, and runs `specs/*.spec.ts`. The included `smoke.spec.ts` boots the app, waits for the operator UI to mount, injects `web-vitals`, and reports INP/LCP/CLS after 10s.
+`wdio.conf.ts` resolves the binary from `TAURI_APP_PATH` (or the real build
+locations — release preferred, honoring `CARGO_TARGET_DIR`), spawns
+`tauri-driver` on port 4445, drives the binary via WebDriver, and runs
+`specs/*.spec.ts`:
+
+- `smoke.spec.ts` — boots the app, waits for the operator UI to mount, injects
+  `web-vitals`, and reports INP/LCP/CLS after 10s.
+- `plan-popup-open.perf.spec.ts` — drives the REAL "open a plan" interaction
+  (sidebar Plans face → row click → plan body rendered in Vditor) and asserts
+  the page-relative `plan-popup-open` `performance.measure` against its budget
+  (mirrors `DESKTOP_PERF_BUDGETS`; the fresh-harness fix for
+  EI-18128922194224210).
+
+> ⚠️ **Use a RELEASE binary for budget assertions.** A debug build runs
+> several-fold slower, so its interaction timings blow the release-tuned
+> budgets. wdio.conf falls back to a debug binary (for wiring/smoke) but prefers
+> release. `npm run perf:desktop` writes each run's output (incl. the `[perf]
+> <interaction> = Nms` lines) to `results/run-<ts>.log`.
 
 ## Architecture vs the in-process `/tests` page
 

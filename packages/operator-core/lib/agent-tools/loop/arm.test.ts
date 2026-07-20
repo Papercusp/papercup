@@ -14,7 +14,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
-vi.mock('@papercusp/flags', () => ({ FLAGS: { LOOPS: 'papercusp-loops' } }));
+vi.mock('@papercusp/flags', () => ({
+  FLAGS: {
+    LOOPS: 'papercusp-loops',
+    HEADLESS_LOOPS_COLD_BY_DEFAULT: 'papercusp-headless-loops-cold-by-default',
+  },
+}));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({
