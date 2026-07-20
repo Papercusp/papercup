@@ -574,4 +574,143 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.error).toMatch(/winding-down/);
     });
   });
+
+  // WI-5561: scheduler:get_next's fleet-scoped miss path gave ZERO diagnosis when the
+  // whole issue-family pool was floor-gated (federation-detector / needs-human /
+  // claim-hold / observation-lane / …), leaving a fleet member (and the leader they'd
+  // report a false "scope/spec bug" to) with nothing but a bare "no claimable
+  // work-item matched fleet scope". diagnoseFleetScopeIssueFloorMiss reuses the exact
+  // aggregateIssueClaimExclusions floor-breakdown the non-fleet miss path already gets
+  // via buildMissDiagnosis; fleetScopedMiss surfaces it honestly instead of the bare
+  // message.
+  describe('WI-5561: issue-family floor-breakdown miss re-attribution', () => {
+    const issueScope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bug-drain-200k',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'bugs-rev1',
+          revision: 1,
+          view: { filter: { field: 'kind', op: '=' as const, value: 'bug' } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+          states: ['open'],
+        },
+        revision: 1,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+
+    const floorGatedBreakdown = {
+      matchedByFilter: 302,
+      excluded: {
+        taken: 0,
+        claimHold: 33,
+        needsHuman: 80,
+        observationLane: 21,
+        externalBlocker: 0,
+        planLaneReserved: 0,
+        federationDetector: 169,
+        loopNoise: 0,
+        alreadyCompleted: 0,
+        crossMachineRig: 0,
+        blockedDep: 0,
+        cooldown: 0,
+      },
+    };
+
+    it('returns the floor breakdown when the spec matches issue-family rows, threading harness/assignee/states/rigAvailable', async () => {
+      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue(floorGatedBreakdown);
+
+      const diag = await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+        rigAvailable: true,
+      });
+
+      expect(diag).toEqual(floorGatedBreakdown);
+      const [filterArg, optsArg] = admissionMocks.aggregateIssueClaimExclusions.mock.calls[0] ?? [];
+      expect(filterArg).toEqual(issueScope.record.spec.view.filter);
+      expect(optsArg).toMatchObject({
+        harness: 'papercusp',
+        assignee: 'su-member',
+        rigAvailable: true,
+        states: ['open'],
+      });
+    });
+
+    it('falls back to the spec\'s own `states` when no explicit states are passed', async () => {
+      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue(floorGatedBreakdown);
+      await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
+      const optsArg = admissionMocks.aggregateIssueClaimExclusions.mock.calls[0]?.[1];
+      expect(optsArg?.states).toEqual(['open']);
+    });
+
+    it('returns null (a genuine scope/spec-empty miss, not a floor story) when the filter matches zero issue-family rows', async () => {
+      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue({ matchedByFilter: 0, excluded: floorGatedBreakdown.excluded });
+      const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
+      expect(diag).toBeNull();
+    });
+
+    it('FAILS SOFT: a query error degrades to null, never throws (annotation only, like diagnoseFleetScopeCooldownMiss)', async () => {
+      admissionMocks.aggregateIssueClaimExclusions.mockRejectedValue(new Error('pg unavailable'));
+      const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
+      expect(diag).toBeNull();
+    });
+
+    it('returns null when the workspace cannot be resolved (nothing to diagnose)', async () => {
+      const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: null });
+      expect(diag).toBeNull();
+      expect(admissionMocks.aggregateIssueClaimExclusions).not.toHaveBeenCalled();
+    });
+
+    it('fleetScopedMiss surfaces excludedBreakdown + excludedBreakdownSummary + floor-gated advice when an issueBreakdown is present', () => {
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: floorGatedBreakdown });
+      expect(miss.windDown).toBe(true);
+      expect(miss.excludedBreakdown).toEqual(floorGatedBreakdown);
+      expect(miss.excludedBreakdownSummary).toMatch(/federationDetector=169/);
+      expect(miss.excludedBreakdownSummary).toMatch(/needsHuman=80/);
+      expect(miss.excludedBreakdownSummary).toMatch(/claimHold=33/);
+      expect(miss.excludedBreakdownSummary).toMatch(/observationLane=21/);
+      // zero-count buckets are dropped from the summary, not padded in
+      expect(miss.excludedBreakdownSummary).not.toMatch(/taken=0/);
+      expect(miss.advice).toMatch(/FLOOR-GATED miss \(WI-5561\)/);
+      expect(miss.advice).toMatch(/not a scope\/spec mismatch/);
+    });
+
+    it('fleetScopedMiss keeps the ORIGINAL scope-mismatch message + omits excludedBreakdown when issueBreakdown is null/absent', () => {
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: null });
+      expect(miss.excludedBreakdown).toBeUndefined();
+      expect(miss.excludedBreakdownSummary).toBeUndefined();
+      expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
+    });
+
+    it('a paused miss NEVER surfaces the floor breakdown, even if an issueBreakdown is passed (pause explains the miss fully)', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        pausedReason: 'owner pause',
+        issueBreakdown: floorGatedBreakdown,
+      });
+      expect(miss.paused).toBe(true);
+      expect(miss.excludedBreakdown).toBeUndefined();
+      expect(miss.error).toMatch(/winding-down/);
+    });
+
+    it('a cooldown-only miss and a floor breakdown can co-occur (both are independent, non-paused annotations)', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        cooldownDiag: { cooldownExcluded: 2, earliestExpiryMs: Date.now() + 5_000, earliestRowId: 'WI-9010' },
+        issueBreakdown: floorGatedBreakdown,
+      });
+      expect(miss.cooldownOnly).toBe(true);
+      expect(miss.excludedBreakdown).toEqual(floorGatedBreakdown);
+      // cooldown's message takes precedence when both are present (fleetScopedMiss's
+      // `error` branches on cooldown before breakdown), but the breakdown data itself
+      // still rides along on the response for the caller to inspect.
+      expect(miss.error).toMatch(/YOUR OWN release-cooldown floor/);
+    });
+  });
 });

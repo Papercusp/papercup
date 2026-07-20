@@ -267,7 +267,14 @@ export interface SampleReplicationLivenessOpts {
    * sat open forever because only the no_replicator axis reported recovery; now
    * each axis auto-resolves its own EI when the underlying replication recovers).
    */
-  onRecovery?: (recovery: ReplicationStallEpisode) => void | Promise<void>;
+  // EI-16949: kept as a plain `=> void` (not `void | Promise<void>`) on
+  // purpose — every call site fires this with `void onRecovery(...)`
+  // (fire-and-forget), and TS's void-return bivariance already lets a
+  // Promise-returning function (e.g. the default `reportRecovery`) satisfy
+  // a `=> void` target. Widening this to a union broke that bivariance
+  // exemption and red-lit every test callback that returns a non-void value
+  // (e.g. `(e) => someCounter++`) under `tsc --noEmit`.
+  onRecovery?: (recovery: ReplicationStallEpisode) => void;
 }
 
 /**

@@ -354,7 +354,8 @@ export default defineTool({
           ? ` ⚠ Did NOT auto-claim ${workItemClaim.id} — already held by ${workItemClaim.holder}. Coordinate with them (coord:send); the loop is armed regardless.`
           : ` ⚠ Did NOT auto-claim ${workItemClaim.id} (${workItemClaim.reason}); the loop is armed regardless — claim it yourself if this loop drives it.`
       : '';
-    const note = baseNote + claimNote;
+    const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
+    const note = baseNote + claimNote + warningNote;
 
     return {
       content: [
@@ -371,7 +372,7 @@ export default defineTool({
               goal,
               carry: args.carry ?? 'warm',
               continuation: args.continuation ?? 'settle',
-              mode: args.mode ?? 'work',
+              mode: resolvedMode,
               costCapCents: args.costCapCents ?? null,
               // EI-6878: a re-arm of an ALREADY-armed loop called from WITHIN its own
               // in-flight turn returns the loop's row PARKED at the 'infinity' sentinel
@@ -390,6 +391,7 @@ export default defineTool({
             },
             workItemClaim,
             reachability: reachabilityOut,
+            unboundedWarmLoopWarning,
             note,
           }),
         },

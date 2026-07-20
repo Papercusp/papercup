@@ -31,7 +31,7 @@ export function filterAndSortEvents(
 
 /** Pure: tally events by kind (all five kinds present, zero-defaulted). Exported for tests. */
 export function countEventsByKind(events: PerfEvent[]): Record<string, number> {
-  const c: Record<string, number> = { interaction: 0, longtask: 0, 'layout-shift': 0, 'console-error': 0, 'unhandled-error': 0 };
+  const c: Record<string, number> = { interaction: 0, longtask: 0, 'layout-shift': 0, measure: 0, 'console-error': 0, 'unhandled-error': 0 };
   for (const e of events) c[e.kind] = (c[e.kind] ?? 0) + 1;
   return c;
 }
@@ -81,7 +81,7 @@ export default function LiveMetricsTab() {
   const [events, setEvents] = useState<PerfEvent[]>([]);
   const [kindFilter, setKindFilter] = useQueryState(
     'kind',
-    parseAsStringEnum<PerfEventKind | 'all'>(['all', 'interaction', 'longtask', 'layout-shift', 'console-error', 'unhandled-error']).withDefault('all'),
+    parseAsStringEnum<PerfEventKind | 'all'>(['all', 'interaction', 'longtask', 'layout-shift', 'measure', 'console-error', 'unhandled-error']).withDefault('all'),
   );
   const [routeFilter, setRouteFilter] = useQueryState('route', parseAsString.withDefault(''));
   const [sort, setSort] = useQueryState(
@@ -117,6 +117,7 @@ export default function LiveMetricsTab() {
           <span className="pc-test-badge is-muted">interactions {counts.interaction}</span>
           <span className="pc-test-badge is-muted">long tasks {counts.longtask}</span>
           <span className="pc-test-badge is-muted">layout shifts {counts['layout-shift']}</span>
+          <span className="pc-test-badge is-muted">measures {counts.measure}</span>
           <span className="pc-test-badge is-poor">console errors {counts['console-error']}</span>
           <span className="pc-test-badge is-poor">unhandled {counts['unhandled-error']}</span>
         </div>
@@ -132,6 +133,7 @@ export default function LiveMetricsTab() {
                 { value: 'interaction', label: 'interaction' },
                 { value: 'longtask', label: 'longtask' },
                 { value: 'layout-shift', label: 'layout-shift' },
+                { value: 'measure', label: 'measure' },
                 { value: 'console-error', label: 'console-error' },
                 { value: 'unhandled-error', label: 'unhandled-error' },
               ]}
