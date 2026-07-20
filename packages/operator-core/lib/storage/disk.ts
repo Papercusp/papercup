@@ -8,7 +8,7 @@
  * collectible once it is neither live nor resumable AND past the retention
  * window); this module just supplies the protected set + sizing. Server-only.
  */
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, promises as fsp } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -17,6 +17,7 @@ import {
   type SessionDirCandidate,
   type ProtectedSessionIdentity,
 } from '../session-dir-gc';
+import { cooperativeYield } from '../event-loop-lag-monitor';
 import { scratchRoot } from '../scratch-uri';
 import type { DiskStorageCategory } from './categories';
 
@@ -129,6 +130,65 @@ export function dirSizeBytes(path: string, maxEntries = 400_000, budget?: DiskWa
 }
 
 /**
+ * Async, event-loop-COOPERATIVE twin of {@link dirSizeBytes} (WI-5471). Same
+ * iterative walk, same `maxEntries`/`budget` bounds, and byte-identical
+ * symlink-follow semantics (`fsp.stat` follows the link exactly like the sync
+ * `statSync`) — but every filesystem syscall is awaited on the libuv threadpool
+ * and the loop is yielded via {@link cooperativeYield}, so the recursive `du` of
+ * ~100k session-dir files can no longer BLOCK the bg-host event loop for the ~90s
+ * that froze it every `storage.usage` precompute cycle (the confirmed WI-5471
+ * acute soak-blocker). Wall-clock is marginally longer; nobody is waiting on the
+ * precompute, and the loop stays live throughout.
+ *
+ * `cooperativeYield` matters even though `await` already yields: when every stat
+ * is an inode-cache hit the awaited promises resolve as MICROTASKS without
+ * returning to the timer phase, so a tight micro-loop could still starve the
+ * routine ticker — the periodic `setImmediate` macrotask hop guarantees it runs
+ * (and the gate yields EVERY iteration once loop pressure is already elevated).
+ */
+export async function dirSizeBytesAsync(
+  path: string,
+  maxEntries = 400_000,
+  budget?: DiskWalkBudget,
+): Promise<number> {
+  let total = 0;
+  let seen = 0;
+  let iters = 0;
+  let yielded = 0;
+  const stack: string[] = [path];
+  while (stack.length > 0) {
+    if (seen >= maxEntries) break;
+    // Wall-clock bound (EI-6045) — identical to the sync twin: checked only every
+    // 4096 iters so the Date.now() cost is negligible.
+    if (budget && (iters++ & 0xfff) === 0 && Date.now() >= budget.deadlineMs) {
+      budget.truncated = true;
+      break;
+    }
+    yielded = await cooperativeYield(yielded, 64);
+    const cur = stack.pop()!;
+    let st: Awaited<ReturnType<typeof fsp.stat>>;
+    try {
+      st = await fsp.stat(cur);
+    } catch {
+      continue; // raced removal / permission — skip
+    }
+    if (st.isDirectory()) {
+      let names: string[];
+      try {
+        names = await fsp.readdir(cur);
+      } catch {
+        continue;
+      }
+      for (const n of names) stack.push(join(cur, n));
+    } else if (st.isFile()) {
+      total += st.size;
+      seen += 1;
+    }
+  }
+  return total;
+}
+
+/**
  * Enumerate the trim units of a disk category with size + mtime. For session-dirs
  * each candidate carries its protected-set key so a trim can exclude live
  * sessions; for plain stores each top-level child is one entry; for glob-files
@@ -184,6 +244,77 @@ export function listDiskEntries(cat: DiskStorageCategory, budget?: DiskWalkBudge
       try {
         const st = statSync(path);
         out.push({ path, mtimeMs: st.mtimeMs, sizeBytes: dirSizeBytes(path, 400_000, budget) });
+      } catch {
+        continue; // raced removal — skip
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Async, event-loop-cooperative twin of {@link listDiskEntries} (WI-5471). Same
+ * enumeration + protected-key wiring, but every recursive size is the awaited
+ * {@link dirSizeBytesAsync} and every stat/readdir is on the threadpool — so the
+ * whole `computeStorageUsage` disk phase completes WITHOUT blocking the loop. A
+ * missing/unreadable root resolves to `[]`/skip via the readdir throw (drops the
+ * sync twin's `existsSync` TOCTOU pre-check).
+ */
+export async function listDiskEntriesAsync(
+  cat: DiskStorageCategory,
+  budget?: DiskWalkBudget,
+): Promise<DiskEntry[]> {
+  if (cat.store === 'session-dirs') {
+    const candidates = discoverSessionDirCandidates(defaultSessionDirRoots());
+    const out: DiskEntry[] = [];
+    for (const c of candidates) {
+      out.push({
+        path: c.path,
+        mtimeMs: c.mtimeMs,
+        sizeBytes: await dirSizeBytesAsync(c.path, 400_000, budget),
+        protectKey: c.key,
+        protectKeyKind: c.keyKind,
+      });
+    }
+    return out;
+  }
+  if (cat.store === 'glob-files') {
+    if (!cat.glob) return [];
+    const root = globRoot(cat.glob.rootKind);
+    const { prefix, suffix } = cat.glob;
+    let names: string[];
+    try {
+      names = await fsp.readdir(root);
+    } catch {
+      return []; // missing / unreadable root
+    }
+    const out: DiskEntry[] = [];
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+      const path = join(root, name);
+      try {
+        const st = await fsp.stat(path);
+        if (!st.isFile()) continue; // glob-files matches FILES only
+        out.push({ path, mtimeMs: st.mtimeMs, sizeBytes: st.size });
+      } catch {
+        continue;
+      }
+    }
+    return out;
+  }
+  const out: DiskEntry[] = [];
+  for (const root of plainStoreRoots(cat.store)) {
+    let names: string[];
+    try {
+      names = await fsp.readdir(root);
+    } catch {
+      continue; // missing / unreadable root
+    }
+    for (const name of names) {
+      const path = join(root, name);
+      try {
+        const st = await fsp.stat(path);
+        out.push({ path, mtimeMs: st.mtimeMs, sizeBytes: await dirSizeBytesAsync(path, 400_000, budget) });
       } catch {
         continue; // raced removal — skip
       }

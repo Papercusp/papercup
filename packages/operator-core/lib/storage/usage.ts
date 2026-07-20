@@ -17,7 +17,7 @@ import {
   type StorageCategory,
   type StorageFederation,
 } from './categories';
-import { listDiskEntries, type DiskWalkBudget } from './disk';
+import { listDiskEntriesAsync, type DiskWalkBudget } from './disk';
 
 /** The fixed "trim older than" thresholds (days) the page offers + projects. */
 export const TRIM_THRESHOLD_DAYS = [30, 90, 365] as const;
@@ -202,11 +202,11 @@ async function computePgUsage(
   return base;
 }
 
-function computeDiskUsage(
+async function computeDiskUsage(
   cat: StorageCategory & { kind: 'disk' },
   budget?: DiskWalkBudget,
-): StorageUsageRow {
-  const entries = listDiskEntries(cat, budget);
+): Promise<StorageUsageRow> {
+  const entries = await listDiskEntriesAsync(cat, budget);
   const now = Date.now();
   const totalBytes = entries.reduce((a, e) => a + e.sizeBytes, 0);
   const buckets: StorageAgeBucket[] = TRIM_THRESHOLD_DAYS.map((d) => {
@@ -258,7 +258,7 @@ export async function computeStorageUsage(
       out.push(await computePgUsage(sql, cat, opts));
     } else {
       try {
-        out.push(computeDiskUsage(cat, diskBudget));
+        out.push(await computeDiskUsage(cat, diskBudget));
       } catch (err) {
         out.push({
           id: cat.id,
