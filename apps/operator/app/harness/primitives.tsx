@@ -77,13 +77,22 @@ function ChipPill({
 // `?? Circle` fallback discipline as SEVERITY_ICON so an unknown status can't
 // render `<undefined/>` and crash the row subtree.
 export const STATUS_ICON: Record<HarnessStatus, LucideIcon> = {
+  // work-item-status-full-unify P-007: unified lifecycle icons…
+  open: Circle,
+  wip: Hammer,
+  blocked: AlertTriangle,
+  'needs-human': AlertOctagon,
+  done: CheckCircle,
+  dropped: Archive,
+  // …plus the legacy per-family spellings kept tolerant in theme.ts _STATUS_TABLE.
   todo: Circle,
   in_progress: Hammer,
   validating: Eye,
   failing: XCircle,
-  blocked: AlertTriangle,
   passed: CheckCircle,
   deprecated: Archive,
+  resolved: CheckCircle,
+  closed: Archive,
 };
 
 /** Dot + label — Linear's status badge pattern. variant="chip" renders the

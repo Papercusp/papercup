@@ -5,7 +5,7 @@
  * verified live.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolverModel, toRoutineInfo, pinProvenGateCorrection, type RawGateCounters } from './git-pipeline-stats';
+import { resolverModel, toRoutineInfo, pinProvenGateCorrection, mapActiveRun, type RawGateCounters } from './git-pipeline-stats';
 
 describe('resolverModel', () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -95,5 +95,35 @@ describe('pinProvenGateCorrection (EI-13714)', () => {
 
   it('leaves the raw counters untouched when the verdict is not stale at all', () => {
     expect(pinProvenGateCorrection(null, RAW)).toEqual(RAW);
+  });
+});
+
+describe('mapActiveRun (overview-tab-expansion P-001)', () => {
+  it('maps a live judging run: systemd timestamp → epoch ms, candidate + elapsed through', () => {
+    const m = mapActiveRun({
+      active: true,
+      candidate: '06a0eb9577deadbeef',
+      started_at: '2026-07-20T04:00:00.000Z',
+      elapsed_sec: 840,
+    });
+    expect(m).toEqual({
+      active: true,
+      candidate: '06a0eb9577deadbeef',
+      startedAtMs: Date.parse('2026-07-20T04:00:00.000Z'),
+      elapsedSec: 840,
+    });
+  });
+
+  it('maps an idle probe ({active:false}) with nulls — distinct from the not-probed null', () => {
+    expect(mapActiveRun({ active: false })).toEqual({
+      active: false,
+      candidate: null,
+      startedAtMs: null,
+      elapsedSec: null,
+    });
+  });
+
+  it('nulls an unparseable systemd timestamp instead of NaN', () => {
+    expect(mapActiveRun({ active: true, started_at: 'not-a-date' }).startedAtMs).toBeNull();
   });
 });

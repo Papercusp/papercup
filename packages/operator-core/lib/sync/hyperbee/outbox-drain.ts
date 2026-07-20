@@ -524,10 +524,10 @@ export async function drainOutboxOnce(
        AND drained_at IS NULL
        -- mig 645 (WI-3896 follow-up): a PERSISTED-quarantined poison row is
        -- excluded at the SQL level too — not just the post-fetch
-       -- `opts.quarantinedIds` check below — so it stops occupying a `batch`
+       -- opts.quarantinedIds check below — so it stops occupying a batch
        -- slot on every single pass forever (the live incident: a growing
-       -- `engineer_issues` backlog for papercusp where a handful of ancient
-       -- quarantined rows sat at the head of `ORDER BY id` and were
+       -- engineer_issues backlog for papercusp where a handful of ancient
+       -- quarantined rows sat at the head of ORDER BY id and were
        -- re-fetched-then-skipped on every pass, wasting throughput that real
        -- candidates behind them needed). Read RESILIENTLY via to_jsonb (same
        -- pattern as op_hlc above) so an outbox provisioned before migration 645
@@ -1324,6 +1324,34 @@ export function startOutboxDrain(
     // whose keypair it no longer holds.
     if (!stopped) await maybeDetectOrphanTail();
   }
+
+  // mig 645 (WI-3896 follow-up): seed `quarantinedIds` from any ALREADY-persisted
+  // quarantine (a prior process, before this restart, stamped `quarantined_at`)
+  // so a fresh boot doesn't have to re-discover + re-time-out (3× 45s) the SAME
+  // poison row it already root-caused-as-poison last time. Best-effort: read
+  // RESILIENTLY via to_jsonb (mirrors the drain SELECT above) so a pre-645
+  // outbox / a fake test `pg` with no `quarantined_at` handling degrades to
+  // "nothing pre-seeded" rather than throwing at boot.
+  void (async () => {
+    try {
+      const seeded = await pg<Array<{ id: string | number }>>`
+        SELECT id FROM harness_shared.substrate_outbox
+         WHERE workspace_id = ${handle.workspaceId}
+           AND harness_slug = ${handle.harnessSlug}
+           AND drained_at IS NULL
+           AND (to_jsonb(substrate_outbox.*) ->> 'quarantined_at') IS NOT NULL`;
+      for (const r of seeded) quarantinedIds.add(String(r.id));
+      if (seeded.length > 0) {
+        console.warn(
+          `[outbox-drain] seeded ${seeded.length} already-persisted quarantined row id(s) for ` +
+            `${wantPayload} from a prior process (WI-3896 follow-up — no re-discovery needed).`,
+        );
+      }
+    } catch {
+      // best-effort — a probe fault must never block boot; worst case this
+      // process re-discovers + re-quarantines the same poison row itself.
+    }
+  })();
 
   // Immediate catch-up drain.
   void drainSafely();
