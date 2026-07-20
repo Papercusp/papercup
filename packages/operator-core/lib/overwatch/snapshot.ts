@@ -27,7 +27,7 @@ import { FLAGS } from "@papercusp/flags";
 import { getFlag } from "@papercusp/flags/server";
 import { activeWorkspaceId } from "../workspace-registry";
 import { resolvePotHomeSlug } from "../pot/wake";
-import { lastSystemHealth, runSystemHealthTick } from "../system-health";
+import { resolveSystemHealth } from "../system-health";
 import { mapSystemHealthToBrief, withAnomalies } from "./compute-brief";
 import {
   emptyOverwatchBrief,
@@ -71,18 +71,16 @@ export async function getOverwatchSnapshot(opts?: {
   // tab serves; recompute on a cold/stale miss. We deliberately do NOT gate on
   // SYSTEM_HEALTH_TAB here (that gates the tab/getSystemHealth) — the overwatch
   // brief stays on its OWN flag, surfaced via the pane's flag gate + control state.
-  let health = lastSystemHealth(ws);
-  if (!health) {
-    // Cold cache (first read after boot) — compute once, blocking, so the pane
-    // has SOMETHING to map. This is the ONLY path that ever waits.
-    health = await runSystemHealthTick(ws).catch(() => null);
-  } else if (Date.now() - health.evaluatedAt > maxAgeMs) {
-    // Stale-while-revalidate: serve the last-known snapshot INSTANTLY (the pane
-    // opens with no spinner) and refresh in the BACKGROUND. runSystemHealthTick
-    // invalidates `overwatch.snapshot` when the status changes, so an open pane
-    // updates over SSE — this read never blocks on a full re-aggregation.
-    void runSystemHealthTick(ws).catch(() => {});
-  }
+  // D-006: ONE health aggregation, TWO consumers. `resolveSystemHealth` serves the
+  // SAME cache the Health tab serves, stale-while-revalidate. On a reader process
+  // that never runs the 30s tick (the :3170 staging operator, a utility host, or
+  // any process in the ~30s window right after boot) it serves the cross-process
+  // SHARED snapshot the tick writes (a plain SELECT) instead of blocking on the
+  // full ~15-collector aggregation on the pane's read path (P-001, the 1.6-2.0s the
+  // audit measured). A tick host keeps its local SWR refresh, so the 30s
+  // status-change SSE liveness is unchanged. Fail-soft to the neutral brief on a
+  // catastrophic cold-compute failure (or a cold cache that can't warm).
+  const health = await resolveSystemHealth(ws, maxAgeMs).catch(() => null);
 
   const potSlug =
     opts?.potSlug ??

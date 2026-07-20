@@ -1133,16 +1133,19 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
         await closeHarnessStore({ workspaceRoot: rootOwner, harnessSlug: HIVE_HOME });
       });
 
-      // The zombie seam: the member's FIRST connection is "claimed" (offloaded)
+      // The zombie seam: EVERY member connection is "claimed" (offloaded)
       // without ever calling corestore.replicate() on it — a REAL live swarm
       // connection (admission/announce still work) that genuinely never
-      // replicates any log. The 2nd+ connection (the fresh join a forced rejoin
-      // opens) replicates normally, modeling "this one connection's data path
-      // was dead; a fresh reconnect works" — the exact WI-183/EI-13317 shape.
+      // replicates any log — UNTIL the real production escalation
+      // (escalateToForcedRejoin, detected via forceRejoinFired above) has
+      // actually fired. Only THEN does a connection replicate normally,
+      // modeling "the data path is dead until the fix's forced rejoin runs" —
+      // gated on the real event, not a connection-event count (see the
+      // infoSpy comment above for why a count is racy).
       let memberConnAttempts = 0;
       const sidecarOffloadOverride = () => {
         memberConnAttempts += 1;
-        return memberConnAttempts === 1;
+        return !forceRejoinFired;
       };
 
       const member = await bootViaSidecarHost({
@@ -1200,9 +1203,12 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       );
       expect(
         landedEarly,
-        'F-zombie landed BEFORE the grace window elapsed — the sidecarOffloadOverride zombie seam did not actually prevent replication (this test is not exercising a genuine stall)',
+        `F-zombie landed BEFORE the grace window elapsed (memberConnAttempts=${memberConnAttempts}) — the sidecarOffloadOverride zombie seam did not actually prevent replication (this test is not exercising a genuine stall)`,
       ).toBeUndefined();
-      expect(memberConnAttempts, 'member should still be on its first (zombie) connection at this point').toBe(1);
+      expect(
+        forceRejoinFired,
+        'the production forced-rejoin escalation must NOT have fired yet at this point — it should only fire after GRACE_MS, not within this short early window',
+      ).toBe(false);
 
       // (2) EI-13317's fix recovers it: connected_never_replicated escalates
       // PROMPTLY (no 3-attempt ladder wait) to a forced rejoin once GRACE_MS
@@ -1216,12 +1222,12 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       );
       expect(
         landed,
-        `F-zombie never landed on the member — the connected_never_replicated -> forceRejoin recovery path did not fire/heal within 30s (memberConnAttempts=${memberConnAttempts}, elapsed=${Date.now() - t0}ms)`,
+        `F-zombie never landed on the member — the connected_never_replicated -> forceRejoin recovery path did not fire/heal within 30s (memberConnAttempts=${memberConnAttempts}, forceRejoinFired=${forceRejoinFired}, elapsed=${Date.now() - t0}ms)`,
       ).toMatchObject({ feature_id: 'F-zombie', origin: 'remote', title: 'Authored while member zombied' });
       expect(
-        memberConnAttempts,
-        'recovery must have opened a FRESH (2nd) connection — the forced rejoin, not a fluke on the same zombie connection',
-      ).toBeGreaterThanOrEqual(2);
+        forceRejoinFired,
+        'recovery must have gone through the REAL production escalateToForcedRejoin path (connected_never_replicated -> forceRejoin), not an incidental extra connection',
+      ).toBe(true);
       expect(
         member.handle.admitted.has(owner.handle.ownLog.keyHex),
         'the member must have (re-)admitted the owner log on the recovered connection',

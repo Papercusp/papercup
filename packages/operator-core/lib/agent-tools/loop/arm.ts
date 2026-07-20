@@ -35,6 +35,7 @@ import {
 } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
+import { findLiveHost, sessionClassForHost } from '../../events/await/psu-pty-discovery';
 import {
   probeWakeReachability,
   type WakeReachabilityVerdict,

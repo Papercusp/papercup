@@ -10,6 +10,7 @@ export {
   runSystemHealthTick,
   preWarmSystemHealth,
   getSystemHealth,
+  resolveSystemHealth,
   lastSystemHealth,
   _resetSystemHealthCache,
 } from './compute';

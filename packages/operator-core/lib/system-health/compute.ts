@@ -29,6 +29,9 @@ import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { notifySyncInvalidate } from '../sync-sse';
+import { backgroundWorkersEnabled } from '../background-workers';
+import { systemDistinctId } from '../flag-distinct-id';
+import { readSharedSnapshot, writeSharedSnapshot } from '../derived-reads/shared-snapshot';
 import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import { accountFull } from '../deployment/account-pool';
@@ -2035,7 +2038,75 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
 
 // ── cache + tick + read surface (mirrors learning-infra-health) ──────────────
 
+/** Shared-snapshot key/version/max-age for the P-001 cross-process cache. Bump the
+ *  version when `SystemHealth`'s shape changes so a reader never maps a stale shape. */
+const SYSTEM_HEALTH_SNAPSHOT_KEY = 'system.health';
+const SYSTEM_HEALTH_SNAPSHOT_VERSION = 1;
+/** A reader accepts a shared snapshot up to this old before falling back to a local
+ *  recompute. Comfortably above the 30s tick cadence so a healthy writer always
+ *  keeps it fresh, but bounded so a DEAD writer eventually forces a local compute. */
+const SHARED_SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
+
 const cache = new Map<string, SystemHealth>();
+
+/** The precompute kill-switch, fail-OPEN to enabled (the correct behavior on the
+ *  shipping target — never silently fall back to a slow inline recompute). */
+async function precomputeSharedHealthEnabled(): Promise<boolean> {
+  try {
+    return await getFlag(FLAGS.PRECOMPUTE_DERIVED_READS, systemDistinctId());
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Serve `SystemHealth` from the cross-process SHARED snapshot the tick writes,
+ * NEVER a local aggregation (P-001). Used by reader processes that don't run the
+ * tick, and on any host's cold-cache path. On a hit it also refreshes the
+ * in-process cache so `lastSystemHealth()` stays coherent for this process.
+ * Returns null on a miss / version mismatch / too-stale row / flag off, letting
+ * the caller decide whether to pay a blocking recompute.
+ */
+async function readSharedSystemHealth(ws: string): Promise<SystemHealth | null> {
+  if (!(await precomputeSharedHealthEnabled())) return null;
+  const shared = await readSharedSnapshot<SystemHealth>(
+    SYSTEM_HEALTH_SNAPSHOT_KEY,
+    ws,
+    SYSTEM_HEALTH_SNAPSHOT_VERSION,
+    SHARED_SNAPSHOT_MAX_AGE_MS,
+  ).catch(() => null);
+  if (!shared) return null;
+  cache.set(ws, shared.payload);
+  return shared.payload;
+}
+
+/**
+ * The host-aware SystemHealth resolve, WITHOUT the SYSTEM_HEALTH_TAB gate (that
+ * gate belongs to `getSystemHealth`; the Overwatch brief deliberately does not
+ * apply it). Stale-while-revalidate, but the REVALIDATE differs by host role:
+ *   - a tick host (bg workers on) refreshes LOCALLY via `runSystemHealthTick`;
+ *   - a reader host re-reads the SHARED snapshot the tick writes, so it never runs
+ *     the ~15-collector aggregation on its own event loop (the P-001 fix).
+ * A cold cache tries the shared snapshot before a blocking recompute.
+ */
+export async function resolveSystemHealth(
+  ws: string,
+  maxAgeMs = 30_000,
+): Promise<SystemHealth | null> {
+  const isTickHost = backgroundWorkersEnabled();
+  const cached = cache.get(ws);
+  if (cached) {
+    if (Date.now() - cached.evaluatedAt > maxAgeMs) {
+      if (isTickHost) void runSystemHealthTick(ws).catch(() => {});
+      else void readSharedSystemHealth(ws).catch(() => {});
+    }
+    return cached;
+  }
+  // Cold cache — a shared SELECT before a blocking recompute.
+  const shared = await readSharedSystemHealth(ws);
+  if (shared) return shared;
+  return runSystemHealthTick(ws);
+}
 
 /** Last computed snapshot for a workspace, or null. */
 export function lastSystemHealth(workspaceId?: string): SystemHealth | null {
@@ -2077,6 +2148,19 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
     }
   } catch { /* incident-capture preservation must never break the tick */ }
   cache.set(ws, health);
+  // P-001 (precompute-sync-reads-phase2): publish the freshly-computed snapshot to
+  // the cross-process SHARED store so a reader process that never runs this tick
+  // (the :3170 staging operator, a utility host, or any process in the ~30s window
+  // right after boot) can serve overwatch.snapshot / health.snapshot from a plain
+  // SELECT instead of paying the full ~15-collector aggregation on the read path.
+  // Fire-and-forget + fail-soft: the in-process cache above is authoritative on
+  // THIS host, so a shared-write hiccup only forgoes the cross-process benefit; it
+  // must never slow or break the tick.
+  if (await precomputeSharedHealthEnabled()) {
+    void writeSharedSnapshot(SYSTEM_HEALTH_SNAPSHOT_KEY, ws, health, SYSTEM_HEALTH_SNAPSHOT_VERSION).catch(
+      (e) => console.warn(`[system-health] shared-snapshot write failed for ${ws}: ${e instanceof Error ? e.message : e}`),
+    );
+  }
   await notifySyncInvalidate('health.snapshot', undefined).catch(() => {});
   await notifySyncInvalidate('health.history', undefined).catch(() => {});
   // The Overwatch pane (B-08) reads the SAME SystemHealth as its brief snapshot
@@ -2132,12 +2216,9 @@ export async function preWarmSystemHealth(
 export async function getSystemHealth(maxAgeMs = 30_000, workspaceId?: string): Promise<SystemHealth | null> {
   if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return null;
   const ws = workspaceId ?? activeWorkspaceId();
-  const cached = cache.get(ws);
-  if (cached) {
-    if (Date.now() - cached.evaluatedAt > maxAgeMs) void runSystemHealthTick(ws).catch(() => {});
-    return cached;
-  }
-  return runSystemHealthTick(ws);
+  // Host-aware SWR + cross-process shared-snapshot cold read (P-001): a reader
+  // process serves from the shared snapshot instead of a 1.6-2.0s local recompute.
+  return resolveSystemHealth(ws, maxAgeMs);
 }
 
 /** Test-only — clear the per-workspace cache. */

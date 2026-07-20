@@ -321,8 +321,36 @@ const invoke = defineTool({
     let hiveSpawnId: string | null = null;
     let advSessionRowId: number | null = null;
     if (isHiveLaunch || isOverwatchLaunch) {
-      const trackedInteractiveBackend = interactiveBackendFromSpawnBackend(routeBackend);
-      const trackedGuard = backendFeatureGuard(trackedInteractiveBackend, 'forced-native-session-id');
+      let trackedInteractiveBackend = interactiveBackendFromSpawnBackend(routeBackend);
+      let trackedGuard = backendFeatureGuard(trackedInteractiveBackend, 'forced-native-session-id');
+      if (!trackedGuard.supported && trackedInteractiveBackend !== 'codex') {
+        // EI-18133554034909305 "Agent spawns are failing repeatedly": every tracked
+        // hive/overwatch launch resolves omp by DEFAULT (resolveSpawnBackendModel's
+        // `process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p'` fallthrough) when
+        // the host has no explicit per-role/global backend config — and omp
+        // structurally cannot support a forced native session id (it resumes by
+        // thread id), so this ALWAYS 400'd, deterministically, on a host with no
+        // override configured. Rescue exactly that "fell through to the generic
+        // default" case by re-resolving with an explicit claude-code override — the
+        // same rescue codex already gets below, just via a fallback instead of a
+        // fixed special-case, since codex (unlike omp) still mints a usable
+        // transcript-key uuid. Preserve the loud, honest 400 when omp was an
+        // EXPLICIT operator choice (a per-role AGENT_ROLE_BACKENDS override, or a
+        // configured AGENT_CMD/CLAUDE) — that is a real misconfiguration worth
+        // surfacing, not silently overriding.
+        if (!isOmpBackendExplicitlyConfigured(role)) {
+          routeBackendModel = resolveSpawnBackendModel(role, spawnModelPin || undefined, 'claude-code');
+          routeBackend = routeBackendModel.backend;
+          trackedInteractiveBackend = interactiveBackendFromSpawnBackend(routeBackend);
+          trackedGuard = backendFeatureGuard(trackedInteractiveBackend, 'forced-native-session-id');
+          backendFallbackForSpawnEnv = 'claude-code';
+          console.warn(
+            `[invoke ${project.slug}] tracked ${isOverwatchLaunch ? 'overwatch' : 'hive'} launch for role=${role} ` +
+              `resolved to the unconfigured default backend (omp), which cannot support a forced native session id — ` +
+              `falling back to claude-code instead of failing the spawn`,
+          );
+        }
+      }
       if (!trackedGuard.supported && trackedInteractiveBackend !== 'codex') {
         return Response.json({
           ok: false,

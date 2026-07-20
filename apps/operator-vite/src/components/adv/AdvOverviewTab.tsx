@@ -445,22 +445,28 @@ export default function AdvOverviewTab() {
               <button
                 key={p.slug}
                 type="button"
-                className="pc-overview__plan pc-overview__rowbtn"
+                className="pc-overview__rowbtn"
                 aria-label={`Open plan ${p.title ?? p.slug}`}
                 onClick={() => void openPlan(p.slug)}
               >
-                {/* spans, not divs: a <button> takes phrasing content only —
-                    the classes carry the flex layout either way. */}
-                <span className="pc-overview__plan-head">
-                  <span className="pc-overview__plan-title" title={p.title ?? p.slug}>
-                    {p.title ?? p.slug}
+                {/* Flex layout lives on an INNER span, never on the <button>
+                    itself: WebKitGTK (the Tauri webview) renders button
+                    contents through an anonymous box that IGNORES flex on the
+                    button element — children overflowed and the progress bar
+                    collapsed to 0×0 (owner report 2026-07-19). Chromium
+                    resolves it; WebKit doesn't. */}
+                <span className="pc-overview__plan">
+                  <span className="pc-overview__plan-head">
+                    <span className="pc-overview__plan-title" title={p.title ?? p.slug}>
+                      {p.title ?? p.slug}
+                    </span>
+                    <span className="pc-overview__plan-frac">
+                      {done}/{total}
+                    </span>
                   </span>
-                  <span className="pc-overview__plan-frac">
-                    {done}/{total}
+                  <span className="pc-overview__bar" aria-hidden>
+                    <span className="pc-overview__bar-fill" style={{ width: `${pct}%` }} />
                   </span>
-                </span>
-                <span className="pc-overview__bar" aria-hidden>
-                  <span className="pc-overview__bar-fill" style={{ width: `${pct}%` }} />
                 </span>
               </button>
             );
@@ -512,17 +518,21 @@ export default function AdvOverviewTab() {
               <button
                 key={a.ownerId}
                 type="button"
-                className="pc-overview__row pc-overview__rowbtn"
+                className="pc-overview__rowbtn"
                 aria-label={`Open ${label}'s session history`}
                 onClick={() => void openAgent(a.ownerId)}
               >
-                <span className="pc-overview__row-dot" data-live={a.liveness} aria-hidden />
-                {/* title on the SPAN, not the button — the design-primitives lint
-                    blocks native title= on buttons (Tooltip or span-title only). */}
-                <span className="pc-overview__row-title" title={a.intent || label}>
-                  {a.intent || label}
+                {/* Inner span carries the row flex — WebKitGTK ignores flex on
+                    <button> (see the plans rows above). */}
+                <span className="pc-overview__row">
+                  <span className="pc-overview__row-dot" data-live={a.liveness} aria-hidden />
+                  {/* title on the SPAN, not the button — the design-primitives lint
+                      blocks native title= on buttons (Tooltip or span-title only). */}
+                  <span className="pc-overview__row-title" title={a.intent || label}>
+                    {a.intent || label}
+                  </span>
+                  {a.role && <span className="pc-overview__row-tag">{agentRoleLabel(a.role, lex)}</span>}
                 </span>
-                {a.role && <span className="pc-overview__row-tag">{agentRoleLabel(a.role, lex)}</span>}
               </button>
             );
           })}
@@ -542,13 +552,17 @@ export default function AdvOverviewTab() {
             <button
               key={r.id}
               type="button"
-              className="pc-overview__row pc-overview__rowbtn"
+              className="pc-overview__rowbtn"
               aria-label="Open this event in Conversations"
               onClick={() => void openActivity(r.id)}
             >
-              <span className="pc-overview__row-actor">{r.agent ?? '—'}</span>
-              <span className="pc-overview__row-title" title={r.summary ?? r.kind}>
-                {r.summary ?? r.kind}
+              {/* Inner span carries the row flex — WebKitGTK ignores flex on
+                  <button> (see the plans rows above). */}
+              <span className="pc-overview__row">
+                <span className="pc-overview__row-actor">{r.agent ?? '—'}</span>
+                <span className="pc-overview__row-title" title={r.summary ?? r.kind}>
+                  {r.summary ?? r.kind}
+                </span>
               </span>
             </button>
           ))}

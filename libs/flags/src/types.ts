@@ -1319,6 +1319,36 @@ export const FLAGS = {
   // arms a loop cold. OFF ⇒ every loop wake stays warm regardless of its carry marker. Read at
   // the wake-executor call-site (engine.ts) as the injected coldAutoEnabled dep.
   SU_COLD_AUTO: "papercusp-su-cold-auto",
+  // cold-with-carry-activation-2026-07-20 (owner-directed A+B, fact
+  // cold-with-carry-activation-approved): loop:arm defaults an UNATTENDED HEADLESS
+  // session's loop (host.bridgeTty===false ⇒ sessionClassForHost 'claude-headless')
+  // to carry:'cold' when the caller does not pass an explicit `carry` — the whole
+  // point of the cold-auto system is to keep unattended loops from re-waking the
+  // SAME warm session until context overflows and dies uncleanly (WI-5557 / the
+  // fa10eeb7 warm-to-974k-death incident). An INTERACTIVE session ALWAYS stays warm
+  // (D-005 never-cold-a-human), and an explicit `carry` arg ALWAYS wins. DEFAULT ON
+  // (not in DARK_FLAGS); OFF = the kill-switch that restores the historical
+  // warm-everywhere default (existing loops are unaffected — this only sets the
+  // arm-time default for NEW loop:arm calls). Layered under SU_COLD_AUTO: a
+  // cold-armed loop still only actually colds when SU_COLD_AUTO is on AND a
+  // carry-note anchor exists (decideColdWake), so this is a DEFAULT change, not a
+  // new cold path.
+  HEADLESS_LOOPS_COLD_BY_DEFAULT: "papercusp-headless-loops-cold-by-default",
+  // cold-with-carry-activation-2026-07-20 (owner-directed A2): gates the AUTOMATIC
+  // cold-boot drill runner — a system-health managed interval that BOOTSTRAPS P-021
+  // cold-by-default by producing the graded drills it requires. P-021's
+  // classDefaultColdForWake only colds a session class the drill ledger PROVES
+  // sufficient, but drills were opt-in and never run at scale, AND the classifier's
+  // live vocabulary ('claude-headless'/'claude-interactive') never matched the
+  // manually-run drills' class strings (EI-18133456688790756), so NO live-wake
+  // class was ever proven and cold-by-default stayed inert for the whole headless
+  // fleet. Each pass this runner (a) server-side GRADES its prior ungraded-but-
+  // respawned drills, then (b) if a live-wake class is not yet proven, starts ONE
+  // rate-limited, flush-gated cold-boot drill on an eligible headless
+  // carry-respawn-capable host — passing NO explicit class so the grade lands under
+  // sessionClassForHost's real vocabulary. It stops drilling a class once proven.
+  // DEFAULT ON; OFF = the kill-switch (the timer still ticks but every pass no-ops).
+  COLD_BOOT_DRILL_AUTORUNNER: "papercusp-cold-boot-drill-autorunner",
   // EI-12755 (deterministic-context-carry P-020 hardening): gates the
   // carry-drill drop watchdog — a system-health sweep that tails the shared
   // drill ledger (~/.papercusp/psu-pty/carry-drills.events.jsonl) and opens ONE

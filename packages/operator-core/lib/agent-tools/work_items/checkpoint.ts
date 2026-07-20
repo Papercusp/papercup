@@ -128,7 +128,7 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
     'Writes are verify-read and fail loudly on an invisible write (checkpoint_verify_failed); a plain replace that shrinks ' +
-    "a substantial checkpoint >50% returns a non-blocking `shrinkWarning`. Requires holding the item (fails `not_holder` on a peer's).",
+    'a substantial checkpoint >50% returns a non-blocking `shrinkWarning`. Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next ' +
@@ -136,7 +136,7 @@ export default defineTool({
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. NOT an edit channel ' +
       'for the item: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +
-      "tool surface reports them missing). Not for a peer's item — claim it first, or leave a work_items:comment.",
+      "tool surface reports them missing). Not for a peer's item — claim it, or comment instead.",
     chaining:
       'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a claim held ' +
       'through long purely-local tool use can go presence-stale and be reclaimed (no separate heartbeat verb).',
