@@ -31,6 +31,23 @@
  * (5min / 20min) that clear it with margin while staying far tighter than
  * `outbox-drain.ts`'s own genuine-wedge detectors. The per-(workspace,harness)
  * watchdog dedup means one improvement per stall, never one per tick.
+ *
+ * RE-FILE COOLDOWN (2026-07-20, EI-18151359560402948 follow-up): raising the
+ * thresholds above did NOT stop the storm — it just changed its shape. Because
+ * `capture()` runs with `dedupScope:'open'`, a CLOSED duplicate is (by design,
+ * for genuine regressions — see capture-core.ts's dedup doc) never suppressed,
+ * so as soon as an agent closes one instance the very next 5min tick (if the
+ * harness is still mid-flap) mints a brand-new issue. Live evidence: 20 distinct
+ * "Federation stall: papercusp …" issues filed between 2026-07-19T19:39 and
+ * 2026-07-20T04:29 (~9h), most closed within minutes as "self-resolved, root
+ * cause already fixed by peers" — i.e. the SAME flapping episode re-filed as a
+ * fresh ticket ~20 times, burning an agent-investigation each time instead of
+ * being tracked as one recurring incident. `REFILE_COOLDOWN_MS` below adds a
+ * caller-local (not capture-core-global — this repeat-regression shape is
+ * specific to a flapping infra signal, not improvements in general) grace
+ * period: if the SAME watchdogKey's most-recently-updated issue was closed more
+ * recently than the cooldown, the recurrence is posted as a COMMENT on that
+ * issue (visible, reopens the conversation) instead of minting a duplicate.
  */
 import type { SubstrateDrainStat } from './load-drain-stats';
 import type { InProcessSubstrateStatus } from './in-process-status';
@@ -42,6 +59,24 @@ import {
 } from './plan-drain-reconcile';
 
 const ZERO_DRAIN: SubstrateDrainStat = { undrainedCount: 0, oldestUndrainedAgeMs: null };
+
+/**
+ * Minimum time since a same-watchdogKey issue was last updated (i.e. closed) before
+ * a NEW stall observation for that same (workspace, harness) may mint a fresh issue.
+ * Default 30min: short enough that a genuinely NEW multi-hour stall episode still
+ * gets its own tracked issue promptly, long enough to absorb the 5min-tick ×
+ * few-minutes-to-close flapping pattern that produced the 2026-07-20 storm (see
+ * doc comment above). Tunable via `RunDrainReconcileDeps.refileCooldownMs` (tests
+ * pass 0 to disable it and keep exercising the always-refile path).
+ */
+export const DEFAULT_REFILE_COOLDOWN_MS = 30 * 60_000;
+
+/** The subset of EngineerIssue this module needs for the cooldown check. */
+interface RecentWatchdogIssue {
+  id: string;
+  state: string;
+  updatedAt: string;
+}
 
 /** Result of a capture attempt (the subset of captureImprovement's return we use). */
 export interface CaptureResult {
@@ -70,11 +105,23 @@ export interface RunDrainReconcileDeps {
   log?: (msg: string) => void;
   stalledMs?: number;
   unhealthyMs?: number;
+  /** Look up prior issues (any state) carrying a watchdogKey, newest-updated first.
+   *  Default: findIssuesByWatchdogKeys (harness/issues-engineer.ts). */
+  findByWatchdogKey?: (key: string) => Promise<RecentWatchdogIssue[]>;
+  /** Post a recurrence note on an existing issue instead of filing a duplicate.
+   *  Default: commentIssue (harness/issues-engineer.ts). */
+  commentOnRecurrence?: (issueId: string, body: string) => Promise<unknown>;
+  /** See DEFAULT_REFILE_COOLDOWN_MS. */
+  refileCooldownMs?: number;
+  /** Override for tests; defaults to Date.now(). */
+  nowMs?: number;
 }
 
 export interface RunDrainReconcileResult {
   flagged: DrainStallFlag[];
   captured: number;
+  /** Flagged-but-in-cooldown: a recurrence comment was posted instead of a new issue. */
+  coolingDown: number;
 }
 
 function bodyFor(f: DrainStallFlag): string {
@@ -128,6 +175,23 @@ export async function runDrainReconcileOnce(
       const { captureImprovement } = await import('../../harness/improvements/capture-core');
       return (await captureImprovement(input)) as CaptureResult;
     });
+
+  const findByWatchdogKey =
+    deps.findByWatchdogKey ??
+    (async (key: string) => {
+      const { findIssuesByWatchdogKeys } = await import('../../issues-engineer');
+      return findIssuesByWatchdogKeys([key]);
+    });
+
+  const commentOnRecurrence =
+    deps.commentOnRecurrence ??
+    (async (issueId: string, body: string) => {
+      const { commentIssue } = await import('../../issues-engineer');
+      return commentIssue(issueId, body);
+    });
+
+  const cooldownMs = deps.refileCooldownMs ?? DEFAULT_REFILE_COOLDOWN_MS;
+  const now = deps.nowMs ?? Date.now();
 
   const drainByKey = await loadDrainStats();
   const status = getStatus({

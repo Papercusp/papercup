@@ -63,9 +63,19 @@ export type DivergenceSignal =
    * store's git transport resolved a different credential than the clone's
    * per-URL helper → `Repository not found` every tick, verdict `clear`.
    * Lever is a HUMAN one (fix the remote URL or wire the credential), so this
-   * sets needsOwner.
+   * sets needsOwner — UNLESS `transient` is true: every failing branch traced
+   * to a process-level spawn/timeout fault (the git transport never even
+   * ran, e.g. `spawn git ENOENT` right after a host restart) rather than git
+   * actually running and reporting a transport error. That case self-heals
+   * on the next tick and does NOT need an owner (EI-18152354175913564).
    */
-  | { kind: 'bridge-remote-unreachable'; remoteUrl: string | null; branches: string[]; errors: string[] }
+  | {
+      kind: 'bridge-remote-unreachable';
+      remoteUrl: string | null;
+      branches: string[];
+      errors: string[];
+      transient: boolean;
+    }
   /**
    * The egress target is live but the bare store has no canonical ref to push.
    * Without this signal an unestablished canonical is INDISTINGUISHABLE from a
@@ -101,7 +111,7 @@ export function collectDivergenceSignals(results: {
   /** Set by the tick when a live egress target found no canonical ref to push. */
   canonicalMissing?: { canonicalRef: string; watermarkSha: string | null } | null;
   /** Set by the tick when ingress failed for EVERY requested branch (remote unreachable). */
-  remoteUnreachable?: { remoteUrl: string | null; branches: string[]; errors: string[] } | null;
+  remoteUnreachable?: { remoteUrl: string | null; branches: string[]; errors: string[]; transient?: boolean } | null;
 }): DivergenceSignal[] {
   const signals: DivergenceSignal[] = [];
   if (results.remoteUnreachable) {
@@ -110,6 +120,7 @@ export function collectDivergenceSignals(results: {
       remoteUrl: results.remoteUnreachable.remoteUrl,
       branches: results.remoteUnreachable.branches,
       errors: results.remoteUnreachable.errors,
+      transient: results.remoteUnreachable.transient === true,
     });
   }
   if (results.canonicalMissing) {
@@ -151,7 +162,10 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
   // non-FF usually self-heals via the integrator's next merge of the ingressed
   // origin head; a secret block needs a scrub, not an owner.
   const needsOwner = signals.some(
-    (s) => s.kind === 'ingress-non-ff' || s.kind === 'admission-blocked' || s.kind === 'bridge-remote-unreachable',
+    (s) =>
+      s.kind === 'ingress-non-ff' ||
+      s.kind === 'admission-blocked' ||
+      (s.kind === 'bridge-remote-unreachable' && !s.transient),
   );
   const counts = new Map<DivergenceSignal['kind'], number>();
   for (const s of signals) counts.set(s.kind, (counts.get(s.kind) ?? 0) + 1);
@@ -171,9 +185,16 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     );
   if (c('egress-secret-block') > 0)
     parts.push(`${c('egress-secret-block')} ref(s) blocked by the secrets gate (nothing left the machine — scrub + re-egress)`);
-  if (c('bridge-remote-unreachable') > 0)
+  const unreachable = signals.filter(
+    (s): s is Extract<DivergenceSignal, { kind: 'bridge-remote-unreachable' }> => s.kind === 'bridge-remote-unreachable',
+  );
+  if (unreachable.some((s) => !s.transient))
     parts.push(
       'the GitHub remote could not be contacted for ANY branch (repo not found / auth refused / network) — the bridge is INERT: nothing ingresses, nothing egresses, and origin is frozen. Fix the remote URL or wire the credential the git transport needs for it',
+    );
+  if (unreachable.some((s) => s.transient))
+    parts.push(
+      'the git transport could not even be SPAWNED for ANY branch this tick (e.g. right after a process restart — an env/PATH hiccup, not a remote URL or credential problem) — likely transient; no owner action needed unless it persists across ticks',
     );
   if (c('egress-canonical-missing') > 0)
     parts.push(

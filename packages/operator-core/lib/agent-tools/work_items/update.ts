@@ -114,7 +114,7 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title / body / severity / kind / found-during / linked feature. Notifies subscribers. Single: { id, …fields }. Many heterogeneous: items:[{ id, …fields }]. Returns { ok, results:[{ ok, id, item? | error }], counts } — correlate by id; a not-found item never fails the rest. Field-edit is issue-family only (bug/change/task); a feature-family item edits via its pipeline. A `body` edit that would drastically shrink a substantial existing body is rejected unless confirmShrink:true (EI-8497 fat-finger guard). (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title / body / severity / kind / found-during / linked feature / needsTwoMachineRig. Notifies subscribers. Single: { id, …fields }. Many heterogeneous: items:[{ id, …fields }]. Returns { ok, results:[{ ok, id, item? | error }], counts } — correlate by id; a not-found item never fails the rest. Field-edit is issue-family only (bug/change/task); a feature-family item edits via its pipeline. A `body` edit that would drastically shrink a substantial existing body is rejected unless confirmShrink:true (EI-8497 fat-finger guard). `needsTwoMachineRig:true/false` sets/clears payload.needs_2_machine_rig, which excludes/re-admits the item from single-box scheduler:get_next/claim_next self-select (WI-2796). (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
     when: 'Refine work-item(s) you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it. Edit several at once via items:[…].',
     notWhen: 'Changing lifecycle state (work_items:set_state), recording a structural decision like split/drop (work_items:amend), adding a note (work_items:comment), or routing to a topic (work_items:tag).',
@@ -174,6 +174,7 @@ export default defineTool({
           ),
           linkedFeatureId: it.linkedFeatureId !== undefined ? it.linkedFeatureId : args.linkedFeatureId,
           confirmShrink: it.confirmShrink ?? args.confirmShrink,
+          needsTwoMachineRig: it.needsTwoMachineRig !== undefined ? it.needsTwoMachineRig : args.needsTwoMachineRig,
           harness: it.harness ?? args.harness,
         }))
       : [
@@ -186,6 +187,7 @@ export default defineTool({
             foundDuring: clampText(args.foundDuring, LIMITS.LABEL),
             linkedFeatureId: args.linkedFeatureId,
             confirmShrink: args.confirmShrink,
+            needsTwoMachineRig: args.needsTwoMachineRig,
             harness: args.harness,
           },
         ];
@@ -206,7 +208,21 @@ export default defineTool({
           ident.ownerId,
           { harness: it.harness },
         );
-        if (res.ok) return { ok: true as const, id: it.id, item: res.item };
+        if (res.ok) {
+          let item = res.item;
+          // EI-18151406094317010: needsTwoMachineRig isn't a real issue column, so it's
+          // applied additively via mergeWorkItemPayload rather than the updateIssue patch
+          // above (which would silently drop an unknown key).
+          if (it.needsTwoMachineRig !== undefined) {
+            const merged = await mergeWorkItemPayload(
+              it.id,
+              { needs_2_machine_rig: it.needsTwoMachineRig },
+              { harness: it.harness },
+            );
+            if (merged) item = merged;
+          }
+          return { ok: true as const, id: it.id, item };
+        }
         if (res.reason === 'body_shrink_guard') {
           return {
             ok: false as const,

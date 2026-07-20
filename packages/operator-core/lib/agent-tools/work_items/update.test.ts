@@ -11,10 +11,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
-vi.mock('../../work-items', () => ({ updateWorkItem: vi.fn() }));
+vi.mock('../../work-items', () => ({ updateWorkItem: vi.fn(), mergeWorkItemPayload: vi.fn() }));
 
-import { updateWorkItem } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload } from '../../work-items';
 const updM = vi.mocked(updateWorkItem);
+const mergeM = vi.mocked(mergeWorkItemPayload);
 const tool = (await import('./update')).default;
 
 type Out = { data: any };
@@ -150,6 +151,55 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
       await body({ id: 'EI-1', kind: 'change' });
       expect(updM).toHaveBeenCalledWith('EI-1', expect.objectContaining({ kind: 'change' }), 'me', expect.any(Object));
+    });
+  });
+
+  // EI-18151406094317010: needsTwoMachineRig isn't a real issue column — updateWorkItem's
+  // patch would silently drop it (unknown key), so it must be applied ADDITIVELY via
+  // mergeWorkItemPayload onto payload.needs_2_machine_rig (the exact key
+  // crossMachineRigExclusionSql reads in scheduler:get_next / claim_next), never through
+  // the updateIssue column patch.
+  describe('needsTwoMachineRig → payload.needs_2_machine_rig (EI-18151406094317010)', () => {
+    it('true: calls mergeWorkItemPayload with needs_2_machine_rig:true and returns the merged item', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'WI-5631', title: 'rig item' } } as never);
+      mergeM.mockResolvedValue({ id: 'WI-5631', title: 'rig item', payload: { needs_2_machine_rig: true } } as never);
+      const b = await body({ id: 'WI-5631', needsTwoMachineRig: true });
+      expect(mergeM).toHaveBeenCalledWith('WI-5631', { needs_2_machine_rig: true }, { harness: undefined });
+      expect(b.results[0]).toMatchObject({
+        ok: true,
+        id: 'WI-5631',
+        item: { payload: { needs_2_machine_rig: true } },
+      });
+    });
+
+    it('false: clears the tag via mergeWorkItemPayload with needs_2_machine_rig:false', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'WI-5631' } } as never);
+      mergeM.mockResolvedValue({ id: 'WI-5631', payload: { needs_2_machine_rig: false } } as never);
+      await body({ id: 'WI-5631', needsTwoMachineRig: false });
+      expect(mergeM).toHaveBeenCalledWith('WI-5631', { needs_2_machine_rig: false }, { harness: undefined });
+    });
+
+    it('omitted: never calls mergeWorkItemPayload (no spurious payload write)', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
+      await body({ id: 'EI-1', title: 'unrelated edit' });
+      expect(mergeM).not.toHaveBeenCalled();
+    });
+
+    it('items:[…] per-item needsTwoMachineRig fans out independently', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
+      await body({ items: [{ id: 'WI-1', needsTwoMachineRig: true }, { id: 'WI-2' }] });
+      expect(mergeM).toHaveBeenCalledTimes(1);
+      expect(mergeM).toHaveBeenCalledWith('WI-1', { needs_2_machine_rig: true }, expect.any(Object));
+    });
+
+    it('a top-level needsTwoMachineRig applies as the batch default (mirrors EI-7639)', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
+      await body({ needsTwoMachineRig: true, items: [{ id: 'WI-1' }, { id: 'WI-2' }] });
+      expect(mergeM).toHaveBeenCalledTimes(2);
+      expect(mergeM).toHaveBeenNthCalledWith(1, 'WI-1', { needs_2_machine_rig: true }, expect.any(Object));
+      expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-2', { needs_2_machine_rig: true }, expect.any(Object));
     });
   });
 });

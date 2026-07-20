@@ -183,7 +183,14 @@ export async function ingressOriginBranches(input: IngressInput): Promise<Ingres
         res.absent.push(branch);
       } else {
         res.ok = false;
-        res.errors.push({ branch, message: fetch.stderr.trim() || `fetch exited ${fetch.code}` });
+        // code === -1 is defaultRunGit's own sentinel for a process-level
+        // fault (spawn error or timeout-kill) — never a real git exit code —
+        // so tag it transient rather than let it read as a transport error.
+        res.errors.push({
+          branch,
+          message: fetch.stderr.trim() || `fetch exited ${fetch.code}`,
+          transient: fetch.code === -1,
+        });
       }
       continue;
     }

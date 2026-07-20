@@ -35,6 +35,12 @@ export interface DecideInvokeResult {
   exitCode: number;
   stderr?: string;
   timedOut?: boolean;
+  /**
+   * TERMINAL (not transient): the harness no longer resolves (`resolveProject`
+   * returned null). The pipeline must STOP cleanly rather than retry — see
+   * `PipelineInvokeRunner`'s return type. WI-5630.
+   */
+  unresolvedHarness?: boolean;
 }
 
 export interface RateLimitToleranceDeps {

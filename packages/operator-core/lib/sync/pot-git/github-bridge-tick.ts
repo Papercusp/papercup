@@ -140,6 +140,13 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
         remoteUrl: input.githubRemote ?? null,
         branches: [...input.branches],
         errors: ingress.errors.map((e) => e.message),
+        // Every failing branch traced to a process-level spawn/timeout fault
+        // (the git transport never even ran), not an actual credential/URL
+        // problem — surfaced so the divergence policy doesn't tell an owner
+        // to "fix the remote" for a transient env hiccup (2026-07-20, three
+        // harnesses hit `spawn git ENOENT` right after a bg-host restart,
+        // all self-cleared within minutes; EI-18152354175913564).
+        transient: ingress.errors.length > 0 && ingress.errors.every((e) => e.transient === true),
       }
     : null;
 
