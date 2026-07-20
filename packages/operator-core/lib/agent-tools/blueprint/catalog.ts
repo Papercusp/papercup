@@ -105,6 +105,13 @@ export default defineTool({
           dispatch: (bp as { dispatch?: unknown }).dispatch,
           requiresRepo: bp.knobs.requiresRepo,
           ...(validation.warnings.length > 0 ? { warnings: validation.warnings } : {}),
+          // WI-5645 (no-retirement-launch-guard): surface inherited retirement
+          // here too — the catalog is the discovery surface `harness:create`
+          // decisions start from, so a retired-but-preserved blueprint (itself
+          // or via `extends`, e.g. external-bench ⟶ coding-factory) must be
+          // visibly flagged BEFORE a new harness gets pointed at it, not only
+          // caught later at dispatch time.
+          ...(blueprintRetirement(bp) ? { retired: blueprintRetirement(bp) } : {}),
         };
       } catch (e) {
         // A deliberately-PARTIAL parent (e.g. `base` — no own workItem/spine;
