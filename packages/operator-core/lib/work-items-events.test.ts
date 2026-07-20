@@ -473,6 +473,21 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     }
   });
 
+  it('EI-18128621906886568: the guard drops a claim-hold PARKED item even with no assignee — a parked row must never advertise as claimable', async () => {
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    for (const payload of [{ _claimHold: true }, { _claimHold: 'true', held_open_by: 'su-x' }]) {
+      const emit = typedEmit();
+      emitWorkItemClaimableEvent(wi({ id: 'WI-38', state: 'open', assignee: null, payload }), 'released', { emit });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(emit, `payload ${JSON.stringify(payload)} must not fire`).not.toHaveBeenCalled();
+    }
+    // sanity: an unparked, unassigned, claimable row still fires (the guard isn't over-broad).
+    const emit = typedEmit();
+    emitWorkItemClaimableEvent(wi({ id: 'WI-39', state: 'open', assignee: null, payload: { _claimHold: false } }), 'released', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
   it('CO-FIRES from the unblocked path for an unassigned claimable dependent (reason: unblocked)', async () => {
     const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: null });

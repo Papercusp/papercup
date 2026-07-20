@@ -190,7 +190,17 @@ function classify(row: ReleasedRow, cap: number): StaleClaimAction {
     return row.requeue_count >= cap ? 'dead-lettered' : 'requeued';
   }
   if (row.former_status === 'blocked') return 'freed-blocked';
-  if (row.former_status === 'todo' || row.former_status === '' || row.former_status == null) return 'freed-todo';
+  // work-item-status-full-unify P-004/P-005: `open` is the unified claimable token (feature
+  // `todo`→`open`). A freed already-claimable row — legacy `todo` OR unified `open` — is just
+  // released in place (status untouched), never mis-read as terminal. The action label stays
+  // `freed-todo` (an internal enum meaning "freed, was-already-claimable"); a rename is P-006/P-007.
+  if (
+    row.former_status === 'todo' ||
+    row.former_status === 'open' ||
+    row.former_status === '' ||
+    row.former_status == null
+  )
+    return 'freed-todo';
   return 'freed-terminal';
 }
 

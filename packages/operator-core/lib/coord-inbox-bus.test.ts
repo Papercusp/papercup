@@ -108,24 +108,23 @@ describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', 
     const { onCoordInbox, _coordInboxTestSeam } = await import('./coord-inbox-bus');
     onCoordInbox(vi.fn());
 
-    await vi.advanceTimersByTimeAsync(0); // attempt 1 fails
-    // Deterministically settle the in-flight ensureStarted() attempt via the
-    // module's own test seam before asserting on it. A single
-    // advanceTimersByTimeAsync(0) tick is a real-wall-clock race under heavy
-    // CPU contention: ensureStarted() chains several await hops (initCursor's
-    // DB peek, then listen()) before the retry catch handler runs, and a
-    // loaded test:affected run (load1 > 40) can leave one of those hops
-    // unflushed when the assertion fires, reading listen() as "0 calls".
-    // Awaiting the seam's `ready` (== ensureStarted, memoized on the
-    // in-flight startPromise) blocks on the SAME promise chain instead of a
-    // fixed-time guess, so it is immune to scheduling delays.
+    // Deterministically settle attempt 1 via the module's own awaitable-startup
+    // seam (`_coordInboxTestSeam.ready`, == `ensureStarted`) instead of a
+    // fixed-time `advanceTimersByTimeAsync(0)` guess. `onCoordInbox` already
+    // started the attempt synchronously (its `startPromise` is set before this
+    // line runs), so `ready()` here just awaits that SAME in-flight promise
+    // (memoized — it does not start a second attempt); it blocks until
+    // initCursor's DB peek + the listen() call + the retry catch handler have
+    // all actually run, so it can't under-flush the way a fixed
+    // advanceTimersByTimeAsync(0) tick can under heavy real CPU contention
+    // (observed flaky only inside a loaded test:affected run, load1 > 40).
     await _coordInboxTestSeam.ready();
     expect(listen).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(499);
     expect(listen).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(1); // 500ms backoff elapses → retry succeeds
+    await vi.advanceTimersByTimeAsync(1); // 500ms backoff elapses → retry fires
     await _coordInboxTestSeam.ready(); // settle the retry attempt too (same race)
     expect(listen).toHaveBeenCalledTimes(2);
   });
@@ -136,8 +135,7 @@ describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', 
     const { onCoordInbox, _coordInboxTestSeam } = await import('./coord-inbox-bus');
     const unsubscribe = onCoordInbox(vi.fn());
 
-    await vi.advanceTimersByTimeAsync(0); // attempt 1 fails, retry scheduled
-    await _coordInboxTestSeam.ready(); // deterministic settle — see note above
+    await _coordInboxTestSeam.ready(); // attempt 1 fails, retry scheduled — deterministic settle, see note above
     expect(listen).toHaveBeenCalledTimes(1);
 
     unsubscribe();
@@ -151,7 +149,6 @@ describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', 
 
     const { onCoordInbox, _coordInboxTestSeam } = await import('./coord-inbox-bus');
     onCoordInbox(vi.fn());
-    await vi.advanceTimersByTimeAsync(0);
     await _coordInboxTestSeam.ready(); // deterministic settle — see note above
 
     expect(listen).toHaveBeenCalledTimes(1);
