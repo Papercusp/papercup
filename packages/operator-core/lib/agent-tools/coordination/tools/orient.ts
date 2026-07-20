@@ -511,7 +511,11 @@ export async function composeOrient(
     ? []
     : await call('work_items:list', {
         ...(args.harness ? { harness: args.harness } : {}),
-        state: args.claimableState ?? 'todo',
+        // work-item-status-full-unify P-007: the unified claimable token is 'open' (feature
+        // `todo`→`open`; issue claimable was already `open`). work_items:list filters
+        // `status = <state>` EXACTLY (no alias-expand), so defaulting to the legacy 'todo'
+        // matched ~nothing post-backfill — every agent's orient claimable backlog read empty.
+        state: args.claimableState ?? 'open',
         limit: args.claimableLimit ?? 20,
         // EI-7841: orient's claimable backlog feeds self-select loop agents — exclude
         // feature-family items the G2 admission/trust gate would refuse a claim on, so
@@ -1211,7 +1215,7 @@ export default defineTool({
       .max(80)
       .optional()
       .describe('Scope assignments + claimable + recall + declare to this harness.'),
-    claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'todo')."),
+    claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'open' — the unified claimable token)."),
     claimableLimit: z.number().int().positive().max(100).optional().describe('Max claimable items (default 20).'),
     inboxLimit: z.number().int().positive().max(50).optional().describe('Max recent inbox entries (default 10).'),
     mode: z

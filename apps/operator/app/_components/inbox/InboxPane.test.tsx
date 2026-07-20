@@ -27,6 +27,13 @@ const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, e
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
 }));
+// P-006 perf-marks wiring: spy begin/end, keep the real PERF_INTERACTIONS names.
+const perfMarks = vi.hoisted(() => ({ begin: vi.fn(), end: vi.fn() }));
+vi.mock('../perf/perf-marks', async (orig) => ({
+  ...(await orig<typeof import('../perf/perf-marks')>()),
+  beginInteraction: perfMarks.begin,
+  endInteraction: perfMarks.end,
+}));
 // jsdom has no layout, so the real @tanstack/react-virtual renders zero rows
 // (WI-5339 virtualization) — mock it to render every item (same seam as
 // ChatConversation.test).
@@ -143,6 +150,8 @@ afterEach(() => {
   H.results = {};
   consumePendingChatSeed(); // drain any staged seed between tests
   chatModalProps.mockClear();
+  perfMarks.begin.mockClear();
+  perfMarks.end.mockClear();
 });
 
 describe('effectiveTier (badge/filter derivation)', () => {
@@ -175,6 +184,12 @@ describe('useInboxPendingCount', () => {
 });
 
 describe('<InboxPane>', () => {
+  it('begins the inbox-list-settle perf interaction on a filter click (P-006)', () => {
+    renderPane(); // default filter = "needs"
+    fireEvent.click(screen.getByTestId('inbox-filter-all'));
+    expect(perfMarks.begin).toHaveBeenCalledWith('inbox-list-settle');
+  });
+
   it('defaults to "Needs you" — decision-tier rows only, with chip counts', () => {
     seedAttention([
       mkItem('d1'),

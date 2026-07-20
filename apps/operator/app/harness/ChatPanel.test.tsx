@@ -47,6 +47,14 @@ vi.mock('./Tooltip', () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
+// P-006 perf-marks wiring: spy begin/end, keep the real PERF_INTERACTIONS names.
+const perfMarks = vi.hoisted(() => ({ begin: vi.fn(), end: vi.fn() }));
+vi.mock('@/app/_components/perf/perf-marks', async (orig) => ({
+  ...(await orig<typeof import('@/app/_components/perf/perf-marks')>()),
+  beginInteraction: perfMarks.begin,
+  endInteraction: perfMarks.end,
+}));
+
 import ChatPanel from './ChatPanel';
 
 const SLUG = 'papercup';

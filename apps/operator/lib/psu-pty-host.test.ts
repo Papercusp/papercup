@@ -1647,11 +1647,26 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(h.controller.pendingCount()).toBe(0);
   });
 
-  it('a non-drill retry that ALSO defers drops terminally with respawn-carry-dropped { rearmed:true } and never recycles', async () => {
+  // WI-5623: a PRODUCTION respawn is a MUST-DELIVER — it RE-POLLS across
+  // successive busy-gate windows instead of dropping after one retry. A drill
+  // stays one-shot. (The old behavior — drop after one defer — meant 0/22
+  // production deliveries: autonomous/headless sessions are near-continuously
+  // busy and rarely present the 1.5s idle window inside a single window, so the
+  // respawn dropped before the session's next idle/recycle boundary and the
+  // session ran to the hard context wall.)
+  it('WI-5623: a permanently-busy non-drill respawn RE-POLLS (never gives up after one) and drops only after exhausting the anti-spin cap', async () => {
+    // Always-deferred gate + isStale default-false ⇒ runs to the attempt cap.
     const h = makeHarness({ promptResults: [{ deferred: true }] });
     expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
     await h.settle();
     expect(h.recycles).toEqual([]);
+    // The fix: re-polled MANY windows, not once.
+    const promptCalls = h.order.filter((o) => o === 'prompt').length;
+    expect(promptCalls).toBeGreaterThan(1);
+    // Inject mutex RELEASED between every attempt (never held across the re-poll,
+    // or this session's coord/loop wakes would wedge for the whole wait).
+    expect(h.releaseCount()).toBe(promptCalls);
+    // Only after exhausting the cap does it drop, loud.
     expect(h.events.at(-1)).toMatchObject({
       kind: 'respawn-carry-dropped',
       mode: 'carry-respawn',
@@ -1659,6 +1674,26 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       rearmed: true,
     });
     expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('WI-5623: a non-drill respawn deferred a few windows then IDLE delivers (re-poll catches the idle boundary); a drill in the same scenario stays one-shot and drops', async () => {
+    // Busy for two windows, then the agent idles on the third.
+    const h = makeHarness({ promptResults: [{ deferred: true }, { deferred: true }, { deferred: false }] });
+    expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
+    await h.settle();
+    expect(h.recycles).toHaveLength(1);
+    expect(h.order.filter((o) => o === 'prompt').length).toBe(3);
+    expect(h.events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+    expect(h.controller.pendingCount()).toBe(0);
+
+    // Same gate sequence, but a DRILL: ONE shot only — it defers on window 1 and
+    // drops (a drill is a test, not a must-deliver), never reaching the idle window.
+    const d = makeHarness({ promptResults: [{ deferred: true }, { deferred: true }, { deferred: false }] });
+    expect(d.controller.schedule(DRILL_MSG)).toBe('queued');
+    await d.settle();
+    expect(d.recycles).toEqual([]);
+    expect(d.order.filter((o) => o === 'prompt').length).toBe(1);
+    expect(d.events.at(-1)).toMatchObject({ kind: 'carry-drill-carry-dropped', rearmed: true });
   });
 
   it('a second non-drill schedule while one is pending returns duplicate (shared non-drill key)', () => {
