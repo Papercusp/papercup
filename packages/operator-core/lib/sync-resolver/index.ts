@@ -2018,6 +2018,47 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // workItems.delta24h — the 24h burn-down companion to workItems.stats
+  // (overview-tab-expansion-2026-07-20 P-002): per-kind opened (created_ts inside
+  // the window) vs closed (TERMINAL rows whose last write is inside the window —
+  // the unified table records no terminal-transition timestamp, so updated_ts on a
+  // terminal row is the honest available proxy; a terminal row touched again later
+  // re-counts once, acceptable drift for a dashboard delta). Same workspace scope +
+  // observation-lane exclusion as the stats cells; same work_items-bridge
+  // invalidation. Kinds with a zero delta are dropped server-side.
+  'workItems.delta24h': {
+    argsSchema: z.object({ harnessSlug: z.string().optional() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug?: string };
+      const [{ getOrgPg }, { observationLaneExclusionSql }, { ALL_TERMINAL_STATUSES }, { activeWorkspaceId }] =
+        await Promise.all([
+          import('@papercusp/db-org'),
+          import('../work-items'),
+          import('../work-item-blocking'),
+          import('../workspace-registry'),
+        ]);
+      const { sql } = getOrgPg();
+      const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
+      const rows = await sql<{ kind: string | null; opened: number; closed: number }[]>`
+        SELECT wi.item_kind AS kind,
+               count(*) FILTER (WHERE wi.created_ts >= ${cutoffMs})::int AS opened,
+               count(*) FILTER (
+                 WHERE wi.updated_ts >= ${cutoffMs}
+                   AND wi.status = ANY(${[...ALL_TERMINAL_STATUSES]}::text[])
+               )::int AS closed
+          FROM harness_shared.work_items wi
+         WHERE wi.workspace_id = ${activeWorkspaceId()}
+           AND ${harnessSlug ? sql`wi.harness_slug = ${harnessSlug}` : sql`TRUE`}
+           AND ${observationLaneExclusionSql(sql)}
+           AND (wi.created_ts >= ${cutoffMs} OR wi.updated_ts >= ${cutoffMs})
+         GROUP BY 1`;
+      return rows
+        .filter((r) => r.opened > 0 || r.closed > 0)
+        .map((r) => ({ kind: r.kind ?? 'unknown', opened: r.opened, closed: r.closed }))
+        .sort((a, b) => b.opened + b.closed - (a.opened + a.closed));
+    },
+  },
+
   // fleetAssignments.byHarness — "who's working here?" for the Progress tab's
   // Agents panel (progress-tab-agents-convergence-2026-06-11 P-001/P-002).
   // ⚠ DEPRECATED for NEW consumers (presence-v2 P-007): this is the "divergent"

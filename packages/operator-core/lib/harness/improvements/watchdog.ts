@@ -31,6 +31,8 @@
 import postgres from 'postgres';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFile } from 'node:fs/promises';
+import { join as pathJoin, isAbsolute as pathIsAbsolute } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';

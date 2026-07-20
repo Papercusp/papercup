@@ -56,6 +56,14 @@ vi.mock('@papercusp/operator-core/lib/lazy-with-retry', () => ({
   },
 }));
 
+// P-006 perf-marks wiring: spy begin, keep the real PERF_INTERACTIONS names.
+const perfMarks = vi.hoisted(() => ({ begin: vi.fn(), end: vi.fn() }));
+vi.mock('./perf/perf-marks', async (orig) => ({
+  ...(await orig<typeof import('./perf/perf-marks')>()),
+  beginInteraction: perfMarks.begin,
+  endInteraction: perfMarks.end,
+}));
+
 import GlobalCommandPalette from './GlobalCommandPalette';
 
 function renderHost(ui: ReactElement, searchParams = '') {
@@ -64,6 +72,8 @@ function renderHost(ui: ReactElement, searchParams = '') {
 
 beforeEach(() => {
   registered.length = 0;
+  perfMarks.begin.mockClear();
+  perfMarks.end.mockClear();
 });
 afterEach(cleanup);
 
@@ -83,6 +93,16 @@ describe('GlobalCommandPalette', () => {
     await waitFor(() => expect(screen.getByTestId('palette')).toBeTruthy());
     // The registry command source feeds 1 command into the palette.
     expect(screen.getByText(/1 cmds/)).toBeTruthy();
+  });
+
+  it('begins the command-palette-open perf interaction when opened (P-006)', async () => {
+    // closed → no begin; open transition → begin fires once (any open path).
+    const { rerender } = renderHost(<GlobalCommandPalette />, '');
+    expect(perfMarks.begin).not.toHaveBeenCalled();
+    rerender(
+      <NuqsTestingAdapter searchParams="?palette=true"><GlobalCommandPalette /></NuqsTestingAdapter>,
+    );
+    await waitFor(() => expect(perfMarks.begin).toHaveBeenCalledWith('command-palette-open'));
   });
 
   it('registers the palette.toggle shortcut', () => {

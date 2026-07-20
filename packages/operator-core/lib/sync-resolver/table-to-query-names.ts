@@ -269,8 +269,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // spine, plan-link) that move the list row.
     'workItems.detail',
     // The Overview stats tile's kind × state aggregate (WI-5517) — any work-item
-    // write can move a count cell.
+    // write can move a count cell. delta24h (P-002) is its 24h burn-down sibling,
+    // moved by exactly the same writes.
     'workItems.stats',
+    'workItems.delta24h',
     'contributors.byHarness',
     'featureTimeline.byFeature',
     // scheduler.running (the live-execution view) reads work-item claims (taken_by /
