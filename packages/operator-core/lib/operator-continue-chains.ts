@@ -24,13 +24,19 @@ import { randomUUID } from 'node:crypto';
 import { sharedUtilityPoolMax } from './resource-profile';
 
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
 
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { activeWorkspaceId } from './workspace-registry';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
-  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
+  if (!pool)
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('operator-continue-chains'),
+      max: sharedUtilityPoolMax(),
+      prepare: false,
+    });
   return pool;
 }
 

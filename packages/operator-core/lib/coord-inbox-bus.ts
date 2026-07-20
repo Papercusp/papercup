@@ -43,7 +43,7 @@
  * below is the smaller, lower-risk fix for the actual reported defect.
  */
 import postgres from "postgres";
-import { getOrgPg } from "@papercusp/db-org";
+import { getOrgPg, longLivedPoolConnectionOptions } from "@papercusp/db-org";
 import { DEFAULT_COORD_WORKSPACE } from "@papercusp/coordination/event-log";
 import { evaluateDataCondition, type DataCondition } from "@papercusp/rules";
 import { getHarnessAdminUrl } from "./embedded-pg-discovery";
@@ -261,7 +261,7 @@ async function ensureStarted(): Promise<void> {
         });
       } else {
         listenerSql = postgres(getHarnessAdminUrl(), {
-          onnotice: () => {},
+          ...longLivedPoolConnectionOptions("coord-inbox-bus"),
           max: 1,
         });
         await listenerSql.listen("coord_inbox", () => {
