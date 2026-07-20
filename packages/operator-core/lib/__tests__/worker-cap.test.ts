@@ -12,6 +12,7 @@
  * sibling pattern this follows.
  */
 import { describe, it, expect } from 'vitest';
+// @ts-expect-error worker-cap.mjs is a standalone Node script without declarations.
 import { computeWorkerCap, applyWorkerCapEnv } from '../../../../scripts/lib/worker-cap.mjs';
 
 describe('computeWorkerCap', () => {
