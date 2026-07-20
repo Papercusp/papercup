@@ -20,7 +20,7 @@
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { intFromEnv } from './improvement-actions';
+import { resolveKnowledgePackKnobs } from '../../knowledge-packs/config';
 import { runFleetLessonsDeliveryTick } from '../../knowledge-packs/delivery';
 import {
   runKnowledgeHygieneTick,
@@ -35,7 +35,8 @@ registerSystemAction('knowledge-pack-delivery', async (ctx: SystemActionCtx): Pr
     console.log('[knowledge-pack-delivery] knowledge-packs flag off — delivery skipped');
     return;
   }
-  const maxHivesPerTick = intFromEnv('PAPERCUSP_KNOWLEDGE_DELIVERY_MAX_HIVES', 10, { min: 1 });
+  // knowledge-pack-settings P-002: stored → env → default (env name unchanged).
+  const maxHivesPerTick = (await resolveKnowledgePackKnobs()).deliveryMaxHivesPerTick;
   const r = await runFleetLessonsDeliveryTick({ workspaceId: ctx.workspaceId, maxHivesPerTick });
   const summary =
     r.packVersion === null
@@ -204,12 +205,16 @@ registerSystemAction('knowledge-pack-hygiene', async (ctx: SystemActionCtx): Pro
     return;
   }
   const deps = await liveHygieneDeps(ctx.workspaceId);
+  // knowledge-pack-settings P-002: knobs resolve stored → env → default, so a
+  // memory-settings edit takes effect on the NEXT tick with no restart (the
+  // env names above keep working as boot-time fallbacks).
+  const knobs = await resolveKnowledgePackKnobs();
   const r = await runKnowledgeHygieneTick(
     {
-      minAgeDays: intFromEnv('PAPERCUSP_KNOWLEDGE_HYGIENE_MIN_AGE_DAYS', 30, { min: 0 }),
-      maxReviewsPerTick: intFromEnv('PAPERCUSP_KNOWLEDGE_HYGIENE_MAX_REVIEWS', 10, { min: 0 }),
-      maxHivesPerTick: intFromEnv('PAPERCUSP_KNOWLEDGE_HYGIENE_MAX_HIVES', 3, { min: 0 }),
-      pruneDismissedDays: intFromEnv('PAPERCUSP_KNOWLEDGE_HYGIENE_PRUNE_DAYS', 90, { min: 1 }),
+      minAgeDays: knobs.minAgeDays,
+      maxReviewsPerTick: knobs.maxReviewsPerTick,
+      maxHivesPerTick: knobs.hygieneMaxHivesPerTick,
+      pruneDismissedDays: knobs.pruneDismissedDays,
     },
     deps,
   );

@@ -130,7 +130,10 @@ type StateTable =
   // Migration 635 — durable cross-worker flap-episode counters for the
   // infra-liveness alarm (EI-15126 fix — see the migration's own comment for
   // the full root-cause story):
-  | 'operator_liveness_flap_state';
+  | 'operator_liveness_flap_state'
+  // Migration 639 — knowledge-pack loop settings (cadence presets, adoption
+  // policy, hygiene/delivery knobs; knowledge-pack-settings-2026-07-19 P-001):
+  | 'knowledge_pack_config';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //

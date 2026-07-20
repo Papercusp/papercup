@@ -89,8 +89,13 @@ import {
 /** Default pending-candidate cap — staging refuses past it (queue, not landfill). */
 export const MAX_PENDING_CANDIDATES = 20;
 
-/** Env-tunable pending cap (PAPERCUSP_LEARNING_CANDIDATE_CAP). */
-export function pendingCandidateCap(): number {
+/**
+ * Pending cap: stored settings override (knowledge-pack-settings P-002) →
+ * env (PAPERCUSP_LEARNING_CANDIDATE_CAP) → default. `stored` is passed by the
+ * async staging path; a bare call keeps the env→default behavior.
+ */
+export function pendingCandidateCap(stored?: number): number {
+  if (typeof stored === 'number' && Number.isFinite(stored) && stored > 0) return Math.floor(stored);
   const raw = Number(process.env.PAPERCUSP_LEARNING_CANDIDATE_CAP);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : MAX_PENDING_CANDIDATES;
 }
@@ -202,7 +207,13 @@ export async function stageKnowledgePackCandidate(
   const [{ count }] = await sql<[{ count: string }]>`
     SELECT count(*)::text AS count FROM harness_shared.knowledge_pack_candidates
     WHERE status = 'pending'`;
-  if (Number(count) >= pendingCandidateCap()) return { staged: false, reason: 'pending-cap' };
+  // knowledge-pack-settings P-002: the stored cap (memory settings page) wins
+  // over the env var; fail-open to env/default if the settings read breaks.
+  const storedCap = await import('./config')
+    .then((m) => m.readKnowledgePackSettings())
+    .then((s) => s.pendingCandidateCap)
+    .catch(() => undefined);
+  if (Number(count) >= pendingCandidateCap(storedCap)) return { staged: false, reason: 'pending-cap' };
 
   // knowledge-pack-loop-integrity P-002: dedup on the INSTANCE-STRIPPED
   // signature (log hashes / uuids / bare numbers removed) so one incident

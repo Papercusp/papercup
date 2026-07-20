@@ -4711,7 +4711,7 @@ export function LearningStyles() {
       .pc-learning__hivepick {
         display: inline-flex; align-items: center; gap: 6px;
         margin-left: auto;
-        padding: 5px 10px; font-size: 11.5px; font-weight: 600; border-radius: 999px;
+        padding: 5px 10px; font-size: 11.5px; font-weight: 600; border-radius: 8px;
         border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-mute);
       }
       .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0; }
@@ -4854,7 +4854,7 @@ export function LearningStyles() {
       .pc-learning__tickstrip { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
       .pc-learning__tick {
         display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
-        padding: 3px 7px; font-size: 10.5px; font-weight: 600; border-radius: 999px;
+        padding: 3px 7px; font-size: 10.5px; font-weight: 600; border-radius: 7px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
         cursor: default; white-space: nowrap;
@@ -5133,7 +5133,7 @@ export function LearningStyles() {
       @container learning (max-width: 820px) { .pc-learning__retainlayout.has-detail { grid-template-columns: 1fr; } .pc-learning__retaindetail { grid-row: 1; } }
 
       /* Lens sampling weights (P-007 steering visibility). */
-      .pc-learning__lens { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__lens { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 8px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4); }
       .pc-learning__lens em { font-style: normal; color: var(--fg-dim, #b9d4e8); }
       .pc-learning__lens strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
       .pc-learning__lensbar { width: 44px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
