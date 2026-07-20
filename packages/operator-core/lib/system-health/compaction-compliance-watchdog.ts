@@ -585,7 +585,7 @@ async function maybeCarryRespawn(
     });
     if (ok) {
       console.warn(
-        `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) at the soft` +
+        `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) at the soft ` +
           `threshold — fresh Claude successor will inherit the deterministic carry; native ` +
           `auto-compact is disabled only on that successor (P-018).`,
       );
@@ -725,6 +725,7 @@ async function maybeForceRespawn(
       mode: 'carry-respawn',
       data: firstPrompt,
       systemPromptAddendum: spec.systemPromptAddendum,
+      ownerId,
     });
     if (ok) {
       console.warn(

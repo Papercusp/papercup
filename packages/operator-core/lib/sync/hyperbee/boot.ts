@@ -1895,13 +1895,32 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * Genuine recovery (ingest resumed OR caught up) clears the confirmation
    * and does nothing further — replication-liveness.ts's own recovery branch
    * independently clears ITS latch off the same sample, so the two are
-   * consistent without coordinating directly. A log with zero live peers is
-   * left to the `no_replicator` axis (a level below a session re-attach —
-   * WI-752/WI-1534's swarm self-heal loop, not this ladder) rather than
-   * judged here. Otherwise: the repair did NOT work — synthesize the next
-   * attempt via `enqueueRepairAttempt` directly, which is precisely the call
-   * replication-liveness.ts's edge-latch cannot make again on its own while
-   * still alarmed.
+   * consistent without coordinating directly. Otherwise: the repair did NOT
+   * work — synthesize the next attempt via `enqueueRepairAttempt` directly,
+   * which is precisely the call replication-liveness.ts's edge-latch cannot
+   * make again on its own while still alarmed.
+   *
+   * WI-5481 (live-fed gate stamp=171739): a log with ZERO live peers right at
+   * this exact judgment moment used to be treated as a permanent bail-out —
+   * `repairConfirmations.delete()` ran unconditionally before the peers-count
+   * check, so a zero-peer sample threw the confirmation away for good and no
+   * later pass ever re-judged this log, even once a peer reconnected. That
+   * is precisely the shape a `connected_never_replicated` repair produces: it
+   * escalates straight to `escalateToForcedRejoin` (evicts the zombie socket
+   * + fresh DHT join), so the very session this confirmation is judging is
+   * almost always mid-reconnect — zero peers for a few seconds — right when
+   * the grace window elapses. Evidence: serve.log showed "repair-on-detect:
+   * re-attached replica session ... (attempt 1/3)" fire promptly after a
+   * forced rejoin, then NO attempt 2/3 and NO exhaustion event for the rest
+   * of the process — yet "recovered ... after 1105s/1080s swarm-connected-
+   * but-dead" eventually fired, meaning the log truly was still stuck long
+   * after grace elapsed; the confirmation had simply already been discarded.
+   * Fix: a zero-peers sample RE-ARMS the confirmation (fresh `appliedAtMs`,
+   * same baseline/kind) instead of deleting it, deferring judgment to a LATER
+   * pass that actually observes a live peer — genuinely permanent
+   * zero-replicator cases (the `no_replicator` axis — WI-752/WI-1534's swarm
+   * self-heal loop, not this ladder) just leave the confirmation re-arming
+   * forever, a harmless no-op Map entry, never retry-storming.
    */
   function checkRepairConfirmation(
     logKeyHex: string,
@@ -1912,11 +1931,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const confirmation = repairConfirmations.get(logKeyHex);
     if (!confirmation) return;
     if (Date.now() - confirmation.appliedAtMs < REPLICATION_STALL_GRACE_MS) return;
-    repairConfirmations.delete(logKeyHex); // one judgment per applied repair
     const advanced = mergedPosition > confirmation.baselinePosition;
     const caughtUp = knownLength <= mergedPosition;
-    if (advanced || caughtUp) return; // genuine recovery — nothing to do
-    if ((peersCount ?? 0) <= 0) return; // no_replicator's axis, not this ladder
+    if (advanced || caughtUp) {
+      repairConfirmations.delete(logKeyHex); // genuine recovery — nothing to do
+      return;
+    }
+    if ((peersCount ?? 0) <= 0) {
+      // Still no live replicator peer — likely mid-reconnect after the
+      // forced rejoin that applied this repair. Defer judgment instead of
+      // discarding it: re-arm with a fresh window so the NEXT pass that
+      // observes a live peer (or genuine progress) gets the real verdict.
+      confirmation.appliedAtMs = Date.now();
+      return;
+    }
+    repairConfirmations.delete(logKeyHex); // one judgment per applied repair
     recordBootEvent(
       opts.workspaceId,
       opts.harnessSlug,
