@@ -10,7 +10,9 @@ const h = vi.hoisted(() => ({ sql: null as unknown }));
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 
-const { openOrTouchGate, closeGate, closeGateByToolUseId, listPendingGates } = await import('./gate-store');
+const { openOrTouchGate, closeGate, closeGateByToolUseId, listPendingGates, listClosedAskGatesSince } = await import(
+  './gate-store'
+);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 describe('gate-store (real PG)', () => {
@@ -114,5 +116,32 @@ describe('gate-store (real PG)', () => {
 
     const newestFirst = await listPendingGates({ workspaceId: ws, sessionId: 's6', order: 'newest' });
     expect(newestFirst.map((r) => r.ref_id)).toEqual(['r-new', 'r-old']);
+  });
+
+  it('listClosedAskGatesSince returns only CLOSED ask gates within the window, newest-first (EI-147)', async () => {
+    await openOrTouchGate({ workspaceId: ws, sessionId: 's7', client: 'claude', kind: 'ask', refId: 'r7-open', source: 'watcher' });
+    await openOrTouchGate({ workspaceId: ws, sessionId: 's7', client: 'claude', kind: 'ask', refId: 'r7-closed-old', source: 'watcher' });
+    await closeGate({ workspaceId: ws, sessionId: 's7', refId: 'r7-closed-old', reason: 'tool_result_observed' });
+    await new Promise((r) => setTimeout(r, 5));
+    await openOrTouchGate({ workspaceId: ws, sessionId: 's7', client: 'claude', kind: 'permission_wait', refId: 'r7-perm', source: 'watcher' });
+    await closeGate({ workspaceId: ws, sessionId: 's7', refId: 'r7-perm', reason: 'hook_cleared' });
+    await new Promise((r) => setTimeout(r, 5));
+    await openOrTouchGate({ workspaceId: ws, sessionId: 's7', client: 'claude', kind: 'ask', refId: 'r7-closed-new', source: 'watcher' });
+    await closeGate({ workspaceId: ws, sessionId: 's7', refId: 'r7-closed-new', reason: 'tool_result_observed' });
+
+    const sinceIso = new Date(Date.now() - 3_600_000).toISOString();
+    const rows = await listClosedAskGatesSince({ workspaceId: ws, sinceIso });
+    const forS7 = rows.filter((r) => r.session_id === 's7');
+    // r7-open is still open (excluded); r7-perm is closed but kind='permission_wait' (excluded).
+    expect(forS7.map((r) => r.ref_id)).toEqual(['r7-closed-new', 'r7-closed-old']);
+  });
+
+  it('listClosedAskGatesSince excludes closes older than sinceIso', async () => {
+    await openOrTouchGate({ workspaceId: ws, sessionId: 's8', client: 'claude', kind: 'ask', refId: 'r8', source: 'watcher' });
+    await closeGate({ workspaceId: ws, sessionId: 's8', refId: 'r8', reason: 'tool_result_observed' });
+
+    const futureSinceIso = new Date(Date.now() + 3_600_000).toISOString();
+    const rows = await listClosedAskGatesSince({ workspaceId: ws, sinceIso: futureSinceIso });
+    expect(rows.some((r) => r.session_id === 's8')).toBe(false);
   });
 });

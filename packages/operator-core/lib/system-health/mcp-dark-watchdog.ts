@@ -762,6 +762,7 @@ async function runInteractiveHealStep(
       await discovery.injectIntoHost(host.sock, {
         mode: 'turn',
         data: healedWakeText(step.ownerId, v?.staleMins ?? 0),
+        ownerId: step.ownerId,
       });
     }
     // Clear any standing escalation row (idempotent).

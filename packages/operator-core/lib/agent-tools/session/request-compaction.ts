@@ -307,6 +307,7 @@ export default defineTool({
       mode: 'carry-respawn',
       data: firstPrompt,
       systemPromptAddendum: spec.systemPromptAddendum,
+      ownerId: identity.ownerId,
     });
     // EI-8987: the cut is already QUEUED at this point (idle-gated — it fires
     // after THIS turn ends), so a warning here is still actionable: the turn
