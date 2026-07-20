@@ -515,7 +515,16 @@ export default function ObservationsPanel({
         /* The kind label + count render as CardStack's on-card header badge. */
         .pc-observations__stackgroup { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
         .pc-observations__kinddot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-        .pc-observations__card { display: flex; flex-direction: column; gap: 5px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); color: inherit; text-align: left; font: inherit; cursor: pointer; }
+        .pc-observations__card { display: flex; flex-direction: column; gap: 5px; width: 100%; padding: 0 12px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); color: inherit; text-align: left; font: inherit; cursor: pointer; }
+        /* Accent header band (design pass 2026-07-19f), tinted by the deck's
+           kind color via --cs-accent. */
+        .pc-observations__card-head {
+          margin: 0 -12px 2px; padding: 7px 12px 6px;
+          background: linear-gradient(
+            color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 10%, transparent),
+            color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 3%, transparent));
+          border-bottom: 1px solid color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 16%, var(--border));
+        }
         .pc-observations__card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
         .pc-observations__card.is-selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
         .pc-observations__card-head { display: flex; align-items: center; gap: 8px; }

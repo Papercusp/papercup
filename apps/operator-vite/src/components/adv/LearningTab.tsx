@@ -1529,7 +1529,7 @@ function CardGradeStars({
               if (!noteOpen) onGrade(g);
             }}
           >
-            <Star size={15} fill={g <= shown ? "currentColor" : "none"} aria-hidden />
+            <Star size={16} fill={g <= shown ? "currentColor" : "none"} aria-hidden />
           </button>
         ))}
       </span>
@@ -5018,10 +5018,9 @@ export function LearningStyles() {
       .pc-learning__trace {
         grid-column: 1 / -1;
         display: grid; grid-template-columns: max-content minmax(0, 1fr);
-        gap: 6px 12px; align-items: start;
-        margin-top: 9px; padding: 9px 12px; border-radius: 9px;
-        border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 10%, var(--border, rgba(125, 211, 252, 0.14)));
-        background: color-mix(in srgb, var(--bg-1, #0d151d) 55%, transparent);
+        gap: 7px 12px; align-items: start;
+        margin-top: 9px; padding: 10px 12px; border-radius: 9px;
+        background: color-mix(in srgb, var(--bg-1, #0d151d) 60%, transparent);
       }
       .pc-learning__tracerow { display: contents; }
       .pc-learning__tracerow > em {
@@ -5208,14 +5207,13 @@ export function LearningStyles() {
       /* ── Inline star grader on the idea card (owner ask 2026-07-19d) ───── */
       .pc-learning__stargrade {
         display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px;
-        padding: 6px 8px; border-radius: 8px;
-        border: 1px dashed color-mix(in srgb, #fbbf24 35%, var(--border, rgba(125, 211, 252, 0.16)));
-        background: color-mix(in srgb, #fbbf24 4%, transparent);
+        padding: 6px 9px; border-radius: 8px;
+        border: 1px solid color-mix(in srgb, #fbbf24 22%, var(--border, rgba(125, 211, 252, 0.16)));
+        background: color-mix(in srgb, #fbbf24 5%, transparent);
       }
       .pc-learning__stargrade.is-graded {
-        border-style: solid;
-        border-color: color-mix(in srgb, #fbbf24 45%, transparent);
-        background: color-mix(in srgb, #fbbf24 7%, transparent);
+        border-color: color-mix(in srgb, #fbbf24 40%, transparent);
+        background: color-mix(in srgb, #fbbf24 8%, transparent);
       }
       .pc-learning__stars { display: inline-flex; gap: 2px; }
       .pc-learning__star {
@@ -5340,11 +5338,21 @@ export function LearningStyles() {
          ledger recessed below — readable at a glance, roomy, consistent. */
       .pc-learning__ideacard {
         display: flex; flex-direction: column; gap: 8px;
-        padding: 12px 14px 13px; border-radius: 10px;
+        padding: 0 14px 13px; border-radius: 10px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
         background: var(--bg-2, rgba(255, 255, 255, 0.04));
       }
-      .pc-learning__ideacard-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 22px; }
+      /* Accent header BAND (design pass 2026-07-19f): the category color (the
+         deck's --cs-accent, cascading in) structures the card's top — meta on
+         a tinted strip, content below a hairline. */
+      .pc-learning__ideacard-head {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 22px;
+        margin: 0 -14px 2px; padding: 9px 14px 8px;
+        background: linear-gradient(
+          color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 10%, transparent),
+          color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 3%, transparent));
+        border-bottom: 1px solid color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 16%, var(--border, rgba(125, 211, 252, 0.16)));
+      }
       .pc-learning__ideacard-head .pc-learning__id {
         display: inline-flex; align-items: center; gap: 5px;
         font-size: 9.5px; font-weight: 720; text-transform: uppercase;

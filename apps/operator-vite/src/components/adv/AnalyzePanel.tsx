@@ -142,8 +142,17 @@ export function AnalyzePanel({
          and source chains, so they want the width. */
       .pc-analyze__lensstacks--fusions { grid-template-columns: 1fr; }
       .pc-analyze__ideacard {
-        display: flex; flex-direction: column; gap: 6px; padding: 11px 13px;
+        display: flex; flex-direction: column; gap: 6px; padding: 0 13px 12px;
         font-size: 12px; color: var(--fg, #e7eef5);
+      }
+      /* Accent header band (design pass 2026-07-19f) — the verdict/meta row
+         rides a category-tinted strip, matching the Ideas cards. */
+      .pc-analyze__ideacard > .pc-analyze__row:first-child {
+        margin: 0 -13px 2px; padding: 8px 13px 7px;
+        background: linear-gradient(
+          color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 10%, transparent),
+          color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 3%, transparent));
+        border-bottom: 1px solid color-mix(in srgb, var(--cs-accent, var(--accent, #7dd3fc)) 16%, var(--border, rgba(125, 211, 252, 0.16)));
       }
       .pc-analyze__ideatitle {
         font-size: 12.5px; font-weight: 660; line-height: 1.4;
