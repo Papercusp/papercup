@@ -55,6 +55,9 @@ import { buildCoordOpCtx } from '../coord-ops/prod-caps';
 import { registerHarnessOpProxies } from '../harness-ops/proxy';
 import { HarnessEndpointUnavailableError } from '../harness-ops/transport';
 import { runWithWorkspace } from '../workspace-als';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { resolveWorkItemPot } from '../pot-membership';
 
 const operatorBase = operatorApiBase;
 
@@ -286,6 +289,22 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
     wi.payload && typeof wi.payload === 'object' ? (wi.payload as Record<string, unknown>) : null;
   const now = Date.now();
 
+  // pot-membership-enforcement-2026-07-20 (P-005/P-006): a scheduled work-item must
+  // belong to a REAL Pot. A workspace-global routine host (`@singleton`) or any non-pot
+  // installSlug homes to the workspace platform Pot; a real Pot slug is unchanged.
+  // Defensive: this is a durable step (never-throw contract) + the enforcement is
+  // flag-gated, so a resolver miss keeps installSlug rather than failing the step (the
+  // P-006 DB trigger is the hard backstop for a genuine non-pot write).
+  let potSlug = installSlug;
+  if (await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system')) {
+    try {
+      const resolved = await resolveWorkItemPot({ rawSlug: installSlug, workspaceId });
+      if (resolved) potSlug = resolved;
+    } catch (e) {
+      console.warn(`[blueprint-run] ${installSlug}: pot-membership resolve skipped: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   const { sql } = getOrgPg();
   // Admin pool (RLS-bypassed) with workspace_id set explicitly — no GUC needed. The jsonb
   // payload is bound as `$N::text::jsonb` (the JSON.stringify'd value), the client-agnostic
@@ -300,7 +319,7 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
        $5, $6::text::jsonb, FALSE, $7, $8, $9, $10
      )
      ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
-    [installSlug, featureId, title, summary, itemKind, payload ? JSON.stringify(payload) : null, workspaceId, now, now, now],
+    [potSlug, featureId, title, summary, itemKind, payload ? JSON.stringify(payload) : null, workspaceId, now, now, now],
   );
   console.log(`[blueprint-run] ${installSlug}: created scheduled work-item ${featureId} (item_kind=${itemKind})`);
 }

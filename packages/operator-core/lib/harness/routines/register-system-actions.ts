@@ -204,8 +204,8 @@ import './foreign-git-sync-action';
 // `system:sweep-orphaned-foreign-harnesses` — WI-1937/P-406 item 3: the
 // ephemeral-harness ORPHAN-REGISTRY cleanup sweep (registerEphemeralForeignHarness
 // rows left behind by a missed deregister). NOT the same as P-104's H12/H13
-// superviseForeignSessions liveness/orphan-ORIGIN sweep (foreign-supervision.ts),
-// which is a separate, still-unwired gap tracked apart from this one.
+// superviseForeignSessions liveness/orphan-ORIGIN sweep (foreign-supervision.ts) —
+// see foreign-supervision-action.ts below, which now closes that gap.
 import './sweep-orphaned-foreign-harnesses-action';
 // `system:p2p-work-intake` — p2p-public-release-remaining-lanes-2026-07-16
 // P-406 (D-004): the minimal production intake loop — lists open work
@@ -214,6 +214,12 @@ import './sweep-orphaned-foreign-harnesses-action';
 // module doc — seeding needs an owner-configured host identity this module
 // has no seam to discover on its own).
 import './work-intake-action';
+// `system:p2p-foreign-supervision` — p2p-public-release-remaining-lanes-2026-07-16
+// P-407 (D-004): P-104's H12/H13 foreign-session liveness + orphan-origin
+// wind-down sweep, now bound to production data (foreign-supervision-production.ts)
+// + scheduled. Built + tested but NOT YET SEEDED anywhere, same reason as
+// system:p2p-work-intake above (see foreign-supervision-action.ts's module doc).
+import './foreign-supervision-action';
 // papercusp-dogfood-phase7-pr-lifecycle P-042 (un-vaporware, PR-1): `system:pr-poll`
 // — per-harness inbound-PR poll daemon (notice PR → track → trigger reviewer →
 // decideAutoReview → auto-approve/merge). Seeded INACTIVE; the pr-reviewer-settings

@@ -33,6 +33,12 @@ BIN="$(find "$EXTRACT_DIR/squashfs-root" -type f -name 'papercusp-desktop' 2>/de
 echo "Resolved binary: ${BIN:-<none>}" | tee -a "$LOG"
 [ -x "$BIN" ] || { echo "FATAL: no executable binary in AppImage" | tee -a "$LOG"; ls -R "$EXTRACT_DIR/squashfs-root/usr" 2>/dev/null | head -40 | tee -a "$LOG"; exit 5; }
 
+echo "== STEP 1b: reap stale harness procs (avoid :4445 collision) ==" | tee -a "$LOG"
+pkill -f "tauri-driver" 2>/dev/null; pkill -f "squashfs-root/usr/bin/papercusp-desktop" 2>/dev/null; pkill -f "wdio run wdio.conf" 2>/dev/null
+sleep 2
+if command -v fuser >/dev/null; then fuser -k 4445/tcp 4446/tcp 2>/dev/null; sleep 1; fi
+echo "port 4445 holders after reap: $(ss -ltnp 2>/dev/null | grep ':4445' || echo none)" | tee -a "$LOG"
+
 echo "== STEP 2: private Xvfb on $DISP ==" | tee -a "$LOG"
 pkill -f "Xvfb $DISP" 2>/dev/null; sleep 1
 Xvfb "$DISP" -screen 0 1600x1000x24 -ac -nolisten tcp >>"$LOG" 2>&1 &
@@ -46,7 +52,7 @@ cd "$WDIO_DIR"
 # Bundled libs live alongside the binary; help the loader find them.
 BINDIR="$(dirname "$BIN")"
 export LD_LIBRARY_PATH="$BINDIR/../lib:$BINDIR:${LD_LIBRARY_PATH:-}"
-DISPLAY="$DISP" TAURI_APP_PATH="$BIN" timeout 900 npx wdio run wdio.conf.ts >>"$LOG" 2>&1
+DISPLAY="$DISP" TAURI_APP_PATH="$BIN" timeout 300 npx wdio run wdio.conf.ts >>"$LOG" 2>&1
 RC=$?
 echo "== wdio exit code: $RC ==" | tee -a "$LOG"
 

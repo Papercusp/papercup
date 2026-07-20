@@ -173,13 +173,23 @@ export function pgPotLookup(workspaceId: string): PotLookup {
   };
 }
 
-/** Does a Pot with home slug `slug` exist in `workspaceId`? */
+/**
+ * Does a Pot with home slug `slug` exist in `workspaceId`? FAILS OPEN (returns false)
+ * on any DB error — an unreadable/absent `harness_shared.pots` (a bare test schema, a
+ * transient pool error) must never turn write-time enforcement into a hard create
+ * failure. A false here cascades to the fail-open path in {@link resolveWorkItemPot}
+ * (platformPot → null ⇒ no reject); the P-006 DB trigger remains the hard guarantee.
+ */
 async function potExists(workspaceId: string, slug: string): Promise<boolean> {
-  const { sql } = getOrgPg();
-  const rows = await sql<{ one: number }[]>`
-    SELECT 1 AS one
-      FROM harness_shared.pots
-     WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${slug}
-     LIMIT 1`;
-  return rows.length > 0;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ one: number }[]>`
+      SELECT 1 AS one
+        FROM harness_shared.pots
+       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${slug}
+       LIMIT 1`;
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
 }
