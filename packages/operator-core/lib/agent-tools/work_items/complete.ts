@@ -84,11 +84,21 @@ const completionSpec = z
   );
 
 /**
- * EI-5269: the canonical terminal states across BOTH families (feature: passed/deprecated;
- * issue: resolved/closed — see work-items.ts). A completion that leaves the item in ANY other
- * state has NOT closed it, so the row stays claimable + reclaimable.
+ * EI-5269 / EI-18127483322976472: the canonical terminal states across BOTH families
+ * (feature: passed/deprecated; issue: resolved/closed) — and, post work-item-status-full-unify
+ * (2026-07-19), their UNIFIED representations (done/dropped) that the issue-family write path
+ * (ISSUE_STATE_ALIASES) now actually persists (resolved→done, closed→dropped). A completion
+ * that leaves the item in ANY other state has NOT closed it, so the row stays claimable +
+ * reclaimable.
+ *
+ * MUST be sourced from work-items.ts's `SETTLED_WORK_ITEM_STATES` (the single source of
+ * truth for "this work_item is done, one way or another") rather than a locally-duplicated
+ * literal list: a stale local copy that omits 'done'/'dropped' is exactly what caused this
+ * receipt to report "COMPLETION RECORDED, BUT ... DID NOT CLOSE" for a change/issue-family
+ * completion that had, in fact, already landed terminal as 'done' — the pre-alias name list
+ * disagreeing with the family's actual post-alias terminal representation.
  */
-const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'deprecated', 'resolved', 'closed']);
+const TERMINAL_WORK_ITEM_STATES = new Set<string>(SETTLED_WORK_ITEM_STATES);
 
 /**
  * WI-4529: states a caller passes MEANING "close this" — the true terminals PLUS the common

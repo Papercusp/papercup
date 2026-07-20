@@ -133,7 +133,7 @@ async function ensureStarted(): Promise<void> {
       hubUnsub = await hubListen("agent_activity", onNotify);
     } else {
       listenerSql = postgres(getHarnessAdminUrl(), {
-        onnotice: () => {},
+        ...longLivedPoolConnectionOptions("agent-activity-bus"),
         max: 1,
       });
       await listenerSql.listen("agent_activity", onNotify);
