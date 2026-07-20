@@ -957,3 +957,250 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
     240_000,
   );
 });
+
+/**
+ * WI-5579 (EI-13317/WI-5481 validation): a GENUINE connected_never_replicated
+ * ("zombie socket") repro — the member's transport connects to the owner (swarm
+ * shows a live connection, admission/roster federate normally over the announce
+ * channel, which rides the SAME socket unconditionally — see swarm.ts), but the
+ * owner's log is deliberately withheld from `corestore.replicate(socket)` on the
+ * member's FIRST connection via the `sidecarOffloadOverride` test seam (boot.ts's
+ * authoritative "claim this socket, do not corestore.replicate it" hook — the
+ * SAME seam production's sidecar-offload feature uses; "An explicit test
+ * override is authoritative" per boot.ts). This models a dead-but-connected data
+ * path WITHOUT faking any wire-level behavior — no real network partition, no
+ * Docker/testcontainer rig, just the real replication-liveness detector + repair
+ * ladder running against a real swarm connection that genuinely never replicates.
+ *
+ * Proves TWO things end-to-end:
+ *   1. The zombie is REAL — content authored while zombied does NOT land within
+ *      a window well short of the detector's grace period (if it did, the
+ *      override failed to prevent replication and this test would be lying
+ *      about what it covers).
+ *   2. EI-13317's fix RECOVERS it — `connected_never_replicated` escalates
+ *      PROMPTLY (no 3-attempt/~540s ladder wait) to `forceRejoin` (swarm.ts:
+ *      leave()+join()), which opens a FRESH connection; the override's 2nd
+ *      invocation lets that connection replicate normally, and the
+ *      already-authored content lands shortly after — with NO process restart,
+ *      NO manual intervention, using only the real onAnnounce/poll-driven path
+ *      (mergePollMs>0, no manual mergeNow() anywhere, matching the
+ *      ALTERNATING-SOAK test above).
+ *
+ * `replicationStallGraceMs` is shrunk from its 3-minute production default so
+ * the detector fires in seconds, not minutes — this changes ONLY the wait, not
+ * the code path (the exact same grace-then-escalate logic boot.ts runs in
+ * production).
+ */
+describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — a live swarm connection that genuinely never replicates, detected + evicted + recovered via the REAL repair ladder (no manual intervention)', () => {
+  it(
+    "member's FIRST connection never replicates (sidecarOffloadOverride) — content does not land while zombied, then the real connected_never_replicated -> forceRejoin path recovers it on the very next (fresh) connection",
+    async () => {
+      const HIVE_HOME = 'zombie-owner-hive';
+      const MEMBER_SLUG = 'zombie-joined-hive';
+      const MERGE_POLL_MS = 250;
+      const GRACE_MS = 1_500; // shrunk from the 3min production default — same code path, faster wait
+
+      // ── env-route getOrgPg (identical pattern to the sibling repros above) ──
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      const prev = {
+        adminUrl: process.env.HARNESS_ADMIN_DATABASE_URL,
+        appUrl: process.env.HARNESS_DATABASE_URL,
+        ws: process.env.PAPERCUSP_WORKSPACE_ID,
+        skip: process.env.PAPERCUSP_SKIP_PG_DISCOVERY,
+        pgb: process.env.PAPERCUSP_PGBOUNCER,
+      };
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        if (prev.adminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL; else process.env.HARNESS_ADMIN_DATABASE_URL = prev.adminUrl;
+        if (prev.appUrl === undefined) delete process.env.HARNESS_DATABASE_URL; else process.env.HARNESS_DATABASE_URL = prev.appUrl;
+        if (prev.ws === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID; else process.env.PAPERCUSP_WORKSPACE_ID = prev.ws;
+        if (prev.skip === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY; else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prev.skip;
+        if (prev.pgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER; else process.env.PAPERCUSP_PGBOUNCER = prev.pgb;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
+      const idMember = makeIdentityOverride('member', 7, 'kc-member');
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-owner-home', 'Owner Home', null, 1, 1)
+      `;
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
+        VALUES (${WORKSPACE_ID}, ${JSON.stringify({
+          hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idOwner.devicePubkey }],
+        })}::text::jsonb, 1)
+      `;
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/zombie-owner-hive', harness_kind: 'hive', remote_hive: true },
+            { slug: MEMBER_SLUG, path: '/tmp/zombie-member', hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+
+      const dbOwner: FreshPgDb = await createFreshPgDb('zombieOwner');
+      cleanups.push(() => dbOwner.cleanup());
+      await setupOwnerSchema(dbOwner.sql, HIVE_HOME, hivePubkeyB64);
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const swarmOwner = makeSwarm(testnet.bootstrap);
+      const swarmMember = makeSwarm(testnet.bootstrap);
+      const rootOwner = makeWorkspaceRoot('zombie-owner-');
+      const rootMember = makeWorkspaceRoot('zombie-member-');
+
+      const hiveBinding: SwarmBinding = { kind: 'hive', hive_pubkey: hivePubkeyB64 };
+      const memberBinding: SwarmBinding = {
+        kind: 'topic',
+        topic_hex: deriveSwarmTopic(hiveBinding).toString('hex'),
+      };
+
+      let ownerApply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      let owner: PeerControl;
+      owner = await bootViaSidecarHost({
+        root: rootOwner,
+        swarm: swarmOwner,
+        harnessSlug: HIVE_HOME,
+        binding: hiveBinding,
+        bootExtra: {
+          announceIdentityOverride: idOwner.override,
+          verifyBindingOverride: async (_pk, _login, userId) =>
+            userId === idMember.userId ? 'verified' : 'fail',
+          applyOverride: (op) => {
+            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, owner.handle.ownLog.keyHex);
+            return ownerApply(op);
+          },
+          mergePollMs: MERGE_POLL_MS,
+        },
+      });
+      cleanups.push(async () => {
+        await owner.host.closeAll();
+        await closeHarnessStore({ workspaceRoot: rootOwner, harnessSlug: HIVE_HOME });
+      });
+
+      // The zombie seam: the member's FIRST connection is "claimed" (offloaded)
+      // without ever calling corestore.replicate() on it — a REAL live swarm
+      // connection (admission/announce still work) that genuinely never
+      // replicates any log. The 2nd+ connection (the fresh join a forced rejoin
+      // opens) replicates normally, modeling "this one connection's data path
+      // was dead; a fresh reconnect works" — the exact WI-183/EI-13317 shape.
+      let memberConnAttempts = 0;
+      const sidecarOffloadOverride = () => {
+        memberConnAttempts += 1;
+        return memberConnAttempts === 1;
+      };
+
+      const member = await bootViaSidecarHost({
+        root: rootMember,
+        swarm: swarmMember,
+        harnessSlug: MEMBER_SLUG,
+        binding: memberBinding,
+        bootExtra: {
+          announceIdentityOverride: idMember.override,
+          mergePollMs: MERGE_POLL_MS,
+          replicationStallGraceMs: GRACE_MS,
+          sidecarOffloadOverride,
+        },
+      });
+      cleanups.push(async () => {
+        await member.host.closeAll();
+        await closeHarnessStore({ workspaceRoot: rootMember, harnessSlug: MEMBER_SLUG });
+      });
+
+      expect(owner.handle.swarm, 'owner did not join a swarm').not.toBeNull();
+      expect(member.handle.swarm, 'member did not join a swarm').not.toBeNull();
+      expect(owner.handle.swarm!.topicHex).toBe(member.handle.swarm!.topicHex);
+
+      // Owner authors its roster + ONE feature, drains to its own log (author
+      // side — see the sibling tests' identical comment on why this isn't a
+      // "manual merge": it's the CDC→outbox→own-log boundary, not receive-side).
+      const memberAtt = (login: string, pk: string) =>
+        JSON.stringify([
+          { device_pubkey: pk, gist_id: `gist-${login}`, gist_url: `https://gist.github.com/${login}`, device_label: `${login}-dev`, created_at: 1, signature_by_device: 'sig' },
+        ]);
+      await dbOwner.sql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner', ${memberAtt('owner', idOwner.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
+      `;
+      await dbOwner.sql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idMember.userId}, 'member', ${memberAtt('member', idMember.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
+      `;
+      await dbOwner.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${HIVE_HOME}, 'F-zombie', 'Authored while member zombied', 'zombie repro', 'todo', 0, 'local', 6001, 6001, 6001)
+      `;
+      const t0 = Date.now();
+      await drainOutboxOnce(owner.handle, dbOwner.sql);
+
+      // (1) The zombie is REAL: content must NOT land within a window well
+      // short of GRACE_MS — if it did, the offload override failed to prevent
+      // replication and this test is not exercising what it claims to.
+      const landedEarly = await pollUntil(
+        async () => (await readFeature(orgDb.adminSql, HIVE_HOME, 'F-zombie')) ?? undefined,
+        { timeoutMs: Math.floor(GRACE_MS * 0.6), intervalMs: 100 },
+      );
+      expect(
+        landedEarly,
+        'F-zombie landed BEFORE the grace window elapsed — the sidecarOffloadOverride zombie seam did not actually prevent replication (this test is not exercising a genuine stall)',
+      ).toBeUndefined();
+      expect(memberConnAttempts, 'member should still be on its first (zombie) connection at this point').toBe(1);
+
+      // (2) EI-13317's fix recovers it: connected_never_replicated escalates
+      // PROMPTLY (no 3-attempt ladder wait) to a forced rejoin once GRACE_MS
+      // elapses — a fresh connection opens, the override's 2nd call lets it
+      // replicate normally, and F-zombie lands shortly after. Bound generously
+      // (GRACE_MS + rejoin/reconnect overhead + a few poll cycles) but far
+      // short of the ladder's ~540s production worst case this fix collapses.
+      const landed = await pollUntil(
+        async () => (await readFeature(orgDb.adminSql, HIVE_HOME, 'F-zombie')) ?? undefined,
+        { timeoutMs: 30_000, intervalMs: 200 },
+      );
+      expect(
+        landed,
+        `F-zombie never landed on the member — the connected_never_replicated -> forceRejoin recovery path did not fire/heal within 30s (memberConnAttempts=${memberConnAttempts}, elapsed=${Date.now() - t0}ms)`,
+      ).toMatchObject({ feature_id: 'F-zombie', origin: 'remote', title: 'Authored while member zombied' });
+      expect(
+        memberConnAttempts,
+        'recovery must have opened a FRESH (2nd) connection — the forced rejoin, not a fluke on the same zombie connection',
+      ).toBeGreaterThanOrEqual(2);
+      expect(
+        member.handle.admitted.has(owner.handle.ownLog.keyHex),
+        'the member must have (re-)admitted the owner log on the recovered connection',
+      ).toBe(true);
+    },
+    60_000,
+  );
+});

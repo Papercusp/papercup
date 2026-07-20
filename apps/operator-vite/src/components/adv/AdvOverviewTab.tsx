@@ -30,6 +30,7 @@ import {
 import { Tooltip } from '@/app/harness/Tooltip';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { requestDockPanelOpen } from '@/app/adv/harnesses/open-dock-panel';
+import { KindPill } from '@/app/harness/primitives';
 import { useLexicon } from '@/lib/useLexicon';
 
 /**
@@ -568,7 +569,12 @@ export default function AdvOverviewTab() {
         >
           {workItemStats.kinds.map((k) => (
             <div key={k.kind} className="pc-overview__row">
-              <span className="pc-overview__row-title">{k.kind}</span>
+              {/* Owner ask 2026-07-19: the canonical per-kind icon chip
+                  (KindPill / KIND_ICON) instead of a bare kind name — one
+                  visual language with the Work items table. */}
+              <span className="pc-overview__row-title">
+                <KindPill kind={k.kind} size="xs" />
+              </span>
               <span className="pc-overview__row-tag">
                 {k.open} open · {k.total} all
               </span>

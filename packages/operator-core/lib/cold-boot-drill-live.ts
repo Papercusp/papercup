@@ -49,6 +49,29 @@ const DRILL_LEDGER_MAX_BYTES = 1024 * 1024;
 const DRILL_LEDGER_FILE = 'carry-drills.events.jsonl';
 const CARRY_ROOT = join(homedir(), '.papercusp', 'launch-context');
 
+/**
+ * EI-18133456688790756 (P-021 class-name mismatch): `startColdBootDrill` now
+ * always DEFAULTS an omitted `sessionClass` from the canonical classifier
+ * (`sessionClassForHost` — see the comment at its call site), but a handful of
+ * historical ledger rows (2026-07-17) were requested with an EXPLICIT, hand-typed
+ * `sessionClass: 'gateway-claude-headless'` that the classifier has never emitted
+ * (confirmed: `git log -S'gateway-claude-headless'` on psu-pty-discovery.ts is
+ * empty) — a caller-supplied override, not a classifier bug. Left unaliased those
+ * graded drills silently orphan into a phantom class no live headless wake can
+ * ever match, so the REAL 'claude-headless' class reads zero drills forever even
+ * though a genuinely good drill already ran under a stale label. Alias at
+ * READ-time (never mutate the append-only ledger) so old data folds back into
+ * the class it was always actually testing. Extend this map only for a CONFIRMED
+ * one-off caller-supplied label, never for a class the live classifier can emit.
+ */
+const LEGACY_SESSION_CLASS_ALIASES: Readonly<Record<string, string>> = {
+  'gateway-claude-headless': 'claude-headless',
+};
+
+function normalizeSessionClass(sessionClass: string): string {
+  return LEGACY_SESSION_CLASS_ALIASES[sessionClass] ?? sessionClass;
+}
+
 export type ColdBootDrillLedgerKind =
   | 'carry-drill-requested'
   | 'carry-drill-queued'
@@ -387,7 +410,10 @@ function reportFromLedger(events: readonly ColdBootDrillLedgerEvent[]): CarrySuf
   const samples = new Map<string, DrillSample>();
   for (const event of events) {
     if (event.kind !== 'carry-drill-graded' || !Array.isArray(event.lookups)) continue;
-    samples.set(event.drillId, { sessionClass: event.sessionClass, lookups: event.lookups });
+    samples.set(event.drillId, {
+      sessionClass: normalizeSessionClass(event.sessionClass),
+      lookups: event.lookups,
+    });
   }
   return gradeColdBootDrills([...samples.values()], DEFAULT_SUFFICIENCY_PARAMS);
 }

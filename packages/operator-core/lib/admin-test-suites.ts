@@ -579,6 +579,39 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       },
     },
     {
+      id: 'interaction-plan-popup-open',
+      label: 'Plan popup open interaction',
+      run: async () => {
+        // Drive the REAL "open a plan" interaction the owner hit (WI-5547): select
+        // the op-chat sidebar Plans face, click a plan row, and read the
+        // page-relative plan-popup-open measure the in-app perf-marks hooks emit.
+        // Unlike the warm-ROUTE checks above, this asserts an INTERACTION budget —
+        // the detector gap that let the "several seconds to load a plan" regression
+        // ship green.
+        await clearPerfRecorder(ctx);
+        const result = await measureInteraction(ctx, {
+          name: 'plan-popup-open',
+          setup: `const u = new URL(location.href); u.searchParams.set('opcv', 'plans'); history.pushState({}, '', u.pathname + u.search + u.hash); window.dispatchEvent(new PopStateEvent('popstate'));`,
+          triggerSelector: '[data-testid^="plans-pane-row-"]',
+          settleTimeoutMs: 6_000,
+        });
+        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['plan-popup-open'];
+        if (!result.ok) {
+          return fail(
+            `The Plans sidebar popup-open interaction settles within ${budgetMs}ms in the Tauri desktop shell.`,
+            `Could not measure plan-popup-open: ${result.detail}`,
+            ['Open the op-chat sidebar on the Plans face (?opcv=plans) with at least one plan row so the interaction can be driven.'],
+          );
+        }
+        const verdict = evaluateInteractionBudget('plan-popup-open', result.measuredMs);
+        return statusResult(
+          verdict.ok,
+          `The Plans sidebar popup-open interaction settles within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
+          `plan-popup-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+        );
+      },
+    },
+    {
       id: 'chaos-recorder-usability',
       label: 'Chaos recorder usability',
       run: async () => {
