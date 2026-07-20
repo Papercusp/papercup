@@ -94,6 +94,10 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
       cwd: input.cwd,
       ...(agentChatsModel ? { model: agentChatsModel } : {}),
       backend: agentChatsBackend,
+      // gateway-priority-tiers (WI-4542): the ChatPanel stream is user-driven and synchronous — a
+      // human is watching it render — so tag it 'interactive' rather than let it fall to the
+      // untagged default band alongside batch/background traffic.
+      priority: 'interactive',
       signal: ctx.signal,
       ...(mcpConfig
         ? {

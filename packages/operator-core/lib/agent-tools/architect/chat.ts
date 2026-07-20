@@ -102,6 +102,11 @@ async function streamPrompt(
       cwd,
       ...(model ? { model } : {}),
       backend,
+      // gateway-priority-tiers (WI-4542): a human is synchronously waiting on this stream in the
+      // operator UI's architect/brainstorm chat pane — tag it 'interactive' so it rides the
+      // protected tier-1 admission lane instead of silently falling to the untagged default band
+      // (tier 5) alongside batch/background traffic. No-op when the tier flag / gateway are off.
+      priority: 'interactive',
       // Caller-side cancellation: dispatcher's wrapped signal fires on
       // client disconnect / wall-clock timeout / idle timeout. Forward
       // so runAgentChat shuts the subprocess down instead of letting

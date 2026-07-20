@@ -98,6 +98,46 @@ function boolToStatus(ok: boolean): StepStatus {
   return ok ? 'ok' : 'needs-attention';
 }
 
+export interface ModelEgressStatus {
+  /** INFERENCE_GATEWAY is on for this install — irrelevant (throttled always false)
+   *  when off, since a direct-egress session isn't gateway-account-gated at all. */
+  enabled: boolean;
+  /** The gateway is reachable but every routable account is paused/rate-limited right
+   *  now (WI-3186) — a real model call would 429 even though `logins`/`agents` read
+   *  'ok' (they only prove a CLI is signed in, not that egress currently has budget).
+   *  A single-account packaged install (the common Mac case) has no failover, so this
+   *  is the state a fresh install commonly lands in after burning its window. */
+  throttled: boolean;
+  /** Seconds until the throttled window is expected to reset, when known. */
+  retryAfterSec: number | null;
+}
+
+/**
+ * WI-3186: the `logins`/`agents` steps only prove a CLI is signed in — they say nothing
+ * about whether a real model call can go through RIGHT NOW. On a packaged single-account
+ * install (no pool failover) that account's window commonly exhausts, and the only signal
+ * used to be a raw `{gateway:true, error:{type:'rate_limit_error'}}` 429 body surfacing
+ * wherever the first LLM call happened to fire — never surfaced in setup/onboarding as an
+ * actionable, expected state. Reuses the SAME wholesale-throttle predicate the spawn
+ * classifier trusts (`isWholesaleThrottled` / `gatewayWholesaleThrottled`, P-006/H13)
+ * instead of inventing a second detector. Fail-soft: any probe error reads as
+ * `{ enabled: false, throttled: false, retryAfterSec: null }` (never blocks setup-status).
+ */
+async function probeModelEgress(): Promise<ModelEgressStatus> {
+  const notThrottled: ModelEgressStatus = { enabled: false, throttled: false, retryAfterSec: null };
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return notThrottled;
+    const { fetchGatewayHeadroom, isWholesaleThrottled } = await import('../../../inference-gateway/observability');
+    const h = await fetchGatewayHeadroom({ timeoutMs: 1500 });
+    if (h.reachable !== true) return { ...notThrottled, enabled: true };
+    return { enabled: true, throttled: isWholesaleThrottled(h), retryAfterSec: h.resetInSec ?? null };
+  } catch {
+    return notThrottled;
+  }
+}
+
 /**
  * Gather every Setup-Wizard step status + the agent-runtime breakdown — the
  * ONE detection read, shared by the GET route below and the `setup:status`
@@ -117,6 +157,7 @@ export async function collectSetupStatus() {
     devices,
     backupSettings,
     gitOk,
+    modelEgress,
   ] = await Promise.all([
     safe(probePostgres(), false),
     safe(detectClaude(), false),
@@ -134,6 +175,7 @@ export async function collectSetupStatus() {
     safe(listDevices(ws), [] as Awaited<ReturnType<typeof listDevices>>),
     safe(workspaceBackupFor(ws).getSettings(), null as Awaited<ReturnType<ReturnType<typeof workspaceBackupFor>['getSettings']>> | null),
     safe(gitIdentityConfigured(), false),
+    probeModelEgress(),
   ]);
 
   // os-permissions: Linux/Windows aren't install-gated → 'ok'. macOS

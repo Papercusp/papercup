@@ -108,6 +108,10 @@ async function oracleHandler(input: Args, ctx: ChatCtx) {
       allowedTools: [...ORACLE_ALLOWED_TOOLS],
       toolEventFilter: oracleToolEventFilter,
       permissionMode: 'bypassPermissions',
+      // gateway-priority-tiers (WI-4542): the Oracle dock is a synchronous human-waiting chat
+      // stream (OracleDock.tsx) — tag it 'interactive' so it rides the protected tier-1 admission
+      // lane instead of falling to the untagged default band with batch/background traffic.
+      priority: 'interactive',
       signal: ctx.signal,
     })) {
       if (ev.type === 'delta') {

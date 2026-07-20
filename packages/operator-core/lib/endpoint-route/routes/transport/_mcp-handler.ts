@@ -2177,48 +2177,7 @@ const handler = createMcpHandler(
         const builtin = getCatalog().find((t) => t.name === toolName);
         if (builtin) {
           const bearer = bearerFromExtra(extra);
-          // WI-4760: this branch used to `await dispatch(...)` completely
-          // unbounded — unlike the projected path above (P2-5, line ~2151),
-          // it had NO per-call deadline at all, so a wedged nested call inside
-          // ANY builtin tool's handler (a hung DB query, a stuck subprocess, a
-          // blocked fetch) held the whole MCP request — and the calling
-          // agent's turn — open indefinitely while the rest of the operator
-          // stayed fully responsive (confirmed 2026-07-13: direct systemd +
-          // checkpoint-log reads returned <1s during an >80s hang on this
-          // exact path). Race it against the same effective deadline the
-          // projected path uses so a hang here surfaces as a clean, attributed
-          // timeout instead of a silent multi-minute stall.
-          // Legacy (principal-gated) ToolDefinition has no per-tool `timeoutSec`
-          // (that field only exists on the newer RoleToolDefinition/ProjectedTool
-          // shape) — fall back to the same flat floor the projected path uses
-          // when a tool declares nothing.
-          const legacyDeadlineMs = effectiveMcpDeadlineMs(null);
-          const r = await raceDeadline(
-            legacyDeadlineMs,
-            () => dispatch({ toolName, args, bearer }),
-            () => {
-              // Attribution/telemetry: the legacy path has no idempotent
-              // replay store (unlike the projected path), so log enough to
-              // find + fix the wedge instead of promising a safe retry.
-
-              console.warn(
-                `[mcp-legacy-deadline] tool "${toolName}" exceeded ${legacyDeadlineMs}ms on the legacy ` +
-                  `bearer-only dispatch path (no spawn ctx) — still running server-side; it is NOT ` +
-                  `cancelled and has no idempotent replay here, so investigate the handler for a missing ` +
-                  `timeout/abort on its own I/O (DB query, subprocess, fetch).`,
-              );
-              return {
-                ok: false as const,
-                error: {
-                  code: 'request_timeout',
-                  message:
-                    `tool "${toolName}" exceeded ${legacyDeadlineMs}ms on the legacy dispatch path ` +
-                    `(still running server-side, not cancelled; this path has no idempotency-key replay, ` +
-                    `so re-check current state via the matching *:get/*:list before deciding whether to retry).`,
-                },
-              };
-            },
-          );
+          const r = await dispatchLegacyWithDeadline({ toolName, args, bearer });
           if (!r.ok) {
             return {
               isError: true,
@@ -2508,6 +2467,62 @@ export async function raceDeadline<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * WI-4760: the "legacy bearer-only fallback" branch (a builtin catalog tool
+ * called with a bare bearer + no spawn ctx — e.g. an external MCP client like
+ * Codex hitting the endpoint with just an Authorization header) used to
+ * `await dispatch(...)` completely UNBOUNDED, unlike the projected path above
+ * (P2-5) which already races every call against `effectiveMcpDeadlineMs`. A
+ * wedged nested call inside ANY builtin tool's handler (a hung DB query, a
+ * stuck subprocess, a blocked fetch) held the whole MCP request — and the
+ * calling agent's turn — open indefinitely while the rest of the operator
+ * stayed fully responsive (confirmed 2026-07-13: direct systemd +
+ * checkpoint-log reads returned <1s during an >80s hang on exactly this
+ * path). This races the same call against the same effective deadline the
+ * projected path uses, so a hang here surfaces as a clean, attributed
+ * timeout instead of a silent multi-minute stall — and logs enough to find
+ * the wedged handler instead of just returning a generic error.
+ *
+ * Legacy (principal-gated) `ToolDefinition`s have no per-tool `timeoutSec`
+ * (that field only exists on the newer `RoleToolDefinition`/`ProjectedTool`
+ * shape used by the projected path), so this always falls back to the flat
+ * `baseDeadlineMs` floor — same behavior as a projected tool that declares
+ * nothing. `baseDeadlineMs` defaults to the module's `MCP_DEADLINE_MS` but is
+ * injectable so the timeout branch is unit-testable without waiting out the
+ * real flat deadline.
+ */
+export async function dispatchLegacyWithDeadline(
+  opts: Parameters<typeof dispatch>[0],
+  baseDeadlineMs: number = MCP_DEADLINE_MS,
+): Promise<Awaited<ReturnType<typeof dispatch>>> {
+  const deadlineMs = effectiveMcpDeadlineMs(null, baseDeadlineMs);
+  return raceDeadline(
+    deadlineMs,
+    () => dispatch(opts),
+    () => {
+      // Attribution/telemetry: the legacy path has no idempotent replay
+      // store (unlike the projected path), so log enough to find + fix the
+      // wedge instead of promising a safe retry.
+      console.warn(
+        `[mcp-legacy-deadline] tool "${opts.toolName}" exceeded ${deadlineMs}ms on the legacy ` +
+          `bearer-only dispatch path (no spawn ctx) — still running server-side; it is NOT ` +
+          `cancelled and has no idempotent replay here, so investigate the handler for a missing ` +
+          `timeout/abort on its own I/O (DB query, subprocess, fetch).`,
+      );
+      return {
+        ok: false,
+        error: {
+          code: 'request_timeout',
+          message:
+            `tool "${opts.toolName}" exceeded ${deadlineMs}ms on the legacy dispatch path ` +
+            `(still running server-side, not cancelled; this path has no idempotency-key replay, ` +
+            `so re-check current state via the matching *:get/*:list before deciding whether to retry).`,
+        },
+      };
+    },
+  );
 }
 
 export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KEEPALIVE_MS): Response {

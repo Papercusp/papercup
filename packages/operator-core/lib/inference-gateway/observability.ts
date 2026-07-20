@@ -122,13 +122,32 @@ export async function fetchGatewayHeadroom(
 }
 
 /**
- * Best-effort predicate: is the inference gateway WHOLESALE-throttled right now — the
- * bound account paused, or its unified window hard-rejected (the all-accounts 429
- * storm / no-fresh-account state)? Used to tell a CAPACITY-SHED mid-turn spawn death
- * (a transient capacity event — RETRYABLE) from a real launcher-host loss (terminal):
- * a spawn whose 1st gateway call succeeded then exits-1 when its 2nd call hits the
- * all-accounts storm was being mislabeled `infra_loss` / "host dead/unstable", sending
- * debuggers hunting a phantom host bug (spawn-classification audit P-006/H13;
+ * Pure predicate: does an ALREADY-FETCHED headroom read show the gateway
+ * WHOLESALE-throttled — the bound account paused, or its unified window hard-rejected
+ * (the all-accounts 429 storm / no-fresh-account state), with no priority-tier capacity
+ * to fall back on? Factored out of `gatewayWholesaleThrottled` (WI-3186) so a caller that
+ * already called `fetchGatewayHeadroom` for another reason (e.g. the desktop setup-status
+ * probe) can reuse the SAME decision without a second `/stats` round-trip. Returns false
+ * when the read isn't reachable — the conservative answer, matching `gatewayWholesaleThrottled`.
+ */
+export function isWholesaleThrottled(h: GatewayHeadroom): boolean {
+  if (h.reachable !== true) return false;
+  if (h.priorityTiers) {
+    const serviceable =
+      h.priorityTiers.healthyAccounts > 0 &&
+      h.priorityTiers.tiers.some((t) => t.cap === null || t.cap > t.inFlight + t.queued);
+    if (serviceable) return false;
+  }
+  return h.paused === true || h.rejected === true;
+}
+
+/**
+ * Best-effort predicate: is the inference gateway WHOLESALE-throttled right now — see
+ * {@link isWholesaleThrottled} for the decision itself. Used to tell a CAPACITY-SHED
+ * mid-turn spawn death (a transient capacity event — RETRYABLE) from a real launcher-host
+ * loss (terminal): a spawn whose 1st gateway call succeeded then exits-1 when its 2nd call
+ * hits the all-accounts storm was being mislabeled `infra_loss` / "host dead/unstable",
+ * sending debuggers hunting a phantom host bug (spawn-classification audit P-006/H13;
  * agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5).
  *
  * Never throws (delegates to fetchGatewayHeadroom, which swallows transport errors) and
@@ -147,14 +166,7 @@ export async function gatewayWholesaleThrottled(
   // logic, so that path still runs. Production (VITEST unset) is unchanged.
   if (process.env.VITEST && !opts.fetchImpl) return false;
   const h = await fetchGatewayHeadroom({ timeoutMs: 800, ...opts });
-  if (h.reachable !== true) return false;
-  if (h.priorityTiers) {
-    const serviceable =
-      h.priorityTiers.healthyAccounts > 0 &&
-      h.priorityTiers.tiers.some((t) => t.cap === null || t.cap > t.inFlight + t.queued);
-    if (serviceable) return false;
-  }
-  return h.paused === true || h.rejected === true;
+  return isWholesaleThrottled(h);
 }
 
 /**

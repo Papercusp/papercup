@@ -526,6 +526,10 @@ const docsQa = defineTool({
             signal: ac.signal,
           };
         }
+        // gateway-priority-tiers (WI-4542): docs-qa is a synchronous human-waiting stream (the
+        // tutorial's "Ask a question" / Ctrl+/ search palette) — tag it 'interactive' so it rides
+        // the protected tier-1 admission lane instead of the untagged default band, on EITHER path.
+        runOpts.priority = 'interactive';
 
         const citedSlugs = new Set<string>();
         let answerText = '';
