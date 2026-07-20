@@ -53,6 +53,7 @@ import { spawnGymOperatorWithRetry } from './operator-ready';
 import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
 import { gatewayLlmEnv, gatewayPort, resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { activeWorkspaceId } from '../workspace-registry';
+import { resolveGymAccountWorkspace } from './account-workspace';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
@@ -242,10 +243,7 @@ export async function runOneAutoloopCycle(
     // against the operator's CREDENTIAL workspace instead: an explicit override, else the
     // process pin, else the operator's active workspace (papercusp-workspace in the
     // routine host, where the pool lives). Everything else still scopes to WS.
-    const accountRoutingWs =
-      process.env.GYM_LOOP_ACCOUNT_WORKSPACE?.trim() ||
-      process.env.PAPERCUSP_WORKSPACE_ID?.trim() ||
-      activeWorkspaceId();
+    const accountRoutingWs = resolveGymAccountWorkspace(process.env, activeWorkspaceId);
     try {
       gymSpawnGatewayEnv = await resolveSpawnGatewayEnv({
         workspaceId: accountRoutingWs,
