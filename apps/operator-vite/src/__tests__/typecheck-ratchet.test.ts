@@ -54,7 +54,25 @@ const APP_ROOT = resolve(__dirname, '../..');
  * the honest measured number from a run that parsed 107 real error lines (not a
  * WI-4721-style empty/crashed run) and left src/** at zero.
  */
-const FOREIGN_ERROR_WATERMARK = 107;
+/*
+ * 2026-07-20 (EI-18140228761358124): 107 → 84 (redded to 108 first). Root
+ * cause: React 19's @types/react moved the JSX namespace under React.JSX
+ * (`namespace JSX { ... }` now nests inside `declare namespace React { ... }`,
+ * exported globally via `export as namespace React`) — so the bare global
+ * `JSX` namespace no longer exists. 24 foreign files across apps/operator
+ * still annotated component return types as bare `JSX.Element`, which
+ * resolved fine under Next's own ambient JSX augmentation but not under this
+ * app's plain tsc run — TS2503 "Cannot find namespace 'JSX'" x24 (9 in
+ * operator-mock/page.tsx, 6 in settings/omp/page.tsx, 4 in
+ * settings/plugins/tools/page.tsx, 1 each in settings/voice/page.tsx,
+ * AriaLiveRegions.tsx, IpcTab.tsx, TerminalTab.tsx, swarm-logos/page.tsx).
+ * Fixed by rewriting every occurrence to `React.JSX.Element` (the pattern
+ * already used elsewhere in the repo, e.g. SessionsRosterContext.tsx) — no
+ * new import needed since `React` is a global ambient namespace. Lowered to
+ * the honest measured number from a run that parsed 84 real error lines and
+ * left src/** at zero.
+ */
+const FOREIGN_ERROR_WATERMARK = 84;
 
 interface TscError {
   file: string;

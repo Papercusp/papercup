@@ -15,6 +15,8 @@ import {
   PAYLOAD_BUDGET_BYTES,
   LATENCY_BUDGET_MS,
   queryRequiresArgs,
+  resolveFixture,
+  buildLiveFixtureMap,
   evaluateBudget,
   measureSyncReadPayloadsViaRest,
 } from './sync-read-audit';
@@ -26,19 +28,32 @@ describe('sync-read audit — registry coverage guard (P-008)', () => {
     expect(names.length).toBeGreaterThan(100);
   });
 
-  it('EVERY arg-requiring query has a fixtures entry (extend SYNC_QUERY_FIXTURES, do not work around)', () => {
+  it('EVERY arg-requiring query resolves to a fixture (default args OR an explicit entry)', () => {
     const missing: string[] = [];
     for (const name of names) {
       const entry = getRegistryEntryV2(name) as { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined;
       if (!queryRequiresArgs(entry)) continue; // resolves with {} → no fixture needed
-      if (!Object.prototype.hasOwnProperty.call(SYNC_QUERY_FIXTURES, name)) missing.push(name);
+      const r = resolveFixture(name, entry);
+      if ('needsExplicit' in r) missing.push(name);
     }
     expect(
       missing,
-      `These arg-REQUIRING sync queries have no fixture — the audit cannot measure them.\n` +
-        `Add representative args to SYNC_QUERY_FIXTURES in sync-read-audit.ts (or null if it needs a\n` +
-        `per-run id that has no stable fixture):\n  ${missing.join('\n  ')}`,
+      `These arg-REQUIRING sync queries have no usable fixture (DEFAULT_HARNESS_ARGS does not satisfy\n` +
+        `their argsSchema). Add a representative-args (or null) entry to SYNC_QUERY_FIXTURES in\n` +
+        `sync-read-audit.ts — do not work around the guard:\n  ${missing.join('\n  ')}`,
     ).toEqual([]);
+  });
+
+  it('every EXPLICIT non-null fixture actually satisfies its query argsSchema', () => {
+    const bad: string[] = [];
+    for (const [name, fixture] of Object.entries(SYNC_QUERY_FIXTURES)) {
+      if (fixture === null) continue;
+      const entry = getRegistryEntryV2(name) as { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined;
+      const schema = entry?.argsSchema;
+      // A query with no argsSchema accepts anything; only validate when one exists.
+      if (schema?.safeParse && schema.safeParse(fixture).success === false) bad.push(name);
+    }
+    expect(bad, `explicit fixtures that do NOT parse against their argsSchema: ${bad.join(', ')}`).toEqual([]);
   });
 
   it('no fixture entry names an UNREGISTERED query (fixtures cannot drift ahead of the registry)', () => {
@@ -98,7 +113,12 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     const report = await measureSyncReadPayloadsViaRest({
       baseUrl: 'http://x',
       token: 't',
-      queryNames: ['featuresConsolidated.bySlug', 'agentRunsConsolidated.bySlug', 'workItems.stats', 'workItems.detail'],
+      fixtures: {
+        'featuresConsolidated.bySlug': { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+        'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
+        'workItems.stats': { harnessSlug: 'papercusp' },
+        'workItems.detail': null, // skipped, never fetched
+      },
       fetchImpl: fakeFetch,
     });
 
@@ -120,10 +140,24 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     const report = await measureSyncReadPayloadsViaRest({
       baseUrl: 'http://x',
       token: 't',
-      queryNames: ['workItems.stats'],
+      fixtures: { 'workItems.stats': { harnessSlug: 'papercusp' } },
       fetchImpl: fakeFetch,
     });
     expect(report.measured[0].error).toBe('HTTP 500');
     expect(report.violations).toEqual([]);
+  });
+
+  it('buildLiveFixtureMap resolves the whole registry with no unresolved arg-requiring query', () => {
+    const names = knownQueryNamesV2();
+    const map = buildLiveFixtureMap(names, (n) => getRegistryEntryV2(n) as never);
+    // Every arg-requiring query is either present (default/explicit) or an
+    // explicit null — never silently absent.
+    for (const name of names) {
+      const entry = getRegistryEntryV2(name) as { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined;
+      if (!queryRequiresArgs(entry)) continue;
+      expect(Object.prototype.hasOwnProperty.call(map, name), `${name} unresolved in the live map`).toBe(true);
+    }
+    // A no-arg query resolves to {}; a null-fixtured one stays null.
+    expect(map['workItems.detail']).toBeNull();
   });
 });

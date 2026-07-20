@@ -17,6 +17,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 
 import type { CSSProperties, ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Command as CmdK } from 'cmdk';
+import { endInteraction, PERF_INTERACTIONS } from './perf/perf-marks';
 import { useLexicon } from '../../lib/useLexicon';
 
 export interface Command {
@@ -58,6 +59,18 @@ export default function CommandPalette({
   // visibility:hidden override clear before we focus; Firefox refuses
   // to move focus to an element that's still computed-hidden.
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Perf-marks (P-006): end the command-palette-open interaction on first mount.
+  // GlobalCommandPalette lazy-mounts this component only on the first open, so a
+  // mount-once effect closes the measure that its open-transition effect began —
+  // the span covers the dynamic cmdk+Radix chunk import + first render. No-op
+  // unless a matching beginInteraction ran (measure-once guard), so it never
+  // emits a stray measure.
+  useEffect(() => {
+    endInteraction(PERF_INTERACTIONS.commandPaletteOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     const raf = requestAnimationFrame(() => {

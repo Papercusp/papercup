@@ -280,6 +280,38 @@ class OperatorSession implements ChatSession {
       if (observed && !result.cards.some(alreadyHave)) {
         result.cards.push(observed);
       }
+
+      // WI-5613: op-S10-ask-choice (and any scenario exercising a blocking
+      // human-in-the-loop tool) was false-failing whenever the PRIMARY
+      // stream got severed by an infra event unrelated to the SUT — most
+      // commonly another fleet agent restarting :3170 mid-turn while
+      // ctx.askUser legitimately blocks for up to 10 minutes waiting on a
+      // click nobody in this unattended harness will ever send. The read
+      // loop above then throws (fetch/SSE reset → 'terminated' or similar)
+      // and sets finishReason='error', which runner.ts's
+      // `inconclusiveReason` unconditionally turns into the whole run
+      // being `errored` — even though harness_shared.tool_invocations (and
+      // this very cardWatcher) prove the SUT already did exactly what the
+      // scenario expects.
+      //
+      // Once we've actually OBSERVED the card the assert is waiting for
+      // (via the separate, workspace-wide state-snapshot channel — a
+      // channel that only reflects a card the SUT genuinely emitted), the
+      // interesting part of the turn already happened: the rest of the
+      // primary stream is just riding out an indefinite block that was
+      // always going to end in a timeout, never a real answer. So the
+      // disconnect at that point is evidence of infra churn, not a SUT
+      // failure — downgrade back to 'done' so asserts (card_emitted, etc.)
+      // evaluate normally instead of the run being marked inconclusive.
+      //
+      // A disconnect BEFORE any card ever arrives (observed === null, and
+      // no card already in result.cards from the primary stream itself)
+      // still errors the turn exactly as before — this only recovers the
+      // specific case the evidence trail (WI-5613) diagnosed.
+      if (result.finishReason === 'error' && (observed || result.cards.length > 0)) {
+        result.recoveredFromDisconnectAfterCard = true;
+        result.finishReason = 'done';
+      }
     }
 
     result.latencyMs = Date.now() - startMs;

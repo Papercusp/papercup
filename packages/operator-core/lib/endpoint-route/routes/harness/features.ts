@@ -224,10 +224,13 @@ const resetFeature = defineTool({
     ).get(project.slug, id) as any;
     if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
     await dbc.transaction(async (tx: any) => {
+      // work-item-status-full-unify P-007: reset re-queues to the UNIFIED claimable token
+      // 'open' (was 'todo') — this raw write bypasses setWorkItemState's alias-fold, so a
+      // literal 'todo' here reintroduced the legacy spelling the backfill removed.
       await tx.prepare(
         'UPDATE harness_features SET status = ?, attempts = ?, updated_ts = ? WHERE harness_slug = ? AND feature_id = ?',
-      ).run('todo', 0, Date.now(), project.slug, id);
-      auditFeatureChange(project.slug, id, 'status', existing.status, 'todo', 'api:reset');
+      ).run('open', 0, Date.now(), project.slug, id);
+      auditFeatureChange(project.slug, id, 'status', existing.status, 'open', 'api:reset');
       auditFeatureChange(project.slug, id, 'attempts', existing.attempts, 0, 'api:reset');
     });
     const feat = rowToFeature(
@@ -388,9 +391,10 @@ const updateFeature = defineTool({
           const wi = await wiMod.getWorkItem(id, project.slug);
           if (!wi) return;
           const m = await import('../../../work-items-events');
-          // wi.state is already the unified success terminal (`done`) as just written; emit
-          // the settled events on the item's real state rather than forcing the legacy `passed`.
-          await m.emitWorkItemSettledEvents(wi);
+          // Force the unified success terminal `done` (was the legacy `passed`) so the settled
+          // events fire even if the consolidated read hasn't projected the write yet — `done` is
+          // in SETTLED_STATES.feature (frontier-readiness.TERMINAL_STATUSES).
+          await m.emitWorkItemSettledEvents({ ...wi, state: 'done' });
         })
         .catch(() => {});
     }
@@ -564,7 +568,7 @@ const importFeatures = defineTool({
               status = ?,
               updated_ts = ?
             WHERE harness_slug = ? AND feature_id = ?
-          `).run(f.title, f.summary ?? null, f.status ?? 'todo', now, project.slug, f.id);
+          `).run(f.title, f.summary ?? null, f.status ?? 'open', now, project.slug, f.id);
           updated++;
         } else {
           await tx.prepare(`
@@ -574,7 +578,7 @@ const importFeatures = defineTool({
                ts, created_ts, updated_ts)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
-            project.slug, f.id, f.title, f.summary ?? null, f.status ?? 'todo',
+            project.slug, f.id, f.title, f.summary ?? null, f.status ?? 'open',
             f.attempts ?? 0,
             f.claims && f.claims.length > 0 ? JSON.stringify(f.claims) : null,
             f.notes ?? null,
@@ -756,7 +760,7 @@ const createFeature = defineTool({
     // WI-195 C2: validate/normalize the caller-supplied feature status (typo guard,
     // mirroring the engine + PATCH path). The out_of_budget branch above returns
     // before this, so its internal status write is unaffected.
-    const statusNorm = normalizeFeatureStateInput(body.status || 'todo');
+    const statusNorm = normalizeFeatureStateInput(body.status || 'open');
     if (!statusNorm.ok) {
       return Response.json({ error: `invalid status '${body.status}' — valid: ${statusNorm.valid.join(', ')}` }, { status: 400 });
     }

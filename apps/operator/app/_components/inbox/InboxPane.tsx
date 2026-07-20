@@ -38,6 +38,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { beginInteraction, endInteraction, PERF_INTERACTIONS } from '../perf/perf-marks';
 import {
   useQueryState,
   useQueryStates,
@@ -197,6 +198,9 @@ export default function InboxPane({ onDiscussInChat }: {
 
   const toggleKind = useCallback(
     (kind: string) => {
+      // Perf-marks (P-006): a facet toggle re-scopes the virtualized list; the
+      // matching endInteraction fires after `visible` recomputes + re-renders.
+      beginInteraction(PERF_INTERACTIONS.inboxListSettle);
       const next = new Set(selectedKinds);
       if (next.has(kind)) next.delete(kind);
       else next.add(kind);
@@ -265,6 +269,15 @@ export default function InboxPane({ onDiscussInChat }: {
       .map((x) => x.item);
   }, [scoped, filter, selectedKinds, q]);
 
+  // Perf-marks (P-006): end the inbox-list-settle interaction after the scoped
+  // list recomputes + re-renders. `visible` changes on every filter/facet/search
+  // change AND on data refresh, but endInteraction is a no-op unless a matching
+  // beginInteraction (a filter/facet click) ran — so only a user-driven re-scope
+  // produces a measure; a background refresh emits nothing.
+  useEffect(() => {
+    endInteraction(PERF_INTERACTIONS.inboxListSettle);
+  }, [visible]);
+
   // Virtualize the row list (WI-5339): even scoped, the inbox can hold many rows.
   const rowVirtualizer = useVirtualizer({
     count: visible.length,
@@ -298,7 +311,7 @@ export default function InboxPane({ onDiscussInChat }: {
             className={`op-inbox__chip${filter === f ? ' is-active' : ''}`}
             aria-pressed={filter === f}
             data-testid={`inbox-filter-${f}`}
-            onClick={() => void setFilter(f)}
+            onClick={() => { beginInteraction(PERF_INTERACTIONS.inboxListSettle); void setFilter(f); }}
           >
             {FILTER_LABEL[f]}
             <span className="op-inbox__chip-count">{counts[f]}</span>

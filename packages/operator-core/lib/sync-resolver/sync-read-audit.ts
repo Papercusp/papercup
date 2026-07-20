@@ -72,6 +72,16 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
   'agentRunsConsolidated.recent': { harnessSlug: 'papercusp' },
   'featuresConsolidated.byPlanSlug': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
+  // pot/hive-scoped (potHomeSlug / potSlug, not harnessSlug)
+  'featuresConsolidated.byHive': { potHomeSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+  'plans.byHive': { potHomeSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+  'hive.overrides': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+  'hiveRoster.byHive': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+  'insights.tokens': { harness: 'papercusp' }, // `harness`, not `harnessSlug`
+  'planSessions.list': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
+  'plans.runHistory': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
+  'plans.scheduledOccurrences': { rangeStartMs: 0, rangeEndMs: 9_999_999_999_999 },
+  'p2p.grants': { potSlug: 'papercusp' },
 
   // ── needs a per-run id → skipped by the live audit (null) ──
   'workItems.detail': null, // a specific work-item id
@@ -102,6 +112,16 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'projectSpecRevisions.byProject': null,
   'snapshotsConsolidated.bySlug': null,
   'userActions.byKind': null,
+  // needs a specific id / key / coordinate with no stable representative value
+  'hive.beaconConsent': null, // a specific potId
+  'network.hive.beacons': null, // a federation hiveKey (device pubkey)
+  'network.hive.wakes': null, // a federation hive key
+  'rubrics.trend': null, // a specific rubricRef
+  'scorecards.list': null, // a specific rubricRef
+  'sidebar.cupMail': null, // a specific owner id
+  'userMemory.feedbackStats': null, // a specific userId
+  'userMemory.list': null, // a specific userId
+  'weather.current': null, // lat/lon — an external fetch, not a DB sync-read payload
 };
 
 /** An accepted over-budget read: WHY it is allowed + WHEN to re-review. A bounded

@@ -732,6 +732,10 @@ import './git_sync/run';
 // WI-1555 — the owner ratify surface for the multi-owner integration-requests queue
 // (lib/sync/pot-git/integration-requests.ts had no exposed verb until this tool).
 import './pot_git/integration_requests';
+// WI-5591 — no-restart operator/agent lever for the own-head publish guard's
+// runtime secrets-scanner path exemptions (the FIXTURE_FILES-editing +
+// bg-host-restart wedge remedy, made data-driven).
+import './pot_git/secrets_exemptions';
 // schedule-inventory-and-ephemeral-tier-2026-06-26 P-002 — central read-only inventory of every cadence:
 import './schedule/inventory';
 // live-configurability-audit-2026-06-20 P-020 — runtime dispatch telemetry-buffer sizing:
