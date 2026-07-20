@@ -6,7 +6,7 @@
 // (usePlanList / useInboxAttention / useSyncQuery roster / useWorkspaceId) and
 // the heavy PlanPopupModal (→ PlanDetail) are mocked; nuqs is a seeded store.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
 
 // jsdom has no layout, so the real @tanstack/react-virtual renders zero rows
@@ -74,6 +74,11 @@ vi.mock('./PlanPopupModal', () => ({
   default: ({ planSlug }: { planSlug: string | null }) =>
     planSlug ? <div data-testid="popup-open">{planSlug}</div> : null,
 }));
+// WI-5547: PlansPane warms the Vditor/Lute stack on idle after mount so the
+// first plan popup opens WARM (~430ms) instead of paying the ~600ms cold WASM
+// init on the click. Spy on the preload so this wiring cannot silently regress.
+const { preloadVditorSpy } = vi.hoisted(() => ({ preloadVditorSpy: vi.fn(() => Promise.resolve()) }));
+vi.mock('@/app/_components/MarkdownEditor', () => ({ preloadVditor: preloadVditorSpy }));
 
 import PlansPane from './PlansPane';
 

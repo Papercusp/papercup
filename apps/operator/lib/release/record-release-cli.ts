@@ -43,6 +43,26 @@ import {
   type ReleaseRow,
   type Scope,
 } from './release-registry';
+import {
+  REQUIRED_DESKTOP_PLATFORMS,
+  REQUIRED_DESKTOP_PRODUCTS,
+  computeReleaseCompleteness,
+  type RequiredDesktopProduct,
+  type RequiredDesktopPlatform,
+  type MissingArtifactSlot,
+} from './release-completeness';
+// Re-exported for back-compat: callers (record-release-cli.test.ts, page renderer)
+// import the completeness matrix from here. The definitions now live in the pure,
+// dependency-free release-completeness.ts so preflight-build-set.ts can reuse the
+// matrix without this CLI's fs/os/postgres surface.
+export {
+  REQUIRED_DESKTOP_PLATFORMS,
+  REQUIRED_DESKTOP_PRODUCTS,
+  computeReleaseCompleteness,
+  type RequiredDesktopProduct,
+  type RequiredDesktopPlatform,
+  type MissingArtifactSlot,
+};
 import { generateChangelog } from './changelog-generate';
 import {
   planPagePath,
@@ -97,49 +117,6 @@ export function classifyArtifact(name: string): Pick<ReleaseArtifact, 'product' 
   if (/\.(dmg)$/.test(name) || /\.app\.tar\.gz$/.test(name)) return { product, platform: 'darwin-universal' };
   if (/\.(exe|msi)$/.test(name)) return { product, platform: 'windows-x86_64' };
   return null;
-}
-
-/**
- * The desktop artifact matrix a COMPLETE release is expected to carry: every
- * desktop PRODUCT on every desktop PLATFORM. This is the single source of truth
- * for the completeness alert (WI-5515 / owner directive 2026-07-19).
- *
- * Mobile is deliberately EXCLUDED — a desktop cut with no phone build is legal and
- * is reported on its own line, never as a "missing" desktop artifact. `server` IS
- * included: the old check here covered only `gui`, so a version that shipped a
- * linux Server but no mac/windows Server passed as "complete" silently — the exact
- * gap this catches.
- */
-export const REQUIRED_DESKTOP_PLATFORMS = [
-  'linux-x86_64',
-  'darwin-universal',
-  'windows-x86_64',
-] as const;
-export const REQUIRED_DESKTOP_PRODUCTS = ['gui', 'server'] as const;
-export type RequiredDesktopProduct = (typeof REQUIRED_DESKTOP_PRODUCTS)[number];
-export type RequiredDesktopPlatform = (typeof REQUIRED_DESKTOP_PLATFORMS)[number];
-
-export interface MissingArtifactSlot {
-  product: RequiredDesktopProduct;
-  platform: RequiredDesktopPlatform;
-}
-
-/**
- * Which (product × platform) desktop slots a release's artifacts do NOT cover.
- * PURE (takes just the classified artifacts) so it is trivially unit-testable and
- * reusable by the page renderer. Mobile artifacts are ignored — never required.
- */
-export function computeReleaseCompleteness(
-  artifacts: Pick<ReleaseArtifact, 'product' | 'platform'>[],
-): { missing: MissingArtifactSlot[]; complete: boolean } {
-  const have = new Set(artifacts.map((a) => `${a.product}:${a.platform}`));
-  const missing: MissingArtifactSlot[] = [];
-  for (const product of REQUIRED_DESKTOP_PRODUCTS) {
-    for (const platform of REQUIRED_DESKTOP_PLATFORMS) {
-      if (!have.has(`${product}:${platform}`)) missing.push({ product, platform });
-    }
-  }
-  return { missing, complete: missing.length === 0 };
 }
 
 const PLATFORM_LABEL: Record<string, string> = {

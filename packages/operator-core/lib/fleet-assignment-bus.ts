@@ -20,6 +20,7 @@
  * it (never a browser/Vite chunk).
  */
 import postgres from "postgres";
+import { longLivedPoolConnectionOptions } from "@papercusp/db-org";
 import { getHarnessAdminUrl } from "./embedded-pg-discovery";
 import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
@@ -102,7 +103,7 @@ async function ensureStarted(): Promise<void> {
       hubUnsub = await hubListen("fleet_assignment", onNotify);
     } else {
       listenerSql = postgres(getHarnessAdminUrl(), {
-        onnotice: () => {},
+        ...longLivedPoolConnectionOptions("fleet-assignment-bus"),
         max: 1,
       });
       await listenerSql.listen("fleet_assignment", onNotify);
