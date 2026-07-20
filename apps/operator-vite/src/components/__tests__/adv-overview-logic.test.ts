@@ -405,3 +405,65 @@ describe('deriveDeployTile', () => {
     expect(m.refs[2].tag).toBeNull();
   });
 });
+
+// ─── deriveSpendTile (overview-tab-expansion-2026-07-20 P-003) ──────────────
+describe('deriveSpendTile', () => {
+  const acct = (over: Partial<OverviewAccountRow> & { id: string }): OverviewAccountRow => ({
+    label: undefined,
+    provider: 'anthropic',
+    available: true,
+    usageWalled: false,
+    edgeThrottled: false,
+    rate: { pausedUntil: 0 },
+    ...over,
+  });
+
+  it('null with neither spend nor accounts; headline "—" with accounts only', () => {
+    expect(deriveSpendTile(undefined, [], NOW)).toBeNull();
+    expect(deriveSpendTile(undefined, [acct({ id: 'a' })], NOW)!.headline).toBe('—');
+  });
+
+  it('formats the 1h/24h headline with the compact-spend rules', () => {
+    const m = deriveSpendTile(
+      { h1: { spendUsd: 0.0042, calls: 3 }, h24: { spendUsd: 18.4, calls: 900 } },
+      [],
+      NOW,
+    )!;
+    expect(m.headline).toBe('$0.0042 1h · $18.40 24h');
+    expect(m.rows).toEqual([]);
+  });
+
+  it('sorts accounts most-burned first, unknown utilization last; counts unavailable', () => {
+    const m = deriveSpendTile(
+      { h1: { spendUsd: 1, calls: 1 }, h24: { spendUsd: 2, calls: 2 } },
+      [
+        acct({ id: 'cold' }), // no utilization observed yet
+        acct({ id: 'hot', rate: { pausedUntil: 0, utilization: 0.95 } }),
+        acct({ id: 'warm', available: false, usageWalled: true, rate: { pausedUntil: 0, utilization: 0.5 } }),
+      ],
+      NOW,
+    )!;
+    expect(m.rows.map((r) => r.id)).toEqual(['hot', 'warm', 'cold']);
+    expect(m.rows[2].utilPct).toBeNull();
+    expect(m.unavailable).toBe(1);
+  });
+
+  it('state precedence: walled > edge > paused > ok', () => {
+    const rows = deriveSpendTile(
+      { h1: { spendUsd: 0, calls: 0 }, h24: { spendUsd: 0, calls: 0 } },
+      [
+        acct({ id: 'w', usageWalled: true, edgeThrottled: true, rate: { pausedUntil: NOW + 60_000, utilization: 0.9 } }),
+        acct({ id: 'e', edgeThrottled: true, rate: { pausedUntil: NOW + 60_000, utilization: 0.8 } }),
+        acct({ id: 'p', rate: { pausedUntil: NOW + 60_000, utilization: 0.7 } }),
+        acct({ id: 'o', rate: { pausedUntil: NOW - 60_000, utilization: 0.6 } }),
+      ],
+      NOW,
+    )!.rows;
+    expect(rows.map((r) => r.state)).toEqual(['walled', 'edge', 'paused', 'ok']);
+  });
+
+  it('falls back to the account id when no label is set', () => {
+    const m = deriveSpendTile(undefined, [acct({ id: 'acct-9' })], NOW)!;
+    expect(m.rows[0].label).toBe('acct-9');
+  });
+});

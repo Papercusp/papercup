@@ -2105,7 +2105,9 @@ export async function collectStalledFeatureSignals(
       FROM harness_shared.work_items w
      WHERE w.workspace_id = ${workspaceId}
        AND w.item_kind = 'feature'
-       AND w.status IN ('todo', 'failing', 'pending', 'failed')
+       -- work-item-status-full-unify P-007: the unified claimable token 'open' joins the
+       -- stalled-detector set (feature `todo`/`failing`→`open`); legacy spellings kept tolerant.
+       AND w.status IN ('open', 'todo', 'failing', 'pending', 'failed')
        AND w.updated_ts < (extract(epoch from now()) * 1000 - ${staleHours} * 3600000)
        AND w.taken_by IS NULL
        AND (

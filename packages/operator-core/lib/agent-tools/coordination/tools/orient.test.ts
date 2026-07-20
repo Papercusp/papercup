@@ -94,7 +94,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls[0].args).toMatchObject({ agent: 'me', harness: 'h' });
     // EI-7841: claimable is self-select context — must ask work_items:list to
     // exclude G2-admission-gated items so "claimable" matches what claim will do.
-    expect(calls[1].args).toMatchObject({ harness: 'h', state: 'todo', limit: 20, admissibleOnly: true });
+    // D-002/EI-11300: 'open' is the unified claimable token (feature 'todo' retired) —
+    // composeOrient's own default (orient.ts line ~518) moved to 'open'; this assertion
+    // was stale (last updated for the old default), not a regression in production code.
+    expect(calls[1].args).toMatchObject({ harness: 'h', state: 'open', limit: 20, admissibleOnly: true });
     expect(calls[2].args).toMatchObject({ limit: 10, max_body_chars: 300 });
     // calls[3] is the hoisted coord:whoami (P-007); plan-events follows it.
     expect(calls[4].args).toMatchObject({ limit: 10 });
