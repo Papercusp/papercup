@@ -32,6 +32,7 @@ import {
   ISOLATION_RETRY_MAX,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
+  createTerminationSignalHandler,
   armSelfWatchdog,
   isWorkerPoolCrash,
   parseCrashedWorkspaces,
@@ -232,6 +233,39 @@ describe('acquireCheckpointRunLock', () => {
       lockA.release();
       lockB.release();
     });
+  });
+});
+
+describe('createTerminationSignalHandler (EI-10680: replaceStale relaunched into skipped-locked against the run it just stopped)', () => {
+  it('releases (via releaseAndExit) on SIGTERM, so an external "stop this run" deterministically frees the lock', () => {
+    const releaseAndExit = vi.fn();
+    const log = vi.fn();
+    const handler = createTerminationSignalHandler(releaseAndExit, log);
+    handler('SIGTERM');
+    expect(releaseAndExit).toHaveBeenCalledTimes(1);
+    expect(releaseAndExit).toHaveBeenCalledWith(143);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toContain('SIGTERM');
+  });
+
+  it('releases on SIGINT too (the same handler is installed for both)', () => {
+    const releaseAndExit = vi.fn();
+    const handler = createTerminationSignalHandler(releaseAndExit, () => {});
+    handler('SIGINT');
+    expect(releaseAndExit).toHaveBeenCalledWith(143);
+  });
+
+  it('defaults to console.error when no log fn is injected (does not throw)', () => {
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const releaseAndExit = vi.fn();
+      const handler = createTerminationSignalHandler(releaseAndExit);
+      expect(() => handler('SIGTERM')).not.toThrow();
+      expect(releaseAndExit).toHaveBeenCalledWith(143);
+      expect(consoleErr).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleErr.mockRestore();
+    }
   });
 });
 

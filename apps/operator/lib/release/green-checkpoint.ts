@@ -550,6 +550,32 @@ export function acquireCheckpointRunLock(
   return { acquired: false, lockDir, owner: { detail: 'could not acquire after stale lock cleanup' }, release: () => {} };
 }
 
+/**
+ * EI-10680: builds the SIGTERM/SIGINT handler a live run installs so an external "stop this
+ * run" (systemctl --user stop, e.g. release-checkpoint-launch's replaceStale path) deterministically
+ * releases the run-lock before this process exits — regardless of whether Node's OS-default
+ * terminate-on-signal behaviour is still in effect (it is silently disabled the moment ANY
+ * listener is registered for the same signal anywhere in-process, e.g. by vitest's own
+ * worker-pool cleanup, which this run's programmatic vitest invocation can trigger). Without
+ * this, a killed-but-not-yet-exited run can hold its file lock past its systemd unit's "stop"
+ * job completing, so a caller's replaceStale (stop the stale run, then relaunch) relaunches
+ * straight into "skipped-locked" against the very run it believed it had just stopped
+ * (confirmed live 2026-07-13 — the SAME pid reported "already running" on two consecutive
+ * replaceStale attempts).
+ *
+ * Pure + injectable (`releaseAndExit`/`log`) so the release-on-signal behaviour is unit-testable
+ * without spawning a real process or sending a real signal.
+ */
+export function createTerminationSignalHandler(
+  releaseAndExit: (code: number) => void,
+  log: (msg: string) => void = (m) => console.error(m),
+): (signal: NodeJS.Signals) => void {
+  return (signal: NodeJS.Signals): void => {
+    log(`[green-checkpoint] received ${signal} — releasing run-lock and exiting (pid ${process.pid})`);
+    releaseAndExit(143);
+  };
+}
+
 /** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
  *  release-actions routine parses one delimited line instead of brace-slicing the whole
  *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
@@ -2973,6 +2999,23 @@ if (require.main === module) {
       lock.release();
       process.exit(code);
     };
+    // EI-10680: this process previously had NO signal handler for SIGTERM/SIGINT, so an
+    // external "stop this run" (systemctl --user stop, e.g. from release-checkpoint-launch's
+    // replaceStale path) relied entirely on the OS's default terminate-on-signal behaviour to
+    // kill it. That default is silently BYPASSED the moment ANY listener is registered for the
+    // same signal anywhere in this process (Node then expects user code to call process.exit()
+    // itself) — and this run programmatically drives vitest's runner, whose own worker-pool
+    // cleanup path can install exactly such a listener. When that happens the process survives
+    // past the stop request without ever reaching `releaseAndExit`, so its run-lock is never
+    // released — a caller's replaceStale (stop the stale run, then relaunch) then relaunches
+    // straight into "skipped-locked" against the very run it believed it had just stopped
+    // (confirmed live 2026-07-13: the SAME pid reported "already running" on two consecutive
+    // replaceStale attempts). Registering our OWN handler makes the release deterministic:
+    // whatever else may or may not be listening, THIS run always drops its lock and exits the
+    // moment it is asked to stop.
+    const handleTermSignal = createTerminationSignalHandler(releaseAndExit);
+    process.once('SIGTERM', handleTermSignal);
+    process.once('SIGINT', handleTermSignal);
     runGreenCheckpoint(cfg, realCheckpointDeps(cfg, undefined, runId), {
       candidate: candidateArg,
       noPush: process.argv.includes('--no-push'),
