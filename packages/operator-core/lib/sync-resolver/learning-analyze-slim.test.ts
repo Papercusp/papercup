@@ -59,9 +59,9 @@ describe('learning.analyze P-007 (summary-slim + analyzeCycle detail)', () => {
     expect(c.routedCount).toBe(1);
     expect(c.verdicts).toEqual(['keep', 'moonshot', 'reject']);
     // The heavy arrays must NOT be present on the wire summary.
-    expect((c as Record<string, unknown>).ideas).toBeUndefined();
-    expect((c as Record<string, unknown>).scored).toBeUndefined();
-    expect((c as Record<string, unknown>).proposals).toBeUndefined();
+    expect((c as unknown as Record<string, unknown>).ideas).toBeUndefined();
+    expect((c as unknown as Record<string, unknown>).scored).toBeUndefined();
+    expect((c as unknown as Record<string, unknown>).proposals).toBeUndefined();
   });
 
   it('readAnalyzeCycle returns the FULL single-cycle artifacts (with scored notes)', async () => {

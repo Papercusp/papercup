@@ -65,7 +65,7 @@ export default defineTool({
     } = await import('../../sync/pot-git/secrets-guard-exemptions');
     const principalWs = ctx?.principal?.workspaceId;
     const ws = args.workspaceId ?? (principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId());
-    const createdBy = ctx?.principal?.id ?? ctx?.principal?.workspaceId ?? 'agent';
+    const createdBy = ctx?.principal?.slug ?? ctx?.principal?.workspaceId ?? 'agent';
     let payload: Record<string, unknown>;
     if (args.action === 'list') {
       const exemptions = await listSecretsGuardPathExemptions(ws);

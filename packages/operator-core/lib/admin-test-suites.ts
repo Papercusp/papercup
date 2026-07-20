@@ -1317,10 +1317,12 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
   const triggerTimeoutMs = spec.triggerTimeoutMs ?? 8_000;
   const settleTimeoutMs = spec.settleTimeoutMs ?? 8_000;
   const nameJson = JSON.stringify(spec.name);
-  const script = `
-    (async () => {
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      ${spec.setup ? `try { ${spec.setup} } catch (e) { return { stage: 'setup', error: String((e && e.message) || e) }; }` : ''}
+  // With a triggerSelector: setup brings the trigger into view, then a click on
+  // it STARTS the interaction. Without one: the setup IS the trigger (a
+  // ?palette=true deep-link, a route nav whose mount begins the interaction) —
+  // skip the wait+click and just poll for the measure the setup induced.
+  const clickBlock = spec.triggerSelector
+    ? `
       const triggerDeadline = Date.now() + ${triggerTimeoutMs};
       let trigger = null;
       while (Date.now() < triggerDeadline) {
@@ -1330,7 +1332,16 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
       }
       if (!trigger) return { stage: 'trigger', error: 'trigger not found: ' + ${JSON.stringify(spec.triggerSelector)} };
       try { if (performance.clearMeasures) performance.clearMeasures(${nameJson}); } catch (e) {}
-      trigger.click();
+      trigger.click();`
+    : '';
+  const script = `
+    (async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      // Clear any stale measure BEFORE setup so a no-trigger interaction (setup
+      // is the trigger) reads only the fresh one it induces.
+      try { if (performance.clearMeasures) performance.clearMeasures(${nameJson}); } catch (e) {}
+      ${spec.setup ? `try { ${spec.setup} } catch (e) { return { stage: 'setup', error: String((e && e.message) || e) }; }` : ''}
+      ${clickBlock}
       const settleDeadline = Date.now() + ${settleTimeoutMs};
       let measuredMs = null;
       while (Date.now() < settleDeadline) {

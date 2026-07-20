@@ -108,8 +108,10 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
     setSaving(true);
     try {
       const claims = claimsText.split('\n').map((s) => s.trim()).filter(Boolean);
-      if (status === 'deprecated' && deprecationReason.trim() === '') {
-        setToast('Deprecation reason is required when status is "deprecated".');
+      // work-item-status-full-unify P-007: the drop terminal is the unified `dropped`
+      // (feature `deprecated`→`dropped`); the deprecation-reason gate keys on it now.
+      if (status === 'dropped' && deprecationReason.trim() === '') {
+        setToast('Deprecation reason is required when status is "dropped".');
         setSaving(false);
         return;
       }
@@ -122,7 +124,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
       } else {
         const body: Record<string, unknown> = { title, claims, status, attempts };
-        if (status === 'deprecated') body.deprecation_reason = deprecationReason.trim();
+        if (status === 'dropped') body.deprecation_reason = deprecationReason.trim();
         const r = await fetch(`/api/harness/${slug}/features/${id}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
