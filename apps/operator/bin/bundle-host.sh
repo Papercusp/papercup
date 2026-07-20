@@ -91,7 +91,7 @@ TMPFILE="$OUTFILE.tmp.$$"
 # ANY time, including mid-rebuild).
 NEW_BLUEPRINTS_DIR=""
 NEW_SQL_DIR=""
-trap 'rm -f "$TMPFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"; rm -rf "$OUTDIR_LOCKFILE_STALE_GLOB" 2>/dev/null || true' EXIT
+trap 'rm -f "$TMPFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"' EXIT
 
 echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx loader)"
 (
@@ -145,8 +145,24 @@ if [[ ! -f "$NEW_BLUEPRINTS_DIR/base/blueprint.yaml" ]]; then
   echo "ERROR: bundled $NEW_BLUEPRINTS_DIR is missing base/blueprint.yaml"
   exit 1
 fi
-mv -T "$NEW_BLUEPRINTS_DIR" "$OUTDIR/blueprints"
+# `mv -T` only performs a single-syscall atomic rename when the destination is
+# ABSENT or an EMPTY directory — POSIX rename(2) itself refuses to replace a
+# NON-empty directory (confirmed live: `mv -T new existing-nonempty-dir` fails
+# "cannot overwrite: File exists"), and $OUTDIR/blueprints is non-empty on
+# every rebuild after the first. So: rename the OLD tree out of the way first
+# (freeing the name), then rename the NEW tree in — the same two-step swap
+# already proven for this exact class of problem in
+# papercusp-desktop/bin/build-desktop-sidecar.sh (EI-160/EI-200). This leaves
+# a residual window of two back-to-back rename() syscalls (microseconds)
+# instead of the original rm-rf+mkdir+`cp -R` window (however long the copy
+# takes) — a many-orders-of-magnitude reduction, not a mathematical
+# guarantee (POSIX cannot do better for a non-empty-directory swap).
+if [[ -d "$OUTDIR/blueprints" ]]; then
+  mv "$OUTDIR/blueprints" "$OUTDIR/blueprints.old.$$"
+fi
+mv "$NEW_BLUEPRINTS_DIR" "$OUTDIR/blueprints"
 NEW_BLUEPRINTS_DIR=""
+rm -rf "$OUTDIR/blueprints.old.$$" 2>/dev/null || true
 echo "    ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml"
 
 LOCKS_SQL_SRC="${PAPERCUSP_LOCKS_SQL_DIR:-../../libs/papercusp/packages/locks/src/sql}"
@@ -182,8 +198,15 @@ if [[ -z "$_locks_sql_max" || "$_locks_sql_max" != "$_bundled_locks_sql_max" || 
   echo "       source $LOCKS_SQL_SRC (highest=$_locks_sql_max, count=$_locks_sql_count)"
   exit 1
 fi
-mv -T "$NEW_SQL_DIR" "$OUTDIR/sql"
+# Two-step rename-swap, not `mv -T` — see the blueprints publish above for
+# why (mv -T cannot replace a non-empty existing directory; $OUTDIR/sql is
+# non-empty on every rebuild after the first).
+if [[ -d "$OUTDIR/sql" ]]; then
+  mv "$OUTDIR/sql" "$OUTDIR/sql.old.$$"
+fi
+mv "$NEW_SQL_DIR" "$OUTDIR/sql"
 NEW_SQL_DIR=""
+rm -rf "$OUTDIR/sql.old.$$" 2>/dev/null || true
 echo "    ✓ bundled @papercusp/locks DDL matches the tree (highest migration $_locks_sql_max, $_locks_sql_count files)"
 
 # @papercusp/memory's local-embedder-worker.ts resolves its worker-thread

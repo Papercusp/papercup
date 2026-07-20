@@ -282,3 +282,50 @@ describe('system:improvement-implement — runner-harness defaults to ctx.instal
     ]);
   });
 });
+
+describe('system:improvement-implement — defaultFire idempotencyKey (EI-18117747280304049 orphaned-dispatch fix)', () => {
+  // Exercise the REAL default fire (not the stub the other describes install) so
+  // the idempotencyKey derivation itself is under test.
+  beforeEach(() => setImprovementImplementFire(null));
+
+  const arm = (...items: ImprovementCandidate[]) => {
+    vi.mocked(getFlag).mockResolvedValue(true as never);
+    vi.mocked(readImprovementItems).mockResolvedValue(items as never);
+  };
+
+  it('two dispatches of the SAME item with a STUCK attempts counter get DISTINCT idempotency keys', async () => {
+    // Root-cause repro: payload.implementAttempts pinned at 0 across two separate
+    // ticks (the EI-406 worker-exit rollback makes this routine, not hypothetical —
+    // live evidence: EI-10524 88x, EI-8914 10x, EI-13241 4x, every dispatch attempt=1
+    // with the IDENTICAL spawned_run_id). Before the fix both ticks computed
+    // `implement:EI-STUCK:1` — DBOS's {workflowID, deduplicationID} then silently
+    // no-op'd the second dispatch as a replay of the first (already-terminal)
+    // workflow, so no new worker ever ran and it sat until the 2h orphan collector
+    // mislabeled it "orphaned". dispatchId (a fresh ledger-row UUID per real fire)
+    // must make the two keys diverge regardless of the frozen counter.
+    arm(cand({ id: 'EI-STUCK', attempts: 0 }));
+    await run();
+    arm(cand({ id: 'EI-STUCK', attempts: 0 })); // still 0 — the counter never advanced
+    await run();
+
+    expect(ledgerFired.map((f) => f.attempt)).toEqual([1, 1]); // the bookkeeping counter IS stuck
+    const keys = vi.mocked(buildLaunchSpawnRequest).mock.calls.map((c) => c[2]);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toEqual(keys[1]); // …but the DISPATCH is never deduped away
+    expect(keys[0]).toContain('d-1');
+    expect(keys[1]).toContain('d-2');
+  });
+
+  it('falls back to the attempt-keyed form when the ledger insert failed (no dispatchId)', async () => {
+    setImprovementDispatchLedger({
+      recordDispatchFired: async () => null, // ledger write failed — no row id
+      recordFireResult: async () => {},
+    });
+    arm(cand({ id: 'EI-NOLEDGER', attempts: 2 }));
+
+    await run();
+
+    const keys = vi.mocked(buildLaunchSpawnRequest).mock.calls.map((c) => c[2]);
+    expect(keys).toEqual(['implement:EI-NOLEDGER:3']);
+  });
+});

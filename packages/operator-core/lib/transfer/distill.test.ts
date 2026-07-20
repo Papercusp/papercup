@@ -53,6 +53,29 @@ describe('parseDistilledLessons', () => {
     expect(parseDistilledLessons('[not valid', 3)).toEqual([]);
     expect(parseDistilledLessons('[]', 3)).toEqual([]);
   });
+
+  it('truncates an over-budget title at a word boundary with an ellipsis, never mid-word (EI-18121665970916886)', () => {
+    // 120-char TITLE_CAP; this title is well past it and must NOT be hard-cut
+    // mid-word (the historical bug produced "...not class matchin").
+    const longTitle =
+      'Suppress repeated escalations for confirmed-benign transient signals using structural envelope bounds, not class matching heuristics';
+    expect(longTitle.length).toBeGreaterThan(120);
+    const [{ title }] = parseDistilledLessons(
+      JSON.stringify([{ title: longTitle, lesson: 'L' }]),
+      3,
+    );
+    expect(title.length).toBeLessThanOrEqual(120);
+    expect(title.endsWith('…')).toBe(true);
+    // no dangling word-fragment before the ellipsis — the char right before it is a
+    // complete word boundary (space was cut, not mid-word like "matchin")
+    expect(longTitle.startsWith(title.slice(0, -1))).toBe(true);
+    expect(title.slice(0, -1).endsWith('matchin')).toBe(false);
+  });
+
+  it('leaves a title at or under the cap untouched (no ellipsis added)', () => {
+    const [{ title }] = parseDistilledLessons(JSON.stringify([{ title: 'Short title', lesson: 'L' }]), 3);
+    expect(title).toBe('Short title');
+  });
 });
 
 function transcript(turnCount: number): ReplayTranscript {

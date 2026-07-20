@@ -45,6 +45,34 @@ describe('candidateItemId', () => {
     expect(candidateItemId('???', new Set())).toBe('fleet-lesson');
     expect(candidateItemId(`${'very-'.repeat(30)}long`, new Set()).length).toBeLessThanOrEqual(60);
   });
+
+  it('cuts a long multi-word title at a dash (word) boundary, never mid-word (EI-18121665970916886)', () => {
+    // A realistic long title made of real words joined by kebab-casing — the
+    // historical bug (.slice(0, 60)) produced ids ending mid-word, e.g.
+    // "...-work-items-prob" (chopping "problem"/"problematic" in half).
+    const title =
+      'The hive re-mounts a full escalation cascade work items problematic for downstream consumers';
+    const id = candidateItemId(title, new Set());
+    expect(id.length).toBeLessThanOrEqual(60);
+    // the id must be a PREFIX of the full kebab-cased title up to a dash —
+    // i.e. every char before the cut point matches, and the cut lands exactly
+    // on a dash boundary (no trailing partial word).
+    const fullKebab = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    expect(fullKebab.startsWith(id)).toBe(true);
+    expect(fullKebab.length).toBeGreaterThan(id.length); // it really was cut
+    // the char immediately after the cut in the full string is a dash (word
+    // boundary), i.e. we did not stop mid-word
+    expect(fullKebab[id.length]).toBe('-');
+  });
+
+  it('falls back to a hard cut only when there is no dash to cut on within budget', () => {
+    const id = candidateItemId(`${'x'.repeat(100)}`, new Set());
+    expect(id.length).toBeLessThanOrEqual(60);
+    expect(id).toBe('x'.repeat(60));
+  });
 });
 
 describe('renderCandidateLearningFile', () => {

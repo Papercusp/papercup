@@ -118,25 +118,25 @@ beforeEach(async () => {
 });
 
 describe('per-family state normalization (EI-24)', () => {
-  it("issue-family takes the canonical vocabulary: 'done'→resolved, 'dropped'→closed, 'todo'→open", async () => {
+  it("issue-family stores the unified enum directly: 'done'/'dropped' pass through as-is, 'todo'→'open' (work-item-status-full-unify P-003)", async () => {
     const task = await wi.createWorkItem({ kind: 'task', title: 't', harness: 'papercup' });
-    expect((await wi.setWorkItemState(task.id, 'done', { by: 'agA', completionRef: 'test' }))?.state).toBe('resolved');
+    expect((await wi.setWorkItemState(task.id, 'done', { by: 'agA', completionRef: 'test' }))?.state).toBe('done');
     expect((await wi.setWorkItemState(task.id, 'todo', { by: 'agA' }))?.state).toBe('open');
-    expect((await wi.setWorkItemState(task.id, 'dropped', { by: 'agA', completionRef: 'test' }))?.state).toBe('closed');
+    expect((await wi.setWorkItemState(task.id, 'dropped', { by: 'agA', completionRef: 'test' }))?.state).toBe('dropped');
   });
 
   it('an unmappable issue-family state is a TYPED refusal naming the valid set — never a raw PG CHECK error', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup' });
     await expect(wi.setWorkItemState(bug.id, 'validating')).rejects.toThrow(
-      /cannot take state 'validating' — valid: open, resolved, closed, done, dropped, todo/,
+      /cannot take state 'validating' — valid: open, wip, blocked, needs-human, done, dropped, resolved, closed/,
     );
   });
 
-  it("feature-family maps 'done'→passed / 'dropped'→deprecated and passes pipeline states through", async () => {
+  it("feature-family stores the unified enum directly: 'done'/'dropped' pass through as-is, and folds legacy phase spellings onto it ('validating'→'wip') (work-item-status-full-unify P-003)", async () => {
     const f = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup' });
-    expect((await wi.setWorkItemState(f.id, 'done', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('passed');
-    expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup', by: 'agA' }))?.state).toBe('validating');
-    expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('deprecated');
+    expect((await wi.setWorkItemState(f.id, 'done', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('done');
+    expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup', by: 'agA' }))?.state).toBe('wip');
+    expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('dropped');
   });
 
   // EI-7125 / WI-2573: an issue-family 'blocked' request silently aliased to 'open'
