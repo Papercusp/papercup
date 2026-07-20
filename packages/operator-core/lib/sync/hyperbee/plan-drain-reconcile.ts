@@ -85,9 +85,9 @@ export interface PlanDrainReconcileOpts {
  * Pure tick planning: which booted harnesses are stalled (undrained rows whose
  * oldest age ≥ the stall threshold). Only flags a harness with `undrainedCount > 0`
  * AND a measured `oldestUndrainedAgeMs ≥ stalledMs` — a harness with a
- * briefly-undrained outbox (rows between the capture and the next drain tick) or a
- * fully-drained outbox is NOT flagged. Severity escalates to `unhealthy` at the
- * 5-minute mark, matching the on-read verdict.
+ * briefly-undrained outbox (rows between the capture and the next drain tick, or a
+ * routine host-recycle catch-up gap) or a fully-drained outbox is NOT flagged.
+ * Severity escalates to `unhealthy` at `DRAIN_UNHEALTHY_MS`.
  *
  * NB the input is expected to cover only LIVE booted harnesses (the action maps
  * over listBootedHandles) — dead/test hive slugs are never booted, so they never

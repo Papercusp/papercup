@@ -4,8 +4,11 @@
  * The pure detection core of the periodic federation-drain reconcile: which LIVE
  * booted harnesses are stalled (outbox captured-but-not-federating). Assertions
  * are teeth-shaped — neuter the threshold or the undrained guard and a case goes
- * RED. Thresholds mirror assessHarnessSubstrateHealth (60s degraded / 5m unhealthy)
- * so the routine and the on-read federation-status verdict agree.
+ * RED. Thresholds (5min degraded / 20min unhealthy) DELIBERATELY diverge from
+ * assessHarnessSubstrateHealth's on-read ladder (60s / 5m) — this reconcile files
+ * a DURABLE tracked bug per breach, so it needs a materially higher bar than the
+ * ephemeral on-read verdict to avoid flooding the tracker with noise from routine
+ * host-recycle catch-up gaps (2026-07-19 fix — see plan-drain-reconcile.ts).
  */
 import { describe, it, expect } from 'vitest';
 import {

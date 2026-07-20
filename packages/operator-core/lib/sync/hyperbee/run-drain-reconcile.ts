@@ -20,9 +20,17 @@
  * tick lazy-imports + calls it.
  *
  * Over-reaction guard (aligned with the transient-signal-over-reaction runbook):
- * a healthy drain marks a row within seconds, so the 60s threshold is solidly past
- * any transient capture→drain gap; the per-(workspace,harness) watchdog dedup means
- * one improvement per stall, never one per tick.
+ * a healthy drain marks a row within seconds — UNLESS the host just self-recycled
+ * (this dev box's `papercup-staging-api`/`papercup-dev-api` routinely SIGKILL-
+ * restart every ~5-8min), which reliably produces a ~90-130s capture→drain
+ * catch-up gap that is normal + self-healing, not a stall. 2026-07-19 live evidence
+ * (24 duplicate "Federation stall" bugs filed against the papercusp harness in
+ * ~12h, each manually investigated + closed as self-resolved) showed the ORIGINAL
+ * 60s threshold sat inside that noise floor — see `plan-drain-reconcile.ts`'s
+ * `DRAIN_STALLED_MS`/`DRAIN_UNHEALTHY_MS` doc comments for the raised thresholds
+ * (5min / 20min) that clear it with margin while staying far tighter than
+ * `outbox-drain.ts`'s own genuine-wedge detectors. The per-(workspace,harness)
+ * watchdog dedup means one improvement per stall, never one per tick.
  */
 import type { SubstrateDrainStat } from './load-drain-stats';
 import type { InProcessSubstrateStatus } from './in-process-status';

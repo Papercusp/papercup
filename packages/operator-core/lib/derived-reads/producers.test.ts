@@ -16,7 +16,6 @@
 // boundary so no PG IO runs; the rollup grouping is what these tests pin down.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __clearDerivedReadRegistryForTest, listDerivedReadProducers } from './registry';
 
 function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1', score10: number | null = 10) {
   return {
@@ -33,11 +32,17 @@ function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1', score
   };
 }
 
+// NOTE: `./registry` must be imported DYNAMICALLY, after `vi.resetModules()`, in
+// the same "epoch" as `./producers`'s own dynamic import of it — a top-level
+// static import of `./registry` binds to the module instance loaded before any
+// resetModules() call, which diverges from the fresh instance `./producers`
+// registers into post-reset (its REGISTRY Map would appear empty here).
 async function loadRubricsListProducer() {
-  __clearDerivedReadRegistryForTest();
   vi.resetModules();
+  const registry = await import('./registry');
+  registry.__clearDerivedReadRegistryForTest();
   await import('./producers');
-  const producer = listDerivedReadProducers().find((p) => p.key === 'rubrics.list');
+  const producer = registry.listDerivedReadProducers().find((p) => p.key === 'rubrics.list');
   if (!producer) throw new Error('rubrics.list producer not registered');
   return producer;
 }

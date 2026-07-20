@@ -249,17 +249,19 @@ async function escalateContextDeath(ownerId: string, ownerLabel: string): Promis
 /**
  * P-018 boot self-assert (agent-managed-compaction-2026-07-01): raise ONE advisory
  * coord escalation per owner per defect-class when a live member fails a critical-config
- * assertion — a too-high compaction_limit seed (compacts too late for its tier) or dark
- * context telemetry (the watchdog/gauge/force-compact are BLIND to its usage). Both
- * incident defects were latent from boot and survived hours silently; surfacing them
- * (D-008: surface, don't seize) lets a leader/owner fix or relaunch. Advisory band ⇒
- * self-clears once stale (the agent fixes its limit / telemetry resolves). Deduped +
- * best-effort — never fails the sweep; a failed escalation un-dedups to retry next pass.
+ * assertion — a too-high compaction_limit seed (compacts too late for its tier), dark
+ * context telemetry (the watchdog/gauge/force-compact are BLIND to its usage), or a
+ * dark-presence gap (EI-18127246030401689: the session has NO coord_presence row at all,
+ * so it is invisible to every layer above, not merely blind on one estimate). All three
+ * defects were latent from boot and survived hours silently; surfacing them (D-008:
+ * surface, don't seize) lets a leader/owner fix or relaunch. Advisory band ⇒ self-clears
+ * once stale. Deduped + best-effort — never fails the sweep; a failed escalation un-dedups
+ * to retry next pass.
  */
 async function escalateBootConfig(
   ownerId: string,
   ownerLabel: string,
-  kind: 'dark-telemetry',
+  kind: 'dark-telemetry' | 'dark-presence',
   summary: string,
   body: string,
 ): Promise<void> {

@@ -73,7 +73,7 @@ async function seedFeature(id: string, opts: SeedOpts = {}) {
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
        created_ts, updated_ts, feature_order, tags,
        origin, audit_verdict, verified_author_github_user_id, swarm_affinity, source_plan_item_ids)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, ${WS},
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${WS},
        ${opts.createdTs ?? 0}, 0, ${opts.featureOrder ?? null},
        ${opts.tags ? db.sql.json(opts.tags) : null},
        ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null},

@@ -68,6 +68,7 @@ beforeEach(() => {
   });
   setImprovementMarkDispatched(async (item) => {
     dispatched.push(item);
+    return true;
   });
   setImprovementImplementFire(async () => {});
   // ALWAYS stub the dispatch ledger here — the default is PG-backed and
