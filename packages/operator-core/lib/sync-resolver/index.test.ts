@@ -932,26 +932,45 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
     tierCeilings: null,
   };
 
-  // Mock the three boundaries the resolver dynamic-imports: the hive list, the
-  // owner-steering decode, and the active-workspace accessor. (Specifiers resolve
-  // identically from this test file and index.ts — both live in sync-resolver/.)
+  // Mock the boundaries the resolver dynamic-imports. The three UNIT boundaries
+  // (hive list, owner-steering decode, active-workspace accessor) are the seam
+  // under test. The resolver ALSO dynamic-imports four HEAVY modules purely for
+  // decorative UI defaults (throttle defaults — queen-steering-panel P-006 D-006;
+  // home-hive stamp — 2026-07-01): ../pot/wake, ../rate-limit-config,
+  // ../pot/placement-watchdog, ../harness/operator-home-harness. They are NOT the
+  // unit under test, and their COLD transform (~8s of transitive deps) pushed the
+  // first real resolve here past the 10s resolver timeout under checkpoint load
+  // (WI-5610). Mock them too so every test stays a true, fast unit test.
+  // (Specifiers resolve identically from this test file and index.ts — both live
+  // in sync-resolver/.) Returns the getOwnerSteering spy for call-arg assertions.
   function mockSteeringDeps(opts: {
     hives: Array<{ slug: string }> | (() => Promise<never>);
     getOwnerSteering: (ws: string, slug: string) => Promise<typeof DEFAULT>;
   }) {
+    const getOwnerSteering = vi.fn(opts.getOwnerSteering);
     vi.doMock('../agent-tools/pot/_resolve', () => ({
       listPots: vi.fn(typeof opts.hives === 'function' ? opts.hives : async () => opts.hives),
     }));
     vi.doMock('../owner-steering', () => ({
-      getOwnerSteering: vi.fn(opts.getOwnerSteering),
+      getOwnerSteering,
       DEFAULT_OWNER_STEERING: DEFAULT,
     }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    // Decorative-default deps (not under test) — mocked to skip their cold transform.
+    vi.doMock('../pot/wake', () => ({ potWakeFloorSec: () => 60, resolvePotHomeSlug: () => null }));
+    vi.doMock('../rate-limit-config', () => ({ getCachedRateLimitConfig: () => ({ maxSimultaneousAgents: 10 }) }));
+    vi.doMock('../pot/placement-watchdog', () => ({ placementConfig: () => ({ breakerThreshold: 3 }) }));
+    vi.doMock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => null }));
+    return { getOwnerSteering };
   }
   function unmockSteeringDeps() {
     vi.doUnmock('../agent-tools/pot/_resolve');
     vi.doUnmock('../owner-steering');
     vi.doUnmock('../workspace-registry');
+    vi.doUnmock('../pot/wake');
+    vi.doUnmock('../rate-limit-config');
+    vi.doUnmock('../pot/placement-watchdog');
+    vi.doUnmock('../harness/operator-home-harness');
   }
 
   it('is registered in knownQueryNamesV2', () => {

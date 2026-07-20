@@ -19,12 +19,13 @@
  * depth for the scanner's own known self-referential fixtures); this module
  * is the operator/agent-facing lever for the NEXT unforeseen false positive.
  *
- * Fails CLOSED (empty exemption set) on any read error — a DB hiccup must
- * never silently widen what the scanner treats as safe; see
- * loadSecretsGuardPathExemptions.
+ * `workspaceId` is taken EXPLICITLY (not `activeWorkspaceId()`'s ambient
+ * lookup) because the caller chain (git-sync-action.ts's per-tick loop)
+ * already threads a concrete workspaceId through runOwnHeadPublishLeg for
+ * exactly this reason — a background tick must not depend on request-scoped
+ * ambient context being set correctly.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
 
 const TABLE = 'harness_shared.secrets_guard_path_exemptions';
 
@@ -35,15 +36,14 @@ export interface SecretsGuardExemption {
   createdAt: string;
 }
 
-/** All exempted paths for the active workspace, as a Set for O(1) lookup.
- *  Fails CLOSED to an empty set on any error — a DB hiccup must never
- *  silently exempt more than intended (the scanner stays strict). */
-export async function loadSecretsGuardPathExemptions(): Promise<ReadonlySet<string>> {
+/** All exempted paths for `workspaceId`, as a Set for O(1) lookup. Fails
+ *  CLOSED to an empty set on any error — a DB hiccup must never silently
+ *  exempt more than intended (the scanner stays strict on read failure). */
+export async function loadSecretsGuardPathExemptions(workspaceId: string): Promise<ReadonlySet<string>> {
   try {
     const { sql } = getOrgPg();
-    const ws = activeWorkspaceId();
     const rows = (await sql`
-      SELECT path FROM ${sql(TABLE)} WHERE workspace_id = ${ws}
+      SELECT path FROM ${sql(TABLE)} WHERE workspace_id = ${workspaceId}
     `) as Array<{ path: string }>;
     return new Set(rows.map((r) => r.path));
   } catch {
@@ -52,13 +52,12 @@ export async function loadSecretsGuardPathExemptions(): Promise<ReadonlySet<stri
 }
 
 /** List exemptions with full detail (reason/who/when) — for an admin/agent view. */
-export async function listSecretsGuardPathExemptions(): Promise<SecretsGuardExemption[]> {
+export async function listSecretsGuardPathExemptions(workspaceId: string): Promise<SecretsGuardExemption[]> {
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
   const rows = (await sql`
     SELECT path, reason, created_by, created_at
       FROM ${sql(TABLE)}
-     WHERE workspace_id = ${ws}
+     WHERE workspace_id = ${workspaceId}
      ORDER BY created_at DESC
   `) as Array<{ path: string; reason: string; created_by: string; created_at: string }>;
   return rows.map((r) => ({ path: r.path, reason: r.reason, createdBy: r.created_by, createdAt: r.created_at }));
@@ -67,23 +66,22 @@ export async function listSecretsGuardPathExemptions(): Promise<SecretsGuardExem
 /** Add (or update the reason on) a path exemption — takes effect on the very
  *  next publish-guard tick, no restart required. */
 export async function addSecretsGuardPathExemption(input: {
+  workspaceId: string;
   path: string;
   reason: string;
   createdBy: string;
 }): Promise<void> {
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
   await sql`
     INSERT INTO ${sql(TABLE)} (workspace_id, path, reason, created_by)
-    VALUES (${ws}, ${input.path}, ${input.reason}, ${input.createdBy})
+    VALUES (${input.workspaceId}, ${input.path}, ${input.reason}, ${input.createdBy})
     ON CONFLICT (workspace_id, path) DO UPDATE
       SET reason = EXCLUDED.reason, created_by = EXCLUDED.created_by, created_at = now()
   `;
 }
 
 /** Remove a path exemption (re-arm the scan for that path). */
-export async function removeSecretsGuardPathExemption(path: string): Promise<void> {
+export async function removeSecretsGuardPathExemption(workspaceId: string, path: string): Promise<void> {
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
-  await sql`DELETE FROM ${sql(TABLE)} WHERE workspace_id = ${ws} AND path = ${path}`;
+  await sql`DELETE FROM ${sql(TABLE)} WHERE workspace_id = ${workspaceId} AND path = ${path}`;
 }

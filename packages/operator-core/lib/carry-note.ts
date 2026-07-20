@@ -569,14 +569,24 @@ export interface SetCarryNoteResult {
   stored: string | null;
   /** chars in the PRIOR note before this write replaced it (0 if none existed). */
   priorLength: number;
+  /** EI-18140632570924965: present when a caller-supplied `guard` blocked this
+   *  write — the write did NOT happen (no DELETE/INSERT ran); `stored` echoes the
+   *  UNCHANGED prior note instead of the would-be new one. */
+  blockedReason?: string;
 }
 
 /** Same semantics as {@link setCarryNote}, plus the prior note's length (EI-9325) —
- *  free, since the row is already SELECTed FOR UPDATE to build the journal ring. */
+ *  free, since the row is already SELECTed FOR UPDATE to build the journal ring.
+ *
+ *  EI-18140632570924965: an optional `guard` runs INSIDE the same locked
+ *  transaction, given the prior note + its length, and may return a block reason
+ *  to abort the write entirely (no DELETE/INSERT) instead of a race-prone
+ *  read-then-decide-then-write pattern at the caller. Absent for the overwhelming
+ *  common case — every existing caller is unaffected. */
 export async function setCarryNoteWithPrior(
   ref: CarryNoteRef | string,
   note: string | null | undefined,
-  opts?: { journal?: boolean },
+  opts?: { journal?: boolean; guard?: (priorNote: string | null, priorLength: number) => string | null },
 ): Promise<SetCarryNoteResult> {
   const journalEnabled = opts?.journal ?? true;
   const { ws, scope } = resolveRef(ref);
@@ -588,7 +598,12 @@ export async function setCarryNoteWithPrior(
       SELECT journal, note FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} FOR UPDATE`;
     const prevJournal = normalizeJournal(rows[0]?.journal);
-    const priorLength = (rows[0]?.note ?? '').length;
+    const priorNote = rows[0]?.note ?? null;
+    const priorLength = (priorNote ?? '').length;
+    if (opts?.guard) {
+      const blockedReason = opts.guard(priorNote, priorLength);
+      if (blockedReason) return { stored: priorNote, priorLength, blockedReason };
+    }
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;

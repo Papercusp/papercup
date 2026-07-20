@@ -27,6 +27,7 @@
 import { spawn } from 'node:child_process';
 import { type RunGit, defaultRunGit } from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
+import { loadSecretsGuardPathExemptions } from './secrets-guard-exemptions';
 
 /** Default per-blob cap — matches GitHub's hard limit posture and
  *  foreign-mirror-quarantine's DEFAULT_MAX_BLOB_BYTES (the two "no one should
@@ -53,6 +54,18 @@ export interface PublishGuardInput {
   toOid: string;
   caps?: PublishGuardCaps;
   runGit?: RunGit;
+  /**
+   * WI-5591: workspace whose runtime secrets-guard path exemptions
+   * (harness_shared.secrets_guard_path_exemptions, migration 644) should be
+   * consulted before a 'secrets' refusal is finalized — the no-restart escape
+   * hatch for a false positive (see secrets-guard-exemptions.ts). Omitted ⇒
+   * no runtime exemptions are consulted (only the static FIXTURE_FILES set
+   * applies), preserving prior behavior for callers that don't pass it (e.g.
+   * the existing unit/integration tests).
+   */
+  workspaceId?: string;
+  /** Injectable for tests; defaults to the real DB-backed loader. */
+  loadPathExemptions?: (workspaceId: string) => Promise<ReadonlySet<string>>;
 }
 
 export type PublishRefusalCode = 'blob-over-cap' | 'total-over-cap' | 'object-flood' | 'secrets' | 'error';
@@ -64,6 +77,10 @@ export interface PublishGuardResult {
   newTotalBytes: number;
   oversizeBlobs: { oid: string; path: string; bytes: number }[];
   secretFindings: SecretFinding[];
+  /** Findings that WOULD have refused the publish but were suppressed by a
+   *  runtime path exemption (WI-5591) — surfaced for audit/logging even
+   *  though they no longer block. Empty when no exemption applied. */
+  exemptedFindings: SecretFinding[];
   errors: string[];
 }
 
@@ -104,6 +121,7 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
     newTotalBytes: 0,
     oversizeBlobs: [],
     secretFindings: [],
+    exemptedFindings: [],
     errors: [],
   };
   const refuse = (code: PublishRefusalCode, err?: string): PublishGuardResult => {
@@ -180,6 +198,23 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
       files.push({ path: p, content: show.stdout });
     }
     res.secretFindings = scanForSecrets(files);
+    if (res.secretFindings.length > 0 && input.workspaceId) {
+      // WI-5591: consult the runtime, no-restart exemption list before
+      // finalizing a 'secrets' refusal — a false positive on an already
+      // fail-closed-forever range can be cleared by an INSERT instead of a
+      // code edit + bg-host restart. A path exempted here is moved to
+      // exemptedFindings (kept for audit) rather than dropped silently.
+      const load = input.loadPathExemptions ?? loadSecretsGuardPathExemptions;
+      const exempt = await load(input.workspaceId);
+      if (exempt.size > 0) {
+        const stillBlocking: SecretFinding[] = [];
+        for (const f of res.secretFindings) {
+          if (exempt.has(f.path)) res.exemptedFindings.push(f);
+          else stillBlocking.push(f);
+        }
+        res.secretFindings = stillBlocking;
+      }
+    }
     if (res.secretFindings.length > 0) return refuse('secrets');
 
     res.ok = true;

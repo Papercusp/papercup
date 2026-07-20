@@ -65,7 +65,6 @@ vi.mock('@papercusp/flags', async (orig) => {
   return { ...actual, DARK_FLAGS: new Map() };
 });
 
-import { afterEach } from 'vitest';
 import tool from '../attention';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { resetOperatorCacheForTests } from '../../../cache';
@@ -111,6 +110,19 @@ beforeEach(async () => {
   setFlagOverridesForTest({ 'papercusp-cache-layer': false });
   resetOperatorCacheForTests();
   await _refreshCacheLayerForTests();
+});
+
+// EI-18138040328678826: this suite never reset the flag override it sets above,
+// leaking `{ 'papercusp-cache-layer': false }` into the module-level `overrides`
+// singleton in `@papercusp/flags/test` — which is a real external-package module
+// instance, NOT reset by vitest's per-file isolation for files sharing a forked
+// worker (unlike this project's own local modules). Every sibling *.cache.test.ts
+// in this repo resets via `afterEach(() => setFlagOverridesForTest(null))`; this
+// file was the one outlier missing it, so it silently forced
+// 'papercusp-cache-layer' off for whatever unit test file vitest happened to run
+// next in the same worker.
+afterEach(() => {
+  setFlagOverridesForTest(null);
 });
 
 describe('plans:attention — parallel source aggregation (P-005)', () => {

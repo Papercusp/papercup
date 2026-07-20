@@ -122,13 +122,18 @@ export interface WorkItemCheckpointWithPriorResult {
   stored: string | null;
   /** chars in the PRIOR checkpoint before this write replaced it (0 if none existed). */
   priorLength: number;
+  /** EI-18140632570924965: present when `guard` blocked this write — nothing was
+   *  written; `stored` echoes the UNCHANGED prior checkpoint. */
+  blockedReason?: string;
 }
 
 /** Same semantics + same progress-anchor bump as {@link setWorkItemCheckpoint}, plus
- *  the prior checkpoint's length. */
+ *  the prior checkpoint's length. `guard` (EI-18140632570924965) runs inside the
+ *  same locked transaction as the read — see {@link setCarryNoteWithPrior}. */
 export async function setWorkItemCheckpointWithPrior(
   ref: WorkItemCheckpointRef,
   checkpoint: string | null | undefined,
+  opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
 ): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
   // the unscoped-session wildcard '*' (or nothing) must never key a row under a
@@ -144,13 +149,14 @@ export async function setWorkItemCheckpointWithPrior(
   // graceful degradation, mig 281 semantics), byte-identical to the pre-P-001 store.
   // The scope harness is CANONICALIZED (EI-8805) so a harness-null item keys under
   // one namespace on every write/read seam.
-  const { stored, priorLength } = await setCarryNoteWithPrior(
+  const { stored, priorLength, blockedReason } = await setCarryNoteWithPrior(
     { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
-    { journal: false },
+    { journal: false, guard: opts?.guard },
   );
-  if (stored !== null) await bumpCheckpointProgressAnchor(ref, ws);
-  return { stored, priorLength };
+  // A blocked write is a no-op — never bump the progress anchor for it.
+  if (stored !== null && !blockedReason) await bumpCheckpointProgressAnchor(ref, ws);
+  return { stored, priorLength, blockedReason };
 }
 
 /**

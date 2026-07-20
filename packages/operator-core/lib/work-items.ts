@@ -416,7 +416,10 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     harness: r.harness_slug,
     title: r.title ?? '',
     summary: r.summary ?? '',
-    state: r.status ?? 'todo',
+    // work-item-status-full-unify P-007: the unified claimable token is 'open'
+    // (feature `todo`→`open`). A null status defaults to the unified claimable
+    // token, not the legacy 'todo' spelling (no row should sit at 'todo' post-backfill).
+    state: r.status ?? 'open',
     // EI-15027: same sentinel-collapse as issueToWorkItem above — taken_by can carry
     // the same "unassigned" placeholder as engineer_issues.assignee.
     assignee: normalizeTakenBy(r.taken_by),

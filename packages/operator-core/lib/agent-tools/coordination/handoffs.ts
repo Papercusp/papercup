@@ -150,10 +150,85 @@ export async function getHandoff(msgId: string): Promise<HandoffRecord | null> {
 /**
  * List handoffs (with acceptance/expiry status), optionally filtered to
  * open / accepted / expired.
+ *
+ * UNBOUNDED — reads the ENTIRE handoffs surface (`coordLog.readEvents`, no
+ * LIMIT) every call. Fine for the surface's own small volume, but a caller
+ * that just wants a recent, bounded page (e.g. a history/feed view) should
+ * use `listHandoffsPaginated` instead — see EI-18138089781782660.
  */
 export async function listHandoffs(
   opts: { status?: 'open' | 'accepted' | 'expired' } = {},
 ): Promise<HandoffWithAcceptance[]> {
   const records = (await coordLog.readEvents('handoffs')).filter(isHandoffRecord);
   return foldHandoffs(records, opts);
+}
+
+/** WI-4181-style slack subtracted from the oldest open's ts when deciding
+ *  whether the accept/expire window covers the opens window — absorbs writer
+ *  clock skew between a handoff and its acceptance/expiry. Mirrors
+ *  escalations.ts's RESOLVE_COVERAGE_SLACK_MS for the same failure class
+ *  (a zombie "open" handoff re-appearing once its acceptance ages out of a
+ *  count-bounded window). */
+const HANDOFF_COVERAGE_SLACK_MS = 60_000;
+/** Hard cap on EXTRA accept/expire pages fetched for coverage (beyond the
+ *  first window) — bounds the read to (1 + cap) × maxRecords rows even on a
+ *  pathologically accept-heavy surface. */
+const MAX_HANDOFF_COVERAGE_PAGES = 8;
+
+/**
+ * List handoffs with pagination — bounds the READ at the storage layer
+ * instead of loading the entire handoffs surface into memory (EI-18138089781782660,
+ * mirroring listEscalationsPaginated's EI-1548/EI-6624/WI-4181 pattern).
+ *
+ * Reads `handoff` (opens) and `handoff_accepted`/`handoff_expired`/
+ * `handoff_repinged` (status events) on SEPARATE bounded windows, then pages
+ * the status-events window deeper (up to MAX_HANDOFF_COVERAGE_PAGES rounds)
+ * until it covers the oldest open in this page — otherwise a handoff whose
+ * acceptance/expiry got evicted from a shallower window would re-appear as a
+ * zombie "open" (the exact bug WI-4181 fixed for escalations).
+ */
+export async function listHandoffsPaginated(
+  opts: { status?: 'open' | 'accepted' | 'expired'; maxRecords?: number } = {},
+): Promise<{ handoffs: HandoffWithAcceptance[]; truncated: boolean; total: number }> {
+  const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
+  const STATUS_KINDS = ['handoff_accepted', 'handoff_expired', 'handoff_repinged'] as const;
+
+  const [opensRaw, firstStatusPage] = await Promise.all([
+    coordLog.readEventsBounded('handoffs', { limit: maxRecords, kinds: ['handoff'] }),
+    coordLog.readEventsBoundedCursor('handoffs', { limit: maxRecords, kinds: [...STATUS_KINDS] }),
+  ]);
+  const opens = (opensRaw as HandoffRecord[]).filter(isHandoffRecord);
+
+  let statusRows = firstStatusPage.rows;
+  let statusExhausted = firstStatusPage.exhausted;
+  const oldestOpenMs = opens.length
+    ? Date.parse(opens.reduce((min, o) => (o.ts < min ? o.ts : min), opens[0].ts))
+    : null;
+  const coverageTs =
+    oldestOpenMs !== null && Number.isFinite(oldestOpenMs)
+      ? new Date(oldestOpenMs - HANDOFF_COVERAGE_SLACK_MS).toISOString()
+      : null;
+  let extraPages = 0;
+  while (
+    coverageTs !== null &&
+    !statusExhausted &&
+    extraPages < MAX_HANDOFF_COVERAGE_PAGES &&
+    statusRows.length > 0 &&
+    statusRows[statusRows.length - 1].envelope.ts > coverageTs
+  ) {
+    const page = await coordLog.readEventsBoundedCursor('handoffs', {
+      limit: maxRecords,
+      kinds: [...STATUS_KINDS],
+      beforeId: statusRows[statusRows.length - 1].id,
+    });
+    statusRows = statusRows.concat(page.rows);
+    statusExhausted = page.exhausted;
+    extraPages += 1;
+    if (page.rows.length === 0) break;
+  }
+  const statusEvents = statusRows.map((r) => r.envelope).filter(isHandoffRecord);
+
+  const handoffs = foldHandoffs([...opens, ...statusEvents], opts);
+  const truncated = opens.length >= maxRecords || statusRows.length >= maxRecords;
+  return { handoffs, truncated, total: handoffs.length };
 }

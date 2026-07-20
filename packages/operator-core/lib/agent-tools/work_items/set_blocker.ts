@@ -167,7 +167,11 @@ export default defineTool({
               by: identity.ownerId,
             });
           } else if (updated.family === 'feature' && updated.state === 'blocked') {
-            lifecycle = await setWorkItemStateWithAliasInfo(input.id, 'todo', {
+            // work-item-status-full-unify P-007: restore to the UNIFIED claimable token
+            // 'open' directly (was 'todo', which only reached 'open' via the legacy
+            // alias-fold + mis-reported the synced state — same class as the
+            // planSyncWorkItemState re-open writer fixed in P-005).
+            lifecycle = await setWorkItemStateWithAliasInfo(input.id, 'open', {
               harness: input.harness,
               by: identity.ownerId,
             });
@@ -191,7 +195,9 @@ export default defineTool({
           if (active.length === 0 && finalWorkItem.state === 'blocked') {
             const restored = await setWorkItemStateWithAliasInfo(
               input.id,
-              finalWorkItem.family === 'feature' ? 'todo' : 'open',
+              // work-item-status-full-unify P-007: both families restore to the unified
+              // claimable token 'open' (feature `todo`→`open` collapsed the duality).
+              'open',
               { harness: input.harness, by: identity.ownerId },
             );
             if (restored.workItem) finalWorkItem = restored.workItem;

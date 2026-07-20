@@ -37,14 +37,31 @@ export const COLORS = {
 // Without this, `STATUS[unknownStatus].label` crashes the entire FeatureList
 // subtree at hydration when a parent harness's features are loaded — see
 // `getStatusMeta()` below for the canonical config-aware lookup.
+// work-item-status-full-unify (2026-07-19): the feature + issue families now share ONE
+// lifecycle — open → wip → blocked | needs-human → done | dropped. This is the single
+// source for work-item status coloring; the UNIFIED tokens lead. The legacy per-family
+// spellings (todo/in_progress/validating/failing/passed/deprecated) are KEPT as tolerant
+// aliases so a residual pre-backfill row or a federated peer still on the old vocab renders
+// correctly instead of falling through to the grey "Unknown" fallback (234 features still at
+// 'passed', 2 at 'deprecated' at cutover; more may arrive over the wire). Narrow to the
+// unified set only once the federation cutover + cleanup pass lands.
 const _STATUS_TABLE = {
-  todo:        { solid: '#6b7280', bg: 'rgba(107,114,128,0.15)',  text: '#d1d5db', label: 'Todo' },
-  in_progress: { solid: '#3b82f6', bg: 'rgba(59,130,246,0.15)',   text: '#93c5fd', label: 'In progress' },
+  // ── Unified lifecycle (leads) ──
+  open:        { solid: '#6b7280', bg: 'rgba(107,114,128,0.15)',  text: '#d1d5db', label: 'Open' },
+  wip:         { solid: '#3b82f6', bg: 'rgba(59,130,246,0.15)',   text: '#93c5fd', label: 'WIP' },
+  blocked:     { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',   text: '#fcd34d', label: 'Blocked' },
+  'needs-human': { solid: '#f97316', bg: 'rgba(249,115,22,0.15)', text: '#fdba74', label: 'Needs human' },
+  done:        { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',   text: '#6ee7b7', label: 'Done' },
+  dropped:     { solid: '#52525b', bg: 'rgba(82,82,91,0.18)',     text: '#a1a1aa', label: 'Dropped' },
+  // ── Legacy per-family spellings (tolerant aliases; see note above) ──
+  todo:        { solid: '#6b7280', bg: 'rgba(107,114,128,0.15)',  text: '#d1d5db', label: 'Open' },
+  in_progress: { solid: '#3b82f6', bg: 'rgba(59,130,246,0.15)',   text: '#93c5fd', label: 'WIP' },
   validating:  { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)',   text: '#d8b4fe', label: 'Validating' },
   failing:     { solid: '#ef4444', bg: 'rgba(239,68,68,0.15)',    text: '#fca5a5', label: 'Failing' },
-  blocked:     { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',   text: '#fcd34d', label: 'Blocked' },
   passed:      { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',   text: '#6ee7b7', label: 'Passed' },
   deprecated:  { solid: '#52525b', bg: 'rgba(82,82,91,0.18)',     text: '#a1a1aa', label: 'Deprecated' },
+  resolved:    { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',   text: '#6ee7b7', label: 'Resolved' },
+  closed:      { solid: '#52525b', bg: 'rgba(82,82,91,0.18)',     text: '#a1a1aa', label: 'Closed' },
 } as const;
 
 const _STATUS_FALLBACK = { solid: '#6b7280', bg: 'rgba(107,114,128,0.15)', text: '#9ca3af', label: 'Unknown' } as const;

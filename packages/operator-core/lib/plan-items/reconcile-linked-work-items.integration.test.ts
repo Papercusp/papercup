@@ -45,6 +45,7 @@ vi.mock('../work-items', async () => {
   const actual = await vi.importActual<typeof import('../work-items')>('../work-items');
   return {
     isSettledWorkItemState: actual.isSettledWorkItemState,
+    SETTLED_WORK_ITEM_STATES: actual.SETTLED_WORK_ITEM_STATES,
     getWorkItem: (id: string) => h2.items.get(id) ?? null,
     setWorkItemState: h2.setWorkItemState,
   };
@@ -397,6 +398,48 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
     expect(result.candidatePlanItems).toBe(0);
     expect(result.reconciled).toEqual([]);
     expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('WI-5279: does NOT enumerate a work-item stored with the UNIFIED terminal spelling (done/dropped), not just the legacy one', async () => {
+    // work-item-status-full-unify (2026-07-19): rows can now be written with the
+    // literal 'done'/'dropped' status instead of the legacy per-family spelling.
+    // The candidate query's exclusion list must cover BOTH or these rows leak back
+    // in as "candidates" every sweep tick, wasting work and — at scale — crowding
+    // out genuine orphans from the `LIMIT cap` window (WI-5279/EI-13337 class).
+    await insertWorkItemRow({ id: 'F-unified-term', kind: 'feature', status: 'done', planSlug: 'punified', itemId: 'P-1' });
+    await insertWorkItemRow({ id: 'WI-unified-term', kind: 'bug', status: 'dropped', planSlug: 'punified', itemId: 'P-2' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }, { id: 'P-2', status: 'dropped' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.candidatePlanItems).toBe(0);
+    expect(result.reconciled).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('WI-5279: a genuine orphan is not starved out of the LIMIT-cap window by already-terminal (unified-spelling) noise', async () => {
+    // Reproduces the production shape found live-verifying WI-5279: a large volume
+    // of already-`done`/`dropped` stamped rows sitting alongside one genuine
+    // non-terminal orphan. With a tight cap and the STALE exclusion list, the noise
+    // could fill the whole candidate window before the real orphan is ever read.
+    for (let i = 0; i < 5; i++) {
+      await insertWorkItemRow({ id: `F-noise-${i}`, kind: 'feature', status: 'done', planSlug: 'pnoise', itemId: `P-noise-${i}` });
+    }
+    await insertWorkItemRow({ id: 'F-real-orphan', kind: 'feature', status: 'todo', planSlug: 'pnoise', itemId: 'P-real' });
+    await edge({ plan: 'pnoise', item: 'P-real', srcRef: 'sheets#F-real-orphan', srcKind: 'feature' });
+    stub({ id: 'F-real-orphan', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        ...Array.from({ length: 5 }, (_, i) => ({ id: `P-noise-${i}`, status: 'done' })),
+        { id: 'P-real', status: 'done' },
+      ],
+    });
+
+    const result = await reconcileOrphanedPlanItemWorkItems({ candidateCap: 3 });
+
+    expect(result.candidatePlanItems).toBe(1);
+    expect(result.reconciled).toEqual(['F-real-orphan']);
+    expect(setWorkItemState).toHaveBeenCalledWith('F-real-orphan', 'passed', expect.anything());
   });
 
   it('skips a candidate carrying independent in-flight progress (lastProgressAt)', async () => {
