@@ -44,7 +44,7 @@ type RowState = 'idle' | 'saving' | 'saved' | 'error';
 
 const SECTIONS_OPEN_BY_DEFAULT = ['providers'];
 
-export default function OmpSettingsPage(): JSX.Element {
+export default function OmpSettingsPage(): React.JSX.Element {
   const [sections, setSections] = useState<OmpSection[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   // URL-backed view state (nuqs) — agents can read + drive the filter and
@@ -431,7 +431,7 @@ function SettingRow({
   rowState?: { state: RowState; error?: string };
   onSave: (v: unknown) => void;
   onUnset: () => void;
-}): JSX.Element {
+}): React.JSX.Element {
   const stateLabel = rowState?.state === 'saving' ? 'Saving…'
     : rowState?.state === 'saved' ? 'Saved'
     : rowState?.state === 'error' ? `Error: ${rowState.error?.slice(0, 80) ?? 'unknown'}`
@@ -464,7 +464,7 @@ function SettingRow({
   );
 }
 
-function ValueControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+function ValueControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): React.JSX.Element {
   if (setting.type === 'boolean') {
     return (
       <label style={S.toggle}>
@@ -499,7 +499,7 @@ function ValueControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: un
   return <StringControl setting={setting} onSave={onSave} />;
 }
 
-function StringControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+function StringControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): React.JSX.Element {
   const [v, setV] = useState<string>(setting.isUnset ? '' : String(setting.parsed ?? ''));
   const dirtyRef = useRef(false);
   useEffect(() => { if (!dirtyRef.current) setV(setting.isUnset ? '' : String(setting.parsed ?? '')); }, [setting.parsed, setting.isUnset]);
@@ -521,7 +521,7 @@ function StringControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: u
   );
 }
 
-function NumberControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+function NumberControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): React.JSX.Element {
   // Commit/validation semantics live in lib/forms DraftNumberInput: a
   // non-numeric or empty draft never persists (the old fall-through saved
   // the raw string; an empty field saved 0 — Number('') === 0).
@@ -537,7 +537,7 @@ function NumberControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: u
   );
 }
 
-function JsonControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+function JsonControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): React.JSX.Element {
   const initial = setting.isUnset ? '' : JSON.stringify(setting.parsed ?? null, null, 2);
   const [v, setV] = useState<string>(initial);
   const [err, setErr] = useState<string | null>(null);

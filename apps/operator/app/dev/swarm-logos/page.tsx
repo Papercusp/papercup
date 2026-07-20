@@ -9,7 +9,7 @@ type LogoOption = {
   mood: string;
   bestFor: string;
   verdict: string;
-  Glyph: (props: SVGProps<SVGSVGElement>) => JSX.Element;
+  Glyph: (props: SVGProps<SVGSVGElement>) => React.JSX.Element;
 };
 
 const OPTIONS: LogoOption[] = [

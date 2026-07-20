@@ -29,7 +29,7 @@ interface ToolRow {
   recentErrors?: number;
 }
 
-export default function PluginToolsPage(): JSX.Element {
+export default function PluginToolsPage(): React.JSX.Element {
   const [tools, setTools] = useState<ToolRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
@@ -120,7 +120,7 @@ export default function PluginToolsPage(): JSX.Element {
   );
 }
 
-function ToolCard({ tool: t }: { tool: ToolRow }): JSX.Element {
+function ToolCard({ tool: t }: { tool: ToolRow }): React.JSX.Element {
   return (
     <div style={{
       border: '1px solid var(--border)', borderRadius: 6, padding: 12,
@@ -174,7 +174,7 @@ function ToolCard({ tool: t }: { tool: ToolRow }): JSX.Element {
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
+function Row({ label, children }: { label: string; children: React.ReactNode }): React.JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
       <span style={{ minWidth: 90, color: 'var(--fg-mute)' }}>{label}:</span>
@@ -185,7 +185,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }):
   );
 }
 
-function Badge({ children }: { children: React.ReactNode }): JSX.Element {
+function Badge({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <span style={{
       padding: '1px 6px',

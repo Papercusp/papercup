@@ -478,4 +478,88 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.shrinkWarning).toBeUndefined();
     });
   });
+
+  describe('EI-18140632570924965: a plain-replace shrink is BLOCKED by default (shrink_blocked), not just warned', () => {
+    it('blocks the write when setWorkItemCheckpointWithPrior reports blockedReason — no progress bump, no verify-read', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-4487', harness: 'papercup' });
+      setWorkItemCheckpointWithPrior.mockResolvedValue({
+        stored: '19348-char forensic record, unchanged',
+        priorLength: 19348,
+        blockedReason:
+          'plain replace would shrink the checkpoint from 19348 to 12 chars (>50% loss). Pass { append: true } ' +
+          'to join onto the existing checkpoint instead, or { confirmShrink: true } if this replace is intentional.',
+      });
+      const r = await one({ id: 'WI-4487', checkpoint: 'short status' });
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('shrink_blocked');
+      expect(r.error).toContain('19348');
+      // Blocked ⇒ no read-after-write verification and no progress-anchor bump attempt.
+      expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
+    });
+
+    it('the guard callback passed to setWorkItemCheckpointWithPrior blocks only a >50% shrink off a substantial (>500 char) prior', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'short new note', priorLength: 20000 });
+      getWorkItemCheckpoint.mockResolvedValue('short new note');
+      await one({ id: 'WI-7', checkpoint: 'short new note' });
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, string, { guard?: (n: string | null, l: number) => string | null }];
+      const guard = call[2].guard!;
+      expect(guard(null, 20000)).toMatch(/plain replace would shrink/); // 14-char new text vs 20000 prior
+      expect(guard(null, 100)).toBeNull(); // prior not "substantial" (<=500)
+      expect(guard(null, 501)).not.toBeNull(); // just over the substantial floor, still a >50% shrink
+    });
+
+    it('confirmShrink:true omits the guard entirely — the destructive replace proceeds (still gets the EI-9325 warning)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-4487', harness: 'papercup' });
+      const stored = 'short status';
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 19348 });
+      getWorkItemCheckpoint.mockResolvedValue(stored);
+      const r = await one({ id: 'WI-4487', checkpoint: stored, confirmShrink: true });
+      expect(r.ok).toBe(true);
+      expect(r.shrinkWarning).toBeDefined();
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, string, { guard?: unknown }];
+      expect(call[2].guard).toBeUndefined();
+    });
+
+    it('append:true never invokes the guard path at all (goes through setWorkItemCheckpoint, not WithPrior)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(20000));
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    });
+
+    it('a per-item confirmShrink:true overrides a batch-level default of false/omitted', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      const stored = 'tiny';
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 5000 });
+      getWorkItemCheckpoint.mockResolvedValue(stored);
+      const out = await env({ items: [{ id: 'WI-7', checkpoint: stored, confirmShrink: true }] });
+      expect(out.results[0].ok).toBe(true);
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, string, { guard?: unknown }];
+      expect(call[2].guard).toBeUndefined();
+    });
+
+    it('a mixed batch: the blocked item fails on its own, siblings still write', async () => {
+      getWorkItem.mockImplementation(async (id: string) => ({ id, harness: 'papercup' }));
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, text: string, opts?: { guard?: (n: string | null, l: number) => string | null }) => {
+        const priorLength = text === 'clobber' ? 19348 : 0;
+        const blockedReason = opts?.guard ? opts.guard(null, priorLength) ?? undefined : undefined;
+        return { stored: blockedReason ? 'unchanged prior' : text, priorLength, blockedReason };
+      });
+      getWorkItemCheckpoint.mockImplementation(async () => 'fine, brand new note');
+      const out = await env({
+        items: [
+          { id: 'WI-BLOCKED', checkpoint: 'clobber' },
+          { id: 'WI-FINE', checkpoint: 'fine, brand new note' },
+        ],
+      });
+      expect(out.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
+        ['WI-BLOCKED', false],
+        ['WI-FINE', true],
+      ]);
+      expect(out.results[0].error).toContain('shrink_blocked');
+    });
+  });
 });

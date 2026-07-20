@@ -33,7 +33,7 @@
 import { useEffect, useState } from 'react';
 import { subscribeAriaLiveText } from './aria-live-bus';
 
-export function AriaLiveRegions(): JSX.Element {
+export function AriaLiveRegions(): React.JSX.Element {
   const [polite, setPolite] = useState('');
   const [assertive, setAssertive] = useState('');
 

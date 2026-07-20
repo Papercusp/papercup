@@ -81,6 +81,10 @@ export interface OwnHeadPublishTickInput {
    */
   genesisBaselineSha?: string | null;
   runGit?: RunGit;
+  /** WI-5591: workspace whose runtime secrets-guard path exemptions to
+   *  consult (see publish-guard.ts's PublishGuardInput.workspaceId). Omitted
+   *  ⇒ no runtime exemptions consulted (only static FIXTURE_FILES applies). */
+  workspaceId?: string;
 }
 
 export interface OwnHeadPublishTickOutcome {
@@ -99,6 +103,10 @@ export interface OwnHeadPublishTickOutcome {
    *  nothing became servable; safe to retry after the offending commit is
    *  removed. Deliberate refusal, not an error. */
   refused: PublishGuardResult | null;
+  /** Secret findings suppressed by a runtime path exemption this tick (WI-5591)
+   *  — populated whether the publish ultimately admitted or was refused for a
+   *  DIFFERENT reason, so an exemption's use is always visible for audit. */
+  exemptedFindings: SecretFinding[];
   errors: string[];
 }
 
@@ -120,6 +128,7 @@ export async function runOwnHeadPublishTick(
     headSha: null,
     priorSha: null,
     refused: null,
+    exemptedFindings: [],
     errors,
   });
 
@@ -148,7 +157,7 @@ export async function runOwnHeadPublishTick(
     return { ...noop(branch), ran: true, headSha };
   }
   if (priorSha === headSha) {
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };
   }
 
   // WI-5163: a SHALLOW source worktree (from-repo's `shallow:true` smoke
@@ -184,7 +193,7 @@ export async function runOwnHeadPublishTick(
   const fetch = await runGit(['fetch', '--quiet', input.worktreePath, branchRef], repoPath);
   if (fetch.code !== 0) {
     errors.push(`object transfer from worktree failed: ${fetch.stderr.trim().slice(0, 500)}`);
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };
   }
 
   // G-10: judge the (prior, head] range BEFORE the ref makes it servable. On a
@@ -202,13 +211,14 @@ export async function runOwnHeadPublishTick(
       toOid: headSha,
       caps: input.publishGuardCaps,
       runGit,
+      workspaceId: input.workspaceId,
     });
   } catch (e) {
     errors.push(`publish guard threw (refusing, fail-closed): ${e instanceof Error ? e.message : e}`);
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };
   }
   if (!guard.ok) {
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: guard, errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: guard, exemptedFindings: guard.exemptedFindings, errors };
   }
 
   try {
@@ -222,7 +232,7 @@ export async function runOwnHeadPublishTick(
     );
   } catch (e) {
     errors.push(`namespace ref CAS write failed: ${e instanceof Error ? e.message : e}`);
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: guard.exemptedFindings, errors };
   }
 
   // The integrator gates member heads at the canonical WORK_REF, not the

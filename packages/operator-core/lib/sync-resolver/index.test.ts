@@ -982,12 +982,10 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
       'papercup-hive': { ...DEFAULT, directive: 'focus the backlog', eligiblePlans: ['plan-a'] },
       'other-hive': { ...DEFAULT, pauseNewWork: true },
     };
-    const getOwnerSteering = vi.fn(async (_ws: string, slug: string) => bySlug[slug] ?? DEFAULT);
-    vi.doMock('../agent-tools/pot/_resolve', () => ({
-      listPots: vi.fn(async () => [{ slug: 'papercup-hive' }, { slug: 'other-hive' }]),
-    }));
-    vi.doMock('../owner-steering', () => ({ getOwnerSteering, DEFAULT_OWNER_STEERING: DEFAULT }));
-    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { getOwnerSteering } = mockSteeringDeps({
+      hives: [{ slug: 'papercup-hive' }, { slug: 'other-hive' }],
+      getOwnerSteering: async (_ws: string, slug: string) => bySlug[slug] ?? DEFAULT,
+    });
     const { resolveNamedQueryV2: r } = await import('./index');
 
     const rows = (await r('hive.steering', {})) as Array<Record<string, unknown>>;
@@ -1001,9 +999,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
       ['ws-test', 'other-hive'],
     ]);
 
-    vi.doUnmock('../agent-tools/pot/_resolve');
-    vi.doUnmock('../owner-steering');
-    vi.doUnmock('../workspace-registry');
+    unmockSteeringDeps();
   });
 
   it('returns [] for an un-hived workspace (no hives)', async () => {

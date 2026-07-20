@@ -334,10 +334,15 @@ const updateFeature = defineTool({
       if (body.deprecation_reason !== null && typeof body.deprecation_reason !== 'string') return Response.json({ error: 'deprecation_reason must be a string or null' }, { status: 400 });
       updates.deprecation_reason = body.deprecation_reason;
     }
-    if (updates.status === 'deprecated' && updates.deprecation_reason === undefined && !existing.deprecation_reason) {
-      return Response.json({ error: 'deprecation_reason required when transitioning to status=deprecated' }, { status: 400 });
+    // work-item-status-full-unify P-007: `updates.status` is the NORMALIZED value, and
+    // normalizeFeatureStateInput now folds the legacy `deprecated` spelling onto the unified
+    // drop terminal `dropped` (P-003 writer-flip). Key these guards on `dropped` — checking
+    // `=== 'deprecated'` here silently stopped firing after the flip, so the required-reason
+    // gate went dead AND the off-deprecate clear wiped the reason WHILE dropping.
+    if (updates.status === 'dropped' && updates.deprecation_reason === undefined && !existing.deprecation_reason) {
+      return Response.json({ error: 'deprecation_reason required when transitioning to status=dropped (deprecate)' }, { status: 400 });
     }
-    if (updates.status !== undefined && updates.status !== 'deprecated' && existing.deprecation_reason && updates.deprecation_reason === undefined) {
+    if (updates.status !== undefined && updates.status !== 'dropped' && existing.deprecation_reason && updates.deprecation_reason === undefined) {
       updates.deprecation_reason = null;
     }
 

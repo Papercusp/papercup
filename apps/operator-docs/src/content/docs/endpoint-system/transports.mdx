@@ -395,7 +395,7 @@ The signing scheme defends against prompt-injected workers rewriting URL params.
 
 ### Desktop IPC: webview is in-boundary
 
-The desktop Tauri app uses a fourth transport — endpoint IPC over a Unix domain socket (Linux/macOS) or named pipe (Windows). The Tauri webview opens a `Channel<T>` through Rust to the Node sidecar's IPC server (`libs/generic/ipc-endpoint-server/src/server.ts`); the round-trip skips localhost HTTP entirely. See [`packages/operator-core/lib/endpoint-ipc/PROTOCOL.md`](https://github.com/papercupai/papercup/blob/main/packages/operator-core/lib/endpoint-ipc/PROTOCOL.md) for the wire format.
+The desktop Tauri app uses a fourth transport — endpoint IPC over a Unix domain socket (Linux/macOS) or named pipe (Windows). The Tauri webview opens a `Channel<T>` through Rust to the Node sidecar's IPC server (`libs/generic/ipc-endpoint-server/src/server.ts`); the round-trip skips localhost HTTP entirely. See [`packages/operator-core/lib/endpoint-ipc/PROTOCOL.md`](https://github.com/Papercusp/papercup/blob/main/packages/operator-core/lib/endpoint-ipc/PROTOCOL.md) for the wire format.
 
 IPC calls **skip HMAC signature verification**. The trust boundary is different from the signed-URL HTTP path:
 

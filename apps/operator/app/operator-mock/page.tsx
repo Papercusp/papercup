@@ -279,7 +279,7 @@ const resolvePot = (s: string, t: Lexicon): string =>
 type View = 'decisions' | 'activity';
 type ActivityFilter = 'all' | 'in-flight' | 'done' | 'delegates' | 'scans';
 
-export default function OperatorMockPage(): JSX.Element {
+export default function OperatorMockPage(): React.JSX.Element {
   const t = useLexicon();
   const [view, setView] = useState<View>('decisions');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all');
@@ -563,7 +563,7 @@ function DecisionsView({
   onOpen: (c: DecisionCard) => void;
   onAck: (c: DecisionCard) => void;
   gotoActivity: () => void;
-}): JSX.Element {
+}): React.JSX.Element {
   if (paused) {
     return (
       <div style={S.emptyState}>
@@ -620,7 +620,7 @@ function DecisionCardView({
   onDismiss: () => void;
   onOpen: () => void;
   onAck: () => void;
-}): JSX.Element {
+}): React.JSX.Element {
   const t = TIER_COPY[card.tier];
   const [bodyOpen, setBodyOpen] = useState(false);
 
@@ -703,7 +703,7 @@ function ActivityView({
   lex: Lexicon;
   inFlight: DecisionCard[];
   doneItems: DecisionCard[];
-}): JSX.Element {
+}): React.JSX.Element {
   const filters: { id: ActivityFilter; label: string; count: number }[] = [
     { id: 'all', label: 'All', count: inFlight.length + doneItems.length + DELEGATES.length + SCANS.length },
     { id: 'in-flight', label: 'In flight', count: inFlight.length },
@@ -777,7 +777,7 @@ function matchSearch(c: DecisionCard, q: string): boolean {
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
+function Section({ label, children }: { label: string; children: React.ReactNode }): React.JSX.Element {
   return (
     <section style={S.activitySection}>
       <div style={S.activitySectionHead}>{label}</div>
@@ -786,7 +786,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function ActivityCardRow({ card, lex }: { card: DecisionCard; lex: Lexicon }): JSX.Element {
+function ActivityCardRow({ card, lex }: { card: DecisionCard; lex: Lexicon }): React.JSX.Element {
   const kind = card.status === 'in-flight' ? 'in-flight' : card.status === 'failed' ? 'error' : 'done';
   const t = TIER_COPY[card.tier];
   return (
@@ -813,7 +813,7 @@ function DelegateRow({
   delegate,
 }: {
   delegate: { id: string; title: string; sessionId: string; turns: number; status: 'in-flight' | 'done' | 'archived'; started: string };
-}): JSX.Element {
+}): React.JSX.Element {
   const kind = delegate.status === 'in-flight' ? 'in-flight' : 'delegate';
   return (
     <div style={S.activityRow}>
@@ -846,7 +846,7 @@ function ScanRow({
   scan,
 }: {
   scan: { id: string; started: string; summary: string; cards: number; cost: string };
-}): JSX.Element {
+}): React.JSX.Element {
   const [open, setOpen] = useState(false);
   return (
     <div style={open ? S.scanRowOpen : S.scanRow} onClick={() => setOpen(!open)}>
@@ -878,7 +878,7 @@ function DispatchConfirm({
   card: DecisionCard;
   onCancel: () => void;
   onConfirm: () => void;
-}): JSX.Element {
+}): React.JSX.Element {
   const t = useLexicon();
   return (
     <div style={S.modalBackdrop} onClick={onCancel}>

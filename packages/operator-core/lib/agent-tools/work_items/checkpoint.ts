@@ -51,6 +51,17 @@
  * ring) — no extra round-trip, so the existing "plain replace never pre-reads"
  * contract (see the append-mode tests) is unaffected.
  *
+ * EI-18140632570924965: EI-9325's shrinkWarning was WARN-ONLY — it still executed
+ * the destructive write in the same call. Confirmed live: a plain replace on WI-4487
+ * (a 19,348-char / 5-day / 4-agent forensic record) silently collapsed it to 739
+ * chars; only the shrinkWarning in the response let the caller notice and restore
+ * from a prior Read. Fix: the SAME shrink condition now BLOCKS the write by default
+ * (`shrink_blocked`, no data touched — the guard runs inside
+ * setWorkItemCheckpointWithPrior's locked transaction, before the DELETE/INSERT) —
+ * pass `append: true` to join instead (the item's own convention here — every real
+ * checkpoint on a long-running ticket already separates dated sections with `---`),
+ * or `confirmShrink: true` when a genuine replace is intended.
+ *
  * EI-18132462898750489: NO ownership guard existed — any agent could checkpoint (or
  * CLEAR) an item it does not hold, silently overwriting the actual assignee's
  * in-flight state. Confirmed live: a fleet member (su-2e534e59) that had only READ
@@ -116,6 +127,13 @@ const itemSpec = z.object({
         'non-blank `checkpoint` (append + clear is contradictory — rejected, not silently treated as a clear). ' +
         'Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would overflow it.',
     ),
+  confirmShrink: z
+    .boolean()
+    .optional()
+    .describe(
+      'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
+        'more than half is BLOCKED (`shrink_blocked`) by default. Pass true to confirm the replace is intentional.',
+    ),
 });
 
 export default defineTool({
@@ -127,8 +145,9 @@ export default defineTool({
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
-    'Writes are verify-read and fail loudly on an invisible write (checkpoint_verify_failed); a plain replace that shrinks ' +
-    'a substantial checkpoint >50% returns a non-blocking `shrinkWarning`. Refuses a peer-held item (`not_holder`).',
+    'Writes are verify-read and fail loudly on an invisible write (checkpoint_verify_failed). A plain replace that would ' +
+    'shrink a substantial checkpoint >50% is BLOCKED (`shrink_blocked`) — pass `append:true` or `confirmShrink:true`. ' +
+    'Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next ' +
@@ -158,6 +177,10 @@ export default defineTool({
           'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
             'instead of replacing it. Also the default applied to any `items[]` entry that omits its own `append`.',
         ),
+      confirmShrink: z
+        .boolean()
+        .optional()
+        .describe('single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',
@@ -167,7 +190,15 @@ export default defineTool({
     const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null };
     const items = args.items?.length
       ? args.items
-      : [{ id: args.id as string, checkpoint: args.checkpoint, harness: args.harness, append: args.append }];
+      : [
+          {
+            id: args.id as string,
+            checkpoint: args.checkpoint,
+            harness: args.harness,
+            append: args.append,
+            confirmShrink: args.confirmShrink,
+          },
+        ];
     const env = await runBulk(
       items,
       async (it) => {
@@ -241,14 +272,39 @@ export default defineTool({
         // build the journal ring) and gives us the prior length for free to warn on.
         // append mode already reads + folds the prior text explicitly above, so it
         // can't hit this failure mode; a clear has no "shrink" to warn about either.
+        // EI-18140632570924965: a plain replace (not append, not a clear) that
+        // would shrink a substantial prior checkpoint by more than half is BLOCKED
+        // by default — the same threshold EI-9325's shrinkWarning already used to
+        // WARN, now enforced as a guard. Confirmed live: a caller relying on the
+        // warn-only nudge still executed the destructive write before noticing it.
+        // `confirmShrink:true` opts back into the old warn-only behavior for a
+        // genuinely intentional replace. The guard runs INSIDE the store's locked
+        // transaction (see setCarryNoteWithPrior) — no separate read-then-write
+        // race between the check and the write.
+        const wantsConfirmShrink = it.confirmShrink ?? args.confirmShrink ?? false;
         let priorLength: number | null = null;
         let stored: string | null;
+        let blockedReason: string | undefined;
         if (!wantsAppend && checkpointToStore && checkpointToStore.length > 0) {
-          const res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore);
+          const newLength = checkpointToStore.length;
+          const res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+            guard: wantsConfirmShrink
+              ? undefined
+              : (_priorNote, priorLen) =>
+                  priorLen > 500 && newLength < priorLen * 0.5
+                    ? `plain replace would shrink the checkpoint from ${priorLen} to ${newLength} chars (>50% loss). ` +
+                      'Pass { append: true } to join onto the existing checkpoint instead, or { confirmShrink: true } ' +
+                      'if this replace is intentional.'
+                    : null,
+          });
           stored = res.stored;
           priorLength = res.priorLength;
+          blockedReason = res.blockedReason;
         } else {
           stored = await setWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }, checkpointToStore);
+        }
+        if (blockedReason) {
+          return { ok: false as const, id: it.id, error: `shrink_blocked — ${blockedReason}` };
         }
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
         // is REAL item-scoped progress — credit it so the item reads as `progressing`, not

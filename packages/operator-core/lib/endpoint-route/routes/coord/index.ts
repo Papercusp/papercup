@@ -21,8 +21,8 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import inboxSse from './inbox-sse';
 import { readPlanEvents } from '../../../agent-tools/coordination/plan-events';
-import { listEscalations } from '../../../agent-tools/coordination/escalations';
-import { listHandoffs } from '../../../agent-tools/coordination/handoffs';
+import { listEscalations, listEscalationsPaginated } from '../../../agent-tools/coordination/escalations';
+import { listHandoffs, listHandoffsPaginated } from '../../../agent-tools/coordination/handoffs';
 import { coordLog } from '../../../agent-tools/coordination/log';
 import { type CoordEnvelope } from '../../../agent-tools/coordination/envelope';
 
@@ -77,6 +77,28 @@ function toHistoryItem(source: HistoryItem['source'], e: CoordEnvelope): History
   };
 }
 
+// EI-18138089781782660: this used to read the WHOLE coord corpus (every
+// plan-event + every message + every escalation + every handoff, unbounded)
+// on every call, then filter/sort/slice in JS — cost grew unboundedly with
+// total coord volume. Every per-surface fetch below is now a BOUNDED storage
+// read: readPlanEvents already pushes since_ts/planSlug into its own bounded
+// query; messages go through `readLinesBounded` (limit/sinceTs/planSlug
+// pushed to SQL, same primitive plan-events uses); escalations/handoffs go
+// through their already-bounded/folded `*Paginated` readers (which page a
+// coverage window deeper rather than risk a zombie "open" record — the same
+// pattern WI-4181 hardened for escalations, now mirrored for handoffs). The
+// `owner` filter still runs in JS over the bounded window (matching
+// `readCoordFeed`'s established convention — see feed.ts's WI-3869 comment;
+// pushing an owner/`to`-array-containment filter into SQL isn't the part
+// that was unbounded).
+//
+// PUSHDOWN_CAP mirrors feed.ts's RAW_SURFACE_FETCH_CAP: fetch at most this
+// many rows per surface regardless of the final page `limit`, so a caller
+// asking for a small page with a narrow (planSlug/owner) filter still gets a
+// wide-enough window to find its matches, without ever re-materializing the
+// whole surface.
+const PUSHDOWN_CAP = 1000;
+
 export async function loadCoordHistory(args: {
   kinds?: string[];
   planSlug?: string;
@@ -87,18 +109,30 @@ export async function loadCoordHistory(args: {
   const wanted = args.kinds?.length ? new Set(args.kinds) : null;
   const sinceMs = args.sinceTs ? new Date(args.sinceTs).getTime() : 0;
   const limit = Math.min(Math.max(args.limit ?? 200, 1), 1000);
+  const pushdownLimit = Math.min(Math.max(limit * 3, 200), PUSHDOWN_CAP);
   const items: HistoryItem[] = [];
   if (!wanted || wanted.has('plan_event')) {
-    for (const e of await readPlanEvents({})) items.push(toHistoryItem('plan_event', e));
+    for (const e of await readPlanEvents({
+      planSlugs: args.planSlug ? [args.planSlug] : undefined,
+      since_ts: args.sinceTs,
+      limit: pushdownLimit,
+    })) items.push(toHistoryItem('plan_event', e));
   }
   if (!wanted || wanted.has('message')) {
-    for (const e of await readAllMessages()) items.push(toHistoryItem('message', e));
+    const bounded = await coordLog.readLinesBounded('messages', {
+      limit: pushdownLimit,
+      ...(args.sinceTs ? { sinceTs: args.sinceTs } : {}),
+      ...(args.planSlug ? { planSlug: args.planSlug } : {}),
+    });
+    for (const e of bounded) items.push(toHistoryItem('message', e));
   }
   if (!wanted || wanted.has('escalation')) {
-    for (const e of await listEscalations({})) items.push(toHistoryItem('escalation', e));
+    const { escalations } = await listEscalationsPaginated({ maxRecords: pushdownLimit });
+    for (const e of escalations) items.push(toHistoryItem('escalation', e));
   }
   if (!wanted || wanted.has('handoff')) {
-    for (const h of await listHandoffs({})) {
+    const { handoffs } = await listHandoffsPaginated({ maxRecords: pushdownLimit });
+    for (const h of handoffs) {
       items.push(toHistoryItem('handoff', h.record));
       if (h.accepted_by) items.push(toHistoryItem('handoff', h.accepted_by));
     }

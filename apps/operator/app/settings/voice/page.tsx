@@ -1148,11 +1148,12 @@ function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
     // Force a fresh always-on cycle. setVoiceMode early-returns when the
     // mode hasn't changed, so if the user is already in always-on the
     // capture loop won't re-spin. Toggle off → on to force a fresh start.
-    let restoreMode: 'off' | 'push-to-talk' | 'always-on' | null = null;
+    type VoiceRestoreMode = 'off' | 'push-to-talk' | 'always-on' | null;
+    let restoreMode: VoiceRestoreMode = null;
     try {
       const stMod = await import('../../_components/voice/voice-mode');
       const stCfg = stMod.getVoiceConfig();
-      restoreMode = (stCfg.lastMode ?? 'off') as typeof restoreMode;
+      restoreMode = (stCfg.lastMode ?? 'off') as VoiceRestoreMode;
       setVoiceMode('off');
       // Brief tick so the prior capture tears down before we restart.
       await new Promise(r => setTimeout(r, 200));
@@ -1531,7 +1532,7 @@ function EnginePreview({ engine }: { engine: string }) {
  * voice on demand. Persisting to el-agent-sync.mjs is a separate step
  * (run the script after you settle on a voice you like).
  */
-function ConvAgentVoice(): JSX.Element {
+function ConvAgentVoice(): React.JSX.Element {
   const [current, setCurrent] = useState<{ voiceId: string | null; voiceName: string | null; modelId: string | null } | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);

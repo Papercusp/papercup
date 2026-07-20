@@ -39,7 +39,7 @@ async function resolveHarnessSlug(): Promise<string | null> {
   } catch { return null; }
 }
 
-export default function TerminalTab(): JSX.Element {
+export default function TerminalTab(): React.JSX.Element {
   const t = useLexicon();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<import('@xterm/xterm').Terminal | null>(null);

@@ -82,7 +82,7 @@ const summaryColumns: ColumnDef<SummaryRow>[] = [
   { key: 'open', header: 'open', width: 0.65, toCopyText: (r) => String(r.open), render: ({ row }) => row.open },
 ];
 
-export default function IpcTab(): JSX.Element {
+export default function IpcTab(): React.JSX.Element {
   const [transport, setTransport] = useState<'ipc' | 'http' | 'unknown'>('unknown');
   const [message, setMessage] = useState('hello from the dev page');
   const [emitBinary, setEmitBinary] = useState(false);
