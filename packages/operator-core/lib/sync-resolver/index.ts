@@ -2185,12 +2185,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // On papercusp that was 1162 rows ≈ 9.4MB parsed into the webview per load.
       // Projecting to the rendered columns cuts it ~20× with NO behavior change
       // (row count unchanged, so client-side search/count still see every row).
+      //
+      // P-007 (precompute-sync-reads-phase2): `summary` was STILL ~423KB of the
+      // remaining ~665KB list payload (1181 rows × ~366 avg chars) — and the grid
+      // never renders it (only DetailPanel's Description prose, for the ONE
+      // selected feature). Dropped here at the sync boundary; the Detail pane
+      // fetches the selected feature's summary on demand via
+      // `featuresConsolidated.detail` (mirrors the workItems.byHarness/.detail
+      // split, P-006). List row count is unchanged so client search/count still
+      // see every row.
       return (await db
         .select({
           harnessSlug: t.harnessSlug,
           featureId: t.featureId,
           title: t.title,
-          summary: t.summary,
           status: t.status,
           attempts: t.attempts,
           claims: t.claims,
@@ -2285,6 +2293,54 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         .from(t)
         .where(eq(t.sourcePlanSlug, planSlug))
         .orderBy(desc(t.createdTs))) as unknown[];
+    },
+  },
+
+  // featuresConsolidated.detail — the single-feature ON-DEMAND detail read
+  // (P-007). Carries the per-row `summary` that featuresConsolidated.bySlug
+  // dropped at the sync boundary (the grid never renders it; only the Detail
+  // pane's Description prose does, for the ONE selected feature). Mirrors the
+  // workItems.byHarness/.detail split (P-006): the Detail pane fires this tiny
+  // 1-row query on selection instead of the list carrying every feature's
+  // summary. Always a 0-or-1-element array (client reads data[0]).
+  'featuresConsolidated.detail': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      featureId: z.string().min(1),
+      workspaceId: z.string().optional(),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, featureId, workspaceId } = args as {
+        harnessSlug: string;
+        featureId: string;
+        workspaceId?: string;
+      };
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
+      const { and, eq } = await import('drizzle-orm');
+      const t = generated.harnessFeaturesConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select({
+          harnessSlug: t.harnessSlug,
+          featureId: t.featureId,
+          title: t.title,
+          summary: t.summary,
+          status: t.status,
+          attempts: t.attempts,
+          claims: t.claims,
+          tags: t.tags,
+          needsHumanReview: t.needsHumanReview,
+          sourcePlanSlug: t.sourcePlanSlug,
+          workingUsers: t.workingUsers,
+          updatedTs: t.updatedTs,
+        })
+        .from(t)
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.featureId, featureId), eq(t.workspaceId, workspaceId))
+            : and(eq(t.harnessSlug, harnessSlug), eq(t.featureId, featureId)),
+        )
+        .limit(1)) as unknown[];
     },
   },
 

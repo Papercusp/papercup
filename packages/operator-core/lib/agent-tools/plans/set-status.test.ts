@@ -79,9 +79,11 @@ describe('planSyncWorkItemState (EI-14699)', () => {
     expect(planSyncWorkItemState('todo', 'blocked', 'blocked')).toBeNull();
   });
 
-  it('returns a blocked work_item to todo when the plan item is REOPENED from blocked/needs-human', () => {
-    expect(planSyncWorkItemState('blocked', 'todo', 'blocked')).toBe('todo');
-    expect(planSyncWorkItemState('needs-human', 'todo', 'blocked')).toBe('todo');
+  it('reopens a blocked work_item onto the unified claimable token `open` when the plan item is REOPENED from blocked/needs-human', () => {
+    // work-item-status-full-unify (P-005): the plan-item status is `todo` (its own vocabulary),
+    // but the work_item is re-opened onto the SINGLE claimable token `open` for both families.
+    expect(planSyncWorkItemState('blocked', 'todo', 'blocked')).toBe('open');
+    expect(planSyncWorkItemState('needs-human', 'todo', 'blocked')).toBe('open');
   });
 
   it('does NOT reopen a work_item that is not blocked, nor on a reopen from a non-blocked status', () => {

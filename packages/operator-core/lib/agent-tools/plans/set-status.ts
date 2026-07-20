@@ -189,14 +189,15 @@ export function shouldPushNeedsHuman(
  * / reflectedStatus so the rule is unit-tested without the lock/PG path.
  */
 export const PLAN_BLOCKED_STATUSES = new Set(['blocked', 'needs-human']);
-/** The work_item states a claimable item can be in before we block it — the
- *  canonical claimable states across both families (feature: `todo`, issue: `open`). */
+/** The work_item states a claimable item can be in before we block it. work-item-status-full-unify
+ *  (P-004/P-005): `open` is now the SINGLE claimable token for BOTH families; `todo` is retired but
+ *  kept here as a TOLERANT read-superset so a not-yet-backfilled legacy row still blocks correctly. */
 export const CLAIMABLE_WORK_ITEM_STATES = new Set(['todo', 'open']);
 export function planSyncWorkItemState(
   oldPlanStatus: string | null,
   newPlanStatus: string,
   currentWorkItemState: string,
-): 'blocked' | 'todo' | null {
+): 'blocked' | 'open' | null {
   if (newPlanStatus === oldPlanStatus) return null;
   if (PLAN_BLOCKED_STATUSES.has(newPlanStatus)) {
     return CLAIMABLE_WORK_ITEM_STATES.has(currentWorkItemState) ? 'blocked' : null;
@@ -207,7 +208,10 @@ export function planSyncWorkItemState(
     PLAN_BLOCKED_STATUSES.has(oldPlanStatus) &&
     currentWorkItemState === 'blocked'
   ) {
-    return 'todo';
+    // work-item-status-full-unify (P-005): re-open onto the UNIFIED claimable token `open`
+    // directly (was `todo`, which only reached 'open' via the legacy alias-fold + mis-reported
+    // workItemSynced.state). The plan-item status stays `todo` (its own vocabulary is unchanged).
+    return 'open';
   }
   return null;
 }
@@ -658,7 +662,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // current-state-gated by planSyncWorkItemState so a routine re-set never disturbs
   // a work_item already placed correctly (wip/terminal/etc). Awaited but fully
   // fail-safe: a lookup/write hiccup NEVER fails the plan-status flip.
-  let workItemSynced: { id: string; state: 'blocked' | 'todo' } | undefined;
+  let workItemSynced: { id: string; state: 'blocked' | 'open' } | undefined;
   {
     // Cheap pre-gate: only a block/unblock EDGE can ever sync, so skip the PG lookup
     // for every other flip (done/wip/re-set) — the vast majority. The authoritative

@@ -36,6 +36,7 @@ import {
 } from './git-ops';
 import { toolingRoot, type ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromEnv } from './perf-gate';
+import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
 import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
 import { heldGateAlert } from './held-gate-alarm';
 
@@ -120,6 +121,14 @@ export interface CheckpointDeps {
    *  + flag-gated (a no-op `pass` unless PAPERCUSP_PERF_GATE=1) so existing stubs need not
    *  provide it and the default deploy behaviour is unchanged. */
   perfGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  /** desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. Runs
+   *  post-runGreen / pre-advance on a GREEN candidate: if the latest persisted
+   *  desktop-perf run (desktop_perf_runs, P-010) shows a budgeted interaction /
+   *  route / RSS regression, WARN (default — still advance) or BLOCK (only when
+   *  block-mode is armed, which V1 never does — warn-not-block until trusted).
+   *  Optional + FLAG-gated (FLAGS.DESKTOP_PERF_GATE, default ON; a no-op `pass`
+   *  when off or when no run is recorded) so existing stubs need not provide it. */
+  desktopPerfGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
   /** P-016 (agent-tool-delta-protocol D-008): the delta-protocol SAFETY gate.
    *  Runs post-runGreen / pre-advance on a GREEN candidate: if the production
    *  semantic-delta flag is ON but the Lane-C scenarios (S23/S24/S25) are not
@@ -206,7 +215,7 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'delta-held' | 'cupboard-hygiene-held' | 'skipped-locked';
+  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'desktop-perf-held' | 'delta-held' | 'cupboard-hygiene-held' | 'skipped-locked';
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -1974,6 +1983,25 @@ export async function runGreenCheckpoint(
     }
   }
 
+  // desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. The
+  // candidate is GREEN — but if the latest recorded desktop-perf run shows a
+  // budgeted interaction/route/RSS regression, don't silently advance the green
+  // pin into a slower desktop UX. Default-WARN (surface + still advance); BLOCK
+  // only when block-mode is armed (V1 never arms it — warn-not-block until
+  // trusted). Flag-gated + fail-soft (a no-op `pass` unless FLAGS.DESKTOP_PERF_GATE
+  // is on AND a run is recorded), so the default deploy path is unchanged.
+  const desktopPerf = await deps.desktopPerfGate?.(candidate).catch(() => undefined);
+  if (desktopPerf && desktopPerf.action !== 'pass') {
+    deps.log(desktopPerf.summary);
+    await deps.broadcast(desktopPerf.summary).catch(() => {});
+    if (desktopPerf.action === 'block') {
+      await deps
+        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} desktop-perf-regressed`, desktopPerf.summary)
+        .catch(() => {});
+      return { advanced: false, candidate, from: lastReady, green: true, reason: 'desktop-perf-held', summary: desktopPerf.summary };
+    }
+  }
+
   // P-016 (agent-tool-delta-protocol D-008): the delta SAFETY gate. If the
   // production semantic-delta flag is ON but the Lane-C scenarios (S23/S24/S25)
   // are not recorded-green-and-fresh, do not advance the green pin into a state
@@ -2691,6 +2719,13 @@ export function realCheckpointDeps(
     // (PAPERCUSP_PERF_GATE / PAPERCUSP_PERF_GATE_BLOCK). Inert (`pass`, reads nothing)
     // until the owner enables it.
     perfGate: (candidate) => runPerfGate(perfGatePolicyFromEnv(), candidate),
+    // desktop-performance-suite-2026-07-20 P-011: the real desktop-perf gate reads
+    // the latest persisted desktop-perf run (desktop_perf_runs) and evaluates its
+    // budgeted measures. Policy from the FLAGS system (FLAGS.DESKTOP_PERF_GATE,
+    // default ON — a FLAGS entry, not env; block-mode never armed in V1). A no-op
+    // `pass` (reads nothing) when the flag is off or no run is recorded.
+    desktopPerfGate: async (candidate) =>
+      runDesktopPerfGate(await desktopPerfGatePolicyFromFlags(), { candidateSha: candidate }),
     // P-016 (agent-tool-delta-protocol D-008): the real delta gate reads the
     // baked production delta-flag default + the latest recorded Lane-C scenario
     // verdicts (llm_test_runs) — NOT a synchronous live-model eval. Policy from

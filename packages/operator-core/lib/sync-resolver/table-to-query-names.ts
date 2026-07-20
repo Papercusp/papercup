@@ -246,6 +246,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // cache-tag-trigger-coverage.integration.test.ts.
   'harness_shared.work_items': [
     'featuresConsolidated.bySlug',
+    // P-007: the single-feature on-demand detail read (carries the `summary`
+    // dropped from bySlug) — bridged wherever bySlug is so an open Detail pane
+    // live-refreshes the Description on the same writes that move the list row.
+    'featuresConsolidated.detail',
     'featuresConsolidated.byPlanSlug',
     // designFeatures.byHarness (data-sync-push-completion P-003) — the Design dashboard's
     // "features needing design" list reads work_items (needs_design / design_status /
@@ -285,6 +289,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',
+    // P-007: single-feature on-demand detail (carries `summary` dropped from bySlug).
+    'featuresConsolidated.detail',
     'featuresConsolidated.byPlanSlug',
     'featuresConsolidated.byHive',
     'workItems.byHarness',
