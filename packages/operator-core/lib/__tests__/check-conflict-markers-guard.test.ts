@@ -18,12 +18,9 @@
  */
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import {
-  findConflictMarker,
-  CONFLICT_MARKER_ERE,
-  isDirectCliInvocation,
-} from '../../../../scripts/check-conflict-markers.mjs';
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only. Single-line
+// so the @ts-ignore covers the module-specifier line (TS7016 anchors there on a multiline import).
+import { findConflictMarker, CONFLICT_MARKER_ERE, isDirectCliInvocation } from '../../../../scripts/check-conflict-markers.mjs';
 
 const B = (c: string) => c.repeat(7); // a 7-char bracket run, without a literal marker here
 

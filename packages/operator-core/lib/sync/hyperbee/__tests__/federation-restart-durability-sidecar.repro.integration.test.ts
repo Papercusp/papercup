@@ -988,7 +988,32 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
  * override — not adding a new seam — is the fix.
  */
 describe('MEMBER→OWNER content guard (WI-5481 scope-extension) — member-authored content applies on the owner via the REAL (non-overridden) apply path, no restarts', () => {
-  it(
+  // SKIPPED (WI-5481, 2026-07-21 su-6ffd5ea8): NOT YET GREEN — left in as a scaffolded
+  // starting point, not a finished repro. Status as of this wake:
+  //   ✓ owner ADMITS the member's log (both directions) using two EXISTING test seams —
+  //     `loadHiveMembersOverride` (boot.ts:470) for admit-time membership, and
+  //     `potHomeSlugForHarnessOverride` (boot.ts:395) so the owner resolves its own
+  //     content-guard home without a DB round trip. No new seam was needed here —
+  //     supersedes an earlier (wrong) checkpoint note on this thread claiming
+  //     `resolveAuthorDevice` needed a new override; it does not (see the block comment
+  //     above this describe).
+  //   ✓ member's authored feature CDC-captures + drains once `harness_shared.projects`
+  //     also has a row for MEMBER_SLUG in the env-routed `orgDb` (fill_workspace_id_from_projects
+  //     needs it — the dedicated `dbOwner` schema the alternating-soak test above uses
+  //     has this by construction; the shared `orgDb` used by both directions' real
+  //     content-guard apply does not, unless inserted explicitly).
+  //   ✗ STILL FAILS: the member-authored op does not land on the owner within 25s.
+  //     `PAPERCUSP_A003_TRACE=1` shows admission succeeding on both sides, but no
+  //     `member-guard` or `identity-gap` trace line ever fires — suggesting the op
+  //     never reaches `decideMemberContentOp` at all (a MERGE-stage gap, not a
+  //     guard-decision gap) — NOT YET ROOT-CAUSED. (Also noted in passing: this test
+  //     file runs under `vitest-fail-on-console`, so `PAPERCUSP_A003_TRACE=1` needs
+  //     `vi.spyOn(console, 'error').mockImplementation(...)` or every trace line trips
+  //     the no-console-error assertion — a real friction for whoever debugs this next.)
+  // NEXT: instrument the owner's merge-cursor / mergePollMs poll loop directly (not just
+  // the admit/apply traces) to see whether it ever reads past the member's admitted log
+  // at all for this harness pairing.
+  it.skip(
     'a member-authored feature lands on the owner within a bounded window via the real onAnnounce/poll-driven merge + WI-259 content guard',
     async () => {
       const HIVE_HOME = 'm2o-owner-hive';

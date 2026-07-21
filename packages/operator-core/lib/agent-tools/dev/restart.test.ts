@@ -51,7 +51,7 @@ const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
 const orgPgM = vi.mocked(getOrgPg);
-const auditUnsafeM = vi.fn(async () => undefined);
+const auditUnsafeM = vi.fn(async (_query: string, _params: unknown[]) => undefined);
 
 const restartModule = await import('./restart');
 const tool = restartModule.default;

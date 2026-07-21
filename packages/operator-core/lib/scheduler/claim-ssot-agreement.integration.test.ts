@@ -130,7 +130,7 @@ async function seed(
     VALUES (
       ${o.harnessSlug ?? H}, ${id}, ${o.kind ?? 'bug'}, ${o.status ?? 'open'}, ${o.takenBy ?? null}, ${WS},
       ${o.createdTs ?? 0}, 0,
-      ${o.payload ? db.sql.json(o.payload) : null},
+      ${o.payload ? db.sql.json(o.payload as Parameters<typeof db.sql.json>[0]) : null},
       ${o.origin ?? 'local'}, ${o.authorPubkey ?? null}, ${o.title ?? id},
       ${o.terminalOwner ?? null}, ${o.terminalCompletionRef ?? null}, ${o.swarmAffinity ?? null}, ${o.redundancy ?? null})`;
 }
