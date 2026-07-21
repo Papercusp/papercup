@@ -95,7 +95,8 @@ export interface ClaimLedgerMismatchTripwire {
  *  readers discriminate on `kind`. */
 export type JournalTripwire =
   | ClaimLedgerMismatchTripwire
-  | import('./turn-end-tracking').UnregisteredArtifactTripwire;
+  | import('./turn-end-tracking').UnregisteredArtifactTripwire
+  | import('./turn-end-tracking').UnguardedHaltTripwire;
 
 /** A note that ALSO discloses failure is honest — never tripwire disclosure.
  *  Shared across every domain: an honest note that names the failure alongside

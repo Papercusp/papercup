@@ -51,8 +51,10 @@ export default defineTool({
       'work_items:observe (claimability of specific ids you already have)',
     ],
     byRole: {
-      mug:
-        "Before draining/winding a fleet down, confirm claimableCount===0 here (the drain-stamp records this same oracle). A non-zero count with a bare `status='open'` justification means the drain is premature.",
+      mug: {
+        when:
+          "Before draining/winding a fleet down, confirm claimableCount===0 here (the drain-stamp records this same oracle). A non-zero count with a bare `status='open'` justification means the drain is premature.",
+      },
     },
   },
   capability: 'work_items:read',

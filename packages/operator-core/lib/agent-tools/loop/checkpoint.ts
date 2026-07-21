@@ -391,10 +391,38 @@ export default defineTool({
         } catch {
           unreadInbox = null;
         }
+        // Re-wake guarantee (turn-end-tracking.isRewakeGuaranteed): is ending
+        // THIS turn safe, or would an autonomous session silently halt? A CLOSED
+        // gate that says "settle" is FALSE COMFORT when no re-wake exists — it
+        // must escalate to self-compact / arm-a-wake. Excludes the always-armed
+        // coord:inbox-wake keepalive (liveness, not a deliberate wake for this
+        // work). Best-effort; unknown ⇒ null → base guidance (non-breaking).
+        let rewakeGuaranteed: boolean | null = null;
+        try {
+          const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] =
+            await Promise.all([
+              import('../../turn-end-tracking'),
+              import('../../events/await/store'),
+              import('../../modes/store'),
+            ]);
+          const [loop, awaits, modes] = await Promise.all([
+            getLoopStatus(ownerId).catch(() => null),
+            listActiveAwaits(ownerId).catch(() => []),
+            workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([]),
+          ]);
+          rewakeGuaranteed = isRewakeGuaranteed({
+            autonomousModeActive: modes.some((m) => m.mode === 'auto' || m.mode === 'drain'),
+            loopActive: Boolean(loop?.active),
+            activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
+          });
+        } catch {
+          rewakeGuaranteed = null;
+        }
         return continuationGateFromReads({
           contextTokens: liveTokens ?? pres?.contextTokens,
           compactionLimit: derivedLimit,
           unreadInbox,
+          rewakeGuaranteed,
         });
       },
       {

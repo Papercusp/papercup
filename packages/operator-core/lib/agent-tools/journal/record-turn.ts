@@ -88,10 +88,23 @@ export default defineTool({
     // artifacts:save registration. The claim-mismatch tripwire outranks it on
     // the single tripwire slot (dishonesty > untracked output); the sweep is
     // bounded + fail-soft and only runs when the slot is free.
+    const ioMod = await import('../../turn-end-tracking-io');
     const artifactTripwire = claimTripwire
       ? null
-      : await (await import('../../turn-end-tracking-io')).boundedArtifactSweep(args.session_id, sinceIso);
-    const tripwire = claimTripwire ?? artifactTripwire;
+      : await ioMod.boundedArtifactSweep(args.session_id, sinceIso);
+    // P-015 turn-end sweep (re-wake guarantee): an AUTONOMOUS session ending a
+    // turn with no armed loop, no real (non-inbox-wake) event-await, and no
+    // owner present is about to SILENTLY HALT — the classic lost-session
+    // failure ("ended a turn expecting a wake that was not armed"). Warn-only:
+    // record a visible tripwire so the owner-report / successor / next orient
+    // surfaces it (the continuation gate is the live nudge for an agent that
+    // self-checks). Outranks the artifact sweep on the single slot (a lost
+    // session > a lost file); never masks a dishonest note (claim wins).
+    const unguardedHaltTripwire =
+      ownerId && !claimTripwire
+        ? await ioMod.boundedUnguardedHaltSweep({ ownerId, workspaceId: identity.workspaceId ?? '*' })
+        : null;
+    const tripwire = claimTripwire ?? unguardedHaltTripwire ?? artifactTripwire;
 
     const { id, deduped } = await recordTurnJournal({
       ownerId,
@@ -210,6 +223,7 @@ export default defineTool({
         tripwire,
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
+        ...(unguardedHaltTripwire ? { unguardedHalt: unguardedHaltTripwire } : {}),
         ...(cursorPersisted ? { cursorPersisted } : {}),
       },
     };

@@ -22,9 +22,14 @@ import { aggregateIssueClaimExclusions } from '../../scheduler/get-next';
 const recM = vi.mocked(getClaimSpecRecord);
 const aggM = vi.mocked(aggregateIssueClaimExclusions);
 
-function breakdown(over: Partial<IssueClaimExclusionBreakdown['excluded']> = {}, matched = 100): IssueClaimExclusionBreakdown {
+function breakdown(
+  over: Partial<IssueClaimExclusionBreakdown['excluded']> = {},
+  matched = 100,
+  claimable = 0,
+): IssueClaimExclusionBreakdown {
   return {
     matchedByFilter: matched,
+    claimable,
     excluded: {
       taken: 0,
       claimHold: 0,

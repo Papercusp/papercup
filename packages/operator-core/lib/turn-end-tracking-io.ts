@@ -9,9 +9,11 @@
 import { withBoundedTimeout } from './bounded-timeout';
 import {
   composeMechanicalCheckpoint,
+  detectUnguardedHalt,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
   unregisteredArtifactTripwire,
+  type UnguardedHaltTripwire,
   type UnregisteredArtifactTripwire,
 } from './turn-end-tracking';
 
@@ -134,6 +136,60 @@ export async function boundedAutoCheckpoint(
     fallback: [] as AutoCheckpointResult[],
     timeoutMs: TURN_END_SWEEP_BUDGET_MS,
     label: 'turn-end-auto-checkpoint',
+  });
+  return value;
+}
+
+/**
+ * The re-wake-guarantee sweep for one turn end: does this owner have a
+ * guaranteed re-wake, or is an autonomous session about to silently halt? Reads
+ * the three signals the compaction-strategy triad turns on — active
+ * mode(s), the engine loop, and this owner's REAL (non-inbox-wake) event-awaits
+ * — and returns the {@link UnguardedHaltTripwire} when none guarantee a wake.
+ * Null (the common case) when a re-wake is guaranteed. Never throws.
+ *
+ * The `coord:inbox-wake:` keepalive is excluded on purpose: every live agent
+ * always holds one (INBOX_WAKE_KEY_PREFIX), so counting it would mean the sweep
+ * NEVER fires. It is liveness, not a deliberate wake for this session's work.
+ */
+export async function sweepUnguardedHalt(input: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<UnguardedHaltTripwire | null> {
+  try {
+    const [{ getModes }, { getLoopStatus }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }] =
+      await Promise.all([
+        import('./modes/store'),
+        import('./harness/routines/loop'),
+        import('./events/await/store'),
+      ]);
+    const [modes, loop, awaits] = await Promise.all([
+      getModes(input.workspaceId, input.ownerId).catch(() => []),
+      getLoopStatus(input.ownerId).catch(() => null),
+      listActiveAwaits(input.ownerId).catch(() => []),
+    ]);
+    const autonomousModeActive = modes.some((m) => m.mode === 'auto' || m.mode === 'drain');
+    const activeAwaitCount = awaits.filter(
+      (a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX),
+    ).length;
+    return detectUnguardedHalt({
+      autonomousModeActive,
+      loopActive: Boolean(loop?.active),
+      activeAwaitCount,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function boundedUnguardedHaltSweep(input: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<UnguardedHaltTripwire | null> {
+  const { value } = await withBoundedTimeout(sweepUnguardedHalt(input), {
+    fallback: null,
+    timeoutMs: TURN_END_SWEEP_BUDGET_MS,
+    label: 'turn-end-unguarded-halt-sweep',
   });
   return value;
 }

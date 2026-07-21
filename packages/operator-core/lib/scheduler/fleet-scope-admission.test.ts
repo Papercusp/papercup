@@ -610,6 +610,7 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     const floorGatedBreakdown = {
       matchedByFilter: 302,
+      claimable: 0,
       excluded: {
         taken: 0,
         claimHold: 33,
@@ -655,7 +656,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
 
     it('returns null (a genuine scope/spec-empty miss, not a floor story) when the filter matches zero issue-family rows', async () => {
-      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue({ matchedByFilter: 0, excluded: floorGatedBreakdown.excluded });
+      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue({ matchedByFilter: 0, claimable: 0, excluded: floorGatedBreakdown.excluded });
       const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
       expect(diag).toBeNull();
     });

@@ -959,6 +959,213 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
 });
 
 /**
+ * WI-5481 SCOPE-EXTENSION repro: the MEMBER→OWNER leg the alternating-soak test above
+ * deliberately left uncovered (see its SCOPE NOTE) — b8-replication-soak.sh polls BOTH
+ * directions every cycle, but no in-process test previously exercised member-authored
+ * content landing on the OWNER via the REAL (non-overridden) apply path.
+ *
+ * Two extra wiring pieces the owner→member direction never needed, both closed here:
+ *   1. ADMIT-time: the owner's `resolveSameHiveMember` needs `loadHiveMembers(HIVE_HOME)`
+ *      to resolve the member's device as a known member — wired via the EXISTING
+ *      `loadHiveMembersOverride` test seam (boot.ts:470) rather than duplicating
+ *      `pot_members` rows into a DB the owner's admit path can reach.
+ *   2. APPLY-time: `decideMemberContentOp` (member-content-guard.ts) resolves the
+ *      member set via `resolveHiveMemberDeviceSet(workspaceId, potHomeSlug)` with NO sql
+ *      override (env-routed to the workspace source) — this one is NOT test-seamed, so
+ *      the `pot_members` row must actually exist in the ENV-ROUTED db (`orgDb`, the same
+ *      one `HARNESS_ADMIN_DATABASE_URL` points at for this whole process).
+ *   3. The owner must run the REAL default apply (no `applyOverride`) so `resolveAuthorDevice`
+ *      + the WI-259 guard actually engage — `potHomeSlugForHarnessOverride` (boot.ts:395,
+ *      an EXISTING seam) resolves the owner's own content-guard home without a DB round
+ *      trip, matching the `resolvedPotHomeSlug === opts.harnessSlug` self-referential case
+ *      a real owned-hive owner takes in production.
+ *
+ * Correction of an earlier (wrong) hypothesis on this thread: `resolveAuthorDevice`
+ * (boot.ts:925) does NOT need a new override seam — it is closed over `admittedIdentities`
+ * and wired automatically into the REAL `buildScopedApply`; it only looked unreachable
+ * because the existing test's owner used a custom `applyOverride` that bypasses
+ * `buildScopedApply` (and therefore `resolveAuthorDevice`) entirely. Dropping that
+ * override — not adding a new seam — is the fix.
+ */
+describe('MEMBER→OWNER content guard (WI-5481 scope-extension) — member-authored content applies on the owner via the REAL (non-overridden) apply path, no restarts', () => {
+  it(
+    'a member-authored feature lands on the owner within a bounded window via the real onAnnounce/poll-driven merge + WI-259 content guard',
+    async () => {
+      const HIVE_HOME = 'm2o-owner-hive';
+      const MEMBER_SLUG = 'm2o-joined-hive';
+      const MERGE_POLL_MS = 1000;
+      const LEG_TIMEOUT_MS = 25_000;
+
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      const prev = {
+        adminUrl: process.env.HARNESS_ADMIN_DATABASE_URL,
+        appUrl: process.env.HARNESS_DATABASE_URL,
+        ws: process.env.PAPERCUSP_WORKSPACE_ID,
+        skip: process.env.PAPERCUSP_SKIP_PG_DISCOVERY,
+        pgb: process.env.PAPERCUSP_PGBOUNCER,
+      };
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        if (prev.adminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL; else process.env.HARNESS_ADMIN_DATABASE_URL = prev.adminUrl;
+        if (prev.appUrl === undefined) delete process.env.HARNESS_DATABASE_URL; else process.env.HARNESS_DATABASE_URL = prev.appUrl;
+        if (prev.ws === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID; else process.env.PAPERCUSP_WORKSPACE_ID = prev.ws;
+        if (prev.skip === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY; else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prev.skip;
+        if (prev.pgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER; else process.env.PAPERCUSP_PGBOUNCER = prev.pgb;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      const idOwner = makeIdentityOverride('owner', 199, 'kc-m2o-owner');
+      const idMember = makeIdentityOverride('member', 17, 'kc-m2o-member');
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-m2o-owner-home', 'Owner Home', null, 1, 1)
+      `;
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
+        VALUES (${WORKSPACE_ID}, ${JSON.stringify({
+          hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idOwner.devicePubkey }],
+        })}::text::jsonb, 1)
+      `;
+      // APPLY-time membership (decideMemberContentOp → resolveHiveMemberDeviceSet, no sql
+      // override — env-routed to orgDb) needs the member's row HERE, not just on a
+      // dedicated owner-schema DB. ADMIT-time membership is separately seamed below.
+      const memberAtt = (login: string, pk: string) =>
+        JSON.stringify([
+          { device_pubkey: pk, gist_id: `gist-${login}`, gist_url: `https://gist.github.com/${login}`, device_label: `${login}-dev`, created_at: 1, signature_by_device: 'sig' },
+        ]);
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idMember.userId}, 'member', ${memberAtt('member', idMember.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
+      `;
+
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/m2o-owner-hive', harness_kind: 'hive', remote_hive: true },
+            { slug: MEMBER_SLUG, path: '/tmp/m2o-member', hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const rootOwner = makeWorkspaceRoot('m2o-owner-');
+      const rootMember = makeWorkspaceRoot('m2o-member-');
+
+      const hiveBinding: SwarmBinding = { kind: 'hive', hive_pubkey: hivePubkeyB64 };
+      const memberBinding: SwarmBinding = {
+        kind: 'topic',
+        topic_hex: deriveSwarmTopic(hiveBinding).toString('hex'),
+      };
+
+      const swarmOwner = makeSwarm(testnet.bootstrap);
+      const swarmMember = makeSwarm(testnet.bootstrap);
+
+      const owner = await bootViaSidecarHost({
+        root: rootOwner,
+        swarm: swarmOwner,
+        harnessSlug: HIVE_HOME,
+        binding: hiveBinding,
+        bootExtra: {
+          announceIdentityOverride: idOwner.override,
+          verifyBindingOverride: async (_pk, _login, userId) =>
+            userId === idMember.userId ? 'verified' : 'fail',
+          mergePollMs: MERGE_POLL_MS,
+          // NO applyOverride — the REAL buildScopedApply must run so resolveAuthorDevice
+          // + the WI-259 content guard actually engage (this is the whole point).
+          potHomeSlugForHarnessOverride: async () => HIVE_HOME,
+          loadHiveMembersOverride: async () => [idMember.devicePubkey],
+        },
+      });
+      const member = await bootViaSidecarHost({
+        root: rootMember,
+        swarm: swarmMember,
+        harnessSlug: MEMBER_SLUG,
+        binding: memberBinding,
+        bootExtra: { announceIdentityOverride: idMember.override, mergePollMs: MERGE_POLL_MS },
+      });
+      cleanups.push(async () => {
+        await owner.host.closeAll();
+        await closeHarnessStore({ workspaceRoot: rootOwner, harnessSlug: HIVE_HOME });
+      });
+      cleanups.push(async () => {
+        await member.host.closeAll();
+        await closeHarnessStore({ workspaceRoot: rootMember, harnessSlug: MEMBER_SLUG });
+      });
+
+      expect(owner.handle.swarm, 'owner did not join a swarm').not.toBeNull();
+      expect(member.handle.swarm, 'member did not join a swarm').not.toBeNull();
+      expect(owner.handle.swarm!.topicHex).toBe(member.handle.swarm!.topicHex);
+
+      // Wait for the OWNER to admit the MEMBER's log (the leg this test is actually
+      // proving — the alternating-soak test above never asserts this direction).
+      const memberLogKey = member.handle.ownLog.keyHex;
+      const ownerAdmittedMember = await pollUntil(
+        () => owner.handle.admitted.has(memberLogKey) || undefined,
+        { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
+      );
+      expect(ownerAdmittedMember, 'owner never admitted the member log (ADMIT-time membership wiring gap)').toBe(true);
+
+      // Member authors a feature directly in the env-routed org DB (the same DB its
+      // real CDC-capture/outbox writes through) and drains its outbox — the AUTHOR-side
+      // boundary, symmetric to the owner-side `drainOutboxOnce` calls elsewhere in this
+      // file; NOT a manual merge.
+      const fidMO = 'F-M2O-1';
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${MEMBER_SLUG}, ${fidMO}, 'member->owner soak feature', 'm2o', 'todo', 0, 'local', 8001, 8001, 8001)
+      `;
+      const memberDrained = await drainOutboxOnce(member.handle, orgDb.adminSql);
+      expect(memberDrained, 'member outbox did not drain the authored feature').toBeGreaterThanOrEqual(1);
+
+      // Landed on the OWNER means: applied via the owner's REAL scoped apply, under the
+      // owner's own (self-referential) potHomeSlug === HIVE_HOME — the same table space
+      // the owner's own local content would use (WI-2105's home-log-exclusion is what
+      // keeps that safe from double-apply; not exercised by this single-write test).
+      const landedMO = await pollUntil(
+        async () => (await readFeature(orgDb.adminSql, HIVE_HOME, fidMO)) ?? undefined,
+        { timeoutMs: LEG_TIMEOUT_MS, intervalMs: 300 },
+      );
+      expect(
+        landedMO,
+        `member->owner ${fidMO} did not land on the owner within ${LEG_TIMEOUT_MS}ms via the real reconnect+poll-merge path`,
+      ).toBeTruthy();
+      expect(landedMO?.origin).toBe('remote');
+    },
+    90_000,
+  );
+});
+
+/**
  * WI-5579 (EI-13317/WI-5481 validation): a GENUINE connected_never_replicated
  * ("zombie socket") repro — the member's transport connects to the owner (swarm
  * shows a live connection, admission/roster federate normally over the announce

@@ -93,6 +93,15 @@ export interface ContinuationGateInputs {
   unreadInbox: number | null | undefined;
   /** Override the context ceiling (default {@link CONTINUATION_CEILING_PCT}). */
   ceilingPct?: number;
+  /** Is a re-wake GUARANTEED if this turn ends now — an armed loop, a registered
+   *  (non-inbox-wake) event-await, or a present owner (turn-end-tracking's
+   *  isRewakeGuaranteed)? A CLOSED gate says "settle", but SETTLING IS ONLY SAFE
+   *  WHEN A RE-WAKE EXISTS: false here means ending the turn would silently halt
+   *  an autonomous session, so the guidance escalates to self-compact / arm a
+   *  wake instead of the plain "end the turn; the next wake re-opens the gate".
+   *  null/undefined ⇒ unknown → guidance unchanged (non-breaking for callers
+   *  that don't supply it; an interactive session's owner is the guaranteed wake). */
+  rewakeGuaranteed?: boolean | null;
 }
 
 export interface ContinuationVerdict {
@@ -103,6 +112,8 @@ export interface ContinuationVerdict {
   /** contextPct is known AND strictly below the ceiling. */
   contextHeadroom: boolean;
   unreadInbox: number | null;
+  /** The re-wake-guarantee input echoed back (null ⇒ unknown/not supplied). */
+  rewakeGuaranteed: boolean | null;
   /** Why the gate is CLOSED, one phrase per blocking leg (empty ⇒ open). */
   reasons: string[];
   /** One-line agent-facing guidance derived from the verdict. */
@@ -141,11 +152,26 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   }
 
   const shouldContinue = reasons.length === 0;
-  const guidance = shouldContinue
+  const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
+  let guidance = shouldContinue
     ? `continuation gate OPEN (${contextPct}% context, no unread inbox): you MAY run the next unit in this turn IF it is already scoped — but FIRST flush (every held work-item claim checkpointed, P-002). Re-evaluate this gate at the next unit boundary.`
     : `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. Checkpoint what you hold and end the turn; the next wake re-opens the gate.`;
 
-  return { shouldContinue, ceilingPct, contextPct, contextHeadroom, unreadInbox, reasons, guidance };
+  // Re-wake guarantee: "settle" is only SAFE when a re-wake actually exists. For
+  // an autonomous session with no armed loop / real await / present owner,
+  // "end the turn; the next wake re-opens the gate" is FALSE COMFORT — there is
+  // no next wake, so ending here silently HALTS the session. Replace the closing
+  // instruction with the self-compact / arm-a-wake directive. Only fires on an
+  // explicit false (unknown/true keeps the base guidance — non-breaking).
+  if (!shouldContinue && rewakeGuaranteed === false) {
+    guidance =
+      `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
+      `⚠ NO guaranteed re-wake (autonomous mode; no armed loop, no registered await, no owner present): ` +
+      `ending the turn now would SILENTLY HALT the session. Do NOT just end it — SELF-COMPACT to continue ` +
+      `(session:request-compaction { autoContinue: true }), or arm a wake first (loop:arm / events:await).`;
+  }
+
+  return { shouldContinue, ceilingPct, contextPct, contextHeadroom, unreadInbox, rewakeGuaranteed, reasons, guidance };
 }
 
 /** Convenience: build the gate inputs from raw presence + inbox reads (the shape
@@ -156,10 +182,12 @@ export function continuationGateFromReads(args: {
   compactionLimit: number | null | undefined;
   unreadInbox: number | null | undefined;
   ceilingPct?: number;
+  rewakeGuaranteed?: boolean | null;
 }): ContinuationVerdict {
   return evaluateContinuationGate({
     contextPct: contextUsagePct(args.contextTokens, args.compactionLimit),
     unreadInbox: args.unreadInbox,
     ceilingPct: args.ceilingPct,
+    rewakeGuaranteed: args.rewakeGuaranteed,
   });
 }

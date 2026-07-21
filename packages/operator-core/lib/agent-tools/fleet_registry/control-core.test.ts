@@ -211,6 +211,7 @@ describe('applyFleetControl', () => {
       harness: 'papercusp',
       breakdown: {
         matchedByFilter: 302,
+        claimable: 0,
         excluded: {
           taken: 0,
           claimHold: 33,

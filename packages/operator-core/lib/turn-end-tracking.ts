@@ -185,3 +185,72 @@ export function unregisteredArtifactTripwire(
   if (files.length === 0) return null;
   return { kind: 'unregistered-artifact', files, note: UNREGISTERED_ARTIFACT_NOTE };
 }
+
+/* ------------------------------------------------------------------ */
+/* Unguarded-halt detection — the re-wake guarantee at turn end        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The classic silent-halt: an AUTONOMOUS session (auto/drain mode) ends a turn
+ * with open work but NO guaranteed re-wake — no armed loop, no registered
+ * event-await, and (by the autonomous mode's own semantics) no owner present to
+ * speak next. Nothing re-invokes it; it halts until a human notices. This is
+ * exactly the "never end a turn expecting a wake that is not armed" failure the
+ * compaction-strategy prose describes — the point of this sweep is to move it
+ * from advice the agent must REMEMBER to a MECHANICAL turn-end read the system
+ * owns (deterministic-context-carry P-015; warn-only, enforcement is P-016).
+ *
+ * Gating on autonomous-mode is the high-precision "open work + no present owner"
+ * signal: AUTO/DRAIN's entire premise is that the owner is away and work recurs
+ * across turns (the AUTO contract literally says to arm a loop for exactly this),
+ * so an autonomous session with no loop and no await is DEFINITIONALLY about to
+ * violate that contract. An interactive session is never flagged — its owner IS
+ * the guaranteed next wake.
+ */
+export interface RewakeGuaranteeState {
+  /** An autonomous mode (auto/drain) is active — the owner is, by that mode's
+   *  own semantics, NOT the guaranteed next speaker. */
+  autonomousModeActive: boolean;
+  /** The engine loop is armed (loop:status.active === true). */
+  loopActive: boolean;
+  /** Count of this owner's active event-await registrations, EXCLUDING the
+   *  always-armed `coord:inbox-wake:` keepalive (which every live agent holds,
+   *  so it is liveness — not a deliberate wake for this session's pending work).
+   *  The caller applies the exclusion (INBOX_WAKE_KEY_PREFIX). */
+  activeAwaitCount: number;
+  /** The prompt that STARTED this turn was owner-interactive (a human is here
+   *  and will speak next) — suppresses the flag. Best-effort; default false. */
+  ownerInteractiveTurn?: boolean;
+}
+
+/**
+ * Is a re-wake GUARANTEED after this turn ends? True (safe to settle) when the
+ * session is interactive, an owner is present this turn, a loop is armed, or a
+ * real (non-inbox-wake) await is registered. False ONLY for an autonomous
+ * session with none of those — the unguarded halt.
+ */
+export function isRewakeGuaranteed(s: RewakeGuaranteeState): boolean {
+  if (!s.autonomousModeActive) return true; // interactive/normal: owner speaks next
+  if (s.ownerInteractiveTurn) return true; // a human is here this turn
+  if (s.loopActive) return true; // armed engine loop re-wakes it
+  if (s.activeAwaitCount > 0) return true; // a registered event-await re-wakes it
+  return false;
+}
+
+export interface UnguardedHaltTripwire {
+  kind: 'unguarded-halt';
+  note: string;
+}
+
+export const UNGUARDED_HALT_NOTE =
+  'Turn ending under an autonomous mode (auto/drain) with NO guaranteed re-wake: no armed loop, ' +
+  'no registered event-await, and no owner present to speak next. Nothing will re-invoke this ' +
+  'session — it silently halts until a human notices (the "ended a turn expecting a wake that was ' +
+  'not armed" failure). Before ending: arm a loop (loop:arm), register a wake (events:await / ' +
+  'deploy:await), or self-compact to continue (session:request-compaction { autoContinue: true }).';
+
+/** The unguarded-halt tripwire for a turn-end state, or null when a re-wake is
+ *  guaranteed ({@link isRewakeGuaranteed}). Pure. */
+export function detectUnguardedHalt(s: RewakeGuaranteeState): UnguardedHaltTripwire | null {
+  return isRewakeGuaranteed(s) ? null : { kind: 'unguarded-halt', note: UNGUARDED_HALT_NOTE };
+}
