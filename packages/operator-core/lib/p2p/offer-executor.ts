@@ -48,6 +48,8 @@ import {
 } from './claim-authority';
 import { emitP2pReceipt } from './receipts';
 import { resolveP2pGrantWorkspace } from './grant-store';
+import { ensureForeignGitSyncRoutine } from '../harness/routines/foreign-git-sync-action';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** M14: the fleet-scoped presence label a foreign session carries, so hosts
  *  and peers can tell foreign work from native sessions at a glance. */
@@ -87,6 +89,16 @@ export interface OfferExecutorDeps {
   bindForeignSession?: typeof bindForeignSession;
   setForeignWorkspaceState?: typeof setForeignWorkspaceState;
   emitP2pReceipt?: typeof emitP2pReceipt;
+  /**
+   * WI-5327 follow-up: seed this workspace's `system:foreign-git-sync` routine
+   * (foreign-git-sync-action.ts) the moment a foreign workspace first exists —
+   * per that file's own module doc, seeding belongs HERE (registerForeignWorkspace's
+   * consumer, P-104 spawn), never a blanket boot-time seed, so the lane activates
+   * exactly when foreign work exists (P-005). Best-effort: a seeding failure must
+   * NEVER block or refuse the spawn — logged and swallowed, same posture as
+   * ensure-host-routines.ts's boot-time seeding.
+   */
+  ensureForeignGitSyncRoutine?: typeof ensureForeignGitSyncRoutine;
 }
 
 export interface ExecuteClaimedOfferArgs {
@@ -230,6 +242,23 @@ export async function executeClaimedOffer(
   if (!prov.ok) {
     await receipt({ action: 'work-offer:spawn', refusal: prov.refusal });
     return refuse(prov.refusal.code, prov.refusal.detail);
+  }
+
+  // (c2) WI-5327 follow-up: seed the foreign-git-sync routine now that a
+  // foreign workspace genuinely exists (foreign-git-sync-action.ts's own
+  // seeding contract — activation gated by the real surface, P-005). Never
+  // fabricated: installSlug is the SAME operator-home convention every other
+  // host-wide singleton routine uses (ensure-host-routines.ts). Best-effort —
+  // a seeding failure must never block or refuse a spawn that already
+  // provisioned successfully.
+  try {
+    const seedRoutine = deps.ensureForeignGitSyncRoutine ?? ensureForeignGitSyncRoutine;
+    await seedRoutine({ workspaceId: ws, installSlug: operatorHomeHarnessSlug() });
+  } catch (e) {
+    console.log(
+      `[offer-executor] foreign-git-sync routine seed failed for offer ${args.offer.offerId} ` +
+        `(non-fatal, spawn continues): ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 
   const park = (reason: string) =>

@@ -65,6 +65,10 @@ function makeDeps(over: Partial<OfferExecutorDeps> = {}) {
       receipts.push(a);
       return { ok: true as const, receipt: {} as any };
     }) as any,
+    ensureForeignGitSyncRoutine: vi.fn(async () => {
+      calls.push('seed-git-sync');
+      return {} as any;
+    }),
     ...over,
   };
   return { deps, calls, receipts };
@@ -134,8 +138,14 @@ describe('executeClaimedOffer', () => {
     expect(res.sessionId).toBe('sess-9');
     expect(res.workspace.state).toBe('active');
     expect(res.presenceLabel).toBe('foreign:fleet-a:offer-1');
-    // C2 before launch, provision before both.
-    expect(calls).toEqual(['provision', 'envelope', 'launch']);
+    // C2 before launch, provision before both, git-sync routine seeded right after provision.
+    expect(calls).toEqual(['provision', 'seed-git-sync', 'envelope', 'launch']);
+    expect((deps.ensureForeignGitSyncRoutine as any).mock.calls[0][0]).toMatchObject({
+      workspaceId: 'ws-1',
+    });
+    expect((deps.ensureForeignGitSyncRoutine as any).mock.calls[0][0].installSlug).toEqual(
+      expect.any(String),
+    );
     // H11 ledger seeded from the EFFECTIVE cap = min(offer 1000, available min(500,800)=500).
     expect(res.ledgers.remote?.cap).toBe(500);
     expect(res.ledgers.remote?.maxPerCall).toBe(100);
@@ -202,5 +212,19 @@ describe('executeClaimedOffer', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.refusal.code).toBe('workspace_unresolved');
     expect(deps.currentGrantorEpoch).not.toHaveBeenCalled();
+  });
+
+  it('WI-5327 follow-up: a foreign-git-sync routine seed FAILURE never blocks the spawn (best-effort)', async () => {
+    const { deps, calls } = makeDeps({
+      ensureForeignGitSyncRoutine: vi.fn(async () => {
+        throw new Error('db unavailable');
+      }),
+    });
+    const res = await executeClaimedOffer(baseArgs, deps);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('unreachable');
+    expect(res.sessionId).toBe('sess-9');
+    // provision still ran, launch still ran — the seed failure was swallowed.
+    expect(calls).toEqual(['provision', 'envelope', 'launch']);
   });
 });
