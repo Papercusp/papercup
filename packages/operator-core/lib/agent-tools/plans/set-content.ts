@@ -34,7 +34,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { resolveCtxHarnessSlug, resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan, type ParsedPlan } from './parser';

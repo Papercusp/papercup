@@ -2251,6 +2251,20 @@ export function stalledClaimSignalsFromRows(
  * work-item-claims.ts#listActiveClaimFreshnessForOwner already uses (scope-only
  * join, cross-workspace-safe, `note IS NOT NULL` so a cleared checkpoint reads
  * as no-checkpoint).
+ *
+ * (bug-drain-200k live find, 2026-07-21) A `payload._claimHold: true` row (WI-2797
+ * "held open" — the holder deliberately parked the item, e.g. `state:'blocked'`
+ * pending a live-rig / owner decision, via {@link setWorkItemClaimHold}) is a
+ * CONSIDERED disposition, not an abandoned claim: the holder already decided there
+ * is no more work to do right now, and the item is durably excluded from
+ * claim_next/scheduler:get_next self-select for exactly that reason
+ * ({@link claimHoldExclusionSql}). Without this exclusion the signal re-flags the
+ * SAME held item forever (it never gets a checkpoint/state update again by design),
+ * so every stalled-claim sweep re-serves it as a fresh "bug" to whichever agent
+ * pulls it next — burning a full investigate-and-rediscover cycle each time
+ * (confirmed live: WI-3669, held+blocked ~20h earlier, resurfaced verbatim). Join
+ * back to the base `work_items` row (fleet_assignment doesn't expose `payload`)
+ * and drop it, mirroring {@link isClaimHoldParked}'s JS-side check.
  */
 export async function collectStalledClaimSignals(
   sql: Sql,
@@ -2298,6 +2312,16 @@ export async function collectStalledClaimSignals(
          SELECT 1 FROM harness_shared.tool_invocations ti
           WHERE ti.coord_owner_id = fa.agent_id
             AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
+       )
+       -- (bug-drain-200k, WI-3669 recurrence) a deliberately claim-held item
+       -- (payload._claimHold = true, WI-2797) is a considered "nothing more to do
+       -- right now" disposition, not an abandoned/stuck claim — never raise it.
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.work_items wi
+          WHERE wi.workspace_id = fa.workspace_id
+            AND wi.harness_slug = fa.harness_slug
+            AND wi.feature_id = fa.work_item_id
+            AND COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHold' = 'true'
        )
      ORDER BY COALESCE(fa.last_progress_at, fa.claim_acquired_ts) ASC
      LIMIT 50`;

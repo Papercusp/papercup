@@ -27,7 +27,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
-import { resolveCtxHarnessSlug, resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
@@ -190,7 +190,7 @@ export default defineTool({
     // legacy plans seldom have one — but cheap and keeps the rule total.)
     if (isTerminalPlanStatus(args.status)) {
       try {
-        await clearStartedForTerminalPlan(resolveEffectiveHarnessSlug(sctx), args.slug);
+        await clearStartedForTerminalPlan(result.scope.workspaceId, result.scope.harnessSlug, args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

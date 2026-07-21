@@ -7,7 +7,7 @@
  * covered elsewhere; the gap is the handler's post-write reconciliation:
  *
  *     if (isTerminalPlanStatus(parsePlan(content).frontmatter.status)) {
- *       await clearStartedForTerminalPlan(harnessSlug, slug);  // op_status → 'done'
+ *       await clearStartedForTerminalPlan(result.scope.workspaceId, result.scope.harnessSlug, slug);  // op_status → 'done'
  *     }
  *
  * Invariant (plan-start-state.ts): a plan that is operationally `started`/

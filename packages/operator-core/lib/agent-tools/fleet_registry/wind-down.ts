@@ -29,6 +29,14 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('Why the fleet is winding down — travels on the registry row + the member cue.'),
+    harness: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe(
+        "P-006: harness whose lane to snapshot for the auto-drain stamp (the live scheduler:get_next exclusion breakdown + re-verify command auto-appended to the reason). Omit to use your session harness, else the fleet sentinel spec's own scope.",
+      ),
     acknowledgeOpenDirectives: z
       .boolean()
       .optional()
@@ -47,7 +55,9 @@ export default defineTool({
       action: 'fleet:wind-down',
     });
     if (guard) return json(guard as unknown as Record<string, unknown>, true);
-    const result = await applyFleetControl(ctx, args.fleet, 'wind-down', args.reason);
+    const result = await applyFleetControl(ctx, args.fleet, 'wind-down', args.reason, {
+      harness: args.harness,
+    });
     return json(result as unknown as Record<string, unknown>, !result.ok);
   },
 });

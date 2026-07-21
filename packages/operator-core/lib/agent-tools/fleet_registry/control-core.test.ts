@@ -26,6 +26,10 @@ vi.mock('../coordination/presence', () => ({ getPresence: vi.fn(async () => null
 vi.mock('../coordination/audience-host', () => ({
   hostAudienceResolvers: { listFleetMembers: vi.fn(async () => [] as string[]) },
 }));
+// P-006: the drain-stamp helper hits PG (scheduler oracle) — mock it so control-core
+// unit tests stay DB-free + deterministic. Default: no stamp (fails-soft path); a
+// dedicated test overrides it to assert the auto-stamp augments the reason + result.
+vi.mock('./drain-stamp', () => ({ buildFleetDrainStamp: vi.fn(async () => null) }));
 
 import {
   applyFleetControl,
@@ -37,12 +41,14 @@ import { sendMessage } from '../coordination/messages';
 import { getPresence } from '../coordination/presence';
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { CUE_AUTHORITY_FIELD } from '../coordination/cue-authority';
+import { buildFleetDrainStamp } from './drain-stamp';
 
 const getFleetM = vi.mocked(getFleet);
 const setControlM = vi.mocked(setFleetControlState);
 const sendM = vi.mocked(sendMessage);
 const presenceM = vi.mocked(getPresence);
 const membersM = vi.mocked(hostAudienceResolvers.listFleetMembers);
+const drainStampM = vi.mocked(buildFleetDrainStamp);
 
 function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
   return {
@@ -69,6 +75,7 @@ beforeEach(() => {
   presenceM.mockResolvedValue(null as never);
   sendM.mockResolvedValue({ msg_id: 'm-cue' } as never);
   membersM.mockResolvedValue([]);
+  drainStampM.mockResolvedValue(null); // default: fails-soft, no auto-stamp
   // setFleetControlState echoes the applied state back (the RETURNING row).
   setControlM.mockImplementation(async (_ws, slug, control) =>
     fleet({ fleetSlug: slug, controlState: control.state, controlReason: control.reason ?? null, controlBy: control.by ?? null, controlAt: 99 }),
@@ -197,5 +204,75 @@ describe('applyFleetControl', () => {
     getFleetM.mockResolvedValue(fleet({ fleetSlug: 'backend-team', leaderOwnerId: callerRef.ownerId }));
     await applyFleetControl({} as never, 'Backend Team', 'wind-down');
     expect(getFleetM).toHaveBeenCalledWith('ws-1', 'backend-team');
+  });
+
+  describe('P-006 auto-drain stamp', () => {
+    const STAMP = {
+      harness: 'papercusp',
+      breakdown: {
+        matchedByFilter: 302,
+        excluded: {
+          taken: 0,
+          claimHold: 33,
+          needsHuman: 80,
+          observationLane: 21,
+          externalBlocker: 0,
+          planLaneReserved: 0,
+          federationDetector: 169,
+          loopNoise: 0,
+          alreadyCompleted: 0,
+          crossMachineRig: 0,
+          blockedDep: 0,
+          cooldown: 0,
+        },
+      },
+      spec: { specId: 'bug-drain', revision: 4, source: 'cup' as const },
+      summary:
+        "[auto-drain-stamp 2026-07-21T00:00:00.000Z · spec bug-drain@4] 302 in-lane issue-family row(s) matched the fleet spec's filter; stranded by: federationDetector=169, needsHuman=80. Re-verify against the authoritative oracle (no hand-rolled SQL): scheduler:get_next { harness: 'papercusp' }.",
+      reVerifyCommand: "scheduler:get_next { harness: 'papercusp' }",
+    };
+
+    it('winds down: the live scheduler-oracle breakdown auto-stamps the reason + rides the result & cue', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      membersM.mockResolvedValue(['m-1']);
+      drainStampM.mockResolvedValue(STAMP);
+      const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'plans shipped', {
+        harness: 'papercusp',
+      });
+      // caller's reason PREPENDED, the auto-stamp APPENDED — both durable on the row.
+      const persisted = setControlM.mock.calls[0][2];
+      expect(persisted.reason).toBe(`plans shipped | ${STAMP.summary}`);
+      // structured stamp rides the result for the immediate caller.
+      expect(r.drainStamp).toEqual(STAMP);
+      // the member cue body carries the augmented reason (successor sees it at orient too).
+      const cueBody = (sendM.mock.calls[0][1] as { body: string }).body;
+      expect(cueBody).toContain(STAMP.reVerifyCommand);
+      // the helper was fed the caller's harness first, then the session harness as fallback.
+      expect(drainStampM).toHaveBeenCalledWith(
+        expect.objectContaining({ fleetSlug: 'backend', harnessCandidates: ['papercusp', undefined] }),
+      );
+    });
+
+    it('no explicit reason: the stamp becomes the whole reason', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      drainStampM.mockResolvedValue(STAMP);
+      await applyFleetControl({} as never, 'backend', 'wind-down');
+      expect(setControlM.mock.calls[0][2].reason).toBe(STAMP.summary);
+    });
+
+    it('RESUME never computes a drain stamp (wind-down-only)', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId, controlState: 'winding-down' }));
+      await applyFleetControl({} as never, 'backend', 'resume', 'lane refilled');
+      expect(drainStampM).not.toHaveBeenCalled();
+      expect(setControlM.mock.calls[0][2].reason).toBe('lane refilled');
+    });
+
+    it('a stamp failure (null) leaves the bare reason untouched — never blocks the flip', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      drainStampM.mockResolvedValue(null);
+      const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'just because');
+      expect(setControlM.mock.calls[0][2].reason).toBe('just because');
+      expect(r.drainStamp).toBeUndefined();
+    });
   });
 });

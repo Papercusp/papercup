@@ -28,15 +28,6 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, withWorkspace: H.withWorkspace };
 });
 
-// EI-16183: clearStartedForTerminalPlan resolves its workspace via activeWorkspaceId()
-// (process-global — request-ALS → PAPERCUSP_WORKSPACE_ID → registry default),
-// uncontrolled here. Pin it deterministically rather than depending on the real
-// machine's workspace-registry file.
-vi.mock('../../workspace-registry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../workspace-registry')>();
-  return { ...actual, activeWorkspaceId: () => actual.DEFAULT_WORKSPACE_ID };
-});
-
 import {
   isTerminalPlanStatus,
   reconcileStartStatus,
@@ -91,9 +82,16 @@ describe('reconcileStartStatus (read-time self-heal)', () => {
 });
 
 describe('clearStartedForTerminalPlan', () => {
-  it('issues a scoped UPDATE → done guarded to started/paused rows only', async () => {
+  it('issues a scoped UPDATE → done guarded to started/paused rows only, using the PASSED workspaceId', async () => {
     H.state.txResult = [{ plan_slug: 'p' }]; // one active row cleared
-    const res = await clearStartedForTerminalPlan('myharn', 'my-plan-2026-06-02');
+    // Deliberately NOT DEFAULT_WORKSPACE_ID — proves the caller-supplied scope is
+    // used verbatim rather than falling back to some ambient/global workspace
+    // (the EI-16183 / WI-5694 class of bug: clearStartedForTerminalPlan used to
+    // resolve its own workspace via activeWorkspaceId(), which can silently
+    // disagree with the workspace the plan write itself resolved via
+    // resolvePlanScope, so the clear updated zero rows).
+    const WORKSPACE = 'ws-explicit-scope-test';
+    const res = await clearStartedForTerminalPlan(WORKSPACE, 'myharn', 'my-plan-2026-06-02');
 
     expect(H.state.txCalls).toHaveLength(1);
     const { strings, values } = H.state.txCalls[0];
@@ -105,7 +103,8 @@ describe('clearStartedForTerminalPlan', () => {
     // Only an active row is touched — a done/missing row is never resurrected.
     expect(sql).toContain("op_status IN ('started', 'paused')");
     // Params: [op_updated_at, workspace_id, harness_slug, plan_slug].
-    expect(values[1]).toBe(DEFAULT_WORKSPACE_ID);
+    expect(values[1]).toBe(WORKSPACE);
+    expect(values[1]).not.toBe(DEFAULT_WORKSPACE_ID);
     expect(values[2]).toBe('myharn');
     expect(values[3]).toBe('my-plan-2026-06-02');
     expect(res).toEqual({ cleared: true });
@@ -113,7 +112,7 @@ describe('clearStartedForTerminalPlan', () => {
 
   it('reports cleared:false when no active row matched (idempotent no-op)', async () => {
     H.state.txResult = [];
-    const res = await clearStartedForTerminalPlan('myharn', 'never-started');
+    const res = await clearStartedForTerminalPlan(DEFAULT_WORKSPACE_ID, 'myharn', 'never-started');
     expect(res).toEqual({ cleared: false });
   });
 });

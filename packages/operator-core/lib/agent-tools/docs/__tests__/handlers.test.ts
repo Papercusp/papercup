@@ -481,16 +481,38 @@ describe('docs:search handler', () => {
       expect(mod.default.args.safeParse({ query: 'auth', limit: 5000 }).success).toBe(false);
     });
 
-    it('threads the validated limit through to the engine (truncation cap)', async () => {
+    it('over-fetches the engine past the caller limit (RRF headroom), but still truncates the FINAL result to it', async () => {
+      // WI-5690: the engine is now over-fetched (limit*3, floor 30) so RRF
+      // fusion with the semantic leg has real candidates to promote above the
+      // cut — searchDocs no longer receives the caller's raw limit directly.
+      // The result-limit guard this test class exists for (CH3) now applies
+      // POST-fusion instead, so assert both halves: the over-fetch call, and
+      // the final truncation to the caller's `limit`.
       mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      searchDocs.mockResolvedValueOnce({
+        hits: [
+          { slug: 'p1', title: 'P1', excerpt: 'ex', score: 5 },
+          { slug: 'p2', title: 'P2', excerpt: 'ex', score: 4 },
+          { slug: 'p3', title: 'P3', excerpt: 'ex', score: 3 },
+          { slug: 'p4', title: 'P4', excerpt: 'ex', score: 2 },
+          { slug: 'p5', title: 'P5', excerpt: 'ex', score: 1 },
+        ],
+        hitCount: 5,
+        tokenCount: 2,
+        query: 'auth flow',
+      });
       const tool = (await import('../search')).default;
-      await tool.handler({ query: 'auth flow', limit: 3 } as never, { harnessSlug: 'sheets' } as never);
-      // searchDocs(adapter, args, ctx) — args carries the bounded limit.
+      const res = await tool.handler({ query: 'auth flow', limit: 3 } as never, { harnessSlug: 'sheets' } as never);
+      // searchDocs(adapter, args, ctx) — args carries the OVER-FETCHED limit
+      // (Math.max(3*3, 30) = 30), not the raw caller limit.
       expect(searchDocs).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ limit: 3 }),
+        expect.objectContaining({ limit: 30 }),
         expect.anything(),
       );
+      const p = payloadOf(res);
+      expect(p.hits).toHaveLength(3);
+      expect(p.hits.map((h: { slug: string }) => h.slug)).toEqual(['p1', 'p2', 'p3']);
     });
   });
 });
