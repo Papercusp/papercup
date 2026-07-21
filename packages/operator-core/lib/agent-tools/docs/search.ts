@@ -12,7 +12,9 @@ import {
   searchDocs,
   harnessFsAdapter,
   type DocSource,
+  type SearchHit,
 } from '@papercusp/docs-engine';
+import { rrfCombine, RRF_K_DEFAULT, type RankedItem } from '@papercusp/rrf';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';

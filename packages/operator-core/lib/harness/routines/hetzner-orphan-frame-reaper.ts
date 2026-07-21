@@ -123,6 +123,9 @@ export interface HetznerOrphanReaperDeps {
   /** Injectable clock (tests pass a fixed instant). */
   now(): number;
   namePatterns?: readonly RegExp[];
+  /** Injectable retry backoff sleep (tests pass a no-op so retries run instantly).
+   *  Defaults to a real `setTimeout`-based delay. */
+  delay?(ms: number): Promise<void>;
 }
 
 export interface ReapOptions {
@@ -131,9 +134,32 @@ export interface ReapOptions {
   minAgeHours?: number;
   /** Preview only — classify + report, destroy nothing. */
   dryRun?: boolean;
+  /** WI (hetzner-orphan-frame-reaper HTTP-401 flap): the number of `listFrames()`
+   *  attempts before a non-transient failure (a bad-token 401, an unexpected 5xx)
+   *  is treated as GENUINE and allowed to surface as a routine failure. Previously
+   *  ANY single non-network-transient error surfaced immediately — but a real
+   *  incident showed Hetzner's own auth path can 401 on a one-off blip (confirmed:
+   *  the SAME token succeeded seconds later, with no rotation in between), which
+   *  filed/updated a bug EI over a self-healing condition (the exact "phantom
+   *  routine-failure" class this reaper's watchdog signal is already known to
+   *  produce for network-level errors — this closes the same gap at the
+   *  HTTP-status layer). A PERSISTENTLY bad token still fails every attempt and
+   *  correctly surfaces after the retries are exhausted — this only absorbs a
+   *  one-off flake, it never hides a real credential problem. Default 3.
+   */
+  maxListAttempts?: number;
 }
 
 export const DEFAULT_MIN_AGE_HOURS = 2;
+export const DEFAULT_MAX_LIST_ATTEMPTS = 3;
+/** Backoff between listFrames() retry attempts (ms) — short, since this only exists
+ *  to absorb a one-off upstream blip, not to wait out a real outage (the transient-
+ *  network path already skips-and-retries-next-cadence for that). */
+const LIST_RETRY_BACKOFF_MS = [300, 900];
+
+async function defaultDelay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export interface ReapResult {
   scanned: number;
@@ -174,19 +200,36 @@ export async function reapOrphanedHetznerFrames(
     dryRun,
   };
 
-  let all: HetznerFrameInfo[];
-  try {
-    all = await deps.listFrames();
-  } catch (e) {
-    // A transient network blip reaching the upstream (the `fetch failed` class) must
-    // NOT wedge this best-effort periodic sweep — skip the tick cleanly and let the
-    // next cadence retry. A genuine failure (bad token, logic bug) still propagates.
-    if (isTransientNetworkError(e)) {
-      out.listError = e instanceof Error ? e.message : String(e);
-      return out;
+  const maxAttempts = Math.max(1, opts.maxListAttempts ?? DEFAULT_MAX_LIST_ATTEMPTS);
+  const delay = deps.delay ?? defaultDelay;
+  let all: HetznerFrameInfo[] | undefined;
+  let lastNonTransientError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      all = await deps.listFrames();
+      lastNonTransientError = undefined;
+      break;
+    } catch (e) {
+      // A transient network blip reaching the upstream (the `fetch failed` class) must
+      // NOT wedge this best-effort periodic sweep — skip the tick cleanly and let the
+      // next cadence retry (no point burning retries here — the transient-network path
+      // already has its own next-cadence retry).
+      if (isTransientNetworkError(e)) {
+        out.listError = e instanceof Error ? e.message : String(e);
+        return out;
+      }
+      // A non-transient (HTTP-status) failure — e.g. a bad-token 401, an unexpected
+      // 5xx — used to surface on the FIRST occurrence. But a real incident showed
+      // Hetzner's own auth path can 401 on a one-off blip that clears on the very
+      // next call with the SAME (unrotated, still-valid) token — indistinguishable
+      // from a genuinely bad token without retrying. Absorb up to `maxAttempts`
+      // one-off flakes with a short backoff; only surface once it's PERSISTENT.
+      lastNonTransientError = e;
+      if (attempt < maxAttempts) await delay(LIST_RETRY_BACKOFF_MS[Math.min(attempt - 1, LIST_RETRY_BACKOFF_MS.length - 1)]);
     }
-    throw e;
   }
+  if (lastNonTransientError !== undefined) throw lastNonTransientError;
+  if (!all) throw new Error('hetzner-orphan-frame-reaper: unreachable — listFrames neither succeeded nor threw');
   out.scanned = all.length;
   const candidates = all.filter((f) => matchesRigNaming(f.name, patterns));
   out.matchedRigNames = candidates.length;
