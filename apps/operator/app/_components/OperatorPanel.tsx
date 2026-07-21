@@ -27,6 +27,7 @@ import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { MarkdownPreview } from './MarkdownEditor';
+import { LazyDetails } from './LazyDetails';
 import { Select } from '../harness/Select';
 import { Tooltip } from '../harness/Tooltip';
 import { usePromptDialog } from '../harness/usePromptDialog';
@@ -2070,12 +2071,13 @@ export function OperatorPanel(): ReactElement | null {
                         )}
 
                         {s.action === 'send_directive' && s.directive_body && (
-                          <details className="operator-entry__details">
-                            <summary>Directive body</summary>
-                            <div>
-                              <MarkdownPreview value={s.directive_body} outline="left" />
-                            </div>
-                          </details>
+                          <LazyDetails
+                            className="operator-entry__details"
+                            summaryClassName="operator-entry__details-summary"
+                            summary="Directive body"
+                          >
+                            <MarkdownPreview value={s.directive_body} outline="left" />
+                          </LazyDetails>
                         )}
                         {s.action === 'inform' && s.body && (
                           <div className="operator-entry__markdown operator-entry__markdown--compact">
