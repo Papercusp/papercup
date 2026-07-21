@@ -398,7 +398,7 @@ export default defineTool({
     // never counted as "waiting". Best-effort — plans:list self-heals on read.
     if (isTerminalPlanStatus(parsePlan(args.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
       try {
-        await clearStartedForTerminalPlan(resolveEffectiveHarnessSlug(sctx), args.slug);
+        await clearStartedForTerminalPlan(result.scope.workspaceId, result.scope.harnessSlug, args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

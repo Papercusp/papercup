@@ -254,7 +254,7 @@ export default defineTool({
 
         if (isTerminalPlanStatus(status)) {
           try {
-            await clearStartedForTerminalPlan(resolveEffectiveHarnessSlug(sctx), slug);
+            await clearStartedForTerminalPlan(result.scope.workspaceId, result.scope.harnessSlug, slug);
           } catch {
             /* recovered by reconcileStartStatus on the next plans:list read */
           }

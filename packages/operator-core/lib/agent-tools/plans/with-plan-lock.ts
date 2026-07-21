@@ -133,6 +133,20 @@ export interface AppliedResult<T> {
   filePath: string;
   /** The row's version after this write (unchanged when the mutator wrote nothing). */
   version: number;
+  /**
+   * The (workspaceId, harnessSlug) this write actually resolved + landed
+   * under, per `resolvePlanScope` — NOT necessarily the ambient/global
+   * "current workspace" (`activeWorkspaceId()`'s registry fallback), which
+   * a concrete-harness plan write never uses. A caller that needs to touch
+   * the SAME row again afterward (e.g. `clearStartedForTerminalPlan`'s
+   * cross-store invariant clear) MUST reuse this scope rather than
+   * independently re-resolving one — two disagreeing resolutions silently
+   * targets the wrong workspace's row (EI/WI class of set-plan-status's
+   * terminal-clear bug: `activeWorkspaceId()` resolved the operator's
+   * globally-active workspace while the plan actually lived under the
+   * harness's registered workspace, so the clear silently updated zero rows).
+   */
+  scope: { workspaceId: string; harnessSlug: string };
 }
 
 export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
@@ -376,6 +390,7 @@ export async function withPlanLock<T>(
       value,
       filePath,
       version: newVersion,
+      scope: { workspaceId, harnessSlug },
       writtenBody,
       // P-010: the PRE-edit content, threaded to the post-commit per-part capture
       // so it can baseline (deterministic fed_ts=0) before diffing the new content.

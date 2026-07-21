@@ -58,6 +58,11 @@ export interface FleetControlResult {
    *  — the registry state still stands, and late joiners see it at orient). */
   notified?: string[];
   cueMsgId?: string | null;
+  /** P-006 (work-item-claimability-clarity-2026-07-20): on a wind-down, the live
+   *  scheduler-oracle drain snapshot auto-stamped onto the reason — the per-floor
+   *  exclusion breakdown + the exact re-verify command. Absent when it could not be
+   *  computed (fails soft) or the action was resume. */
+  drainStamp?: import('./drain-stamp').FleetDrainStamp;
   error?: string;
   message?: string;
 }
@@ -109,6 +114,13 @@ export async function applyFleetControl(
   fleetArg: string,
   action: FleetControlAction,
   reason?: string,
+  opts?: {
+    /** P-006: explicit harness for the wind-down drain stamp (else the invoker's
+     *  session harness, else the fleet sentinel spec's own scope). */
+    harness?: string | null;
+    /** P-006: pass true only with a live ≥2-machine rig — mirrors scheduler:get_next. */
+    rigAvailable?: boolean;
+  },
 ): Promise<FleetControlResult> {
   const { ownerId, workspaceId, identity } = resolveFleetCaller(ctx);
   const slug = fleetSlugFromName(fleetArg);
@@ -149,13 +161,36 @@ export async function applyFleetControl(
     };
   }
 
+  // P-006 (work-item-claimability-clarity-2026-07-20): on a WIND-DOWN, snapshot the
+  // live scheduler-oracle drain breakdown and AUTO-STAMP it onto the reason, so the
+  // durable control_reason records WHY the lane is (or is not) drained in the ONE
+  // vocabulary the whole plan makes trustworthy — the authoritative floors, not a
+  // hand-rolled `status='open'` count — plus the exact re-verify command. Fails soft:
+  // a null stamp leaves the caller's bare reason untouched, never blocking the flip.
+  let drainStamp: import('./drain-stamp').FleetDrainStamp | undefined;
+  let effectiveReason = reason ?? null;
+  if (action === 'wind-down') {
+    const { buildFleetDrainStamp } = await import('./drain-stamp');
+    const stamp = await buildFleetDrainStamp({
+      fleetSlug: slug,
+      ownerId,
+      workspaceId,
+      harnessCandidates: [opts?.harness, (ctx as { harnessSlug?: string | null }).harnessSlug],
+      rigAvailable: opts?.rigAvailable,
+    }).catch(() => null);
+    if (stamp) {
+      drainStamp = stamp;
+      effectiveReason = reason ? `${reason} | ${stamp.summary}` : stamp.summary;
+    }
+  }
+
   // 2. PERSIST the typed state (idempotent — a re-invoke refreshes reason/by/at).
   const targetState = ACTION_TO_STATE[action];
   const alreadyInState = fleet.controlState === targetState;
   const updated = await setFleetControlState(
     workspaceId,
     slug,
-    { state: targetState, reason: reason ?? null, by: ownerId },
+    { state: targetState, reason: effectiveReason, by: ownerId },
   );
   const record: AgentFleetRecord = updated ?? fleet;
 
@@ -173,7 +208,7 @@ export async function applyFleetControl(
         const { summary, body } = fleetControlCueText(
           action,
           slug,
-          reason ?? null,
+          effectiveReason,
           shortHandle(ownerId),
         );
         const env = await sendMessage(identity, {
@@ -200,5 +235,6 @@ export async function applyFleetControl(
     ...(alreadyInState ? { alreadyInState: true } : {}),
     notified,
     cueMsgId,
+    ...(drainStamp ? { drainStamp } : {}),
   };
 }

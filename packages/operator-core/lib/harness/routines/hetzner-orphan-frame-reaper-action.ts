@@ -18,6 +18,15 @@
  * No HCLOUD_TOKEN reachable (common on the operator's systemd unit — the token
  * usually lives only in an interactive shell / `~/.papercusp/hcloud-token`, per
  * deb-hetzner-rig.sh) → logs and no-ops rather than failing the routine tick.
+ *
+ * WI (hetzner-orphan-frame-reaper HTTP-401 flap): a genuine, non-network-transient
+ * `listServers()` failure (a bad-token 401, an unexpected 5xx) is retried up to
+ * `reapOrphanedHetznerFrames`'s `DEFAULT_MAX_LIST_ATTEMPTS` (3, short in-process
+ * backoff) before it's allowed to surface and fail this routine tick — a real
+ * incident showed Hetzner's own auth path can 401 on a one-off blip that clears on
+ * the very next call with the SAME, still-valid, unrotated token. Only a
+ * PERSISTENTLY bad token (fails every attempt) still surfaces, so a genuine
+ * credential rotation need is never silently swallowed.
  */
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';

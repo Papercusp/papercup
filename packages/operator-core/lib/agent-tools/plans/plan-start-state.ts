@@ -24,7 +24,6 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
 
 export type StartStatus = 'started' | 'paused' | 'done' | null;
 
@@ -57,21 +56,33 @@ export function reconcileStartStatus(startStatus: StartStatus, lifecycleStatus: 
  * caller's file write has already succeeded, and {@link reconcileStartStatus}
  * recovers a missed clear on the next read.
  *
+ * `workspaceId` MUST be the same (workspaceId, harnessSlug) scope the plan
+ * write itself resolved (`withPlanLock`'s returned `result.scope` —
+ * `resolvePlanScope`'s output), never independently re-derived. `harness_plans`
+ * is keyed on (workspace_id, harness_slug, plan_slug), and a concrete-harness
+ * plan's workspace is resolved via the harness registry / `harness_shared.projects`
+ * (or `PAPERCUSP_WORKSPACE_ID` for the operator-home scope) — NOT via the
+ * ambient "currently active workspace" (`activeWorkspaceId()`'s
+ * request-ALS / env / global-registry fallback chain). A prior version of
+ * this function called `activeWorkspaceId()` itself (WI-5125 class / EI-16183
+ * had already fixed one generation of this bug, by replacing a hardcoded
+ * `DEFAULT_WORKSPACE_ID` with `activeWorkspaceId()` — which reintroduced the
+ * SAME class: whenever the caller's ambient workspace differs from the
+ * harness's registered workspace — e.g. any tool call outside a browser
+ * request's ALS scope, or simply a different workspace being "current" in
+ * the registry — the UPDATE below silently matched zero rows and a
+ * started/paused terminal plan never healed except lazily on the next
+ * `plans:list` read). Passing the already-resolved scope through removes the
+ * second, disagreeing resolution path entirely.
+ *
  * @returns `{ cleared }` — whether an active row was transitioned.
  */
 export async function clearStartedForTerminalPlan(
+  workspaceId: string,
   harnessSlug: string,
   planSlug: string,
 ): Promise<{ cleared: boolean }> {
   const now = new Date().toISOString();
-  // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
-  // harness_slug, plan_slug) — workspace_id is only knowable in-process via
-  // activeWorkspaceId(). The old literal DEFAULT_WORKSPACE_ID matched ZERO
-  // rows for any non-default tenant, so a plan going terminal never cleared
-  // its started/paused row (best-effort by design, but silently so — a
-  // terminal plan could keep reporting started/paused until the next
-  // plans:list self-heal).
-  const workspaceId = activeWorkspaceId();
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<{ plan_slug: string }[]>`
       UPDATE harness_shared.harness_plans
