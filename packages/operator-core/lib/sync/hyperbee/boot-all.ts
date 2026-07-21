@@ -668,10 +668,15 @@ export async function bootSingleHarness(
     bootHarness?: (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>;
     /** Remote handles are wired in their owning process; skip main-process send-side loops. */
     skipSendSideWiring?: boolean;
-    /** Override the replication-liveness stall grace (ms). Default: env
-     *  PAPERCUSP_REPLICATION_STALL_GRACE_MS if set, else bootHarnessSubstrate's
-     *  own DEFAULT_REPLICATION_STALL_GRACE_MS (180s, unchanged in production). */
+    /** Override the replication-liveness stall grace (ms) for the
+     *  no_replicator/frozen axes (+ the legacy checkReplicationStall). Default:
+     *  bootHarnessSubstrate's own DEFAULT_REPLICATION_STALL_GRACE_MS (180s). */
     replicationStallGraceMs?: number;
+    /** WI-5686: override the connected_never_replicated (zombie-socket) axis's
+     *  OWN grace (ms), separate from `replicationStallGraceMs`. Default: env
+     *  PAPERCUSP_REPLICATION_STALL_GRACE_MS if set, else `replicationStallGraceMs`
+     *  (which itself falls back to the 180s production default). */
+    connectedNeverReplicatedGraceMs?: number;
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
@@ -757,21 +762,37 @@ export async function bootSingleHarness(
     (Number.isFinite(envBootTimeout) && envBootTimeout > 0 ? envBootTimeout : 30_000);
   // EI-13317/WI-5481 rig-isolation follow-up: the connected_never_replicated
   // (zombie-socket) DETECTION grace (replication-liveness.ts's
-  // DEFAULT_LIVENESS_GRACE_MS, threaded through boot.ts's
-  // REPLICATION_STALL_GRACE_MS into sampleReplicationLiveness) defaults to 180s —
-  // structurally larger than replication_soak's 90s SLA, so whenever the zombie
-  // path actually triggers during a kill/restart cycle the soak fails by
-  // construction, REGARDLESS of how promptly EI-13317's forced-rejoin escalation
-  // fires afterward (live-evidenced: gate run 20260720-054709, cycles 3/4 both
-  // legs FAIL, "204s"/"217s connected-but-dead" before the episode even fires —
-  // the escalation itself is prompt, the DETECTION isn't). Same operator-tunable
+  // DEFAULT_LIVENESS_GRACE_MS) defaults to 180s — structurally larger than
+  // replication_soak's 90s SLA, so whenever the zombie path actually triggers
+  // during a kill/restart cycle the soak fails by construction, REGARDLESS of
+  // how promptly EI-13317's forced-rejoin escalation fires afterward
+  // (live-evidenced: gate run 20260720-054709, cycles 3/4 both legs FAIL,
+  // "204s"/"217s connected-but-dead" before the episode even fires — the
+  // escalation itself is prompt, the DETECTION isn't). Same operator-tunable
   // pattern as the WI-1892 boot timeout above: env-only override, PRODUCTION
   // DEFAULT UNCHANGED (180s) unless explicitly set — this exists so the local
   // rig (bin/local-matrix.sh) can test a shorter grace without touching the
   // production constant.
+  //
+  // WI-5686: this env var feeds ONLY the zombie axis's OWN grace
+  // (`connectedNeverReplicatedGraceMs`), never the general
+  // `replicationStallGraceMs` (no_replicator/frozen + the legacy
+  // checkReplicationStall). It used to feed the SHARED `replicationStallGraceMs`
+  // directly — which, since sampleReplicationLiveness/getReplicationLiveness
+  // apply one grace value to ALL THREE axes, silently collapsed no_replicator's
+  // and frozen's grace to the same ~15s the rig sets for the zombie axis. A
+  // cold-restart+re-peer cycle legitimately holds 0 peers well past 15s while
+  // perfectly healthy, so every ordinary restart cycle false-fired
+  // no_replicator — which ALSO triggers repair-on-detect's disruptive session
+  // close+reopen — discovered as the WI-5672/WI-5686 false-positive class
+  // (content_bidir/planpart_bidir/coord_bidir/concurrent_lww probe=0 failures
+  // and replication_soak's own detector-noise assert, both traced to this same
+  // rig launch config). `replicationStallGraceMs` now ALWAYS stays at its own
+  // default (180s) unless a caller passes it explicitly.
   const envGraceMs = Number(process.env.PAPERCUSP_REPLICATION_STALL_GRACE_MS);
-  const replicationStallGraceMs =
-    opts.replicationStallGraceMs ??
+  const replicationStallGraceMs = opts.replicationStallGraceMs;
+  const connectedNeverReplicatedGraceMs =
+    opts.connectedNeverReplicatedGraceMs ??
     (Number.isFinite(envGraceMs) && envGraceMs > 0 ? envGraceMs : undefined);
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
   // WI-1892: keep a reference to the RAW boot promise (not the raced one) so a
@@ -796,6 +817,7 @@ export async function bootSingleHarness(
       swarmBinding,
       mergeCursorStore,
       replicationStallGraceMs,
+      connectedNeverReplicatedGraceMs,
       // WI-752 late-join re-wire: the presence step no-ops against a swarm-less
       // handle and is then marked wired, so a join that only succeeds via the
       // retry left presence-gossip dead for the process lifetime (tower bg-host,

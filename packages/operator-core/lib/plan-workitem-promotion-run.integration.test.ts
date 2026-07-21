@@ -31,7 +31,10 @@ const COORD_EVENT_LOG_DDL = `
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
-  plans: new Map<string, { items: { id: string; status: string; text?: string }[]; title?: string }>(),
+  plans: new Map<
+    string,
+    { items: { id: string; status: string; text?: string; blockedBy?: string[] }[]; title?: string }
+  >(),
   flagOn: true,
 }));
 
@@ -62,9 +65,17 @@ vi.mock('./agent-tools/plans/source', () => ({
         frontmatter: p.title ? { title: p.title } : {},
         now: null,
         decisions: [],
-        items: p.items.map((i) => ({ id: i.id, storedStatus: i.status, text: i.text ?? '', decisionRefs: [] })),
+        items: p.items.map((i) => ({
+          id: i.id,
+          storedStatus: i.status,
+          text: i.text ?? '',
+          decisionRefs: [],
+          blockedBy: i.blockedBy ?? [],
+        })),
       },
-      row: { items: p.items.map((i) => ({ id: i.id, status: i.status, text: i.text ?? '' })) },
+      row: {
+        items: p.items.map((i) => ({ id: i.id, status: i.status, text: i.text ?? '', blockedBy: i.blockedBy ?? [] })),
+      },
     };
   },
 }));

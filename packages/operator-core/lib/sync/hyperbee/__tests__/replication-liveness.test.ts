@@ -924,6 +924,117 @@ describe('connected_never_replicated axis (WI-183 zombie connections, rig run m1
   });
 });
 
+describe('WI-5686: connectedNeverReplicatedGraceMs is INDEPENDENT of the general graceMs', () => {
+  // Repro of the false-positive class (WI-5672/WI-5686): a rig soak shortens
+  // ONLY the zombie axis's grace (WI-5634, ~15s in production) so repair-on-
+  // detect gets a chance inside the soak's SLA. Before this fix, that same
+  // short value was the ONE `graceMs` sampleReplicationLiveness/getReplication
+  // Liveness apply to ALL THREE axes — so no_replicator (a log that WAS
+  // replicating and legitimately holds 0 peers for the length of an ordinary
+  // cold-restart+re-peer cycle, comfortably longer than 15s) false-fired on
+  // every restart, even though the peer was never a zombie and reconnected
+  // fine well inside the real 180s production grace.
+  const shortZombieGrace = 15_000; // WI-5634's rig default
+  const realisticRestartGapMs = 90_000; // a healthy but slow cold-restart+re-peer
+  const productionLikeGraceMs = 200_000; // > realisticRestartGapMs, unlike the file's tiny GRACE=10s
+
+  it('a realistic restart-cycle gap (90s) does NOT false-fire no_replicator when the zombie axis alone is shortened to 15s', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    const sample = (peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+        {
+          graceMs: productionLikeGraceMs, // production-shaped general grace (180s in prod)
+          connectedNeverReplicatedGraceMs: shortZombieGrace,
+          nowMs: now,
+          onStallEpisode: on,
+          onRecovery: () => {},
+        },
+      );
+    sample(1); // was replicating
+    now += realisticRestartGapMs; // frame cold-restarts + re-peers — 0 peers the whole time
+    // 90s > shortZombieGrace(15s) but < productionLikeGraceMs(200s) — must NOT alarm.
+    sample(0);
+    expect(episodes).toHaveLength(0);
+    now += 1_000;
+    sample(1); // reconnects — healthy
+    expect(episodes).toHaveLength(0);
+  });
+
+  it('BEFORE this fix (simulated: pass the short value as the shared graceMs) the same gap WOULD have false-fired — proves the fix is load-bearing', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    const sample = (peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+        // The OLD behavior: one shared grace fed to everything (no
+        // connectedNeverReplicatedGraceMs override — or, equivalently, the
+        // pre-fix code path where the rig's short value WAS `graceMs`).
+        { graceMs: shortZombieGrace, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+      );
+    sample(1);
+    now += realisticRestartGapMs; // same healthy 90s restart gap
+    sample(0);
+    expect(episodes).toHaveLength(1); // false-fires — this is the bug this test documents
+    expect(episodes[0]!.kind).toBe('no_replicator');
+  });
+
+  it('a GENUINE zombie (swarm connected, never replicated) still alarms promptly at the short grace, unaffected by the general graceMs', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    const sample = (swarm: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 0, peersCount: 0, swarmConnections: swarm },
+        {
+          graceMs: productionLikeGraceMs, // long general grace — must not slow the zombie axis down
+          connectedNeverReplicatedGraceMs: shortZombieGrace,
+          nowMs: now,
+          onStallEpisode: on,
+          onRecovery: () => {},
+        },
+      );
+    sample(1); // zombie window opens: swarm connected, never replicated
+    expect(episodes).toHaveLength(0);
+    now += shortZombieGrace;
+    sample(1); // still zombied, past the SHORT grace (far short of productionLikeGraceMs)
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('connected_never_replicated');
+  });
+
+  it('read-time getReplicationLiveness honors the same split via connectedNeverReplicatedGraceMs', () => {
+    let now = 1_000_000;
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+      { graceMs: productionLikeGraceMs, nowMs: now, onStallEpisode: () => {}, onRecovery: () => {} },
+    );
+    now += realisticRestartGapMs;
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 0 },
+      { graceMs: productionLikeGraceMs, nowMs: now, onStallEpisode: () => {}, onRecovery: () => {} },
+    );
+    // Read-time verdict with the split grace: 90s hasn't crossed the general
+    // productionLikeGraceMs(200s), so still 'live' even though it WOULD read
+    // no_replicator against a naive shared-short-grace read.
+    const view = getReplicationLiveness({
+      nowMs: now,
+      graceMs: productionLikeGraceMs,
+      connectedNeverReplicatedGraceMs: shortZombieGrace,
+    })[0]!;
+    expect(view.logs[0]!.verdict).toBe('live');
+  });
+});
+
 describe('WI-3684 repair-on-detect: the per-harness repair-handler seam', () => {
   // Drive the zombie axis (swarm connected, replicator never attached): two
   // samples spanning the grace window fire exactly one episode.
