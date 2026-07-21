@@ -228,7 +228,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        "EI-7841/WI-3649: exclude items the actual claim path would refuse. Feature-family: the G2 admission/trust gate (remote, un-admitted, untrusted-author) work_items:claim / claim_next enforce. Issue-family (bug/change/task, WI-3649): a federated origin='remote' row, which is owned exclusively by its authoring peer and can never be claimed locally. Default false (full backlog, including gated items, for overview/leader reads). Pass true for a SELF-SELECT read so 'claimable' actually means claimable.",
+        "EI-7841/WI-3649: a cheap STRUCTURAL pre-filter — excludes rows the claim path refuses on ORIGIN/ADMISSION grounds ONLY, NOT the full claim-floor verdict. Feature-family: the G2 admission/trust gate (remote, un-admitted, untrusted-author) work_items:claim/claim_next enforce. Issue-family (bug/change/task): a federated origin='remote' row (owned by its authoring peer, never locally claimable) + the observation lane. It does NOT apply claim-hold / needs-human / reserved-plan-lane / blocked-dep / cooldown / rig, so a row it admits may STILL be unclaimable — this weaker check caused the 2026-07-12 idle-fleet miss. ⚠ NOT the claimable verdict: for 'what issue-family work can I claim right now' use work_items:claimable (the full floors). Default false (full backlog incl. gated items, for overview/leader reads).",
       ),
     audit: z
       .enum(COMPLETION_AUDITS)
