@@ -3,6 +3,7 @@ import { useLocation } from '@tanstack/react-router';
 import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
 import { CHUNK_LOAD_ERROR_RE } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { inDevBuildWatcherShell } from '../lib/dev-build-shell';
+import { ErrorDetail } from './ErrorDetail';
 
 /**
  * Error boundary around the route content (`<Outlet/>`).
@@ -27,6 +28,9 @@ interface Props {
 }
 interface State {
   error: Error | null;
+  /** React component stack from componentDidCatch — names the component that
+   *  threw (the console's "occurred in <X>"), shown in the detail pane. */
+  componentStack: string | null;
   expanded: boolean;
 }
 
@@ -77,7 +81,7 @@ export function shouldAutoReloadForChunkError(
 }
 
 class RouteErrorBoundaryInner extends Component<Props, State> {
-  state: State = { error: null, expanded: false };
+  state: State = { error: null, componentStack: null, expanded: false };
 
   static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
@@ -88,11 +92,14 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
     // route. If the new route also throws, getDerivedStateFromError re-sets it
     // (resetKey is now stable, so no loop).
     if (this.state.error && prev.resetKey !== this.props.resetKey) {
-      this.setState({ error: null, expanded: false });
+      this.setState({ error: null, componentStack: null, expanded: false });
     }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
+    // Capture the component stack so the detail pane can show it (the console's
+    // "occurred in <X>" — the part that actually names the broken component).
+    this.setState({ componentStack: info.componentStack ?? null });
     // eslint-disable-next-line no-console
     console.error('[RouteErrorBoundary] caught render error:', error, info.componentStack);
     // Stale-chunk AUTO-HEAL (2026-07-01): a long-open window whose lazy tab
