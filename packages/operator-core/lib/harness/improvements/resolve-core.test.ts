@@ -207,18 +207,34 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
     expect(d.rec.comments[0].body).toMatch(/LEADER TRIAGE/);
   });
 
-  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER inbox (payload.needsHuman)', async () => {
+  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER inbox (payload.needsHuman) AND state moves to needs-human (EI-18210987268765837)', async () => {
     const d = deps(issue({ id: 'EI-3' }));
     const r = await resolveImprovement(
       { id: 'EI-3', outcome: 'needs-human', summary: 'needs a prod DB credential only the owner holds', blockerCapability: 'credential' },
       d,
     );
-    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'open', routedToHuman: true });
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'needs-human', routedToHuman: true });
     expect(r.routedToLeaderTriage).toBeUndefined();
     expect(d.rec.payloads).toEqual([{ id: 'EI-3', patch: { needsHuman: true, humanCapability: 'credential' } }]);
-    expect(d.rec.states).toHaveLength(0); // stays open; the human decides
+    // EI-18210987268765837 regression: a comment-only handoff (payload flag with NO state
+    // transition) left the item in 'open' — every claim path gates on state='open', so it
+    // stayed claimable and resurfaced days later as if freshly auto-eligible (root-caused on
+    // EI-12198). The state write is what actually excludes it, not the payload flag alone.
+    expect(d.rec.states).toEqual([{ id: 'EI-3', state: 'needs-human' }]);
     expect(d.rec.released).toEqual(['EI-3']);
     expect(d.rec.comments[0].body).toMatch(/credential/);
+  });
+
+  it('EI-18210987268765837: setIssueState no-op (federated/remote-owned issue) still sets payload.needsHuman as a fallback and reports the state it could confirm', async () => {
+    const d = deps(issue({ id: 'EI-remote', origin: 'remote' }));
+    d.setIssueState = async () => null;
+    const r = await resolveImprovement(
+      { id: 'EI-remote', outcome: 'needs-human', summary: 'needs a credential, and this issue is federated', blockerCapability: 'credential' },
+      d,
+    );
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'open', routedToHuman: true });
+    expect(d.rec.payloads).toEqual([{ id: 'EI-remote', patch: { needsHuman: true, humanCapability: 'credential' } }]);
+    expect(d.rec.released).toEqual(['EI-remote']);
   });
 
   it('product-decision is genuinely owner-gated → the OWNER inbox', async () => {

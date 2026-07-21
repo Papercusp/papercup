@@ -326,11 +326,12 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   can silently hit a different tenant's row and look like a stale/diverged
   store when it isn't:
   [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
-  ⚠ For CLAIMABLE work, `status='open'` (and the decoy `needs_human_review` column) are
-  **NOT** claimability — the real claim path applies ~12 unconditional floors, so a raw
-  `WHERE status='open'` overcounts ~13×. Query `harness_shared.work_items_claimable` /
-  `scheduler:get_next` `excludedBreakdown` / `work_items:list{admissibleOnly:true}`, never
-  hand-rolled floors:
+  ⚠ For CLAIMABLE work, `status='open'` is **NOT** claimability — the real claim path
+  applies ~12 unconditional floors, so a raw `WHERE status='open'` overcounts ~13×. Query
+  `harness_shared.work_items_claimable` / `scheduler:get_next` `excludedBreakdown` /
+  `work_items:list{admissibleOnly:true}`, never hand-rolled floors (and for issue-family
+  human-routing the signal is `payload.needsHuman`, NOT the feature-family
+  `needs_human_review` column):
   [judging claimable work — status='open' is not claimability](/internal/docs/agent-insights/judging-claimable-work-not-status-open).
 - ⚠ **Apply migrations via the runner (`db:migrate`)** — a raw `psql -f` runs
   DDL without recording it in `harness_shared.schema_migrations`, so every

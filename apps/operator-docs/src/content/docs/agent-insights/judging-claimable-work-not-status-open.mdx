@@ -38,10 +38,14 @@ other ~93% are mostly observation-lane scorecards (reflections that by design *n
 the work queue*), plus needs-human, claim-held, reserved-plan-lane, blocked-by-dep,
 already-terminally-completed, and federation-detector rows.
 
-<Aside type="danger" title="The needs_human_review column is a decoy too">
-`harness_shared.work_items.needs_human_review` (a boolean) is **~always false** and
-shadows the real signal, `payload.needsHuman`. Do not read it to judge human-routing or
-claimability — it means nothing. (It is slated to be dropped.)
+<Aside type="caution" title="needs_human_review is the FEATURE family's flag — not the issue signal">
+Do not read the `needs_human_review` boolean to judge **issue-family** (bug/change/task)
+claimability or human-routing — the issue-family signal is `payload.needsHuman`.
+`needs_human_review` is the **feature family's** separate human-review flag (set by the
+orchestrator on attempts-capped features, cleared by the `approve-human` API, surfaced by
+curation/attention). It is a real, live column — currently ~always false only because no
+feature is flagged right now — just NOT the issue-family's claimability signal. Don't
+conflate the two.
 </Aside>
 
 ## Root cause

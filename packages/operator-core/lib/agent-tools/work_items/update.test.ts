@@ -202,6 +202,69 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-2', { needs_2_machine_rig: true }, expect.any(Object));
     });
   });
+
+  // WI-5689: needsHuman was DECLARED in the zod schema (FIELDS.needsHuman) and documented
+  // in the tool description, but never threaded into `list` nor applied in the handler —
+  // a genuine dead field: work_items:update{needsHuman:true} always resolved to
+  // `it.needsHuman === undefined`, so mergeWorkItemPayload was never called and the call
+  // still returned ok:true (confirmed live via direct Postgres read on EI-12519 — a
+  // genuine write-side no-op, not a stale-read artifact). Mirrors the needsTwoMachineRig
+  // contract above exactly.
+  describe('needsHuman → payload.needsHuman (WI-5689)', () => {
+    it('true: calls mergeWorkItemPayload with needsHuman:true and returns the merged item', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'EI-12519', title: 'human item' } } as never);
+      mergeM.mockResolvedValue({ id: 'EI-12519', title: 'human item', payload: { needsHuman: true } } as never);
+      const b = await body({ id: 'EI-12519', needsHuman: true });
+      expect(mergeM).toHaveBeenCalledWith('EI-12519', { needsHuman: true }, { harness: undefined });
+      expect(b.results[0]).toMatchObject({
+        ok: true,
+        id: 'EI-12519',
+        item: { payload: { needsHuman: true } },
+      });
+    });
+
+    it('false: re-admits (clears) via mergeWorkItemPayload with needsHuman:false', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'EI-12519' } } as never);
+      mergeM.mockResolvedValue({ id: 'EI-12519', payload: { needsHuman: false } } as never);
+      await body({ id: 'EI-12519', needsHuman: false });
+      expect(mergeM).toHaveBeenCalledWith('EI-12519', { needsHuman: false }, { harness: undefined });
+    });
+
+    it('omitted: never calls mergeWorkItemPayload (no spurious payload write)', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
+      await body({ id: 'EI-1', title: 'unrelated edit' });
+      expect(mergeM).not.toHaveBeenCalled();
+    });
+
+    it('items:[…] per-item needsHuman fans out independently', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
+      await body({ items: [{ id: 'WI-1', needsHuman: true }, { id: 'WI-2' }] });
+      expect(mergeM).toHaveBeenCalledTimes(1);
+      expect(mergeM).toHaveBeenCalledWith('WI-1', { needsHuman: true }, expect.any(Object));
+    });
+
+    it('a top-level needsHuman applies as the batch default (mirrors EI-7639)', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
+      await body({ needsHuman: true, items: [{ id: 'WI-1' }, { id: 'WI-2' }] });
+      expect(mergeM).toHaveBeenCalledTimes(2);
+      expect(mergeM).toHaveBeenNthCalledWith(1, 'WI-1', { needsHuman: true }, expect.any(Object));
+      expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-2', { needsHuman: true }, expect.any(Object));
+    });
+
+    it('needsHuman and needsTwoMachineRig on the same item both merge (two separate calls)', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'WI-1' } } as never);
+      mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
+      const b = await body({ id: 'WI-1', needsHuman: true, needsTwoMachineRig: true });
+      expect(mergeM).toHaveBeenCalledTimes(2);
+      expect(mergeM).toHaveBeenNthCalledWith(1, 'WI-1', { needs_2_machine_rig: true }, expect.any(Object));
+      expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-1', { needsHuman: true }, expect.any(Object));
+      // the second merge's return value wins as the final echoed item (last-write, matches
+      // needsTwoMachineRig's own existing item-reassignment pattern above)
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', item: { payload: { needsHuman: true } } });
+    });
+  });
 });
 
 // EI-6060: `status`/`state` are lifecycle fields owned by work_items:set_state. Zod's

@@ -1986,7 +1986,7 @@ export async function setWorkItemStateWithAliasInfo(
   opts: Parameters<typeof setWorkItemState>[2] = {},
 ): Promise<{ workItem: WorkItem | null } & LifecycleAliasInfo> {
   let onAliasInfo: { requested: string; resolved: string } | undefined;
-  const workItem = await setWorkItemState(id, requestedState, {
+  let workItem = await setWorkItemState(id, requestedState, {
     ...opts,
     onAlias: (info) => {
       onAliasInfo = info;
@@ -2008,6 +2008,14 @@ export async function setWorkItemStateWithAliasInfo(
         await mergeIssuePayload(id, { needsHuman: true });
         autoGateNote =
           ' It has been auto-routed to a human (payload.needsHuman) — excluded from claim_next/scheduler:get_next self-selection (reads as drained, not pending) until cleared.';
+        // WI-5689: mergeIssuePayload durably persists payload.needsHuman, but the
+        // `workItem` snapshot above was captured BEFORE this write — echoing it back
+        // as-is silently reports the STALE pre-merge payload (needsHuman still false)
+        // even though the DB row is already correct, indistinguishable from the
+        // update.ts sibling bug where the write never landed at all. Re-fetch so the
+        // caller's response reflects what was actually persisted.
+        const refreshed = await getWorkItem(id, opts.harness);
+        if (refreshed) workItem = refreshed;
       } else if (appliedLower === 'blocked') {
         const held = await setWorkItemClaimHold(id, true, { harness: opts.harness, by: opts.by, reason: 'blocked' });
         if (held?.applicable) {

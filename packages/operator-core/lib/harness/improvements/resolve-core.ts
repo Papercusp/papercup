@@ -267,10 +267,25 @@ export async function resolveImprovement(
         `⤴ Routed to a human (${input.blockerCapability}) by the implement worker:\n${input.summary}`,
         by,
       );
+      // EI-18210987268765837: this branch used to ONLY merge payload.needsHuman and never
+      // transitioned `state` — so the item stayed 'open', and every claim path (scheduler:
+      // get_next, claim_next) gates on state='open' (P-004/WI-5679's "claim floor" — the
+      // needsHuman payload flag alone is NOT durably-excluding, it's the belt-and-suspenders
+      // surface for OLDER consumers, not the actual gate). The comment-only handoff was
+      // indistinguishable from a state mutation that never happened: root-caused live on
+      // EI-12198, which resurfaced via scheduler:get_next 5 days after being "routed to a
+      // human" because payload.needsHuman was the only thing set. Mirror the OTHER resolve
+      // branches (fixed → 'resolved', leader-triage → 'blocked') by ALSO moving state here —
+      // 'needs-human' is a first-class, non-terminal IssueState that the claim floor excludes.
+      const updated = await deps.setIssueState(input.id, 'needs-human', by);
       await deps.mergeIssuePayload(input.id, { needsHuman: true, humanCapability: input.blockerCapability });
       await deps.releaseIssue(input.id);
       await closeLedger();
-      return { ok: true, id: input.id, outcome: 'needs-human', state: 'open', routedToHuman: true };
+      // A null `updated` (e.g. a federated/remote-owned issue whose view UPDATE no-ops, same
+      // class as the 'fixed' path above) still leaves payload.needsHuman set as a fallback —
+      // report the state we could actually confirm rather than claiming a state that may not
+      // have persisted.
+      return { ok: true, id: input.id, outcome: 'needs-human', state: updated?.state ?? 'open', routedToHuman: true };
     }
     await deps.commentIssue(
       input.id,

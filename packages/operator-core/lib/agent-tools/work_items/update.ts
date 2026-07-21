@@ -126,7 +126,7 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title / body / severity / kind / found-during / linked feature / needsTwoMachineRig. Notifies subscribers. Single: { id, …fields }. Many heterogeneous: items:[{ id, …fields }]. Returns { ok, results:[{ ok, id, item? | error }], counts } — correlate by id; a not-found item never fails the rest. Field-edit is issue-family only (bug/change/task); a feature-family item edits via its pipeline. A `body` edit that would drastically shrink a substantial existing body is rejected unless confirmShrink:true (EI-8497 fat-finger guard). `needsTwoMachineRig:true/false` sets/clears payload.needs_2_machine_rig, which excludes/re-admits the item from single-box scheduler:get_next/claim_next self-select (WI-2796). (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title / body / severity / kind / found-during / linked feature / needsTwoMachineRig / needsHuman. Notifies subscribers. Single: { id, …fields }. Many heterogeneous: items:[{ id, …fields }]. Returns { ok, results:[{ ok, id, item? | error }], counts } — correlate by id; a not-found item never fails the rest. Field-edit is issue-family only (bug/change/task); a feature-family item edits via its pipeline. A `body` edit that would drastically shrink a substantial existing body is rejected unless confirmShrink:true (EI-8497 fat-finger guard). `needsTwoMachineRig:true/false` sets/clears payload.needs_2_machine_rig, which excludes/re-admits the item from single-box scheduler:get_next/claim_next self-select (WI-2796). `needsHuman:true/false` sets/clears payload.needsHuman, the same human-review gate (WI-5689: this is now actually wired — previously a declared-but-dead no-op field). (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
     when: 'Refine work-item(s) you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it. Edit several at once via items:[…].',
     notWhen: 'Changing lifecycle state (work_items:set_state), recording a structural decision like split/drop (work_items:amend), adding a note (work_items:comment), or routing to a topic (work_items:tag).',
@@ -187,6 +187,12 @@ export default defineTool({
           linkedFeatureId: it.linkedFeatureId !== undefined ? it.linkedFeatureId : args.linkedFeatureId,
           confirmShrink: it.confirmShrink ?? args.confirmShrink,
           needsTwoMachineRig: it.needsTwoMachineRig !== undefined ? it.needsTwoMachineRig : args.needsTwoMachineRig,
+          // WI-5689: needsHuman was declared in the zod schema + documented, but never
+          // threaded into `list` (nor applied in the handler below) — a genuine dead
+          // field that always resolved to `undefined` regardless of caller input, so
+          // work_items:update{needsHuman:true} was a silent no-op that still returned
+          // ok:true. Wire it exactly like the sibling needsTwoMachineRig flag.
+          needsHuman: it.needsHuman !== undefined ? it.needsHuman : args.needsHuman,
           harness: it.harness ?? args.harness,
         }))
       : [
@@ -200,6 +206,7 @@ export default defineTool({
             linkedFeatureId: args.linkedFeatureId,
             confirmShrink: args.confirmShrink,
             needsTwoMachineRig: args.needsTwoMachineRig,
+            needsHuman: args.needsHuman, // WI-5689
             harness: args.harness,
           },
         ];
@@ -231,6 +238,13 @@ export default defineTool({
               { needs_2_machine_rig: it.needsTwoMachineRig },
               { harness: it.harness },
             );
+            if (merged) item = merged;
+          }
+          // WI-5689: needsHuman is likewise not a real column — apply it the same way,
+          // via mergeWorkItemPayload (re-fetches so the echoed `item` reflects the
+          // write, not a stale pre-merge snapshot).
+          if (it.needsHuman !== undefined) {
+            const merged = await mergeWorkItemPayload(it.id, { needsHuman: it.needsHuman }, { harness: it.harness });
             if (merged) item = merged;
           }
           return { ok: true as const, id: it.id, item };
