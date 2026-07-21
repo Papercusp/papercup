@@ -15,6 +15,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { rrfCombine, RRF_K_DEFAULT, type RankedItem } from '@papercusp/rrf';
 import { listPlanRowsMatchingAnyToken, syntheticPlanPath, VALID_PLAN_SLUG } from './source';
 import { parsePlan } from './parser';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
@@ -46,8 +47,9 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Merge embedding-cosine hits after the lexical results (up to 3 extras, marked semantic:true). ' +
-        'Default on (off under vitest); false = lexical-only.',
+      'Fuse embedding-cosine hits with the lexical ranking via Reciprocal Rank Fusion (RRF) instead of ' +
+        'scoring lexical alone — a topically-exact plan whose lexical score is low/zero can still rank near ' +
+        'the top on the strength of its semantic rank. Default on (off under vitest); false = lexical-only.',
     ),
 });
 
@@ -277,44 +279,79 @@ export default defineTool({
     }
 
     hits.sort((a, b) => b.score - a.score);
-    const trimmed = hits.slice(0, limit);
 
-    // P-010 (shared-embedding-sidecar-and-enrichment-2026-07-10): recall-
-    // additive semantic leg over the migration-553 plan embeddings. Extras are
-    // APPENDED after the lexical hits (never displacing them), capped at 3,
-    // marked semantic:true — a rephrased topic query now finds plans whose
-    // slug/title/content words never matched. Strictly fail-open; inert under
-    // vitest unless semantic:true is forced (WI-3792 load-scar class).
-    const merged: Array<Hit & { semantic?: true; similarity?: number }> = [...trimmed];
+    // WI-5683 fix (was P-010 shared-embedding-sidecar-and-enrichment-2026-07-10's
+    // recall-additive leg): fuse the lexical ranking with the migration-553
+    // plan-embedding semantic ranking via Reciprocal Rank Fusion — the same
+    // pattern search:semantic already uses (@papercusp/rrf) — instead of
+    // scoring lexical alone and APPENDING up to 3 semantic extras after the
+    // cut. RRF combines by RANK POSITION, not raw score, so a plan whose
+    // lexical score is 0/weak (a long, unrelated plan that merely repeats
+    // common tokens can outscore a topically-exact plan on raw term
+    // frequency — see WI-5683) — or one the CANDIDATE_LIMIT ILIKE prefilter
+    // dropped before scoring (semanticPlanHits queries harness_plans by
+    // pgvector directly, over the FULL corpus, so it is NOT subject to that
+    // prefilter) — but that ranks highly semantically now lands near the top
+    // of the fused list instead of buried behind (or entirely absent from)
+    // every plan that merely shares common words. Strictly fail-open: an
+    // embedder outage/timeout/disable degrades to lexical-only (matches the
+    // prior default-on behavior); inert under vitest unless semantic:true is
+    // forced (WI-3792 load-scar class).
     let semanticHitCount = 0;
+    let merged: Array<Hit & { semantic?: true; similarity?: number }>;
     const semanticOn = args.semantic ?? !process.env.VITEST;
+    let sem: Awaited<ReturnType<typeof semanticPlanHits>> = null;
     if (semanticOn) {
       try {
-        const sem = await semanticPlanHits(args.query, { ...opts, includeArchived, limit: limit * 2 });
-        if (sem?.length) {
-          const seen = new Set(merged.map((h) => h.plan));
-          for (const h of sem) {
-            if (seen.has(h.slug)) continue;
-            merged.push({
-              plan: h.slug,
-              score: 0,
-              semantic: true,
-              similarity: Math.round(h.similarity * 1000) / 1000,
-              matches: [{ scope: 'title', snippet: h.title ?? h.slug }],
-            });
-            semanticHitCount += 1;
-            if (semanticHitCount >= Math.min(3, limit)) break;
-          }
-        }
+        // Over-fetch for RRF fusion headroom (mirrors runHybridSearch's
+        // limit*3 candidate pool) rather than the old fixed "+3 extras" cap.
+        sem = await semanticPlanHits(args.query, { ...opts, includeArchived, limit: Math.max(limit * 3, 30) });
       } catch {
         // fail-open: the lexical result stands.
+        sem = null;
       }
+    }
+
+    if (sem?.length) {
+      const lexicalSlugs = new Set(hits.map((h) => h.plan));
+      const lexicalRanked: RankedItem<Hit>[] = hits.map((h) => ({ key: h.plan, score: h.score, row: h }));
+      const semanticRanked: RankedItem<Hit>[] = sem.map((h) => ({
+        key: h.slug,
+        score: h.similarity,
+        row: {
+          plan: h.slug,
+          score: 0,
+          matches: [{ scope: 'title', snippet: h.title ?? h.slug }],
+        },
+      }));
+      const simBySlug = new Map(sem.map((h) => [h.slug, Math.round(h.similarity * 1000) / 1000]));
+      const fused = rrfCombine<Hit>(
+        [
+          { name: 'lexical', list: lexicalRanked },
+          { name: 'semantic', list: semanticRanked },
+        ],
+        RRF_K_DEFAULT,
+      );
+      merged = fused.slice(0, limit).map(({ row, rankers }) => {
+        const similarity = simBySlug.get(row.plan);
+        // Only mark semantic:true (the "this wasn't a lexical match" signal
+        // downstream callers key on) when the plan has NO lexical score of
+        // its own — a plan found by both legs keeps its real lexical matches
+        // and just also carries the similarity that helped rank it.
+        if (!lexicalSlugs.has(row.plan) && rankers.includes('semantic')) {
+          semanticHitCount += 1;
+          return { ...row, semantic: true as const, similarity };
+        }
+        return similarity !== undefined ? { ...row, similarity } : row;
+      });
+    } else {
+      merged = hits.slice(0, limit);
     }
 
     ctxAny.metadata?.({
       query: args.query,
       scopes,
-      count: trimmed.length,
+      count: merged.length - semanticHitCount,
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
       ...(truncated ? { truncatedCandidates: true } : {}),
       ...(crossHarnessHit ? { crossHarnessHit: true } : {}),
