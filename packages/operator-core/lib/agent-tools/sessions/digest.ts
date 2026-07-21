@@ -30,6 +30,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS } from './_shared';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -40,22 +41,15 @@ const EXCERPT_MAX = 400;
 /**
  * The row shape the digest query returns.
  *
- * This is declared as a real interface and used to ANNOTATE the `rows` const —
- * not just passed as `ctx.tx<...>`'s type argument — because that type argument
- * is DECORATIVE. `ToolContext<Tx = any>` (tooldef/src/types.ts) types `tx` as
- * `any`, so `ctx.tx<Array<{…}>>` is a generic call on an `any`: TypeScript
- * discards the argument and hands back `any`. Every sessions tool has been
- * writing that generic under the impression it typed the result; none of them
- * were checked. It only SURFACED here because this file is the first to run a
- * callback over the rows (`rows.map((r) => …)`), and a callback param off an
- * `any` receiver is an implicit-any — TS7006 — which the operator-core tsc
- * baseline gates on.
- *
- * Annotating the const is what actually binds the type: `rows` is a real
- * DigestRow[], `r`/`d` infer from it, and a query/shape mismatch is now caught
- * at build instead of silently becoming `any` at runtime. Filed as the wider
- * finding (the type arg is a no-op across every ctx.tx caller); fixing it at the
- * framework is a separate, much larger change.
+ * EI-10968: `ctx.tx<Array<{…}>>` used to be DECORATIVE here — this handler is
+ * role-gated (`requirePrincipal: false`), so its `ctx` was inferred as bare
+ * `UnifiedToolContext`, whose `tx?: any` has no generic to bind at all
+ * (TypeScript silently discarded the `<…>` type argument and handed back
+ * `any`). The handler below is now typed `ctx: PapercuspUnifiedToolContext`
+ * (`_tool-context.ts`), which gives `tx` a real `Sql` type — `ctx.tx<DigestRow[]>`
+ * genuinely binds `DigestRow[]` now, so this interface (and the `rows` const's
+ * own annotation, kept for readability) is checked against the query, not just
+ * decorative.
  */
 interface DigestRow {
   source_kind: string;
