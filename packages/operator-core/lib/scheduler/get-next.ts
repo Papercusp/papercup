@@ -554,6 +554,14 @@ export interface IssueClaimExclusionBreakdown {
    *  view.filter matches — BEFORE taken/floors. 0 here means the spec itself is the
    *  problem (a kind/plan/tag scoping that matches nothing), not a floor. */
   matchedByFilter: number;
+  /** Of matchedByFilter, how many survive spec_match AND EVERY floor — the count a
+   *  self-selecting caller would actually see as claimable RIGHT NOW (identical to
+   *  {@link listIssueClaimableRows}' total before its LIMIT). NOT `matched − Σexcluded`:
+   *  the `excluded` buckets OVERLAP (a row can be counted under several floors at once),
+   *  so this is a DISTINCT additive count of rows passing every predicate, computed by the
+   *  SAME inner subquery. This is the ONE number the whole claimability-clarity plan makes
+   *  trustworthy — the `0 claimable` a wind-down / drain decision hinges on. */
+  claimable: number;
   /** Of matchedByFilter, counts of why each is NOT self-selectable right now. Every
    *  floor after `taken` is counted only among the UNTAKEN subset (a taken row is
    *  trivially excluded for that reason alone — counting it again under e.g. claimHold
