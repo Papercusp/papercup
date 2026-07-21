@@ -523,9 +523,10 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     ]);
     const releaseClaim = vi.fn(async () => ({}));
     const rollbackAttempt = vi.fn(async () => ({}));
-    // The exact EI-10524 shape: the thrash breaker trips, but the payload write silently
-    // matches zero rows — needsHuman never actually persists, so nothing stops the item
-    // re-dispatching next tick even though the collector was ABOUT to report it handled.
+    // The exact EI-10524 shape: the thrash breaker trips, but the write silently matches zero
+    // rows — the status='blocked' leader-triage routing never actually persists (P-004/WI-5679),
+    // so nothing stops the item re-dispatching next tick even though the collector was ABOUT to
+    // report it handled. A null return is the no-op signal (EI-15486) the collector must honor.
     const escalateThrash = vi.fn(async () => null);
     const result = await collectOrphanedDispatchSignals('ws-1', {
       bootMs,

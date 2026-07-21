@@ -1,9 +1,10 @@
 /**
  * Handler-level tests for the `system:improvement-implement` action — the
- * exhausted⇒needs-human flip (self-improvement-consume-edges-2026-06-12 P-012).
+ * exhausted⇒leader-triage flip (self-improvement-consume-edges-2026-06-12 P-012;
+ * routing target changed from the owner inbox to leader triage in P-004/WI-5679).
  *
  * The pure decision (which items are exhausted) is plan-implement.test.ts; the
- * flip semantics (comment + needsHuman + release) is resolve-core.test.ts. This
+ * flip semantics (comment + status='blocked' + release) is resolve-core.test.ts. This
  * file proves the ROUTINE wires them: every tick, whatever the plan action,
  * each attempts-exhausted item goes through the flip seam — the silent-worker-
  * death case finally leaves the auto lane.

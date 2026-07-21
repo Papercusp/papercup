@@ -159,10 +159,12 @@ describe('resolveImprovement — could-not-fix (retry path)', () => {
   it('releases the claim and stays open (a later run retries)', async () => {
     const d = deps(issue({ id: 'EI-2', payload: { implementAttempts: 1 } }));
     const r = await resolveImprovement({ id: 'EI-2', outcome: 'could-not-fix', summary: 'repro is flaky, ran out of leads' }, d);
-    expect(r).toMatchObject({ ok: true, outcome: 'could-not-fix', state: 'open', routedToHuman: false });
+    expect(r).toMatchObject({ ok: true, outcome: 'could-not-fix', state: 'open' });
+    expect(r.routedToHuman).toBeUndefined();
+    expect(r.routedToLeaderTriage).toBeUndefined();
     expect(d.rec.released).toEqual(['EI-2']);
     expect(d.rec.states).toHaveLength(0);
-    expect(d.rec.payloads).toHaveLength(0); // attempts not exhausted → no needsHuman
+    expect(d.rec.payloads).toHaveLength(0); // attempts not exhausted → no needsHuman / no block
   });
 
   it('exhausted attempts → routes to LEADER TRIAGE (status=blocked), NOT the owner inbox (P-004/WI-5679)', async () => {
