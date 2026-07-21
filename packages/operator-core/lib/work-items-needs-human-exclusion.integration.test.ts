@@ -150,3 +150,47 @@ describe('diagnoseClaimNextMiss treats a needsHuman-only backlog as DRAINED (EI-
     expect(diag.drained).toBe(false);
   });
 });
+
+// WI-5689: setWorkItemStateWithAliasInfo's needs-human auto-gate genuinely persists
+// payload.needsHuman (mergeIssuePayload does a real `COALESCE(payload,'{}') || patch` UPDATE
+// ... RETURNING), but the `workItem` snapshot echoed back to the caller was captured BEFORE
+// that write and never refreshed — so a caller reading the response saw the STALE pre-merge
+// payload (needsHuman still false) even though the DB row was already correct. Reported
+// live as a second "silent no-op" repro on the SAME work-item as the update.ts sibling bug
+// (which — unlike this one — genuinely never wrote at all). Proves both halves: the DB
+// write really lands, AND the echoed response now reflects it (not stale).
+describe('setWorkItemStateWithAliasInfo needs-human auto-gate echoes the FRESH payload, not a stale pre-merge snapshot (WI-5689)', () => {
+  it('the returned workItem.payload.needsHuman is true in the SAME call that set the state', async () => {
+    await seedIssue('EI-echo-1', { kind: 'change', status: 'open', createdTs: 100, payload: {} });
+
+    const res = await wi.setWorkItemStateWithAliasInfo('EI-echo-1', 'needs-human', { harness: H, by: 'tester' });
+
+    expect(res.appliedState).toBe('needs-human');
+    // The bug: this used to be `false`/`undefined` (the pre-merge snapshot) despite the
+    // DB write already having landed underneath it.
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBe(true);
+    expect(res.aliasNote).toMatch(/auto-routed to a human/);
+  });
+
+  it('matches what is actually persisted in Postgres (not just a locally-patched echo)', async () => {
+    await seedIssue('EI-echo-2', { kind: 'change', status: 'open', createdTs: 100, payload: {} });
+    await wi.setWorkItemStateWithAliasInfo('EI-echo-2', 'needs-human', { harness: H, by: 'tester' });
+
+    const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = 'EI-echo-2'`;
+    expect(rows[0]?.payload?.needsHuman).toBe(true);
+
+    // A follow-up read via getWorkItem (what work_items:get / work_items:set_state's
+    // response ultimately re-derives from) agrees with the echoed value above.
+    const fetched = await wi.getWorkItem('EI-echo-2', H);
+    expect((fetched?.payload as Record<string, unknown> | undefined)?.needsHuman).toBe(true);
+  });
+
+  it('a non-issue-family transition (e.g. plain wip) never calls the auto-gate / re-fetch at all', async () => {
+    await seedIssue('EI-echo-3', { kind: 'change', status: 'open', createdTs: 100, payload: { marker: 'untouched' } });
+    const res = await wi.setWorkItemStateWithAliasInfo('EI-echo-3', 'wip', { harness: H, by: 'tester' });
+    expect(res.appliedState).toBe('wip');
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.marker).toBe('untouched');
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBeUndefined();
+  });
+});
