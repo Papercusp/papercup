@@ -34,6 +34,11 @@ function makeDeps(o: {
       destroyed.push(id);
     },
     now: () => NOW,
+    // WI (hetzner-orphan-frame-reaper HTTP-401 flap): default to an instant no-op
+    // backoff so the retry-around-a-non-transient-error path doesn't add real
+    // wall-clock delay to every test in this file — tests that specifically
+    // exercise the backoff behavior itself override this.
+    async delay() {},
   };
 }
 
@@ -186,12 +191,94 @@ describe('reapOrphanedHetznerFrames', () => {
     expect(r.destroyed).toEqual([]);
   });
 
-  it('a NON-transient listFrames error still propagates (surfaces a genuine failure)', async () => {
+  it('a NON-transient listFrames error PERSISTING across every retry attempt still propagates (surfaces a genuine failure)', async () => {
     const deps = makeDeps({ frames: [] });
+    let calls = 0;
     deps.listFrames = async () => {
+      calls++;
       throw new Error('Hetzner API listServers failed (HTTP 401): unauthorized');
     };
     await expect(reapOrphanedHetznerFrames(deps)).rejects.toThrow(/401/);
+    expect(calls).toBe(3); // DEFAULT_MAX_LIST_ATTEMPTS — a persistently bad token exhausts every attempt
+  });
+
+  // WI (hetzner-orphan-frame-reaper HTTP-401 flap): a real incident showed Hetzner's
+  // own auth path can 401 on a ONE-OFF blip that clears on the very next call with
+  // the SAME (unrotated, still-valid) token — confirmed live by re-hitting the API
+  // with the exact token seconds after a routine-failure EI was filed and getting a
+  // clean 200. Previously ANY single non-transient error surfaced immediately,
+  // spamming a bug EI over a self-healing condition (the same "phantom routine-
+  // failure" class already known for the network-transient path, just at the
+  // HTTP-status layer instead). This proves the retry now absorbs that.
+  describe('non-transient listFrames retry-then-recover (HTTP-401 flap)', () => {
+    it('a single 401 that clears on retry is absorbed — never surfaces, never wedges', async () => {
+      const deps = makeDeps({ frames: [] });
+      let calls = 0;
+      deps.listFrames = async () => {
+        calls++;
+        if (calls === 1) throw new Error('Hetzner API listServers failed (HTTP 401): unauthorized');
+        return [];
+      };
+      const r = await reapOrphanedHetznerFrames(deps);
+      expect(calls).toBe(2);
+      expect(r.listError).toBeUndefined();
+      expect(r.scanned).toBe(0);
+    });
+
+    it('a rig frame IS still processed normally once the retry recovers', async () => {
+      const f = frame({ id: 'rig-1', labels: { [OWNER_LABEL_KEY]: 'owner-1' } });
+      const deps = makeDeps({ frames: [f], liveness: { 'owner-1': 'ended' } });
+      let calls = 0;
+      deps.listFrames = async () => {
+        calls++;
+        if (calls === 1) throw new Error('Hetzner API listServers failed (HTTP 401): unauthorized');
+        return [f];
+      };
+      const r = await reapOrphanedHetznerFrames(deps);
+      expect(r.listError).toBeUndefined();
+      expect(r.destroyed).toEqual(['rig-1']);
+    });
+
+    it('sleeps between attempts using the injected backoff (never a real timer in tests)', async () => {
+      const deps = makeDeps({ frames: [] });
+      const delays: number[] = [];
+      deps.delay = async (ms: number) => {
+        delays.push(ms);
+      };
+      let calls = 0;
+      deps.listFrames = async () => {
+        calls++;
+        if (calls < 3) throw new Error('Hetzner API listServers failed (HTTP 401): unauthorized');
+        return [];
+      };
+      const r = await reapOrphanedHetznerFrames(deps);
+      expect(r.listError).toBeUndefined();
+      expect(calls).toBe(3);
+      expect(delays).toEqual([300, 900]); // one delay BETWEEN each of the 2 failed attempts, none after the final success
+    });
+
+    it('maxListAttempts is configurable — honors a caller-supplied cap', async () => {
+      const deps = makeDeps({ frames: [] });
+      let calls = 0;
+      deps.listFrames = async () => {
+        calls++;
+        throw new Error('Hetzner API listServers failed (HTTP 401): unauthorized');
+      };
+      await expect(reapOrphanedHetznerFrames(deps, { maxListAttempts: 1 })).rejects.toThrow(/401/);
+      expect(calls).toBe(1); // no retries at all when capped to 1
+    });
+
+    it('a TRANSIENT network error never burns a retry attempt (its own next-cadence retry already covers it)', async () => {
+      const deps = makeDeps({ frames: [] });
+      let calls = 0;
+      deps.listFrames = async () => {
+        calls++;
+        throw new TypeError('fetch failed');
+      };
+      const r = await reapOrphanedHetznerFrames(deps);
+      expect(calls).toBe(1); // returns immediately as a clean listError, not retried in-process
+      expect(r.listError).toMatch(/fetch failed/);
+    });
   });
 });
 

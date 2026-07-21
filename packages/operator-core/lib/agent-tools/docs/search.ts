@@ -143,53 +143,102 @@ export default defineTool({
         isError: true,
       };
     }
-    ctxAny.metadata?.({ surface: resolved.surface, ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}) });
+    const limit = args.limit;
+    // WI-5690 (sibling of WI-5683's plans:search fix): over-fetch the LEXICAL
+    // leg past `limit` so RRF fusion below has real headroom to promote a
+    // semantic-only hit above the cut — mirrors the semantic leg's own
+    // OVERFETCH pattern (semantic-leg.ts) and plans/search.ts's `limit*3`
+    // over-fetch. searchDocs's internal `hitCount`/full `scored` list is
+    // unaffected by the limit param; only how much of it gets sliced into
+    // `hits` changes, so this is purely more fusion candidates, not a
+    // behavior change to the underlying ranker.
+    const overFetchLimit = Math.max(limit * 3, 30);
 
-    const response = await searchDocs(resolved.adapter, args, {
+    // searchDocs's own ctx.metadata call reports non_searchable_excluded
+    // (not part of its return value) — capture it via a local sink instead of
+    // forwarding ctxAny.metadata directly, so it can be merged into ONE final
+    // metadata() call below that reflects the POST-fusion counts rather than
+    // the over-fetched intermediate ones.
+    let innerMeta: Record<string, unknown> = {};
+    const response = await searchDocs(resolved.adapter, { ...args, limit: overFetchLimit }, {
       ...(ctxAny.signal && { signal: ctxAny.signal }),
-      ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
       ...(ctxAny.progress && { progress: ctxAny.progress }),
+      metadata: (d) => { innerMeta = d; },
     });
 
-    // P-009 (shared-embedding-sidecar-and-enrichment-2026-07-10): recall-
-    // additive semantic leg. Cosine hits from the migration-552 section store
-    // are APPENDED after the lexical results (never displacing them — the
-    // lexical corpus already fills `limit` with weak keyword hits, so a
-    // slice-to-limit merge would hide exactly the vocabulary-mismatch hits
-    // this leg exists for), capped at 3 extras, marked semantic:true. A
-    // rephrased query ("how do I revive a dead session") now surfaces
-    // runbooks whose words never matched. Strictly fail-open; inert under
-    // vitest (WI-3792 load-scar class) unless semantic:true is forced.
-    let payload: Record<string, unknown> = { ...response, surface: resolved.surface };
+    // WI-5690: fuse the lexical ranking with the migration-552 doc-section
+    // semantic ranking via Reciprocal Rank Fusion (@papercusp/rrf, same
+    // pattern plans:search / search:semantic already use) instead of scoring
+    // lexical-only and APPENDING up to 3 semantic extras after the cut. RRF
+    // combines by RANK POSITION, not raw score, so a page that ranks #1
+    // semantically (a rephrased query whose words never appear verbatim in
+    // the answer doc) can't be buried behind — or dropped entirely by the
+    // `limit`-capped slice ahead of — pages that only win on raw lexical
+    // score. Strictly fail-open: an embedder outage/timeout/disable degrades
+    // to lexical-only (matches the prior default-on behavior); inert under
+    // vitest unless semantic:true is forced (WI-3792 load-scar class).
+    let semanticHitCount = 0;
+    let finalHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }>;
     const semanticOn = args.semantic ?? !process.env.VITEST;
+    let sem: Awaited<ReturnType<typeof semanticDocHits>> = null;
     if (semanticOn) {
       try {
-        const sem = await semanticDocHits(args.query, resolved.adapter.name, args.limit);
-        if (sem?.length) {
-          const seen = new Set(response.hits.map((h) => h.slug));
-          const extras: Array<Record<string, unknown>> = [];
-          for (const h of sem) {
-            if (seen.has(h.slug)) continue;
-            extras.push({
-              slug: h.slug,
-              url: h.url,
-              title: h.title,
-              score: 0,
-              excerpt: h.excerpt,
-              semantic: true,
-              similarity: Math.round(h.similarity * 1000) / 1000,
-              ...(h.anchor ? { anchor: h.anchor } : {}),
-            });
-            if (extras.length >= Math.min(3, args.limit)) break;
-          }
-          if (extras.length > 0) {
-            payload = { ...payload, hits: [...response.hits, ...extras], semanticHitCount: extras.length };
-          }
-        }
+        sem = await semanticDocHits(args.query, resolved.adapter.name, overFetchLimit);
       } catch {
         // fail-open: the lexical result stands.
+        sem = null;
       }
     }
+
+    if (sem?.length) {
+      const lexicalSlugs = new Set(response.hits.map((h) => h.slug));
+      const lexicalRanked: RankedItem<SearchHit>[] = response.hits.map((h) => ({ key: h.slug, score: h.score, row: h }));
+      const semanticRanked: RankedItem<SearchHit>[] = sem.map((h) => ({
+        key: h.slug,
+        score: h.similarity,
+        row: { slug: h.slug, url: h.url, title: h.title, score: 0, excerpt: h.excerpt },
+      }));
+      const simBySlug = new Map(sem.map((h) => [h.slug, Math.round(h.similarity * 1000) / 1000]));
+      const anchorBySlug = new Map(sem.map((h) => [h.slug, h.anchor]));
+      const fused = rrfCombine<SearchHit>(
+        [
+          { name: 'lexical', list: lexicalRanked },
+          { name: 'semantic', list: semanticRanked },
+        ],
+        RRF_K_DEFAULT,
+      );
+      finalHits = fused.slice(0, limit).map(({ row, rankers }) => {
+        const similarity = simBySlug.get(row.slug);
+        const anchor = anchorBySlug.get(row.slug);
+        // Only mark semantic:true (the "this wasn't a lexical match" signal
+        // downstream callers key on) when the page has NO lexical hit of its
+        // own — a page found by both legs keeps its real lexical excerpt and
+        // just also carries the similarity that helped rank it.
+        if (!lexicalSlugs.has(row.slug) && rankers.includes('semantic')) {
+          semanticHitCount += 1;
+          return { ...row, semantic: true as const, similarity, ...(anchor ? { anchor } : {}) };
+        }
+        return similarity !== undefined ? { ...row, similarity } : row;
+      });
+    } else {
+      finalHits = response.hits.slice(0, limit);
+    }
+
+    const payload: Record<string, unknown> = {
+      ...response,
+      hits: finalHits,
+      hitCount: response.hitCount,
+      surface: resolved.surface,
+      ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
+      ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+    };
+    ctxAny.metadata?.({
+      ...innerMeta,
+      surface: resolved.surface,
+      ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
+      returned: finalHits.length - semanticHitCount,
+      ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+    });
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });
