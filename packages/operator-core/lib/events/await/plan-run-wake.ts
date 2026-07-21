@@ -40,6 +40,11 @@ export async function resumePlanRunForWake(input: {
     promptText: input.wakeText,
     cwd: getRepoRoot(),
     uiClientId: null,
+    // gateway-priority-tiers (WI-4542/WI-5676): this channel re-invokes a sleeping
+    // plan run from an EVENT WAKE — there is no ctx/identity to resolve (unlike
+    // plans:launch/plans:resume) and, structurally, no human is ever synchronously
+    // watching a background wake. Always the 'su' middle tier, never 'interactive'.
+    priority: 'su',
     signal: undefined,
     emit: () => {},
   }).catch(() => {
