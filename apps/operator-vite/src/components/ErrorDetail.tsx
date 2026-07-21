@@ -128,7 +128,6 @@ const LABEL: CSSProperties = {
   marginTop: 6,
   fontSize: 10.5,
   fontWeight: 600,
-  letterSpacing: 0.4,
   textTransform: 'uppercase',
   color: 'var(--fg-mute, #7f9bb4)',
 };
