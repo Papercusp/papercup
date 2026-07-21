@@ -72,6 +72,19 @@ writeFileSync(
 );
 afterAll(() => rmSync(migrationsLintTree, { recursive: true, force: true }));
 
+// EI-18218408212070282: a candidate tree that provides `lint:design-primitives` but not
+// `lint:tsc`/`lint:migrations` — isolates the design-primitives leg's wiring (position in
+// the sequence, env, failure signature) the same way the trees above isolate their own legs.
+const designPrimitivesLintTree = mkdtempSync(join(tmpdir(), 'green-cp-design-primitives-lint-tree-'));
+writeFileSync(
+  join(designPrimitivesLintTree, 'package.json'),
+  JSON.stringify({
+    name: 'cp-design-primitives-lint-fixture',
+    scripts: { 'lint:design-primitives': 'node scripts/test-files.mjs apps/operator/app/_lints/design-primitives.test.ts' },
+  }),
+);
+afterAll(() => rmSync(designPrimitivesLintTree, { recursive: true, force: true }));
+
 const cfg: ReleaseConfig = releaseConfig({
   integrationRoot: '/int',
   releaseRoot: '/int',
@@ -152,6 +165,45 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(r.green).toBe(false);
     expect(r.failingTests).toContain('lint:migrations');
     expect(r.summary).toContain('MIGRATION LINT FAILED');
+    expect(calls).toHaveLength(2); // build NOT attempted — held before the SPA build leg
+  });
+
+  // EI-18218408212070282: design-primitives.test.ts et al. are GLOBAL source-scanning
+  // lints — `test:affected` only runs them when @papercusp/web happens to be in the
+  // candidate diff's affected set, so a real violation elsewhere in the tree could
+  // silently ride an unrelated candidate's diff into the green pin. This leg must run
+  // UNCONDITIONALLY (never gated by the affected set) so "green" reflects the whole tree.
+  it('detects the optional lint:design-primitives script without requiring it from subject hives', () => {
+    expect(hasNpmScript(cpTree, 'lint:design-primitives')).toBe(false);
+    expect(hasNpmScript(designPrimitivesLintTree, 'lint:design-primitives')).toBe(true);
+  });
+
+  it('runs lint:design-primitives after a green suite, before the SPA build, when the candidate provides it', async () => {
+    // suite green → lint:design-primitives green → marker grep clean → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(designPrimitivesLintTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls[1].cmd).toBe('npm');
+    expect(calls[1].args).toEqual(['run', 'lint:design-primitives']);
+    expect(calls[1].opts?.cwd).toBe(designPrimitivesLintTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[1].opts?.env?.AFFECTED_BASE).toBe('base-sha');
+    expect(calls[2].cmd).toBe('git');
+    expect(calls[3].args).toContain('build');
+  });
+
+  it('holds the candidate when lint:design-primitives reports a violation and skips the SPA build — even though the diff never touched @papercusp/web', async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: 'FAIL app/_lints/design-primitives.test.ts > blocks direct sky brand primitives' },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(designPrimitivesLintTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('lint:design-primitives');
+    expect(r.summary).toContain('DESIGN PRIMITIVES LINT FAILED');
     expect(calls).toHaveLength(2); // build NOT attempted — held before the SPA build leg
   });
 

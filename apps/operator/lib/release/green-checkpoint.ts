@@ -2369,6 +2369,42 @@ export function realCheckpointDeps(
         }
       }
 
+      // EI-18218408212070282: `test:affected` (the `r` leg above) only runs a workspace's
+      // suite when that workspace is in the CANDIDATE DIFF's affected set (scripts/
+      // affected-tests.mjs). design-primitives.test.ts and its siblings (css-tokens.test.ts,
+      // contrast.test.ts) are GLOBAL source-scanning lints — they scan the WHOLE
+      // apps/operator + operator-vite tree for token/primitive compliance, independent of
+      // what this candidate's diff touched. So a candidate whose diff doesn't happen to
+      // touch @papercusp/web (or anything reverse-depending on it) skips them entirely, and
+      // a real, pre-existing violation elsewhere in the tree (e.g. left by an earlier
+      // candidate whose OWN diff also missed the affected set, or a live-merge landing
+      // between checkpoint runs) rides straight into the green pin: the gate flapped
+      // red<->green on the SAME uncorrected violation purely depending on each candidate's
+      // diff shape, not on whether the tree was actually clean. Run these three files
+      // UNCONDITIONALLY here — like lint:tsc/lint:migrations above, never gated by the
+      // affected set — so "green" means the whole tree's design-primitive invariants hold,
+      // not just the diffed slice. `npm run test:file` (scripts/test-files.mjs) resolves
+      // each file to its owning Vitest config and hard-fails on a zero/partial match, so a
+      // future rename of any of the three files fails LOUDLY here instead of silently
+      // stopping being gated. A subject hive without the script (hasNpmScript false — no
+      // design-lint files) skips this leg entirely, same fallback as the legs above.
+      let lintDesignPrimitivesOut = '';
+      let lintDesignPrimitivesOk = true;
+      if (r.code === 0 && typecheckOk && lintMigrationsOk && hasNpmScript(treeDir, 'lint:design-primitives')) {
+        const designPrimitives = await exec('npm', ['run', 'lint:design-primitives'], {
+          cwd: treeDir,
+          env,
+          allowNonZero: true,
+        });
+        lintDesignPrimitivesOk = designPrimitives.code === 0;
+        if (!lintDesignPrimitivesOk) {
+          lintDesignPrimitivesOut =
+            '\n\n=== DESIGN PRIMITIVES LINT FAILED (npm run lint:design-primitives) — global token/primitive scan, independent of the affected set ===\n' +
+            designPrimitives.stdout +
+            designPrimitives.stderr;
+        }
+      }
+
       // P-005: the SPA build is PART of "green". A build break (a bad import, a type
       // error in a bundled module) passes the Vitest suite, then fails at the deploy's
       // swap step (`--build-spa`) and rolls back — needlessly draining + restarting the
@@ -2385,7 +2421,7 @@ export function realCheckpointDeps(
       // made `npm --workspace @papercusp/operator-vite run build` die with "No workspaces
       // found" on every per-hive gate, holding that hive's `main` forever (oddsmith).
       const spaWorkspace = cfg.spaBuildWorkspace;
-      if (r.code === 0 && typecheckOk && lintMigrationsOk && spaWorkspace) {
+      if (r.code === 0 && typecheckOk && lintMigrationsOk && lintDesignPrimitivesOk && spaWorkspace) {
         // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a
         // cryptic CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such
         // markers in globals.css (a bad git-sync auto-merge — the live-merge resolver
@@ -2422,8 +2458,8 @@ export function realCheckpointDeps(
           }
         }
       }
-      let green = r.code === 0 && typecheckOk && lintMigrationsOk && buildOk;
-      const fullOutput = r.stdout + r.stderr + typecheckOut + lintMigrationsOut + buildOut;
+      let green = r.code === 0 && typecheckOk && lintMigrationsOk && lintDesignPrimitivesOk && buildOk;
+      const fullOutput = r.stdout + r.stderr + typecheckOut + lintMigrationsOut + lintDesignPrimitivesOut + buildOut;
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
       // SUITE is what failed (r.code !== 0; the build only runs on a green suite, so
@@ -2487,6 +2523,7 @@ export function realCheckpointDeps(
       let failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
       if (!typecheckOk && !failingTests.includes('lint:tsc')) failingTests.push('lint:tsc');
       if (!lintMigrationsOk && !failingTests.includes('lint:migrations')) failingTests.push('lint:migrations');
+      if (!lintDesignPrimitivesOk && !failingTests.includes('lint:design-primitives')) failingTests.push('lint:design-primitives');
       let summary = summarizeSuiteOutput(fullOutput);
       if (!green && buildOk && failingTests.length) {
         try {

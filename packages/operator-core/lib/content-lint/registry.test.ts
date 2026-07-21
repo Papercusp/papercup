@@ -91,8 +91,42 @@ describe('shellSyntaxDetector', () => {
   });
 });
 
+describe('conflictMarkersDetector', () => {
+  it('matches every tracked file, excluding retired/vendored/build trees (mirrors check-conflict-markers.mjs scope)', () => {
+    expect(conflictMarkersDetector.matches('apps/operator/app/globals.css')).toBe(true);
+    expect(conflictMarkersDetector.matches('README.md')).toBe(true);
+    expect(conflictMarkersDetector.matches('packages/x/lib/a.ts')).toBe(true);
+    expect(conflictMarkersDetector.matches('_retired/old/a.ts')).toBe(false);
+    expect(conflictMarkersDetector.matches('packages/x/node_modules/pkg/a.ts')).toBe(false);
+    expect(conflictMarkersDetector.matches('packages/x/dist/a.js')).toBe(false);
+  });
+
+  it('detect flags a committed conflict marker, leaves a clean file null', () => {
+    const marker = '<'.repeat(7);
+    const bad = conflictMarkersDetector.detect(
+      'apps/operator/app/globals.css',
+      `.a {}\n${marker} Updated upstream\n.b {}`,
+    );
+    expect(bad).toMatch(/committed git conflict marker at line 2/i);
+    expect(conflictMarkersDetector.detect('apps/operator/app/globals.css', '.a { color: red; }\n')).toBeNull();
+  });
+
+  it('dispatches to the content-fixer role', () => {
+    expect(conflictMarkersDetector.fixerRole).toBe('content-fixer');
+  });
+
+  it('has no autoFix — a real conflict needs a human/LLM to pick the correct side', () => {
+    expect(conflictMarkersDetector.autoFix).toBeUndefined();
+  });
+});
+
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all three seeded detectors, keyed for the guard + escalation', () => {
-    expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual(['mdx', 'smart-quotes', 'shell-syntax']);
+  it('ships all four seeded detectors, keyed for the guard + escalation', () => {
+    expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
+      'mdx',
+      'smart-quotes',
+      'shell-syntax',
+      'conflict-markers',
+    ]);
   });
 });
