@@ -273,10 +273,21 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
     await g.close();
   });
 
-  it('WI-5355: never evicts a socket still paired on a DIFFERENT healthy topic', async () => {
+  it('EI-13317/WI-5481: evicts a socket even when still paired on a DIFFERENT topic (shared-socket eviction deadlock)', async () => {
     // Sockets are shared A↔B connections across every topic this gossip
-    // instance manages (module header) — evicting one still serving another
-    // healthy topic would sever a working link, not fix a broken one.
+    // instance manages (module header). This test used to assert the
+    // OPPOSITE (never evict a socket another topic still claims) — that is
+    // precisely the shared-socket eviction DEADLOCK EI-13317/WI-5481 fixed:
+    // one physical peer socket can half-open (live at the transport layer,
+    // dead for gossip) and sever EVERY topic riding it at once, and each
+    // topic's escalation refusing to evict because some OTHER topic still
+    // claims the same dead socket means NOBODY ever evicts it. Reaching this
+    // escalation means TOPIC's link is already proven dead past the repair
+    // ladder, and a dead handshake is dead for every topic muxed over the
+    // same socket — so eviction must be unconditional. (Silently reverting
+    // this call site back to the guarded form on 2026-07-20 reintroduced the
+    // exact deadlock and broke live cross-machine content federation for
+    // hours — see the call site's EI-13317/WI-5481 writeup.)
     const TOPIC2 = Buffer.alloc(32, 22);
     const f = fakeSwarm();
     const g = createTopicGossip<Frame>({
@@ -301,8 +312,11 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
 
     await vi.advanceTimersByTimeAsync(1100);
     expect(f.left).toHaveLength(1); // TOPIC's escalation fired
-    expect(socket.destroyed).toBe(false); // must survive — still serving TOPIC2
-    expect(g.openChannelCount(TOPIC2.toString('hex'))).toBe(1);
+    // EI-13317/WI-5481: evicted unconditionally even though TOPIC2 still
+    // claimed it — a real destroy() would cascade-close every muxed channel
+    // (incl. TOPIC2's), but this fake doesn't model that cascade, so we only
+    // assert the eviction decision itself here.
+    expect(socket.destroyed).toBe(true);
     await g.close();
   });
 
