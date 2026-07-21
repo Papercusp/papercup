@@ -174,4 +174,57 @@ describe('autonomous loop → control plane (D-020)', () => {
     const prompts = await getPrompts(sql, { workspaceId: WS, harnessSlug: SLUG });
     expect(prompts.roles.worker).toContain('Re-read the acceptance');
   });
+
+  it('WI-5697: a SECOND run of the SAME harness still mints a NEW gym_proposals row, even though the first run\'s cycle-1 candidate is already decided', async () => {
+    // Before the fix, buildLoopDeps' newVariantId was `cand-c${cycle}` — identical across
+    // EVERY run (autoloop cycles almost always run maxCycles=1, so it was always "cand-c1").
+    // Once the prior test decided that id's proposal, this run's recordProposal would silently
+    // no-op (control-plane.ts recordProposal's `ON CONFLICT ... WHERE status = 'pending'`
+    // matches nothing against an already-decided row) — reproducing "cycles no longer mint
+    // gym_proposals rows" live against a real gym_proposals table.
+    const beforeCount = (await sql<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM harness_shared.gym_proposals`)[0]!.n;
+
+    const deps = buildLoopDeps({
+      gymSql: sql,
+      ports: {} as never,
+      judgeCall: fakeJudge(),
+      proposerCall: fakeProposer,
+      proposerModel: 'claude-sonnet-4-6',
+      tasks: TASKS,
+      baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+      harnessCommit: 'deadbeef',
+      workspaceId: WS,
+      scratchRoot: '/tmp/scratch-loop-2',
+      timeoutMs: 1000,
+      pollIntervalMs: 10,
+      maxDistillChars: 8000,
+      abDeps: fakeAbDeps(),
+      recordProposal: makeLoopProposalRecorder(sql, { workspaceId: WS, harnessSlug: SLUG }),
+      // No explicit runId — proves the DEFAULT (a fresh random token per buildLoopDeps call)
+      // is what prevents the collision, not merely a caller who remembered to pass one.
+    });
+
+    const result = await runOptimizationLoop(
+      {
+        thresholds: { epsilon: 0, delta: 1, costCeiling: 10 },
+        baselineMeanCost: 1,
+        baselineOfRecord: 0,
+        dropThreshold: 1000,
+        maxCycles: 1,
+        budgetUsd: null,
+        proposerModel: 'claude-sonnet-4-6',
+        autoPromote: false,
+      },
+      deps,
+    );
+    expect(result.cycles).toBe(1);
+
+    const afterCount = (await sql<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM harness_shared.gym_proposals`)[0]!.n;
+    expect(afterCount).toBeGreaterThan(beforeCount);
+
+    const pendingNow = await listProposals(sql, { workspaceId: WS, harnessSlug: SLUG, status: 'pending' });
+    const freshWorkerProp = pendingNow.find((p) => p.role === 'worker');
+    expect(freshWorkerProp).toBeTruthy();
+    expect(freshWorkerProp!.proposedMd).toContain('Re-read the acceptance');
+  });
 });

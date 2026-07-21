@@ -215,13 +215,15 @@ describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () =
     expect(sqlSink.join('\n')).toMatch(/gym_cycles/);
   });
 
-  it('newVariantId is deterministic per cycle and recordProposal is wired through', async () => {
-    const { deps, proposals } = makeDeps();
-    expect(deps.newVariantId(5)).toBe('cand-c5');
+  it('newVariantId is deterministic per cycle WITHIN a run (intra-run retry idempotency, RB-006), and recordProposal is wired through', async () => {
+    const { deps, proposals } = makeDeps({ runId: 'fixedrun' });
+    expect(deps.newVariantId(5)).toBe('cand-fixedrun-c5');
+    // Same run, same cycle → same id every time (a retried cycle must not mint a second id).
+    expect(deps.newVariantId(5)).toBe(deps.newVariantId(5));
     expect(typeof deps.recordProposal).toBe('function');
     await deps.recordProposal!({
       cycle: 1,
-      candidateId: 'cand-c1',
+      candidateId: deps.newVariantId(1),
       parentId: 'baseline',
       overlay: { promptOverrides: { worker: 'new' } },
       parentOverlay: { promptOverrides: {} },
@@ -232,7 +234,13 @@ describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () =
       verdict: 'accept',
     });
     expect(proposals).toHaveLength(1);
-    expect(proposals[0].candidateId).toBe('cand-c1');
+    expect(proposals[0].candidateId).toBe('cand-fixedrun-c1');
+  });
+
+  it('WI-5697: newVariantId is UNIQUE ACROSS runs by default (no runId passed) — the root cause of "cycles no longer mint proposals" was this id collapsing to the same "cand-c<cycle>" across every run of a harness (almost always maxCycles=1 ⇒ always "cand-c1"), so a later run\'s recordProposal silently no-op\'d against the already-decided row from an earlier run', () => {
+    const { deps: run1 } = makeDeps();
+    const { deps: run2 } = makeDeps();
+    expect(run1.newVariantId(1)).not.toBe(run2.newVariantId(1));
   });
 
   it('promote and revert are no-ops unless wired (human-gated default, D-020)', async () => {

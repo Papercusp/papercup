@@ -463,6 +463,13 @@ export async function runOneAutoloopCycle(
       judgeCall: judge,
       proposerCall: proposer,
       proposerModel: PROPOSER_MODEL,
+      // WI-5697: reuse this run's own random token (already minted above for the ephemeral
+      // DB name / log path) so every candidate id is unique PER RUN, not just per cycle —
+      // without this, autoloop cycles (almost always maxCycles=1) always minted "cand-c1",
+      // so once that id's proposal rows were decided ONCE, every later run's recordProposal
+      // silently no-op'd against the already-decided row (control-plane.ts recordProposal's
+      // `ON CONFLICT ... WHERE status = 'pending'`) and never minted a new gym_proposals row.
+      runId: HEX,
       tasks,
       rubric: GYM_JUDGE_RUBRIC_V1,
       baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
