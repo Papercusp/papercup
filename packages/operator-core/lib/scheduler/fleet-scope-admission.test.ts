@@ -63,9 +63,12 @@ import {
   admitWorkItemForFleetTarget,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
+  fleetScopeLeaderRemedy,
   fleetScopedMiss,
+  notifyFleetScopeRefusal,
   readFleetPauseState,
   reconcileFleetScopeClaims,
+  type FleetScopeAdmission,
 } from './fleet-scope-admission';
 
 const base: ClaimSpecSubject = {
@@ -711,6 +714,90 @@ describe('fleet scope assignment admission (P-016)', () => {
       // `error` branches on cooldown before breakdown), but the breakdown data itself
       // still rides along on the response for the caller to inspect.
       expect(miss.error).toMatch(/YOUR OWN release-cooldown floor/);
+    });
+  });
+
+  // EI-18221674485894260: a fleet-scope refusal must POINT AT the concrete widen tool
+  // (scheduler:set_claim_spec) so a leader never has to hunt a tool ToolSearch/tools:find
+  // failed to surface. The prior body said only "Re-steer the member's claim spec" —
+  // naming neither the tool nor the call shape.
+  describe('EI-18221674485894260: fleet-scope refusal names the one-call widen action', () => {
+    const scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'p2p-release-verify',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'p2p-release-verify-lane',
+          revision: 20,
+          view: { filter: { field: 'kind', op: '=' as const, value: 'bug' } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+        },
+        revision: 20,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+    const violation: Extract<FleetScopeAdmission, { allowed: false }> = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      scope,
+    };
+
+    it('fleetScopeLeaderRemedy names scheduler:set_claim_spec, the fleet slug, and the current specId@revision for a scope violation', () => {
+      const remedy = fleetScopeLeaderRemedy(violation);
+      expect(remedy).toMatch(/scheduler:set_claim_spec/);
+      expect(remedy).toMatch(/fleet: "p2p-release-verify"/);
+      expect(remedy).toMatch(/p2p-release-verify-lane@20/);
+      // A live scope violation is NOT a pause — it must never route the leader at fleet:resume.
+      expect(remedy).not.toMatch(/fleet:resume/);
+    });
+
+    it('fleetScopeLeaderRemedy routes a fleet_winding_down refusal at fleet:resume, NOT a spec widen', () => {
+      const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation,
+        code: 'fleet_winding_down',
+        reason: 'fleet \'p2p-release-verify\' is winding-down (paused)',
+      };
+      const remedy = fleetScopeLeaderRemedy(paused);
+      expect(remedy).toMatch(/fleet:resume \{ fleet: "p2p-release-verify" \}/);
+      // Widening a PAUSED fleet's spec would recruit a member that must be standing down.
+      expect(remedy).not.toMatch(/scheduler:set_claim_spec/);
+    });
+
+    it('fleetScopeLeaderRemedy still names the widen tool for a fleet_scope_missing (no authored spec) refusal', () => {
+      const missing: Extract<FleetScopeAdmission, { allowed: false }> = {
+        allowed: false,
+        scoped: true,
+        code: 'fleet_scope_missing',
+        reason: 'fleet member su-member belongs to \'p2p-release-verify\' but has no explicit spec',
+        scope: { ...scope, record: { ...scope.record, source: 'default' as const } },
+      };
+      const remedy = fleetScopeLeaderRemedy(missing);
+      expect(remedy).toMatch(/scheduler:set_claim_spec/);
+      expect(remedy).toMatch(/fleet: "p2p-release-verify"/);
+    });
+
+    it('notifyFleetScopeRefusal sends the leader a body carrying the factual reason AND the concrete widen action', async () => {
+      await notifyFleetScopeRefusal(
+        { ownerId: 'su-member' } as never,
+        violation,
+        'work_items:claim WI-5700 → su-member',
+      );
+      expect(admissionMocks.sendMessage).toHaveBeenCalledOnce();
+      const payload = admissionMocks.sendMessage.mock.calls[0]?.[1] as { to: string[]; summary: string; body: string; category: string };
+      expect(payload.to).toEqual(['@fleet-leader:p2p-release-verify']);
+      expect(payload.category).toBe('fleet-scope-admission');
+      // The factual mismatch is preserved…
+      expect(payload.body).toMatch(/does not match p2p-release-verify-lane@20/);
+      // …AND the leader now gets the one-call widen action instead of "re-steer somehow".
+      expect(payload.body).toMatch(/scheduler:set_claim_spec/);
+      expect(payload.body).not.toMatch(/Re-steer the member's claim spec or route the work elsewhere\./);
     });
   });
 });
