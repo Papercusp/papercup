@@ -302,6 +302,7 @@ export default defineTool({
     chaining:
       'scheduler:get_next → work_items:set_state → work_items:release. Your leader re-steers via scheduler:set_claim_spec. A non-fleet MISS may park on one work-item:claimable event. A fleet scoped miss returns windDown:true: checkpoint/release, loop:end, and report to the leader; resume only after a spec revision or claimable event.',
     seeAlso: [
+      'work_items:claimable (how many / which items are claimable, WITHOUT claiming — same oracle, no side-effect)',
       'work_items:claim_next (plain oldest-first self-select, no spec)',
       'work_items:claim (claim a SPECIFIC item by id)',
       'scheduler:set_claim_spec (the spec your queen or fleet leader steers you with)',
