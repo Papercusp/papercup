@@ -883,14 +883,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
          
-        console.error(`[A-003] resolve ${opts.harnessSlug}: joinerPotHomeSlug=${resolved ?? '<null>'}`);
+        console.error(
+          `[A-003] ${new Date().toISOString()} resolve ${opts.harnessSlug}: joinerPotHomeSlug=${resolved ?? '<null>'}`,
+        );
       }
       return resolved;
     } catch (e) {
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
          
         console.error(
-          `[A-003] resolve ${opts.harnessSlug}: joinerPotHomeSlug THREW: ${e instanceof Error ? e.message : String(e)}`,
+          `[A-003] ${new Date().toISOString()} resolve ${opts.harnessSlug}: joinerPotHomeSlug THREW: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
       return undefined; // fail-open: fall back to member-slug binding (today's behavior)
@@ -1075,12 +1077,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let hiveHomeProjectionSlug = await resolveHiveHomeProjectionSlug(opts.swarmBinding);
   // A-003 diagnostic (env-gated, off by default → zero test impact): show the
   // boot-time hive-home binding decision in the harness log so a live witness can
-  // grep `[A-003]` to see whether the joiner rebind engaged + which slug. Set
+  // grep `[A-003]` to see whether the joiner rebind engaged + which slug. Every
+  // line carries an ISO wall-clock timestamp right after the `[A-003]` tag so a
+  // live witness can correlate it against PG joined_at / other frame's log
+  // without back-computing timelines from scenario-order arithmetic. Set
   // PAPERCUSP_A003_TRACE=1 on the instance to enable.
   if (process.env.PAPERCUSP_A003_TRACE === '1') {
-     
+
     console.error(
-      `[A-003] boot ${opts.harnessSlug}: swarmBinding.kind=${opts.swarmBinding?.kind ?? '<none>'} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'}`,
+      `[A-003] ${new Date().toISOString()} boot ${opts.harnessSlug}: swarmBinding.kind=${opts.swarmBinding?.kind ?? '<none>'} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'}`,
     );
   }
   // WI-2105 REV diag (DURABLE, not env-gated): the effective member-content-guard
@@ -2865,7 +2870,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
        
       console.error(
-        `[A-003] owner-resolve ${opts.harnessSlug}: binding.kind=${binding.kind} ` +
+        `[A-003] ${new Date().toISOString()} owner-resolve ${opts.harnessSlug}: binding.kind=${binding.kind} ` +
           `${binding.kind === 'hive' ? `hive_pubkey=${binding.hive_pubkey.slice(0, 10)}` : binding.kind === 'topic' ? `topic=${binding.topic_hex.slice(0, 12)}` : ''} ` +
           `→ ownerDevice=${resolved ? resolved.slice(0, 10) : '<null>'}`,
       );
@@ -3022,7 +3027,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
        
       console.error(
-        `[A-003] owner-admit ${opts.harnessSlug}: ownerDevice=${ownerDevice ? ownerDevice.slice(0, 10) : '<null>'} ` +
+        `[A-003] ${new Date().toISOString()} owner-admit ${opts.harnessSlug}: ownerDevice=${ownerDevice ? ownerDevice.slice(0, 10) : '<null>'} ` +
           `frame.device=${frame.device_pubkey.slice(0, 10)} match=${!!(ownerDevice && frame.device_pubkey === ownerDevice)}`,
       );
     }
@@ -3115,7 +3120,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
            
           console.error(
-            `[A-003] reclassify ${opts.harnessSlug}: binding_invalid → pending (join window, home=<none>) peer=${peerLabel(frame.log_core_key)}`,
+            `[A-003] ${new Date().toISOString()} reclassify ${opts.harnessSlug}: binding_invalid → pending (join window, home=<none>) peer=${peerLabel(frame.log_core_key)}`,
           );
         }
         return { admit: false, reason: 'pending' };
