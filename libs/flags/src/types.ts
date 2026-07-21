@@ -380,7 +380,7 @@ export const FLAGS = {
   // per-call. DEFAULT ON (not in DARK_FLAGS). OFF = the kill-switch if the guard
   // ever false-positives.
   WORK_ITEM_MIRROR_GUARD: "papercusp-work-item-mirror-guard",
-  // pot-membership-enforcement-2026-07-20 (P-005/P-006, owner directive Avi
+  // pot-membership-enforcement-2026-07-20 (P-005/P-006, owner directive
   // 2026-07-20 "AUDIT ALL WORK ITEMS THEY SHOULD ALL BE PART OF A REAL POT ...
   // WE ADDED SOMETHING TO ENFORCE WORK ITEMS TO BE PART OF A REAL POT, RIGHT?"):
   // when ON, createWorkItem resolves every new item's harness_slug to a REAL pot

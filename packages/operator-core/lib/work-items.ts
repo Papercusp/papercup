@@ -1111,7 +1111,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       : null;
   const resolvedWs = explicitWs ?? activeWorkspaceId();
   // pot-membership-enforcement-2026-07-20 (P-005): a feature-family row must belong to
-  // a REAL Pot (owner directive — Avi 2026-07-20 11:21). Resolve input.harness against
+  // a REAL Pot (owner directive — 2026-07-20 11:21). Resolve input.harness against
   // harness_shared.pots: canonicalize + collapse a member harness to its Pot home; an
   // explicit made-up slug is REJECTED (PotMembershipError propagates to the caller).
   // Flag-gated (default ON); fails open (keeps input.harness) for an un-potted workspace.

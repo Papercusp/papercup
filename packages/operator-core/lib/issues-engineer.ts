@@ -544,7 +544,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   let scope = input.scope ?? 'operator';
   assertScopeWellFormed(scope);
   // pot-membership-enforcement-2026-07-20 (P-005): every issue must belong to a REAL
-  // Pot (owner directive — Avi 2026-07-20 11:21). Resolve the scope's Pot: an
+  // Pot (owner directive — 2026-07-20 11:21). Resolve the scope's Pot: an
   // operator / workspace-global scope homes to the workspace platform Pot (so
   // `operator` issues are no longer stored under the non-pot `operator:<ws>` slug),
   // and an explicit `harness:<made-up>` is REJECTED (PotMembershipError). Flag-gated

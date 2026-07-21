@@ -1,6 +1,6 @@
 /**
  * Pot-membership resolution + enforcement (pot-membership-enforcement-2026-07-20,
- * P-005). Owner directive (VERIFIED — Avi, interactive, 2026-07-20 11:21, sess
+ * P-005). Owner directive (VERIFIED — interactive, 2026-07-20 11:21, sess
  * a5e7a6e8): "AUDIT ALL WORK ITEMS THEY SHOULD ALL BE PART OF A REAL POT ...
  * papercusp-workspace ISNT A PART ... WE ADDED SOMETHING TO ENFORCE WORK ITEMS
  * TO BE PART OF A REAL POT, RIGHT?"
