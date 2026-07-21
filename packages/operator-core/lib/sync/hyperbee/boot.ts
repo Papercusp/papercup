@@ -302,6 +302,19 @@ export interface BootHarnessOpts {
    */
   replicationStallGraceMs?: number;
   /**
+   * WI-5686: SEPARATE grace (ms) for the replication-liveness registry's
+   * connected_never_replicated (zombie-socket) axis only — the no_replicator
+   * and frozen axes (and the legacy checkReplicationStall above) always use
+   * `replicationStallGraceMs`. Defaults to `replicationStallGraceMs` when
+   * omitted, so a caller that only ever set the one option keeps identical
+   * behavior. See `SampleReplicationLivenessOpts.connectedNeverReplicatedGraceMs`
+   * for the full rationale — sharing one grace value across all three axes
+   * made no_replicator false-fire (with its disruptive repair-on-detect
+   * session tear-down) on every ordinary cold-restart cycle whenever the
+   * zombie axis was intentionally shortened (WI-5634's rig soak override).
+   */
+  connectedNeverReplicatedGraceMs?: number;
+  /**
    * Test seam — override the read-admission binding check. Production leaves
    * this undefined and the real `buildVerifyBindingAdapter` (verifyAttestation
    * on the announce's attestation_gist_id — write-free join) is used. Tests
@@ -1229,6 +1242,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   >();
   const REPLICATION_STALL_GRACE_MS =
     opts.replicationStallGraceMs ?? DEFAULT_REPLICATION_STALL_GRACE_MS;
+  // WI-5686: zombie axis gets its own grace, defaulting to the general one.
+  const CONNECTED_NEVER_REPLICATED_GRACE_MS =
+    opts.connectedNeverReplicatedGraceMs ?? REPLICATION_STALL_GRACE_MS;
 
   // ── Revocation (D-004) ── the only blocklist. `revoked` holds device pubkeys
   // (base64) the read-admission decider refuses; `pubkeyToLogKey` records the
@@ -2390,7 +2406,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                 // disables the axis for this sample, never alarms.
                 swarmConnections: swarmHandle?.liveConnectionCount,
               },
-              { graceMs: REPLICATION_STALL_GRACE_MS },
+              {
+                graceMs: REPLICATION_STALL_GRACE_MS,
+                connectedNeverReplicatedGraceMs: CONNECTED_NEVER_REPLICATED_GRACE_MS,
+              },
             );
             // WI-5340: judge any OUTSTANDING post-repair confirmation off the
             // SAME sample (cheap no-op Map lookup when none is outstanding).

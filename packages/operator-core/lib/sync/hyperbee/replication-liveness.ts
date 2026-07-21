@@ -248,8 +248,26 @@ export const SAMPLING_STALE_AFTER_MS = 60 * 1000;
 export const SWARM_CHURN_TOLERANCE_MS = 60 * 1000;
 
 export interface SampleReplicationLivenessOpts {
-  /** Stall grace window (ms). Default DEFAULT_LIVENESS_GRACE_MS. */
+  /**
+   * Stall grace window (ms) for the no_replicator and frozen axes. Default
+   * DEFAULT_LIVENESS_GRACE_MS (180s).
+   */
   graceMs?: number;
+  /**
+   * WI-5686: SEPARATE grace window (ms) for the connected_never_replicated
+   * (WI-183 zombie-socket) axis ONLY. Defaults to `graceMs` when omitted —
+   * unset behavior is unchanged. Exists because a caller may legitimately
+   * want the zombie axis to fire much faster than the general axes (WI-5634:
+   * a rig soak sizes it to ~15s, well inside its own SLA, so repair-on-detect
+   * gets a chance to heal a genuine dead socket before the SLA expires)
+   * WITHOUT that shortened window also collapsing no_replicator/frozen's
+   * grace — a cold-restart+re-peer cycle legitimately holds 0 peers for far
+   * longer than 15s while healthy, so sharing one grace value across all
+   * three axes made no_replicator false-fire (and its repair-on-detect tear
+   * down + re-open the session) on every ordinary restart, discovered as the
+   * WI-5672/WI-5686 false-positive class.
+   */
+  connectedNeverReplicatedGraceMs?: number;
   /** Test seam — clock override. */
   nowMs?: number;
   /**
@@ -464,6 +482,10 @@ export function sampleReplicationLiveness(
 ): void {
   const now = opts.nowMs ?? Date.now();
   const graceMs = opts.graceMs ?? DEFAULT_LIVENESS_GRACE_MS;
+  // WI-5686: the zombie axis gets its OWN grace, defaulting to `graceMs` when
+  // the caller doesn't distinguish (unchanged behavior for every existing
+  // caller/test that only ever set `graceMs`).
+  const zombieGraceMs = opts.connectedNeverReplicatedGraceMs ?? graceMs;
   const onEpisode = opts.onStallEpisode ?? reportEpisode;
   const onRecovery = opts.onRecovery ?? reportRecovery;
 
@@ -600,7 +622,7 @@ export function sampleReplicationLiveness(
       if (st.connectedNeverReplSinceMs === null) st.connectedNeverReplSinceMs = now;
       if (
         !st.alarmedConnectedNever &&
-        now - st.connectedNeverReplSinceMs >= graceMs
+        now - st.connectedNeverReplSinceMs >= zombieGraceMs
       ) {
         st.alarmedConnectedNever = true;
         const episode: ReplicationStallEpisode = {
@@ -729,6 +751,9 @@ function deriveVerdict(
   now: number,
   graceMs: number,
   harnessMismatched = false,
+  // WI-5686: defaults to `graceMs` — a caller that doesn't pass this (every
+  // pre-existing call site) sees unchanged behavior.
+  zombieGraceMs: number = graceMs,
 ): ReplicationLogVerdict {
   // WI-3604: a flagged DHT-universe mismatch overrides every other axis for
   // this harness's logs — the split-DHT-universe outage class must read as
@@ -753,7 +778,7 @@ function deriveVerdict(
     st.alarmedConnectedNever ||
     (st.lastNonZeroPeersMs === null &&
       st.connectedNeverReplSinceMs !== null &&
-      now - st.connectedNeverReplSinceMs >= graceMs)
+      now - st.connectedNeverReplSinceMs >= zombieGraceMs)
   ) {
     return 'no_replicator';
   }
@@ -778,6 +803,12 @@ export interface GetReplicationLivenessOpts {
   nowMs?: number;
   /** Grace used for read-time derivation. Default DEFAULT_LIVENESS_GRACE_MS. */
   graceMs?: number;
+  /**
+   * WI-5686: separate read-time grace for the connected_never_replicated
+   * (zombie) axis — mirrors `SampleReplicationLivenessOpts.connectedNeverReplicatedGraceMs`.
+   * Defaults to `graceMs` when omitted.
+   */
+  connectedNeverReplicatedGraceMs?: number;
 }
 
 /** Read-time snapshot of every tracked (workspace, harness)'s per-log liveness. */
@@ -786,6 +817,7 @@ export function getReplicationLiveness(
 ): HarnessReplicationLiveness[] {
   const now = opts.nowMs ?? Date.now();
   const graceMs = opts.graceMs ?? DEFAULT_LIVENESS_GRACE_MS;
+  const zombieGraceMs = opts.connectedNeverReplicatedGraceMs ?? graceMs;
   const out: HarnessReplicationLiveness[] = [];
   // WI-3604: iterate the UNION of registry keys ∪ dhtUniverseState keys — a
   // harness may have the mismatch flag set with zero sampled logs (e.g. it
@@ -810,7 +842,7 @@ export function getReplicationLiveness(
       dhtUniverseMismatch: 0,
     };
     for (const st of logs?.values() ?? []) {
-      const verdict = deriveVerdict(st, now, graceMs, harnessMismatched);
+      const verdict = deriveVerdict(st, now, graceMs, harnessMismatched, zombieGraceMs);
       if (verdict === 'live') counts.live += 1;
       else if (verdict === 'never_connected') counts.neverConnected += 1;
       else if (verdict === 'no_replicator') counts.noReplicator += 1;
