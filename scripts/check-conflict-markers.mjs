@@ -37,7 +37,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -154,8 +154,30 @@ function main() {
   process.exit(1);
 }
 
-// Only run the CLI when invoked directly — importing the detector (the guard test)
-// must not trigger a tree scan.
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+/**
+ * Only run the CLI when invoked directly via `node .../check-conflict-markers.mjs`
+ * — importing the detector (content-lint/conflict-markers.ts, and the guard test)
+ * must never trigger a tree scan.
+ *
+ * Deliberately does NOT compare `import.meta.url` to `process.argv[1]` (the old
+ * check): this module is also imported — for its pure `findConflictMarker` export
+ * only — by `packages/operator-core/lib/content-lint/conflict-markers.ts`, which the
+ * desktop sidecar's esbuild single-file bundle inlines into `serve.mjs` (WI-5702).
+ * Once inlined, `import.meta.url` for EVERY module in the bundle resolves to the
+ * OUTPUT file's own URL (there is only one real ESM module at runtime) — so when the
+ * packaged sidecar boots via `node serve.mjs`, `import.meta.url` equals
+ * `pathToFileURL(process.argv[1]).href` for THIS code too, and the old check
+ * false-fired `main()` at server boot: `scanTree()` ran `git grep` over the
+ * installed (non-git) package directory, threw "fatal: not a git repository", and
+ * crashed the sidecar before Postgres could finish starting (EMBEDDED_PG_FAILED).
+ *
+ * Checking only the actual process entry path's basename is immune to import.meta.url
+ * rewriting: a bundled runtime's entry is always the bundle's own filename
+ * (`serve.mjs`), never this file's — so it can never accidentally match.
+ */
+export const isDirectCliInvocation = (entryPath = process.argv[1]) =>
+  typeof entryPath === 'string' && /(?:^|[\\/])check-conflict-markers\.mjs$/.test(entryPath);
+
+if (isDirectCliInvocation()) {
   main();
 }

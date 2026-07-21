@@ -135,6 +135,53 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
     expect((await wi.claimWorkItem('F-3', 'agA', { harness: H }))?.assignee).toBe('agA');
     expect((await wi.claimWorkItem('F-3', 'agA', { harness: H }))?.assignee).toBe('agA');
   });
+
+  // bug-drain-200k (2026-07-21, EI-18218648001542437 / migration 655): the ISSUE-family
+  // counterpart of "two competing claims ⇒ exactly one wins" above. Issue-family claim-by-id
+  // goes through claimIssue() -> `UPDATE engineer_issues SET assignee=... WHERE assignee IS
+  // NULL OR ...` — an updatable view backed by an INSTEAD OF trigger, NOT the direct
+  // FOR-UPDATE-SKIP-LOCKED base-table path the feature family uses. Before migration 655 the
+  // trigger's inner `UPDATE work_items SET taken_by=NEW.assignee ... WHERE (pk)=(...)` had NO
+  // taken_by re-check, so two concurrent claimIssue() calls could both pass the outer view-
+  // level check against their own pre-commit snapshot and the second one's unconditional inner
+  // write silently overwrote the first claimant's already-committed win — a REAL, observed
+  // duplicate-claim, not a theoretical one.
+  describe('issue-family claim-by-id (claimIssue via the engineer_issues view) — same atomicity guarantee', () => {
+    it('two competing claims on one issue ⇒ exactly one wins (migration 655 regression)', async () => {
+      await seedIssue('EI-race-1');
+      const [a, b] = await Promise.all([
+        wi.claimWorkItem('EI-race-1', 'agA', { harness: H }),
+        wi.claimWorkItem('EI-race-1', 'agB', { harness: H }),
+      ]);
+      const winners = [a, b].filter(Boolean);
+      expect(winners).toHaveLength(1); // NOT both — pre-655 this could flake to 2
+      const row = await db.sql<{ taken_by: string }[]>`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='EI-race-1'`;
+      expect(['agA', 'agB']).toContain(row[0].taken_by);
+      expect(winners[0]!.assignee).toBe(row[0].taken_by);
+    });
+
+    it('claiming an issue already held by someone else returns null (claim lost)', async () => {
+      await seedIssue('EI-race-2', { takenBy: 'agA' });
+      expect(await wi.claimWorkItem('EI-race-2', 'agB', { harness: H })).toBeNull();
+      const row = await db.sql<{ taken_by: string }[]>`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='EI-race-2'`;
+      expect(row[0].taken_by).toBe('agA'); // unchanged
+    });
+
+    it('re-claiming an issue by the same assignee is idempotent', async () => {
+      await seedIssue('EI-race-3');
+      expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+      expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+    });
+
+    it('releasing an issue (assignee -> null) still works under the new guard', async () => {
+      await seedIssue('EI-race-4', { takenBy: 'agA' });
+      const issues = await import('./issues-engineer');
+      const released = await issues.releaseIssue('EI-race-4', { expectedAssignee: 'agA' });
+      expect(released?.assignee ?? null).toBeNull();
+      const row = await db.sql<{ taken_by: string | null }[]>`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='EI-race-4'`;
+      expect(row[0].taken_by).toBeNull();
+    });
+  });
 });
 
 describe('work_items claim_next — associative `in` + work-stealing (D-004/D-007, real PG)', () => {

@@ -19,7 +19,11 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import { findConflictMarker, CONFLICT_MARKER_ERE } from '../../../../scripts/check-conflict-markers.mjs';
+import {
+  findConflictMarker,
+  CONFLICT_MARKER_ERE,
+  isDirectCliInvocation,
+} from '../../../../scripts/check-conflict-markers.mjs';
 
 const B = (c: string) => c.repeat(7); // a 7-char bracket run, without a literal marker here
 
@@ -74,5 +78,36 @@ describe('check-conflict-markers guard detector (EI-1836)', () => {
     expect(re.test(`${B('>')}`)).toBe(true);
     expect(re.test(B('='))).toBe(false); // separator excluded
     expect(re.test(`${'<'.repeat(6)} HEAD`)).toBe(false);
+  });
+
+  describe('isDirectCliInvocation (WI-5702)', () => {
+    // The self-invocation guard decides whether `main()` (which runs `git grep`
+    // over the tree) fires on import. It must fire ONLY for a genuine
+    // `node .../check-conflict-markers.mjs` CLI run, and MUST NOT be fooled by
+    // `import.meta.url` — which the desktop sidecar's esbuild single-file bundle
+    // rewrites to the OUTPUT file's own URL for every inlined module, including
+    // this one (imported transitively via content-lint/conflict-markers.ts). A
+    // bundled `serve.mjs` boot crashed the sidecar on exactly this false-fire:
+    // `git grep` ran against the installed (non-git) package dir and threw
+    // "fatal: not a git repository", aborting Postgres startup mid-boot.
+
+    it('MATCHES a direct CLI path', () => {
+      expect(isDirectCliInvocation('/repo/scripts/check-conflict-markers.mjs')).toBe(true);
+      expect(isDirectCliInvocation('scripts/check-conflict-markers.mjs')).toBe(true);
+    });
+
+    it('does NOT match the bundled desktop sidecar entry (the WI-5702 false-fire)', () => {
+      // This is the exact process.argv[1] a packaged sidecar boots with — this
+      // module's code is inlined into that same file, but must never self-run.
+      expect(
+        isDirectCliInvocation('/usr/lib/Papercusp Server/sidecar/serve.mjs'),
+      ).toBe(false);
+    });
+
+    it('does NOT match an unrelated or missing entry path', () => {
+      expect(isDirectCliInvocation('/repo/node_modules/.bin/vitest')).toBe(false);
+      expect(isDirectCliInvocation(undefined)).toBe(false);
+      expect(isDirectCliInvocation('')).toBe(false);
+    });
   });
 });
