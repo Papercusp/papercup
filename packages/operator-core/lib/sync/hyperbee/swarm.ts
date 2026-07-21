@@ -1004,6 +1004,24 @@ export async function joinHarnessSwarm(
     connectionCount++;
     liveConnectionCount++;
     mySockets.add(socket);
+    // WI-5672/WI-5355/WI-5481 diagnostic (env-gated, off by default): the live
+    // gate has shown a recurring HIGH-RATE reconnect churn on this exact
+    // 'connection' handler (100s of opens/closes per two-frame session) that
+    // correlates with content/plan-part/coord bidir-merge failures and an
+    // empty joiner roster — but with NO visibility into WHY a socket closes
+    // (clean vs erroring) or HOW LONG it lived before this instrumentation.
+    // Set PAPERCUSP_SWARM_CHURN_DEBUG=1 to log each open/error/close with the
+    // socket's lifetime + whether an 'error' preceded its 'close', so the next
+    // live run can distinguish "genuine hyperswarm-level churn" from a local
+    // bug (e.g. a repeated forced rejoin) without guessing from connection
+    // counts alone. Never touches control flow — pure diagnostic, off by
+    // default; symmetrical to hive-epoch-boot-deps.ts's PAPERCUSP_EPOCH_BOOT_DEBUG.
+    const churnDbg = process.env.PAPERCUSP_SWARM_CHURN_DEBUG
+      ? (msg: string, o?: unknown) => console.error('[swarm-churn]', msg, o ?? '')
+      : () => {};
+    const churnOpenedAtMs = Date.now();
+    let churnSawError: string | null = null;
+    churnDbg('open', { topic: topicHex.slice(0, 8), n: connectionCount });
     {
       let set = swarmJoinSocketTopics.get(socket as object);
       if (!set) {
@@ -1019,13 +1037,21 @@ export async function joinHarnessSwarm(
     // (coord-system-e2e-testing-2026-06-10); hyperswarm's own docs require the
     // consumer to handle connection errors. The reconnect path is discovery's
     // job — the error itself is just churn.
-    (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown })?.on?.('error', () => {});
+    (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown })?.on?.('error', (e) => {
+      churnSawError = e instanceof Error ? e.message : String(e);
+      churnDbg('error', { topic: topicHex.slice(0, 8), msg: churnSawError });
+    });
     // WI-752 self-heal: re-arm the FAST refresh window when this peer socket
     // closes, so a dropped peer re-pairs snappily (the DHT round after a loss
     // reliably needs several refreshes — see directory-swarm.ts). Best-effort;
     // counting ALL peer closes (the shared swarm dedups one socket per peer
     // across topics) only ever schedules a few extra harmless refreshes.
     (socket as { once?: (ev: string, fn: () => void) => unknown })?.once?.('close', () => {
+      churnDbg('close', {
+        topic: topicHex.slice(0, 8),
+        ageMs: Date.now() - churnOpenedAtMs,
+        precededByError: churnSawError,
+      });
       fastWindowStartMs = Date.now();
       liveConnectionCount = Math.max(0, liveConnectionCount - 1);
       // WI-5355: this socket genuinely closed (Hyperswarm's own `close` handler
