@@ -1101,6 +1101,11 @@ async function injectPsuHostWake(
   };
 
   let decision: ColdWakeDecision = { cold: false, reason: 'warm (cold fork not engaged)' };
+  // EI-18224278118395857: the carry-note's absolute write instant, threaded into
+  // renderColdWakeInjection so a cold successor can detect a note that went stale in
+  // the fire→busy-gate-flush gap (see that function's `updatedAtMs` doc). null when
+  // unknown (the getLoopCarryNoteFn test seam is note-only) ⇒ no stamp, byte-identical.
+  let noteUpdatedAtMs: number | null = null;
   try {
     const marker = loopMarker;
     // Cheap short-circuit: only a harness-scoped LOOP wake can go cold — either
@@ -1118,12 +1123,29 @@ async function injectPsuHostWake(
           ? await (deps.classDefaultCold ?? (async () => false))(host)
           : false;
       if (marker.carry === 'cold' || classDefaultCold) {
-        const getNote = deps.getLoopCarryNoteFn ?? getLoopCarryNote;
         // Only pay the carry-note read when the master gate is actually on (P-006's
-        // anchor is moot if cold-auto is disabled).
-        const carryNote = coldEnabled
-          ? await getNote({ harness: marker.harness, ownerId: d.subscriberId, workspaceId: d.workspaceId })
-          : null;
+        // anchor is moot if cold-auto is disabled). A test-injected getLoopCarryNoteFn
+        // seam is note-only (no meta stamp); the production read uses the META variant
+        // (same pinned-then-newest precedence as getLoopCarryNote) so it ALSO carries
+        // the write instant for the staleness stamp — no extra DB round-trip.
+        let carryNote: string | null = null;
+        if (coldEnabled) {
+          if (deps.getLoopCarryNoteFn) {
+            carryNote = await deps.getLoopCarryNoteFn({
+              harness: marker.harness,
+              ownerId: d.subscriberId,
+              workspaceId: d.workspaceId,
+            });
+          } else {
+            const meta = await (deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta)({
+              harness: marker.harness,
+              ownerId: d.subscriberId,
+              workspaceId: d.workspaceId,
+            });
+            carryNote = meta.note;
+            noteUpdatedAtMs = meta.updatedAtMs;
+          }
+        }
         decision = decideColdWake({ payload: d.payload, coldEnabled, carryNote, classDefaultCold });
       }
     }
@@ -1163,7 +1185,14 @@ async function injectPsuHostWake(
     // envelope itself (not just the text) so the delivery-side stale-fire guard
     // can DROP a superseded delivery instead of merely labeling it.
     const coldFireCount = loopMarker?.wakeCount;
-    const coldText = tagWakeText(d, renderColdWakeInjection(decision.carryNote, extras, coldFireCount), deps.tagTurn ?? tagTurnForInjection);
+    // EI-18224278118395857: pass the note's write instant so the cold injection stamps its
+    // age — the successor's only signal that a late-flushed note may be stale (its transcript
+    // is gone). Undefined on the note-only test-seam path ⇒ no stamp, byte-identical.
+    const coldText = tagWakeText(
+      d,
+      renderColdWakeInjection(decision.carryNote, extras, coldFireCount, noteUpdatedAtMs ?? undefined),
+      deps.tagTurn ?? tagTurnForInjection,
+    );
     const ok = await injectPsuHost(sock, {
       mode: decision.mode,
       data: coldText,

@@ -1348,6 +1348,37 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(msg.data).toContain('loop:checkpoint');
   });
 
+  it('EI-18224278118395857: the production read (meta variant, no getLoopCarryNoteFn seam) threads the note write-time into the injection so a late-flushed stale note is self-evident', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const updatedAtMs = Date.parse('2026-07-21T03:10:00.000Z');
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: '## Next action\nresume the wiring',
+      updatedAtMs,
+    }));
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 96 }) }),
+      coldDeps({
+        injectPsuHost: injectPsuHost as never,
+        // Drop the note-only seam so the production META read runs (carries updatedAtMs).
+        getLoopCarryNoteFn: undefined,
+        getLoopCarryNoteWithMetaFn: getLoopCarryNoteWithMetaFn as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      ownerId: 'su-abc',
+      workspaceId: 'ws',
+    });
+    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    // the fresh-read note is still the core, now with the write-time stamp + reconcile guidance.
+    expect(data).toContain('## Next action\nresume the wiring');
+    expect(data).toContain('[07-21T03:10:00Z]');
+    expect(data.toLowerCase()).toContain('stale');
+    expect(data.toLowerCase()).toContain('reconcile');
+    expect(data).toContain('(fire #96)');
+  });
+
   it('P-003 (compaction-continuity-hardening): the cold injection appends the carry-brief EXTRAS (held items + walls/facts + awaits + fleet) after the note; the note stays the core', async () => {
     const injectPsuHost = vi.fn(async () => true);
     // The return is TYPED as CarryBrief on purpose: this fixture has now been

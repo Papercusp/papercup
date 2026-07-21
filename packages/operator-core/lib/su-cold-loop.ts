@@ -146,6 +146,21 @@ export function decideColdWake(input: {
   return { cold: true, mode, carryNote: note };
 }
 
+/** Compact absolute stamp (mm-ddThh:mm:ssZ) — mirrors loop-fire.ts's isoStamp (EI-13592).
+ *  A cold successor computes the TRUE age of its carry-note against its own wall-clock,
+ *  independent of how long the composed wake sat in the host busy-gate before flush. Pure. */
+function coldNoteStamp(ms: number): string {
+  return `${new Date(ms).toISOString().slice(5, 19)}Z`;
+}
+
+/** Human-readable elapsed span (mirrors loop-fire.ts's humanAge). Pure. */
+function coldNoteAge(ms: number): string {
+  if (ms < 90_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  if (ms < 90 * 60_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 36 * 3_600_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
 /**
  * Render the text a COLD wake injects (P-002 producer half): the agent's carry-note
  * framed as its reconstructed working state, plus the STANDING re-checkpoint mandate.
@@ -177,14 +192,41 @@ export function decideColdWake(input: {
  * claim is fire #N; if I have already seen a later fire, this delivery is stale —
  * reconcile against my actual live transcript before trusting the reset framing."
  * Absent/non-finite ⇒ omitted (byte-identical to before this fix).
+ *
+ * `updatedAtMs` (EI-18224278118395857): the carry-note's ABSOLUTE last-write instant
+ * (carry_notes.updated_ts), stamped into the header when known. The cold-wake text is
+ * COMPOSED (the note read) at executeWake/fire time and then STAGED behind the psu-pty-host
+ * agent-busy-gate — which can hold it for minutes before it is flushed into the pty. If the
+ * agent wrote a FRESHER loop:checkpoint in that fire→flush gap, the flushed note is stale by
+ * the time the cold successor reads it (live-witnessed: a cold reset delivered a note ~35min
+ * older than the last checkpoint write, about a task the agent had already moved on from).
+ * A cold reset drops the transcript, so — unlike the fire-number caveat above, which relies
+ * on the successor seeing later tool calls it no longer has — the successor has NO in-context
+ * signal to notice this. Stamping the absolute write-time (mirroring renderLoopCheckpointBlock's
+ * EI-13592 fix for warm wakes) gives it the one thing it CAN check: the note's age against its
+ * own wall-clock. Absent/non-finite ⇒ omitted (byte-identical to before this fix).
  */
-export function renderColdWakeInjection(carryNote: string, extras?: string, wakeCount?: number): string {
+export function renderColdWakeInjection(
+  carryNote: string,
+  extras?: string,
+  wakeCount?: number,
+  updatedAtMs?: number | null,
+): string {
   const note = (carryNote ?? '').trim();
   const extraBlock = (extras ?? '').trim();
   const fireTag = typeof wakeCount === 'number' && Number.isFinite(wakeCount) && wakeCount > 0 ? ` (fire #${wakeCount})` : '';
+  const hasStamp = typeof updatedAtMs === 'number' && Number.isFinite(updatedAtMs) && updatedAtMs > 0;
+  const ageMs = hasStamp ? Math.max(0, Date.now() - updatedAtMs!) : null;
+  const writeAgeLine = hasStamp
+    ? `This carry-note was last written [${coldNoteStamp(updatedAtMs!)}] — ~${coldNoteAge(ageMs!)} ago as of NOW. A ` +
+      'cold wake can be flushed LATE from the host busy-gate, so if that write-time is much older than you would expect ' +
+      'for your most recent work, this note is likely a STALE/superseded snapshot: reconcile against live state (your ' +
+      'held work-items via work_items:get, your latest loop:checkpoint) before trusting the note below as your current task.'
+    : null;
   return [
     `❄️ COLD LOOP WAKE${fireTag} — your context was just reset to your carry-note. Your prior transcript is GONE;`,
     'the note below IS your continuity — treat it as your working state and continue from its "Next action".',
+    ...(writeAgeLine ? [writeAgeLine] : []),
     ...(fireTag
       ? [
           'If you can see ANY tool calls or turns from AFTER this fire number in what looks like your own transcript, ' +

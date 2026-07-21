@@ -244,4 +244,44 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
     expect(base).not.toContain('fire #');
     expect(base.toLowerCase()).not.toContain('stale');
   });
+
+  // EI-18224278118395857: the cold-wake text is composed at fire time and can be flushed
+  // minutes late from the host busy-gate, so a note fresh at fire time can be stale by the
+  // time a cold successor (whose transcript is gone) reads it. Stamp the note's ABSOLUTE
+  // write-time so the successor can detect the staleness against its own wall-clock —
+  // mirroring the warm path's EI-13592 treatment (renderLoopCheckpointBlock).
+  it('stamps the carry-note write-time + a reconcile instruction when updatedAtMs is a positive finite number', () => {
+    // 2026-07-21T03:10:00Z → compact stamp "07-21T03:10:00Z" (mm-ddThh:mm:ssZ).
+    const updatedAtMs = Date.parse('2026-07-21T03:10:00.000Z');
+    const out = renderColdWakeInjection('note', undefined, 96, updatedAtMs);
+    expect(out).toContain('[07-21T03:10:00Z]');
+    expect(out).toContain('last written');
+    expect(out).toContain('ago as of NOW');
+    expect(out.toLowerCase()).toContain('stale');
+    expect(out.toLowerCase()).toContain('reconcile');
+    // the concrete probes the successor is told to run
+    expect(out).toContain('work_items:get');
+    expect(out).toContain('loop:checkpoint');
+    // the fire tag is still present and the note verbatim
+    expect(out).toContain('(fire #96)');
+    expect(out).toContain('\nnote\n');
+  });
+
+  it('is byte-identical to the no-updatedAtMs rendering when updatedAtMs is absent, null, zero, negative, or non-finite', () => {
+    const base = renderColdWakeInjection('note', undefined, 4);
+    expect(renderColdWakeInjection('note', undefined, 4, undefined)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, 4, null)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, 4, 0)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, 4, -1)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, 4, Number.NaN)).toBe(base);
+    expect(renderColdWakeInjection('note', undefined, 4, Number.POSITIVE_INFINITY)).toBe(base);
+    expect(base).not.toContain('last written');
+  });
+
+  it('the write-time stamp is independent of the fire tag (present even with no wakeCount)', () => {
+    const updatedAtMs = Date.parse('2026-07-21T03:10:00.000Z');
+    const out = renderColdWakeInjection('note', undefined, undefined, updatedAtMs);
+    expect(out).toContain('[07-21T03:10:00Z]');
+    expect(out).not.toContain('fire #');
+  });
 });
