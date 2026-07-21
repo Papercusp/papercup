@@ -243,8 +243,23 @@ export function applyHostSaturationShed(
  * EI-73 Fix #1: also folds in the host per-thread saturation verdict (see
  * `applyHostSaturationShed` above) — fail-soft (an unreadable/absent/stale perf
  * capture leaves headroom exactly as it was: count-based only).
+ *
+ * EI-5678 Fix: `opts.skipHostSaturationShed` lets a caller opt OUT of the
+ * saturation shed entirely, computing headroom from the raw count-based
+ * ceiling only. This is for the INTERACTIVE safety floor
+ * (`interactive-safety-floor.ts`), whose own doc comment states human-initiated
+ * launches WAIVE brain admission and pass only "the absolute concurrency
+ * ceiling" — host-saturation shedding is a brain-admission-style load throttle
+ * (built for autonomous spawns, EI-73), so silently applying it here made an
+ * interactive launch refusable with `running: 0 ≥ ceiling: 8` (a self-
+ * contradicting message whose real cause — host saturation — was never
+ * surfaced). Default false: every other caller (brain admission / batch
+ * placement) is unaffected.
  */
-export async function getSpawnHeadroom(workspaceId: string): Promise<{
+export async function getSpawnHeadroom(
+  workspaceId: string,
+  opts?: { skipHostSaturationShed?: boolean },
+): Promise<{
   ceiling: number;
   running: number;
   headroom: number;
@@ -268,13 +283,15 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
     shed: false,
     reason: null,
   };
-  try {
-    const { readLatestPerfSignals, evaluatePerfSignals } = await import('../system-health/perf-budgets');
-    const signals = await readLatestPerfSignals();
-    const verdict = evaluatePerfSignals(signals, Date.now());
-    shedResult = applyHostSaturationShed(countHeadroom, verdict);
-  } catch {
-    /* fail-soft — perf module unreadable leaves headroom count-based only */
+  if (!opts?.skipHostSaturationShed) {
+    try {
+      const { readLatestPerfSignals, evaluatePerfSignals } = await import('../system-health/perf-budgets');
+      const signals = await readLatestPerfSignals();
+      const verdict = evaluatePerfSignals(signals, Date.now());
+      shedResult = applyHostSaturationShed(countHeadroom, verdict);
+    } catch {
+      /* fail-soft — perf module unreadable leaves headroom count-based only */
+    }
   }
 
   return {

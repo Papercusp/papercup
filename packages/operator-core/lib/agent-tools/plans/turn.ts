@@ -64,6 +64,13 @@ export interface ExecutePlanTurnOptions {
   cwd: string;
   /** Browser-tab client id, when the turn originated from a tab. */
   uiClientId?: string | null;
+  /**
+   * Gateway admission-tier label (gateway-priority-tiers WI-4542/WI-5676) —
+   * forwarded verbatim to `runPlanAgent` → `runAgentChat`. See
+   * `RunPlanAgentOptions.priority` for the full contract. Omitted → the
+   * runner's own 'su' default applies.
+   */
+  priority?: string;
   /** Cancellation — forwarded to the spawned process. */
   signal?: AbortSignal;
   /** Wire-event sink — `delta` / `tool_call` / `cost` / `error`. */
@@ -105,6 +112,7 @@ export async function executePlanAgentTurn(
       promptText: opts.promptText,
       cwd: opts.cwd,
       uiClientId: opts.uiClientId ?? null,
+      priority: opts.priority,
       signal: opts.signal,
     })) {
       if (ev.type === 'delta') {

@@ -12,6 +12,14 @@
  * floor also feeds interactive launches into the same headroom picture the
  * brain consults (`getSpawnHeadroom`), so they are not invisible to the floor.
  *
+ * EI-5678: `getSpawnHeadroom` is called with `skipHostSaturationShed: true` —
+ * host-saturation load-shedding (EI-73) is a brain-admission-style throttle
+ * built for autonomous spawns, not the deterministic ceiling this floor is
+ * documented to enforce. Without this, a human could be refused with a
+ * self-contradicting `0 agent(s) running ≥ ceiling 8` message whose real cause
+ * (host saturation) was never surfaced — leaving `headroom <= 0` here always
+ * traceable to the count-based ceiling the message actually describes.
+ *
  * Fail-OPEN: if the headroom read throws (e.g. PG briefly down) we NEVER block
  * a human launch on it — the floor is a guard, not a gate that can wedge a
  * person.
@@ -28,7 +36,7 @@ export async function checkInteractiveSafetyFloor(
 ): Promise<{ ok: boolean; reason?: string }> {
   try {
     const { getSpawnHeadroom } = await import('./fleet/operator-spawn');
-    const floor = await getSpawnHeadroom(activeWorkspaceId());
+    const floor = await getSpawnHeadroom(activeWorkspaceId(), { skipHostSaturationShed: true });
     if (floor.headroom <= 0) {
       return {
         ok: false,

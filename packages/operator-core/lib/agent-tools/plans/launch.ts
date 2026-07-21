@@ -31,7 +31,11 @@ import { buildPlanContextBundle } from './context-bundle';
 import { getRepoRoot } from './source';
 import { insertPlanRun } from './runs';
 import { executePlanAgentTurn } from './turn';
-import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import {
+  resolveAgentIdentity,
+  type IdentitySource,
+  type ResolveIdentityCtx,
+} from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { deriveLaunchPromptText } from './launch-prompt';
 
@@ -102,6 +106,30 @@ type LaunchCtx = ResolveIdentityCtx & {
   signal?: AbortSignal;
 };
 
+/**
+ * gateway-priority-tiers (WI-4542 follow-up, WI-5676): the gateway admission-tier
+ * label for a launched/resumed plan-agent run.
+ *
+ * A plan agent does real engineering work and can be triggered either from the
+ * operator UI (a human is synchronously watching the stream — genuinely
+ * `'interactive'`, the same bar `architect:chat` / `oracle:chat` / `agent_chats:chat`
+ * use per WI-4542) or autonomously (AUTO mode, a schedule firing `plans:launch`, or
+ * another agent calling it programmatically). Wrongly tagging an autonomous run
+ * `'interactive'` would let it compete with genuine owner turns for the reserved
+ * tier-1 floor — the exact starvation bug WI-4542 fixed — so only the SAME
+ * power-user identity that already proves a live UI/OMP session (see
+ * `resolveAgentIdentity` in `coordination/identity.ts`) earns `'interactive'`; every
+ * other caller (su engineer session, in-process principal, fleet-spawn, or an
+ * unattributable/failed identity resolution) gets the `'su'` middle tier instead of
+ * falling to the untagged default band (tier 5). Pure + exported for unit test;
+ * shared with `plans:resume`.
+ */
+export function derivePlanAgentPriority(
+  identitySource: IdentitySource | undefined,
+): string {
+  return identitySource === 'power-user-token' ? 'interactive' : 'su';
+}
+
 async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   // 1. Assemble the launch seed (plan doc + rationale digest — P-009).
   const sctx = harnessScopedCtx(input.harness, ctx);
@@ -133,11 +161,15 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   //    == plan_runs.session_id) and resolve who launched it.
   const sessionId = globalThis.crypto.randomUUID();
   let launchedBy = 'unknown';
+  // gateway-priority-tiers (WI-4542/WI-5676) — see derivePlanAgentPriority above.
+  let launchPriority = derivePlanAgentPriority(undefined);
   try {
-    launchedBy = resolveAgentIdentity(ctx).ownerId;
+    const identity = resolveAgentIdentity(ctx);
+    launchedBy = identity.ownerId;
+    launchPriority = derivePlanAgentPriority(identity.source);
   } catch {
     // Unattributable caller — record the launch as 'unknown' rather
-    // than fail it (launched_by is NOT NULL).
+    // than fail it (launched_by is NOT NULL). Keep the 'su' priority default.
   }
 
   const launchHarnessSlug = resolveCtxHarnessSlug(sctx);
@@ -187,6 +219,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
       promptText,
       cwd: getRepoRoot(),
       uiClientId: ctx.uiClientId ?? null,
+      priority: launchPriority,
       signal: ctx.signal,
       emit: ctx.emit,
     }).catch(() => { /* settled to 'failed' inside the turn */ });
@@ -213,6 +246,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
     promptText,
     cwd: getRepoRoot(),
     uiClientId: ctx.uiClientId ?? null,
+    priority: launchPriority,
     signal: ctx.signal,
     emit: ctx.emit,
   });

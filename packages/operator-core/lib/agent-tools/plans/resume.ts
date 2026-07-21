@@ -34,6 +34,8 @@ import { buildPlanContextBundle } from './context-bundle';
 import { getRepoRoot } from './source';
 import { getPlanRun, markPlanRunResumed } from './runs';
 import { executePlanAgentTurn } from './turn';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { derivePlanAgentPriority } from './launch';
 
 const argsSchema = z.object({
   // z.coerce on numerics + a string-`"true"|"false"` coerce on `await`
@@ -92,9 +94,11 @@ export function derivePlanChangeWarning(
 }
 
 /** The ctx subset `plans:resume` reads — the streaming/cancellation
- *  handles plus the session harness scope (fed to `harnessScopedCtx`).
- *  The real `UnifiedToolContext` satisfies it structurally. */
-type ResumeCtx = {
+ *  handles plus the session harness scope (fed to `harnessScopedCtx`),
+ *  plus `ResolveIdentityCtx` (gateway-priority-tiers WI-4542/WI-5676: needed to
+ *  derive the resumed turn's admission-tier label the same way `plans:launch`
+ *  does). The real `UnifiedToolContext` satisfies it structurally. */
+type ResumeCtx = ResolveIdentityCtx & {
   emit: (name: string, data: unknown) => void;
   signal?: AbortSignal;
   uiClientId?: string | null;
@@ -169,6 +173,15 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
   }
   ctx.emit('run_resumed', { runId: input.runId, sessionId: run.sessionId });
 
+  // gateway-priority-tiers (WI-4542/WI-5676): same derivation as plans:launch —
+  // see `derivePlanAgentPriority` in ./launch.
+  let resumePriority = derivePlanAgentPriority(undefined);
+  try {
+    resumePriority = derivePlanAgentPriority(resolveAgentIdentity(ctx).source);
+  } catch {
+    // Unattributable caller — keep the 'su' priority default.
+  }
+
   // 5. Run the continuation turn — stream + persist turns + settle
   //    status. Shared with launch (P-012); see turn.ts.
   //
@@ -183,6 +196,7 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
       promptText: input.message,
       cwd: getRepoRoot(),
       uiClientId: ctx.uiClientId ?? null,
+      priority: resumePriority,
       signal: ctx.signal,
       emit: ctx.emit,
     }).catch(() => { /* settled to 'failed' inside the turn */ });
@@ -209,6 +223,7 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
     promptText: input.message,
     cwd: getRepoRoot(),
     uiClientId: ctx.uiClientId ?? null,
+    priority: resumePriority,
     signal: ctx.signal,
     emit: ctx.emit,
   });

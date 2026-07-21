@@ -230,6 +230,16 @@ export interface RunPlanAgentOptions {
   /** Browser-tab client id, when the launch came from a tab — lets the
    *  agent's `ui:*` calls default to it. */
   uiClientId?: string | null;
+  /**
+   * Gateway admission-tier label (gateway-priority-tiers WI-4542) — forwarded
+   * verbatim to `runAgentChat`'s `priority`, which stamps `x-papercusp-priority`
+   * on the spawned agent's own LLM calls. Callers (`plans:launch` / `plans:resume`)
+   * derive this from who triggered the run — `'interactive'` when a human is
+   * synchronously watching (a power-user/UI launch), else a non-interactive
+   * label (e.g. `'su'`) so an autonomous launch never rides fully untagged into
+   * the lowest default band.
+   */
+  priority?: string;
   /** Cancellation — forwarded to the spawned process. */
   signal?: AbortSignal;
 }
@@ -269,6 +279,10 @@ export async function* runPlanAgent(
     allowedTools: [...PLAN_AGENT_ALLOWED_TOOLS],
     toolEventFilter: planAgentToolEventFilter,
     permissionMode: 'bypassPermissions',
+    // gateway-priority-tiers (WI-4542/WI-5676): tag the spawn's admission tier so it
+    // never falls to the untagged lowest band — caller-supplied (see RunPlanAgentOptions.priority);
+    // 'su' is a safe default when a caller omits it (better than untagged tier-5).
+    priority: opts.priority ?? 'su',
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     sessionMode: 'force',

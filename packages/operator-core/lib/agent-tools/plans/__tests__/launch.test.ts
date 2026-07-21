@@ -8,8 +8,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { deriveLaunchPromptText, deriveLaunchTitle } from '../launch';
+import { deriveLaunchPromptText, deriveLaunchTitle, derivePlanAgentPriority } from '../launch';
 import { kickoffGuardProfileForAgent } from '../launch-prompt';
+import type { IdentitySource } from '../../coordination/identity';
 
 describe('deriveLaunchPromptText', () => {
   it('uses the supplied note as the first user turn', () => {
@@ -151,5 +152,29 @@ describe('deriveLaunchTitle', () => {
   it('does not truncate a first line at or under 120 chars', () => {
     const note = 'y'.repeat(120);
     expect(deriveLaunchTitle(note, 'Plan X')).toBe(note);
+  });
+});
+
+// gateway-priority-tiers (WI-4542/WI-5676): plans:launch/plans:resume previously
+// spawned the launched plan agent with NO `priority` at all, so it always fell to
+// the gateway's untagged default band (tier 5) regardless of who triggered it —
+// the same structural gap WI-4542 already fixed for architect/oracle/agent_chats.
+describe('derivePlanAgentPriority', () => {
+  it("tags a power-user (operator UI / OMP session) launch 'interactive' — a human is synchronously watching this stream", () => {
+    expect(derivePlanAgentPriority('power-user-token')).toBe('interactive');
+  });
+
+  it("does NOT tag any other identity source 'interactive' — only a proven power-user session may compete for the reserved tier-1 floor", () => {
+    const nonHumanSources: (IdentitySource | undefined)[] = [
+      'omp-hook-session', // su engineer session — could be AUTO mode, no human necessarily watching
+      'static-client',
+      'principal', // in-process caller (operator chat / autoloop) — autonomous
+      'fleet-spawn', // bee/cup — autonomous
+      'signed-spawn',
+      undefined, // unattributable / identity resolution failed
+    ];
+    for (const source of nonHumanSources) {
+      expect(derivePlanAgentPriority(source)).toBe('su');
+    }
   });
 });

@@ -104,6 +104,14 @@ vi.mock('../events/await/engine', () => ({
 // below asserts the call directly rather than needing a full work-items.ts
 // PG-backed read (getWorkItem) to succeed against this file's minimal sql fake.
 vi.mock('../work-items', () => ({ releaseWorkItem: vi.fn(async () => null) }));
+// getSpawnHeadroom lazy-imports this for the host-saturation shed (EI-73);
+// vi.mock intercepts the dynamic import too (same pattern as
+// '../events/await/engine' above). Default: no capture → 'unknown' verdict
+// (fail-soft, matches the real no-PostHog/no-capture fallback).
+vi.mock('../system-health/perf-budgets', () => ({
+  readLatestPerfSignals: vi.fn(async () => null),
+  evaluatePerfSignals: vi.fn(() => ({ status: 'unknown', reasons: [] })),
+}));
 
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
@@ -116,6 +124,7 @@ import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import { reclaimOrphanedSpawns, recordSpawnPid } from './spawn-reclaim';
 import { releaseWorkItem } from '../work-items';
+import { evaluatePerfSignals } from '../system-health/perf-budgets';
 import {
   spawnAgentInHarness,
   abortLocalSpawn,
@@ -125,6 +134,7 @@ import {
   selectWedgeReapCandidates,
   WEDGE_REAP_SILENT_MS,
   applyHostSaturationShed,
+  getSpawnHeadroom,
 } from './operator-spawn';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
@@ -1179,5 +1189,43 @@ describe('applyHostSaturationShed — pure host-saturation headroom shed (EI-73 
       shed: true,
       reason: 'host saturation crit — operator :3070 unreachable',
     });
+  });
+});
+
+/**
+ * EI-5678: getSpawnHeadroom({ skipHostSaturationShed }) — the interactive
+ * safety floor's own doc comment states human-initiated launches WAIVE brain
+ * admission and pass only "the absolute concurrency ceiling"; host-saturation
+ * shedding (EI-73) is a brain-admission-style throttle that was silently
+ * riding along for every caller, including interactive ones. This threading
+ * is what lets `interactive-safety-floor.ts` opt out so a refusal there can
+ * never be self-contradicting (e.g. "0 agent(s) running ≥ ceiling 8" caused
+ * by a host-saturation shed the message never mentioned).
+ */
+describe('getSpawnHeadroom({ skipHostSaturationShed }) — EI-5678', () => {
+  beforeEach(() => {
+    runningCount = 0;
+    vi.mocked(evaluatePerfSignals).mockReturnValue({ status: 'crit', reasons: ['event-loop lag p95 1500ms ≥ 1000ms'] } as never);
+  });
+
+  it('default (opts omitted): a crit host-saturation verdict sheds headroom to zero', async () => {
+    const out = await getSpawnHeadroom('ws-test');
+    expect(out.headroom).toBe(0);
+    expect(out.hostSaturated).toBe(true);
+    expect(out.hostSaturationReason).toContain('event-loop lag');
+  });
+
+  it('skipHostSaturationShed:true: the same crit verdict is IGNORED — headroom is count-based only', async () => {
+    const out = await getSpawnHeadroom('ws-test', { skipHostSaturationShed: true });
+    expect(out.hostSaturated).toBeUndefined();
+    expect(out.hostSaturationReason).toBeUndefined();
+    // no running agents (runningCount=0) against the default ceiling → full headroom, not shed
+    expect(out.headroom).toBeGreaterThan(0);
+  });
+
+  it('skipHostSaturationShed:true never even reads the perf-signals capture', async () => {
+    vi.mocked(evaluatePerfSignals).mockClear();
+    await getSpawnHeadroom('ws-test', { skipHostSaturationShed: true });
+    expect(evaluatePerfSignals).not.toHaveBeenCalled();
   });
 });
