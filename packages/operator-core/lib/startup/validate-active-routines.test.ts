@@ -49,6 +49,7 @@ describe('validateActiveRoutines', () => {
 
     expect(result.ok).toBe(true);
     expect(result.activeRoutineCount).toBe(2);
+    expect(result.activeRoutineNames).toEqual(['improvement-implement@papercusp', 'git-sync@other-hive']);
     expect(result.unregisteredHarnesses.size).toBe(0);
     expect(result.problematicRoutines).toHaveLength(0);
   });
@@ -111,6 +112,10 @@ describe('validateActiveRoutines', () => {
 
     expect(result.ok).toBe(true);
     expect(result.activeRoutineCount).toBe(2);
+    expect(result.activeRoutineNames).toEqual([
+      'bp-singleton-scout-0@@singleton',
+      `workspace-learning-pulse@${mockWs}`,
+    ]);
     expect(result.problematicRoutines).toHaveLength(0);
     expect(harnessCore.resolveProject).not.toHaveBeenCalled();
   });
@@ -126,6 +131,7 @@ describe('validateActiveRoutines', () => {
 
     expect(result.ok).toBe(true);
     expect(result.activeRoutineCount).toBe(0);
+    expect(result.activeRoutineNames).toEqual([]);
     expect(result.problematicRoutines).toHaveLength(0);
   });
 

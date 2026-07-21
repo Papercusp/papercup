@@ -247,7 +247,7 @@ export function runBootstrap(): void {
         '@papercusp/operator-core/lib/startup/validate-active-routines'
       );
       const r = await validateActiveRoutines();
-      if (r.ok) console.log(`[routine-validation] startup validation passed — ${r.activeRoutineCount} active routine(s) resolve`);
+      if (r.ok) console.log(`[routine-validation] startup validation passed — ${r.activeRoutineCount} active routine(s) resolve: [${r.activeRoutineNames.join(', ')}]`);
     } catch (e) {
       console.warn('[routine-validation] startup validation skipped (non-fatal):', (e as Error)?.message ?? e);
     }

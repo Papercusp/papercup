@@ -30,6 +30,15 @@ import { activeWorkspaceId } from '../workspace-registry';
 export interface RoutineValidationResult {
   ok: boolean;
   activeRoutineCount: number;
+  /**
+   * Names of every ACTIVE routine this scan found, as `"<name>@<install_slug>"` (WI-5704).
+   * The bare `activeRoutineCount` alone can't say WHICH routines are active — during the
+   * WI-5672 live-fed-gate triage that made it impossible to tell, without a live psql tap
+   * before rig teardown, whether joiner frame B (1 active routine vs owner A's 5) was even
+   * missing the hive-member-rekey/epoch-key-reconcile routine. This makes the startup log
+   * self-sufficient evidence.
+   */
+  activeRoutineNames: string[];
   unregisteredHarnesses: Set<string>;
   problematicRoutines: Array<{ installSlug: string; routineName: string; workspaceId: string }>;
 }
@@ -57,12 +66,15 @@ export async function validateActiveRoutines(workspaceId?: string): Promise<Rout
 
   const unregisteredHarnesses = new Set<string>();
   const problematicRoutines: Array<{ installSlug: string; routineName: string; workspaceId: string }> = [];
+  const activeRoutineNames: string[] = [];
 
   // Validate each routine's harness resolves
   for (const routine of activeRoutines) {
     const slug = (routine as any).install_slug;
     const name = (routine as any).name;
     const routineWs = (routine as any).workspace_id;
+
+    activeRoutineNames.push(`${name || '<unnamed>'}@${slug || '<empty>'}`);
 
     if (!slug || !slug.trim()) {
       // Empty slug is a data integrity error, not a registration error
@@ -92,5 +104,11 @@ export async function validateActiveRoutines(workspaceId?: string): Promise<Rout
     );
   }
 
-  return { ok, activeRoutineCount: activeRoutines.length, unregisteredHarnesses, problematicRoutines };
+  return {
+    ok,
+    activeRoutineCount: activeRoutines.length,
+    activeRoutineNames,
+    unregisteredHarnesses,
+    problematicRoutines,
+  };
 }
