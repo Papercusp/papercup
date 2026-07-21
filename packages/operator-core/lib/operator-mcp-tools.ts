@@ -28,6 +28,11 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__goals:get',
   // issues:list retired onto the unified work-item surface (coordination-unification-2026-06-23 P-009):
   'mcp__agentmcp__work_items:list',
+  // The authoritative "what issue-family work is ACTUALLY claimable now" read
+  // (claimable-read-tool-and-sql-encapsulation-audit-2026-07-21 P-001) — the SSOT floors
+  // as a tool, so "how many bugs can we still claim / is this drain premature" is answered
+  // without raw SQL. Read-only (never claims).
+  'mcp__agentmcp__work_items:claimable',
   // Rubrics — the shared-standards store (rubric-driven-observations-2026-06-20
   // P-002). The brain consults active rubrics (the standards agents grade structured
   // observations against) — read-only here; propose/ratify are agent/Queen verbs.

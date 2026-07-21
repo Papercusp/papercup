@@ -836,6 +836,10 @@ import './system-health/unack';
 import './work_items/create';
 import './work_items/get';
 import './work_items/list';
+// claimable-read-tool-and-sql-encapsulation-audit-2026-07-21 P-001 — the authoritative
+// "what issue-family work can I actually claim now" read (the SSOT floors as a tool, so
+// agents stop reaching for raw SQL on work_items / the claimable view).
+import './work_items/claimable';
 import './work_items/burn_down';
 import './work_items/search';
 import './work_items/set_state';
