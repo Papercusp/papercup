@@ -134,7 +134,7 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
             <button
               type="button"
               style={SECONDARY}
-              onClick={() => this.setState({ error: null, expanded: false })}
+              onClick={() => this.setState({ error: null, componentStack: null, expanded: false })}
             >
               Try again
             </button>
@@ -146,7 +146,7 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
               {expanded ? 'Hide details' : 'Show details'}
             </button>
           </div>
-          {expanded && <pre style={PRE}>{String(error.stack || error.message || error)}</pre>}
+          {expanded && <ErrorDetail error={error} componentStack={this.state.componentStack} />}
         </div>
       </div>
     );
@@ -205,7 +205,6 @@ export function DefaultRouterErrorComponent({
       /* sessionStorage unavailable → manual fallback stays */
     }
   }, [error]);
-  const err = error as { stack?: string; message?: string } | null;
   return (
     <div role="alert" style={WRAP}>
       <div style={CARD}>
@@ -224,7 +223,10 @@ export function DefaultRouterErrorComponent({
             {expanded ? 'Hide details' : 'Show details'}
           </button>
         </div>
-        {expanded && <pre style={PRE}>{String(err?.stack || err?.message || error)}</pre>}
+        {/* TanStack's default-error path passes only `error` (no component
+            stack); ErrorDetail still surfaces the message + linkified react.dev
+            decode + the JS stack, all copyable. */}
+        {expanded && <ErrorDetail error={error} />}
       </div>
     </div>
   );
@@ -281,19 +283,4 @@ const LINK: CSSProperties = {
   border: 0,
   cursor: 'pointer',
   textDecoration: 'underline',
-};
-const PRE: CSSProperties = {
-  marginTop: 14,
-  padding: 12,
-  maxHeight: 220,
-  overflow: 'auto',
-  fontSize: 11,
-  lineHeight: 1.5,
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-  color: 'var(--fg-mute, #9bb3c7)',
-  background: 'color-mix(in srgb, var(--bg-deeper, #060b12), transparent 0%)',
-  border: '1px solid var(--border, #2a2a2a)',
-  borderRadius: 6,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
 };

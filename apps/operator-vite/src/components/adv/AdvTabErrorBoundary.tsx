@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { ErrorDetail } from '../ErrorDetail';
 
 /**
  * AdvTabErrorBoundary — isolates a render crash in ONE /adv tab body so it can't
@@ -26,16 +27,19 @@ interface Props {
 }
 interface State {
   error: Error | null;
+  /** React component stack (componentDidCatch) — names the component that threw. */
+  componentStack: string | null;
 }
 
 export default class AdvTabErrorBoundary extends Component<Props, State> {
-  state: State = { error: null };
+  state: State = { error: null, componentStack: null };
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
+    this.setState({ componentStack: info.componentStack ?? null });
     // The shell survives a caught tab crash, so this console line is the only
     // signal the tab died — surfaced for the read_console_messages debug path.
     console.error(`[adv-tab:${this.props.tab}] render crashed:`, error, info.componentStack);
@@ -55,22 +59,7 @@ export default class AdvTabErrorBoundary extends Component<Props, State> {
           The <strong>{this.props.tab}</strong> tab failed to render. The rest of the app is
           unaffected — switch to another tab, or reload once the underlying issue is fixed.
         </p>
-        <pre
-          style={{
-            fontSize: 11.5,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            background: 'var(--bg-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            padding: '8px 10px',
-            color: 'var(--fg-mute)',
-            maxHeight: 200,
-            overflow: 'auto',
-          }}
-        >
-          {error.message || String(error)}
-        </pre>
+        <ErrorDetail error={error} componentStack={this.state.componentStack} />
       </div>
     );
   }

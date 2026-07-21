@@ -82,9 +82,11 @@ describe('<RouteErrorBoundary>', () => {
       </RouteErrorBoundary>,
     );
     fireEvent.click(screen.getByText('Show details'));
-    expect(screen.getByText(/kaboom in a tab/)).toBeTruthy();
+    // The error text now shows in BOTH the message surface and the JS stack
+    // (ErrorDetail surfaces message + component stack + stack), so match all.
+    expect(screen.getAllByText(/kaboom in a tab/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText('Hide details'));
-    expect(screen.queryByText(/kaboom in a tab/)).toBeNull();
+    expect(screen.queryAllByText(/kaboom in a tab/).length).toBe(0);
   });
 
   it('Try again clears the error and re-renders the children once the cause is gone', () => {

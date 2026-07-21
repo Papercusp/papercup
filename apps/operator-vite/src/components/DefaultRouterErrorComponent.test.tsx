@@ -74,8 +74,10 @@ describe('<DefaultRouterErrorComponent>', () => {
   it('Show details toggles the stack trace', () => {
     render(<DefaultRouterErrorComponent error={RENDER_BUG} reset={() => {}} />);
     fireEvent.click(screen.getByText('Show details'));
-    expect(screen.getByText(/Cannot read properties of undefined/)).toBeTruthy();
+    // ErrorDetail surfaces the message AND the JS stack, so the text can appear
+    // in more than one node — match all.
+    expect(screen.getAllByText(/Cannot read properties of undefined/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText('Hide details'));
-    expect(screen.queryByText(/Cannot read properties of undefined/)).toBeNull();
+    expect(screen.queryAllByText(/Cannot read properties of undefined/).length).toBe(0);
   });
 });
