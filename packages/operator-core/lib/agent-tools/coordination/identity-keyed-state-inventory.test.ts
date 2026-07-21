@@ -218,6 +218,16 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'covered',
     surface: 'held-work-items',
   },
+  'work_items_claimable.taken_by': {
+    status: 'covered',
+    surface: 'held-work-items',
+    // work-item-claim-floors-ssot (migration 654): a VIEW that projects
+    // `wi.taken_by` straight through from harness_shared.work_items (see
+    // `CREATE VIEW harness_shared.work_items_claimable` in
+    // 654-work-item-claim-floors-ssot.sql) — not an independently-stored
+    // copy, so the base table's 'held-work-items' rebind already covers it,
+    // same shape as harness_features(_consolidated).taken_by above.
+  },
 
   'predicate_watches.owner_id': {
     status: 'exempt',
@@ -293,6 +303,14 @@ const ALLOWLIST: Record<string, Classification> = {
     reason:
       'frozen pre-migration backup snapshot of work_items taken during the 2026-07-17 unify migration — no live ' +
       'reader or reaper touches it; DELETE this entry when the bak_ table is dropped.',
+  },
+  '_pot_backfill_649_dropped.taken_by': {
+    status: 'exempt',
+    reason:
+      'pot-membership-backfill (migration 649): a frozen reversibility snapshot of the work_items rows dropped ' +
+      'during the pot-membership backfill (CREATE TABLE … AS SELECT wi.* … before the DELETE, ' +
+      '649-pot-membership-backfill.sql step 3) — no live reader or reaper touches it; DELETE this entry when the ' +
+      '_pot_backfill_649_dropped table is dropped.',
   },
   'bak_20260717_unify_subs.subscriber_id': {
     status: 'exempt',

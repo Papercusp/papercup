@@ -11,6 +11,15 @@
  * insensitive token matching and a position-weighted boost for
  * title/now hits. If/when corpus size or query complexity grows,
  * lift this to a proper index.
+ *
+ * WI-5683: the lexical TF ranking above is fused with the migration-553
+ * plan-embedding semantic ranking via Reciprocal Rank Fusion (@papercusp/rrf)
+ * before the top-N cut — see the fusion block in the handler below. Prior to
+ * this fix, semantic hits were only ever appended (capped at 3) AFTER the
+ * lexical results, so a topically-exact plan whose lexical score was low —
+ * e.g. buried behind long plans that merely repeat common tokens, or dropped
+ * entirely by the CANDIDATE_LIMIT ILIKE prefilter below — ranked dead last or
+ * vanished from a `limit`-capped page.
  */
 
 import { z } from 'zod';

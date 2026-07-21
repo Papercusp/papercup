@@ -320,16 +320,22 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
     await g.close();
   });
 
-  it('WI-5355 iteration 3: re-attempts CHANNEL-level pairing on a surviving socket after the forced leave+rejoin (not just the DHT-level rejoin)', async () => {
-    // Root cause: a topic that severs on a socket which is NOT evicted (still
-    // serving some OTHER topic — the common real-world case, e.g. the shared
-    // substrate/corestore connection also carries a directory-gossip topic)
-    // never gets its Protomux CHANNEL recreated by the escalation — only the
-    // DHT-level swarm.leave()/join() ran. Since Hyperswarm dedupes connections
-    // per peer, the SAME socket persists, so unless the code re-invokes
-    // openTopicChannel (mux.createChannel + .open()) on that surviving socket,
-    // the channel-level handshake is NEVER retried and the topic can never
-    // re-pair — reproducing "forceRejoin fires but never actually re-pairs".
+  it('WI-5355 iteration 3 (EI-13317/WI-5481 unconditional-eviction era): re-opens a CHANNEL for the topic on the next fresh connection after the forced leave+rejoin', async () => {
+    // Historical note: this test originally covered a topic severing on a
+    // socket that SURVIVED the escalation (still serving some OTHER topic —
+    // eviction used to be guarded). Under EI-13317/WI-5481's unconditional
+    // eviction (restored 2026-07-20 — see the "shared-socket eviction
+    // deadlock" test above), NO socket survives an escalation: every tracked
+    // socket is evicted, so a "re-open the channel on the surviving socket"
+    // loop is now a guaranteed no-op. Channel-level re-pairing instead
+    // happens the ordinary way: the DHT leave()+join() below makes
+    // Hyperswarm fire a fresh 'connection' event once the peer reconnects,
+    // and the connection handler opens a channel for every joined topic on
+    // that fresh socket (openTopicChannel) — still exercising the same
+    // underlying concern this test guards: a rejected/closed Protomux
+    // channel must be given a genuinely NEW local channel + a freshly-sent
+    // "open" frame, not just a DHT-level rejoin, or the remote has nothing to
+    // pair against and the topic is wedged forever.
     const TOPIC2 = Buffer.alloc(32, 33);
     const f = fakeSwarm();
     const g = createTopicGossip<Frame>({
@@ -350,20 +356,18 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
     const ch2 = mux.channels.find((c) => c.id && c.id.equals(TOPIC2))!;
     ch1.pairRemote();
     ch2.pairRemote();
-    ch1.fireClose(); // TOPIC severs; TOPIC2 (same socket) stays live so the socket is never evicted
+    ch1.fireClose(); // TOPIC severs; TOPIC2's channel (same socket) stays live
 
     await vi.advanceTimersByTimeAsync(1100);
     expect(f.left).toHaveLength(1); // DHT-level escalation fired
-    expect(socket.destroyed).toBe(false); // survives — still serving TOPIC2
+    expect(socket.destroyed).toBe(true); // EI-13317/WI-5481: evicted unconditionally
 
-    // The fix under test: a FRESH channel for TOPIC must have been created on
-    // the surviving socket (the closed ch1 plus a brand-new one), and it must
-    // have been opened (an "open" frame sent) — otherwise the remote peer
-    // (which, per the bug, already rejected/closed the old one) has nothing
-    // to pair against and the topic is wedged forever.
-    const topicChannelsOnSocket = mux.channels.filter((c) => c.id && c.id.equals(TOPIC));
-    expect(topicChannelsOnSocket.length).toBeGreaterThanOrEqual(2);
-    const freshChannel = topicChannelsOnSocket[topicChannelsOnSocket.length - 1]!;
+    // The peer reconnects after the DHT rejoin (a fresh swarm 'connection'
+    // event) — the connection handler must open a fresh, LOCAL channel for
+    // TOPIC on it (and send an "open" frame) so the remote has something new
+    // to pair against.
+    const socket2 = f.connect();
+    const freshChannel = socket2.userData!.channels.find((c) => c.id && c.id.equals(TOPIC))!;
     expect(freshChannel.closed).toBe(false);
     expect(freshChannel.opened).toBe(true);
 
