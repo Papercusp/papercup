@@ -39,8 +39,26 @@
  * `withWorkspace`-scoped handle, both `Sql` instances) — so this is not a narrowing
  * guess, it is the actual type already in use everywhere `ctx.tx` is passed to a
  * `Sql`-typed helper (e.g. `route-workspace.ts`'s `fn: (tx: Sql) => …`).
+ *
+ * TWO aliases, because `defineTool` hands two DIFFERENT context types to a handler
+ * depending on the gate, and neither is a plain `Tx`-parameterized `ToolContext` in
+ * the common case:
+ *   - a PRINCIPAL-gated tool (`defineTool({ capability, args, handler })`, the
+ *     default — `requirePrincipal` absent/true) gets `ctx: ToolContext<Tx = any>`.
+ *     `PapercuspToolContext` binds that.
+ *   - a ROLE-gated tool (`defineTool({ requirePrincipal: false, agentRoles, … })` —
+ *     what most su/agent-facing tools in this tree actually are, e.g. sessions:*,
+ *     loop:checkpoint) gets `ctx: UnifiedToolContext` instead, whose `tx?: any` has
+ *     NO generic parameter to bind at all. `PapercuspUnifiedToolContext` overrides
+ *     just that one field via `Omit` + intersection.
  */
-import type { ToolContext } from '@papercusp/agent-mcp';
+import type { ToolContext, UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { Sql } from 'postgres';
 
+/** For a PRINCIPAL-gated `defineTool` (no `requirePrincipal: false`). */
 export type PapercuspToolContext = ToolContext<Sql>;
+
+/** For a ROLE-gated `defineTool` (`requirePrincipal: false`) — the majority of
+ *  su/agent-facing tools. `UnifiedToolContext` has no `Tx` type param, so this
+ *  overrides its `tx?: any` field directly instead of binding a generic. */
+export type PapercuspUnifiedToolContext = Omit<UnifiedToolContext, 'tx'> & { tx: Sql };
