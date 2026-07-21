@@ -583,6 +583,93 @@ export interface IssueClaimExclusionBreakdown {
   };
 }
 
+/** The AND of every per-row claim-floor predicate (the `ok_*` booleans decorated by
+ *  {@link issueClaimCandidateSubquery}). A row for which this holds AND `spec_match` is
+ *  claimable RIGHT NOW. Defined ONCE so the survivors COUNT
+ *  ({@link aggregateIssueClaimExclusions}'s `claimable`) and the survivors ROW LIST
+ *  ({@link listIssueClaimableRows}) apply the byte-identical bar — add/remove a floor and
+ *  both move together. Pure column identifiers, no bound values, so `sql.unsafe` is safe. */
+const ALL_ISSUE_CLAIM_FLOORS_PASS =
+  `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_observation ` +
+  `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
+  `AND ok_completed AND ok_rig AND ok_no_blocker AND ok_cooldown`;
+
+/**
+ * The SHARED inner subquery for issue-family claimability: every candidate issue-family
+ * row for the harness/workspace/states, decorated with `spec_match` + one `ok_<floor>`
+ * boolean per claim floor — each computed by the SAME exported floor-predicate helper the
+ * real claim path (`claimNextIssueWorkItem`) enforces. Both
+ * {@link aggregateIssueClaimExclusions} (which COUNTs the booleans) and
+ * {@link listIssueClaimableRows} (which SELECTs the rows passing {@link ALL_ISSUE_CLAIM_FLOORS_PASS})
+ * wrap this ONE fragment, so the survivors count and the row list can never disagree with
+ * each other or with the floors — a second SQL copy is exactly the drift
+ * work-item-claimability-clarity removes. Projects `wi.*` so any consumer (a rank ORDER BY,
+ * a row projection) can reference any base column; the aggregate wrapper ignores the extra
+ * columns (a pure `count(*)` is unaffected).
+ */
+function issueClaimCandidateSubquery(
+  sql: OrgSql,
+  args: {
+    compiled: SqlFragment;
+    assignee: string;
+    cooldown: number;
+    harness: string;
+    states: readonly string[];
+    issueWs: string;
+    operatorScopeSlug: string;
+    rigAvailable?: boolean;
+  },
+): SqlFragment {
+  const { compiled, assignee, cooldown, harness, states, issueWs, operatorScopeSlug, rigAvailable } = args;
+  return sql`
+    SELECT
+      wi.*,
+      (${compiled})                                                     AS spec_match,
+      (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
+      (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
+      (${needsHumanExclusionSql(sql)})                                  AS ok_needs_human,
+      (${observationLaneExclusionSql(sql)})                             AS ok_observation,
+      (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
+      (${reservedPlanLaneExclusionSql(sql, assignee)})                  AS ok_plan_lane,
+      (${federationDetectorExclusionSql(sql)})                          AS ok_federation,
+      (${loopIterationNoiseExclusionSql(sql)})                          AS ok_loop_noise,
+      (${alreadyTerminallyCompletedExclusionSql(sql)})                  AS ok_completed,
+      (${crossMachineRigExclusionSql(sql, rigAvailable)})               AS ok_rig,
+      (NOT EXISTS (
+          SELECT 1 FROM harness_shared.work_item_deps d
+           WHERE d.workspace_id = 'default'
+             AND d.dep_type = 'blocks'
+             AND d.blocked_ref = wi.feature_id
+             AND (
+               EXISTS (
+                 SELECT 1 FROM harness_shared.harness_features_consolidated bf
+                  WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                    AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
+               )
+               OR EXISTS (
+                 SELECT 1 FROM harness_shared.engineer_issues bi
+                  WHERE bi.workspace_id = 'default'
+                    AND bi.issue_id = d.blocker_ref
+                    AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
+               )
+             )
+      ))                                                                AS ok_no_blocker,
+      (${
+        cooldown > 0
+          ? sql`(wi.last_released_by IS NULL
+              OR wi.last_released_by <> ${assignee}
+              OR wi.last_released_at IS NULL
+              OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
+          : sql`TRUE`
+      })                                                                AS ok_cooldown
+    FROM harness_shared.work_items wi
+    WHERE wi.item_kind IN ('bug', 'change', 'task')
+      AND wi.workspace_id = ${issueWs}
+      AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
+      AND wi.status = ANY(${states as string[]}::text[])
+  `;
+}
+
 export async function aggregateIssueClaimExclusions(
   filter: FilterNode | undefined,
   opts: {
@@ -664,6 +751,110 @@ export async function aggregateIssueClaimExclusions(
       cooldown: r?.cooldown ?? 0,
     },
   };
+}
+
+/** One claimable issue-family row surfaced by {@link listIssueClaimableRows} — a lean,
+ *  self-selection-oriented projection (id/kind/title/status/severity/plan + the ordering
+ *  keys). Full body via `work_items:get { id }`. */
+export interface IssueClaimableRow {
+  /** The work-item id (feature_id — WI-/EI-…). */
+  id: string;
+  /** item_kind (bug | change | task), COALESCEd over the legacy free-text `kind`. */
+  kind: string;
+  title: string | null;
+  status: string;
+  /** payload.severity for bugs (null when the row carries none). */
+  severity: string | null;
+  /** source_plan_slug — the plan this item belongs to, if any. */
+  plan: string | null;
+  /** feature_order (the prioritization key; null = unprioritized, sorts last). */
+  featureOrder: number | null;
+  /** created_ts (epoch ms). */
+  createdTs: number | null;
+}
+
+/**
+ * The companion row-lister to {@link aggregateIssueClaimExclusions}: the actual issue-family
+ * rows that survive `spec_match` AND every claim floor — i.e. what a self-selecting caller
+ * under this spec would see as claimable RIGHT NOW, ordered the way `get_next` would hand
+ * them out (via {@link compileRank} over the same spec). Wraps the SAME
+ * {@link issueClaimCandidateSubquery} + the SAME {@link ALL_ISSUE_CLAIM_FLOORS_PASS} bar the
+ * survivors COUNT uses, so `rows.length` (uncapped) === the oracle's `claimable` count — the
+ * list and the count structurally cannot disagree, nor drift from the floors. Read-only; NO
+ * claim side-effect (this is the diagnostic read `work_items:claimable` exposes, never a
+ * claim path).
+ */
+export async function listIssueClaimableRows(
+  filter: FilterNode | undefined,
+  opts: {
+    harness: string;
+    states?: readonly string[];
+    assignee?: string;
+    rigAvailable?: boolean;
+    /** The validated claim spec whose rank orders the survivors (defaults to
+     *  DEFAULT_CLAIM_SPEC's fixed feature_order→created ordering). Reusing compileRank
+     *  makes the listing order match what get_next under this spec would actually claim. */
+    spec?: ClaimSpec;
+  },
+  limit: number,
+): Promise<IssueClaimableRow[]> {
+  const sql = getOrgPg().sql;
+  const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
+  const issueWs = issuesScopeWorkspace();
+  const operatorScopeSlug = `operator:${issueWs}`;
+  const assignee = opts.assignee ?? '';
+  const compiled = compileFilter(sql, filter);
+  const cooldown = releaseCooldownSec();
+  const cap = Math.max(1, Math.min(Math.floor(limit) || 1, 200));
+  // Reuse the resolver's OWN rank compiler so the diagnostic order == the claim order.
+  // Empty heldPaths ⇒ the `affinity` term is NEUTRAL (dropped), leaving the spec's
+  // deterministic feature_order→created ordering — exactly get_next's for a fresh bee.
+  const order = compileRank(sql, opts.spec ?? DEFAULT_CLAIM_SPEC, { assignee });
+  const sub = issueClaimCandidateSubquery(sql, {
+    compiled,
+    assignee,
+    cooldown,
+    harness: opts.harness,
+    states,
+    issueWs,
+    operatorScopeSlug,
+    rigAvailable: opts.rigAvailable,
+  });
+
+  const rows = (await sql`
+    SELECT
+      feature_id                AS id,
+      COALESCE(item_kind, kind) AS kind,
+      title,
+      status,
+      (payload->>'severity')    AS severity,
+      source_plan_slug          AS plan,
+      feature_order,
+      created_ts
+    FROM (${sub}) sub
+    WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}
+    ORDER BY ${order}
+    LIMIT ${cap}
+  `) as Array<{
+    id: string;
+    kind: string;
+    title: string | null;
+    status: string;
+    severity: string | null;
+    plan: string | null;
+    feature_order: number | string | null;
+    created_ts: number | string | null;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    title: r.title,
+    status: r.status,
+    severity: r.severity,
+    plan: r.plan,
+    featureOrder: r.feature_order == null ? null : Number(r.feature_order),
+    createdTs: r.created_ts == null ? null : Number(r.created_ts),
+  }));
 }
 
 // ────────────────────────────────────────────────────────────────────────────
