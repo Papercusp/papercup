@@ -1078,6 +1078,23 @@ export async function bootAllHarnessesForActiveWorkspace(
     }
   })();
 
+  // WI-5327 (p2p-public-release-remaining-lanes-2026-07-16 P-406/P-407): once-
+  // per-process seeding of THIS host's p2p production routines
+  // (sweep-orphaned-foreign-harnesses, p2p-foreign-supervision,
+  // p2p-work-intake) — host identity resolved from existing seams only (see
+  // ensure-host-routines.ts's module doc), never fabricated. Same posture as
+  // the git-sync reconcile hygiene block above: lazy-import + fire-and-forget
+  // with its own catch — it must NEVER affect harness boot — and the
+  // once-guard lives in the module, so retry passes of this function no-op.
+  void (async () => {
+    try {
+      const { ensureP2pHostRoutinesSeededOnce } = await import('../../p2p/ensure-host-routines');
+      ensureP2pHostRoutinesSeededOnce(workspaceIds);
+    } catch {
+      /* best-effort; boot-all never fails on p2p host-routine seeding */
+    }
+  })();
+
   // plan-federation-regrain-2026-06-13 P-005/P-007: once-per-process per-part
   // plan-federation reconcile/backfill — decompose each plan into harness_plan_parts
   // (origin='local') so local plan edits federate per-part. FLAG-GATED inside the
