@@ -42,6 +42,7 @@
     "@papercusp/plan-parser": "*",
     "@papercusp/resource-profile": "*",
     "@papercusp/result-encoding": "*",
+    "@papercusp/rrf": "*",
     "@papercusp/rules": "*",
     "@papercusp/scheduled-registry": "*",
     "@papercusp/seed-bundle": "*",
