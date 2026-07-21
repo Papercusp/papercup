@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const joinHiveAsView = vi.fn();
 const bustProjectsLiteCache = vi.fn();
+const ensureHiveDirectoryWired = vi.fn();
 vi.mock('../../../harness/join-hive', () => ({
   joinHiveAsView: (...a: unknown[]) => joinHiveAsView(...a),
 }));
@@ -19,6 +20,9 @@ vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-tes
 vi.mock('../../../harness/projects-lite', () => ({
   bustProjectsLiteCache: (...a: unknown[]) => bustProjectsLiteCache(...a),
   buildProjectsLitePayload: vi.fn(async () => ({ projects: [] })),
+}));
+vi.mock('../../../hive-directory-boot', () => ({
+  ensureHiveDirectoryWired: (...a: unknown[]) => ensureHiveDirectoryWired(...a),
 }));
 
 import joinHiveRoute from './join-pot';
@@ -38,7 +42,9 @@ async function post(body: unknown, { raw }: { raw?: string } = {}) {
 beforeEach(() => {
   joinHiveAsView.mockReset();
   bustProjectsLiteCache.mockReset();
+  ensureHiveDirectoryWired.mockReset();
   joinHiveAsView.mockResolvedValue({ ok: true, members: [{ slug: 'm', ok: true }], viewSlug: 'acme' });
+  ensureHiveDirectoryWired.mockResolvedValue({ joinInviteTopic: vi.fn() });
 });
 
 describe('POST /api/discovery/join-pot (Gap 9)', () => {
@@ -132,5 +138,44 @@ describe('POST /api/discovery/join-pot (Gap 9)', () => {
   it('omits a blank title (defaults downstream)', async () => {
     await post({ potId: 'acme', title: '   ', memberLinks: [LINK] });
     expect(joinHiveAsView.mock.calls[0][0]).not.toHaveProperty('title');
+  });
+
+  // WI-5672: this route (what the gate rig's rig_join_hive / discovery-panel
+  // "Join" both drive) used to skip ensureHiveDirectoryWired entirely — unlike
+  // papercusp-hive-join.ts's canonical dogfood-bootstrap join, which wires the
+  // hive-directory topic BEFORE joining. Live-reproduced on the 2-machine gate
+  // rig: the joiner's serve.log never emitted a single
+  // `[topic-gossip:papercusp/hive-directory]` line. These pin the fix.
+  describe('hive-directory wiring (WI-5672)', () => {
+    it('wires the hive directory for the active workspace BEFORE joining', async () => {
+      const order: string[] = [];
+      ensureHiveDirectoryWired.mockImplementation(async () => {
+        order.push('wired');
+        return { joinInviteTopic: vi.fn() };
+      });
+      joinHiveAsView.mockImplementation(async () => {
+        order.push('joined');
+        return { ok: true, members: [{ slug: 'm', ok: true }], viewSlug: 'acme' };
+      });
+      const { status } = await post({ potId: 'acme', memberLinks: [LINK] });
+      expect(status).toBe(200);
+      expect(ensureHiveDirectoryWired).toHaveBeenCalledTimes(1);
+      expect(ensureHiveDirectoryWired).toHaveBeenCalledWith('ws-test');
+      expect(order).toEqual(['wired', 'joined']);
+    });
+
+    it('is best-effort: a directory-wiring failure never blocks the join', async () => {
+      ensureHiveDirectoryWired.mockRejectedValue(new Error('directory wiring stalled'));
+      const { status, body } = await post({ potId: 'acme', memberLinks: [LINK] });
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ ok: true });
+      expect(joinHiveAsView).toHaveBeenCalledTimes(1);
+    });
+
+    it('still wires the directory even for an invalid_args request path it never reaches — i.e. wiring only runs past validation', async () => {
+      await post({ potId: '', memberLinks: [] });
+      expect(ensureHiveDirectoryWired).not.toHaveBeenCalled();
+      expect(joinHiveAsView).not.toHaveBeenCalled();
+    });
   });
 });

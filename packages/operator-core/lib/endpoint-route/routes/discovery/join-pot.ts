@@ -45,6 +45,23 @@ export default defineTool({
     }
     const { joinHiveAsView } = await import('../../../harness/join-hive');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
+    const workspaceId = activeWorkspaceId();
+    // WI-5672: this is the discovery-panel / rig `rig_join_hive` join path, and it
+    // used to be the ONLY joiner path that never wired the hive-directory swarm
+    // topic — papercusp-hive-join.ts's canonical dogfood-bootstrap join calls
+    // ensureHiveDirectoryWired BEFORE joinHiveAsView (see its `defaultEnsureWired`),
+    // but this route went straight to joinHiveAsView. Live-reproduced on the
+    // 2-machine gate rig: the joiner's serve.log never emitted a single
+    // `[topic-gossip:papercusp/hive-directory]` line (only hive-presence), so the
+    // joiner never subscribes to the directory topic peers announce/re-announce
+    // hive membership changes on. Mirror the canonical path's pattern — best-effort,
+    // memoized (a no-op if boot-all already wired it), NEVER fails the join.
+    try {
+      const { ensureHiveDirectoryWired } = await import('../../../hive-directory-boot');
+      await ensureHiveDirectoryWired(workspaceId);
+    } catch {
+      /* best-effort — directory wiring never blocks the join itself */
+    }
     const res = await joinHiveAsView({
       potId,
       ...(typeof body.title === 'string' && body.title.trim() ? { title: body.title.trim() } : {}),
@@ -52,7 +69,7 @@ export default defineTool({
         ? { hivePubkey: body.hivePubkey.trim() }
         : {}),
       memberLinks,
-      workspaceId: activeWorkspaceId(),
+      workspaceId,
     });
     if (!res.ok) {
       const status = res.error === 'invalid_member_links' ? 400 : 502;
