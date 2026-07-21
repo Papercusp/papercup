@@ -8,7 +8,13 @@
  * no-false-positive corpus behavior is locked separately in check-mdx-guard.test.ts.)
  */
 import { describe, it, expect } from 'vitest';
-import { mdxDetector, smartQuotesDetector, shellSyntaxDetector, DEFAULT_CONTENT_DETECTORS } from './registry';
+import {
+  mdxDetector,
+  smartQuotesDetector,
+  shellSyntaxDetector,
+  conflictMarkersDetector,
+  DEFAULT_CONTENT_DETECTORS,
+} from './registry';
 
 describe('mdxDetector', () => {
   it('matches ONLY .mdx under the astro-built docs set (mirrors check-mdx.mjs scope)', () => {

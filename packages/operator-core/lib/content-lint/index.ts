@@ -8,10 +8,13 @@
 export { blankFrontmatter, findMdxCompileError, type MdxCompileError } from './mdx';
 export { findCodePositionCurlyQuotes, curlyLabel, CURLY, type CurlyQuoteHit } from './smart-quotes';
 export { findStaleInsightCitations, formatStaleCitations, type StaleCitation } from './insight-citations';
+export { findConflictMarker, CONFLICT_MARKER_ERE, type ConflictMarkerHit } from './conflict-markers';
 export {
   type ContentDetector,
   mdxDetector,
   smartQuotesDetector,
+  shellSyntaxDetector,
+  conflictMarkersDetector,
   DEFAULT_CONTENT_DETECTORS,
   CONTENT_FIXER_ROLE,
 } from './registry';

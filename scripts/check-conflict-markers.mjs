@@ -23,6 +23,16 @@
  * NOT flag the bare `=======` separator: a 7-wide markdown setext underline or an
  * ASCII divider is exactly seven `=`, so flagging it would add false positives — and
  * the brackets already catch every real conflict, so it adds no coverage.
+ *
+ * D-003 (git-sync-content-guard-2026-06-13, mirroring shell-syntax): this pure
+ * detector is now ALSO reused by the git-sync content guard's PRE-commit
+ * registry (packages/operator-core/lib/content-lint/conflict-markers.ts imports
+ * it FROM here) so a conflict-marker file is quarantined before it ever reaches
+ * `staging` (EI-18217568076594579), not just caught by this post-hoc CI gate
+ * hours later. Kept plain-Node-runnable (no TS import) deliberately: this script
+ * is invoked directly via bare `node` from papercusp-desktop/bin/build-desktop-sidecar.sh
+ * (a non-tsx, non-npm build context) — it must never gain a TypeScript-only
+ * dependency, so content-lint imports THIS file rather than the reverse.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -43,7 +53,8 @@ const markerRegExp = () => new RegExp(CONFLICT_MARKER_ERE);
 
 /**
  * Pure detector: the FIRST conflict marker in `content`, or null. 1-based line.
- * Exported so the guard's logic is unit-tested directly (check-conflict-markers-guard.test.ts).
+ * Exported so the guard's logic is unit-tested directly (check-conflict-markers-guard.test.ts)
+ * AND reused by the git-sync content-guard registry (content-lint/conflict-markers.ts).
  */
 export function findConflictMarker(path, content) {
   const re = markerRegExp();

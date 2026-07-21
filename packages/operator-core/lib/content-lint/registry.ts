@@ -14,6 +14,7 @@
 import { findMdxCompileError, autoFixMdxAngles } from './mdx';
 import { findCodePositionCurlyQuotes, curlyLabel } from './smart-quotes';
 import { findShellSyntaxError } from './shell-syntax';
+import { findConflictMarker } from './conflict-markers';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -116,8 +117,36 @@ export const shellSyntaxDetector: ContentDetector = {
 };
 
 /**
+ * The committed-conflict-marker detector (EI-1836 / EI-18217568076594579) — a
+ * COMMITTED git conflict marker (`<<<<<<<`, `>>>>>>>`, `|||||||` at line start)
+ * is a hard, language-agnostic build breaker (a stray "Stashed" token froze the
+ * whole fleet's SPA + desktop-sidecar + green-checkpoint builds for ~27min, twice).
+ * Scoped to EVERY tracked file (mirrors check-conflict-markers.mjs's tree-wide
+ * scan) rather than one extension, since a conflict marker can land in any file
+ * type. No `autoFix` — like shell-syntax, a real conflict needs a human/LLM to
+ * pick the correct side; the goal here is quarantine-before-commit, not silent
+ * auto-resolution of someone's merge.
+ */
+export const conflictMarkersDetector: ContentDetector = {
+  key: 'conflict-markers',
+  glob: '**/*',
+  matches: (f) => !isExcludedPath(f),
+  detect: (file, text) => {
+    const hit = findConflictMarker(file, text);
+    if (!hit) return null;
+    return `committed git conflict marker at line ${hit.line} (${hit.marker.slice(0, 1)}×7): ${hit.text.slice(0, 80)}`;
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
  * The default registry the git-sync content guard runs with. Extend by adding an
  * entry (a new `{ key, glob, matches, detect, fixerRole }`); the guard + escalation
  * + fixer dispatch pick it up with no further change.
  */
-export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [mdxDetector, smartQuotesDetector, shellSyntaxDetector];
+export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
+  mdxDetector,
+  smartQuotesDetector,
+  shellSyntaxDetector,
+  conflictMarkersDetector,
+];
