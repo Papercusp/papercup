@@ -18,6 +18,7 @@
  * no operator, no real PG); `gym-loop-run.ts` passes the real adapters.
  */
 import type { Sql } from 'postgres';
+import { randomBytes } from 'node:crypto';
 import { buildAbDeps } from './ab-runner-real';
 import { judgeGymRun, type JudgeLlmCall } from './judge';
 import { proposeCandidate, type WorstTrace } from './proposer';
@@ -103,6 +104,22 @@ export interface BuildLoopDepsConfig {
   noveltyForVariant?: (variantId: string) => Promise<number>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * WI-5697: a token unique to THIS run, folded into candidate ids
+   * (`cand-<runId>-c<cycle>`). `newVariantId` must stay DETERMINISTIC per cycle
+   * WITHIN a run (a rate-limited retry must reuse the same id — RB-006's
+   * intra-run idempotency, see loop.ts), but a bare `cand-c${cycle}` is also
+   * deterministic ACROSS every run of the same harness (autoloop cycles almost
+   * always run maxCycles=1, so it was ALWAYS "cand-c1"). Once that id's
+   * proposal rows were decided by an earlier run, `recordProposal`'s
+   * idempotent upsert (control-plane.ts `recordProposal`'s
+   * `WHERE gym_proposals.status = 'pending'`) silently no-ops on every later
+   * run — no error, no new row, forever — which is exactly the "gym cycles no
+   * longer mint gym_proposals rows" bug. Default: a fresh random token per
+   * `buildLoopDeps` call, so callers get the fix for free even without
+   * threading their own per-run id.
+   */
+  runId?: string;
 }
 
 export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
@@ -111,6 +128,9 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
   const sleep = cfg.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const worstK = cfg.worstK ?? 3;
   const repeats = Math.max(1, cfg.repeats ?? 1);
+  // WI-5697: unique-per-run token — see BuildLoopDepsConfig.runId's doc for why this must
+  // never collapse to a bare per-cycle id across runs.
+  const runId = cfg.runId ?? randomBytes(4).toString('hex');
 
   // Reuse the smoke-proven per-run engine (runPipeline + collectAndDistill + gym-PG store).
   const ab =
@@ -280,7 +300,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     recordArchive: cfg.recordArchive,
     noveltyForVariant: cfg.noveltyForVariant,
     federateAcceptedElite: cfg.federateAcceptedElite,
-    newVariantId: (cycle) => `cand-c${cycle}`,
+    newVariantId: (cycle) => `cand-${runId}-c${cycle}`,
     now,
     sleep,
   };
