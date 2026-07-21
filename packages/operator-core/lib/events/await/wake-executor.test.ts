@@ -1364,7 +1364,9 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
         getLoopCarryNoteWithMetaFn: getLoopCarryNoteWithMetaFn as never,
       }),
     );
-    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    // fire #96 is 96 % 8 === 0 ⇒ a RECYCLE (faithful to the reported incident); the injected
+    // data is composed by renderColdWakeInjection for both reset and recycle.
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
     expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledWith({
       harness: 'papercusp',
       ownerId: 'su-abc',
