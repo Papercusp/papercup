@@ -175,6 +175,7 @@ export default defineTool({
     notWhen:
       "EI-7589: a row's `assignee:null` does NOT by itself mean 'unclaimed' when the row carries a `plan_item`/`plan_ref` link (payload.plan_item, or the trimmed/standard `plan_ref` field) — a plan-item can be under active coverage (effectiveStatus 'wip', a live worker holding it) while the work-item row's own assignee stays null. Before self-claiming a plan-linked row, cross-check `plans:items { slug }` for that item's effectiveStatus — do not trust the bare assignee field alone, or you risk duplicating in-flight work.",
     seeAlso: [
+      'work_items:claimable (issue-family: how many / which are ACTUALLY claimable — the full claim floors, unlike admissibleOnly here)',
       'work_items:set_priority (steer the backlog order you just read)',
       'work_items:get (full detail on specific ids)',
       'work_items:claim_next (take the next claimable item)',
