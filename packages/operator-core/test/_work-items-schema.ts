@@ -169,7 +169,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       feature_order
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
-  DECLARE v_slug text; v_ei jsonb; v_payload jsonb;
+  DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;
   BEGIN
     IF TG_OP IN ('UPDATE', 'DELETE') AND EXISTS (
       SELECT 1
@@ -222,7 +222,22 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
         -- WI-2990/WI-3006 (migration 509): thread last_progress_at through the view's
         -- UPDATE path (parity with the app-side markIssueProgress direct base-table write).
         last_progress_at = NEW.last_progress_at,
-        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(v_payload - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref WHERE workspace_id=OLD.workspace_id AND harness_slug=OLD.base_harness_slug AND feature_id=OLD.issue_id AND item_kind=OLD.kind;
+        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(v_payload - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref
+      WHERE workspace_id=OLD.workspace_id AND harness_slug=OLD.base_harness_slug AND feature_id=OLD.issue_id AND item_kind=OLD.kind
+        -- 655 (claim-race guard): re-verify ownership against the CURRENT taken_by
+        -- (fresh, at lock-acquisition time), not the OLD pre-commit snapshot the
+        -- outer view-query's WHERE clause used — closes the TOCTOU window between
+        -- two concurrent claimIssue() calls on the same row. See 655's migration
+        -- comment for the full mechanism.
+        AND (
+          NEW.assignee IS NULL
+          OR taken_by IS NULL OR btrim(taken_by) = '' OR lower(btrim(taken_by)) = 'unassigned'
+          OR taken_by = NEW.assignee
+        );
+      GET DIAGNOSTICS v_updated = ROW_COUNT;
+      IF v_updated = 0 THEN
+        RETURN NULL;
+      END IF;
       RETURN NEW;
     END IF;
   END;
