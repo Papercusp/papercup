@@ -1274,6 +1274,44 @@ export async function setIssueState(
 }
 
 /**
+ * P-004 (WI-5679, work-item-claimability-clarity-2026-07-20): route an issue-family item
+ * that hit an OPERATIONAL failure — a worker crash / timeout / context-overflow / attempts-
+ * exhaustion / host-restart thrash, NOT a genuine human-capability blocker — to the
+ * LEADER-TRIAGE lane instead of the owner's inbox.
+ *
+ * Mechanism: set state='blocked' (excluded from ISSUE_FAMILY_CLAIMABLE_STATES=['open'], so it
+ * leaves the auto-dispatch/claim/thrash loop exactly as payload.needsHuman did — the dispatcher
+ * reads readItems({state:'open'}) and every claim path gates on status='open') + stamp
+ * payload.blockedReason/blockedAt for the triaging leader — WITHOUT setting payload.needsHuman,
+ * so policy.ts never routes it to tier:'human' and it never reaches the owner's
+ * plans:items{needsHuman:true} inbox. A fleet leader triages it (work_items:list{state:'blocked'})
+ * and either re-opens it (setIssueState 'open') or, for a GENUINE human need, re-routes it with a
+ * typed capability.
+ *
+ * The whole point: 7 of 8 `mergeIssuePayload(id,{needsHuman:true})` SETTERS were routing
+ * operational failures to the human queue, over-flagging ~82 agent-fixable bugs out of the drain
+ * (WI-5679 diagnosis). needsHuman is now reserved for genuine human-capability verdicts
+ * (credential / physical-device / product-decision / external-service-action).
+ *
+ * Returns the setIssueState result (EngineerIssue | null). NULL on a no-op UPDATE — a remote-owned
+ * row (the engineer_issues INSTEAD OF trigger refuses local mutation) or a missing row — which a
+ * caller relying on null-detection (orphaned-dispatch's recoveryNoOps, EI-15486) needs to stay
+ * accurate. Does NOT release the claim: that is the caller's separate concern (resolve-core
+ * releases explicitly; orphaned-dispatch has a dedicated releaseClaim dep).
+ */
+export async function markLeaderTriage(
+  id: string,
+  blockedReason: string,
+  by = 'leader-triage',
+): Promise<EngineerIssue | null> {
+  const updated = await setIssueState(id, 'blocked', by);
+  if (updated) {
+    await mergeIssuePayload(id, { blockedReason, blockedAt: new Date().toISOString() });
+  }
+  return updated;
+}
+
+/**
  * HARD-delete issues by id, with the coupled coordination edges (tags/links,
  * thread + posts, subscriptions) so no orphaned coord_* rows are left to grow.
  * No FK references engineer_issues (migration 131), and the coord_* tables key

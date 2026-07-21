@@ -121,7 +121,7 @@ export default defineTool({
     wedgedOnly: z.boolean().optional().describe('Only sessions that are STUCK (auth_wall / model_error / context_limit).'),
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
     const limit = args.limit ?? 30;

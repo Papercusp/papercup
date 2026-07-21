@@ -10,15 +10,17 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS, refreshLiveSessionsBeforeRead } from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
 /**
  * The row shape this query returns. Declared as an interface and used to
- * ANNOTATE the `rows` const, because `ctx.tx`'s type argument does NOT type the
- * result: `ToolContext<Tx = any>` makes `tx` an `any`, so `ctx.tx<Array<{…}>>`
- * is a generic call on an `any` and TypeScript throws the argument away. The
- * annotation is what actually binds it — see the same note on sessions/digest.ts.
+ * ANNOTATE the `rows` const. EI-10968: the handler below is now typed
+ * `ctx: PapercuspUnifiedToolContext` (`_tool-context.ts`), which gives `ctx.tx`
+ * a real `Sql` type — `ctx.tx<Array<{…}>>` genuinely binds the row shape now
+ * instead of silently discarding the type argument (see the fuller note on
+ * sessions/digest.ts). The const annotation stays for readability/redundant safety.
  */
 interface SessionListRow {
   source_kind: string;
@@ -88,7 +90,7 @@ export default defineTool({
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:list call with the same filters.'),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
     const limit = args.limit ?? 30;

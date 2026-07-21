@@ -38,6 +38,7 @@ import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import { initializeIdeaLifecycle, updateIdeaLifecycle, type IdeaLifecyclePayload } from './lifecycle';
 import { closeDispatchesForItem } from './dispatch-ledger';
 import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { externalBlockerCapabilityPolicy, type ExternalBlockerCapability } from '../../external-blockers';
 
 export type ResolveOutcome = 'fixed' | 'could-not-fix' | 'needs-human';
 
@@ -57,6 +58,16 @@ export interface ResolveImprovementInput {
   by?: string;
   /** Attempt cap for the could-not-fix → needs-human graduation (default 3). */
   maxAttempts?: number;
+  /**
+   * P-004 (WI-5679): for outcome='needs-human', the TYPED human-capability blocker that makes
+   * this genuinely need the OWNER (mirrors work_items:set_blocker's ExternalBlockerCapability).
+   * A capability whose policy `requiresOwnerCapability` (credential / physical-device /
+   * external-service-action / product-decision) routes to the human queue (payload.needsHuman);
+   * an auto-clearable / live-dependency capability, or NO capability at all, is treated as an
+   * OPERATIONAL block and routed to the LEADER-TRIAGE lane (status='blocked') instead — off the
+   * owner's inbox. Ignored for outcomes other than 'needs-human'.
+   */
+  blockerCapability?: ExternalBlockerCapability;
 }
 
 export interface ResolveImprovementResult {
@@ -65,8 +76,12 @@ export interface ResolveImprovementResult {
   outcome?: ResolveOutcome;
   /** The issue's lifecycle state after the resolve. */
   state?: IssueState;
-  /** True when a could-not-fix exhausted its attempts and was routed to a human. */
+  /** True when this resolve routed the item to the human (owner) queue — a genuine, TYPED
+   *  human-capability blocker, or the federated-remote-unresolvable-locally case. */
   routedToHuman?: boolean;
+  /** P-004 (WI-5679): true when this resolve routed the item to the LEADER-TRIAGE lane
+   *  (status='blocked') for an OPERATIONAL failure — out of the auto loop, NOT the owner's inbox. */
+  routedToLeaderTriage?: boolean;
   error?: string;
 }
 
@@ -110,6 +125,39 @@ function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
   return l && typeof l === 'object' && typeof (l as { state?: unknown }).state === 'string'
     ? (l as IdeaLifecyclePayload)
     : null;
+}
+
+/**
+ * P-004 (WI-5679): is a TYPED needs-human blocker genuinely OWNER-gated (→ human queue), vs an
+ * operational block a leader can clear (→ leader-triage)? Reuses the set_blocker capability policy
+ * as the single source of truth: `requiresOwnerCapability` = credential / physical-device /
+ * external-service-action / product-decision. An ABSENT capability is NOT genuine (the default
+ * operational read); approval-auto-clearable / live-dependency are leader-clearable, not owner work.
+ */
+function isGenuineHumanCapability(cap: ExternalBlockerCapability | undefined): boolean {
+  return cap ? externalBlockerCapabilityPolicy(cap).requiresOwnerCapability : false;
+}
+
+/**
+ * P-004 (WI-5679): route an OPERATIONAL failure to the leader-triage lane through the deps seam —
+ * status='blocked' + payload.blockedReason + release the (stale) claim. Mirrors issues-engineer's
+ * {@link markLeaderTriage} but via ResolveDeps so every branch stays unit-testable without PG.
+ * Returns true when the block actually stuck (setIssueState returned a row); a remote-owned/missing
+ * row no-ops to false and is left as-is (a true-remote row is already excluded from the local claim
+ * path). ALWAYS releases the claim regardless.
+ */
+async function routeToLeaderTriage(
+  deps: ResolveDeps,
+  id: string,
+  blockedReason: string,
+  by: string,
+): Promise<boolean> {
+  const updated = await deps.setIssueState(id, 'blocked', by);
+  if (updated) {
+    await deps.mergeIssuePayload(id, { blockedReason, blockedAt: new Date().toISOString() });
+  }
+  await deps.releaseIssue(id);
+  return updated != null;
 }
 
 export async function resolveImprovement(
@@ -208,27 +256,74 @@ export async function resolveImprovement(
   }
 
   if (input.outcome === 'needs-human') {
-    await deps.commentIssue(input.id, `⤴ Routed to a human by the implement worker:\n${input.summary}`, by);
-    await deps.mergeIssuePayload(input.id, { needsHuman: true });
-    await deps.releaseIssue(input.id);
+    // P-004 (WI-5679): only a TYPED, genuinely owner-gated capability reaches the OWNER's inbox
+    // (payload.needsHuman → policy.ts tier:'human'). An untyped "needs-human" from a worker was
+    // the DOMINANT (209×) over-application — usually an operational give-up, not a real human need
+    // — so it now routes to the LEADER-TRIAGE lane (status='blocked') instead: out of the
+    // auto-dispatch loop, but a leader (not the owner) triages + re-opens/escalates it.
+    if (isGenuineHumanCapability(input.blockerCapability)) {
+      await deps.commentIssue(
+        input.id,
+        `⤴ Routed to a human (${input.blockerCapability}) by the implement worker:\n${input.summary}`,
+        by,
+      );
+      await deps.mergeIssuePayload(input.id, { needsHuman: true, humanCapability: input.blockerCapability });
+      await deps.releaseIssue(input.id);
+      await closeLedger();
+      return { ok: true, id: input.id, outcome: 'needs-human', state: 'open', routedToHuman: true };
+    }
+    await deps.commentIssue(
+      input.id,
+      `⤷ Routed to LEADER TRIAGE (status=blocked) by the implement worker — no typed human-capability ` +
+        `blocker was given, so this is treated as an operational block, not an owner-inbox item:\n${input.summary}\n\n` +
+        `(If this genuinely needs the owner, resolve again with a typed blockerCapability: ` +
+        `credential | physical-device | external-service-action | product-decision.)`,
+      by,
+    );
+    const blocked = await routeToLeaderTriage(deps, input.id, 'implement-worker:needs-human-untyped', by);
     await closeLedger();
-    return { ok: true, id: input.id, outcome: 'needs-human', state: 'open', routedToHuman: true };
+    return {
+      ok: true,
+      id: input.id,
+      outcome: 'needs-human',
+      state: blocked ? 'blocked' : 'open',
+      routedToLeaderTriage: blocked,
+    };
   }
 
-  // could-not-fix: release for a later retry; exhausted attempts → human.
+  // could-not-fix: release for a later retry; exhausted attempts → LEADER TRIAGE (P-004/WI-5679:
+  // a bug that resists the auto-implement retry cap is an operational block a leader triages, not
+  // an owner-inbox item — routing it to payload.needsHuman was over-application).
   const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const attempts = attemptsOf(issue);
   const exhausted = attempts >= maxAttempts;
   await deps.commentIssue(
     input.id,
     `✗ Auto-implement attempt ${attempts || '?'} failed:\n${input.summary}` +
-      (exhausted ? `\n\nRetries exhausted (${attempts}/${maxAttempts}) — routing to a human.` : ''),
+      (exhausted
+        ? `\n\nRetries exhausted (${attempts}/${maxAttempts}) — routing to leader triage (status=blocked).`
+        : ''),
     by,
   );
-  if (exhausted) await deps.mergeIssuePayload(input.id, { needsHuman: true });
+  if (exhausted) {
+    const blocked = await routeToLeaderTriage(
+      deps,
+      input.id,
+      `auto-implement:retries-exhausted:${attempts}/${maxAttempts}`,
+      by,
+    );
+    await closeLedger();
+    return {
+      ok: true,
+      id: input.id,
+      outcome: 'could-not-fix',
+      state: blocked ? 'blocked' : 'open',
+      routedToLeaderTriage: blocked,
+    };
+  }
   await deps.releaseIssue(input.id);
   await closeLedger();
-  return { ok: true, id: input.id, outcome: 'could-not-fix', state: 'open', routedToHuman: exhausted };
+  return { ok: true, id: input.id, outcome: 'could-not-fix', state: 'open' };
 }
 
 // ── Exhausted-without-resolve ⇒ needs-human (consume-edges P-012) ─────────────
