@@ -233,6 +233,40 @@ export async function admitSubjectForFleetTarget(args: {
   };
 }
 
+/**
+ * EI-18221674485894260: the CONCRETE, ready-to-run leader remedy for a fleet-scope
+ * admission refusal. The prior notification said only "Re-steer the member's claim
+ * spec or route the work elsewhere" — naming neither the TOOL nor the call shape, so
+ * a leader who searched their toolset for the widen mechanism came up empty (the tool
+ * DOES exist — `scheduler:set_claim_spec` — but ToolSearch/`tools:find` did not surface
+ * it, and nothing in the refusal itself pointed at it), and every out-of-spec item then
+ * needed manual leader intervention instead of a one-call re-steer. This turns the
+ * refusal into that one-call widen action.
+ *
+ * Code-conditional: a `fleet_winding_down` refusal is NEVER widened — the fleet is
+ * paused, so the member must stand down, and the remedy is `fleet:resume`, not a spec
+ * bump. Pure (no I/O) so it is unit-testable and reused by the member-facing hint path.
+ */
+export function fleetScopeLeaderRemedy(
+  admission: Extract<FleetScopeAdmission, { allowed: false }>,
+): string {
+  const fleetSlug = admission.scope.fleetSlug;
+  if (admission.code === 'fleet_winding_down') {
+    return (
+      `This fleet is PAUSED (winding-down) — do NOT widen its claim spec; the member must stand down. ` +
+      `When you intend it to resume, lift the pause: fleet:resume { fleet: "${fleetSlug}" }.`
+    );
+  }
+  const spec = admission.scope.record?.spec;
+  const specRef = spec?.specId ? `${spec.specId}@${spec.revision}` : 'the fleet lane (no authored spec yet — default)';
+  return (
+    `To let this member self-claim it, WIDEN the fleet lane in ONE call: ` +
+    `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
+    `whose view.filter admits this work } } — the member picks it up on its next scheduler:get_next, ` +
+    `no re-dispatch. (Or route the work elsewhere / complete it yourself.)`
+  );
+}
+
 export async function notifyFleetScopeRefusal(
   identity: AgentIdentity,
   admission: Extract<FleetScopeAdmission, { allowed: false }>,
@@ -242,7 +276,7 @@ export async function notifyFleetScopeRefusal(
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
-    body: `${admission.reason}. The assignment was not mutated. Re-steer the member's claim spec or route the work elsewhere.`,
+    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission)}`,
     category: 'fleet-scope-admission',
   }).catch(() => undefined);
 }
