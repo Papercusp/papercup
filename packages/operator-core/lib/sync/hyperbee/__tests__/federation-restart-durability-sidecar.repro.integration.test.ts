@@ -1067,6 +1067,14 @@ describe('MEMBER→OWNER content guard (WI-5481 scope-extension) — member-auth
         }),
         WORKSPACE_ID,
       );
+      // The real prod fill_workspace_id_from_projects() trigger (CDC capture → outbox)
+      // resolves a row's workspace_id via `harness_shared.projects WHERE slug = harness_slug`
+      // — without a row here the member's authored feature gets stamped workspace_id
+      // 'default' and drainOutboxOnce's workspace-scoped drain never sees it (0 drained).
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id, created_ts, updated_ts)
+        VALUES ('p-m2o-member', 'M2O Member', 'active', ${MEMBER_SLUG}, ${WORKSPACE_ID}, 0, 0)
+      `;
 
       const testnet = await createTestnet(3);
       cleanups.push(async () => {

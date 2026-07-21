@@ -116,4 +116,43 @@ describe('continuationGateFromReads (raw presence + inbox reads)', () => {
     expect(v.contextPct).toBeNull();
     expect(v.shouldContinue).toBe(false);
   });
+
+  it('passes rewakeGuaranteed through to the verdict', () => {
+    expect(continuationGateFromReads({ contextTokens: 40, compactionLimit: 100, unreadInbox: 0, rewakeGuaranteed: true }).rewakeGuaranteed).toBe(true);
+    expect(continuationGateFromReads({ contextTokens: 40, compactionLimit: 100, unreadInbox: 0 }).rewakeGuaranteed).toBeNull();
+  });
+});
+
+describe('re-wake guarantee escalation (kills the "the next wake re-opens the gate" false comfort)', () => {
+  it('a CLOSED gate with NO guaranteed re-wake escalates to self-compact / arm-a-wake', () => {
+    const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: false });
+    expect(v.shouldContinue).toBe(false);
+    expect(v.rewakeGuaranteed).toBe(false);
+    expect(v.guidance).toMatch(/SILENTLY HALT/);
+    expect(v.guidance).toMatch(/session:request-compaction/);
+    expect(v.guidance).toMatch(/loop:arm|events:await/);
+    // and it must NOT hand back the false-comfort "the next wake re-opens the gate"
+    expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
+  });
+
+  it('a CLOSED gate WITH a guarantee keeps the base settle guidance', () => {
+    const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: true });
+    expect(v.shouldContinue).toBe(false);
+    expect(v.guidance).toMatch(/the next wake re-opens the gate/);
+    expect(v.guidance).not.toMatch(/SILENTLY HALT/);
+  });
+
+  it('unknown (null/absent) re-wake keeps the base guidance — non-breaking', () => {
+    const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0 });
+    expect(v.rewakeGuaranteed).toBeNull();
+    expect(v.guidance).toMatch(/the next wake re-opens the gate/);
+    expect(v.guidance).not.toMatch(/SILENTLY HALT/);
+  });
+
+  it('an OPEN gate ignores rewakeGuaranteed (the wake only matters at settle)', () => {
+    const v = evaluateContinuationGate({ contextPct: 30, unreadInbox: 0, rewakeGuaranteed: false });
+    expect(v.shouldContinue).toBe(true);
+    expect(v.guidance).toMatch(/continuation gate OPEN/);
+    expect(v.guidance).not.toMatch(/SILENTLY HALT/);
+  });
 });

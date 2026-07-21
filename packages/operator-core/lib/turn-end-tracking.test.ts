@@ -4,9 +4,12 @@ import { describe, expect, it } from 'vitest';
 import {
   MECHANICAL_CHECKPOINT_MARKER,
   STALE_CHECKPOINT_MS,
+  UNGUARDED_HALT_NOTE,
   composeMechanicalCheckpoint,
+  detectUnguardedHalt,
   detectUnregisteredArtifacts,
   isDeliverableWrite,
+  isRewakeGuaranteed,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
   unregisteredArtifactTripwire,
@@ -97,5 +100,37 @@ describe('deliverable detection', () => {
     expect(t?.kind).toBe('unregistered-artifact');
     expect(t?.files).toEqual(['/tmp/s/scratchpad/report.md']);
     expect(t?.note).toContain('artifacts:save');
+  });
+});
+
+describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
+  const halt = { autonomousModeActive: true, loopActive: false, activeAwaitCount: 0 };
+
+  it('an interactive (non-autonomous) session is ALWAYS guaranteed — never flagged', () => {
+    expect(isRewakeGuaranteed({ ...halt, autonomousModeActive: false })).toBe(true);
+    expect(detectUnguardedHalt({ ...halt, autonomousModeActive: false })).toBeNull();
+  });
+
+  it('an autonomous session with an armed loop is guaranteed', () => {
+    expect(isRewakeGuaranteed({ ...halt, loopActive: true })).toBe(true);
+    expect(detectUnguardedHalt({ ...halt, loopActive: true })).toBeNull();
+  });
+
+  it('an autonomous session with a real (non-inbox-wake) await is guaranteed', () => {
+    expect(isRewakeGuaranteed({ ...halt, activeAwaitCount: 1 })).toBe(true);
+    expect(detectUnguardedHalt({ ...halt, activeAwaitCount: 2 })).toBeNull();
+  });
+
+  it('an owner-interactive turn suppresses the flag even under autonomous mode', () => {
+    expect(isRewakeGuaranteed({ ...halt, ownerInteractiveTurn: true })).toBe(true);
+    expect(detectUnguardedHalt({ ...halt, ownerInteractiveTurn: true })).toBeNull();
+  });
+
+  it('autonomous + no loop + no await + no owner = UNGUARDED HALT', () => {
+    expect(isRewakeGuaranteed(halt)).toBe(false);
+    const t = detectUnguardedHalt(halt);
+    expect(t?.kind).toBe('unguarded-halt');
+    expect(t?.note).toBe(UNGUARDED_HALT_NOTE);
+    expect(t?.note).toContain('session:request-compaction');
   });
 });
