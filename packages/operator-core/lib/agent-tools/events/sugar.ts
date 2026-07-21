@@ -204,7 +204,11 @@ defineTool({
 defineTool({
   name: "checkpoint:await",
   description:
-    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to YOUR exact candidate — another/superseded SHA's verdict never wakes you; without it you may wake on ANY candidate and must lineage-check payload.sha (release:trace). WI-5685: an exact candidateSha bind is a footgun if the HOURLY CRON might race ahead and judge a LATER candidate that still contains your commit as an ancestor — that verdict, which DOES cover you, will never wake a candidateSha-bound await (only an exact-sha match wakes it), so it sleeps to its own timeout even though your change already shipped. If you're not certain your commit will be the EXACT candidate judged, omit candidateSha and use release:trace after waking to confirm your sha's lineage instead. runId (WI-4957) binds to the exact judging run (rare: two runs judging one candidate). pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait; a superseded run's candidate-bound wait is proactively cancelled. Then END YOUR TURN.",
+    // WI-5690-drain: trimmed from a 1180-char description (was over the 1600-char
+    // hard cap at 1875 total) — the detailed WI-5685 race-condition explanation now
+    // lives ONLY on the candidateSha arg's own .describe() (still full detail there,
+    // uncounted by the prompt-weight budget), not duplicated here.
+    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). runId (WI-4957) binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",

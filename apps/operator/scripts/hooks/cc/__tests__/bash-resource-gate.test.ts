@@ -367,6 +367,13 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     ['nohup-wrapped restore .', 'nohup git restore .'],
     ['sudo -u <user> value-flag checkout .', 'sudo -u marsh git checkout .'],
     ['nested wrappers (time rtk) reset --hard', 'time rtk git reset --hard'],
+    // EI-18215743778965613 (self-caught 2026-07-20): `pop`/`apply` and a
+    // scoped `push -- <path>` used to be exempted — but the stash is a SINGLE
+    // shared LIFO stack, so a scoped push followed by `pop` popped an
+    // UNRELATED entry, conflicting in files never touched by the caller.
+    ['stash pop', 'git stash pop'],
+    ['stash apply', 'git stash apply'],
+    ['stash push with an explicit `--` path (no longer exempt — see EI-18215743778965613)', 'git stash push -- path/to/file.ts'],
   ])('denies %s', (_label, command) => {
     expectGitDeny(runGate(bashCmd(command), AGENT));
   });
@@ -374,14 +381,11 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
   it.each([
     ['checkout of an explicit single file', 'git checkout -- path/to/file.ts'],
     ['restore of an explicit single file', 'git restore path/to/file.ts'],
-    ['stash pop', 'git stash pop'],
-    ['stash apply', 'git stash apply'],
     ['stash list', 'git stash list'],
     ['stash show', 'git stash show'],
     ['stash drop', 'git stash drop'],
     ['stash branch', 'git stash branch wip-x'],
     ['stash clear', 'git stash clear'],
-    ['stash push with an explicit `--` path', 'git stash push -- path/to/file.ts'],
     ['clean dry-run (no f flag)', 'git clean -n'],
     ['reset (no --hard)', 'git reset HEAD~1'],
     ['reset --soft', 'git reset --soft HEAD~1'],

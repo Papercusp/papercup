@@ -1671,6 +1671,22 @@ function GymView({
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
   const cycles = snap?.cycles ?? [];
+  // WI-5696 (owner ask 2026-07-20): a completed cycle is a challenger EVENT,
+  // not its own category — it renders as a compact time line under "Recent
+  // challengers", and ONLY when no proposal card already tells its story.
+  // Candidate ids RECYCLE across runs (every run's challenger is cand-c1), so
+  // the match is time-windowed: only a proposal created around this cycle's
+  // window represents THIS run — a stale same-named card must not hide it.
+  const unproposedCycles = cycles.filter(
+    (c) =>
+      !proposals.some(
+        (p) =>
+          p.harnessSlug === c.harnessSlug &&
+          p.cycle === c.cycle &&
+          (!c.candidateId || (p.variantId ?? "") === c.candidateId) &&
+          (c.startedAt == null || p.createdAt >= c.startedAt - 6 * 3600_000),
+      ),
+  );
   // WI-5420: the server fell back to the workspace-wide rollup because this
   // Hive's own gym-scoped read was empty — say so, don't silently reattribute
   // another harness's experiments to this Hive. `useWide` is the client-side
@@ -1806,78 +1822,68 @@ function GymView({
         />
       ) : (
         <>
-          {/* WI-5685: the RUN ledger — every completed cycle, newest first,
-              whether or not it minted a proposal (a losing candidate mints
-              none; without this the owner sees "nothing recent" right after a
-              full run finishes). */}
-          {cycles.length > 0 ? (
-            <>
-              <div className="pc-learning__sectionhead">
-                <h2>Recent runs</h2>
-              </div>
-              <div className="pc-learning__gymcycles" aria-label="Recent gym runs">
-                {cycles.map((c) => {
-                  const decided = c.decision === "accept" || c.decision === "promote";
-                  const decisionColor = statusToneColor(
-                    decided ? "accepted" : c.decision ? "rejected" : "pending",
-                  );
-                  return (
-                    <div
-                      key={`${c.harnessSlug}:${c.cycle}`}
-                      className="pc-learning__ideacard"
-                      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
-                    >
-                      <span
-                        className="pc-learning__chip"
-                        style={{ color: decisionColor, borderColor: decisionColor }}
-                        title={
-                          decided
-                            ? "The challenger beat the champion and was promoted"
-                            : c.decision
-                              ? "The challenger lost to the champion — champion retained"
-                              : "No recorded decision for this cycle"
-                        }
-                      >
-                        {decided ? (
-                          <CheckCircle2 size={10} aria-hidden />
-                        ) : c.decision ? (
-                          <XCircle size={10} aria-hidden />
-                        ) : (
-                          <Clock size={10} aria-hidden />
-                        )}
-                        {decided ? "promoted" : c.decision ? "champion held" : "no decision"}
-                      </span>
-                      <span className="pc-learning__chip" title="Gym harness">
-                        {c.harnessSlug}
-                      </span>
-                      <span className="pc-learning__chip" title="Cycle number">
-                        cycle {c.cycle}
-                      </span>
-                      <span className="pc-learning__muted" title="Challenger vs champion">
-                        {c.candidateId ?? "—"} vs {c.parentId ?? "—"}
-                      </span>
-                      <span className="pc-learning__muted" title="Agent runs scored in this cycle">
-                        {c.runCount} run{c.runCount === 1 ? "" : "s"}
-                      </span>
-                      {c.finishedAt ? (
-                        <span
-                          className="pc-learning__age"
-                          title={new Date(c.finishedAt).toLocaleString()}
-                        >
-                          {whenLabel(c.finishedAt)}
-                        </span>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          ) : null}
-          {proposals.length > 0 ? (
+          {proposals.length > 0 || unproposedCycles.length > 0 ? (
             <>
               <div className="pc-learning__sectionhead">
                 <h2>Recent challengers</h2>
               </div>
+              {/* WI-5696 (owner ask): a completed cycle is not a separate
+                  category — it is a challenger EVENT, so it lives under this
+                  header as a compact time-stamped line. Rendered ONLY for
+                  cycles with no matching proposal card (a cycle that minted a
+                  proposal is already told by that card); once WI-5697 restores
+                  proposal-minting for every decision, these lines vanish via
+                  the dedupe. */}
+              {unproposedCycles.length > 0 ? (
+                <div className="pc-learning__gymcycles" aria-label="Recent gym runs">
+                  {unproposedCycles.map((c) => {
+                    const decided = c.decision === "accept" || c.decision === "promote";
+                    const decisionColor = statusToneColor(
+                      decided ? "accepted" : c.decision ? "rejected" : "pending",
+                    );
+                    return (
+                      <div
+                        key={`${c.harnessSlug}:${c.cycle}`}
+                        className="pc-learning__muted"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8,
+                          flexWrap: "wrap",
+                          fontSize: 12,
+                          padding: "2px 0",
+                        }}
+                        title={`Cycle ${c.cycle} on ${c.harnessSlug}: ${c.candidateId ?? "—"} challenged ${c.parentId ?? "—"} across ${c.runCount} scored run(s)${c.finishedAt ? ` — finished ${new Date(c.finishedAt).toLocaleString()}` : ""}. No challenger card was recorded for this cycle (WI-5697).`}
+                      >
+                        {c.finishedAt ? (
+                          <span className="pc-learning__age">{whenLabel(c.finishedAt)}</span>
+                        ) : null}
+                        <span
+                          className="pc-learning__chip"
+                          style={{ color: decisionColor, borderColor: decisionColor }}
+                        >
+                          {decided ? (
+                            <CheckCircle2 size={10} aria-hidden />
+                          ) : c.decision ? (
+                            <XCircle size={10} aria-hidden />
+                          ) : (
+                            <Clock size={10} aria-hidden />
+                          )}
+                          {decided ? "promoted" : c.decision ? "champion held" : "no decision"}
+                        </span>
+                        <span>
+                          {c.candidateId ?? "—"} vs {c.parentId ?? "—"} · {c.runCount} run
+                          {c.runCount === 1 ? "" : "s"} · {c.harnessSlug}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+          {proposals.length > 0 ? (
+            <>
               {/* One deck per target ROLE (owner ask 2026-07-19e — the gym in
                   cards too): the role is the deck's category + accent. */}
               <div className="pc-learning__lensstacks">

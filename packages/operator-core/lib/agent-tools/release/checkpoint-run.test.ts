@@ -207,6 +207,46 @@ describe('release:checkpoint-run', () => {
     expect(String(b.note)).toMatch(/Do NOT replace/i);
   });
 
+  // WI-5685: the manual unit can be idle while the hourly CRON tick still holds the shared
+  // run-lock — this is the class that used to sail past the pre-launch check entirely
+  // (launched:true, then a silent skipped-locked inside the detached process a moment later).
+  // The reply's `note` must clearly say force/replaceStale cannot help, unlike the manual-vs-
+  // manual collision notes above.
+  it('WI-5685: a run held by the cron (not the manual unit) gets a distinct held_externally note that steers away from force/replaceStale', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        unit: 'papercup-green-checkpoint-manual-1fxzuva (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)',
+        candidate: null,
+        current_head: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        candidate_stale: false,
+        started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+        elapsed_sec: 300,
+        eta_sec: 10500,
+        held_externally: true,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(b).toMatchObject({ ok: false, already_running: true, held_externally: true, candidate: null });
+    expect(String(b.note)).toMatch(/DIFFERENT process/);
+    expect(String(b.note)).toMatch(/cannot free this slot/i);
+    expect(String(b.note)).toContain('checkpoint:await');
+    expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
+  });
+
   it('passes force:true through to the launch primitive', async () => {
     const launchSpy = vi.fn(async () => ({
       launched: true,

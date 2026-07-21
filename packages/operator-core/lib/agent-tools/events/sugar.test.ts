@@ -217,6 +217,30 @@ describe("checkpoint:await sugar", () => {
 
     expect(out.superseded).toBe(0);
   });
+
+  // WI-5685: the generic events:await default (1800s/30min) is shorter than the suite can
+  // legitimately run (the systemd backstop alone allows up to 3h) — a default-timeout
+  // checkpoint:await used to strand the caller mid-suite on EVERY default call. This verb now
+  // carries its OWN default derived from the suite's real ceiling.
+  it("WI-5685: defaults the registered timeout to the suite's real ceiling, not the generic 30min events:await default", async () => {
+    await call({});
+
+    const timeouts = vi
+      .mocked(registerAwait)
+      .mock.calls.map((c) => c[0].timeoutSec);
+    expect(new Set(timeouts).size).toBe(1);
+    expect(timeouts[0]).toBeGreaterThan(30 * 60); // strictly longer than the generic default
+    expect(timeouts[0]).toBeGreaterThanOrEqual(3 * 60 * 60); // at least the systemd backstop (3h)
+  });
+
+  it("WI-5685: an explicit timeout_sec still always wins over the checkpoint-specific default", async () => {
+    await call({ timeout_sec: 60 });
+
+    const timeouts = vi
+      .mocked(registerAwait)
+      .mock.calls.map((c) => c[0].timeoutSec);
+    expect(timeouts).toEqual([60, 60]);
+  });
 });
 
 describe("work-item:await registration latches (EI-13095 — the sugar used to bypass them)", () => {

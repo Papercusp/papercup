@@ -240,6 +240,107 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
   });
 });
 
+// WI-5685: the manual unit only ever sees ITSELF — a cron-invoked run (spawned as a plain
+// child by release-actions.ts's runScript, no systemd unit involved at all) is completely
+// invisible to checkActiveCheckpointRun's systemd probe. Evidence: two manual
+// release:checkpoint-run fires both got launched:true (the probe said "nothing active") and
+// then exited skipped-locked from WITHIN the detached process a moment later, because the
+// shared file-based run-lock was already held by the hourly cron tick. These assert the
+// fallback that closes that blind spot: cross-check the run-lock's own owner.json whenever
+// the manual-unit probe comes back inactive.
+describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-the-lock blind spot)', () => {
+  function fakeSystemctlShow(props: Record<string, string>) {
+    const stdout = Object.entries(props)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    return vi.fn(() => ({ status: 0, stdout, stderr: '' }));
+  }
+  const inactiveUnit = fakeSystemctlShow({ ActiveState: 'inactive', ExecMainStartTimestamp: '' });
+
+  it('reports active:true (held_externally) when the manual unit is idle but a live process holds the shared run-lock', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return inactiveUnit();
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: '98817077fd79af9dfee00076a1c6e90445d268af\n', stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct'))
+        return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 500), stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    const pidAlive = vi.fn(() => true);
+    const readLockOwner = vi.fn(() => ({ pid: 4242, startedAt }));
+
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive, readLockOwner);
+
+    expect(r.active).toBe(true);
+    expect(r.held_externally).toBe(true);
+    expect(r.candidate).toBeNull(); // unknown — we don't know the holder's own log path
+    expect(r.candidate_stale).toBe(false); // never replaceable — EI-11667 safety
+    expect(r.started_at).toBe(startedAt);
+    expect(r.elapsed_sec).toBeGreaterThan(0);
+    expect(r.eta_sec).toBeGreaterThan(0);
+    expect(pidAlive).toHaveBeenCalledWith(4242);
+  });
+
+  it('reports active:false when the run-lock file is missing/unreadable (the common case — nothing running)', () => {
+    const execFn = inactiveUnit;
+    const readLockOwner = vi.fn(() => null);
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, undefined, readLockOwner);
+    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+  });
+
+  it('reports active:false when the lock owner pid is dead (crashed holder, unreclaimed file)', () => {
+    const execFn = inactiveUnit;
+    const pidAlive = vi.fn(() => false);
+    const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date().toISOString() }));
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive, readLockOwner);
+    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+  });
+
+  // End-to-end through the REAL fs + REAL default pidAlive (launchDetachedCheckpoint doesn't
+  // expose pid/lock-owner injection seams — it always calls checkActiveCheckpointRun with just
+  // execFn/readLogHead, so production wiring goes through defaultReadLockOwner + defaultPidAlive).
+  // Proves the whole chain: a real owner.json under the real per-root hashed lock dir stops the
+  // launch BEFORE spawnFn is ever called, using our own live pid so pidAlive is genuinely true.
+  it('[integration] launchDetachedCheckpoint refuses (never calls spawnFn) when a real owner.json under the hashed lock dir names a live pid', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'checkpoint-lock-test-'));
+    const prevEnv = process.env.PAPERCUSP_CHECKPOINT_LOG_DIR;
+    process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = tmpRoot;
+    try {
+      const testTreeRoot = '/tree-int-test';
+      let h = 0;
+      for (let i = 0; i < testTreeRoot.length; i++) h = (h * 31 + testTreeRoot.charCodeAt(i)) >>> 0;
+      const lockDir = path.join(tmpRoot, `.green-checkpoint-run-${h.toString(36)}.lock`);
+      fs.mkdirSync(lockDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(lockDir, 'owner.json'),
+        JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 5 * 60_000).toISOString() }),
+      );
+
+      const execFn = vi.fn((cmd: string) => {
+        if (cmd === 'systemctl') return { status: 0, stdout: 'ActiveState=inactive', stderr: '' };
+        return { status: 1, stdout: '', stderr: '' }; // git reads fail harmlessly (candidate resolution best-effort)
+      });
+      const spawnFn = vi.fn();
+
+      const r = await launchDetachedCheckpoint({ root: testTreeRoot }, spawnFn as never, execFn, () => null);
+
+      expect(spawnFn).not.toHaveBeenCalled();
+      expect(r.launched).toBe(false);
+      expect(r.reason).toBe('already_running');
+      expect(r.alreadyRunning?.held_externally).toBe(true);
+      expect(r.alreadyRunning?.candidate_stale).toBe(false);
+    } finally {
+      if (prevEnv === undefined) delete process.env.PAPERCUSP_CHECKPOINT_LOG_DIR;
+      else process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = prevEnv;
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 // EI-9180: an 18h phantom-wedge — ActiveState kept reading 'active' for a run whose process was
 // already gone (host-load-starved systemd --user manager bookkeeping lag / a kill -9 outside
 // systemd), so every re-fire got refused with a stable started_at/eta_sec from the dead run and

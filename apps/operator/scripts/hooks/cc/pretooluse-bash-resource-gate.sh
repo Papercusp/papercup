@@ -614,7 +614,20 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
             deny(_git_deny.format(op='git clean -f'))
         if re.match(_GIT + r'(?:checkout|restore)\b.*\s(?:\.|:/)(?:\s|$)', _s):
             deny(_git_deny.format(op='git checkout/restore .'))
-        if re.match(_GIT + r'stash\b(?!\s+(?:pop|apply|list|show|drop|branch|clear))', _s) and ' -- ' not in _s:
+        # EI-18215743778965613 (self-caught 2026-07-20): `pop`/`apply` used to be
+        # exempted alongside the genuinely-read-only subcommands below, and a
+        # `push -- <paths>` was exempted as "scoped" — but the stash is a SINGLE
+        # shared LIFO stack across the whole tree, not scoped by a push's
+        # pathspec: a scoped push followed by `pop` popped an UNRELATED ancient
+        # stash entry, producing a merge conflict in files never touched by the
+        # caller. `pop`/`apply` apply WHATEVER is on top of that shared stack to
+        # the working tree — exactly the same "clobbers a peer's uncommitted
+        # state" hazard as reset --hard/checkout .— so they're no safer than a
+        # bare `git stash` and must be denied unconditionally, same as a
+        # scoped `push` (no more ` -- ' exemption). `list`/`show` stay exempt
+        # (read-only, no working-tree mutation); `drop`/`branch`/`clear` are
+        # unchanged from before (not implicated in this incident).
+        if re.match(_GIT + r'stash\b(?!\s+(?:list|show|drop|branch|clear))', _s):
             deny(_git_deny.format(op='git stash'))
 
 # ── Heavy-command admission control (WI-3821) ──────────────────────────────

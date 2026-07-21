@@ -1161,7 +1161,17 @@ const GIT_CMD_PREFIX = String.raw`git\b(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--git-dir\S
 const GIT_RESET_HARD_RE = new RegExp(`^${GIT_CMD_PREFIX}reset\\b.*--hard\\b`);
 const GIT_CLEAN_F_RE = new RegExp(`^${GIT_CMD_PREFIX}clean\\b.*-\\w*f`);
 const GIT_CHECKOUT_DOT_RE = new RegExp(`^${GIT_CMD_PREFIX}(?:checkout|restore)\\b.*\\s(?:\\.|:/)(?:\\s|$)`);
-const GIT_STASH_RE = new RegExp(`^${GIT_CMD_PREFIX}stash\\b(?!\\s+(?:pop|apply|list|show|drop|branch|clear))`);
+// EI-18215743778965613 (self-caught 2026-07-20): `pop`/`apply` used to be
+// exempted alongside the genuinely-read-only subcommands below, and a scoped
+// `push -- <paths>` was exempted too — but the stash is a SINGLE shared LIFO
+// stack across the whole tree, not scoped by a push's pathspec: a scoped push
+// followed by `pop` popped an UNRELATED ancient stash entry, producing a merge
+// conflict in files never touched by the caller. `pop`/`apply` apply WHATEVER
+// is on top of that shared stack to the working tree — the same "clobbers a
+// peer's uncommitted state" hazard as reset --hard/checkout . — so deny them
+// unconditionally, same as a scoped `push` (no more ` -- ` exemption below).
+// `list`/`show` stay exempt (read-only); `drop`/`branch`/`clear` unchanged.
+const GIT_STASH_RE = new RegExp(`^${GIT_CMD_PREFIX}stash\\b(?!\\s+(?:list|show|drop|branch|clear))`);
 
 /** Returns the offending op name (e.g. `'git reset --hard'`) if `command`
  *  contains a destructive tree-wide git op at command position in any
@@ -1172,7 +1182,7 @@ export function destructiveGitCommandOp(command: string): string | null {
     if (GIT_RESET_HARD_RE.test(seg)) return 'git reset --hard';
     if (GIT_CLEAN_F_RE.test(seg)) return 'git clean -f';
     if (GIT_CHECKOUT_DOT_RE.test(seg)) return 'git checkout/restore .';
-    if (GIT_STASH_RE.test(seg) && !seg.includes(' -- ')) return 'git stash';
+    if (GIT_STASH_RE.test(seg)) return 'git stash';
   }
   return null;
 }

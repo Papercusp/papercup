@@ -26794,26 +26794,16 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 .op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option[data-picked="true"] .ask-choice-icon {
   display: block;
 }
-<<<<<<< Updated upstream
 
-=======
->>>>>>> Stashed changes
 /* Deck panel usability refresh */
 body.has-op-chat:has(.operator-panel) .operator-panel {
   left: calc(var(--op-chat-w, 360px) + 16px) !important;
 }
 
-<<<<<<< Updated upstream
 body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   opacity: 0.22;
   filter: saturate(0.45) blur(4px);
   pointer-events: none;
-}
-
-@media (max-width: 960px) {
-  body.has-op-chat:has(.operator-panel) .operator-panel {
-    left: 12px !important;
-  }
 }
 
 /* Deck panel ↔ chat sidebar interaction (restored from fd17294e40^ /
@@ -26822,16 +26812,12 @@ body.has-op-chat:has(.operator-panel) .operator-panel {
   left: calc(var(--op-chat-w, 360px) + 16px) !important;
 }
 
-=======
->>>>>>> Stashed changes
 body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   opacity: 0.22;
   filter: saturate(0.45) blur(4px);
   pointer-events: none;
 }
 
-<<<<<<< Updated upstream
-=======
 .pc-header .pc-operator-popdown,
 .pc-header .pc-operator-auto-feed {
   display: none !important;
@@ -26961,12 +26947,18 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   }
 }
 
->>>>>>> Stashed changes
 @media (max-width: 960px) {
   body.has-op-chat:has(.operator-panel) .operator-panel {
     left: 12px !important;
   }
-<<<<<<< Updated upstream
+
+  .operator-panel__body {
+    grid-template-columns: 1fr !important;
+  }
+
+  .operator-panel__rail--right {
+    display: none !important;
+  }
 }
 
 /* ── Pot health row idioms (operator-chat-sidebar-revival P-018 → WI-4778/89)
@@ -27399,14 +27391,4 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   font-size: 10.5px;
   font-style: italic;
   overflow-wrap: anywhere;
-=======
-
-  .operator-panel__body {
-    grid-template-columns: 1fr !important;
-  }
-
-  .operator-panel__rail--right {
-    display: none !important;
-  }
->>>>>>> Stashed changes
 }
