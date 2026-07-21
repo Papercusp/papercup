@@ -601,10 +601,21 @@ export async function aggregateIssueClaimExclusions(
   const assignee = opts.assignee ?? '';
   const compiled = compileFilter(sql, filter);
   const cooldown = releaseCooldownSec();
+  const sub = issueClaimCandidateSubquery(sql, {
+    compiled,
+    assignee,
+    cooldown,
+    harness: opts.harness,
+    states,
+    issueWs,
+    operatorScopeSlug,
+    rigAvailable: opts.rigAvailable,
+  });
 
   const rows = (await sql`
     SELECT
       count(*) FILTER (WHERE spec_match)::int                                         AS matched,
+      count(*) FILTER (WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)})::int AS claimable,
       count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_human)::int     AS needs_human,
@@ -617,55 +628,10 @@ export async function aggregateIssueClaimExclusions(
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_rig)::int             AS cross_machine_rig,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_no_blocker)::int      AS blocked_dep,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown
-    FROM (
-      SELECT
-        wi.feature_id,
-        (${compiled})                                                     AS spec_match,
-        (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
-        (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
-        (${needsHumanExclusionSql(sql)})                                  AS ok_needs_human,
-        (${observationLaneExclusionSql(sql)})                             AS ok_observation,
-        (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
-        (${reservedPlanLaneExclusionSql(sql, assignee)})                  AS ok_plan_lane,
-        (${federationDetectorExclusionSql(sql)})                          AS ok_federation,
-        (${loopIterationNoiseExclusionSql(sql)})                          AS ok_loop_noise,
-        (${alreadyTerminallyCompletedExclusionSql(sql)})                  AS ok_completed,
-        (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})          AS ok_rig,
-        (NOT EXISTS (
-            SELECT 1 FROM harness_shared.work_item_deps d
-             WHERE d.workspace_id = 'default'
-               AND d.dep_type = 'blocks'
-               AND d.blocked_ref = wi.feature_id
-               AND (
-                 EXISTS (
-                   SELECT 1 FROM harness_shared.harness_features_consolidated bf
-                    WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                      AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
-                 )
-                 OR EXISTS (
-                   SELECT 1 FROM harness_shared.engineer_issues bi
-                    WHERE bi.workspace_id = 'default'
-                      AND bi.issue_id = d.blocker_ref
-                      AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
-                 )
-               )
-        ))                                                                AS ok_no_blocker,
-        (${
-          cooldown > 0
-            ? sql`(wi.last_released_by IS NULL
-                OR wi.last_released_by <> ${assignee}
-                OR wi.last_released_at IS NULL
-                OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
-            : sql`TRUE`
-        })                                                                AS ok_cooldown
-      FROM harness_shared.work_items wi
-      WHERE wi.item_kind IN ('bug', 'change', 'task')
-        AND wi.workspace_id = ${issuesScopeWorkspace()}
-        AND (wi.harness_slug = ${opts.harness} OR wi.harness_slug = ${operatorScopeSlug})
-        AND wi.status = ANY(${states}::text[])
-    ) sub
+    FROM (${sub}) sub
   `) as Array<{
     matched: number;
+    claimable: number;
     taken: number;
     claim_hold: number;
     needs_human: number;
@@ -682,6 +648,7 @@ export async function aggregateIssueClaimExclusions(
   const r = rows[0];
   return {
     matchedByFilter: r?.matched ?? 0,
+    claimable: r?.claimable ?? 0,
     excluded: {
       taken: r?.taken ?? 0,
       claimHold: r?.claim_hold ?? 0,
