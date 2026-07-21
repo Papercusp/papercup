@@ -18196,6 +18196,146 @@ body:has(.operator-panel) {
     linear-gradient(90deg, color-mix(in oklab, var(--operator-entry-tone), white 8%), transparent);
 }
 
+/* Radix Collapsible equivalents for .operator-entry__details (EI-18217558332022495 —
+   the "Directive body" disclosure migrated off native <details>/<summary> to
+   <LazyDetails> so its (potentially large) MarkdownPreview child only mounts
+   after first open — perf anti-pattern A6). Radix marks open/closed state via
+   the `data-state` attribute (not the native [open] attribute) and its trigger
+   renders as a <button>, not a <summary>, so these mirror the CASCADE-WINNING
+   declarations from the native rules above (this file carries duplicated/stale
+   copies of the same native-details rules from an unrelated git-sync issue —
+   see EI-18217568076594579 — so "winning" means the last one in source order,
+   not necessarily the nearest one above) against `.operator-entry__details-summary`
+   (the LazyDetails `summaryClassName`) + `[data-state]` instead. */
+.operator-entry__details-summary {
+  all: unset;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: color-mix(in oklab, var(--accent-cool), white 20%) !important;
+  font-weight: 760;
+  border-radius: 999px;
+  outline: 1px solid rgb(from var(--accent-strong) r g b / 0.12);
+  outline-offset: 3px;
+  text-shadow: 0 0 12px rgb(from var(--accent-strong) r g b / 0.12);
+  border-bottom: 1px solid color-mix(in oklab, var(--operator-entry-tone), transparent 84%);
+  padding-bottom: 2px;
+}
+
+.operator-entry__details-summary::before {
+  content: "▸";
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: color-mix(in oklab, var(--operator-entry-tone), white 18%);
+  font-size: 10px;
+  border: 1px solid color-mix(in oklab, var(--operator-entry-tone), transparent 56%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg), transparent 30%);
+  box-shadow: 0 0 12px color-mix(in oklab, var(--operator-entry-tone), transparent 82%);
+}
+
+.operator-entry__details-summary[data-state="open"]::before {
+  content: "▾";
+}
+
+.operator-entry__details-summary::after {
+  content: "";
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--operator-entry-tone), transparent 30%), transparent);
+  opacity: 0.66;
+}
+
+.operator-entry__details-summary[data-state="open"]::after {
+  content: "";
+  opacity: 0.92;
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--operator-entry-tone), white 8%), transparent);
+}
+
+.operator-entry__details-summary:hover,
+.operator-entry__details-summary:focus-visible {
+  outline-color: color-mix(in oklab, var(--operator-entry-tone), transparent 58%);
+  outline-offset: 4px;
+}
+
+.operator-entry__details[data-state="open"] {
+  width: auto;
+  max-width: 100%;
+}
+
+/* .operator-entry--suggestion scope (every send_directive suggestion card
+   carries this modifier, so these ALWAYS apply on top of the base rules
+   above for the one live usage). */
+.operator-entry.operator-entry--suggestion .operator-entry__details {
+  width: 100%;
+}
+
+.operator-entry.operator-entry--suggestion .operator-entry__details-summary {
+  width: fit-content;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 0 11px !important;
+  border: 1px solid rgb(from var(--accent-strong) r g b / 0.18);
+  border-color: color-mix(in oklab, var(--operator-card-tone), transparent 74%) !important;
+  color: color-mix(in oklab, var(--operator-card-tone), white 16%) !important;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--operator-card-fill), transparent 40%), rgba(255,255,255,0.004)),
+    color-mix(in srgb, var(--bg-deep), transparent 36%) !important;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-entry.operator-entry--suggestion .operator-entry__details-summary[data-state="open"] {
+  border-color: color-mix(in oklab, var(--operator-card-tone), transparent 52%) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--operator-card-tone), transparent 88%),
+    0 0 16px color-mix(in oklab, var(--operator-card-tone), transparent 90%);
+}
+
+.operator-entry.operator-entry--suggestion .operator-entry__details-summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+  opacity: 0.72;
+  transition: transform 140ms ease;
+}
+
+.operator-entry.operator-entry--suggestion .operator-entry__details-summary[data-state="open"]::before {
+  transform: rotate(45deg);
+}
+
+.operator-entry.operator-entry--suggestion .operator-entry__details > div {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.operator-entry.operator-entry--suggestion .operator-entry__details[data-state="open"] > div {
+  overflow: visible !important;
+}
+
+.operator-entry.operator-entry--suggestion .operator-entry__details[data-state="closed"] {
+  max-height: 34px !important;
+  overflow: hidden !important;
+}
+
 .operator-entry__footer {
   margin-top: 13px;
   padding-top: 9px;
