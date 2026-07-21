@@ -119,8 +119,10 @@ beforeEach(async () => {
 });
 
 const features = () =>
-  db.sql<{ feature_id: string; title: string; source_plan_slug: string | null; taken_by: string | null }[]>`
-    SELECT feature_id, title, source_plan_slug, taken_by
+  db.sql<
+    { feature_id: string; title: string; source_plan_slug: string | null; taken_by: string | null; status: string }[]
+  >`
+    SELECT feature_id, title, source_plan_slug, taken_by, status
       FROM harness_shared.harness_features_consolidated
      WHERE item_kind = 'feature' ORDER BY feature_id`;
 
@@ -198,6 +200,35 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     const res = await run.promotePlanItems(base);
     expect(res.promoted).toBe(1);
     expect((await features()).map((r) => r.title).sort()).toEqual(['First', 'Second']);
+  });
+
+  it('EI-14024: a DAG-blocked item (unresolved blocked-by) is minted already GATED, not plainly claimable', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Unblocked prerequisite' },
+        { id: 'P-002', status: 'todo', text: 'Depends on P-001', blockedBy: ['P-001'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res.promoted).toBe(2);
+
+    const rows = await features();
+    const p1 = rows.find((r) => r.title === 'Unblocked prerequisite')!;
+    const p2 = rows.find((r) => r.title === 'Depends on P-001')!;
+    // The unblocked item mints plainly claimable ('open')…
+    expect(p1.status).toBe('open');
+    // …while the DAG-blocked one is minted already gated ('blocked'), never briefly claimable.
+    expect(p2.status).toBe('blocked');
+  });
+
+  it('EI-14024: an item explicitly stored `blocked` is minted already gated too', async () => {
+    h.plans.set(PLAN, {
+      items: [{ id: 'P-001', status: 'blocked', text: 'Externally blocked' }],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res.promoted).toBe(1);
+    const rows = await features();
+    expect(rows[0]!.status).toBe('blocked');
   });
 
   it('is a NO-OP when the flag is OFF (flagOff:true, nothing minted)', async () => {
