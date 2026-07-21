@@ -46,6 +46,7 @@ import {
   findIssuesByWatchdogKeys,
   commentIssue,
   setIssueState,
+  markLeaderTriage,
   type EngineerIssue,
 } from '../../issues-engineer';
 
@@ -515,9 +516,11 @@ export interface OrphanRecoverDeps {
   releaseClaim: (id: string) => Promise<unknown>;
   rollbackAttempt: (id: string, attempts: number) => Promise<unknown>;
   /**
-   * EI-1689: the host-restart re-dispatch breaker has tripped for this item — route
-   * it to a human instead of re-dispatching (default sets `payload.needsHuman`, which
-   * the policy honors to drop it from the auto-eligible pool).
+   * EI-1689: the host-restart re-dispatch breaker has tripped for this item — route it to
+   * LEADER TRIAGE instead of re-dispatching (P-004/WI-5679: default sets status='blocked' via
+   * markLeaderTriage, which the dispatcher's readItems({state:'open'}) fetch honors to drop it from
+   * the auto-eligible pool — WITHOUT clogging the owner's inbox the way `payload.needsHuman` did; a
+   * host-restart thrash is an operational failure, not a genuine human need).
    */
   escalateThrash: (id: string) => Promise<unknown>;
 }
@@ -525,7 +528,9 @@ export interface OrphanRecoverDeps {
 const defaultRecover: OrphanRecoverDeps = {
   releaseClaim: releaseIssue,
   rollbackAttempt: (id, attempts) => mergeIssuePayload(id, { implementAttempts: attempts }),
-  escalateThrash: (id) => mergeIssuePayload(id, { needsHuman: true }),
+  // markLeaderTriage returns the setIssueState row (null on a no-op — remote/missing), preserving
+  // the recoveryNoOps === null contract (EI-15486) the collector relies on.
+  escalateThrash: (id) => markLeaderTriage(id, 'host-restart-thrash', 'orphaned-dispatch-breaker'),
 };
 
 /**

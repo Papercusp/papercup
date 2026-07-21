@@ -92,6 +92,12 @@ export default defineTool({
   }),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
+    // Non-null: `tx` is optional on PapercuspUnifiedToolContext (must match the
+    // framework's own optional `ctx.tx` for defineTool's overload resolution to
+    // accept this handler — see _tool-context.ts) but is always bound for an
+    // authenticated tool call. Destructured once so every ctx.tx<T> below is
+    // actually typed instead of a decorative type argument on `any` (EI-10968).
+    const tx = ctx.tx!;
     const workspaceId = ctx.workspaceId ?? '';
     const limit = args.limit ?? 30;
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
@@ -116,7 +122,7 @@ export default defineTool({
 
     // Read-time freshness applies to every owner filter and to the bounded set
     // of open Codex sessions on an unfiltered read, not only owner:'self'.
-    await refreshLiveSessionsBeforeRead(ctx.tx, owner ? [owner] : null);
+    await refreshLiveSessionsBeforeRead(tx, owner ? [owner] : null);
 
     // EI-9970: `turns` (session_turns row count) and the real prompt/
     // response/tool-call counts (session_ingest_state, accumulated at
@@ -139,7 +145,7 @@ export default defineTool({
     //
     // NOTE: keep backticks out of the SQL template below — it is a JS template
     // literal, and a stray backtick in a comment silently terminates the string.
-    const rows: SessionListRow[] = await ctx.tx<SessionListRow[]>`
+    const rows: SessionListRow[] = await tx<SessionListRow[]>`
       WITH turns_agg AS (
         SELECT source_kind, session_id, count(*)::int AS turns,
                count(*) FILTER (WHERE speaker = 'user')::int AS prompt_count,
@@ -221,7 +227,7 @@ export default defineTool({
         const { resolveSelfSession } = await import('../../search/self-session');
         const self = await resolveSelfSession(owner);
         if (self && !sessions.some((s) => s.source_kind === self.sourceKind && s.session_id === self.sessionId)) {
-          const liveRows = await ctx.tx<Array<{
+          const liveRows = await tx<Array<{
             turns: number; prompt_count: number;
             harness_slug: string | null; cwd: string | null;
             first_ts: string | null; last_ts: string | null;

@@ -301,11 +301,16 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
 
 function fakeDeps(overrides: Partial<ImplementWorkerExitDeps> = {}): {
   deps: ImplementWorkerExitDeps;
-  calls: { markOrphaned: Array<[string, string, string | undefined]>; mergePayload: Array<[string, Record<string, unknown>]> };
+  calls: {
+    markOrphaned: Array<[string, string, string | undefined]>;
+    mergePayload: Array<[string, Record<string, unknown>]>;
+    routeToLeaderTriage: Array<[string, string]>;
+  };
 } {
   const calls = {
     markOrphaned: [] as Array<[string, string, string | undefined]>,
     mergePayload: [] as Array<[string, Record<string, unknown>]>,
+    routeToLeaderTriage: [] as Array<[string, string]>,
   };
   const deps: ImplementWorkerExitDeps = {
     markOrphaned: async (id, by, detail) => {
@@ -317,6 +322,10 @@ function fakeDeps(overrides: Partial<ImplementWorkerExitDeps> = {}): {
       return null;
     },
     getPayload: async () => null, // no prior contextOverflowDeaths unless a test overrides it
+    routeToLeaderTriage: async (id, blockedReason) => {
+      calls.routeToLeaderTriage.push([id, blockedReason]);
+      return null;
+    },
     ...overrides,
   };
   return { deps, calls };
@@ -521,14 +530,16 @@ describe('recordImplementWorkerExit — WI-716 context-overflow bounded escalati
     expect(calls.markOrphaned[0][2]).toMatch(/context-overflow death 1\/2/);
   });
 
-  it(`a ${CONTEXT_OVERFLOW_ESCALATE_CAP}th context-overflow death trips the cap: needsHuman, attempt NOT rolled back`, async () => {
+  it(`a ${CONTEXT_OVERFLOW_ESCALATE_CAP}th context-overflow death trips the cap: LEADER TRIAGE (status=blocked), attempt NOT rolled back`, async () => {
     const { deps, calls } = fakeDeps({ getPayload: async () => ({ contextOverflowDeaths: CONTEXT_OVERFLOW_ESCALATE_CAP - 1 }) });
     const res = await recordImplementWorkerExit(overflowInput({ attempt: 5 }), deps);
     expect(res.contextOverflow).toEqual({ deaths: CONTEXT_OVERFLOW_ESCALATE_CAP, escalated: true });
-    expect(calls.mergePayload).toEqual([
-      ['EI-716', { contextOverflowDeaths: CONTEXT_OVERFLOW_ESCALATE_CAP, needsHuman: true }],
-    ]);
-    // NOT an implementAttempts rollback this time — needsHuman removes it from the
+    // P-004/WI-5679: the death count persists, but the routing is to LEADER TRIAGE (status=blocked)
+    // NOT payload.needsHuman — a repeatedly-overflowing item needs a leader to re-scope it, not the owner.
+    expect(calls.mergePayload).toEqual([['EI-716', { contextOverflowDeaths: CONTEXT_OVERFLOW_ESCALATE_CAP }]]);
+    expect(calls.mergePayload[0][1]).not.toHaveProperty('needsHuman');
+    expect(calls.routeToLeaderTriage).toEqual([['EI-716', `context-overflow-escalated:${CONTEXT_OVERFLOW_ESCALATE_CAP}`]]);
+    // NOT an implementAttempts rollback this time — status=blocked removes it from the
     // auto pool regardless of attempts, so no infinite rollback/re-dispatch loop.
     expect(calls.mergePayload[0][1]).not.toHaveProperty('implementAttempts');
     expect(calls.markOrphaned[0][2]).toMatch(/escalation cap tripped/);
@@ -579,13 +590,14 @@ describe('recordImplementWorkerExit — WI-2162 worker-timeout bounded escalatio
     expect(calls.markOrphaned[0][2]).toMatch(/worker-timeout death 1\/2/);
   });
 
-  it(`a ${TIMEOUT_ESCALATE_CAP}th timeout death trips the cap: needsHuman, attempt NOT rolled back`, async () => {
+  it(`a ${TIMEOUT_ESCALATE_CAP}th timeout death trips the cap: LEADER TRIAGE (status=blocked), attempt NOT rolled back`, async () => {
     const { deps, calls } = fakeDeps({ getPayload: async () => ({ timeoutDeaths: TIMEOUT_ESCALATE_CAP - 1 }) });
     const res = await recordImplementWorkerExit(timeoutInput({ attempt: 3 }), deps);
     expect(res.timeoutEscalation).toEqual({ deaths: TIMEOUT_ESCALATE_CAP, escalated: true });
-    expect(calls.mergePayload).toEqual([
-      ['EI-7203', { timeoutDeaths: TIMEOUT_ESCALATE_CAP, needsHuman: true }],
-    ]);
+    // P-004/WI-5679: death count persists, but routing is LEADER TRIAGE (status=blocked), not needsHuman.
+    expect(calls.mergePayload).toEqual([['EI-7203', { timeoutDeaths: TIMEOUT_ESCALATE_CAP }]]);
+    expect(calls.mergePayload[0][1]).not.toHaveProperty('needsHuman');
+    expect(calls.routeToLeaderTriage).toEqual([['EI-7203', `invoke-timeout-escalated:${TIMEOUT_ESCALATE_CAP}`]]);
     expect(calls.mergePayload[0][1]).not.toHaveProperty('implementAttempts');
     expect(calls.markOrphaned[0][2]).toMatch(/escalation cap tripped/);
   });

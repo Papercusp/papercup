@@ -123,6 +123,12 @@ export default defineTool({
   }),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
+    // Non-null: `tx` is optional on PapercuspUnifiedToolContext (must match the
+    // framework's own optional `ctx.tx` for defineTool's overload resolution to
+    // accept this handler — see _tool-context.ts) but is always bound for an
+    // authenticated tool call. Destructured once so ctx.tx<T> below is actually
+    // typed instead of a decorative type argument on `any` (EI-10968).
+    const tx = ctx.tx!;
     const workspaceId = ctx.workspaceId ?? '';
     const limit = args.limit ?? 30;
     const now = Date.now();
@@ -139,7 +145,7 @@ export default defineTool({
     // session was for) + the LAST assistant turn (where it got to / how it died).
     // DISTINCT ON gives both ends without a second round-trip per session, which is
     // the whole point: the old pattern cost one read PER SESSION.
-    const rows: DigestRow[] = await ctx.tx<DigestRow[]>`
+    const rows: DigestRow[] = await tx<DigestRow[]>`
       WITH scoped AS (
         SELECT *
           FROM harness_shared.session_turns

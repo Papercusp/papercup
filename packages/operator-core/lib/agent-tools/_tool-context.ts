@@ -22,15 +22,26 @@
  *     import type { PapercuspToolContext } from '../_tool-context';
  *
  *     async handler(args, ctx: PapercuspToolContext) {
- *       const rows = await ctx.tx<Array<{ id: string }>>`SELECT …`; // now really typed
+ *       const rows = await ctx.tx!<Array<{ id: string }>>`SELECT …`; // now really typed
  *       ...
  *     }
  *
+ * `tx` stays OPTIONAL on both aliases (`tx?: Sql`, not `tx: Sql`) even though every real
+ * call site treats it as always-present: `UnifiedToolContext`/`ToolContext`'s own `tx` is
+ * optional, and TypeScript's structural check for "is this narrower type assignable
+ * wherever the framework's declared (wider, optional-tx) context type is expected" is a
+ * PRESENCE check independent of `any` — a required `tx` here would make the whole alias
+ * fail that check and `defineTool(...)` would stop compiling at every callsite (verified:
+ * this is exactly what broke when this alias was first drafted with `tx: Sql`). Use the
+ * non-null assertion (`ctx.tx!<T>`) at each call site — it makes the pre-existing implicit
+ * assumption (tx is always bound for an authenticated tool call) explicit instead of
+ * silently baked into `any`.
+ *
  * This is safe to do PER TOOL FILE — it is not a framework-wide default change, and does
  * not require touching tooldef. TypeScript's `any`-is-bidirectionally-compatible rule
- * means a handler typed `(args, ctx: PapercuspToolContext) => …` (tx: Sql) is still
+ * means a handler typed `(args, ctx: PapercuspToolContext) => …` (tx?: Sql) is still
  * assignable wherever `defineTool`'s declared `handler: (args, ctx: ToolContext) => …`
- * (tx: any) is expected — the wider `any` absorbs the narrower `Sql`, so every OTHER
+ * (tx?: any) is expected — the wider `any` absorbs the narrower `Sql`, so every OTHER
  * tool file (and tooldef itself) is completely unaffected by a file opting in here.
  *
  * `Sql` (from the `postgres` package) is the real runtime shape of `ctx.tx` in every
@@ -55,10 +66,13 @@
 import type { ToolContext, UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { Sql } from 'postgres';
 
-/** For a PRINCIPAL-gated `defineTool` (no `requirePrincipal: false`). */
-export type PapercuspToolContext = ToolContext<Sql>;
+/** For a PRINCIPAL-gated `defineTool` (no `requirePrincipal: false`). `tx` stays
+ *  optional (matches `ToolContext`'s own shape) — see the file doc for why a
+ *  required `tx` breaks `defineTool`'s overload resolution; use `ctx.tx!<T>`. */
+export type PapercuspToolContext = ToolContext<Sql | undefined>;
 
 /** For a ROLE-gated `defineTool` (`requirePrincipal: false`) — the majority of
  *  su/agent-facing tools. `UnifiedToolContext` has no `Tx` type param, so this
- *  overrides its `tx?: any` field directly instead of binding a generic. */
-export type PapercuspUnifiedToolContext = Omit<UnifiedToolContext, 'tx'> & { tx: Sql };
+ *  overrides its `tx?: any` field directly instead of binding a generic. `tx`
+ *  stays optional — see the file doc; use `ctx.tx!<T>` at call sites. */
+export type PapercuspUnifiedToolContext = Omit<UnifiedToolContext, 'tx'> & { tx?: Sql };

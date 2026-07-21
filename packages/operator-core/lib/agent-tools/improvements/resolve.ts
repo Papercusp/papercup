@@ -15,14 +15,15 @@ import { hardText } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveImprovement } from '../../harness/improvements/resolve-core';
+import { EXTERNAL_BLOCKER_CAPABILITIES } from '../../external-blockers';
 
 export default defineTool({
   name: 'improvements:resolve',
   profile: 'engineer',
   description:
-    'Close the loop on a captured papercusp improvement you worked: outcome `fixed` (requires testsRun — the verification evidence) marks it resolved so it leaves the queue; `could-not-fix` releases it for a retry (exhausted retries route to a human); `needs-human` routes it to the human queue permanently.',
+    'Close the loop on a captured papercusp improvement you worked: outcome `fixed` (requires testsRun — the verification evidence) marks it resolved so it leaves the queue; `could-not-fix` releases it for a retry (exhausted retries route to LEADER TRIAGE, status=blocked); `needs-human` routes to the OWNER queue ONLY with a typed `blockerCapability`, otherwise to LEADER TRIAGE.',
   guidance: {
-    when: 'You finished working a dispatched/claimed improvement (usually as the implement worker). Fixed + tests green → outcome fixed with the evidence. Could not make it work → could-not-fix with what you tried. The fix would touch a protected surface (operator-core safety / deploy machinery / a migration) or needs judgment → needs-human.',
+    when: 'You finished working a dispatched/claimed improvement (usually as the implement worker). Fixed + tests green → outcome fixed with the evidence. Could not make it work → could-not-fix with what you tried. The fix would touch a protected surface (operator-core safety / deploy machinery / a migration) or needs judgment → needs-human — and pass a typed blockerCapability (credential | physical-device | external-service-action | product-decision) when a HUMAN genuinely must act, else it routes to leader triage, not the owner.',
     notWhen: 'You only want to comment progress — work_items:comment. You are closing a non-improvement issue — work_items:set_state. The item was never captured (no EI/WI id) — improvements:capture it first if it is worth tracking.',
     chaining: 'improvements:digest → (dispatch/claim) → implement + test → improvements:resolve { id, outcome, summary, testsRun }.',
     seeAlso: [
@@ -40,6 +41,15 @@ export default defineTool({
     summary: hardText(4000, { min: 10 }).describe('what happened — for fixed: what changed + how it was verified; for the others: why'),
     testsRun: z.string().max(1000).optional().describe('the test command(s) run + result — REQUIRED for outcome fixed'),
     commit: z.string().max(120).optional().describe('commit/branch the fix landed on (it still rides the release gate)'),
+    blockerCapability: z
+      .enum([...EXTERNAL_BLOCKER_CAPABILITIES])
+      .optional()
+      .describe(
+        'outcome=needs-human ONLY: the TYPED human-capability blocker. credential | physical-device | ' +
+          'external-service-action | product-decision → the OWNER queue; approval-auto-clearable | ' +
+          'live-dependency, or OMITTED → LEADER TRIAGE (an operational block a leader clears, not owner work). ' +
+          'Only pass it when a human genuinely must act.',
+      ),
     confidence: z
       .number()
       .min(0)
@@ -57,6 +67,7 @@ export default defineTool({
       summary: args.summary,
       testsRun: args.testsRun,
       commit: args.commit,
+      blockerCapability: args.blockerCapability,
       by: id.ownerId,
     });
     // Calibration bet at the natural moment (frontier P-041 / FB-13): claiming

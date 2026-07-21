@@ -44,7 +44,7 @@ import { readOwnerFullAutonomyGrant } from '../improvements/full-autonomy-grant'
 import { readRecentDispatches, recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
 import { laneInEnvOutage } from '../improvements/orphaned-dispatch';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
-import { routeExhaustedImprovementToHuman } from '../improvements/resolve-core';
+import { routeExhaustedImprovementToLeaderTriage } from '../improvements/resolve-core';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
 import { runDecaySweep } from '../improvements/decay';
 import {
@@ -490,9 +490,11 @@ export function setImprovementDispatchLedger(fns: DispatchLedgerFns | null): voi
 }
 
 /**
- * The exhausted⇒needs-human flip seam (consume-edges P-012) — injectable so the
+ * The exhausted⇒leader-triage flip seam (consume-edges P-012) — injectable so the
  * handler test observes the flip without PG. Default: resolve-core's
- * routeExhaustedImprovementToHuman (comment + needsHuman + release the stale claim).
+ * routeExhaustedImprovementToLeaderTriage (comment + status='blocked' + release the stale
+ * claim — a silent worker death is operational, so it goes to leader triage, not the owner's
+ * inbox; P-004/WI-5679).
  */
 export type ExhaustedFlipFn = (candidate: ScoredItem, maxAttempts?: number) => void | Promise<void>;
 
@@ -503,7 +505,7 @@ export function setImprovementExhaustedFlip(fn: ExhaustedFlipFn | null): void {
 }
 
 const defaultFlipExhausted: ExhaustedFlipFn = async (candidate, maxAttempts) => {
-  await routeExhaustedImprovementToHuman({
+  await routeExhaustedImprovementToLeaderTriage({
     id: candidate.id,
     attempts: candidate.attempts,
     maxAttempts,

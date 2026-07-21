@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveImprovement, routeExhaustedImprovementToHuman, type ResolveDeps } from './resolve-core';
+import { resolveImprovement, routeExhaustedImprovementToLeaderTriage, type ResolveDeps } from './resolve-core';
 import type { EngineerIssue, IssueState } from '../../issues-engineer';
 
 function issue(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
@@ -165,55 +165,119 @@ describe('resolveImprovement — could-not-fix (retry path)', () => {
     expect(d.rec.payloads).toHaveLength(0); // attempts not exhausted → no needsHuman
   });
 
-  it('exhausted attempts → ALSO routes to a human (no infinite auto ping-pong)', async () => {
+  it('exhausted attempts → routes to LEADER TRIAGE (status=blocked), NOT the owner inbox (P-004/WI-5679)', async () => {
     const d = deps(issue({ id: 'EI-2', payload: { implementAttempts: 3 } }));
     const r = await resolveImprovement({ id: 'EI-2', outcome: 'could-not-fix', summary: 'third strike, still failing' }, d);
-    expect(r.routedToHuman).toBe(true);
-    expect(d.rec.payloads).toEqual([{ id: 'EI-2', patch: { needsHuman: true } }]);
+    expect(r).toMatchObject({ ok: true, outcome: 'could-not-fix', state: 'blocked', routedToLeaderTriage: true });
+    expect(r.routedToHuman).toBeUndefined();
+    // status → blocked (out of the ISSUE_FAMILY_CLAIMABLE_STATES=['open'] auto loop), NOT needsHuman
+    expect(d.rec.states).toEqual([{ id: 'EI-2', state: 'blocked' }]);
+    expect(d.rec.payloads.some((p) => 'needsHuman' in p.patch)).toBe(false);
+    expect(d.rec.payloads[0].patch).toMatchObject({ blockedReason: expect.stringMatching(/retries-exhausted/) });
+    expect(d.rec.released).toEqual(['EI-2']);
     expect(d.rec.comments[0].body).toMatch(/Retries exhausted/);
   });
 
-  it('honors a custom maxAttempts', async () => {
+  it('honors a custom maxAttempts (→ leader triage)', async () => {
     const d = deps(issue({ id: 'EI-2', payload: { implementAttempts: 1 } }));
     const r = await resolveImprovement(
       { id: 'EI-2', outcome: 'could-not-fix', summary: 'one strike policy here', maxAttempts: 1 },
       d,
     );
-    expect(r.routedToHuman).toBe(true);
+    expect(r.routedToLeaderTriage).toBe(true);
+    expect(d.rec.states).toEqual([{ id: 'EI-2', state: 'blocked' }]);
   });
 });
 
-describe('resolveImprovement — needs-human (the protected-surface stop)', () => {
-  it('sets needsHuman, releases the claim, stays open', async () => {
+describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by default, owner only when typed)', () => {
+  it('UNTYPED needs-human → LEADER TRIAGE (status=blocked), NOT the owner inbox', async () => {
     const d = deps(issue({ id: 'EI-3' }));
     const r = await resolveImprovement(
       { id: 'EI-3', outcome: 'needs-human', summary: 'the correct fix is a schema migration' },
       d,
     );
-    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'open', routedToHuman: true });
-    expect(d.rec.payloads).toEqual([{ id: 'EI-3', patch: { needsHuman: true } }]);
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'blocked', routedToLeaderTriage: true });
+    expect(r.routedToHuman).toBeUndefined();
+    expect(d.rec.states).toEqual([{ id: 'EI-3', state: 'blocked' }]);
+    expect(d.rec.payloads.some((p) => 'needsHuman' in p.patch)).toBe(false);
+    expect(d.rec.payloads[0].patch).toMatchObject({ blockedReason: expect.stringMatching(/needs-human-untyped/) });
     expect(d.rec.released).toEqual(['EI-3']);
-    expect(d.rec.states).toHaveLength(0);
+    expect(d.rec.comments[0].body).toMatch(/LEADER TRIAGE/);
+  });
+
+  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER inbox (payload.needsHuman)', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const r = await resolveImprovement(
+      { id: 'EI-3', outcome: 'needs-human', summary: 'needs a prod DB credential only the owner holds', blockerCapability: 'credential' },
+      d,
+    );
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'open', routedToHuman: true });
+    expect(r.routedToLeaderTriage).toBeUndefined();
+    expect(d.rec.payloads).toEqual([{ id: 'EI-3', patch: { needsHuman: true, humanCapability: 'credential' } }]);
+    expect(d.rec.states).toHaveLength(0); // stays open; the human decides
+    expect(d.rec.released).toEqual(['EI-3']);
+    expect(d.rec.comments[0].body).toMatch(/credential/);
+  });
+
+  it('product-decision is genuinely owner-gated → the OWNER inbox', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const r = await resolveImprovement(
+      { id: 'EI-3', outcome: 'needs-human', summary: 'needs a product direction call', blockerCapability: 'product-decision' },
+      d,
+    );
+    expect(r.routedToHuman).toBe(true);
+    expect(d.rec.payloads[0].patch).toMatchObject({ needsHuman: true, humanCapability: 'product-decision' });
+  });
+
+  it('an AUTO-CLEARABLE capability is NOT genuine owner work → LEADER TRIAGE', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const r = await resolveImprovement(
+      { id: 'EI-3', outcome: 'needs-human', summary: 'a standing approval AUTO already satisfies', blockerCapability: 'approval-auto-clearable' },
+      d,
+    );
+    expect(r.routedToLeaderTriage).toBe(true);
+    expect(r.routedToHuman).toBeUndefined();
+    expect(d.rec.states).toEqual([{ id: 'EI-3', state: 'blocked' }]);
+    expect(d.rec.payloads.some((p) => 'needsHuman' in p.patch)).toBe(false);
+  });
+
+  it('a live-dependency capability is leader-clearable → LEADER TRIAGE', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const r = await resolveImprovement(
+      { id: 'EI-3', outcome: 'needs-human', summary: 'awaiting a stalled dependency', blockerCapability: 'live-dependency' },
+      d,
+    );
+    expect(r.routedToLeaderTriage).toBe(true);
+    expect(d.rec.states).toEqual([{ id: 'EI-3', state: 'blocked' }]);
   });
 });
 
-describe('routeExhaustedImprovementToHuman — exhausted with no resolve recorded (consume-edges P-012)', () => {
-  it('SILENT WORKER DEATH: open + exhausted + no needsHuman → comment, flag, release the stale claim', async () => {
-    // The worker(s) died without ever calling improvements:resolve — the item
-    // carries only the dispatch bookkeeping (attempts + a stale claim).
+describe('routeExhaustedImprovementToLeaderTriage — exhausted with no resolve recorded (consume-edges P-012)', () => {
+  it('SILENT WORKER DEATH: open + exhausted → comment + status=blocked (leader triage), release the stale claim', async () => {
+    // The worker(s) died without ever calling improvements:resolve — the item carries only the
+    // dispatch bookkeeping (attempts + a stale claim). P-004/WI-5679: operational, so → leader triage.
     const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 3 } }));
-    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9' }, d);
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-9' }, d);
     expect(r).toMatchObject({ ok: true, flipped: true });
-    expect(d.rec.payloads).toEqual([{ id: 'EI-9', patch: { needsHuman: true } }]);
+    expect(d.rec.states).toEqual([{ id: 'EI-9', state: 'blocked' }]);
+    expect(d.rec.payloads.some((p) => 'needsHuman' in p.patch)).toBe(false);
+    expect(d.rec.payloads[0].patch).toMatchObject({ blockedReason: expect.stringMatching(/silent-worker-death/) });
     expect(d.rec.released).toEqual(['EI-9']);
     expect(d.rec.comments[0].body).toMatch(/NO resolve ever recorded/);
     expect(d.rec.comments[0].body).toMatch(/3\/3/);
-    expect(d.rec.states).toHaveLength(0); // stays open — a human decides, the auto lane just lets go
   });
 
-  it('idempotent: an item already routed to a human is a no-op', async () => {
+  it('idempotent: an item already routed to leader triage (state !== open) is a no-op', async () => {
+    const d = deps(issue({ id: 'EI-9', state: 'blocked', payload: { implementAttempts: 3 } }));
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-9' }, d);
+    expect(r).toMatchObject({ ok: true, flipped: false, reason: 'not open' });
+    expect(d.rec.comments).toHaveLength(0);
+    expect(d.rec.states).toHaveLength(0);
+  });
+
+  it('idempotent: an item already flagged for a human (genuine, typed earlier) is a no-op', async () => {
     const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 3, needsHuman: true } }));
-    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9' }, d);
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-9' }, d);
     expect(r).toMatchObject({ ok: true, flipped: false, reason: expect.stringMatching(/already/) });
     expect(d.rec.comments).toHaveLength(0);
     expect(d.rec.payloads).toHaveLength(0);
@@ -222,21 +286,21 @@ describe('routeExhaustedImprovementToHuman — exhausted with no resolve recorde
 
   it('a resolved item is a no-op (the worker DID resolve — nothing was silent)', async () => {
     const d = deps(issue({ id: 'EI-9', state: 'resolved', payload: { implementAttempts: 3 } }));
-    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9' }, d);
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-9' }, d);
     expect(r).toMatchObject({ ok: true, flipped: false, reason: 'not open' });
     expect(d.rec.comments).toHaveLength(0);
   });
 
   it('a missing item reports not-found without throwing', async () => {
     const d = deps(null);
-    const r = await routeExhaustedImprovementToHuman({ id: 'EI-404' }, d);
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-404' }, d);
     expect(r).toMatchObject({ ok: false, flipped: false });
     expect(r.reason).toMatch(/not found/);
   });
 
   it('uses the provided attempts/maxAttempts in the explanatory comment', async () => {
     const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 5 } }));
-    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9', attempts: 5, maxAttempts: 5, by: 'test-routine' }, d);
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-9', attempts: 5, maxAttempts: 5, by: 'test-routine' }, d);
     expect(r.flipped).toBe(true);
     expect(d.rec.comments[0].body).toMatch(/5\/5/);
     expect(d.rec.comments[0].by).toBe('test-routine');

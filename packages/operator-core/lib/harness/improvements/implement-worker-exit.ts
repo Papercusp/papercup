@@ -26,7 +26,7 @@
  */
 
 import { markDispatchOrphaned } from './dispatch-ledger';
-import { mergeIssuePayload, getIssue } from '../../issues-engineer';
+import { mergeIssuePayload, getIssue, markLeaderTriage } from '../../issues-engineer';
 import { parseResetHoldUntil } from './reset-backoff';
 
 export interface WorkerExitInfo {
@@ -335,6 +335,11 @@ export interface ImplementWorkerExitDeps {
    *  path — every other exit path is unchanged. Best-effort: a read failure is
    *  treated as "0 prior deaths" (never throws). */
   getPayload: (id: string) => Promise<Record<string, unknown> | null>;
+  /** P-004 (WI-5679): route a bounded-escalated overflow/timeout death to LEADER TRIAGE
+   *  (status='blocked' + payload.blockedReason) instead of the owner's inbox. A repeatedly-
+   *  overflowing/timing-out item needs a leader to re-scope/decompose it or grant a bigger-context
+   *  worker — an operational block, not a genuine human-capability need. Default: markLeaderTriage. */
+  routeToLeaderTriage: (id: string, blockedReason: string) => Promise<unknown>;
 }
 
 const defaultDeps: ImplementWorkerExitDeps = {
@@ -344,6 +349,7 @@ const defaultDeps: ImplementWorkerExitDeps = {
     const issue = await getIssue(id);
     return (issue?.payload as Record<string, unknown> | null | undefined) ?? null;
   },
+  routeToLeaderTriage: (id, blockedReason) => markLeaderTriage(id, blockedReason, 'worker-exit-backedge'),
 };
 
 export interface ImplementWorkerExitResult {
@@ -457,13 +463,12 @@ export async function recordImplementWorkerExit(
       // WI-716 bounded escalation: repeated overflow on the SAME item means a bare
       // retry won't help (the item needs to be smaller-scoped / decomposed / given a
       // bigger-context worker) — stop the rollback-retry cycle (which would otherwise
-      // thrash forever, per the ticket's "naive fix is unsafe" caveat) and route to a
-      // human. needsHuman drops it from the auto-eligible pool regardless of attempts
-      // (policy.ts), so leaving implementAttempts untouched here is fine.
-      await deps.mergePayload(input.itemId, {
-        contextOverflowDeaths: overflow.deaths,
-        needsHuman: true,
-      });
+      // thrash forever, per the ticket's "naive fix is unsafe" caveat) and route to
+      // LEADER TRIAGE (P-004/WI-5679: re-scoping/decomposing is a leader task, not an
+      // owner-inbox item — status='blocked' drops it from the auto-eligible pool
+      // regardless of attempts, so leaving implementAttempts untouched here is fine).
+      await deps.mergePayload(input.itemId, { contextOverflowDeaths: overflow.deaths });
+      await deps.routeToLeaderTriage(input.itemId, `context-overflow-escalated:${overflow.deaths}`);
     } else {
       // Below the cap: not a real attempt (the item was never actually reproduced
       // against — the session just ran out of room) — roll the attempt back like a
@@ -483,12 +488,12 @@ export async function recordImplementWorkerExit(
       // WI-2162 bounded escalation (mirrors WI-716): repeated timeout on the SAME item
       // means the invoke route's fixed clock genuinely isn't enough for it — a bare
       // retry with the same budget would just thrash — so stop rolling back and route
-      // to a human instead. needsHuman drops it from the auto-eligible pool regardless
-      // of attempts, so leaving implementAttempts untouched here is fine.
-      await deps.mergePayload(input.itemId, {
-        timeoutDeaths: timeoutEsc.deaths,
-        needsHuman: true,
-      });
+      // to LEADER TRIAGE instead (P-004/WI-5679: needing a bigger clock/re-scope is a
+      // leader task, not an owner-inbox item — status='blocked' drops it from the
+      // auto-eligible pool regardless of attempts, so leaving implementAttempts untouched
+      // here is fine).
+      await deps.mergePayload(input.itemId, { timeoutDeaths: timeoutEsc.deaths });
+      await deps.routeToLeaderTriage(input.itemId, `invoke-timeout-escalated:${timeoutEsc.deaths}`);
     } else {
       // Below the cap: not a real attempt (the worker never reached a fix, let alone
       // improvements:resolve — it was still investigating when the clock ran out) —

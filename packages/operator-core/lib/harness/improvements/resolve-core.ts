@@ -356,12 +356,15 @@ export interface ExhaustedFlipResult {
 }
 
 /**
- * Route an attempts-exhausted item with NO resolve ever recorded to the human
- * tier: explanatory comment + `payload.needsHuman` + release the (stale) claim.
- * Idempotent — an item already flagged, resolved, or missing is a no-op, so the
- * routine can call it every tick for whatever planImplementRun reports exhausted.
+ * Route an attempts-exhausted item with NO resolve ever recorded to the LEADER-TRIAGE lane
+ * (P-004/WI-5679): explanatory comment + status='blocked' (payload.blockedReason) + release the
+ * (stale) claim. A silent worker death is an OPERATIONAL failure, not a genuine human need, so it
+ * belongs in leader triage, not the owner's inbox — routing it to payload.needsHuman was the
+ * over-application this fixes. Idempotent — an item already blocked (state !== 'open'),
+ * already-flagged-human, resolved, or missing is a no-op, so the routine can call it every tick for
+ * whatever planImplementRun reports exhausted.
  */
-export async function routeExhaustedImprovementToHuman(
+export async function routeExhaustedImprovementToLeaderTriage(
   input: ExhaustedFlipInput,
   deps: ResolveDeps = defaultDeps,
 ): Promise<ExhaustedFlipResult> {
@@ -376,12 +379,16 @@ export async function routeExhaustedImprovementToHuman(
   const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   await deps.commentIssue(
     input.id,
-    `⤴ Auto-implement attempts exhausted with NO resolve ever recorded (${attempts}/${maxAttempts} dispatches) — ` +
+    `⤷ Auto-implement attempts exhausted with NO resolve ever recorded (${attempts}/${maxAttempts} dispatches) — ` +
       `the worker(s) died without calling improvements:resolve (silent worker death). ` +
-      `Routing to a human; this item will not auto-dispatch again.`,
+      `Routing to leader triage (status=blocked); this item will not auto-dispatch again.`,
     by,
   );
-  await deps.mergeIssuePayload(input.id, { needsHuman: true });
-  await deps.releaseIssue(input.id);
-  return { ok: true, id: input.id, flipped: true };
+  const blocked = await routeToLeaderTriage(
+    deps,
+    input.id,
+    `silent-worker-death:attempts-exhausted:${attempts}/${maxAttempts}`,
+    by,
+  );
+  return { ok: true, id: input.id, flipped: blocked };
 }
