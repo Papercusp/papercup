@@ -40,7 +40,18 @@ const buildOutline = vi.fn(
   }),
 );
 const getDocs = vi.fn(async () => ({ pages: [{ slug: 'p1', body: 'BODY' }] }));
-const searchDocs = vi.fn(async () => ({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] }));
+// WI-5690: typed against a local shape (not the full real `SearchResult`,
+// which also requires `url` per hit — unused by any assertion here) so the
+// RRF-headroom override below (which sets `score` + hitCount/tokenCount/
+// query) typechecks instead of narrowing to this literal's own shape.
+const searchDocs = vi.fn(
+  async (): Promise<{
+    hits: Array<{ slug: string; title: string; excerpt: string; score?: number }>;
+    hitCount?: number;
+    tokenCount?: number;
+    query?: string;
+  }> => ({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] }),
+);
 
 vi.mock('@papercusp/docs-engine', () => ({
   buildOutline,

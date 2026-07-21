@@ -32,6 +32,7 @@ import { clampText, LIMITS } from "../limits";
 import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
 import { withBoundedTimeout } from "../../bounded-timeout";
+import { CHECKPOINT_MAX_RUNTIME_SEC } from "../../release-checkpoint-launch";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -50,6 +51,27 @@ const timeoutArg = z
   .optional()
   .describe(
     `Deadline in seconds (default ${DEFAULT_TIMEOUT_SEC}); on the deadline you are woken with a TIMEOUT marker.`,
+  );
+
+// WI-5685: checkpoint:await used to inherit the GENERIC 1800s (30min) default above, which is
+// shorter than the green-checkpoint suite can legitimately run — the systemd backstop alone
+// (CHECKPOINT_MAX_RUNTIME_SEC) allows up to 3h, well past the suite's own in-process timeout, and
+// the run can still be salvaging/emitting its verdict for a bit after that. A DEFAULT await
+// therefore used to strand the caller mid-suite on every single default-timeout call (2 for 2 in
+// the WI-5685 evidence) — not an edge case, the COMMON case, since most callers never think to
+// override a generic-sounding default. Give this verb its OWN default derived from the suite's
+// real worst-case ceiling instead of the one-size-fits-all generic default; explicit timeout_sec
+// still always wins.
+export const CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC = CHECKPOINT_MAX_RUNTIME_SEC + 10 * 60; // 3h backstop + 10min grace for the verdict to land/emit after the process exits
+
+const checkpointTimeoutArg = z
+  .number()
+  .int()
+  .positive()
+  .max(MAX_TIMEOUT_SEC)
+  .optional()
+  .describe(
+    `Deadline in seconds (default ${CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC} ≈ ${Math.round(CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC / 60)}min — WI-5685: sized to the suite's real worst-case ceiling, the ${Math.round(CHECKPOINT_MAX_RUNTIME_SEC / 60)}min systemd backstop + slack, NOT the generic events:await default (${DEFAULT_TIMEOUT_SEC}s) which used to strand a default-timeout caller mid-suite); on the deadline you are woken with a TIMEOUT marker.`,
   );
 
 /**
@@ -182,12 +204,12 @@ defineTool({
 defineTool({
   name: "checkpoint:await",
   description:
-    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to YOUR exact candidate — another/superseded SHA's verdict never wakes you; without it you may wake on ANY candidate and must lineage-check payload.sha (release:trace). runId (WI-4957) binds to the exact judging run (rare: two runs judging one candidate). pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait; a superseded run's candidate-bound wait is proactively cancelled. Then END YOUR TURN.",
+    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to YOUR exact candidate — another/superseded SHA's verdict never wakes you; without it you may wake on ANY candidate and must lineage-check payload.sha (release:trace). WI-5685: an exact candidateSha bind is a footgun if the HOURLY CRON might race ahead and judge a LATER candidate that still contains your commit as an ancestor — that verdict, which DOES cover you, will never wake a candidateSha-bound await (only an exact-sha match wakes it), so it sleeps to its own timeout even though your change already shipped. If you're not certain your commit will be the EXACT candidate judged, omit candidateSha and use release:trace after waking to confirm your sha's lineage instead. runId (WI-4957) binds to the exact judging run (rare: two runs judging one candidate). pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait; a superseded run's candidate-bound wait is proactively cancelled. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
     notWhen:
-      "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config.",
+      "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config. Unsure your commit will be the EXACT judged candidate (a cron tick may race ahead of you) — omit candidateSha instead of binding to a sha that may never be the one that verdicts; lineage-check with release:trace on wake.",
     chaining:
       "checkpoint:await { candidateSha } → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail) for this pipeline/candidate; resume or go fix the red.",
     seeAlso: [
@@ -219,7 +241,11 @@ defineTool({
         "EI-12457: bind the wait to this exact candidate (full sha or a prefix) via a payload predicate on the " +
           "emitted payload.sha — a verdict for any OTHER candidate (a stale/superseded run) will NOT wake you; " +
           "you keep sleeping until the correct candidate resolves or the deadline. Strongly recommended whenever " +
-          "you know which commit you are judging (e.g. right after a git-sync:await/deploy).",
+          "you know which commit you are judging (e.g. right after a git-sync:await/deploy). WI-5685: this is an " +
+          "EXACT match, not an ancestry check — a LATER candidate that still contains your commit (e.g. the hourly " +
+          "cron races ahead and judges a newer tip) will NOT wake you even though its green verdict already covers " +
+          "you. If a cron tick could plausibly land before your exact candidate does, omit candidateSha (wake on " +
+          "ANY verdict for this pipeline) and confirm inclusion afterwards with release:trace instead of binding here.",
       ),
     runId: z
       .string()
@@ -243,7 +269,7 @@ defineTool({
       .max(LIMITS.ANNOTATION)
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
-    timeout_sec: timeoutArg,
+    timeout_sec: checkpointTimeoutArg,
   }),
   async handler(args, ctx) {
     const pipeline = args.global
@@ -266,8 +292,12 @@ defineTool({
             ...(args.runId ? { runId: args.runId } : {}),
           }
         : undefined;
+    // WI-5685: this verb's OWN default (not the generic events:await one) — see
+    // CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC's doc comment for why the generic 30min default
+    // strands a caller mid-suite.
+    const timeoutSec = args.timeout_sec ?? CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC;
     return reply(
-      await armAwaits(ctx, keys, note, args.timeout_sec, {
+      await armAwaits(ctx, keys, note, timeoutSec, {
         payloadFilter,
         // EI-12457: a re-await for this pipeline supersedes any prior pending
         // checkpoint-family wait this same subscriber still holds for it.

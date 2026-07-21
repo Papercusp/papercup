@@ -94,11 +94,22 @@ export default defineTool({
               elapsed_sec: a.elapsed_sec ?? null,
               eta_sec: a.eta_sec ?? null,
               replace_refused_young: a.replace_refused_young ?? false,
-              note: a.candidate_stale
-                ? typeof a.elapsed_sec === 'number' && a.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC
-                  ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging, and it is OLD enough that it should have verdicted by now (EI-9672: likely wedged in post-verdict salvage/refire on a superseded commit). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
-                  : 'A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Wait for its verdict (see eta_sec); replaceStale only unlocks once the run is ≥20 min old.'
-                : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
+              held_externally: a.held_externally ?? false,
+              note: a.held_externally
+                ? // WI-5685: the shared run-lock (cron + manual serialize on the SAME lock) is held by a
+                  // process that is NOT this root's manual unit — almost certainly the hourly cron tick.
+                  // force:true would still spawn (this proactive check is the only thing standing in the
+                  // way), but that new process would just lose the exact same lock race a second later and
+                  // produce no verdict either — force/replaceStale are BOTH useless here, unlike the
+                  // manual-vs-manual collision case below. The only real lever is to wait for the verdict:
+                  // it covers your commit too as long as your commit is an ancestor of whatever it judges
+                  // (release:trace confirms after waking if you didn't pass candidateSha).
+                  'A checkpoint run for this root is already in flight, held by a DIFFERENT process than the manual unit (almost certainly the hourly cron tick — it runs as a plain child process, not this unit, so this tool cannot see or control it directly). force:true and replaceStale CANNOT free this slot — a forced launch would just spawn a second process that loses the identical run-lock race a moment later and silently produces no verdict (the exact failure this check exists to prevent). Wait for it instead: checkpoint:await (omit candidateSha to wake on this run\'s verdict regardless of exact sha, then release:trace to confirm your commit is included).'
+                : a.candidate_stale
+                  ? typeof a.elapsed_sec === 'number' && a.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC
+                    ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging, and it is OLD enough that it should have verdicted by now (EI-9672: likely wedged in post-verdict salvage/refire on a superseded commit). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
+                    : 'A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Wait for its verdict (see eta_sec); replaceStale only unlocks once the run is ≥20 min old.'
+                  : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },
         ],
