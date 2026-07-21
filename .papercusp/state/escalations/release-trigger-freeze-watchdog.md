@@ -1,0 +1,13 @@
+---
+authority: null
+body_embedding: null
+body_embedding_mode: null
+body_tsv: "'-06':47A '-07':50A,116A '-12':51A '-18':48A '-21':117A '1':11A,24A '1784665522676':174A '1784667732120':177A '2026':46A,49A,115A '22.676':120A '22909c65621b':109A,172A '25':119A '37m':22A '4cf7':107A,170A '82cf':106A,169A '91dc':108A,171A 'a2724d8e':105A,168A 'activ':19A,81A,112A 'auto':55A 'auto-recoveri':54A 'back':159A 'blind':156A 'blind-toggl':155A 'bug':154A 'cadenc':68A 'catch':70A 'clear':62A 'code':93A 'commit':26A 'confirm':90A 'coordin':122A 'deliber':135A 'demo/capture':143A 'deploy':29A,38A,87A,147A 'deployedbehindgreenpin':10A 'detail':12A 'e.g':138A 'emit':175A 'enabl':128A 'exact':41A 'expedit':84A 'fals':20A,113A 'fight':162A 'fleet':36A 'fleet-wid':35A 'freez':5A,39A 'green':25A 'har':7A 'hold':137A,164A 'kill':150A 'kind':1A 'live':32A 'long':141A 'long-run':140A 'n':99A 'name':77A 'never':59A 'nlast':100A 'often':133A 'op':88A 'papercusp':9A 'paus':18A,64A,101A,131A 'pausedatm':173A 'pausedbi':165A 'protect':136A 're':127A 're-en':126A 'recoveri':56A 'recur':44A 'releas':3A,14A,79A,86A 'release-trigg':13A,78A 'release-trigger-freeze-watchdog':2A 'repeat':130A 'restart':148A 'resum':73A 'routin':65A,75A,110A 'run':142A 'self':61A 'self-clear':60A 'session':144A 'set':76A,111A 'signatur':42A 'silent':34A 'slug':8A 'stuck':153A 'su':104A,167A 'su-a2724d8e-82cf-4cf7-91dc-22909c65621b':103A,166A 't20':118A 'toggl':157A 'trigger':4A,15A,80A,89A 'true':82A,91A 'twice':45A 'wait':96A 'watchdog':6A 'wide':37A 'would':149A 'z':121A"
+escalation: "{\"kind\":\"release-trigger-freeze-watchdog\",\"harness_slug\":\"papercusp\",\"deployedBehindGreenPin\":1,\"detail\":\"release-trigger has been PAUSED (active:false) for ~37m while 1 green commit(s) are deployable but not live: a SILENT fleet-wide deploy freeze — this exact signature has recurred twice (2026-06-18, 2026-07-12) with no auto-recovery. It will NEVER self-clear (a paused routine has no cadence to catch up on). Resume it: routines:set { name: 'release-trigger', active: true }; then expedite with release:deploy { op: 'trigger', confirm: true } if code has been waiting a while.\\n\\nLast paused by su-a2724d8e-82cf-4cf7-91dc-22909c65621b (routines:set active:false) at 2026-07-21T20:25:22.676Z. Coordinate with them before re-enabling — a repeated pause is often a deliberate protective hold (e.g. a long-running demo/capture session that a deploy restart would kill), not a stuck bug; blind-toggling it back on just fights their hold.\",\"pausedBy\":\"su-a2724d8e-82cf-4cf7-91dc-22909c65621b\",\"pausedAtMs\":1784665522676,\"emitted_at\":1784667732120}"
+mtime_ms: 1784667732120
+phase: "release-trigger-freeze-watchdog"
+risk_tier: null
+supervisor_notes: null
+---
+
+
