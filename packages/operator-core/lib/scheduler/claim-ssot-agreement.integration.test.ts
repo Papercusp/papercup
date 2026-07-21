@@ -282,3 +282,66 @@ describe('the three DELIBERATE, documented divergences are pinned (a future "ali
     expect(claimed).toBe('WI-OWN-LEASE'); // the holder's own-lease exemption admits it
   });
 });
+
+/**
+ * P-001 (claimable-read-tool-and-sql-encapsulation-audit-2026-07-21): the read tool's two
+ * primitives — `aggregateIssueClaimExclusions().claimable` (the survivors COUNT) and
+ * `listIssueClaimableRows()` (the survivors ROW LIST) — are built on ONE shared inner
+ * subquery + ONE shared all-floors-pass predicate, so the count and the list can never
+ * disagree, and both apply the SAME per-row floors the scheduler does. These bind that.
+ */
+describe('work_items:claimable primitives — the survivors COUNT === the row LIST === the inline claim drain (P-001)', () => {
+  it('count, list, and inline-drain all agree for a divergence-free seed; floors actually remove rows', async () => {
+    const gn = await import('./get-next');
+    // 3 plainly-claimable rows + one row per representative UNCONDITIONAL floor.
+    await seed('WI-A'); // bug, claimable
+    await seed('WI-B', { kind: 'change' }); // change, claimable
+    await seed('WI-C', { kind: 'task' }); // task, claimable
+    await seed('WI-TAKEN2', { takenBy: 'peer' }); // taken
+    await seed('WI-HOLD2', { payload: { _claimHold: true } }); // claim-hold
+    await seed('WI-NH2', { payload: { needsHuman: true } }); // needs-human
+    await seed('WI-OBS2', { kind: 'change', payload: { lane: 'observation' } }); // observation-lane
+    await seed('WI-DONE2', { terminalOwner: 'su-x', terminalCompletionRef: 'commit:z' }); // already-completed
+    await seedPlan('active2', 'active');
+    await seedPlanLinkedIssue('WI-ACTIVE2', 'active2', 'P-9'); // reserved ACTIVE plan lane
+
+    const breakdown = await gn.aggregateIssueClaimExclusions(undefined, { harness: H, assignee: 'probe' });
+    const rows = await gn.listIssueClaimableRows(undefined, { harness: H, assignee: 'probe' }, 50);
+    const expected = ['WI-A', 'WI-B', 'WI-C'];
+
+    // 1. the row list is EXACTLY the claimable set (ordered ids).
+    expect(rows.map((r) => r.id).sort()).toEqual(expected);
+    // 2. the survivors COUNT equals the row-list length — the drift-proof SSOT guarantee.
+    expect(breakdown.claimable).toBe(rows.length);
+    expect(breakdown.claimable).toBe(expected.length);
+    // 3. both equal what the REAL inline claim path drains (no rig/own-node/lease divergence here).
+    expect(await drainInlineClaimIds()).toEqual(expected);
+    // the floors genuinely removed rows (matched pre-floor strictly exceeds the survivors)…
+    expect(breakdown.matchedByFilter).toBe(9);
+    expect(breakdown.matchedByFilter).toBeGreaterThan(breakdown.claimable);
+    // …and every floored row is absent from the survivors list.
+    for (const floored of ['WI-TAKEN2', 'WI-HOLD2', 'WI-NH2', 'WI-OBS2', 'WI-DONE2', 'WI-ACTIVE2']) {
+      expect(rows.map((r) => r.id)).not.toContain(floored);
+    }
+    // the projected row carries the self-selection fields.
+    const a = rows.find((r) => r.id === 'WI-A')!;
+    expect(a.kind).toBe('bug');
+    expect(a.status).toBe('open');
+  });
+
+  it('a kind filter narrows both the count and the list; LIMIT caps the list only', async () => {
+    const gn = await import('./get-next');
+    await seed('WI-BUG1');
+    await seed('WI-BUG2');
+    await seed('WI-CHG1', { kind: 'change' });
+
+    const bugOnly: import('./claim-spec').FilterNode = { field: 'kind', op: '=', value: 'bug' };
+    const b = await gn.aggregateIssueClaimExclusions(bugOnly, { harness: H, assignee: 'probe' });
+    expect(b.matchedByFilter).toBe(2); // the change row is filtered OUT before floors
+    expect(b.claimable).toBe(2);
+
+    const capped = await gn.listIssueClaimableRows(bugOnly, { harness: H, assignee: 'probe' }, 1);
+    expect(capped).toHaveLength(1); // LIMIT honored (the count still reports the true 2)
+    expect(capped[0]!.kind).toBe('bug');
+  });
+});
