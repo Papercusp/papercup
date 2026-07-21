@@ -5,9 +5,11 @@
  * reconciler frames, which name nothing; the message + react.dev decode link +
  * component stack were dropped). These assert the useful parts are surfaced.
  */
-import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { render, screen, cleanup } from '@testing-library/react';
+import { afterEach, describe, it, expect } from 'vitest';
 import { ErrorDetail, errorMessage, errorStack } from './ErrorDetail';
+
+afterEach(cleanup);
 
 describe('errorMessage / errorStack', () => {
   it('reads Error.message + Error.stack', () => {
