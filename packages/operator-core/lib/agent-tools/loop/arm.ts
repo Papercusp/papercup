@@ -31,6 +31,8 @@ import {
   materializeLoop,
   buildLoopWakePrompt,
   detectDrivenWorkItemId,
+  readActiveLoopFacts,
+  type PriorLoopFacts,
   LOOP_INTERVAL_FLOOR_SEC,
 } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';

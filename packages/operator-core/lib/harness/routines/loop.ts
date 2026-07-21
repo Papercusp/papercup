@@ -713,6 +713,66 @@ export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): 
 }
 
 /**
+ * The lean facts the arm-time overwrite guard (EI-18221784742583615) needs about the
+ * loop a `loop:arm` upsert is ABOUT to replace: whether it is active, its interval, the
+ * full kickoff (so the arming verb can compare the incoming goal against the loop's
+ * current goal), its fireCount, carry/mode, and armedAt. Kept SEPARATE from
+ * getLoopStatus so the roster/watchdog batch reads (getLoopStatuses) never have to carry
+ * the potentially-multi-KB kickoff text. Returns null when the owner has no loop routine
+ * at all. Reads the latest routine per owner (active first), mirroring materializeLoop's
+ * own overwrite target.
+ */
+export interface PriorLoopFacts {
+  active: boolean;
+  intervalSec: number | null;
+  /** The current payload_template.kickoff — the arm-time goal comparison substrate. */
+  kickoff: string;
+  fireCount: number;
+  carry: 'warm' | 'cold';
+  mode: 'work' | 'monitor';
+  armedAt: string | null;
+}
+
+export async function readActiveLoopFacts(
+  ownerId: string,
+  opts: { sql?: Sql } = {},
+): Promise<PriorLoopFacts | null> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<
+    Array<{
+      active: boolean;
+      reschedule_interval_sec: number | null;
+      payload_template: Record<string, unknown> | null;
+      fire_count: number | null;
+      armed_at: string | null;
+    }>
+  >`
+    SELECT r.active,
+           r.reschedule_interval_sec,
+           r.payload_template,
+           COALESCE((r.metadata->>'fire_count')::int, 0) AS fire_count,
+           r.metadata->>'armed_at'                       AS armed_at
+      FROM harness_shared.routines r
+     WHERE r.target_owner_id = ${ownerId}
+       AND r.reschedule_interval_sec IS NOT NULL
+     ORDER BY r.active DESC, r.updated_at DESC
+     LIMIT 1
+  `;
+  const r = rows[0];
+  if (!r) return null;
+  const pt = (r.payload_template ?? {}) as Record<string, unknown>;
+  return {
+    active: Boolean(r.active),
+    intervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
+    kickoff: typeof pt.kickoff === 'string' ? pt.kickoff : '',
+    fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
+    carry: pt.carry === 'cold' ? 'cold' : 'warm',
+    mode: pt.mode === 'monitor' ? 'monitor' : 'work',
+    armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
+  };
+}
+
+/**
  * kickoff-prompt-absorption-2026-07-17 P-001 — arm a fleet MEMBER's engine loop
  * SERVER-SIDE at boot, the moment its fleet membership registers, instead of
  * relying on the kickoff prompt's "you must self-arm" instruction (AUTO_MODE_
