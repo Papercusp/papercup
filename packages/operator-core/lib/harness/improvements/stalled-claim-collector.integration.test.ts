@@ -54,7 +54,7 @@ async function seedBug(
       (${WS}, ${H}, ${featureId}, 'bug', ${featureId}, ${opts.status ?? 'blocked'}, ${takenBy},
        now() - make_interval(mins => ${takenAgoMin}),
        now() - make_interval(mins => ${takenAgoMin}),
-       ${JSON.stringify(payload)}::jsonb, ${Date.now()}, ${Date.now()})`;
+       ${fx.admin.json(payload)}, ${Date.now()}, ${Date.now()})`;
 }
 
 const collect = () => collectStalledClaimSignals(fx.admin, WS, { stalledClaimMinutes: 5 });

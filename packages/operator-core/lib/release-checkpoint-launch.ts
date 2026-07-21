@@ -27,6 +27,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
@@ -156,6 +157,15 @@ export interface ActiveCheckpointCheck {
    *  REPLACE_STALE_MIN_AGE_SEC — the stop was refused (a young stale run is healthy-in-progress
    *  on a busy tree, not wedged; see the constant's doc for the 2026-07-13 replace-storm). */
   replace_refused_young?: boolean;
+  /** WI-5685: true when this active run was detected via the shared file-based RUN LOCK, not
+   *  the manual systemd unit — almost certainly the hourly cron tick (or another out-of-band
+   *  invocation). `candidate`/`candidate_stale` are unknown in this case (the holder's own log
+   *  path isn't known), and `force`/`replaceStale` CANNOT free this slot — there is no manual
+   *  unit to stop or replace, so a `force:true` launch would just spawn a second process that
+   *  loses the exact same lock race and produces no verdict either. The only remedy is to wait
+   *  for it (checkpoint:await, no candidateSha — its outcome covers your commit too as long as
+   *  your commit is an ancestor of whatever it judges). */
+  held_externally?: boolean;
 }
 
 /** Minimal shape of a `child_process.spawnSync` result — injectable so
@@ -269,6 +279,65 @@ function defaultPidAlive(pid: number): boolean {
   }
 }
 
+/** Mirrors green-checkpoint.ts's PER-ROOT run-lock dir hash+path
+ *  (apps/operator/lib/release/green-checkpoint.ts's `checkpointRunLockDir`) — duplicated here,
+ *  READ-ONLY, for the same "operator-core must not depend on apps/operator" reason
+ *  `checkpointPipelineName`/`checkpointUnitForRoot` already duplicate their own hash (see
+ *  those doc comments). Keep the hash algorithm and the `.green-checkpoint-run-<hash>.lock`
+ *  name in sync BY HAND with green-checkpoint.ts — a drift here means this probe silently
+ *  checks the wrong path and always reports "not held", even while a real run holds the lock. */
+function checkpointRunLockDirMirror(logDir: string, root: string): string {
+  let h = 0;
+  for (let i = 0; i < root.length; i++) h = (h * 31 + root.charCodeAt(i)) >>> 0;
+  return path.join(logDir, `.green-checkpoint-run-${h.toString(36)}.lock`);
+}
+
+/** Mirrors release-config.ts's `checkpointLogDir` default resolution (env override, else
+ *  `~/.papercusp/checkpoint-logs`) — same duplication rationale as the lock-dir mirror above. */
+function checkpointLogDirFromEnv(): string {
+  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? path.join(homedir(), '.papercusp', 'checkpoint-logs');
+}
+
+/** Default reader for the run-lock's `owner.json` — real fs; injectable for tests. Never
+ *  throws: a missing/unreadable/malformed lock file just means "not held" (the common case —
+ *  most of the time nothing is running). */
+function defaultReadLockOwner(lockDir: string): { pid?: number; startedAt?: string } | null {
+  try {
+    return JSON.parse(readFileSync(path.join(lockDir, 'owner.json'), 'utf8')) as { pid?: number; startedAt?: string };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WI-5685 root fix: is the green-checkpoint RUN LOCK — the file-based, per-root lock
+ * `acquireCheckpointRunLock` in green-checkpoint.ts serializes EVERY invocation on, cron
+ * (spawned as a plain child by release-actions.ts's `runScript`, no systemd unit at all) and
+ * manual (`release:checkpoint-run`'s detached systemd unit) alike — currently held by a LIVE
+ * process, regardless of whether that process is the manual unit `checkActiveCheckpointRun`
+ * already knows how to see?
+ *
+ * This is the check `checkActiveCheckpointRun` was missing: it only ever probed the MANUAL
+ * unit's own systemd state, so a launch fired while the HOURLY CRON tick held the (unit-less)
+ * run lock sailed straight past that probe, `systemd-run` happily started a brand-new detached
+ * process, and THAT process immediately lost the race for the exact same lock file and exited
+ * `skipped-locked` within about a second — after `release:checkpoint-run` had already replied
+ * `launched:true`. Two consecutive manual fires burned two full `checkpoint:await` windows this
+ * way with zero verdict ever produced (WI-5685 evidence, 2026-07-20/21).
+ */
+function checkRunLockHeld(
+  root: string,
+  pidAlive: (pid: number) => boolean,
+  readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null,
+): { held: boolean; pid?: number | null; started_at?: string | null; elapsed_sec?: number | null } {
+  const lockDir = checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root);
+  const owner = readLockOwner(lockDir);
+  if (!owner || typeof owner.pid !== 'number' || !pidAlive(owner.pid)) return { held: false };
+  const startedMs = owner.startedAt ? Date.parse(owner.startedAt) : NaN;
+  const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000)) : null;
+  return { held: true, pid: owner.pid, started_at: owner.startedAt ?? null, elapsed_sec: elapsedSec };
+}
+
 /**
  * Detect whether a manual checkpoint run for `root` is CURRENTLY ACTIVE, before we'd try to
  * launch a new one (WI-1562). Reads systemd's live unit state directly — rather than firing
@@ -292,6 +361,7 @@ export function checkActiveCheckpointRun(
   execFn: ExecSyncLike = defaultExecSync,
   readLogHead: (logPath: string) => string | null = defaultReadLogHead,
   pidAlive: (pid: number) => boolean = defaultPidAlive,
+  readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null = defaultReadLockOwner,
 ): ActiveCheckpointCheck {
   const unit = checkpointUnitForRoot(root);
   const r = execFn('systemctl', [
@@ -308,6 +378,24 @@ export function checkActiveCheckpointRun(
   // A NEVER-STARTED or GC'd unit shows 'inactive' (or systemctl exits non-zero with empty
   // output for a truly unknown unit) — either way activeState won't be in this set.
   if (activeState !== 'active' && activeState !== 'activating' && activeState !== 'reloading') {
+    // WI-5685: the manual unit isn't active, but the shared RUN LOCK might still be held by a
+    // process that never went through the manual unit at all (the hourly cron tick — see the
+    // checkRunLockHeld doc comment). Cross-check it before declaring nothing active.
+    const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner);
+    if (lockHeld.held) {
+      const current = currentCheckpointCandidate(root, execFn);
+      return {
+        active: true,
+        unit: `${unit} (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)`,
+        candidate: null, // unknown: we don't know the holder's own log path
+        ...current,
+        candidate_stale: false, // never treat an external holder as replaceable-stale (EI-11667 safety)
+        started_at: lockHeld.started_at ?? null,
+        elapsed_sec: lockHeld.elapsed_sec ?? null,
+        eta_sec: lockHeld.elapsed_sec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - lockHeld.elapsed_sec) : null,
+        held_externally: true,
+      };
+    }
     return { active: false, unit };
   }
   // EI-9180 self-heal: MainPID=0 means systemd has no main process to report (nothing to
