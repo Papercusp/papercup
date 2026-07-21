@@ -171,12 +171,27 @@ function main() {
  * installed (non-git) package directory, threw "fatal: not a git repository", and
  * crashed the sidecar before Postgres could finish starting (EMBEDDED_PG_FAILED).
  *
- * Checking only the actual process entry path's basename is immune to import.meta.url
- * rewriting: a bundled runtime's entry is always the bundle's own filename
- * (`serve.mjs`), never this file's — so it can never accidentally match.
+ * This is the SAME landmine class `packages/operator-core/lib/util/cli-entry.ts`
+ * (`isCliEntry`) already exists to close for TS CLIs (EI-650: a bundled library's
+ * `main()` silently `process.exit(0)`'d the sidecar at boot the same way). This
+ * script can't import that helper — it must stay plain-Node-runnable with zero
+ * TS/bundler dependency (`build-desktop-sidecar.sh` runs it via bare `node`, and
+ * `content-lint/conflict-markers.ts` imports it, not the reverse) — so it
+ * re-derives the equivalent guard inline: check the bundle-build marker `--define`
+ * FIRST (same signal `isCliEntry` trusts), and independently check the process
+ * entry path's basename, which is immune to import.meta.url rewriting on its own
+ * (a bundled runtime's entry is always the bundle's own filename — `serve.mjs`,
+ * never this file's — so it can never accidentally match).
  */
+// Injected by esbuild (`--define`) only in the desktop-sidecar bundle (see
+// build-desktop-sidecar.sh). Absent (a genuine `undefined` global) under a plain
+// `node scripts/check-conflict-markers.mjs` CLI run or any test import — read via
+// `typeof` so the bare reference never throws a ReferenceError.
+// eslint-disable-next-line no-undef
+const isBundledSidecar = typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__;
+
 export const isDirectCliInvocation = (entryPath = process.argv[1]) =>
-  typeof entryPath === 'string' && /(?:^|[\\/])check-conflict-markers\.mjs$/.test(entryPath);
+  !isBundledSidecar && typeof entryPath === 'string' && /(?:^|[\\/])check-conflict-markers\.mjs$/.test(entryPath);
 
 if (isDirectCliInvocation()) {
   main();
