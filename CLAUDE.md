@@ -316,9 +316,13 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
 - **Reading PG-canonical state? Query PG — don't dump-and-jq a projection.**
   Plans, work-items, issues, observations (`engineer_issues`), `tool_invocations`,
   scorecards, recipes live in Postgres; the `*:list` tools and `docs/plans/*.md`
-  files are *projections*. For a filtered / aggregate / recency read, use
-  **`dev:pg_query`** (read-only SELECT — read-only txn + `statement_timeout` + row
-  cap) or a server-side `*:list` filter — never fetch a whole `*:list` and
+  files are *projections*. `dev:pg_query` is for **genuinely ad-hoc / analytic** reads
+  (a one-off group-by, join, or recency slice you won't run repeatedly). A HOT read with
+  a stable shape belongs behind a TOOL that wraps the canonical SQL so it can't drift —
+  e.g. "what's claimable" is `work_items:claimable`, NOT a raw floor query (see the
+  claimability note below). For a filtered / aggregate / recency read with no dedicated
+  tool, use **`dev:pg_query`** (read-only SELECT — read-only txn + `statement_timeout` +
+  row cap) or a server-side `*:list` filter — never fetch a whole `*:list` and
   `jq`/python a spilled projection. (su can also `psql` the admin URL directly:
   `getHarnessAdminUrl()` / the live operator's `DATABASE_URL`.) ⚠ Multi-tenant
   tables (`harness_plans`, the `*_consolidated` tables, …) key on
@@ -326,12 +330,18 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   can silently hit a different tenant's row and look like a stale/diverged
   store when it isn't:
   [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
-  ⚠ For CLAIMABLE work, `status='open'` is **NOT** claimability — the real claim path
-  applies ~12 unconditional floors, so a raw `WHERE status='open'` overcounts ~13×. Query
-  `harness_shared.work_items_claimable` / `scheduler:get_next` `excludedBreakdown` /
-  `work_items:list{admissibleOnly:true}`, never hand-rolled floors (and for issue-family
-  human-routing the signal is `payload.needsHuman`, NOT the feature-family
-  `needs_human_review` column):
+  ⚠ For CLAIMABLE issue-family work (bug/change/task), `status='open'` is **NOT**
+  claimability — the real claim path applies ~12 unconditional floors, so a raw
+  `WHERE status='open'` overcounts ~13×. Use the dedicated tool
+  **`work_items:claimable { harness }`** — the authoritative count + rows + per-floor
+  `excludedBreakdown`, wrapping the SAME oracle `scheduler:get_next` runs (so it can't
+  diverge from what the queue actually serves). Do **not** hand-roll floors in SQL over
+  `harness_shared.work_items` / the `work_items_claimable` view, and do **not** treat
+  `work_items:list{admissibleOnly:true}` as the claimable verdict — `admissibleOnly` is
+  only a cheap STRUCTURAL pre-filter (remote-origin + observation-lane), NOT the full claim
+  floors. (`scheduler:get_next`'s own `excludedBreakdown` is the same oracle if you're
+  already calling it.) For issue-family human-routing the signal is `payload.needsHuman`,
+  NOT the feature-family `needs_human_review` column:
   [judging claimable work — status='open' is not claimability](/internal/docs/agent-insights/judging-claimable-work-not-status-open).
 - ⚠ **Apply migrations via the runner (`db:migrate`)** — a raw `psql -f` runs
   DDL without recording it in `harness_shared.schema_migrations`, so every
