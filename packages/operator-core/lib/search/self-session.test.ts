@@ -45,7 +45,7 @@ describe('resolveSelfSession — claude cold-carry respawn chain (WI-5644)', () 
   const CURRENT = 'c95d04fe-a291-4879-b93f-b49f9fb75144'; // newest transcript, minted by a later carry-respawn
 
   async function seedIsolationDir(home: string, owner: string, sessions: Array<{ id: string; mtime: number }>) {
-    const proj = join(home, '.papercusp', 'session-claude', owner, 'projects', '-home-marsh-proj');
+    const proj = join(home, '.papercusp', 'session-claude', owner, 'projects', '-home-testuser-proj');
     await mkdir(proj, { recursive: true });
     for (const s of sessions) {
       const p = join(proj, `${s.id}.jsonl`);
@@ -109,7 +109,7 @@ describe('resolveSelfSession — coord-id drift across a carry-respawn (WI-5681)
     const coordId = 'su-current-coord'; // what coord:whoami returns NOW
     const launchId = 'su-launch-time-iso'; // the id that NAMES the isolation dir (frozen at launch)
     // The transcript lives under the LAUNCH-time id's isolation dir, NOT the coord id's.
-    const proj = join(home, '.papercusp', 'session-claude', launchId, 'projects', '-home-marsh-proj');
+    const proj = join(home, '.papercusp', 'session-claude', launchId, 'projects', '-home-testuser-proj');
     await mkdir(proj, { recursive: true });
     const txnPath = join(proj, `${CURRENT_TXN}.jsonl`);
     await writeFile(txnPath, '{}\n');
