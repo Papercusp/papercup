@@ -112,11 +112,13 @@ async function writeToPg(
     // hive_members rows drop SILENTLY here when this projection is bound to the MEMBER slug
     // instead of the hive-home slug (the rekey-rebind didn't engage) → the joiner's roster
     // stays EMPTY even though B admitted + drained the owner log. This is the apply-side twin
-    // of the owner-LOG bootstrap-admit; a mismatch on the live trace pins the rebind gap.
+    // of the owner-LOG bootstrap-admit; a mismatch on the live trace pins the rebind gap. The
+    // line carries an ISO wall-clock timestamp right after the `[A-003]` tag for cross-frame
+    // timeline correlation.
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-       
+
       console.error(
-        `[A-003] hive-members-drop own=${opts.harnessSlug} row.hive_home=${row.pot_home_slug} ` +
+        `[A-003] ${new Date().toISOString()} hive-members-drop own=${opts.harnessSlug} row.hive_home=${row.pot_home_slug} ` +
           `(cross-Hive: projection NOT bound to hive-home → roster row dropped)`,
       );
     }

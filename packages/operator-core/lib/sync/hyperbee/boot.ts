@@ -3173,11 +3173,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // A-003 diagnostic (env-gated): the per-frame slug-filter decision — so a live
     // witness can grep `[A-003] slug-filter` to see whether a joiner's member harness
     // ADMITS the owner's hive-home log (origin=<hive-home> → ADMIT requires
-    // home=<hive-home>, i.e. the rebind resolved) or REJECTs it.
+    // home=<hive-home>, i.e. the rebind resolved) or REJECTs it. Each line now carries
+    // an ISO wall-clock timestamp right after the `[A-003]` tag for cross-frame
+    // timeline correlation.
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-       
+
       console.error(
-        `[A-003] slug-filter ${opts.harnessSlug}: origin=${originSlug ?? '<none>'} own=${slug} ` +
+        `[A-003] ${new Date().toISOString()} slug-filter ${opts.harnessSlug}: origin=${originSlug ?? '<none>'} own=${slug} ` +
           `home=${hiveHomeProjectionSlug ?? '<none>'} → ${inScope ? 'ADMIT' : 'REJECT'} ` +
           `peer=${peerLabel(frame.log_core_key)}`,
       );
@@ -4141,7 +4143,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
            
           console.error(
-            `[A-003] rekey ${opts.harnessSlug}: binding.kind=${binding?.kind ?? '<none>'} next=${next ?? '<none>'} prev=${hiveHomeProjectionSlug ?? '<none>'} rebind=${next !== hiveHomeProjectionSlug}`,
+            `[A-003] ${new Date().toISOString()} rekey ${opts.harnessSlug}: binding.kind=${binding?.kind ?? '<none>'} next=${next ?? '<none>'} prev=${hiveHomeProjectionSlug ?? '<none>'} rebind=${next !== hiveHomeProjectionSlug}`,
           );
         }
         if (next !== hiveHomeProjectionSlug) {
@@ -4185,7 +4187,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       } else if (process.env.PAPERCUSP_A003_TRACE === '1') {
          
-        console.error(`[A-003] rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`);
+        console.error(
+          `[A-003] ${new Date().toISOString()} rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`,
+        );
       }
       await joinForBinding(binding);
       // A-003 fix (c) — replay-on-rebind. The rekey is the exact moment
