@@ -31,6 +31,7 @@
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { machineFingerprint } from './identity/device-keychain-id';
+import { broadcastSevereEventResolved } from './severe-event-broadcast';
 
 /** The system identity the owner-key-missing escalation is attributed to. */
 const OWNER_KEY_HEALTH_IDENTITY: AgentIdentity = {
@@ -139,12 +140,19 @@ async function insertOwnerKeyToastWithRetry(
   }
 }
 
-/** The default escalation: coord broadcast (the floor) + a toast row (best-effort, retried). */
+/** The default escalation: coord broadcast (the floor) + a toast row (best-effort, retried).
+ *  Stamps `condition_key` (the SAME dedupKey clearOwnedHiveKeyHealth resolves) so a later
+ *  recovery's broadcastSevereEventResolved can annotate this alarm `resolved:true` instead of
+ *  leaving it looking permanently unresolved once the transient boot-time race that caused it
+ *  clears on a later reconcile tick (WI investigation 2026-07-21: exactly this — one firing
+ *  2026-07-17, self-recovered by the next `system:cross-hive-outbox-drain` tick, silently, with
+ *  no way for a reader to tell "still broken" from "recovered minutes later"). */
 async function defaultEscalate(ref: OwnedHiveKeyMissingRef, summary: string): Promise<void> {
   await sendMessage(OWNER_KEY_HEALTH_IDENTITY, {
     to: ['*'],
     summary,
     category: 'hive-owner-health',
+    extra: { condition_key: dedupKey(ref.workspaceId, ref.potSlug) },
   }).catch(() => {});
   // Toast row — the notification panel / notifications:recent rail, AND the
   // persistent cross-restart dedup floor `defaultRecentlyAlerted` reads back.
@@ -288,9 +296,27 @@ export async function signalHiveKeyDivergent(
 /**
  * Recovery edge: the owner key loaded for this hive again. Clears the dedup entry
  * so a FUTURE loss re-alerts. Call on the success path (a non-null pubkey).
+ *
+ * WI investigation (2026-07-21, tower-side owner-key-missing alarm): this used to be a
+ * SILENT clear — the in-memory dedup reset, but no one was ever told the hive recovered.
+ * `wireOneHive` reconciles on every boot AND every `system:cross-hive-outbox-drain` tick, so a
+ * transient keychain-read hiccup (the SAME early-boot/PG-readiness race class already fixed for
+ * the toast-write path, see insertOwnerKeyToastWithRetry) self-heals within one tick — but a
+ * reader of the original 🔴 alert had no way to tell "still broken" from "recovered minutes
+ * later" (proven live: an alert last fired 2026-07-17 01:29Z, never recurred, and
+ * loadHivePubkey resolves fine now — yet nothing ever said so). Only broadcast when this WAS a
+ * real signaled→recovered transition (Set.delete's return value) — a normal boot where the key
+ * was never missing must stay silent, not spam a "recovered" notice for nothing to recover from.
+ * Best-effort + never throws, same posture as every other emission in this module.
  */
 export function clearOwnedHiveKeyHealth(ref: { workspaceId: string; potSlug: string }): void {
-  signaled.delete(dedupKey(ref.workspaceId, ref.potSlug));
+  const k = dedupKey(ref.workspaceId, ref.potSlug);
+  const wasSignaled = signaled.delete(k);
+  if (!wasSignaled) return;
+  void broadcastSevereEventResolved({
+    conditionKey: k,
+    summary: `✅ owner key RECOVERED for hive ${ref.workspaceId}/${ref.potSlug} — loadHivePubkey resolves again; it can sign/serve the hive.`,
+  }).catch(() => {});
 }
 
 /** Whether this hive currently has an outstanding (un-recovered) owner-key alert. */

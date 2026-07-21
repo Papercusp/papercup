@@ -10,9 +10,13 @@ import {
 // Hoisted mocks for the DEFAULT-deps path (defaultEscalate) — used only by the
 // "WI investigation 2026-07-17" describe block below, which exercises the
 // real toast-write-with-retry logic instead of an injected fake `escalate`.
+// Also the mock `clearOwnedHiveKeyHealth` (WI investigation 2026-07-21) reads:
+// it calls broadcastSevereEventResolved, which imports sendMessage from this
+// SAME module path, so this one mock covers both the alarm and the recovery leg.
 const insertValuesMock = vi.hoisted(() => vi.fn());
+const sendMessageMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('./agent-tools/coordination/messages', () => ({
-  sendMessage: vi.fn().mockResolvedValue(undefined),
+  sendMessage: sendMessageMock,
 }));
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({
@@ -32,7 +36,10 @@ vi.mock('@papercusp/db-org', () => ({
  * behavior is the per-(workspace,hive) dedup + the recovery-edge re-arm.
  */
 describe('signalOwnedHiveKeyMissing', () => {
-  beforeEach(() => _resetOwnerKeyHealthForTests());
+  beforeEach(() => {
+    _resetOwnerKeyHealthForTests();
+    sendMessageMock.mockClear();
+  });
 
   const fakeDeps = (): { deps: OwnerKeyHealthDeps; warned: string[]; escalated: string[] } => {
     const warned: string[] = [];
@@ -92,6 +99,34 @@ describe('signalOwnedHiveKeyMissing', () => {
     // key went dark again → a NEW alert fires.
     expect(await signalOwnedHiveKeyMissing({ workspaceId: 'w', potSlug: 'h', context: 'c' }, deps)).toBe(true);
     expect(escalated).toEqual(['w::h', 'w::h']);
+  });
+
+  // WI investigation (2026-07-21, tower-side owner-key-missing alarm): a hive that
+  // self-recovers between reconcile ticks (the observed live pattern — one firing
+  // 2026-07-17 01:29Z, never recurred, loadHivePubkey resolves fine days later) used
+  // to clear SILENTLY — nothing ever told a reader the alert was stale/resolved.
+  // clearOwnedHiveKeyHealth now broadcasts a matching severe-event-resolved so the
+  // original alarm gets annotated resolved:true instead of looking permanently open.
+  it('RESOLVED BROADCAST: a real signaled→recovered transition emits a matching resolution', async () => {
+    const { deps } = fakeDeps();
+    await signalOwnedHiveKeyMissing({ workspaceId: 'w', potSlug: 'h', context: 'cross-hive-boot' }, deps);
+    sendMessageMock.mockClear(); // isolate: only the RESOLUTION call from here on
+    clearOwnedHiveKeyHealth({ workspaceId: 'w', potSlug: 'h' });
+    await Promise.resolve(); // let the fire-and-forget broadcast microtask run
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    const [, opts] = sendMessageMock.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(opts.category).toBe('severe-event-resolved');
+    expect((opts.extra as Record<string, unknown>).resolves_condition).toBe('w::h');
+    expect(opts.summary).toContain('RECOVERED');
+    expect(opts.summary).toContain('w/h');
+  });
+
+  it('RESOLVED BROADCAST is a no-op when the hive was never signaled (no spurious "recovered")', async () => {
+    // Never called signalOwnedHiveKeyMissing for this hive — a normal boot where the
+    // key was always fine must not emit a "recovered from what?" notice.
+    clearOwnedHiveKeyHealth({ workspaceId: 'w', potSlug: 'never-dark' });
+    await Promise.resolve();
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it('CROSS-RESTART: a hive alerted in a PRIOR process (in-mem set empty) is suppressed', async () => {
