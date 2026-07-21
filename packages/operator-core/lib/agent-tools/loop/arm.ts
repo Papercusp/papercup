@@ -92,6 +92,83 @@ async function resolveDefaultCarry(ownerId: string): Promise<'warm' | 'cold'> {
   }
 }
 
+/** Normalize free text for a loose goal-containment check (case/whitespace-insensitive). */
+function normalizeLoopText(s: string): string {
+  return String(s ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** The surfaced comparison when a re-arm materially changes an ACTIVE loop's goal
+ *  (EI-18221784742583615). Advisory only — the loop is still (re-)armed. */
+export interface LoopOverwriteNote {
+  priorIntervalSec: number | null;
+  priorFireCount: number;
+  priorCarry: 'warm' | 'cold';
+  priorMode: 'work' | 'monitor';
+  priorArmedAt: string | null;
+  priorKickoffExcerpt: string;
+  intervalChanged: boolean;
+  message: string;
+}
+
+/**
+ * EI-18221784742583615 — the PURE arm-time overwrite decision. loop:arm is an UPSERT
+ * keyed on (owner, name), so re-arming REPLACES the owner's single loop row wholesale.
+ * A stale/replayed fleet-kickoff turn (an expired-nonce envelope redelivered ~25h late)
+ * could therefore silently clobber an ACTIVE, specialized, long-running loop (rich
+ * checkpoint state, high fireCount, e.g. a 1200s WI-5672 watch) with a generic goal and
+ * a fast 120s cadence — the arming agent, taking the stale premise at face value before
+ * reading its own held work-items, never saw what it replaced.
+ *
+ * Given the prior active loop's facts and the incoming arm, decide whether the re-arm
+ * MATERIALLY changes the loop's GOAL — the harmful case — and, if so, produce the
+ * comparison to surface. Returns null (no warning — the loop still arms) when:
+ *   - there is no prior loop, or it is not active (a fresh start / re-arm over an ended
+ *     loop is fine); OR
+ *   - the newly-built kickoff equals the prior kickoff (an identical re-arm); OR
+ *   - the new goal text already appears in the prior kickoff (the default template embeds
+ *     `{goal}`, so an interval-only / carry / mode retune — the normal in-turn re-arm —
+ *     keeps the goal and is NOT flagged).
+ * Only a goal SWAP (new goal not represented in the prior kickoff) surfaces the note. Pure
+ * + exported for unit tests, mirroring decideDefaultCarry / computeLoopStall.
+ */
+export function computeLoopOverwriteNote(
+  prior: PriorLoopFacts | null,
+  next: { goal: string; intervalSec: number; kickoff: string },
+): LoopOverwriteNote | null {
+  if (!prior || !prior.active) return null;
+  const priorKickoffNorm = normalizeLoopText(prior.kickoff);
+  // Identical re-arm (same built kickoff, incl. a re-armed custom wakePrompt): the same
+  // loop, unchanged — no warning.
+  if (priorKickoffNorm === normalizeLoopText(next.kickoff)) return null;
+  const nextGoal = normalizeLoopText(next.goal);
+  // Goal preserved (present verbatim in the prior kickoff)? Then only interval/carry/mode
+  // changed — a deliberate retune, not a goal swap. No warning.
+  if (nextGoal.length > 0 && priorKickoffNorm.includes(nextGoal)) return null;
+  const intervalChanged = prior.intervalSec != null && prior.intervalSec !== next.intervalSec;
+  const excerpt = prior.kickoff.trim().slice(0, 240);
+  const message =
+    `This re-arm OVERWRITES an already-ACTIVE loop (fired ${prior.fireCount}×` +
+    `${prior.armedAt ? `, last armed ${prior.armedAt}` : ''})` +
+    (intervalChanged ? ` — interval ${prior.intervalSec}s → ${next.intervalSec}s` : '') +
+    ` whose goal DIFFERS from the new one. If you did NOT intend to replace it (e.g. this` +
+    ` turn came from a stale/replayed kickoff), do NOT proceed on the new goal — check` +
+    ` loop:status, then loop:end + re-arm the correct loop. Prior kickoff: "${excerpt}` +
+    `${prior.kickoff.length > 240 ? '…' : ''}"`;
+  return {
+    priorIntervalSec: prior.intervalSec,
+    priorFireCount: prior.fireCount,
+    priorCarry: prior.carry,
+    priorMode: prior.mode,
+    priorArmedAt: prior.armedAt,
+    priorKickoffExcerpt: excerpt,
+    intervalChanged,
+    message,
+  };
+}
+
 export default defineTool({
   name: 'loop:arm',
   profile: 'engineer',
@@ -335,6 +412,23 @@ export default defineTool({
         workItem: claimedWorkItem,
       });
 
+    // EI-18221784742583615 — arm-time overwrite guard. Read the loop this upsert is about
+    // to REPLACE (before materializeLoop overwrites it) and, if the re-arm materially
+    // changes an ACTIVE loop's goal, surface the prior config for comparison so the arming
+    // agent sees what it is replacing instead of clobbering a specialized loop blind (the
+    // stale/replayed-kickoff scenario). Best-effort + purely advisory: the read/compute
+    // never fails the arm, and the loop is still (re-)armed regardless — "surface, don't
+    // silently overwrite" per the filed bug, not a hard refusal.
+    let overwriteNote: LoopOverwriteNote | null = null;
+    try {
+      const prior = await readActiveLoopFacts(ownerId);
+      overwriteNote = computeLoopOverwriteNote(prior, { goal, intervalSec: args.intervalSec, kickoff });
+    } catch (e) {
+      console.warn(
+        `[loop:arm] overwrite-guard read failed (loop still armed): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+
     const loop = await materializeLoop({
       workspaceId,
       harnessSlug: harness,
@@ -398,6 +492,9 @@ export default defineTool({
           ? ` ⚠ Did NOT auto-claim ${workItemClaim.id} — already held by ${workItemClaim.holder}. Coordinate with them (coord:send); the loop is armed regardless.`
           : ` ⚠ Did NOT auto-claim ${workItemClaim.id} (${workItemClaim.reason}); the loop is armed regardless — claim it yourself if this loop drives it.`
       : '';
+    // EI-18221784742583615: put the overwrite comparison right after the base note so it
+    // is the FIRST thing the arming agent reads — ahead of the claim/warm/cold tails.
+    const overwriteNoteText = overwriteNote ? ` ⚠ ${overwriteNote.message}` : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
     // B (cold-with-carry-activation-2026-07-20): disclose when the headless default
     // kicked in, so the arming agent knows its loop will go COLD (transcript reset to
@@ -407,7 +504,7 @@ export default defineTool({
       args.carry == null && carry === 'cold'
         ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
         : '';
-    const note = baseNote + claimNote + warningNote + coldDefaultNote;
+    const note = baseNote + overwriteNoteText + claimNote + warningNote + coldDefaultNote;
 
     return {
       content: [
@@ -444,6 +541,7 @@ export default defineTool({
             workItemClaim,
             reachability: reachabilityOut,
             unboundedWarmLoopWarning,
+            priorLoopOverwrite: overwriteNote,
             note,
           }),
         },

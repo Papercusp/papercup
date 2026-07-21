@@ -39,6 +39,9 @@ vi.mock('../../harness/routines/loop', () => ({
   // WI-2429 fix A: goal auto-detect of the driven work-item (cold-only). Default null
   // (no id) so the WI-1471 identity tests below are unaffected; per-test override sets it.
   detectDrivenWorkItemId: vi.fn(() => null),
+  // EI-18221784742583615: the arm-time overwrite-guard read of the prior loop. Default null
+  // (no prior loop) so every existing test is unaffected; per-test override sets a prior.
+  readActiveLoopFacts: vi.fn(async () => null),
 }));
 // WI-2429 fix A: the arm-time auto-claim of the loop's driven work-item.
 vi.mock('../../work-items', () => ({
@@ -74,16 +77,22 @@ vi.mock('../../events/await/psu-pty-discovery', () => ({
     host?.bridgeTty === false ? 'claude-headless' : 'claude-interactive',
 }));
 
-import { materializeLoop, buildLoopWakePrompt, detectDrivenWorkItemId } from '../../harness/routines/loop';
+import {
+  materializeLoop,
+  buildLoopWakePrompt,
+  detectDrivenWorkItemId,
+  readActiveLoopFacts,
+} from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
-import { decideDefaultCarry } from './arm';
+import { decideDefaultCarry, computeLoopOverwriteNote } from './arm';
 
 const materializeM = vi.mocked(materializeLoop);
 const buildPromptM = vi.mocked(buildLoopWakePrompt);
 const detectM = vi.mocked(detectDrivenWorkItemId);
+const priorLoopM = vi.mocked(readActiveLoopFacts);
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getWiM = vi.mocked(getWorkItem);
@@ -106,6 +115,8 @@ beforeEach(() => {
   claimM.mockResolvedValue(null as never);
   classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
   getWiM.mockResolvedValue(null as never);
+  // EI-18221784742583615: default no prior loop ⇒ no overwrite note (every existing test).
+  priorLoopM.mockResolvedValue(null as never);
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
@@ -356,5 +367,107 @@ describe('loop:arm headless carry default (B, through the handler)', () => {
     const b = body(await call({ carry: 'warm' }));
     expect(b.loop.carry).toBe('warm');
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'warm' }));
+  });
+});
+
+// EI-18221784742583615 — arm-time overwrite guard: a stale/replayed fleet-kickoff turn
+// silently clobbered an active specialized loop's config. loop:arm now surfaces the prior
+// loop when the re-arm materially changes an ACTIVE loop's goal.
+const priorLoop = (over: Partial<Parameters<typeof computeLoopOverwriteNote>[0] & object> = {}) => ({
+  active: true,
+  intervalSec: 1200,
+  kickoff: 'You are continuing your OWN warm session toward: watch WI-5672 for the next live-fed-gate fire',
+  fireCount: 48,
+  carry: 'cold' as const,
+  mode: 'work' as const,
+  armedAt: '2026-07-20T00:00:00.000Z',
+  ...over,
+});
+
+describe('computeLoopOverwriteNote (pure EI-18221784742583615 decision)', () => {
+  const next = { goal: 'drain the generic bug backlog', intervalSec: 120, kickoff: 'new-generic-kickoff' };
+
+  it('null / inactive prior ⇒ no note (a fresh start or re-arm over an ended loop is fine)', () => {
+    expect(computeLoopOverwriteNote(null, next)).toBeNull();
+    expect(computeLoopOverwriteNote(priorLoop({ active: false }), next)).toBeNull();
+  });
+
+  it('identical re-arm (same built kickoff) ⇒ no note, even with an unrelated goal string', () => {
+    const prior = priorLoop({ kickoff: 'same-kickoff-text' });
+    expect(computeLoopOverwriteNote(prior, { ...next, kickoff: 'same-kickoff-text' })).toBeNull();
+    // whitespace/case-insensitive
+    expect(computeLoopOverwriteNote(prior, { ...next, kickoff: '  SAME-kickoff-TEXT  ' })).toBeNull();
+  });
+
+  it('goal PRESERVED (new goal appears verbatim in the prior kickoff) ⇒ no note — an interval-only retune', () => {
+    const prior = priorLoop({ kickoff: 'toward: watch WI-5672 for the next fire', intervalSec: 1200 });
+    // same goal, only the interval changed → deliberate retune, not a goal swap
+    const note = computeLoopOverwriteNote(prior, {
+      goal: 'watch WI-5672 for the next fire',
+      intervalSec: 300,
+      kickoff: 'toward: watch WI-5672 for the next fire (300s)',
+    });
+    expect(note).toBeNull();
+  });
+
+  it('goal SWAP over an active long-running loop ⇒ a note surfacing the prior config', () => {
+    const note = computeLoopOverwriteNote(priorLoop(), next);
+    expect(note).not.toBeNull();
+    expect(note!.priorIntervalSec).toBe(1200);
+    expect(note!.priorFireCount).toBe(48);
+    expect(note!.intervalChanged).toBe(true); // 1200s → 120s
+    expect(note!.message).toContain('OVERWRITES an already-ACTIVE loop');
+    expect(note!.message).toContain('fired 48×');
+    expect(note!.message).toContain('1200s → 120s');
+    expect(note!.message).toContain('loop:end');
+    // the prior kickoff is quoted so the agent can compare goals
+    expect(note!.priorKickoffExcerpt).toContain('WI-5672');
+  });
+
+  it('interval unchanged but goal swapped ⇒ note with intervalChanged=false and no interval delta text', () => {
+    const note = computeLoopOverwriteNote(priorLoop({ intervalSec: 120 }), next);
+    expect(note).not.toBeNull();
+    expect(note!.intervalChanged).toBe(false);
+    expect(note!.message).not.toContain('→');
+  });
+});
+
+describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler)', () => {
+  it('re-arming over an active loop with a DIFFERENT goal surfaces priorLoopOverwrite + a note; the loop still arms', async () => {
+    priorLoopM.mockResolvedValue(priorLoop() as never);
+    // buildLoopWakePrompt is mocked to 'kickoff-prompt', which the prior kickoff does not
+    // contain, and the goal below is not in the prior kickoff → materially different.
+    const b = body(await call({ intervalSec: 120, goal: 'drain the generic bug backlog' }));
+    expect(b.ok).toBe(true); // purely advisory — arming still succeeds
+    expect(materializeM).toHaveBeenCalled(); // the loop was (re-)armed regardless
+    expect(b.priorLoopOverwrite).not.toBeNull();
+    expect(b.priorLoopOverwrite.priorFireCount).toBe(48);
+    expect(b.note).toContain('OVERWRITES an already-ACTIVE loop');
+    expect(priorLoopM).toHaveBeenCalledWith('su-caller-own-id');
+  });
+
+  it('re-arming with the SAME goal (goal present in the prior kickoff) ⇒ no overwrite note', async () => {
+    priorLoopM.mockResolvedValue(
+      priorLoop({ kickoff: 'toward: drain the generic bug backlog now' }) as never,
+    );
+    const b = body(await call({ intervalSec: 120, goal: 'drain the generic bug backlog' }));
+    expect(b.priorLoopOverwrite).toBeNull();
+    expect(b.note).not.toContain('OVERWRITES an already-ACTIVE loop');
+  });
+
+  it('no prior loop ⇒ priorLoopOverwrite null (the default arm shape, unaffected)', async () => {
+    const b = body(await call({}));
+    expect(b.priorLoopOverwrite).toBeNull();
+  });
+
+  it('the overwrite-guard read throwing is swallowed — arming never fails on the advisory leg', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    priorLoopM.mockRejectedValue(new Error('db down') as never);
+    const b = body(await call({ goal: 'anything' }));
+    expect(b.ok).toBe(true);
+    expect(b.priorLoopOverwrite).toBeNull();
+    // the failure is logged (best-effort), not surfaced as an error
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('overwrite-guard read failed'));
+    warnSpy.mockRestore();
   });
 });
