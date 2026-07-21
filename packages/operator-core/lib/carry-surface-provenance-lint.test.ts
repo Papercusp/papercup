@@ -146,6 +146,53 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0].kind).toBe('owner-attribution');
     expect(r.matches[0].line).toContain('the owner said to ship this dark');
   });
+
+  // EI-18226077402946717: a checkpoint that NARRATES a coordination side-effect as
+  // already DONE ("posted evidence to WI-####", "messaged fleet leader su-…") with no
+  // verifiable anchor is the shape that silently drops a handoff when it never happened.
+  it('EI-18226077402946717: flags the exact bug shape — a narrated post + peer message with a coordination target', () => {
+    const r = lintCarrySurfaceProvenance(
+      'Posted full evidence to WI-5672 (posts 53500-53501) and updated the plan. Messaged fleet leader su-bce40c51 directly.',
+    );
+    expect(r.flagged).toBe(true);
+    const kinds = r.matches.map((m) => m.kind);
+    expect(kinds).toContain('unverified-action-claim');
+  });
+
+  it('EI-18226077402946717: flags "commented on WI-…" / "notified the fleet" / "escalated to su-…" narrated actions', () => {
+    expect(lintCarrySurfaceProvenance('commented on WI-5137 that the gate is green').flagged).toBe(true);
+    expect(lintCarrySurfaceProvenance('notified the fleet that the reds are cleared').flagged).toBe(true);
+    expect(lintCarrySurfaceProvenance('escalated to su-a7d08fd3 for the credential').flagged).toBe(true);
+  });
+
+  it('EI-18226077402946717: a [turn:…] ref on the action line CLEARS it — the one valid completion anchor', () => {
+    const r = lintCarrySurfaceProvenance(
+      'Posted evidence to WI-5672 (post 53502) [turn:6ffd5ea8@2026-07-21T04:14:03.101Z]',
+    );
+    expect(r.flagged).toBe(false);
+    expect(r.matches).toEqual([]);
+  });
+
+  it('EI-18226077402946717: does NOT flag ordinary in-file progress prose (past verbs, no coordination target)', () => {
+    // These carry past-tense verbs but describe the agent's OWN in-tree work, not a
+    // cross-agent/cross-item side-effect — must stay clean (high-precision discipline).
+    expect(lintCarrySurfaceProvenance('committed the fix and posted the results to the log').flagged).toBe(false);
+    expect(lintCarrySurfaceProvenance('sent the request to the embedding sidecar; notified the user via toast').flagged).toBe(false);
+    expect(lintCarrySurfaceProvenance('replied to the review comment and refactored the helper').flagged).toBe(false);
+  });
+
+  it('EI-18226077402946717: does NOT flag a PLAN (base-form verb) to do the action next', () => {
+    // A checkpoint's "Next:" line uses the base form — a plan, not a completed claim.
+    expect(lintCarrySurfaceProvenance('Next: post evidence to WI-5672 and message the fleet leader').flagged).toBe(false);
+  });
+
+  it('EI-18226077402946717: an action-claim is NOT laundered by a [self-imposed] directive tag on the same line', () => {
+    // A source tag attributes the DIRECTIVE that ordered the action; it does not prove
+    // the action happened — so the action-claim still flags (only a [turn:…] ref clears it).
+    const r = lintCarrySurfaceProvenance('[self-imposed] posted evidence to WI-5672 for the handoff');
+    expect(r.flagged).toBe(true);
+    expect(r.matches.some((m) => m.kind === 'unverified-action-claim')).toBe(true);
+  });
 });
 
 describe('provenanceLintField', () => {
