@@ -2457,15 +2457,21 @@ export function buildResumeEnv(session, { fork = false, brain = false, accountEn
  * launches pin BOTH variables because PI_CODING_AGENT_DIR overrides
  * PI_CONFIG_DIR; resumes must do the same or `omp -r <native-id>` searches the
  * global ~/.omp store and reports a perfectly valid tracked thread as missing.
- * The config dir remains home-relative because OMP joins it onto homedir(). */
+ * The config dir remains home-relative because OMP joins it onto homedir().
+ *
+ * Also re-heals `agent.db` → global OAuth store (linkOmpAgentDb): pre-fix
+ * sessions have an empty real-file agent.db, so a resume without this would
+ * keep dropping xai-oauth / other logins even after a fresh-launch fix. */
 export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
   if (session?.agent !== 'omp' || session?.id == null) return {};
   const rel = join('.papercusp', 'su-omp-homes', `session-${session.id}`);
   const root = join(home, rel);
   if (!existsSync(root)) return {};
+  const agentDir = join(root, 'agent');
+  linkOmpAgentDb(join(home, '.omp', 'agent'), agentDir);
   return {
     PI_CONFIG_DIR: rel,
-    PI_CODING_AGENT_DIR: join(root, 'agent'),
+    PI_CODING_AGENT_DIR: agentDir,
   };
 }
 

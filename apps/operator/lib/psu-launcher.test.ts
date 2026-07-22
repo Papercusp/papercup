@@ -1693,6 +1693,24 @@ describe('psu-launcher arg parsing', () => {
     }
   });
 
+  it('ompTrackedResumeEnv re-heals a stale empty agent.db to the global OAuth store', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-omp-resume-heal-'));
+    try {
+      const globalAgent = join(home, '.omp', 'agent');
+      const root = join(home, '.papercusp', 'su-omp-homes', 'session-42');
+      mkdirSync(globalAgent, { recursive: true });
+      mkdirSync(join(root, 'agent'), { recursive: true });
+      writeFileSync(join(globalAgent, 'agent.db'), 'GLOBAL_XAI_OAUTH');
+      writeFileSync(join(root, 'agent', 'agent.db'), ''); // pre-fix empty real file
+      ompTrackedResumeEnv({ agent: 'omp', id: 42 }, { home });
+      const dst = join(root, 'agent', 'agent.db');
+      expect(lstatSync(dst).isSymbolicLink()).toBe(true);
+      expect(readFileSync(dst, 'utf8')).toBe('GLOBAL_XAI_OAUTH');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('OMP resume route transitions replace auto/pin config and restore direct config on default', () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-omp-route-'));
     try {
