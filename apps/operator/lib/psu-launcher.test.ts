@@ -9,6 +9,7 @@ import {
   ompDefaultModelAdvisory,
   ompDefaultModel,
   writeOmpSessionConfigDir,
+  linkOmpAgentDb,
   applyOmpToolsAllowlist,
   applyOmpOperatorOrigin,
   applyOmpMcpUrlParams,
@@ -793,6 +794,51 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(readFileSync(agentPath('sess1', 'auth.json'), 'utf8')).toBe('{"token":"AUTHSECRET"}');
     expect(existsSync(agentPath('sess1', 'models.yml'))).toBe(true);
     expect(readFileSync(agentPath('sess1', 'models.db'), 'utf8')).toBe('BINARYREGISTRY');
+  });
+
+  // xai-oauth (and other modern OMP logins) live in agent.db auth_credentials —
+  // not legacy auth.json. Without this symlink, psu→omp sessions boot with an
+  // empty credential store and Grok vanishes from /model even though bare omp works.
+  it('symlinks agent.db so OAuth providers (xai-oauth etc.) survive PI_CONFIG_DIR relocation', () => {
+    writeFileSync(join(home, '.omp', 'agent', 'agent.db'), 'OAUTH_DB_BYTES');
+    writeOmpSessionConfigDir('sess1', {}, home);
+    const dst = agentPath('sess1', 'agent.db');
+    expect(lstatSync(dst).isSymbolicLink()).toBe(true);
+    expect(realpathSync(dst)).toBe(realpathSync(join(home, '.omp', 'agent', 'agent.db')));
+    expect(readFileSync(dst, 'utf8')).toBe('OAUTH_DB_BYTES');
+  });
+
+  it('does not fail when global agent.db is missing (degrades to OMP native auth error)', () => {
+    // beforeEach seeds no agent.db — seed must still succeed for models/mcp.
+    const dir = writeOmpSessionConfigDir('sess1', {}, home);
+    expect(dir).toBe(relDir('sess1'));
+    expect(existsSync(agentPath('sess1', 'agent.db'))).toBe(false);
+    expect(existsSync(agentPath('sess1', 'mcp.json'))).toBe(true);
+  });
+
+  it('replaces a stale non-symlink agent.db (pre-fix empty session db) with a symlink', () => {
+    writeFileSync(join(home, '.omp', 'agent', 'agent.db'), 'GLOBAL_OAUTH');
+    const pre = join(home, relDir('sess1'), 'agent');
+    mkdirSync(pre, { recursive: true });
+    writeFileSync(join(pre, 'agent.db'), ''); // empty real file as a broken prior psu session
+    writeFileSync(join(pre, 'agent.db-wal'), 'STALE_WAL');
+    writeOmpSessionConfigDir('sess1', {}, home);
+    const dst = agentPath('sess1', 'agent.db');
+    expect(lstatSync(dst).isSymbolicLink()).toBe(true);
+    expect(readFileSync(dst, 'utf8')).toBe('GLOBAL_OAUTH');
+    expect(existsSync(agentPath('sess1', 'agent.db-wal'))).toBe(false);
+  });
+
+  it('linkOmpAgentDb is a no-op when already correctly linked', () => {
+    writeFileSync(join(home, '.omp', 'agent', 'agent.db'), 'OAUTH');
+    const dstAgent = join(home, 'dst-agent');
+    mkdirSync(dstAgent, { recursive: true });
+    linkOmpAgentDb(join(home, '.omp', 'agent'), dstAgent);
+    const before = lstatSync(join(dstAgent, 'agent.db'));
+    linkOmpAgentDb(join(home, '.omp', 'agent'), dstAgent);
+    const after = lstatSync(join(dstAgent, 'agent.db'));
+    expect(after.isSymbolicLink()).toBe(true);
+    expect(after.ino).toBe(before.ino);
   });
 
   it('carries mcp.json so the relocated session keeps papercusp-su (the old full-mode bug)', () => {

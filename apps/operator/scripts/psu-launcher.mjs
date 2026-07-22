@@ -2054,6 +2054,55 @@ export function applyOmpMcpUrlParams(mcpJsonText, params) {
 }
 
 /**
+ * Point a relocated OMP agent dir at the global OAuth SQLite store.
+ *
+ * Modern OMP keeps provider logins (xai-oauth, anthropic, openai-codex, …) in
+ * `agent.db` (`auth_credentials`). `PI_CONFIG_DIR` relocation would otherwise
+ * leave the session with a fresh empty db — credentials appear only in
+ * `~/.omp/agent/agent.db` (or the legacy `auth.json` for older providers).
+ *
+ * Symlink (not copy) matches fleet `writeSpawnOmpHome` / `OMP_SEEDED_AGENT_ESSENTIALS`:
+ * concurrent sessions share one credential store; no multi-MB duplicate; token
+ * refresh from a direct `omp` login is visible to the next psu launch.
+ *
+ * Replaces a stale real-file `agent.db` (empty db created by a pre-fix psu
+ * session, or a prior copy) so re-seeding the same session id heals. Best-effort
+ * — never throws; a missing global store degrades to OMP's own auth error.
+ * Exported for tests.
+ */
+export function linkOmpAgentDb(srcAgent, dstAgent) {
+  try {
+    if (!srcAgent || !dstAgent) return;
+    const srcDb = join(srcAgent, 'agent.db');
+    if (!existsSync(srcDb)) return;
+    const dstDb = join(dstAgent, 'agent.db');
+    // Healthy: already a symlink resolving to the global store.
+    try {
+      if (
+        lstatSync(dstDb).isSymbolicLink() &&
+        realpathSync(dstDb) === realpathSync(srcDb)
+      ) {
+        return;
+      }
+    } catch {
+      /* missing or dangling — fall through and (re)link */
+    }
+    // Drop a stale real file / wrong link and any local WAL/SHM left by an empty
+    // session db (those would sit next to the symlink path and confuse SQLite).
+    for (const side of ['agent.db', 'agent.db-wal', 'agent.db-shm']) {
+      try {
+        rmSync(join(dstAgent, side), { force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+    symlinkSync(srcDb, dstDb);
+  } catch {
+    /* a launch must NEVER fail on credential seed */
+  }
+}
+
+/**
  * su-context-size-variants + weak-model-tool-tier: materialize a per-session OMP config dir
  * and return the value to export as PI_CONFIG_DIR.
  *
@@ -2068,6 +2117,14 @@ export function applyOmpMcpUrlParams(mcpJsonText, params) {
  * copy of the model registry (config.yml + models.yml/json/db + auth) AND the mcp.json — else the
  * session loses model resolution AND the papercusp-su MCP server. We copy the small config+registry
  * files (not the multi-MB session/history dbs, which a fresh session recreates).
+ *
+ * OAuth credentials (xai-oauth, anthropic, openai-codex, …) live in `agent.db`
+ * (`auth_credentials`), NOT the legacy `auth.json`. A byte-copy of that SQLite
+ * store would race concurrent sessions and bloat every su-omp-home; instead we
+ * **symlink** `agent.db` to the global `~/.omp/agent/agent.db` — same essential
+ * as fleet `writeSpawnOmpHome` / `OMP_SEEDED_AGENT_ESSENTIALS`. Without the
+ * link, psu→omp sessions boot with an empty credential store and Grok/xAI
+ * (and any other post-login provider) silently vanish from `/model`.
  *
  *   opts.discoveryOff   → flip OMP tool-discovery OFF (contextSize:'full' — whole catalog up-front
  *                         for a capable model).
@@ -2273,6 +2330,8 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
       }
       cpSync(s, join(dstAgent, f));
     }
+    // OAuth credential store — symlink, never copy (see writeOmpSessionConfigDir doc).
+    linkOmpAgentDb(srcAgent, dstAgent);
     // mcp.json — carry the papercusp-su server (else the relocated session has NO MCP at all),
     // optionally trimming its advertised surface to the core spine for a weak model.
     const srcMcp = join(srcAgent, 'mcp.json');
