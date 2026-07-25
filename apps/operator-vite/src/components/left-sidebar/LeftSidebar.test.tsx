@@ -27,6 +27,8 @@ vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-account
 vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
 vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
 vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
+vi.mock('./BlenderTab', () => ({ default: () => <div data-testid="panel-blender" /> }));
+vi.mock('./DocsTab', () => ({ default: () => <div data-testid="panel-docs" /> }));
 // SwarmTab / VoiceTab are deliberately NOT stubbed: this rail no longer mounts
 // them at all (WI-5162 — they are op-chat sidebar faces now). A stub here would
 // hide a regression that re-added them. See the "moved out" test below.
@@ -225,6 +227,37 @@ describe('<LeftSidebar> shell', () => {
     renderRail();
     await waitFor(() => expect(document.body.classList.contains('has-left-sidebar')).toBe(true));
     expect(document.documentElement.style.getPropertyValue('--left-sidebar-w')).toBeTruthy();
+  });
+
+  // Blender + Docs (owner ask 2026-07-25) — the automation-control tabs. These
+  // exist so scheduled agents that SPEND TOKENS are visible and pausable; if a
+  // refactor drops them from TABS the owner silently loses that control again,
+  // which is exactly the failure they were added to fix.
+  it('opens the Blender tab from ?lst=blender', async () => {
+    renderRail('?lst=blender');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('blender');
+    expect(await screen.findByTestId('panel-blender')).toBeTruthy();
+    expect(screen.queryByTestId('panel-queen')).toBeNull();
+  });
+
+  it('opens the Docs tab from ?lst=docs', async () => {
+    renderRail('?lst=docs');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('docs');
+    expect(await screen.findByTestId('panel-docs')).toBeTruthy();
+  });
+
+  it('places Blender and Docs immediately after the kettle/overwatch tab', () => {
+    renderRail();
+    const ids = Array.from(document.querySelectorAll('[role="tab"]')).map((el) =>
+      el.getAttribute('data-testid'),
+    );
+    const kettle = ids.indexOf('left-sidebar-tab-overwatch');
+    const blender = ids.indexOf('left-sidebar-tab-blender');
+    const docs = ids.indexOf('left-sidebar-tab-docs');
+    expect(blender).toBeGreaterThan(-1);
+    expect(docs).toBe(blender + 1);
+    // Overwatch is flag-gated, so only assert adjacency when it is actually rendered.
+    if (kettle > -1) expect(blender).toBe(kettle + 1);
   });
 
 });

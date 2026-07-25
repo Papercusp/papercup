@@ -90,7 +90,12 @@ const AGENT_SPAWNING_PATTERNS: RegExp[] = [
   /^template-gym$/i,
   /^pot-eval-battery$/i,
   /^improvement-(implement|triage|watchdog|human-digest|invalid-args-miner)$/i,
-  /wake$/i, // overwatch-wake, pot-wake, wake-brain
+  // `wake` as a whole word ANYWHERE in the name — not an anchored suffix. The
+  // dominant spender observed on 2026-07-25 was `wake-brain` ($706/7d on opus),
+  // which a `/wake$/` suffix match silently misses while still matching its
+  // siblings `overwatch-wake` / `pot-wake` — i.e. the pane would have flagged the
+  // cheap ones and hidden the expensive one.
+  /(^|-)wake($|-)/i,
   /^loop-su-/i, // agent-armed continuation loops
   /prospector-cadence$/i,
   /^hive-canary$/i,

@@ -1245,4 +1245,54 @@ body.has-left-sidebar .pc-header {
   .pclsb-acct__statuspill { justify-self: start; grid-column: 1 / -1; max-width: 100%; }
 }
 
+/* ── Automation panes (Blender / Docs) — scheduled-agent visibility + pause ──
+   Owner ask 2026-07-25. The visual job here is ONE thing: make "this can spend
+   money" impossible to miss, so the token flag and the live pill carry the accent
+   and everything else stays quiet. */
+.pc-auto { display: flex; flex-direction: column; gap: 9px; min-height: 0; overflow-y: auto; }
+.pc-auto__blurb { margin: 0; font-size: 11px; line-height: 1.4; color: var(--fg-mute, #8a8a91); }
+.pc-auto__pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600;
+  padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
+.pc-auto__pill--live { color: #f59e0b; background: rgba(245, 158, 11, 0.13); }
+
+.pc-auto__actions { display: flex; gap: 6px; }
+.pc-auto__btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: 1;
+  font-size: 11px; font-weight: 600; padding: 5px 8px; border-radius: 6px; cursor: pointer;
+  color: var(--fg, #e6e6e9); background: var(--bg-elev, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1)); }
+.pc-auto__btn:hover:not(:disabled) { background: var(--bg-elev-hover, rgba(255, 255, 255, 0.09)); }
+.pc-auto__btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.pc-auto__btn--danger { color: #f87171; border-color: rgba(248, 113, 113, 0.3); }
+
+.pc-auto__list { display: flex; flex-direction: column; gap: 3px; }
+.pc-auto__row { display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 6px;
+  background: var(--bg-elev, rgba(255, 255, 255, 0.035)); opacity: 0.55; }
+.pc-auto__row.is-active { opacity: 1; }
+.pc-auto__row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.pc-auto__name { font-size: 11.5px; font-weight: 600; color: var(--fg, #e6e6e9);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-auto__meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--fg-mute, #8a8a91); }
+.pc-auto__tokenflag { display: inline-flex; align-items: center; gap: 3px; font-weight: 600;
+  color: #f59e0b; background: rgba(245, 158, 11, 0.12); padding: 1px 4px; border-radius: 4px; }
+.pc-auto__when { font-size: 9.5px; color: var(--fg-mute, #8a8a91); opacity: 0.8; }
+.pc-auto__toggle { display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 26px; height: 26px; border-radius: 6px; cursor: pointer; color: var(--fg-mute, #8a8a91);
+  background: transparent; border: 1px solid var(--border, rgba(255, 255, 255, 0.1)); }
+.pc-auto__toggle.is-on { color: #f59e0b; border-color: rgba(245, 158, 11, 0.35); }
+.pc-auto__toggle:hover:not(:disabled) { background: var(--bg-elev-hover, rgba(255, 255, 255, 0.08)); }
+.pc-auto__toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.pc-auto__section { display: flex; flex-direction: column; gap: 4px; padding-top: 8px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); }
+.pc-auto__section-head { display: flex; align-items: center; gap: 5px; font-size: 10.5px;
+  font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg-mute, #8a8a91); }
+.pc-auto__spend-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px;
+  align-items: baseline; font-size: 11px; }
+.pc-auto__spend-role { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg, #e6e6e9); }
+.pc-auto__spend-role em { font-style: normal; color: var(--fg-mute, #8a8a91); }
+.pc-auto__spend-turns { font-size: 10px; color: var(--fg-mute, #8a8a91); }
+.pc-auto__spend-usd { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--fg, #e6e6e9); }
+.pc-auto__foot { display: flex; align-items: flex-start; gap: 4px; margin: 2px 0 0; font-size: 9.5px;
+  line-height: 1.35; color: var(--fg-mute, #8a8a91); }
+
 `;
