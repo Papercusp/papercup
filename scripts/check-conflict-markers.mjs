@@ -35,7 +35,7 @@
  * dependency, so content-lint imports THIS file rather than the reverse.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -71,6 +71,54 @@ export function findConflictMarker(path, content) {
 // `<{7}`, not seven literal brackets, so this script never self-flags.
 const ALLOW = new Set([]);
 
+// Fallback-only (no-`.git` tree) directory/extension excludes — mirrors what a
+// normal .gitignore would already keep `git grep` from ever seeing.
+const FALLBACK_EXCLUDE_DIRS = new Set([
+  '.git', 'node_modules', 'target', 'dist', 'dist-host', 'build', '.next',
+  '.turbo', '.vite', '.astro', 'coverage', '.cargo', 'seed',
+]);
+const FALLBACK_SKIP_EXT = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.icns', '.dmg', '.zip', '.tar',
+  '.gz', '.woff', '.woff2', '.ttf', '.eot', '.pdf', '.dylib', '.so', '.a',
+  '.o', '.wasm', '.node', '.db', '.sqlite', '.sqlite3', '.lock', '.jpg',
+]);
+
+function walkFallback(dir, out) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // unreadable dir (permissions / vanished mid-walk) — skip it
+  }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue; // never follow — avoids cycles
+    if (entry.isDirectory()) {
+      if (FALLBACK_EXCLUDE_DIRS.has(entry.name)) continue;
+      walkFallback(join(dir, entry.name), out);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const dot = entry.name.lastIndexOf('.');
+    const ext = dot >= 0 ? entry.name.slice(dot) : '';
+    if (FALLBACK_SKIP_EXT.has(ext)) continue;
+    out.push(join(dir, entry.name));
+  }
+}
+
+/** No-`.git` fallback: a git-archive HEAD snapshot shipped to a remote build
+ *  host (mac-vm-verify-build.sh / WI-1708) intentionally excludes `.git` so
+ *  the build is immune to the concurrently-edited shared tree — so `git grep`
+ *  always fails there with "not a git repository", NOT because of a real
+ *  problem. Before this fix that fatal-ed the whole sidecar build with an
+ *  unrelated stack trace on every such snapshot build (WI-5769). Falls back
+ *  to a plain recursive filesystem walk with the same excludes `.gitignore`
+ *  would normally apply — same detector, same guarantee, just no git needed. */
+function candidateFilesFallback() {
+  const abs = [];
+  walkFallback(ROOT, abs);
+  return abs.map((p) => p.slice(ROOT.length).replace(/^[/\\]+/, ''));
+}
+
 /** Tracked files git grep flags as candidates (binary-skipped, fast). [] when clean.
  *  execFileSync with an argument array — no shell, so the (constant) ERE pattern is
  *  passed verbatim to git with no quoting/injection surface. */
@@ -85,6 +133,11 @@ function candidateFiles() {
   } catch (e) {
     // git grep exits 1 with NO output when there are no matches — that is success.
     if (e && e.status === 1 && !String(e.stdout || '').trim()) return [];
+    // No .git at ROOT (a shipped snapshot, not a checkout) — scan the filesystem
+    // directly instead of hard-failing on an unrelated "not a git repository" error.
+    if (String((e && e.stderr) || '').includes('not a git repository')) {
+      return candidateFilesFallback();
+    }
     throw e;
   }
 }
