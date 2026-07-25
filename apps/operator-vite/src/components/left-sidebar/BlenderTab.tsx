@@ -6,6 +6,7 @@
  * routines that were quietly consuming the owner's weekly Claude limit with no
  * surface to see or stop them — the Blender is that surface.
  */
+import { Blend } from 'lucide-react';
 import AutomationPane from './AutomationPane';
 
 export default function BlenderTab({ active }: { active: boolean }) {
@@ -14,6 +15,9 @@ export default function BlenderTab({ active }: { active: boolean }) {
       active={active}
       categories={['learning']}
       title="Blender"
+      subtitle="Learns and self-improves"
+      icon={Blend}
+      viewParam="blenderView"
       blurb="Learning agents that run on a schedule — blueprint singletons, the gym cycle, and the improvement pipeline. Anything marked “tokens” spends money every time it fires."
       spendRoles={['scout', 'gym', 'worker', 'mug', 'kettle']}
     />

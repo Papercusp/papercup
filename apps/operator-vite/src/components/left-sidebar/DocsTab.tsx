@@ -8,6 +8,7 @@
  * The pane still exists so that when one IS armed it is visible and pausable
  * here rather than discovered later from a usage bill.
  */
+import { FileText } from 'lucide-react';
 import AutomationPane from './AutomationPane';
 
 export default function DocsTab({ active }: { active: boolean }) {
@@ -16,6 +17,9 @@ export default function DocsTab({ active }: { active: boolean }) {
       active={active}
       categories={['docs']}
       title="Docs"
+      subtitle="Writes and refreshes docs"
+      icon={FileText}
+      viewParam="docsView"
       blurb="Documentation agents — doc regeneration, knowledge-pack delivery and hygiene. Anything marked “tokens” spends money every time it fires."
     />
   );

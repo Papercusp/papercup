@@ -14,6 +14,7 @@
  * hundreds of historical registrations and almost all are inactive, so the pane's
  * shared sort (spending first, then active) is what keeps the live ones on top.
  */
+import { Bot } from 'lucide-react';
 import AutomationPane from './AutomationPane';
 
 export default function AgentsTab({ active }: { active: boolean }) {
@@ -22,6 +23,9 @@ export default function AgentsTab({ active }: { active: boolean }) {
       active={active}
       categories={['supervision', 'health', 'agent-loops']}
       title="Agents"
+      subtitle="Supervises and sweeps"
+      icon={Bot}
+      viewParam="agentsView"
       blurb="Every other scheduled agent — supervision, health sweeps, and armed continuation loops. Anything marked “tokens” spends money every time it fires."
       spendRoles={['worker', 'mug', 'kettle', 'release-fixer', 'cup']}
     />

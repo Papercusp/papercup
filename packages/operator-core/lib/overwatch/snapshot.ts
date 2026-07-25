@@ -100,11 +100,27 @@ async function resolveOverwatchInstallSlug(
   const direct = explicit ?? resolvePotHomeSlug();
   if (direct) return direct;
   const started = await listStartedOverwatches().catch(() => []);
-  return (
-    started.find((s) => s.workspaceId === ws)?.installSlug ??
-    started[0]?.installSlug ??
-    null
-  );
+  const fromStarted =
+    started.find((s) => s.workspaceId === ws)?.installSlug ?? started[0]?.installSlug ?? null;
+  if (fromStarted) return fromStarted;
+  // REGISTRY FALLBACK (owner bug 2026-07-25). Every source above is empty in the
+  // one state that matters most: PAUSED. `resolvePotHomeSlug()` is env-only and
+  // PAPERCUSP_POT_HOME_SLUG is unset on the dev/green operators, and
+  // listStartedOverwatches() is by definition empty while the Kettle is paused —
+  // so the control-state used to report `potSlug: null` the moment you paused.
+  // The pane derives its Start argument from that field, so Start then fired with
+  // no harness and the tool refused with `no_home_harness`: the owner clicked
+  // Start and NOTHING happened. This is the same defect, and the same fix, as
+  // mug-steering-panel GAP 1 (2026-06-17) — resolveHomePotSlug() falls back to the
+  // registry's first formal pot, which is exactly the slug the steering UI writes
+  // to, so read and write agree. Imported lazily: _resolve lives in the agent-tools
+  // layer above this one, and a static import would invert the dependency.
+  try {
+    const { resolveHomePotSlug } = await import("../agent-tools/pot/_resolve");
+    return await resolveHomePotSlug(ws);
+  } catch {
+    return null;
+  }
 }
 
 /**

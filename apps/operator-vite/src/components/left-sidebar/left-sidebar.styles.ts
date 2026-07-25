@@ -1245,54 +1245,162 @@ body.has-left-sidebar .pc-header {
   .pclsb-acct__statuspill { justify-self: start; grid-column: 1 / -1; max-width: 100%; }
 }
 
-/* ── Automation panes (Blender / Docs) — scheduled-agent visibility + pause ──
-   Owner ask 2026-07-25. The visual job here is ONE thing: make "this can spend
-   money" impossible to miss, so the token flag and the live pill carry the accent
-   and everything else stays quiet. */
-.pc-auto { display: flex; flex-direction: column; gap: 9px; min-height: 0; overflow-y: auto; }
-.pc-auto__blurb { margin: 0; font-size: 11px; line-height: 1.4; color: var(--fg-mute, #8a8a91); }
-.pc-auto__pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600;
-  padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
-.pc-auto__pill--live { color: #f59e0b; background: rgba(245, 158, 11, 0.13); }
+/* ── Automation panes (Blender / Docs / Agents) — scheduled-agent visibility ──
+   Owner ask 2026-07-25, restyled the same day to MODEL THE MUG TAB (owner round 2:
+   "improve the design of the blender and docs tab so it more closely models the mug
+   tab design"). The bar / lane-strip / panel metrics below are deliberately the
+   same numbers as their .pc-queen__* counterparts — these panes are siblings in one
+   rail, so they must read as one family, and a lane strip keeps the spend number
+   (the thing the owner came for) out of the bottom of a long scroll.
 
-.pc-auto__actions { display: flex; gap: 6px; }
-.pc-auto__btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: 1;
-  font-size: 11px; font-weight: 600; padding: 5px 8px; border-radius: 6px; cursor: pointer;
-  color: var(--fg, #e6e6e9); background: var(--bg-elev, rgba(255, 255, 255, 0.05));
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.1)); }
-.pc-auto__btn:hover:not(:disabled) { background: var(--bg-elev-hover, rgba(255, 255, 255, 0.09)); }
-.pc-auto__btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.pc-auto__btn--danger { color: #f87171; border-color: rgba(248, 113, 113, 0.3); }
+   The one place this pane INTENTIONALLY diverges is colour: --warn carries "this
+   can spend money", because that is this surface's entire reason to exist.
+
+   Tokens here stay inside the audited operator vocabulary (--bg-2/--bg-3/--fg/
+   --fg-mute/--border/--accent/--warn/--bad). The previous revision of this block
+   invented `--bg-elev` / `--bg-elev-hover`, which nothing defines — that reds
+   app/_lints/css-tokens.test.ts and, with the letter-spacing below, was blocking
+   the whole fleet's unit gate. Do not reintroduce an undeclared token: the
+   fallback makes it LOOK fine locally while the lint (rightly) fails. */
+.pc-auto { display: flex; flex-direction: column; gap: 9px; min-height: 0; overflow-y: auto; }
+
+/* 1 — header bar (mirrors .pc-queen__bar) */
+.pc-auto__bar { display: flex; align-items: center; gap: 7px; padding: 2px 1px 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent), transparent 84%); }
+.pc-auto__bar svg { flex: 0 0 auto; color: var(--accent); }
+.pc-auto__identity { display: flex; flex: 0 1 auto; align-items: baseline; gap: 6px; min-width: 0; }
+.pc-auto__title { flex: 0 0 auto; font-size: 13px; font-weight: 780; color: var(--fg, #e7f7ff); line-height: 1.05; }
+.pc-auto__subtitle { flex: 0 1 auto; min-width: 0; font-size: 10px; color: var(--fg-mute, #7f9bb4);
+  line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-auto__scope { font-size: 10px; color: var(--fg-mute, #7f9bb4); padding: 2px 6px; border-radius: 999px;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
+  white-space: nowrap; }
+.pc-auto__spacer { flex: 1; }
+.pc-auto__action { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; white-space: nowrap;
+  font-size: 10px; font-weight: 700; padding: 4px 7px; border-radius: 6px; cursor: pointer;
+  color: var(--fg-dim, #b9d4e8); background: var(--bg-3, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.22)); }
+.pc-auto__action:hover:not(:disabled) { color: var(--fg, #e7f7ff);
+  border-color: color-mix(in srgb, var(--accent), transparent 48%);
+  background: color-mix(in srgb, var(--accent), transparent 90%); }
+.pc-auto__action:disabled { opacity: 0.5; cursor: default; }
+.pc-auto__action--danger { color: var(--bad, #f87171);
+  border-color: color-mix(in srgb, var(--bad, #f87171), transparent 68%);
+  background: color-mix(in srgb, var(--bad, #f87171), transparent 92%); }
+.pc-auto__action--danger:hover:not(:disabled) { color: var(--fg, #e7f7ff);
+  border-color: color-mix(in srgb, var(--bad, #f87171), transparent 44%);
+  background: color-mix(in srgb, var(--bad, #f87171), transparent 86%); }
+.pc-auto__action:focus-visible, .pc-auto__lane:focus-visible, .pc-auto__toggle:focus-visible {
+  outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* 2 — lane strip (mirrors .pc-queen__lanes) */
+.pc-auto__lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.pc-auto__lane { min-width: 0; min-height: 46px; display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; text-align: left; cursor: pointer; color: var(--fg-dim, #b9d4e8);
+  background: var(--bg-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); border-radius: 8px; }
+.pc-auto__lane:hover { color: var(--fg, #e7f7ff);
+  border-color: color-mix(in srgb, var(--accent), transparent 64%);
+  background: color-mix(in srgb, var(--accent), transparent 94%); }
+.pc-auto__lane[aria-selected='true'] { color: var(--fg, #e7f7ff);
+  border-color: color-mix(in srgb, var(--accent), transparent 42%);
+  background: color-mix(in srgb, var(--accent), transparent 90%); }
+.pc-auto__lane-icon { width: 24px; height: 24px; display: inline-flex; align-items: center;
+  justify-content: center; flex: 0 0 auto; border-radius: 7px; color: var(--fg-mute, #7f9bb4);
+  background: var(--bg-3, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); }
+.pc-auto__lane[aria-selected='true'] .pc-auto__lane-icon { color: var(--accent-ink);
+  background: var(--accent); border-color: var(--accent); }
+.pc-auto__lane-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pc-auto__lane-label { font-size: 11px; font-weight: 760; line-height: 1; color: inherit; }
+.pc-auto__lane-value { max-width: 100%; font-size: 9.5px; line-height: 1.1; color: var(--fg-mute, #7f9bb4);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-auto__lane[aria-selected='true'] .pc-auto__lane-value { color: var(--fg-dim, #b9d4e8); }
+
+/* 3 — panel (mirrors .pc-queen__panel) */
+.pc-auto__panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.pc-auto__blurb { margin: 0; font-size: 11px; line-height: 1.4; color: var(--fg-mute, #7f9bb4); }
+.pc-auto__placeholder { color: var(--fg-mute, #7f9bb4); font-size: 11px; padding: 7px 2px; }
+.pc-auto__err { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg, #e7f7ff);
+  padding: 6px 9px; border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--bad, #f43f5e), transparent 58%);
+  background: color-mix(in srgb, var(--bad, #f43f5e), transparent 90%); }
 
 .pc-auto__list { display: flex; flex-direction: column; gap: 3px; }
 .pc-auto__row { display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 6px;
-  background: var(--bg-elev, rgba(255, 255, 255, 0.035)); opacity: 0.55; }
+  background: var(--bg-2, rgba(255, 255, 255, 0.035)); opacity: 0.55; }
 .pc-auto__row.is-active { opacity: 1; }
 .pc-auto__row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
-.pc-auto__name { font-size: 11.5px; font-weight: 600; color: var(--fg, #e6e6e9);
+.pc-auto__name { font-size: 11.5px; font-weight: 600; color: var(--fg, #e7f7ff);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pc-auto__meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--fg-mute, #8a8a91); }
+.pc-auto__meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
 .pc-auto__tokenflag { display: inline-flex; align-items: center; gap: 3px; font-weight: 600;
-  color: #f59e0b; background: rgba(245, 158, 11, 0.12); padding: 1px 4px; border-radius: 4px; }
-.pc-auto__when { font-size: 9.5px; color: var(--fg-mute, #8a8a91); opacity: 0.8; }
+  color: var(--warn, #f59e0b); background: color-mix(in srgb, var(--warn, #f59e0b), transparent 88%);
+  padding: 1px 4px; border-radius: 4px; }
+.pc-auto__when { font-size: 9.5px; color: var(--fg-mute, #7f9bb4); opacity: 0.8; }
 .pc-auto__toggle { display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 26px; height: 26px; border-radius: 6px; cursor: pointer; color: var(--fg-mute, #8a8a91);
-  background: transparent; border: 1px solid var(--border, rgba(255, 255, 255, 0.1)); }
-.pc-auto__toggle.is-on { color: #f59e0b; border-color: rgba(245, 158, 11, 0.35); }
-.pc-auto__toggle:hover:not(:disabled) { background: var(--bg-elev-hover, rgba(255, 255, 255, 0.08)); }
+  width: 26px; height: 26px; border-radius: 6px; cursor: pointer; color: var(--fg-mute, #7f9bb4);
+  background: transparent; border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); }
+.pc-auto__toggle.is-on { color: var(--warn, #f59e0b);
+  border-color: color-mix(in srgb, var(--warn, #f59e0b), transparent 65%); }
+.pc-auto__toggle:hover:not(:disabled) { background: color-mix(in srgb, var(--accent), transparent 90%); }
 .pc-auto__toggle:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.pc-auto__section { display: flex; flex-direction: column; gap: 4px; padding-top: 8px;
-  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); }
-.pc-auto__section-head { display: flex; align-items: center; gap: 5px; font-size: 10.5px;
-  font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg-mute, #8a8a91); }
+.pc-auto__section { display: flex; flex-direction: column; gap: 4px; padding: 8px 9px; border-radius: 8px;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+  background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.04)), transparent 18%); }
+/* Sentence-case title, matching .pc-queen__section-title — the previous
+   uppercase+letter-spacing treatment was both off-family and the second of the
+   two lint reds this block was carrying (design-primitives: nonzero
+   letter-spacing is not an approved app-UI primitive). */
+.pc-auto__section-head { display: flex; align-items: center; gap: 6px; }
+.pc-auto__section-head svg { color: var(--fg-mute, #7f9bb4); }
+.pc-auto__section-title { font-size: 11px; font-weight: 760; color: var(--fg, #e7f7ff); }
+.pc-auto__count { margin-left: auto; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); text-align: right;
+  font-variant-numeric: tabular-nums; }
 .pc-auto__spend-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px;
   align-items: baseline; font-size: 11px; }
-.pc-auto__spend-role { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg, #e6e6e9); }
-.pc-auto__spend-role em { font-style: normal; color: var(--fg-mute, #8a8a91); }
-.pc-auto__spend-turns { font-size: 10px; color: var(--fg-mute, #8a8a91); }
-.pc-auto__spend-usd { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--fg, #e6e6e9); }
+.pc-auto__spend-role { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg, #e7f7ff); }
+.pc-auto__spend-role em { font-style: normal; color: var(--fg-mute, #7f9bb4); }
+.pc-auto__spend-turns { font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+.pc-auto__spend-usd { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--fg, #e7f7ff); }
 .pc-auto__foot { display: flex; align-items: flex-start; gap: 4px; margin: 2px 0 0; font-size: 9.5px;
-  line-height: 1.35; color: var(--fg-mute, #8a8a91); }
+  line-height: 1.35; color: var(--fg-mute, #7f9bb4); }
+
+/* ── RailSection — the rail's shared collapsible section (components/left-sidebar/
+   RailSection.tsx). Same disclosure idiom the Mug tab uses (.pc-queen__collapse),
+   lifted out of that private namespace so the Pots tab and the automation panes can
+   share it instead of forking it a fourth time. */
+.pclsb-sect { display: flex; flex-direction: column; gap: 7px; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+  background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.04)), transparent 18%); }
+.pclsb-sect__head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 0;
+  background: none; border: none; cursor: pointer; text-align: left; color: inherit; font: inherit; }
+.pclsb-sect__head svg { color: var(--fg-mute, #7f9bb4); flex-shrink: 0; }
+.pclsb-sect__head:hover .pclsb-sect__title { color: var(--fg, #e7f7ff); }
+.pclsb-sect__head:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 5px; }
+.pclsb-sect__title { font-size: 11px; font-weight: 760; color: var(--fg-dim, #b9d4e8); }
+.pclsb-sect__summary { margin-left: auto; font-size: 9.5px; text-align: right; white-space: nowrap;
+  color: var(--fg-mute, #7f9bb4); }
+.pclsb-sect__summary--good { color: var(--good, #34d399); }
+.pclsb-sect__summary--warn { color: var(--warn, #fbbf24); }
+.pclsb-sect__summary--bad { color: var(--bad, #f87171); }
+.pclsb-sect__body { display: flex; flex-direction: column; gap: 6px; }
+
+/* ── Pots tab COMPACT density (owner ask 2026-07-25: "make the pots tab more
+   compact so its easier to see the full list without scrolling"). Scoped to
+   .pclsb-pots so only this tab tightens — the same targeted-override idiom
+   .pclsb-agent uses above; the default row metrics other tabs rely on are
+   untouched. Roughly a third of the vertical space per row. */
+.pclsb-pots { gap: 5px; padding: 8px 10px 10px; }
+.pclsb-pots .pclsb-panel__bar { min-height: 18px; }
+.pclsb-pots .pclsb-row { padding: 5px 8px; border-radius: 7px; gap: 7px; }
+.pclsb-pots .pclsb-row + .pclsb-row { margin-top: 3px; }
+.pclsb-pots .pclsb-row__title { font-size: 11.5px; font-weight: 640; }
+.pclsb-pots .pclsb-row__sub { margin-top: 1px; font-size: 10px; }
+.pclsb-pots .pclsb-panel__empty { padding: 9px 10px; font-size: 11px; line-height: 1.45; }
+/* The nested panels keep their own padding for the non-collapsible mounts; inside
+   the Pots tab the RailSection already supplies it, so drop the double inset. */
+.pclsb-pots .pclsb-sect .pclsb-panel { padding: 0; gap: 5px; }
 
 `;
