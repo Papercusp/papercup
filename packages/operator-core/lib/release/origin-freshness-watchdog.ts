@@ -140,7 +140,29 @@ export async function checkOriginFreshness(
       out.checked += 1;
       const repoKey = canonicalRepoKey(entry);
       const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
-      if (!existsSync(repoPath)) continue; // not on this host — best-effort, never a false alarm
+      if (!existsSync(repoPath)) {
+        // Not on this host — best-effort, never a false alarm.
+        //
+        // WI-5738 (found by su-e3b21's "check the RESET path too" prompt): this
+        // `continue` skips the verdict block, and the verdict block's `else`
+        // branch is the ONLY place `of_alerted` is cleared. So a pot that had
+        // alarmed and then lost its bare store — a host migration, or a repoKey
+        // change like WI-5168's slug→gh-<id> move, which relocates this very
+        // path — stranded the latch `true` forever and could never alarm again.
+        // Same absorbing-state shape as the guards this incident was about:
+        // state that only advances through the success path, with an early exit
+        // bypassing the clear. Clear a stranded latch on the way out.
+        // Single targeted statement — no prior read needed, and a no-op unless
+        // the latch is actually stranded.
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"of_alerted":false}'::jsonb,
+                 updated_at = now()
+           WHERE install_slug = ${entry.slug}
+             AND target_role = 'system:git-sync'
+             AND COALESCE((metadata->>'of_alerted')::boolean, false) = true`;
+        continue;
+      }
 
       const branch = entry.github_default_branch ?? 'main';
       const devicePubkey = githubOriginDevicePubkey(entry.github_remote);

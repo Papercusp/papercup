@@ -1,0 +1,312 @@
+---
+title: "Absorbing-state guards, and why your detector didn't notice"
+description: "Four failure instances found independently on one day by four agents in different lanes, then recognised as one pattern. Three guard/detector shapes: (A) a guard whose baseline or latch advances ONLY through its own success cannot clear itself — the first failure is permanent; (B) when a component reports its own failure, a detector that infers the same condition from a downstream proxy instead is strictly weaker, because the proxy can be confounded; (C) a detector whose coverage is gated on the success it exists to detect the absence of reports healthy precisely when the thing has failed. The headline is C-and-B, not A: the guard bugs cost hours, the detector bugs cost DAYS."
+discovered: 2026-07-25
+tags: [guards, watchdogs, detectors, liveness, failure-modes, p2p, git-sync, replication, design-smell]
+status: active
+documents:
+  - packages/operator-core/lib/sync/pot-git/publish-guard.ts
+  - packages/operator-core/lib/sync/pot-git/github-egress.ts
+  - packages/operator-core/lib/sync/hyperbee/replication-liveness.ts
+  - packages/operator-core/lib/release/origin-freshness-watchdog.ts
+  - packages/operator-core/lib/sync/hyperbee/boot.ts
+---
+
+## Why this doc exists
+
+On 2026-07-25 two agents in different lanes each hit a multi-day silent outage,
+within the same hour, in code that shares no call path: **pot-git publishing**
+(su-a8ea9) and **hyperbee replication liveness** (su-e3b21). Neither was looking
+for the other's bug. When one described its root cause in a coordination
+message, the other recognised it immediately as the shape they had just fixed.
+
+Comparing notes surfaced **two more the same day**, in two further lanes —
+`restart_settle_barrier` (su-48ed7a) and the replication-liveness detector's
+call site (su-055ae). **Four independent instances in one day, in four lanes,
+found by four agents, none of whom was looking for this.** That is a pattern
+worth a name, not four incident write-ups.
+
+### The headline: it is the detectors, not the guards
+
+The guard bugs (Shape A) are real, but they cost **hours**. What turned each of
+them into a multi-**day** silent outage was that **every single instance was
+paired with a detector that structurally could not see it** — Shape B or Shape C.
+Four for four.
+
+That is the claim worth acting on. A guard that wedges and *pages* is an
+annoyance. A guard that wedges while every dashboard reads green is an outage
+measured in days, and you find it by accident.
+
+**If you change one thing after reading this, change a detector, not a latch.**
+
+## Shape A — the absorbing-state guard
+
+> **A guard whose baseline or latch advances only through its own success cannot
+> clear itself. The first failure is permanent.**
+
+This is an [absorbing state](https://en.wikipedia.org/wiki/Absorbing_Markov_chain):
+once entered, there is no transition out. It is easy to build by accident,
+because the code reads as obviously correct — you advance the watermark *when
+the thing succeeds*, which is exactly what you want, right up until the failure
+path needs the watermark to move too.
+
+### Instance 1 — the pot-git publish guards (three of them)
+
+`own-head-publish.ts` judged the range `(priorSha, head]`, where `priorSha` is
+the namespace ref — and the namespace ref is written **only after `guard.ok`**:
+
+```ts
+const guardBaseline = priorSha ?? input.genesisBaselineSha ?? null;
+// …
+if (!guard.ok) return { …, refused: guard };   // ← ref NOT written
+await writeNamespaceRef(repoPath, …, headSha); // ← the only advance
+```
+
+So a refusal was terminal *by construction*: the baseline could only move
+through the publish it was blocking, and every new commit made the refused range
+bigger. One accidentally-committed 2.26 GB AppImage extraction on 2026-07-20 put
+the range over the 500 MB cap; five days later the guard was still refusing, and
+the measured total had grown from 2261 MB to 2415 MB. Deleting the files did
+nothing — the guard enumerates objects introduced *anywhere* in the range.
+
+The same shape, with three different baselines, in three guards:
+
+| guard | baseline | advances on |
+|---|---|---|
+| `own_head_publish` | the namespace ref | its own successful publish |
+| `ref_announce` | sigrefs | its own successful announce |
+| GitHub egress | `origin/staging` | its own successful push |
+
+Because the baselines are *different objects*, unwedging one by hand did not
+unwedge the others — the manual namespace-ref re-base left `ref_announce` (which
+reads sigrefs) refusing for hours afterwards. Full incident:
+[p2p-publish-guard-total-over-cap-wedge](/internal/docs/agent-insights/p2p-publish-guard-total-over-cap-wedge).
+
+### Instance 2 — the replication-liveness alarm latch
+
+`replication-liveness.ts`'s `connected_never_replicated` latch
+(`alarmedConnectedNever`) was cleared **only on an observed recovery**. On a
+sustained-offline reset the window was cleared but the latch leaked — and since
+the fire guard is `!st.alarmedConnectedNever`, a log that had alarmed and then
+gone offline could never alarm again for the rest of the process lifetime, with
+`deriveVerdict` reading a stale `no_replicator` off the dead latch.
+(Found and fixed independently by su-e3b21; regression-tested in
+`replication-liveness.test.ts`.)
+
+### Where it hides: the reset path and the early exit
+
+The publish-guard instances were on the obvious **refusal** path. The
+replication instance was on the **reset** path — much harder to see, because the
+success path *does* clear the latch and the code looks symmetric at a glance.
+
+A third variant turned up in `origin-freshness-watchdog.ts` only because
+su-e3b21 suggested checking reset paths. Its `of_alerted` latch is cleared in
+exactly one place — the `verdict === 'ok'` branch — but an **earlier `continue`**
+skipped the whole verdict block:
+
+```ts
+if (!existsSync(repoPath)) continue;   // ← bypasses the only clear
+```
+
+A pot that alarmed and then lost its bare store (host migration, or a repoKey
+change like WI-5168's `slug` → `gh-<id>` move, which relocates that very path)
+stranded the latch `true` forever and could never alarm again.
+
+**So the checklist is not "does the failure path clear the state" but:**
+
+- Does the **reset** path clear it, not just the recovery path?
+- Does **every** early `continue` / `return` / `throw` before the clear leave it
+  stranded?
+- Can the state advance **at all** without the success it gates?
+
+### The fix shape
+
+Make progress possible without the blocked success:
+
+- **Split the range.** Volume/aggregate refusals ("too much at once") are
+  satisfiable by doing *less*, so publish the longest admissible prefix and let
+  the backlog drain over ticks. The baseline moves; the wedge is self-clearing.
+- **Attribute precisely.** A hard refusal (a real secret) should stop at the
+  *exact* offending commit with everything before it shipped — never "somewhere
+  in these 358 commits".
+- **Budgets, not cliffs.** A scan cap that *blocks* when exceeded is absorbing;
+  a scan cap that *stops and resumes next tick* is not.
+- **Always ship an escape hatch that reaches every instance.** A runtime
+  exemption existed for one of the three pot-git guards — and not for the one
+  that was actually wedged.
+
+## Shape B — self-report beats inference
+
+> **When a component can report its own failure, the detector must consume that
+> report. Inferring the same condition from a downstream proxy is strictly
+> weaker, because the proxy can be confounded.**
+
+Shape A is survivable *if something notices*. In both known instances, nothing
+did — and that was a second, separate bug.
+
+There **was** a purpose-built watchdog for the pot-git outage:
+`origin-freshness-watchdog` (WI-5607), running the whole time, thresholds
+`aheadCount >= 50` and `tipAge > 3h`, against an outage of **358 commits over 5
+days**. It never fired — zero log lines in three days — because it measured
+against the wrong branch:
+
+```ts
+const branch = entry.github_default_branch ?? 'main';   // ← the INGRESS branch
+```
+
+The bridge *egresses* to `staging`; `main` is the branch it ingests. And `main`
+is fast-forwarded hourly by the **release pipeline** — a completely unrelated
+mechanism — so both signals were structurally pinned healthy:
+
+| signal | threshold | actual | why |
+|---|---|---|---|
+| `aheadCount` | ≥ 50 | 24 | measured against `main`, kept fresh by the release pipeline |
+| `originTipAgeMs` | > 3h | ~0 | `main` moved hourly, restarting the clock every sweep |
+
+**A detector pointed at a signal kept fresh by an unrelated mechanism is
+structurally blind.** It does not report a false negative — it reports
+*correctly, about the wrong thing*, which is much harder to notice.
+
+And the part that makes this a *rule* rather than a bug report: the publish leg
+had been writing
+
+```
+metadata.own_head_publish.refused = 'total-over-cap'
+```
+
+on **every single tick** for five days, and logging it to the journal. The
+system stated its own failure out loud, continuously, and no detector consumed
+it. All that inference was unnecessary.
+
+### The fix shape
+
+- **Consume the self-report directly.** A sustained explicit refusal now alarms
+  on its own.
+- **Do not gate the self-report behind an inferred precondition.** The refusal
+  check deliberately sits *before* the watchdog's `aheadCount <= 0` "nothing to
+  push ⇒ definitionally healthy" early return — a refusal is true regardless of
+  how any commit count comes out, and in this incident the commit count was the
+  confounded signal.
+- **Measure the thing you act on.** The watchdog now reads
+  `github_bridge.egress_head` — what egress *actually landed* — not a mirror of
+  a branch it never writes.
+
+## Shape C — the detector that can only observe the healthy case
+
+> **A detector whose coverage is gated on the success it exists to detect the
+> absence of will report healthy precisely when the thing has failed.**
+
+Shape A is about *state* that cannot advance. Shape B is about a detector
+consuming a confounded *proxy* instead of a self-report. Shape C is about the
+detector's **coverage**: it never runs at all on the failure case, so there is
+no reading to be wrong.
+
+This is the one that produces *zero* log lines and a green dashboard.
+
+### Instance 4 — the replication-liveness detector's call site (WI-5781)
+
+`sampleReplicationLiveness` has exactly **one** call site — `boot.ts:2400`,
+**inside the merge pass's per-remote-log loop**. So the detector can only sample
+logs it has **already attached**.
+
+Read the code and it is entirely reasonable: *iterate the attached logs, sample
+each one for liveness.* But the failure mode that matters is **a log that never
+attached** — which is, by construction, not in the loop.
+
+The evidence is unusually clean, because both frames ran in the same process on
+the same host on the same build (run `20260725-153724`):
+
+| | frame a (host path) | frame b (member / join path) |
+|---|---|---|
+| swarm connections | live | 43 |
+| logs attached | yes | **none** |
+| detector lines emitted | 3 | **0** |
+| detector fired + repaired | yes | — |
+
+Frame b is not a false negative. **The detector never executed.** This is the
+confirmed root cause of the p2p live-federation gate reds — the
+highest-consequence instance of the four.
+
+### Instance 3 — `restart_settle_barrier` (EI-18645423267952485)
+
+The same shape one level up, at the harness layer. The barrier PASSes with
+`order 80 didn't run this session` in **exactly** the case it exists to catch:
+`restart_durability` had just run and **failed**. Its precondition ("did order
+80 run?") was itself derived from the thing that failed, so absence-of-evidence
+rendered as PASS. It masked a 25-minute outage.
+
+### Why this is not Shape B
+
+Shape B's fix is *"consume the self-report instead of inferring."* That does not
+help here. **There is no self-report from a log that never attached** — nothing
+instantiated a reporter for it. Absence does not announce itself.
+
+The fix is different in kind:
+
+- **Shape B:** the reporter exists; read it instead of guessing.
+- **Shape C:** the reporter does not exist; you must enumerate the **expected**
+  set and alarm on the difference from the **achieved** set.
+
+### The fix shape
+
+- **Enumerate expected, not achieved.** Iterate what *should* be attached /
+  registered / running, and alarm on the gap. A loop over what succeeded can
+  never see total failure.
+- **Never derive a barrier's precondition from the thing it guards.** If "did X
+  run?" is answered by X's own output, a failed X reads as "not applicable"
+  rather than "failed".
+- **Make absence loud.** `0 of N sampled` is a finding. A detector that emits
+  nothing must be distinguishable from a detector that emits nothing *because
+  everything is fine*.
+
+## The checklist
+
+When you write or review a guard, latch, watchdog, or watermark:
+
+1. **Can this state advance without the success it gates?** If no, the first
+   failure is permanent. Split the work, or add a path that advances on partial
+   progress.
+2. **Is the clear reachable from every path?** Check reset, and every early
+   `continue` / `return` before it.
+3. **Does the thing being watched report its own health?** If so, consume that
+   report — do not infer it.
+4. **Is the signal you measure kept fresh by anything OTHER than the mechanism
+   you are watching?** If yes, it cannot tell you about that mechanism.
+5. **Does the escape hatch cover every instance of the guard?** An escape hatch
+   present on two of three guards is absent from the one that wedges.
+6. **Does the detector enumerate the EXPECTED set or the ACHIEVED set?** If it
+   iterates things that already succeeded, it is structurally blind to total
+   failure — the case you most need it for.
+
+**Question 6 is the highest-yield of the six.** State it as a test you can apply
+without reading the implementation:
+
+> **"If this never worked even once, would this detector produce a single line?"**
+
+If the answer is no, the detector cannot detect its own primary failure mode.
+
+That one question catches instances 3 and 4 directly. It also catches the
+`origin-freshness-watchdog` early-`continue` in Shape A above — a pot that lost
+its bare store was dropped from the enumerated set entirely, which is the same
+blindness arriving by a different route.
+
+## Provenance
+
+Four instances, four agents, four lanes, one day:
+
+| # | Instance | Shape | Found by |
+|---|---|---|---|
+| 1 | pot-git publish guards (×3) | A | su-a8ea9 |
+| 2 | replication-liveness alarm latch | A (reset path) | su-e3b21 |
+| 3 | `restart_settle_barrier` (EI-18645423267952485) | C | su-48ed7a |
+| 4 | replication-liveness call site (WI-5781) | C | su-055ae |
+
+Shape B and the `origin-freshness-watchdog` latch leak: su-a8ea9.
+
+None of this was written by one agent. The general statement came out of a
+coordination exchange: su-e3b21 asked whether the **reset path** had been
+checked, which is the only reason the `origin-freshness-watchdog` latch leak was
+found; su-e3b21 then rejected the first draft's two-instance framing, supplied
+instances 3 and 4, and argued Shape C and checklist question 6 into existence —
+including the observation that the *detector* failures, not the guard failures,
+are the real headline. The run evidence for instance 4 is su-055ae's.
