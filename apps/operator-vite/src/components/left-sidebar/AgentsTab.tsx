@@ -31,17 +31,25 @@ import { useMemo } from 'react';
 import { Bot, CalendarClock, Users } from 'lucide-react';
 import { parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import type { AutomationCatalog, AutomationCategory } from '@papercusp/operator-core/lib/automation/catalog';
+import { CATCH_ALL_PANE_CATEGORIES } from '@papercusp/operator-core/lib/automation/catalog';
+import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
 import AutomationPane, { scheduleLaneValue } from './AutomationPane';
 import AskAgentPane from './AskAgentPane';
 import SwarmTab from './SwarmTab';
 // Relative, not `@/…`: the `@` alias points at the operator (Next) tree.
 import { isRunningAgent, type RosterAgent } from '../adv/AgentsRunningPill';
 
-/** The catch-all categories: every scheduled spender that is neither a learning
- *  loop (Blender) nor a documentation agent (Docs), so no routine can exist
- *  without appearing in exactly one of the three panes. */
-const CATEGORIES: readonly AutomationCategory[] = ['supervision', 'health', 'agent-loops'];
+/**
+ * The catch-all categories are DERIVED in the catalog, never listed here.
+ *
+ * This used to be the hand-written array `['supervision','health','agent-loops']`
+ * under a comment claiming "no routine can exist without appearing in exactly one
+ * of the three panes". That was false: `infra` was in nobody's list, so 40
+ * routines — 39 of them ACTIVE, including git-sync, green-checkpoint and
+ * hive-git-gc — were surfaced nowhere in the rail. Importing the derived list
+ * means a category can never again be orphaned by omission.
+ */
+const CATEGORIES = CATCH_ALL_PANE_CATEGORIES;
 
 export const AGENT_VIEWS = ['routines', 'dynamic'] as const;
 export type AgentView = (typeof AGENT_VIEWS)[number];
@@ -141,9 +149,14 @@ export default function AgentsTab({ active }: { active: boolean }) {
             active={active}
             categories={CATEGORIES}
             title="Agents"
-            subtitle="Supervises and sweeps"
+            subtitle="Everything else on a schedule"
             icon={Bot}
-            blurb="Every other scheduled agent — supervision, health sweeps, and armed continuation loops. Anything marked “tokens” spends money every time it fires."
+            // Copy widened with the category set: this pane now also carries
+            // `infra` (git-sync, green-checkpoint, GC, release), which are pure
+            // system sweeps and spawn no agent. Saying "every other scheduled
+            // agent" while listing git-sync would misdescribe them — the whole
+            // point of the pane is telling what spends money from what doesn't.
+            blurb="Everything else that runs on a schedule — supervision, health sweeps, system infrastructure (git-sync, checkpoints, GC) and armed continuation loops. Only rows marked “tokens” spend money; the rest are free system sweeps."
           />
         ) : (
           // The live roster, unchanged — same membership rule, same fleet

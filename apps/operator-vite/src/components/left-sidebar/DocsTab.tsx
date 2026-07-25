@@ -9,6 +9,7 @@
  * here rather than discovered later from a usage bill.
  */
 import { FileText } from 'lucide-react';
+import { DOCS_PANE_CATEGORIES } from '@papercusp/operator-core/lib/automation/catalog';
 import AutomationPane from './AutomationPane';
 
 export default function DocsTab({ active }: { active: boolean }) {
