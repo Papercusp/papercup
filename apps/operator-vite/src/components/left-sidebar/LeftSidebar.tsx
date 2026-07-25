@@ -37,7 +37,7 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, Bot, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -80,6 +80,11 @@ const BlenderTab = lazy(() => import('./BlenderTab'));
 // 📄 Docs — the same treatment for the documentation agents (doc regeneration,
 // knowledge-pack delivery/hygiene).
 const DocsTab = lazy(() => import('./DocsTab'));
+// 🤖 Agents — the catch-all: every scheduled spender that is neither a learning
+// loop nor a docs agent (supervision, health sweeps, armed continuation loops).
+// Without it the "no unknown token usage" goal is unmet — 13 spending routines
+// lived outside Blender+Docs on the day these panes were built.
+const AgentsTab = lazy(() => import('./AgentsTab'));
 // (The 📥 Inbox tab (EI-13037) MOVED to the op-chat sidebar — owner placement
 // correction 2026-07-16: this middle rail is the SETTINGS surface; the far-left
 // papercup-chat sidebar is the live surface. See _components/inbox/InboxPane.)
@@ -103,6 +108,7 @@ const TABS = [
   // automation surfaces, not cup-cast brand nouns, so there is no TermKey to resolve.
   { id: 'blender', label: (_t: BoundLexicon) => 'Blender', icon: Blend, tip: (_t: BoundLexicon) => 'Learning agents — scheduled self-improvement loops, and what they cost', render: (a: boolean) => <BlenderTab active={a} /> },
   { id: 'docs', label: (_t: BoundLexicon) => 'Docs', icon: FileText, tip: (_t: BoundLexicon) => 'Documentation agents — doc regeneration & knowledge-pack schedules', render: (a: boolean) => <DocsTab active={a} /> },
+  { id: 'agents', label: (_t: BoundLexicon) => 'Agents', icon: Bot, tip: (_t: BoundLexicon) => 'Every other scheduled agent — supervision, health sweeps, armed loops', render: (a: boolean) => <AgentsTab active={a} /> },
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   // (The Fleet + Peers tabs MOVED to the op-chat sidebar — owner ask 2026-07-17
   // (WI-5162): they now sit right of the 🫖 Pot Health "kettle" button as faces

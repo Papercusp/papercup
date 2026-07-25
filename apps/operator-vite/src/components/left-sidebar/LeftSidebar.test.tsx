@@ -29,6 +29,7 @@ vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwa
 vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
 vi.mock('./BlenderTab', () => ({ default: () => <div data-testid="panel-blender" /> }));
 vi.mock('./DocsTab', () => ({ default: () => <div data-testid="panel-docs" /> }));
+vi.mock('./AgentsTab', () => ({ default: () => <div data-testid="panel-agents" /> }));
 // SwarmTab / VoiceTab are deliberately NOT stubbed: this rail no longer mounts
 // them at all (WI-5162 — they are op-chat sidebar faces now). A stub here would
 // hide a regression that re-added them. See the "moved out" test below.
