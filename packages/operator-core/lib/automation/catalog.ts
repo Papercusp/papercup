@@ -23,6 +23,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import type { ScheduleSource } from '../schedule-inventory';
 
 /** Owner-facing grouping. One pane per category (Blender → learning, Docs → docs). */
 export type AutomationCategory = 'learning' | 'docs' | 'supervision' | 'health' | 'infra' | 'agent-loops';
@@ -355,7 +356,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
     }));
 
   return {
-    routines,
+    routines: allRoutines,
     categories,
     spend7d,
     spend7dTotalUsd: spend7d.reduce((a, b) => a + b.costUsd, 0),

@@ -1389,6 +1389,16 @@ body.has-left-sidebar .pc-header {
 .pc-auto__toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .pc-auto__toggle:disabled { opacity: 0.55; cursor: default; }
 
+/* The "listed but not pausable from here" marker. Deliberately NOT built on
+   .pc-auto__toggle: it must not read as a button the owner can press, because
+   it isn't one — a DBOS workflow / managed timer / in-process sweep has no
+   switch on this surface. Same footprint as the toggle so rows stay aligned,
+   but flat, muted and non-interactive. */
+.pc-auto__nocontrol { display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 26px; height: 24px; border-radius: 7px; cursor: default;
+  color: var(--fg-mute, #7f9bb4); background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.22)), transparent 30%); }
+
 .pc-auto__section { display: flex; flex-direction: column; gap: 4px; padding: 8px 9px; border-radius: 8px;
   border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
   background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.04)), transparent 18%); }

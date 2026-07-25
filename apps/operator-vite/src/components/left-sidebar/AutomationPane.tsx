@@ -37,7 +37,7 @@ import { useMemo, useState } from 'react';
 import type { ComponentType } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, CalendarClock, Coins, Pause, Play } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Coins, Lock, Pause, Play } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import type {
   AutomationCatalog,
@@ -142,7 +142,12 @@ export default function AutomationPane({
       );
   }, [data, categories]);
 
-  const activeSpawning = rows.filter((r) => r.active && r.spawnsAgent).length;
+  // What "Pause all" can ACTUALLY stop. Counting uncontrollable schedules here
+  // would put a number on the button that the click cannot deliver — the pane
+  // must never again promise an action it can't perform. The lane value above
+  // still counts every spender, controllable or not, so the owner sees the true
+  // spend picture even where the switch lives elsewhere.
+  const activeSpawning = rows.filter((r) => r.active && r.spawnsAgent && r.controllable).length;
 
   async function toggleRoutine(r: AutomationRoutine) {
     const key = `${r.installSlug}/${r.name}`;
@@ -170,7 +175,10 @@ export default function AutomationPane({
       // does NOT map 1:1 to a routine group_slug (a docs routine can be filed under
       // health). Pausing each member by name is the only way the button does exactly
       // what its label says — and it never touches a routine outside this pane.
-      for (const r of rows.filter((x) => x.spawnsAgent && x.active !== nextActive)) {
+      // `controllable` guard: a non-routine schedule has no switch this tool can
+      // throw, so including it would make the loop throw on a row it can never
+      // change and abort the rest of the batch.
+      for (const r of rows.filter((x) => x.controllable && x.spawnsAgent && x.active !== nextActive)) {
         await runRoutineTool('routines:set', {
           name: r.name,
           installSlug: r.installSlug,
@@ -217,7 +225,7 @@ export default function AutomationPane({
               </button>
             </Tooltip>
           ) : (
-            rows.some((r) => r.spawnsAgent) && (
+            rows.some((r) => r.spawnsAgent && r.controllable) && (
               <Tooltip label={`Resume the scheduled ${title} agents`}>
                 <button
                   type="button"
@@ -287,17 +295,39 @@ export default function AutomationPane({
                           </span>
                           <span className="pc-auto__when">last {agoLabel(r.lastFiredAt)}</span>
                         </div>
-                        <button
-                          type="button"
-                          className={`pc-auto__toggle${r.active ? ' is-on' : ''}`}
-                          disabled={busy !== null}
-                          aria-pressed={r.active}
-                          aria-label={`${r.active ? 'Pause' : 'Resume'} ${r.name}`}
-                          onClick={() => void toggleRoutine(r)}
-                          data-testid={`automation-toggle-${r.name}`}
-                        >
-                          {busy === key ? '…' : r.active ? <Pause size={12} /> : <Play size={12} />}
-                        </button>
+                        {r.controllable ? (
+                          <button
+                            type="button"
+                            className={`pc-auto__toggle${r.active ? ' is-on' : ''}`}
+                            disabled={busy !== null}
+                            aria-pressed={r.active}
+                            aria-label={`${r.active ? 'Pause' : 'Resume'} ${r.name}`}
+                            onClick={() => void toggleRoutine(r)}
+                            data-testid={`automation-toggle-${r.name}`}
+                          >
+                            {busy === key ? '…' : r.active ? <Pause size={12} /> : <Play size={12} />}
+                          </button>
+                        ) : (
+                          /* Listed for visibility, but NOT pausable from here:
+                             `routines:set` writes harness_shared.routines and
+                             nothing else, so a DBOS workflow / managed timer /
+                             in-process sweep has no switch on this surface.
+                             Render a plain marker, never a button — this pane's
+                             original sin was offering controls that could not
+                             act, and an inert-but-clickable toggle would repeat
+                             that lie in a new place. */
+                          <Tooltip
+                            label={`Runs as a ${r.source} schedule, not a routine — visible here but paused from its own subsystem`}
+                          >
+                            <span
+                              className="pc-auto__nocontrol"
+                              data-testid={`automation-nocontrol-${r.name}`}
+                              aria-label={`${r.name} cannot be paused from this pane`}
+                            >
+                              <Lock size={11} aria-hidden />
+                            </span>
+                          </Tooltip>
+                        )}
                       </div>
                     );
                   })}
