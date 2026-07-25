@@ -53,7 +53,7 @@
  * update, which only ever refreshes trigger_config/target_role/active).
  *
  * WORKSPACE — SINGLE home workspace, resolved via `activeWorkspaceId()`
- * (workspace-registry.ts), NEVER "every workspace in the registry" (WI-5771,
+ * (workspace-registry.ts), NEVER "every workspace in the registry" (WI-5780,
  * found live 2026-07-25 mid-P-407 rig-verify prep): `installSlug` above is a
  * SINGLE fixed value (operatorHomeHarnessSlug() — env-pinned, workspace-
  * agnostic), so the workspace these routines seed under must ALSO be the

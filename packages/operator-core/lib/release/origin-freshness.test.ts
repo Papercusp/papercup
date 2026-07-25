@@ -93,3 +93,73 @@ describe('originFreshness (the WI-5607-sketched thin alias)', () => {
     expect(originFreshness({ aheadCount: 25, originTipAgeMs: 4 * H })).toBe('stale');
   });
 });
+
+/**
+ * WI-5738 — the detector-failure regression.
+ *
+ * The 2026-07-20 wedge ran for FIVE DAYS with this watchdog running the whole
+ * time. Both of its signals were structurally pinned healthy because the
+ * watchdog measured against `github_default_branch` (= `main`, the branch the
+ * bridge INGESTS) instead of `refs/heads/staging` (the branch it EGRESSES).
+ * main is fast-forwarded hourly by the release pipeline, so:
+ *   - aheadCount stayed ~24, under the 50 threshold, and
+ *   - the tracked tip never aged past ~1h, under the 3h threshold,
+ * while the real egress target sat 358 commits and 5 days behind.
+ *
+ * The watchdog now measures against the egress watermark, AND alarms on the
+ * publish leg's own explicit refusal — which had been recorded on every single
+ * tick at metadata.own_head_publish.refused and raised nothing at all.
+ */
+describe('WI-5738 — a sustained publish refusal alarms on its own', () => {
+  it('alarms on a sustained refusal even when BOTH inferred signals read healthy', () => {
+    // The exact shape of the incident as the watchdog saw it.
+    const v = evaluateOriginFreshness({
+      aheadCount: 24, // < 50: measured against main, which the release pipeline keeps fresh
+      originTipAgeMs: 60 * 60 * 1000, // 1h: main moved an hour ago, so "fresh"
+      publishRefusedSweeps: 5,
+      publishRefusalCode: 'total-over-cap',
+    });
+    expect(v.state).toBe('stale');
+    expect(v.publishRefused).toBe(true);
+    expect(v.aheadCountStale).toBe(false); // both inferred signals still read OK…
+    expect(v.tipAgeStale).toBe(false); // …which is precisely why it went unseen
+    expect(v.reason).toMatch(/REFUSED/);
+    expect(v.reason).toMatch(/total-over-cap/);
+  });
+
+  it('alarms on a refusal even when there is nothing to push (ahead <= 0)', () => {
+    // A refusal is a direct self-report, so it must not be swallowed by the
+    // "nothing to push ⇒ definitionally healthy" early return.
+    const v = evaluateOriginFreshness({
+      aheadCount: 0,
+      originTipAgeMs: null,
+      publishRefusedSweeps: 4,
+      publishRefusalCode: 'secrets',
+    });
+    expect(v.state).toBe('stale');
+    expect(v.publishRefused).toBe(true);
+  });
+
+  it('debounces a transient refusal below the sweep threshold', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 1,
+      originTipAgeMs: 0,
+      publishRefusedSweeps: 1,
+      publishRefusalCode: 'error',
+    });
+    expect(v.state).toBe('ok');
+    expect(v.publishRefused).toBe(false);
+  });
+
+  it('a healthy pot with no refusal is unaffected (no new false alarms)', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 3,
+      originTipAgeMs: 60_000,
+      publishRefusedSweeps: 0,
+      publishRefusalCode: null,
+    });
+    expect(v.state).toBe('ok');
+    expect(v.publishRefused).toBe(false);
+    expect(v.reason).toBeNull();
+  });
+});

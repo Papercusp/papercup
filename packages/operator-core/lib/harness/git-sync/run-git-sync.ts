@@ -235,6 +235,14 @@ const defaultRunGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeout
  *  the whole unpushed range PERMANENTLY unpushable (EI-18: 10.4GB of Rust target/
  *  artifacts wedged the push for 20h). Stay safely under. */
 export const DEFAULT_MAX_BLOB_BYTES = 95 * 1024 * 1024;
+/**
+ * WI-5738: cap on the CUMULATIVE size of one auto-commit's dirty set. Set well
+ * under the publish guard's DEFAULT_MAX_PUBLISH_TOTAL_BYTES (500 MB) so the
+ * commit-side gate — where the response is a cheap exclusion — always fires
+ * BEFORE the publish-side one, where the only response was a terminal refusal.
+ * The headroom also absorbs several commits accumulating between publish ticks.
+ */
+export const DEFAULT_MAX_COMMIT_TOTAL_BYTES = 250 * 1024 * 1024;
 
 export interface GitSyncConfig {
   /** Push to origin after committing/merging (default true). */
@@ -252,6 +260,10 @@ export interface GitSyncConfig {
    *  (`oversized` on the outcome) instead of wedging the push forever
    *  (default DEFAULT_MAX_BLOB_BYTES). */
   maxBlobBytes?: number;
+  /** WI-5738: dirty files are excluded largest-first once the CUMULATIVE dirty
+   *  set exceeds this (default DEFAULT_MAX_COMMIT_TOTAL_BYTES) — the gate that
+   *  catches a bulk accident whose individual files are all under maxBlobBytes. */
+  maxCommitTotalBytes?: number;
 }
 
 /** One (sub)repo that hit a merge conflict during a pass. */
@@ -652,6 +664,60 @@ export async function findOversizedDirtyFiles(runGit: RunGit, repoPath: string, 
   return out;
 }
 
+/**
+ * WI-5738 — the CUMULATIVE sibling of `findOversizedDirtyFiles`, and the gate
+ * that should have stopped the 2026-07-20 incident at source.
+ *
+ * `findOversizedDirtyFiles` is PER-FILE. On 2026-07-20 an extracted AppImage
+ * was auto-committed as **2,261 MB across thousands of files** whose largest
+ * single blob was 90.3 MB — comfortably under the 95 MB per-file cap. Every
+ * file passed individually, the whole thing was committed, and the aggregate
+ * then breached the publish guard's 500 MB TOTAL cap one layer downstream,
+ * where the only available response was to refuse (terminally). The per-file
+ * cap cannot see a bulk accident; the total cap can only see it too late.
+ *
+ * So: measure the aggregate HERE, where the response is still cheap and
+ * correct — exclude the files from the commit and leave them dirty, exactly as
+ * the oversized/content guards already do ("quarantine, don't stall"). Largest
+ * -first, because a bulk accident is dominated by a few big artifacts while
+ * genuine source edits are small: the offending tree is peeled off and the
+ * fleet's real work still commits this tick.
+ *
+ * Deliberately NOT a hard failure: a legitimately large commit is possible, and
+ * refusing to commit at all would just relocate the wedge upstream.
+ */
+export async function findBulkDirtyExcess(
+  runGit: RunGit,
+  repoPath: string,
+  maxTotalBytes: number,
+  alreadyExcluded: ReadonlySet<string> = new Set(),
+): Promise<OversizedFile[]> {
+  const paths = await dirtyFiles(runGit, repoPath);
+  const sized: OversizedFile[] = [];
+  let total = 0;
+  for (const path of paths) {
+    if (alreadyExcluded.has(path)) continue; // its bytes are not being committed
+    try {
+      const st = await lstat(join(repoPath, path));
+      if (!st.isFile()) continue;
+      sized.push({ path, sizeBytes: st.size });
+      total += st.size;
+    } catch {
+      /* a racing build artifact vanished mid-pass — nothing to commit, skip */
+    }
+  }
+  if (total <= maxTotalBytes) return [];
+  // Peel the largest until the remainder fits.
+  sized.sort((a, b) => b.sizeBytes - a.sizeBytes);
+  const excluded: OversizedFile[] = [];
+  for (const f of sized) {
+    if (total <= maxTotalBytes) break;
+    excluded.push(f);
+    total -= f.sizeBytes;
+  }
+  return excluded;
+}
+
 /** Enumerate every dirty path (modified/added/deleted/untracked), repo-relative, in the
  *  same path-space as the oversized/content excludes. `-z` keeps paths with spaces/newlines
  *  intact; a rename/copy origin path (the 2nd `-z` field) is skipped. Exported for P-004 tests. */
@@ -724,6 +790,7 @@ export async function commitAttributedGroups(
 interface CommitRepoOpts {
   message: string;
   maxBlobBytes: number;
+  maxCommitTotalBytes: number;
   contentDetectors: ContentDetector[];
   deletionGuard: boolean;
   readText: (repoPath: string, relPath: string) => Promise<string | null>;
@@ -761,6 +828,23 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // files are excluded from the commit (`:(exclude,literal)` pathspecs) and
     // reported; everything else still syncs this tick.
     oversized = await findOversizedDirtyFiles(runGit, repoPath, o.maxBlobBytes);
+    // WI-5738: the CUMULATIVE gate. Individually-fine files can still add up to
+    // an accident (2,261 MB of extracted AppImage in files all < 95 MB, on
+    // 2026-07-20) that the downstream publish guard could then only refuse,
+    // terminally. Catch it here, where excluding is enough.
+    const bulk = await findBulkDirtyExcess(
+      runGit,
+      repoPath,
+      o.maxCommitTotalBytes,
+      new Set(oversized.map((f) => f.path)),
+    );
+    if (bulk.length > 0) {
+      o.log(
+        `[git-sync] cumulative dirty set exceeds ${o.maxCommitTotalBytes} bytes — excluding ${bulk.length} large file(s) ` +
+          `from this commit (left dirty): ${bulk.slice(0, 5).map((f) => `${f.path} (${f.sizeBytes}B)`).join('; ')}`,
+      );
+      oversized = [...oversized, ...bulk];
+    }
     // EI-438 content guard (P-001/P-002, D-001): a dirty file that fails a content
     // detector (an .mdx that won't compile, a curly quote used as code) is EXCLUDED
     // from this commit and left dirty for the content-fixer — so one broken file
@@ -1040,6 +1124,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const doSub = cfg.pushSubmodules !== false;
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
   const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
+  const maxCommitTotalBytes = cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES;
   const log = opts.log ?? (() => {});
   // WI-1416: the checkpoint seam — each phase below runs under `step` so a durable
   // caller records one operation_output per phase (see GitSyncStepRunner).
@@ -1048,7 +1133,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const contentDetectors = opts.contentDetectors ?? DEFAULT_CONTENT_DETECTORS;
   const deletionGuard = opts.deletionGuard ?? true;
   const readText = opts.readText ?? defaultReadText;
-  const repoO = { remote, message, doPush, maxBlobBytes, contentDetectors, deletionGuard, readText, log };
+  const repoO = { remote, message, doPush, maxBlobBytes, maxCommitTotalBytes, contentDetectors, deletionGuard, readText, log };
 
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));
   if (!repo) {

@@ -64,6 +64,18 @@ import { runShutdownWithDeadline } from "../lib/shutdown-deadline";
 import { getBuildInfo } from "@papercusp/operator-core/lib/build-info";
 import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
 import { managedSetInterval } from "@papercusp/scheduled-registry";
+import { installTimestampedConsole } from "@papercusp/operator-core/lib/timestamped-console";
+
+// WI-5778 (P-422): install as the very first statement below the imports —
+// before ANYTHING else in this file has a chance to console.log/warn/error —
+// so as close to every line of the process's own output as possible carries
+// a timestamp. This is the ONE choke point every frame's serve.log flows
+// through (serve.mjs is esbuild-bundled from this file — see
+// build-desktop-sidecar.sh — and every rig script redirects its stdout/
+// stderr straight to `$H/serve.log`), so fixing it here fixes it for every
+// rig at once instead of patching N shell redirects.
+installTimestampedConsole();
+
 // The three sidecar entrypoints (substrate / spawner / inference-gateway) are
 // imported DYNAMICALLY inside main(), never here — same as host-bootstrap,
 // host-handler and embedded-pg below. Each is reachable only from its own

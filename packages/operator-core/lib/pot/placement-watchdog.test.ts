@@ -112,7 +112,13 @@ function obs(over: Partial<PlacementObservation>): PlacementObservation {
 
 describe('isUnitTerminal / isStuckBlockerState', () => {
   it('treats both kind-family terminal dialects as terminal', () => {
-    for (const s of ['passed', 'deprecated', 'resolved', 'closed']) expect(isUnitTerminal(s)).toBe(true);
+    // EI-18653071581558556 — `done`/`dropped` MUST be here. They are the dominant
+    // terminal words in harness_features_consolidated, and omitting them made the
+    // watchdog score finished work as failed placements (~88% phantom
+    // stranded/cursed rows measured live on papercusp 2026-07-25). This list
+    // previously stopped at 'closed', so the bug passed green.
+    for (const s of ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'])
+      expect(isUnitTerminal(s)).toBe(true);
     for (const s of ['todo', 'in_progress', 'wip', 'failing', 'blocked', null, undefined]) {
       expect(isUnitTerminal(s)).toBe(false);
     }

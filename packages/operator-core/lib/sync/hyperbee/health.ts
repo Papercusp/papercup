@@ -117,6 +117,35 @@ export interface SubstrateHealthInputs {
    * = not measured (never fabricates a verdict).
    */
   ownLogFork?: { forked: boolean; detail?: string };
+  /**
+   * WI-5777 (substrate observability gap found while re-verifying WI-5719):
+   * age (ms) since the EI-8892 isolated-DHT-bootstrap liveness probe
+   * (`papercup-dht-liveness-check.sh`, 5-min cadence) last SUCCEEDED, for a
+   * process whose federation actually depends on that isolated bootstrap
+   * (`PAPERCUSP_DHT_BOOTSTRAP` set). This closes a real silent-degrade path:
+   * a wedged bootstrap makes a currently-joining/reconnecting peer read
+   * `never_connected` at the replication-liveness layer, and per WI-183
+   * gating `never_connected` NEVER alarms on its own — it is deliberately
+   * indistinguishable from an ordinary offline peer. The EI-8892 probe is
+   * the only independent signal that CAN tell the two apart; this input
+   * threads that signal into the harness verdict so a wedged substrate
+   * shows up here too, instead of only in a separately-filed, uncorrelated
+   * EI (see WI-5719 for one such instance — resolved transient, but the
+   * correlation to THIS harness's verdict was previously invisible).
+   * `null`/`undefined` = not measured (this process isn't on the isolated
+   * DHT, or the probe has never run / its state dir is unreadable) — never
+   * fabricates a verdict, same convention as every other optional input here.
+   */
+  dhtBootstrapProbeStaleMs?: number | null;
+  /**
+   * `dhtBootstrapProbeStaleMs` ≥ this → `degraded` (never worse — this is
+   * CORRELATIONAL, not a certain diagnosis: the probe itself could just be
+   * down while federation is fine). Default 20 minutes — 4x the probe's
+   * 5-min cadence, comfortably past ordinary timer jitter, well under the
+   * wrapper's own 6h `DHT_STALE_H` "the checker itself has gone dark"
+   * threshold (a different, louder concern this input does not duplicate).
+   */
+  dhtBootstrapProbeStaleThresholdMs?: number;
   /** Override for tests; defaults to Date.now(). */
   nowMs?: number;
   /** mergedOps lagging highestSeen for this long → unhealthy. Default 5m. */
@@ -244,6 +273,26 @@ export function assessHarnessSubstrateHealth(
         `replication-liveness sampler stale for ${samplingStale} log(s) — merge loop may be wedged`,
       );
     }
+  }
+
+  // WI-5777: a stale/failing EI-8892 DHT-bootstrap probe means this harness's
+  // `never_connected` verdicts (which never alarm on their own, by WI-183
+  // design — see replicationLiveness above) may actually be masking a
+  // silently-wedged substrate rather than genuinely-offline peers. Degraded
+  // only, never worse — correlational, not proof; worst-wins (never
+  // downgrades an already-worse verdict from the checks above).
+  if (
+    inputs.dhtBootstrapProbeStaleMs != null &&
+    inputs.dhtBootstrapProbeStaleMs >=
+      (inputs.dhtBootstrapProbeStaleThresholdMs ?? 20 * 60 * 1_000)
+  ) {
+    if (verdict === 'healthy') verdict = 'degraded';
+    reasons.push(
+      `isolated-DHT bootstrap liveness probe stale for ${Math.round(
+        inputs.dhtBootstrapProbeStaleMs / 60_000,
+      )}m — federation may be silently wedged at the substrate level (EI-8892 class); ` +
+        `'never_connected' peers here are unverified, not confirmed-offline`,
+    );
   }
 
   // P-003 (WI-3535): an own-log fork blocks LOCAL writes outright — at least

@@ -57,10 +57,11 @@ import {
   countByFile,
   gitChangedFiles,
   decidePerFile,
+  effectiveBaselineByFile,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
-export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, decidePerFile };
+export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, decidePerFile, effectiveBaselineByFile };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');

@@ -87,6 +87,66 @@ export function gitChangedFiles(root) {
 }
 
 /**
+ * Resolve the EFFECTIVE per-file baseline, inheriting cross-package files from their OWNING
+ * package's baseline (EI-18649014117371738).
+ *
+ * ## Why this exists
+ *
+ * `decidePerFile` treats a file ABSENT from the baseline as an implicit 0 — correct for a file this
+ * gate OWNS (a fresh file that arrives with errors IS a named regression). It is WRONG for a file in
+ * ANOTHER package that has its own baseline gate: this gate's baseline was captured at some other
+ * moment, under a DIFFERENT tsconfig, so "absent" there means "this gate never recorded it", NOT
+ * "it was clean". Absent ⇒ 0 turns that gap into a phantom regression.
+ *
+ * That is not hypothetical: operator-core's baseline records e.g.
+ * `packages/operator-core/lib/agent-tools/memory/search.ts: 1` (a KNOWN, TOLERATED error), while
+ * apps/operator-vite's baseline — seeded four days later — never listed it. So `lint:tsc` PASSED and
+ * `lint:tsc:operator-vite` FAILED on the SAME source file, and 12 operator-core files read as
+ * regressions to an agent who had opened none of them. Two gates over one tree giving opposite
+ * verdicts makes neither number trustworthy — exactly the false-signal problem the per-file gate was
+ * built to kill (EI-847), reintroduced at the cross-package seam.
+ *
+ * ## The rule
+ *
+ * For a file this gate MEASURED but did not record, that lives under a `prefix` owned by a package
+ * with its own baseline, inherit that package's recorded count instead of defaulting to 0.
+ *
+ *   - Own baseline ALWAYS wins when present — an explicit entry is this gate's own measured truth
+ *     under its own tsconfig, and ratchet-only-down must never be loosened by a foreign number.
+ *   - Inheritance is scoped to files actually in `currentByFile`, so a foreign baseline can never
+ *     inject files this gate does not measure (that would fabricate phantom "improvements" and
+ *     inflate the reported total).
+ *   - Absent from BOTH is still an implicit 0 — a genuinely NEW error in a foreign file still gates.
+ *
+ * @param {{
+ *   baselineByFile: Record<string, number>,
+ *   currentByFile: Record<string, number>,
+ *   foreignBaselines?: {prefix:string, files:Record<string,number>, label?:string}[],
+ * }} args
+ * @returns {{ effective: Record<string, number>, inherited: {file:string,baseline:number,from:string}[] }}
+ */
+export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreignBaselines = [] }) {
+  if (!foreignBaselines.length) return { effective: baselineByFile, inherited: [] };
+
+  const effective = { ...baselineByFile };
+  const inherited = [];
+  for (const file of Object.keys(currentByFile)) {
+    if (effective[file] !== undefined) continue; // this gate's OWN recorded count wins, always
+    for (const source of foreignBaselines) {
+      if (!file.startsWith(source.prefix)) continue;
+      const count = source.files?.[file];
+      if (typeof count === 'number' && count > 0) {
+        effective[file] = count;
+        inherited.push({ file, baseline: count, from: source.label ?? source.prefix });
+      }
+      break; // first matching prefix OWNS the file — a second source never overrides it
+    }
+  }
+  inherited.sort((a, b) => a.file.localeCompare(b.file));
+  return { effective, inherited };
+}
+
+/**
  * Pure per-file gate decision — the ONE place the policy lives, so it is unit-testable (EI-104).
  * A file is a REGRESSION when its current error count exceeds its baseline (a file absent from the
  * baseline has an implicit baseline of 0, so any new error in a fresh file is a named regression).
@@ -171,9 +231,22 @@ function formatRow(r) {
  *   countField?: string,    // baseline JSON field the derived total is written to on --update
  *                           // (default 'errorCount'; operator-core keeps its legacy
  *                           // 'operatorCoreErrorCount' name for back-compat with existing tooling).
+ *   foreignBaselines?: {prefix: string, baselineFile: string, label?: string}[],
+ *                           // Cross-package files this gate MEASURES but does not OWN: a file under
+ *                           // `prefix` that is absent from this gate's baseline inherits the owning
+ *                           // package's recorded count instead of an implicit 0. See
+ *                           // effectiveBaselineByFile (EI-18649014117371738).
  * }}
  */
-export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField = 'errorCount' }) {
+export function runTscBaselineGate({
+  root,
+  tscCommand,
+  baselineFile,
+  label,
+  argv,
+  countField = 'errorCount',
+  foreignBaselines = [],
+}) {
   const updateFlag = argv.includes('--update');
   const mineFlag = argv.includes('--mine');
 
@@ -208,7 +281,29 @@ export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv
     process.exit(1);
     return;
   }
-  const baselineByFile = baseline.files ?? {};
+  const ownBaselineByFile = baseline.files ?? {};
+
+  // Load each owning package's baseline for the cross-package files this gate measures but does not
+  // own. Fail-SOFT per source: an unreadable foreign baseline degrades to the old absent⇒0 behaviour
+  // (a possible false red we WARN about) rather than crashing the gate or silently passing.
+  const loadedForeign = [];
+  for (const source of foreignBaselines) {
+    try {
+      const parsed = JSON.parse(readFileSync(source.baselineFile, 'utf-8'));
+      loadedForeign.push({ ...source, files: parsed.files ?? {} });
+    } catch {
+      console.warn(
+        `⚠ Could not read the baseline owning ${source.prefix} (${source.baselineFile}) — ` +
+          `files under it fall back to an implicit 0 baseline and may report as false regressions.`,
+      );
+    }
+  }
+
+  const { effective: baselineByFile, inherited } = effectiveBaselineByFile({
+    baselineByFile: ownBaselineByFile,
+    currentByFile,
+    foreignBaselines: loadedForeign,
+  });
   const changedFiles = mineFlag ? gitChangedFiles(root) : null;
 
   const result = decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles });
@@ -216,6 +311,12 @@ export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv
     `TSC ${label}: ${result.total} type errors across ${Object.keys(currentByFile).length} file(s) ` +
       `(baseline total ${result.baselineTotal})${mineFlag ? ' [--mine]' : ''}`,
   );
+  if (inherited.length > 0) {
+    console.log(
+      `   (${inherited.length} cross-package file(s) inherited their baseline from the package that OWNS them — ` +
+        `already-known errors there, not regressions to this gate.)`,
+    );
+  }
 
   const writeBaseline = (byFile, why) => {
     baseline.files = Object.fromEntries(Object.entries(byFile).sort(([a], [b]) => a.localeCompare(b)));

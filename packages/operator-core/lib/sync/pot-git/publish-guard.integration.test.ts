@@ -11,7 +11,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensurePotGitRepo } from './storage';
-import { checkPublishGuard, describePublishRefusal } from './publish-guard';
+import { checkPublishGuard, describePublishRefusal, resolveIncrementalPublishSha } from './publish-guard';
 
 let commitCounter = 0;
 
@@ -218,6 +218,100 @@ describe('pot-git publish-guard (real bare repo)', () => {
       expect(res.ok).toBe(false);
       expect(res.refusalCode).toBe('secrets');
       expect(res.exemptedFindings).toEqual([]);
+    });
+  });
+  // ── WI-5738: the refusal must not be a one-way latch ──────────────────
+  describe('WI-5738 — a refusal must never be terminal', () => {
+    // The 2026-07-20 incident in miniature: a range whose CUMULATIVE size busts
+    // the total cap, where the offending commit sits in the middle. The old
+    // behaviour refused the whole range, and because callers baseline on their
+    // own last SUCCESS the refusal could never clear itself.
+    const FAT = 'x'.repeat(600 * 1024); // > the 512KB cap used below
+    const caps = { maxTotalNewBytes: 512 * 1024 };
+
+    it('volume refusal DRAINS to the longest admissible prefix instead of refusing everything', async () => {
+      const base = await commit(repo, { 'a.txt': 'a' });
+      const c1 = await commit(repo, { 'a.txt': 'a', 'b.txt': 'small b' }, base);
+      const c2 = await commit(repo, { 'a.txt': 'a', 'b.txt': 'small b', 'c.txt': 'small c' }, c1);
+      const fat = await commit(repo, { 'a.txt': 'a', 'b.txt': 'small b', 'c.txt': 'small c', 'fat.bin': FAT }, c2);
+
+      // Baseline behaviour: the whole range is refused outright.
+      const whole = await checkPublishGuard({ repoPath: repo, fromOid: base, toOid: fat, caps });
+      expect(whole.ok).toBe(false);
+      expect(whole.refusalCode).toBe('total-over-cap');
+
+      // WI-5738: the same range now yields forward progress.
+      const res = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: base, toOid: fat, caps });
+      expect(res.safeSha).toBe(c2);
+      expect(res.safeSha).not.toBe(base); // the baseline MOVED — no ratchet
+      expect(res.drained).toBe(true);
+      expect(res.complete).toBe(false);
+      expect(res.blocked).toBeNull(); // a volume cap is not a hard block
+    });
+
+    it('draining is monotone: re-running from the new baseline gets past the fat commit', async () => {
+      const base = await commit(repo, { 'm.txt': 'm' });
+      const c1 = await commit(repo, { 'm.txt': 'm', 'n.txt': 'n' }, base);
+      const fat = await commit(repo, { 'm.txt': 'm', 'n.txt': 'n', 'fat2.bin': FAT }, c1);
+      const after = await commit(repo, { 'm.txt': 'm', 'n.txt': 'n', 'fat2.bin': FAT, 'o.txt': 'o' }, fat);
+
+      const first = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: base, toOid: after, caps });
+      expect(first.safeSha).toBe(c1);
+
+      // Next tick resumes from what was published. The fat commit is now the
+      // FIRST in the range and indivisible — it goes through rather than
+      // wedging the plane forever, and is named for the health layer.
+      const second = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: first.safeSha, toOid: after, caps });
+      expect(second.oversizedCommit).toBe(fat);
+      expect(second.safeSha).toBe(fat);
+
+      // And the tick after that reaches the head — the wedge is fully drained.
+      const third = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: second.safeSha, toOid: after, caps });
+      expect(third.safeSha).toBe(after);
+      expect(third.complete).toBe(true);
+    });
+
+    it('a HARD refusal (secret) still blocks — but at the exact commit, with the prefix published', async () => {
+      const base = await commit(repo, { 'p.txt': 'p' });
+      const clean = await commit(repo, { 'p.txt': 'p', 'q.txt': 'q' }, base);
+      const fakeKey = ['AKIA', 'HARDHARDHARDHARD'].join('');
+      const leaky = await commit(repo, { 'p.txt': 'p', 'q.txt': 'q', 'leak.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n` }, clean);
+      const later = await commit(repo, { 'p.txt': 'p', 'q.txt': 'q', 'leak.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n`, 'r.txt': 'r' }, leaky);
+
+      const res = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: base, toOid: later });
+      expect(res.safeSha).toBe(clean); // everything before the leak still ships
+      expect(res.blocked?.commit).toBe(leaky); // exact attribution
+      expect(res.blocked?.result.refusalCode).toBe('secrets');
+      expect(res.complete).toBe(false);
+    });
+
+    it('the clean fast path costs exactly ONE guard call', async () => {
+      const base = await commit(repo, { 's.txt': 's' });
+      const next = await commit(repo, { 's.txt': 's', 't.txt': 't' }, base);
+      const res = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: base, toOid: next });
+      expect(res.complete).toBe(true);
+      expect(res.safeSha).toBe(next);
+      expect(res.guardCalls).toBe(1);
+    });
+
+    it("volumeGates:'warn' admits a volume breach (second-line guard) but still refuses secrets", async () => {
+      const base = await commit(repo, { 'w.txt': 'w' });
+      const fat = await commit(repo, { 'w.txt': 'w', 'fat3.bin': FAT }, base);
+
+      const enforced = await checkPublishGuard({ repoPath: repo, fromOid: base, toOid: fat, caps });
+      expect(enforced.ok).toBe(false);
+      expect(enforced.refusalCode).toBe('total-over-cap');
+
+      const warned = await checkPublishGuard({ repoPath: repo, fromOid: base, toOid: fat, caps, volumeGates: 'warn' });
+      expect(warned.ok).toBe(true);
+      expect(warned.volumeWarnings).toContain('total-over-cap');
+
+      // Safety gates are NOT relaxed by 'warn'.
+      const fakeKey = ['AKIA', 'WARNWARNWARNWARN'].join('');
+      const leaky = await commit(repo, { 'w.txt': 'w', 'leak2.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n` }, base);
+      const stillRefused = await checkPublishGuard({ repoPath: repo, fromOid: base, toOid: leaky, volumeGates: 'warn' });
+      expect(stillRefused.ok).toBe(false);
+      expect(stillRefused.refusalCode).toBe('secrets');
     });
   });
 });

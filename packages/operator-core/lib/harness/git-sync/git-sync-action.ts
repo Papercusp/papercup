@@ -1361,6 +1361,9 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
         last_admitted: outcome.lastAdmitted,
         divergence: outcome.verdict.action,
         needs_owner: outcome.verdict.needsOwner,
+        // WI-5738: the truthful egress watermark the origin-freshness watchdog
+        // measures against (see GithubBridgeTickOutcome.egressHead).
+        egress_head: outcome.egressHead ?? null,
         errors: outcome.errors.slice(0, 10),
       },
     });
@@ -1843,6 +1846,8 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       // sigrefs of a pre-existing repo judges the whole history and the flood
       // caps refuse it forever (peers then never fetch the repo at all).
       genesisBaselineSha: await deriveGenesisBaselineSha(entry, undefined),
+      // WI-5738: runtime secrets-guard path exemptions apply here too.
+      workspaceId,
     });
     if (publishOutcome.announcement) {
       const announcement = publishOutcome.announcement;

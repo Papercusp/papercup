@@ -40,9 +40,31 @@ export interface OriginFreshnessSnapshot {
    *  observation of a given origin sha, or when there is nothing to track (aheadCount<=0)
    *  — never stale on a null age. */
   originTipAgeMs: number | null;
+  /**
+   * WI-5738 — the THIRD signal, and the only one that is not a proxy.
+   *
+   * The two signals above infer a stall from origin standing still. A publish
+   * guard REFUSAL is the stall stated outright: the p2p publish leg reporting,
+   * every tick, that it will not publish. It was recorded at
+   * `metadata.own_head_publish.refused` and raised NOTHING — no condition, no
+   * escalation, no health flag — so the 2026-07-20 wedge ran for five days
+   * while the leg logged its own refusal on every single tick. A detector that
+   * ignores an explicit self-report in favour of inference is the detector
+   * failure, not just a missed inference.
+   *
+   * Count of CONSECUTIVE sweeps the publish leg has reported a refusal (0 =
+   * publishing fine). Null when unknown/not applicable.
+   */
+  publishRefusedSweeps?: number | null;
+  /** The refusal code being reported, for the alarm body (e.g. 'total-over-cap'). */
+  publishRefusalCode?: string | null;
 }
 
 export interface OriginFreshnessThresholds {
+  /** Consecutive sweeps of publish-guard refusal before alarming. Default 3 —
+   *  a refusal is a deliberate, sustained verdict, so this only debounces a
+   *  blip (e.g. a transient git error) rather than waiting out a real wedge. */
+  publishRefusedSweepsMax?: number;
   /** Local ahead of the tracked origin tip by at least this many commits ⇒ stale,
    *  regardless of how long ago that happened (a sudden pile-up is itself a signal).
    *  Default 50 — generous enough to absorb a normal burst of commits between bridge
@@ -59,11 +81,14 @@ export interface OriginFreshnessVerdict {
   state: 'ok' | 'stale';
   aheadCountStale: boolean;
   tipAgeStale: boolean;
+  /** WI-5738: the publish leg is explicitly refusing to publish, sustained. */
+  publishRefused: boolean;
   /** Human reason for the alarm body, or null when not stale. */
   reason: string | null;
 }
 
 export const DEFAULT_AHEAD_COUNT_MAX = 50;
+export const DEFAULT_PUBLISH_REFUSED_SWEEPS_MAX = 3;
 export const DEFAULT_TIP_AGE_STALE_MS = 3 * 60 * 60 * 1000; // 3h
 
 const hrs = (ms: number): number => Math.round(ms / 3_600_000);
@@ -79,21 +104,41 @@ export function evaluateOriginFreshness(
 ): OriginFreshnessVerdict {
   const aheadCountMax = thresholds.aheadCountMax ?? DEFAULT_AHEAD_COUNT_MAX;
   const tipAgeStaleMs = thresholds.tipAgeStaleMs ?? DEFAULT_TIP_AGE_STALE_MS;
+  const refusedMax = thresholds.publishRefusedSweepsMax ?? DEFAULT_PUBLISH_REFUSED_SWEEPS_MAX;
+
+  // WI-5738: an explicit, sustained publish REFUSAL alarms on its own — it is a
+  // direct self-report, not an inference, so it must NOT be gated behind the
+  // ahead<=0 early return below. In the 2026-07-20 wedge `ahead` was computed
+  // against the wrong branch and read 24, which silenced everything; a refusal
+  // is true regardless of how any commit-count comes out.
+  const publishRefused = (snapshot.publishRefusedSweeps ?? 0) >= refusedMax;
+  const refusalReason = publishRefused
+    ? `the p2p publish leg has REFUSED to publish for ${snapshot.publishRefusedSweeps} consecutive sweeps` +
+      (snapshot.publishRefusalCode ? ` (${snapshot.publishRefusalCode})` : '') +
+      ' — nothing this device commits is reaching peers or origin'
+    : null;
 
   const ahead = snapshot.aheadCount ?? 0;
   // Nothing to push (local at/behind the tracked origin tip, or unknown) ⇒ never stale —
   // the false-alarm-fix idiom every sibling watchdog applies to its own "idle" state.
   if (ahead <= 0) {
-    return { state: 'ok', aheadCountStale: false, tipAgeStale: false, reason: null };
+    return {
+      state: publishRefused ? 'stale' : 'ok',
+      aheadCountStale: false,
+      tipAgeStale: false,
+      publishRefused,
+      reason: refusalReason,
+    };
   }
 
   const aheadCountStale = ahead >= aheadCountMax;
   const tipAgeStale = snapshot.originTipAgeMs != null && snapshot.originTipAgeMs > tipAgeStaleMs;
-  const stale = aheadCountStale || tipAgeStale;
+  const stale = aheadCountStale || tipAgeStale || publishRefused;
 
   let reason: string | null = null;
   if (stale) {
     const parts: string[] = [];
+    if (refusalReason) parts.push(refusalReason);
     if (aheadCountStale) {
       parts.push(
         `local canonical is ${ahead} commit(s) ahead of the last-known origin tip (>= ${aheadCountMax}) — a backlog is piling up unpushed`,
@@ -107,7 +152,7 @@ export function evaluateOriginFreshness(
     reason = parts.join('; ');
   }
 
-  return { state: stale ? 'stale' : 'ok', aheadCountStale, tipAgeStale, reason };
+  return { state: stale ? 'stale' : 'ok', aheadCountStale, tipAgeStale, publishRefused, reason };
 }
 
 /**

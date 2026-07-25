@@ -94,6 +94,23 @@ export function replicationStallEiTitle(episode: {
 /** Resolver identity stamped on auto-resolved (recovered) replication-stall EIs. */
 export const RECOVERY_OWNER = 'system:replication-liveness';
 
+/**
+ * WI-5762: standing-condition delta-gate cooldown (see escalation/episodic-ei.ts's
+ * `standingCooldownMs`). A chronic (harness, log, kind) stall commonly flaps —
+ * a transient reconnect/repair satisfies `onRecovery` and auto-resolves the open
+ * EI, then the SAME condition re-stalls minutes later (WI-183 class, sharpened
+ * by a restart-heavy soak) — and open-only dedup re-files a fresh duplicate
+ * every time, because the check only ever sees "no OPEN match." Measured: 57
+ * duplicate EIs for one standing stall over a 7d window. 24h mirrors
+ * dark-flag-age-detect's DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS — long
+ * enough to absorb a flap-storm inside one soak/restart cycle, short enough
+ * that a condition still standing a day later still re-pages (this is a
+ * cooldown on RE-FILING, never a suppression of the underlying detector or the
+ * boot-history/console legs, and a genuinely NEW distinct (harness, log, kind)
+ * key is a different title and unaffected).
+ */
+export const REPLICATION_STALL_EI_STANDING_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 /** DI seam so the dedup+file logic unit-tests without PG. */
 export type ReplicationStallEiDeps = EpisodicEiDeps<'major'>;
 
@@ -179,6 +196,7 @@ const escalator = createEpisodicEscalator<StallEiEpisode, RecoveredStallEpisode,
   createdBy: 'system:replication-liveness',
   foundDuring: 'replication-liveness-detector',
   recoveryOwner: RECOVERY_OWNER,
+  standingCooldownMs: REPLICATION_STALL_EI_STANDING_COOLDOWN_MS,
 });
 
 /** Test seam. */

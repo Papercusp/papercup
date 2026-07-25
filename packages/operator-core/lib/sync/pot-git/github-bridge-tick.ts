@@ -75,6 +75,17 @@ export interface BridgeTickOutcome {
   /** The advanced watermark — caller persists it. Unchanged when nothing admitted. */
   lastAdmitted: string | null;
   egress: { pushed: number; upToDate: number; rejectedNonFF: number; blockedSecrets: number } | null;
+  /** WI-5738: the sha egress ACTUALLY landed on the remote staging ref this
+   *  tick (or that the remote already held). This is the only local, truthful
+   *  watermark of what GitHub has — the origin-freshness watchdog measured
+   *  against the INGRESS mirror of `github_default_branch` instead, which on
+   *  papercusp is `main`. main is fast-forwarded hourly by the RELEASE
+   *  pipeline, so both of the watchdog's staleness signals were permanently
+   *  neutralised (ahead-count stayed ~24 < 50, and the tracked tip never aged
+   *  past ~1h) while the actual egress target, origin/staging, sat frozen for
+   *  five days. Same ingress-vs-egress conflation as the incident write-up's
+   *  own framing error. */
+  egressHead?: string | null;
   verdict: DivergenceVerdict;
   errors: string[];
 }
@@ -181,8 +192,10 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
   // origin freezes indefinitely (the hello-world-3-pot canary sat ~22h / 8
   // commits behind reading green). Surface it so divergence escalates.
   let canonicalMissing: { canonicalRef: string; watermarkSha: string | null } | null = null;
+  let canonicalShaForWatermark: string | null = null;
   if (target.target !== 'none') {
     const canonicalSha = await readCanonicalSha(repoPath, runGit);
+    canonicalShaForWatermark = canonicalSha;
     if (canonicalSha) {
       egress = await (input.deps?.egress ?? egressCanonicalRefs)({
         repoPath,
@@ -237,6 +250,9 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
           blockedSecrets: egress.blockedSecrets.length,
         }
       : null,
+    egressHead:
+      egress?.pushed.find((p) => p.remoteRef === BRIDGE_REMOTE_STAGING_REF)?.to ??
+      (egress?.upToDate.includes(BRIDGE_REMOTE_STAGING_REF) ? canonicalShaForWatermark : null),
     verdict,
     errors,
   };

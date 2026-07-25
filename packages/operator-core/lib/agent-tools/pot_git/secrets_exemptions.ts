@@ -21,13 +21,13 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    "Owner: the RUNTIME (no-restart) escape hatch for the git-sync own-head publish guard's secrets scanner (WI-5591) — clears a false-positive that would otherwise permanently freeze git egress for the hive. Actions: list {} — every exempted path + reason/who/when | add {path, reason} — exempt a repo path from the secrets scan starting the NEXT git-sync tick | remove {path} — re-arm scanning for a path. This is a data-driven sibling of secrets-guard.ts's hardcoded FIXTURE_FILES set; use it INSTEAD of editing that source + restarting papercup-bg-host.",
+    "Owner: the RUNTIME (no-restart) escape hatch for the pot-git secrets scanner (WI-5591) — clears a false positive that would otherwise permanently freeze git egress for the hive. Covers BOTH the own-head publish guard and the GitHub-bridge EGRESS guard (WI-5738). Actions: list {} | add {path, reason} — exempt from the scan starting the NEXT git-sync tick | remove {path} — re-arm. `path` is an exact file OR a directory prefix (`dir/`, `dir/**`) to clear a whole bad tree. Data-driven sibling of secrets-guard.ts's FIXTURE_FILES; use INSTEAD of editing that source + restarting papercup-bg-host.",
   capability: 'audit:write',
   guidance: {
     when:
       "own_head_publish.refused === 'secrets' (readable at harness_shared.routines.metadata->'own_head_publish'->>'refused', or git-sync's own console warning) AND you've confirmed the flagged finding is a false positive (a detector fixture, a documented example credential, a placeholder — never a REAL live secret) — {action:'add', path, reason}. Check {action:'list'} first so you don't duplicate an existing exemption.",
     notWhen:
-      "The finding might be a genuine leaked credential — rotate/revoke it and fix the source instead of exempting the path. A repeat false-positive class across many paths (not one specific file) — that calls for a rule-precision fix in secrets-guard.ts itself, not N one-off exemptions here.",
+      "The finding might be a genuine leaked credential — rotate/revoke it and fix the source instead. A false-positive class across many DIFFERENT trees — that needs a rule fix in secrets-guard.ts, not N exemptions. A prefix is a broad waiver: scope it to the actual accident.",
     chaining:
       "{action:'list'} → confirm the path isn't already exempt → {action:'add', path, reason} → the next git-sync tick (or dev:restart of the affected host if you need it sooner) retries the publish.",
     seeAlso: ['pot_git:integration_requests (a different G-10-adjacent queue — below-tier member heads, not secrets)'],
@@ -44,7 +44,7 @@ export default defineTool({
       path: z
         .string()
         .optional()
-        .describe("Exact repo-relative path (matches secrets-guard.ts's FIXTURE_FILES semantics exactly). Required for action:'add'/'remove'."),
+        .describe("Repo-relative path: an exact file, or a directory prefix (`dir/` / `dir/**`) to exempt a whole tree (WI-5738 — one bad extraction was 4,174 files). Required for action:'add'/'remove'."),
       reason: z
         .string()
         .optional()

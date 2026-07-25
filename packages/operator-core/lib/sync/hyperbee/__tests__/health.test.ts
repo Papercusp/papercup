@@ -300,4 +300,62 @@ describe('assessHarnessSubstrateHealth', () => {
       expect(r.verdict).toBe('healthy');
     });
   });
+
+  // WI-5777: a stale/failing EI-8892 DHT-bootstrap probe degrades a harness
+  // whose 'never_connected' peers (WI-183, never-alarms-on-its-own) might
+  // actually be a silently-wedged substrate rather than genuinely offline.
+  describe('dhtBootstrapProbeStaleMs (WI-5777)', () => {
+    it('stale past the default 20m threshold → degraded, with a correlational (not certain) reason', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        dhtBootstrapProbeStaleMs: 25 * 60 * 1_000,
+      });
+      expect(r.verdict).toBe('degraded');
+      expect(r.reasons.join(' ')).toMatch(/isolated-DHT bootstrap liveness probe stale/);
+      expect(r.reasons.join(' ')).toMatch(/never_connected.*unverified/);
+    });
+
+    it('under threshold → no-op (healthy)', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        dhtBootstrapProbeStaleMs: 5 * 60 * 1_000,
+      });
+      expect(r.verdict).toBe('healthy');
+    });
+
+    it('null/omitted → no-op, never fabricates a verdict (process not on the isolated DHT)', () => {
+      const r1 = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        dhtBootstrapProbeStaleMs: null,
+      });
+      expect(r1.verdict).toBe('healthy');
+      const r2 = assessHarnessSubstrateHealth({ flagEnabled: true, handlePresent: true });
+      expect(r2.verdict).toBe('healthy');
+    });
+
+    it('never escalates past degraded on its own (correlational, not certain) — worst-wins does not downgrade an existing unhealthy', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        replicationLiveness: { noReplicator: 1, frozen: 0 },
+        dhtBootstrapProbeStaleMs: 60 * 60 * 1_000,
+      });
+      expect(r.verdict).toBe('unhealthy'); // from noReplicator, not downgraded by the DHT-probe check
+      expect(r.reasons.join(' ')).toMatch(/replication stalled/);
+      expect(r.reasons.join(' ')).toMatch(/isolated-DHT bootstrap liveness probe stale/);
+    });
+
+    it('a custom threshold is honored', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        dhtBootstrapProbeStaleMs: 4 * 60 * 1_000,
+        dhtBootstrapProbeStaleThresholdMs: 3 * 60 * 1_000,
+      });
+      expect(r.verdict).toBe('degraded');
+    });
+  });
 });

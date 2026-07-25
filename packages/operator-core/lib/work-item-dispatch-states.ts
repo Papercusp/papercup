@@ -28,6 +28,32 @@ export const FEATURE_DISPATCHABLE_STATE = 'todo';
  *  requeue settled work en masse. Narrow to ['done','dropped'] after cleanup. */
 export const FEATURE_TERMINAL_STATES: readonly string[] = ['passed', 'deprecated', 'done', 'dropped'];
 
+/** Issue-family (bug/change/task) settled states — the mirror of
+ *  FEATURE_TERMINAL_STATES for the `engineer_issues` dialect. */
+export const ISSUE_TERMINAL_STATES: readonly string[] = ['resolved', 'closed', 'deprecated', 'done'];
+
+/**
+ * Terminal in EITHER kind-family — the canonical cross-family union.
+ *
+ * EI-18653071581558556 / EI-18652789334651795: consumers that see BOTH families
+ * (the placement watchdog, burn-down, any "is this unit finished?" check) kept
+ * HAND-COPYING this union, and the copies drifted. placement-watchdog's copy was
+ * written before work-item-status-full-unify (2026-07-19) added `done`/`dropped`
+ * and never caught up, so it recognized only ['passed','deprecated','resolved',
+ * 'closed']. Since every consumer reads "not in the set ⇒ still active", finished
+ * work was scored as a FAILED placement: measured live on papercusp 2026-07-25,
+ * 15 of 17 units reported stranded/cursed were already terminal (14 `done`,
+ * 1 `dropped`) — ~88% phantoms — and the status census showed the drifted copy
+ * matched just ~18% of terminal rows (done 803 · passed 214 · dropped 206 ·
+ * deprecated 2; `resolved`/`closed` never occur at all).
+ *
+ * DERIVE from this constant — never re-list the words. The drift guard lives in
+ * work-item-dispatch-states.test.ts.
+ */
+export const ANY_FAMILY_TERMINAL_STATES: readonly string[] = [
+  ...new Set([...FEATURE_TERMINAL_STATES, ...ISSUE_TERMINAL_STATES]),
+];
+
 /**
  * Feature states the reaper / release path must NOT requeue to `todo`:
  *   - `todo`         — already claimable, nothing to do;

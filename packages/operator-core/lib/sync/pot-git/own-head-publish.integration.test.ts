@@ -252,22 +252,46 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     // A fresh device + repo key so every publish here is a genuine genesis.
     const REPO_G = 'repo-ohp-genesis';
 
-    it('without a baseline, a history above the flood cap is refused forever (the papercusp shape)', async () => {
+    // WI-5738: this test used to assert that a history above the flood cap is
+    // "refused FOREVER" — and that was literally true, which is exactly the
+    // defect. A volume cap could never clear itself, because the guard baseline
+    // only advances via writeNamespaceRef and writeNamespaceRef only runs after
+    // guard.ok. On 2026-07-20 that latched all p2p publishing shut for five
+    // days. A volume breach is now DRAINED: the longest admissible prefix is
+    // published each tick, so the wedge resolves itself instead of compounding.
+    // (genesisBaselineSha remains the right way to onboard a big repo in ONE
+    // tick rather than many — see the next test.)
+    it('without a baseline, a history above the flood cap DRAINS instead of refusing forever', async () => {
       const dev2 = devicePubkey();
-      const shas: string[] = [];
-      for (let i = 0; i < 4; i++) shas.push(await commitFile(worktree, `g${i}.txt`, `v${i}`, `g${i}`));
-      const out = await runOwnHeadPublishTick({
-        potHomeSlug: HIVE,
-        repoKey: REPO_G,
-        worktreePath: worktree,
-        branch: BRANCH,
-        devicePubkeyBase64: dev2,
-        // Tight flood cap: the FULL history exceeds it, the tip delta does not.
-        publishGuardCaps: { maxNewObjects: 6 },
-      });
-      expect(out.refused).not.toBeNull();
-      expect(out.refused!.refusalCode).toBe('object-flood');
-      expect(out.changed).toBe(false);
+      for (let i = 0; i < 4; i++) await commitFile(worktree, `g${i}.txt`, `v${i}`, `g${i}`);
+      const repoPath = hiveGitRepoPath(HIVE, REPO_G);
+      const head = await git(['rev-parse', 'HEAD'], worktree);
+      const tick = () =>
+        runOwnHeadPublishTick({
+          potHomeSlug: HIVE,
+          repoKey: REPO_G,
+          worktreePath: worktree,
+          branch: BRANCH,
+          devicePubkeyBase64: dev2,
+          // Tight flood cap: the FULL history exceeds it, the tip delta does not.
+          publishGuardCaps: { maxNewObjects: 6 },
+        });
+
+      const first = await tick();
+      // The old contract was `changed: false` forever. Now the ref MOVES.
+      expect(first.changed).toBe(true);
+      expect(first.drained).toBe(true);
+      expect(first.publishedSha).not.toBe(head); // partial — not the whole history
+      const afterFirst = await readNamespaceRef(repoPath, dev2, `refs/heads/${BRANCH}`);
+      expect(afterFirst).toBe(first.publishedSha);
+
+      // Successive ticks converge on the head — the defining property the old
+      // behaviour lacked: the baseline advances, so the wedge is self-clearing.
+      for (let i = 0; i < 10; i++) {
+        const out = await tick();
+        if (!out.changed) break;
+      }
+      expect(await readNamespaceRef(repoPath, dev2, `refs/heads/${BRANCH}`)).toBe(head);
     });
 
     it('with a verified already-exposed baseline, genesis judges only the (baseline, head] delta and lands', async () => {

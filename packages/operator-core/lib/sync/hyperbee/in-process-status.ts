@@ -144,6 +144,19 @@ export interface GetInProcessStatusOpts {
    */
   resolveSidecarLive?: () => boolean | null;
   /**
+   * WI-5777 — resolve the age (ms) since the EI-8892 isolated-DHT-bootstrap
+   * liveness probe last succeeded, or `null` when not applicable (this
+   * process isn't on the isolated DHT, or the probe state is unreadable).
+   * Defaulted to a no-op (`null`) because this module is pure (no FS);
+   * production callers (the federation-status route) pass a resolver that
+   * reads `~/.papercusp/dht-liveness/last-ok`, gated on `PAPERCUSP_DHT_BOOTSTRAP`
+   * being set. Resolved ONCE per call (process-wide — the isolated bootstrap
+   * is a single shared resource, not per-harness, same as `resolveSidecarLive`)
+   * and joined onto every booted harness's verdict below — see health.ts's
+   * doc comment for WHY this matters (the `never_connected` gap it closes).
+   */
+  resolveDhtBootstrapProbeStaleMs?: () => number | null;
+  /**
    * EI-8816 — resolve the primary's latest CACHED booted-handles broadcast (see
    * `cluster-booted-handles-sync.ts`'s `getCachedRemoteBootedHandles`). Only consulted
    * when this process is NOT the substrate owner (a genuine forked cluster worker);
@@ -248,9 +261,11 @@ export function getInProcessSubstrateStatus(
   const resolveStats = opts.resolveClaimStats ?? (() => ZERO_STATS);
   const resolveDrain = opts.resolveDrainStats ?? (() => ZERO_DRAIN);
   const resolveSidecarLive = opts.resolveSidecarLive ?? (() => null);
+  const resolveDhtBootstrapProbeStaleMs = opts.resolveDhtBootstrapProbeStaleMs ?? (() => null);
   // WI-899 (A): resolved ONCE per call (process-wide, not per-harness — see the
   // opt's doc comment) rather than re-probing per booted harness.
   const sidecarLive = resolveSidecarLive();
+  const dhtBootstrapProbeStaleMs = resolveDhtBootstrapProbeStaleMs();
   // P-004 (WI-1840): read-time replication-liveness snapshot, resolved once and
   // joined per-harness below (feeds the health verdict + the status payload).
   const replicationLiveness = getReplicationLiveness();
@@ -293,6 +308,9 @@ export function getInProcessSubstrateStatus(
       ownLogFork: ownLogFork.forked ? { forked: true, detail: ownLogFork.detail ?? undefined } : undefined,
       // WI-899 (A): a confirmed-dead sidecar overrides everything above.
       sidecarLive,
+      // WI-5777: a stale isolated-DHT liveness probe degrades this harness's
+      // verdict — closes the 'never_connected'-never-alarms observability gap.
+      dhtBootstrapProbeStaleMs,
     });
     return {
       workspaceId: h.workspaceId,

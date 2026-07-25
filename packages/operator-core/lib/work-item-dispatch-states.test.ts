@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   FEATURE_DISPATCHABLE_STATE,
   FEATURE_TERMINAL_STATES,
+  ISSUE_TERMINAL_STATES,
+  ANY_FAMILY_TERMINAL_STATES,
   FEATURE_NON_REQUEUE_STATES,
   FEATURE_FAMILY_STATES,
   DEFAULT_STALE_RECLAIM_REQUEUE_CAP,
@@ -9,6 +11,28 @@ import {
   normalizeFeatureStateInput,
   staleReclaimRequeueCap,
 } from './work-item-dispatch-states';
+
+describe('cross-family terminal union (EI-18653071581558556)', () => {
+  it('covers BOTH kind-family terminal dialects', () => {
+    for (const s of FEATURE_TERMINAL_STATES) expect(ANY_FAMILY_TERMINAL_STATES).toContain(s);
+    for (const s of ISSUE_TERMINAL_STATES) expect(ANY_FAMILY_TERMINAL_STATES).toContain(s);
+  });
+
+  it('includes the unified terminals `done` and `dropped` that the drifted copies missed', () => {
+    // placement-watchdog hand-copied this union and stopped at
+    // ['passed','deprecated','resolved','closed']. Every consumer reads
+    // "not terminal => still active", so finished work scored as a FAILED
+    // placement: ~88% of papercusp's reported stranded/cursed units were already
+    // `done`/`dropped` (measured live 2026-07-25). Never re-list these words in a
+    // consumer — derive from ANY_FAMILY_TERMINAL_STATES.
+    expect(ANY_FAMILY_TERMINAL_STATES).toContain('done');
+    expect(ANY_FAMILY_TERMINAL_STATES).toContain('dropped');
+  });
+
+  it('is de-duplicated even though the families overlap', () => {
+    expect(ANY_FAMILY_TERMINAL_STATES.length).toBe(new Set(ANY_FAMILY_TERMINAL_STATES).size);
+  });
+});
 
 describe('feature-state constant invariants', () => {
   it('the dispatchable state and terminal states are members of the family vocabulary', () => {

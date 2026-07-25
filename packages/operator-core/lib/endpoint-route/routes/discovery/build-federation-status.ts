@@ -36,6 +36,9 @@ import {
   type SubstrateDrainStat,
 } from '../../../sync/hyperbee/load-drain-stats';
 import { probeSubstrateSidecar } from '../../../service-health';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 /**
  * Oldest-undrained age (ms) past which a harness's outbox counts as STALLED in
@@ -154,6 +157,28 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
     /* liveness unknown → null, honest */
   }
 
+  // WI-5777: prefetch the EI-8892 isolated-DHT-bootstrap liveness probe's
+  // staleness so (sync) resolveDhtBootstrapProbeStaleMs below can degrade a
+  // harness whose 'never_connected' peers may actually be masking a wedged
+  // substrate (see health.ts's doc comment). Only meaningful for a process
+  // that is actually ON the isolated DHT (PAPERCUSP_DHT_BOOTSTRAP set) — a
+  // public-DHT install has no such probe/state dir, and that's correctly
+  // "not applicable", not "unhealthy". Best-effort: any read failure degrades
+  // to null (unmeasured), never throws, mirrors the sidecarLive probe above.
+  let dhtBootstrapProbeStaleMs: number | null = null;
+  try {
+    if (process.env.PAPERCUSP_DHT_BOOTSTRAP?.trim()) {
+      const lastOkPath = path.join(os.homedir(), '.papercusp', 'dht-liveness', 'last-ok');
+      const raw = fs.readFileSync(lastOkPath, 'utf8').trim();
+      const lastOkS = Number.parseInt(raw, 10);
+      if (Number.isFinite(lastOkS) && lastOkS > 0) {
+        dhtBootstrapProbeStaleMs = Date.now() - lastOkS * 1000;
+      }
+    }
+  } catch {
+    /* isolated DHT not configured here, or probe has never run → null, honest */
+  }
+
   // Install-wide substrate health (local boot state). substrateActive is constant
   // true at runtime; bootedCount + per-harness verdicts are the real signal. The
   // `drain` rollup is the honest install-wide SYNC-health signal: how many booted
@@ -176,6 +201,9 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
         drainByKey.get(`${ws}::${slug}`) ?? { undrainedCount: 0, oldestUndrainedAgeMs: null },
       // WI-899 (A): a dead sidecar forces every harness's verdict to 'unhealthy'.
       resolveSidecarLive: () => sidecarLive,
+      // WI-5777: a stale isolated-DHT liveness probe degrades this harness's
+      // verdict, closing the 'never_connected'-never-alarms observability gap.
+      resolveDhtBootstrapProbeStaleMs: () => dhtBootstrapProbeStaleMs,
     });
     let healthy = 0;
     let booting = 0;

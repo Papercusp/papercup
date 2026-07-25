@@ -151,7 +151,7 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
   });
 });
 
-describe('ensureP2pHostRoutinesSeededOnce (WI-5771 regression)', () => {
+describe('ensureP2pHostRoutinesSeededOnce (WI-5780 regression)', () => {
   beforeEach(() => {
     _resetEnsureP2pHostRoutinesForTests();
     ensureSweep.mockReset().mockResolvedValue({ id: 'rt_sweep' });

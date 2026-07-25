@@ -16,8 +16,14 @@ import {
   type WorkItem,
   type WorkItemKind,
 } from '../../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
-const TERMINAL_STATES = new Set(['done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped']);
+// EI-18653071581558556 — derived from the canonical cross-family union rather
+// than re-listed. This copy happened to be correct, but it was the third
+// hand-maintained duplicate of the same set; placement-watchdog's copy had
+// already drifted (missing `done`/`dropped`) and silently scored finished work
+// as failed placements.
+const TERMINAL_STATES = new Set(ANY_FAMILY_TERMINAL_STATES);
 const PARKED_STATES = new Set(['blocked', 'needs-human', 'needs_human', 'cursed']);
 
 type PresenceLike = { ownerId: string; heartbeatAt?: string | null; stale?: boolean | null };

@@ -22,6 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from './work-items';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import { resolveWorkItemPot } from './pot-membership';
+import { ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import { neutralizeToolCallTags } from './text-safety';
 import {
   PgTaggableStore,
@@ -656,8 +657,9 @@ export interface ListIssuesFilter {
   excludeObservationLane?: boolean;
 }
 
-/** Issue-family terminal states for the P-005 audit (subset of the cross-family set). */
-const ISSUE_TERMINAL_STATES: readonly string[] = ['resolved', 'closed', 'deprecated', 'done'];
+// Issue-family terminal states for the P-005 audit are imported from the canonical
+// work-item-dispatch-states module (EI-18653071581558556 — this was a local literal;
+// the same set hand-copied elsewhere had already drifted).
 
 /**
  * WI-4405: the issue-family `admissibleOnly` floor set, extended past the original

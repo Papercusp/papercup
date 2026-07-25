@@ -45,6 +45,15 @@ export interface EpisodicEiDeps<Sev extends IssueSeverity = IssueSeverity> {
   }): Promise<{ id: string }>;
   /** Resolve a previously-filed EI once its condition has recovered. */
   resolve(id: string, note: string): Promise<void>;
+  /**
+   * WI-5762 (standing-condition delta gate): every EI for this topic — ANY
+   * state, not just open — most-recently-created first. Used only when a
+   * config sets `standingCooldownMs`; omit/leave undefined to opt an
+   * escalator out (byte-identical to pre-WI-5762 behavior). Optional so
+   * every existing hand-rolled `deps` object (tests, other escalators)
+   * keeps compiling without change.
+   */
+  listRecentByTopic?(topic: string): Promise<Array<{ title: string; createdAt: string }>>;
 }
 
 export interface EpisodicEscalatorConfig<E, R, Sev extends IssueSeverity> {
@@ -66,6 +75,20 @@ export interface EpisodicEscalatorConfig<E, R, Sev extends IssueSeverity> {
   recoveryOwner?: string;
   /** Extra topics tagged alongside `topic` on the filed EI. Default `['federation']`. */
   extraTopics?: string[];
+  /**
+   * WI-5762 (standing-condition delta gate): suppress re-filing a title that
+   * was ALREADY filed (in any state — open OR resolved/closed) within this
+   * many milliseconds. `listOpenByTopic`-only dedup catches a title only
+   * while an EI for it still EXISTS open; once a separate subsystem retires
+   * it (auto-recovery close, a human resolving it, hygiene dup-close) the
+   * very next re-detection of the SAME standing condition finds no open
+   * match and mints a fresh duplicate — measured at 57 duplicate EIs for one
+   * standing replication-stall over a 7d window. This cooldown is
+   * independent of the retired EI's state, closing that hole. Omit (default
+   * undefined) to keep the pre-WI-5762 open-only-dedup behavior unchanged —
+   * every OTHER escalator instance stays byte-identical.
+   */
+  standingCooldownMs?: number;
 }
 
 export interface EpisodicEscalator<E, R, Sev extends IssueSeverity = IssueSeverity> {
@@ -118,6 +141,14 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
       resolve: async (id, note) => {
         await m.setIssueState(id, 'resolved', recoveryOwner, note);
       },
+      // WI-5762: deliberately NO `state` filter — the cooldown must see a
+      // recently-RESOLVED title too, that being exactly the case open-only
+      // dedup misses. `listIssues` orders created_at DESC; 100 is ample for
+      // one narrow topic's episodic churn.
+      listRecentByTopic: async (topic) => {
+        const rows = await m.listIssues({ topic, limit: 100 });
+        return rows.map((r) => ({ title: r.title, createdAt: r.createdAt }));
+      },
     };
   }
 
@@ -146,6 +177,28 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
         const d = deps ?? (await defaultDeps());
         const open = await d.listOpenByTopic(config.topic);
         if (open.some((i) => i.title === title)) return null; // already escalated
+        // WI-5762 standing-condition delta gate: a title filed (in ANY state)
+        // within the cooldown window is still "standing" even though the
+        // open-check above just found no match — suppress the duplicate
+        // rather than re-filing. Best-effort: a lookup failure here must
+        // never block a genuinely-new episode from filing, so it falls
+        // through to create() on any error (fail OPEN, same policy as the
+        // watchdog's sibling delta gate).
+        if (config.standingCooldownMs != null && d.listRecentByTopic) {
+          try {
+            const recent = await d.listRecentByTopic(config.topic);
+            const lastFiledAt = recent
+              .filter((i) => i.title === title)
+              .map((i) => Date.parse(i.createdAt))
+              .filter((ms) => Number.isFinite(ms))
+              .reduce((max, ms) => Math.max(max, ms), -Infinity);
+            if (Number.isFinite(lastFiledAt) && Date.now() - lastFiledAt < config.standingCooldownMs) {
+              return null; // standing condition recently reported (open or since-closed) — suppress
+            }
+          } catch {
+            /* fail open — see comment above */
+          }
+        }
         const created = await d.create({
           title,
           body: config.buildBody(episode),

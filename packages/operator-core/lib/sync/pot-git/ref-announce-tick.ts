@@ -90,6 +90,9 @@ export interface RefAnnouncePublishTickInput {
    * prior sigrefs sha keep the strict prior — this only affects genesis.
    */
   genesisBaselineSha?: string | null;
+  /** WI-5738: workspace whose runtime secrets-guard path exemptions apply (see
+   *  PublishGuardInput.workspaceId). Omitted ⇒ static FIXTURE_FILES only. */
+  workspaceId?: string;
 }
 
 export interface RefAnnouncePublishTickOutcome {
@@ -186,6 +189,17 @@ export async function runRefAnnouncePublishTick(
         toOid: r.sha,
         caps: input.publishGuardCaps,
         runGit,
+        workspaceId: input.workspaceId,
+        // WI-5738: SECOND-LINE guard. Everything under this device's namespace
+        // got there through own-head-publish, which already enforced the volume
+        // caps commit-by-commit one hop earlier. Re-measuring the same bytes as
+        // one big range here is double-jeopardy — and because this guard's
+        // baseline is SIGREFS (not the namespace ref), a volume refusal here is
+        // its own separate terminal ratchet: on 2026-07-20 ref-announce stayed
+        // wedged for hours AFTER own-head-publish had been manually unwedged,
+        // because re-basing the namespace ref never touched sigrefs. Hard gates
+        // (oversized blob / secrets) still refuse — those are safety, not rate.
+        volumeGates: 'warn',
       });
     } catch (e) {
       errors.push(`publish guard threw judging ${r.ref} (refusing, fail-closed): ${e instanceof Error ? e.message : e}`);

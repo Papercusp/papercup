@@ -66,6 +66,25 @@ export interface PublishGuardInput {
   workspaceId?: string;
   /** Injectable for tests; defaults to the real DB-backed loader. */
   loadPathExemptions?: (workspaceId: string) => Promise<ReadonlySet<string>>;
+  /**
+   * WI-5738: how to treat the VOLUME gates (`total-over-cap`, `object-flood`).
+   *
+   * 'enforce' (default) — refuse, as always.
+   *
+   * 'warn' — record the breach in `volumeWarnings` but ADMIT the range. For a
+   * SECOND-LINE guard re-judging content a first-line guard already admitted
+   * commit-by-commit, the volume caps are pure double-jeopardy: the same bytes
+   * get re-measured as one big range and re-refused, wedging the second guard
+   * even though nothing unsafe is present. That is exactly how ref-announce
+   * stayed stuck on 2026-07-20 *after* own-head-publish had been unwedged —
+   * its baseline is sigrefs, so the manual namespace re-base never freed it.
+   *
+   * The HARD gates (`blob-over-cap`, `secrets`) are unaffected in both modes:
+   * a secret leaving the machine is a real safety boundary, whereas a volume
+   * cap is a courtesy rate-limit that receivers re-apply on their own side
+   * anyway (foreign-mirror-quarantine.ts).
+   */
+  volumeGates?: 'enforce' | 'warn';
 }
 
 export type PublishRefusalCode = 'blob-over-cap' | 'total-over-cap' | 'object-flood' | 'secrets' | 'error';
@@ -81,6 +100,10 @@ export interface PublishGuardResult {
    *  runtime path exemption (WI-5591) — surfaced for audit/logging even
    *  though they no longer block. Empty when no exemption applied. */
   exemptedFindings: SecretFinding[];
+  /** WI-5738: volume breaches ADMITTED because `volumeGates: 'warn'` was set.
+   *  Non-empty means the range exceeded a volume cap but was let through by a
+   *  second-line guard; the first-line guard already enforced it. */
+  volumeWarnings: PublishRefusalCode[];
   errors: string[];
 }
 
@@ -122,8 +145,10 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
     oversizeBlobs: [],
     secretFindings: [],
     exemptedFindings: [],
+    volumeWarnings: [],
     errors: [],
   };
+  const warnVolume = input.volumeGates === 'warn';
   const refuse = (code: PublishRefusalCode, err?: string): PublishGuardResult => {
     if (err) res.errors.push(err);
     res.refusalCode = code;
@@ -145,7 +170,13 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
       });
     res.newObjectCount = entries.length;
     if (entries.length > caps.maxNewObjects) {
-      return refuse('object-flood', `${entries.length} new objects > cap ${caps.maxNewObjects}`);
+      const msg = `${entries.length} new objects > cap ${caps.maxNewObjects}`;
+      if (warnVolume) {
+        res.volumeWarnings.push('object-flood');
+        res.errors.push(`admitted despite object-flood (second-line guard): ${msg}`);
+      } else {
+        return refuse('object-flood', msg);
+      }
     }
     if (entries.length === 0) {
       res.ok = true;
@@ -183,7 +214,13 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
       );
     }
     if (res.newTotalBytes > caps.maxTotalNewBytes) {
-      return refuse('total-over-cap', `${res.newTotalBytes} new bytes > cap ${caps.maxTotalNewBytes}`);
+      const msg = `${res.newTotalBytes} new bytes > cap ${caps.maxTotalNewBytes}`;
+      if (warnVolume) {
+        res.volumeWarnings.push('total-over-cap');
+        res.errors.push(`admitted despite total-over-cap (second-line guard): ${msg}`);
+      } else {
+        return refuse('total-over-cap', msg);
+      }
     }
 
     // 3. G-10 secrets scan over new TEXT blobs (capped read, binary skipped —

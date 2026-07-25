@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findOversizedDirtyFiles, type RunGit } from './run-git-sync';
+import { findBulkDirtyExcess, findOversizedDirtyFiles, type RunGit } from './run-git-sync';
 
 // G22 (test-coverage-gap): existing oversized tests use sizes clearly over the
 // limit (e.g. 2048 vs 1024). None pin the EXACT boundary. The comparison is
@@ -94,5 +94,73 @@ describe('findOversizedDirtyFiles — WI-3595 gitignored paths never surface as 
     } finally {
       rmSync(bigFileDir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * WI-5738 — the CUMULATIVE gate.
+ *
+ * The 2026-07-20 wedge got past `findOversizedDirtyFiles` because every single
+ * file in an extracted AppImage was under the per-file cap (largest 90.3 MB vs
+ * a 95 MB cap) — while the set totalled 2,261 MB. It committed cleanly, and the
+ * aggregate then breached the publish guard's 500 MB TOTAL cap downstream,
+ * where the only response was a terminal refusal that froze all p2p publishing
+ * for five days.
+ */
+describe('findBulkDirtyExcess — the cumulative cap the per-file cap cannot see', () => {
+  const sizedRunGit = (files: Record<string, number>): RunGit =>
+    (async (args: string[]) => {
+      if (args[0] === 'status') {
+        return { code: 0, stdout: Object.keys(files).map((f) => `?? ${f}`).join('\0') + '\0', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    }) as unknown as RunGit;
+
+  it('excludes nothing when the cumulative set fits', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bulk-ok-'));
+    writeFileSync(join(dir, 'a.bin'), Buffer.alloc(100));
+    writeFileSync(join(dir, 'b.bin'), Buffer.alloc(100));
+    const out = await findBulkDirtyExcess(sizedRunGit({ 'a.bin': 100, 'b.bin': 100 }), dir, 1000);
+    expect(out).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('the incident shape: many individually-fine files that TOGETHER bust the cap', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bulk-incident-'));
+    // Four 400-byte "artifacts" + one small source edit, cap 1000. Every file is
+    // individually fine; only the SUM is the accident — the 2026-07-20 shape.
+    const files: Record<string, number> = {};
+    for (let i = 0; i < 4; i++) {
+      writeFileSync(join(dir, `artifact${i}.bin`), Buffer.alloc(400));
+      files[`artifact${i}.bin`] = 400;
+    }
+    writeFileSync(join(dir, 'src.ts'), Buffer.alloc(20));
+    files['src.ts'] = 20;
+
+    const out = await findBulkDirtyExcess(sizedRunGit(files), dir, 1000);
+    expect(out.length).toBeGreaterThan(0);
+    const excludedPaths = out.map((f) => f.path);
+    // The genuine source edit still commits this tick — quarantine, don't stall.
+    expect(excludedPaths).not.toContain('src.ts');
+    expect(excludedPaths.every((p) => p.startsWith('artifact'))).toBe(true);
+    const remaining = 1620 - out.reduce((n, f) => n + f.sizeBytes, 0);
+    expect(remaining).toBeLessThanOrEqual(1000);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('does not double-count files already excluded by the per-file cap', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bulk-dedup-'));
+    writeFileSync(join(dir, 'huge.bin'), Buffer.alloc(900));
+    writeFileSync(join(dir, 'small.bin'), Buffer.alloc(50));
+    // huge.bin is already excluded upstream, so its bytes are NOT being
+    // committed and must not drive a second exclusion.
+    const out = await findBulkDirtyExcess(
+      sizedRunGit({ 'huge.bin': 900, 'small.bin': 50 }),
+      dir,
+      100,
+      new Set(['huge.bin']),
+    );
+    expect(out).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

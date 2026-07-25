@@ -279,6 +279,52 @@ baselining on their own last success.
 incident documented inline. Tracking: **WI-5738**; standing fact
 `p2p-publish-wedged-appimage-total-over-cap-2026-07-20`.
 
+## The detector failure — why the watchdog built for this was silent
+
+There **is** a watchdog for exactly this: `origin-freshness-watchdog` (WI-5607),
+started from `dbos/bootstrap.ts`, two signals, defaults `aheadCountMax: 50` and
+`tipAgeStaleMs: 3h`. The wedge was **358 commits and 5 days**. It never fired —
+**zero log lines in three days**. It was watching the wrong branch:
+
+```ts
+const branch = entry.github_default_branch ?? 'main';           // ← INGRESS branch
+const originSha = await readNamespaceRef(repoPath, devicePubkey,
+                                         `refs/heads/${branch}`, runGit);
+const aheadCount = revListCount(repoPath, originSha, canonicalSha);
+```
+
+It compared canonical against the ingress mirror of **`main`** while the bridge
+egresses to **`staging`** — *the same ingress-vs-egress conflation that made the
+original write-up above wrong.* And `main` is fast-forwarded hourly by the
+release pipeline, so **both** signals were structurally pinned healthy:
+
+| signal | threshold | actual | why it never tripped |
+|---|---|---|---|
+| `aheadCount` | ≥ 50 | **24** | measured against `main`, which the release pipeline keeps fresh |
+| `originTipAgeMs` | > 3h | **~0** | `main`'s tip moved every hour, restarting the clock every sweep |
+
+A watchdog pointed at a branch kept fresh by an *unrelated* mechanism cannot
+report on the mechanism it was built to watch. It reported healthy, correctly,
+about the wrong thing — for five days.
+
+**Worse: the refusal was never inference in the first place.** The publish leg
+wrote `metadata.own_head_publish.refused = 'total-over-cap'` on *every single
+tick* and logged it to the journal, and nothing consumed either. The system
+stated its own failure out loud, continuously, and no detector was listening.
+
+> **Generalisable rule.** When a component can *report its own failure*, the
+> detector must consume that self-report directly. Inferring the same condition
+> from a downstream proxy is strictly weaker — the proxy can be confounded (as
+> `main` confounded both signals here), while the self-report cannot.
+
+Both are fixed: the watchdog now measures against `github_bridge.egress_head`
+(what egress actually landed), and a sustained `own_head_publish.refused`
+alarms on its own — deliberately *not* gated behind the `aheadCount <= 0`
+early return, since a refusal is true regardless of how any commit count reads.
+Regression test: `origin-freshness.test.ts` → *"alarms on a sustained refusal
+even when BOTH inferred signals read healthy"*, pinned to this incident's exact
+numbers (24 / 1h).
+
 ## The one-line lesson
 
 **Never baseline a guard on its own last success.** `own_head_publish` (namespace

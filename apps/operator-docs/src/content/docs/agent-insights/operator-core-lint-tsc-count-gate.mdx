@@ -6,7 +6,10 @@ tags: [typescript, tooling, verification, vitest]
 status: active
 documents:
   - scripts/lint-tsc.mjs
+  - scripts/lint-tsc-operator-vite.mjs
+  - scripts/lib/tsc-baseline-gate.mjs
   - packages/operator-core/.tsc-baseline.json
+  - apps/operator-vite/.tsc-baseline.json
   - packages/operator-core/tsconfig.json
 ---
 
@@ -101,3 +104,44 @@ npm run lint:tsc             # the authoritative CI gate — every file vs its b
   files, never raises.
 - `test:affected` (vitest) is necessary but **not sufficient** — it proves
   behavior, not types. Run both.
+
+## Two gates, one tree: `0 → N` on files you never opened is an implicit-0 gap
+
+There is a **second** gate on the same policy — `npm run lint:tsc:operator-vite`
+(`scripts/lint-tsc-operator-vite.mjs`, baseline `apps/operator-vite/.tsc-baseline.json`).
+The SPA's type graph pulls `packages/operator-core` in transitively, so the two
+gates **overlap**: ~27 of the vite baseline's entries are operator-core files.
+
+The trap (EI-18649014117371738): a file absent from a baseline is scored as an
+implicit **0**. That is right for a file the gate *owns* — a fresh file arriving
+with errors IS a regression — and wrong for a file another package owns and has
+already baselined. The two baselines were seeded four days apart under different
+tsconfigs, so `lint:tsc` **passed** and `lint:tsc:operator-vite` **failed** on the
+same untouched source: 12 operator-core files reported as regressions to an agent
+who had opened none of them. That cost a full investigation and nearly produced a
+wrong "you broke this" message to a peer.
+
+**Diagnostic heuristic — read the arrow, not just the count.** A gate naming
+files you never touched, *every one of them at exactly `0 → N`*, is the signature
+of a baseline **gap**, not of your change. A real regression in a file with
+history reads `2 → 4`; a uniform wall of `0 → 1` means the gate has no record for
+those files. Before you believe you broke something:
+
+```bash
+# Is the "0" measured, or merely absent? Check the OWNING package's baseline.
+node -e "console.log(require('./packages/operator-core/.tsc-baseline.json').files['<the/file.ts>'])"
+```
+
+A non-zero answer there means the error is **known and tolerated** by the gate
+that owns the file — you did not introduce it.
+
+Fixed structurally rather than by editing either JSON: `runTscBaselineGate` takes
+`foreignBaselines`, and a measured file under another package's prefix that this
+gate has not recorded **inherits the owning package's count** instead of 0
+(`effectiveBaselineByFile` in `scripts/lib/tsc-baseline-gate.mjs`). An explicit
+own-baseline entry always wins, so ratchet-only-down is untouched, and absent
+from *both* is still 0 — a genuinely new error in a foreign file still gates.
+
+Carry the general lesson to any second gate you add over an overlapping file set:
+**absent-from-baseline means "never recorded", not "was clean"** — and two gates
+that can disagree about the same file make *neither* number trustworthy.

@@ -35,6 +35,25 @@ const baselineFile = resolve(ROOT, 'apps/operator-vite/.tsc-baseline.json');
 export const TSC_COMMAND =
   'npx tsc -p apps/operator-vite/tsconfig.json --noEmit --incremental false';
 
+/**
+ * Cross-package files this gate MEASURES but does not OWN (EI-18649014117371738).
+ *
+ * The SPA's type graph pulls packages/operator-core in transitively, so ~27 of this baseline's
+ * entries live there — deliberately covered, not ignored. But the two baselines were captured days
+ * apart under DIFFERENT tsconfigs, so an operator-core file could be recorded (and tolerated) in
+ * operator-core's baseline yet be ABSENT from this one, where absent⇒0 turned it into a phantom
+ * regression: `lint:tsc` passed and `lint:tsc:operator-vite` failed on the SAME untouched file.
+ * Pointing at the OWNING package's baseline makes the two gates agree by construction rather than
+ * by two hand-maintained files happening to stay in sync.
+ */
+export const FOREIGN_BASELINES = [
+  {
+    prefix: 'packages/operator-core/',
+    baselineFile: resolve(ROOT, 'packages/operator-core/.tsc-baseline.json'),
+    label: 'operator-core',
+  },
+];
+
 function main() {
   runTscBaselineGate({
     root: ROOT,
@@ -42,6 +61,7 @@ function main() {
     baselineFile,
     label: 'operator-vite',
     argv: process.argv.slice(2),
+    foreignBaselines: FOREIGN_BASELINES,
   });
 }
 

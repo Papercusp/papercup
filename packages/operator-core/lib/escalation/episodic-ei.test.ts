@@ -16,7 +16,10 @@ type Rec = { key: string; detail: string };
 
 const title = (x: Ep | Rec) => `[demo] key=${x.key}`;
 
-function fakeDeps(open: Array<{ id?: string; title: string }>): {
+function fakeDeps(
+  open: Array<{ id?: string; title: string }>,
+  recent?: Array<{ title: string; createdAt: string }>,
+): {
   deps: EpisodicEiDeps<'major'>;
   created: Array<Parameters<EpisodicEiDeps<'major'>['create']>[0]>;
   resolved: Array<{ id: string; note: string }>;
@@ -35,6 +38,7 @@ function fakeDeps(open: Array<{ id?: string; title: string }>): {
       resolve: async (id, note) => {
         resolved.push({ id, note });
       },
+      ...(recent ? { listRecentByTopic: async () => recent } : {}),
     },
   };
 }
@@ -113,6 +117,75 @@ describe('createEpisodicEscalator config plumbing', () => {
     const ids = await esc.resolve({ key: 'k1', detail: 'store reset' }, deps);
     expect(ids.sort()).toEqual(['EI-1', 'EI-2']);
     expect(resolved.map((r) => r.note)).toEqual(['recovered — store reset', 'recovered — store reset']);
+  });
+
+  describe('standing-condition cooldown (WI-5762)', () => {
+    it('with no standingCooldownMs configured, a since-closed title re-files (pre-existing behavior, byte-identical)', async () => {
+      const esc = make(); // no standingCooldownMs
+      reset = esc._resetForTests;
+      const t = title({ key: 'k1', detail: 'x' });
+      // No open EI (it was closed) AND a recent (resolved) EI exists — but since
+      // the config never opted into the cooldown, this must still file.
+      const { deps, created } = fakeDeps([], [{ title: t, createdAt: new Date().toISOString() }]);
+      const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+      expect(id).toBe('EI-777');
+      expect(created).toHaveLength(1);
+    });
+
+    it('suppresses a re-file when the SAME title was seen (any state) inside the cooldown window', async () => {
+      const esc = make({ standingCooldownMs: 60 * 60 * 1000 }); // 1h
+      reset = esc._resetForTests;
+      const t = title({ key: 'k1', detail: 'x' });
+      // No OPEN match (it was closed 10 minutes ago) — open-only dedup would
+      // re-file here; the cooldown must catch it instead.
+      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const { deps, created } = fakeDeps([], [{ title: t, createdAt: tenMinAgo }]);
+      const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+      expect(id).toBeNull();
+      expect(created).toHaveLength(0);
+    });
+
+    it('files fresh once the cooldown window has elapsed', async () => {
+      const esc = make({ standingCooldownMs: 60 * 60 * 1000 }); // 1h
+      reset = esc._resetForTests;
+      const t = title({ key: 'k1', detail: 'x' });
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const { deps, created } = fakeDeps([], [{ title: t, createdAt: twoHoursAgo }]);
+      const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+      expect(id).toBe('EI-777');
+      expect(created).toHaveLength(1);
+    });
+
+    it('an unrelated title in the recent list never suppresses this one', async () => {
+      const esc = make({ standingCooldownMs: 60 * 60 * 1000 });
+      reset = esc._resetForTests;
+      const other = title({ key: 'other-key', detail: 'x' });
+      const { deps, created } = fakeDeps([], [{ title: other, createdAt: new Date().toISOString() }]);
+      const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+      expect(id).toBe('EI-777');
+      expect(created).toHaveLength(1);
+    });
+
+    it('fails OPEN (still files) when listRecentByTopic throws', async () => {
+      const esc = make({ standingCooldownMs: 60 * 60 * 1000 });
+      reset = esc._resetForTests;
+      const { deps, created } = fakeDeps([]);
+      deps.listRecentByTopic = async () => {
+        throw new Error('pg unavailable');
+      };
+      const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+      expect(id).toBe('EI-777');
+      expect(created).toHaveLength(1);
+    });
+
+    it('is skipped entirely when deps omits listRecentByTopic even with the cooldown configured', async () => {
+      const esc = make({ standingCooldownMs: 60 * 60 * 1000 });
+      reset = esc._resetForTests;
+      const { deps, created } = fakeDeps([]); // no listRecentByTopic on this deps object
+      const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+      expect(id).toBe('EI-777');
+      expect(created).toHaveLength(1);
+    });
   });
 
   it('two escalators keep independent in-flight guards', async () => {

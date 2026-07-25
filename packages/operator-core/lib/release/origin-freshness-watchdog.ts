@@ -145,7 +145,7 @@ export async function checkOriginFreshness(
       const branch = entry.github_default_branch ?? 'main';
       const devicePubkey = githubOriginDevicePubkey(entry.github_remote);
 
-      const [canonicalSha, originSha] = await Promise.all([
+      const [canonicalSha, ingressMirrorSha] = await Promise.all([
         readRefSha(repoPath, BRIDGE_CANONICAL_REF, runGit),
         readNamespaceRef(repoPath, devicePubkey, `refs/heads/${branch}`, runGit),
       ]);
@@ -157,16 +157,39 @@ export async function checkOriginFreshness(
           of_origin_since_ms: string | number | null;
           of_alerted: boolean | null;
           of_stall_sweeps: number | null;
+          of_publish_refused_sweeps: number | null;
+          publish_refused: string | null;
+          egress_head: string | null;
         }[]
       >`
         SELECT metadata->>'of_origin_sha' AS of_origin_sha,
                (metadata->>'of_origin_since_ms')::bigint AS of_origin_since_ms,
                COALESCE((metadata->>'of_alerted')::boolean, false) AS of_alerted,
-               COALESCE((metadata->>'of_stall_sweeps')::int, 0) AS of_stall_sweeps
+               COALESCE((metadata->>'of_stall_sweeps')::int, 0) AS of_stall_sweeps,
+               COALESCE((metadata->>'of_publish_refused_sweeps')::int, 0) AS of_publish_refused_sweeps,
+               metadata->'own_head_publish'->>'refused' AS publish_refused,
+               metadata->'github_bridge'->>'egress_head' AS egress_head
           FROM harness_shared.routines
          WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'
          LIMIT 1`;
       const row = rows[0];
+      // WI-5738 — measure against the EGRESS target, not the ingress mirror.
+      //
+      // This read used to be `readNamespaceRef(..., github_default_branch)`,
+      // i.e. the mirror of the branch the bridge INGESTS. On papercusp that is
+      // `main`, while the bridge EGRESSES to `refs/heads/staging`. main is
+      // fast-forwarded hourly by the release pipeline, so the watchdog's two
+      // signals were both permanently pinned healthy — ahead-count sat at ~24
+      // (< the 50 threshold) and the tracked tip never aged past ~1h — while
+      // origin/staging, the ref the bridge actually writes, stayed frozen for
+      // five days, 358 commits behind. The watchdog was watching a branch that
+      // could not tell it anything about the thing it was built to watch.
+      //
+      // `github_bridge.egress_head` is what egress last actually landed. The
+      // ingress mirror remains a fallback ONLY for a hive whose egress has not
+      // reported yet (pre-upgrade metadata), where the old signal is still
+      // better than none.
+      const originSha = row?.egress_head ?? ingressMirrorSha;
       const alerted = row?.of_alerted ?? false;
       const prevOriginSha = row?.of_origin_sha ?? null;
       const prevOriginSinceMs = row?.of_origin_since_ms != null ? Number(row.of_origin_since_ms) : null;
@@ -190,7 +213,25 @@ export async function checkOriginFreshness(
       const aheadCount =
         canonicalSha != null && originSha != null ? await revListCount(repoPath, originSha, canonicalSha, runGit) : null;
 
-      const verdict = evaluateOriginFreshness({ aheadCount, originTipAgeMs }, opts);
+      // WI-5738: the publish leg's OWN refusal self-report — recorded on every
+      // tick at metadata.own_head_publish.refused since the guard shipped, and
+      // until now raising absolutely nothing.
+      const publishRefusalCode = row?.publish_refused ?? null;
+      const prevRefusedSweeps = row?.of_publish_refused_sweeps ?? 0;
+      const publishRefusedSweeps = publishRefusalCode ? prevRefusedSweeps + 1 : 0;
+      if (publishRefusedSweeps !== prevRefusedSweeps) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('of_publish_refused_sweeps', ${publishRefusedSweeps}::int),
+                 updated_at = now()
+           WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
+      }
+
+      const verdict = evaluateOriginFreshness(
+        { aheadCount, originTipAgeMs, publishRefusedSweeps, publishRefusalCode },
+        opts,
+      );
 
       const prevStallSweeps = row?.of_stall_sweeps ?? 0;
       const stallSweeps = verdict.state === 'stale' ? prevStallSweeps + 1 : 0;
@@ -223,7 +264,12 @@ export async function checkOriginFreshness(
             body: `${entry.slug} (bridged hive ${potHomeSlug}): ${verdict.reason}. The bridge's own divergence classifier reports clear — this is an independent freshness backstop.`,
             importance: 'urgent',
             workspaceId,
-            data: { aheadCountStale: verdict.aheadCountStale, tipAgeStale: verdict.tipAgeStale },
+            data: {
+              aheadCountStale: verdict.aheadCountStale,
+              tipAgeStale: verdict.tipAgeStale,
+              publishRefused: verdict.publishRefused,
+              publishRefusalCode,
+            },
           });
         } catch (e) {
           console.warn(`[origin-freshness-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);

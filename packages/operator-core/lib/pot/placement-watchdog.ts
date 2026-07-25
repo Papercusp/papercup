@@ -48,12 +48,27 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
 import { listStartedPots } from './started';
 import { workItemCheckpointScope } from '../work-item-checkpoint';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 // ── vocabulary (the canonical work-item terminal + stuck states) ──────────────
 
 /** A placed unit is DONE when its status is one of these (work-items.ts: the set
- *  that fires `work-item:done:<id>`). Both kind-family dialects included. */
-const TERMINAL_UNIT_STATES = new Set(['passed', 'deprecated', 'resolved', 'closed']);
+ *  that fires `work-item:done:<id>`). Both kind-family dialects included —
+ *  DERIVED from the canonical union, never re-listed here.
+ *
+ *  EI-18653071581558556 — this used to be a hand-copied literal
+ *  `['passed','deprecated','resolved','closed']` that predated
+ *  work-item-status-full-unify (2026-07-19) and never picked up `done`/`dropped`,
+ *  the two words that dominate the very table every consumer below joins. Since
+ *  each consumer reads "not in this set ⇒ still active", a FINISHED unit fell
+ *  through to the failed-placement path: recorded `stranded`, then `cursed` once
+ *  fail_count tripped, and re-surfaced to the Mug as "drive to terminal /
+ *  re-place NOW". Measured live on papercusp 2026-07-25: 15 of 17 units reported
+ *  stranded/cursed were already terminal (14 `done`, 1 `dropped`) — ~88%
+ *  phantoms; the literal matched only ~18% of terminal rows. That is the
+ *  mechanism behind EI-8529 (an already-resolved item re-placed, wasting a spawn)
+ *  and behind the Mug persona's "confirm each id first" workaround. */
+const TERMINAL_UNIT_STATES = new Set(ANY_FAMILY_TERMINAL_STATES);
 /** A blocker is STUCK (P-022) when stalled in the feature-family failure band. */
 const STUCK_BLOCKER_STATES = new Set(['failing', 'failed']);
 /** A cup spawn row in one of these is GONE (its claim/work is no longer live). */

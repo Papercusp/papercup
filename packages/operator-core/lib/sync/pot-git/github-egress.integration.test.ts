@@ -189,17 +189,39 @@ describe('github-egress (P-001: canonical refs → GitHub, FF-only, secrets-gate
     expect(r.blockedSecrets[0].findings.some((f) => f.rule === 'github-token')).toBe(true);
   });
 
-  it('scan-overflow fails closed (secret_scan_overflow posture)', async () => {
+  // WI-5738: this used to assert "scan-overflow fails closed" — the ref was
+  // blocked outright once the delta exceeded maxScanFiles. That posture was the
+  // bug: because the scanned range is baselined on the REMOTE's current head, a
+  // ref that overflowed once could never un-overflow (the range only shrinks
+  // through the push being refused), so a merely LARGE backlog was refused
+  // forever with an empty findings list. maxScanFiles is now a per-tick BUDGET:
+  // the verified prefix is pushed and the rest drains on later ticks. The
+  // safety invariant is unchanged — nothing unscanned is ever pushed.
+  it('scan budget makes PARTIAL progress instead of failing closed (WI-5738)', async () => {
     const r = await egressCanonicalRefs({
       repoPath: store,
       remoteUrl: origin,
       refs: [{ sha: sha2, remoteRef: 'refs/heads/overflow-probe' }],
       maxScanFiles: 1, // sha2's history introduces >1 blob
     });
-    expect(r.pushed).toEqual([]);
-    expect(r.blockedSecrets).toHaveLength(1);
-    expect(r.blockedSecrets[0].overflow).toBe(true);
-    expect(await originSha(origin, 'refs/heads/overflow-probe')).toBeNull();
+    expect(r.blockedSecrets).toEqual([]); // a big range is not a leak
+    const landed = await originSha(origin, 'refs/heads/overflow-probe');
+    expect(landed).not.toBeNull(); // progress was made…
+    expect(landed).not.toBe(sha2); // …but only as far as the budget verified
+    expect(r.errors.join(' ')).toMatch(/scan budget/);
+
+    // Draining is monotone: repeated ticks converge on the target.
+    for (let i = 0; i < 5; i++) {
+      const again = await egressCanonicalRefs({
+        repoPath: store,
+        remoteUrl: origin,
+        refs: [{ sha: sha2, remoteRef: 'refs/heads/overflow-probe' }],
+        maxScanFiles: 1,
+      });
+      expect(again.blockedSecrets).toEqual([]);
+      if ((await originSha(origin, 'refs/heads/overflow-probe')) === sha2) break;
+    }
+    expect(await originSha(origin, 'refs/heads/overflow-probe')).toBe(sha2);
   });
 
   it('release tags are create-only: new tag pushes, an existing tag never moves', async () => {
@@ -238,5 +260,125 @@ describe('github-egress (P-001: canonical refs → GitHub, FF-only, secrets-gate
     expect(r.ok).toBe(false);
     expect(r.errors.length).toBeGreaterThan(0);
     expect(r.pushed).toEqual([]);
+  });
+});
+
+/**
+ * WI-5738 — egress must make PARTIAL PROGRESS instead of latching shut.
+ *
+ * Before this, `egressCanonicalRefs` scanned (origin, target] as ONE set and
+ * refused the whole push on any finding or on exceeding maxScanFiles. Since the
+ * baseline IS origin's current head, that refusal was terminal: the range could
+ * only shrink through the push it was blocking. One accidental commit froze
+ * origin/staging for five days (2026-07-20) while every health surface read green.
+ */
+describe('github-egress WI-5738 — incremental scan, partial progress, exemptions', () => {
+  let root: string;
+  let store: string;
+  let origin: string;
+  let work: string;
+  const integrator = devicePubkey();
+  let stagingNsRef: string;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'hg-egress-inc-'));
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = join(root, 'store');
+    store = await ensurePotGitRepo('hive-bridge-inc', 'repo-1');
+    stagingNsRef = namespaceRefPath(integrator, STAGING_REF);
+    origin = join(root, 'origin.git');
+    expect((await defaultRunGit(['init', '--bare', '-q', origin], root)).code).toBe(0);
+    work = join(root, 'work');
+    expect((await defaultRunGit(['init', '-q', '-b', 'main', work], root)).code).toBe(0);
+  });
+
+  afterAll(async () => {
+    delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const fakeKey = ['AKIA', 'EGRESSEGRESSEGRE'].join('');
+
+  it('pushes the clean PREFIX and blocks at the exact offending commit', async () => {
+    const c1 = await commitFile(work, 'a.txt', 'one\n', 'c1');
+    const c2 = await commitFile(work, 'b.txt', 'two\n', 'c2');
+    const leaky = await commitFile(work, 'leak.env', `AWS_ACCESS_KEY_ID=${fakeKey}\n`, 'leak');
+    const c4 = await commitFile(work, 'd.txt', 'four\n', 'c4');
+    await publishToStore(store, work, 'main', stagingNsRef);
+
+    const r = await egressCanonicalRefs({
+      repoPath: store,
+      remoteUrl: origin,
+      refs: [{ sha: c4, remoteRef: 'refs/heads/staging' }],
+    });
+
+    // The clean prefix SHIPPED — the old behaviour pushed nothing at all.
+    expect(r.pushed).toEqual([{ remoteRef: 'refs/heads/staging', from: null, to: c2 }]);
+    expect(await originSha(origin, 'refs/heads/staging')).toBe(c2);
+    // …and the block names the exact commit, not "somewhere in this range".
+    expect(r.blockedSecrets).toHaveLength(1);
+    expect(r.blockedSecrets[0].blockedAtCommit).toBe(leaky);
+    expect(r.blockedSecrets[0].advancedTo).toBe(c2);
+    expect(r.blockedSecrets[0].findings[0].path).toBe('leak.env');
+    void c1;
+  });
+
+  it('a runtime PATH-PREFIX exemption clears the block and the backlog drains fully', async () => {
+    const head = (await defaultRunGit(['rev-parse', 'HEAD'], work)).stdout.trim();
+    const r = await egressCanonicalRefs({
+      repoPath: store,
+      remoteUrl: origin,
+      refs: [{ sha: head, remoteRef: 'refs/heads/staging' }],
+      workspaceId: 'ws-test',
+      // A DIRECTORY prefix — the shape the 2026-07-20 incident needed and that
+      // exact-path-only matching could not express (4,174 files under one dir).
+      loadPathExemptions: async () => new Set(['leak.env']),
+    });
+    expect(r.blockedSecrets).toEqual([]);
+    expect(r.exemptedFindings).toHaveLength(1);
+    expect(r.exemptedFindings[0].path).toBe('leak.env');
+    expect(await originSha(origin, 'refs/heads/staging')).toBe(head);
+  });
+
+  it('egress consults NO runtime exemptions when workspaceId is omitted', async () => {
+    let called = false;
+    await commitFile(work, 'leak2.env', `AWS_ACCESS_KEY_ID=${fakeKey}\n`, 'leak2');
+    const head = (await defaultRunGit(['rev-parse', 'HEAD'], work)).stdout.trim();
+    await publishToStore(store, work, 'main', stagingNsRef);
+    const r = await egressCanonicalRefs({
+      repoPath: store,
+      remoteUrl: origin,
+      refs: [{ sha: head, remoteRef: 'refs/heads/staging' }],
+      loadPathExemptions: async () => {
+        called = true;
+        return new Set(['leak2.env']);
+      },
+    });
+    expect(called).toBe(false);
+    expect(r.blockedSecrets).toHaveLength(1);
+  });
+
+  it('a scan BUDGET now drains over ticks instead of refusing forever (was: overflow)', async () => {
+    // maxScanFiles:1 makes every commit exhaust the budget immediately. The old
+    // code returned overflow=true and blocked the ref permanently; now each tick
+    // ships a verified prefix and the next resumes from it.
+    const target = (await defaultRunGit(['rev-parse', 'HEAD'], work)).stdout.trim();
+    const before = await originSha(origin, 'refs/heads/staging');
+    let last = before;
+    for (let tick = 0; tick < 6; tick++) {
+      const r = await egressCanonicalRefs({
+        repoPath: store,
+        remoteUrl: origin,
+        refs: [{ sha: target, remoteRef: 'refs/heads/staging' }],
+        maxScanFiles: 1,
+        workspaceId: 'ws-test',
+        loadPathExemptions: async () => new Set(['leak.env', 'leak2.env']),
+      });
+      expect(r.blockedSecrets).toEqual([]);
+      const now = await originSha(origin, 'refs/heads/staging');
+      expect(now).not.toBeNull();
+      last = now;
+      if (now === target) break;
+    }
+    expect(last).toBe(target); // fully drained — never a permanent refusal
   });
 });

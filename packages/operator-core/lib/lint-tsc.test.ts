@@ -9,11 +9,22 @@
  * The script's pure functions are imported directly (same pattern as apps/operator's
  * psu-pty-host / ptool script tests).
  */
+import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
-import { parseTscErrors, syntaxBrokenFiles, countByFile, decidePerFile, TSC_COMMAND } from '../../../scripts/lint-tsc.mjs';
+import {
+  parseTscErrors,
+  syntaxBrokenFiles,
+  countByFile,
+  decidePerFile,
+  effectiveBaselineByFile,
+  TSC_COMMAND,
+} from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
-import { TSC_COMMAND as OPERATOR_VITE_TSC_COMMAND } from '../../../scripts/lint-tsc-operator-vite.mjs';
+import {
+  TSC_COMMAND as OPERATOR_VITE_TSC_COMMAND,
+  FOREIGN_BASELINES,
+} from '../../../scripts/lint-tsc-operator-vite.mjs';
 
 describe('TSC_COMMAND (EI-487 regression guard)', () => {
   it('always measures fresh — never trusts a warm/stale incremental cache', () => {
@@ -175,5 +186,113 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
     });
     expect(r.verdict).toBe('fail-regressed');
     expect(r.newBaselineByFile).toBeUndefined();
+  });
+});
+
+// EI-18649014117371738: two gates over the SAME tree gave OPPOSITE verdicts on the same untouched
+// files. `lint:tsc` passed (operator-core's baseline records e.g. memory/search.ts: 1 — known and
+// tolerated) while `lint:tsc:operator-vite` failed, because that file was ABSENT from the vite
+// baseline and absent⇒0 made it a phantom "0 → 1" regression. 12 operator-core files read as
+// regressions to an agent who had opened none of them, which is the exact false signal the per-file
+// gate exists to kill (EI-847) leaking back in at the cross-package seam. Absent means "this gate
+// never recorded it", NOT "it was clean" — so a file OWNED by another package inherits that
+// package's baseline instead of an implicit 0.
+describe('effectiveBaselineByFile — cross-package files inherit their OWNER package baseline', () => {
+  const FOREIGN = [
+    {
+      prefix: 'packages/operator-core/',
+      files: { 'packages/operator-core/lib/agent-tools/memory/search.ts': 1 },
+      label: 'operator-core',
+    },
+  ];
+
+  it('the reported bug: a foreign file tolerated by its owner is NOT a regression here', () => {
+    const currentByFile = { 'packages/operator-core/lib/agent-tools/memory/search.ts': 1 };
+    const { effective, inherited } = effectiveBaselineByFile({
+      baselineByFile: {}, // absent from THIS gate's baseline — the whole bug
+      currentByFile,
+      foreignBaselines: FOREIGN,
+    });
+    expect(effective['packages/operator-core/lib/agent-tools/memory/search.ts']).toBe(1);
+    expect(inherited).toEqual([
+      { file: 'packages/operator-core/lib/agent-tools/memory/search.ts', baseline: 1, from: 'operator-core' },
+    ]);
+
+    // ...and the gate now agrees with lint:tsc instead of contradicting it.
+    const r = decidePerFile({ currentByFile, baselineByFile: effective, brokenFiles: [] });
+    expect(r.verdict).toBe('ok');
+    expect(r.regressions).toEqual([]);
+  });
+
+  it('WITHOUT inheritance the same input false-reds — pins that this test guards a real behaviour change', () => {
+    const r = decidePerFile({
+      currentByFile: { 'packages/operator-core/lib/agent-tools/memory/search.ts': 1 },
+      baselineByFile: {},
+      brokenFiles: [],
+    });
+    expect(r.verdict).toBe('fail-regressed');
+  });
+
+  it('a foreign file ABOVE its owner baseline is still a NAMED regression (no laundering)', () => {
+    const currentByFile = { 'packages/operator-core/lib/agent-tools/memory/search.ts': 3 };
+    const { effective } = effectiveBaselineByFile({ baselineByFile: {}, currentByFile, foreignBaselines: FOREIGN });
+    const r = decidePerFile({ currentByFile, baselineByFile: effective, brokenFiles: [] });
+    expect(r.verdict).toBe('fail-regressed');
+    expect(r.regressions).toEqual([
+      { file: 'packages/operator-core/lib/agent-tools/memory/search.ts', baseline: 1, current: 3, delta: 2 },
+    ]);
+  });
+
+  it("this gate's OWN explicit baseline always wins — a foreign count can never loosen the ratchet", () => {
+    const { effective, inherited } = effectiveBaselineByFile({
+      baselineByFile: { 'packages/operator-core/lib/agent-tools/memory/search.ts': 0 },
+      currentByFile: { 'packages/operator-core/lib/agent-tools/memory/search.ts': 1 },
+      foreignBaselines: FOREIGN,
+    });
+    expect(effective['packages/operator-core/lib/agent-tools/memory/search.ts']).toBe(0);
+    expect(inherited).toEqual([]);
+  });
+
+  it('a foreign file absent from BOTH baselines is still an implicit 0 — genuinely new errors gate', () => {
+    const currentByFile = { 'packages/operator-core/lib/brand-new.ts': 2 };
+    const { effective } = effectiveBaselineByFile({ baselineByFile: {}, currentByFile, foreignBaselines: FOREIGN });
+    expect(effective['packages/operator-core/lib/brand-new.ts']).toBeUndefined();
+    expect(decidePerFile({ currentByFile, baselineByFile: effective, brokenFiles: [] }).verdict).toBe('fail-regressed');
+  });
+
+  it('a file this gate OWNS is untouched by inheritance — new local files still gate at 0', () => {
+    const currentByFile = { 'apps/operator-vite/src/New.tsx': 1 };
+    const { effective, inherited } = effectiveBaselineByFile({ baselineByFile: {}, currentByFile, foreignBaselines: FOREIGN });
+    expect(effective).toEqual({});
+    expect(inherited).toEqual([]);
+    expect(decidePerFile({ currentByFile, baselineByFile: effective, brokenFiles: [] }).verdict).toBe('fail-regressed');
+  });
+
+  it('never injects foreign files this gate did not MEASURE (no phantom improvements / inflated total)', () => {
+    // memory/search.ts is in the owner baseline but not in this run's output: it must NOT appear,
+    // or it would read as an "improvement" and inflate the reported baseline total.
+    const { effective } = effectiveBaselineByFile({
+      baselineByFile: {},
+      currentByFile: { 'apps/operator-vite/src/App.tsx': 1 },
+      foreignBaselines: FOREIGN,
+    });
+    expect(effective['packages/operator-core/lib/agent-tools/memory/search.ts']).toBeUndefined();
+  });
+
+  it('no foreign sources configured ⇒ byte-identical behaviour (operator-core gate unaffected)', () => {
+    const baselineByFile = { 'a.ts': 2 };
+    const { effective, inherited } = effectiveBaselineByFile({ baselineByFile, currentByFile: { 'a.ts': 2 } });
+    expect(effective).toBe(baselineByFile); // same object — no copy, no change
+    expect(inherited).toEqual([]);
+  });
+});
+
+describe('operator-vite gate wiring (EI-18649014117371738)', () => {
+  it('declares packages/operator-core as a foreign owner so the two gates cannot disagree', () => {
+    const core = FOREIGN_BASELINES.find((s: { prefix: string }) => s.prefix === 'packages/operator-core/');
+    expect(core, 'operator-vite measures operator-core files; it must inherit their owner baseline').toBeDefined();
+    expect(core!.baselineFile).toMatch(/packages\/operator-core\/\.tsc-baseline\.json$/);
+    // A stale path here would silently degrade to the old absent⇒0 false-red, so pin that it resolves.
+    expect(existsSync(core!.baselineFile)).toBe(true);
   });
 });
