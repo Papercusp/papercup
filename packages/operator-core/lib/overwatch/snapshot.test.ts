@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   getOverwatchStarted: vi.fn(),
   getOverwatchCadenceSec: vi.fn(),
   listStartedOverwatches: vi.fn(async () => [] as Array<{ workspaceId: string; installSlug: string }>),
+  /** The registry home-pot fallback (owner bug 2026-07-25) — see the describe below. */
+  resolveHomePotSlug: vi.fn(async (): Promise<string | null> => null),
   overwatchLivenessCheck: vi.fn(),
   getFlag: vi.fn(),
   mapSystemHealthToBrief: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock('../system-health', () => ({
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: h.activeWorkspaceId }));
 vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: h.resolvePotHomeSlug }));
+vi.mock('../agent-tools/pot/_resolve', () => ({ resolveHomePotSlug: h.resolveHomePotSlug }));
 vi.mock('./control-state', () => ({
   getOverwatchStarted: h.getOverwatchStarted,
   getOverwatchCadenceSec: h.getOverwatchCadenceSec,
@@ -138,6 +141,7 @@ describe('getOverwatchControlState', () => {
   it('returns the zeroed default (no hive) when no home slug is resolvable', async () => {
     h.resolvePotHomeSlug.mockReturnValue(null);
     h.listStartedOverwatches.mockResolvedValue([]);
+    h.resolveHomePotSlug.mockResolvedValue(null);
     h.getFlag.mockResolvedValue(false);
 
     const out = await getOverwatchControlState();
@@ -153,6 +157,64 @@ describe('getOverwatchControlState', () => {
       staleForMs: null,
     });
     expect(h.getOverwatchStarted).not.toHaveBeenCalled();
+  });
+
+  /**
+   * REGRESSION — the server half of the owner's 2026-07-25 report ("if I click
+   * pause or start the state doesn't update"). Every slug source above is empty in
+   * precisely the state where the pane most needs one:
+   *   - resolvePotHomeSlug() is ENV-ONLY and PAPERCUSP_POT_HOME_SLUG is unset on
+   *     the dev/green operator hosts (verified in /proc/<pid>/environ), and
+   *   - listStartedOverwatches() is by definition empty while the Kettle is PAUSED.
+   * So controlState reported potSlug:null the moment you paused, the sidebar
+   * derives its Start argument from that field, and Start then called kettle:start
+   * with no harness → `no_home_harness`. The owner clicked Start and nothing
+   * happened. Same defect + same fix as mug-steering-panel GAP 1 (2026-06-17).
+   */
+  describe('home-pot registry fallback (owner bug 2026-07-25)', () => {
+    it('still reports a potSlug while PAUSED, so the pane can send a harness to kettle:start', async () => {
+      h.resolvePotHomeSlug.mockReturnValue(null); // env unset, as on the real hosts
+      h.listStartedOverwatches.mockResolvedValue([]); // paused ⇒ nothing started
+      h.resolveHomePotSlug.mockResolvedValue('papercusp'); // registry knows the home pot
+      h.getFlag.mockResolvedValue(true);
+      h.getOverwatchStarted.mockResolvedValue(false);
+      h.getOverwatchCadenceSec.mockResolvedValue(600);
+      h.overwatchLivenessCheck.mockResolvedValue({
+        armed: false,
+        nextFireAt: null,
+        lastFiredAt: null,
+        staleForMs: null,
+      });
+
+      const out = await getOverwatchControlState();
+
+      expect(out.potSlug).toBe('papercusp');
+      expect(out.started).toBe(false);
+      // It must READ that pot's state, not skip to the zeroed default.
+      expect(h.getOverwatchStarted).toHaveBeenCalledWith('ws-1', 'papercusp');
+    });
+
+    it('prefers a STARTED overwatch over the registry default', async () => {
+      h.resolvePotHomeSlug.mockReturnValue(null);
+      h.listStartedOverwatches.mockResolvedValue([{ workspaceId: 'ws-1', installSlug: 'running-pot' }]);
+      h.resolveHomePotSlug.mockResolvedValue('papercusp');
+      h.getFlag.mockResolvedValue(true);
+      h.getOverwatchStarted.mockResolvedValue(true);
+      h.getOverwatchCadenceSec.mockResolvedValue(600);
+      h.overwatchLivenessCheck.mockResolvedValue({
+        armed: true,
+        nextFireAt: null,
+        lastFiredAt: null,
+        staleForMs: null,
+      });
+
+      const out = await getOverwatchControlState();
+
+      // A loop that is actually RUNNING is the authoritative answer to "which pot
+      // is this supervising"; the registry default is only the paused-state floor.
+      expect(out.potSlug).toBe('running-pot');
+      expect(h.resolveHomePotSlug).not.toHaveBeenCalled();
+    });
   });
 });
 

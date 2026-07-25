@@ -94,13 +94,52 @@ describe('<LeftSidebar> shell', () => {
     expect(await screen.findByTestId('panel-queen')).toBeTruthy();
   });
 
-  it('orders Accounts as the leftmost tab before Mug', () => {
+  // Pins the WHOLE owner-set order, not just the first pair (owner ask
+  // 2026-07-25: "move the pots tab to the right of the accounts tab" + "move the
+  // papercup tab to the right of the pots tab"). The previous version asserted
+  // only ['Accounts', 'brain'], which would have stayed green through exactly the
+  // reordering the owner asked for — a placement request needs a test that fails
+  // when the placement changes, or the next refactor silently undoes it.
+  //
+  // Labels route through the lexicon (t('pot'), t('operator'), t('brain'),
+  // t('overwatch')); the useLexicon mock above echoes the key, so they render as
+  // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
+  // Pots / Papercup / Brain / Kettle at runtime).
+  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Blender · Docs · Agents', () => {
     renderRail();
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
-    // The queen tab label now routes through the lexicon (t('brain')); the
-    // useLexicon mock above echoes the key, so it renders as 'brain'
-    // (restore-pot-lexicon P-005 — classic pack shows 'Brain' at runtime).
-    expect(tabs.map((x) => x.textContent?.trim()).slice(0, 2)).toEqual(['Accounts', 'brain']);
+    expect(tabs.map((x) => x.textContent?.trim())).toEqual([
+      'Accounts',
+      'pot',
+      'operator',
+      'brain',
+      'overwatch',
+      'Blender',
+      'Docs',
+      'Agents',
+    ]);
+  });
+
+  // The collapsed icon rail is a SECOND rendering of the same TABS array, and the
+  // owner navigates by it while collapsed — so it must carry the same order.
+  it('keeps the collapsed icon rail in the same order as the expanded tabs', () => {
+    renderRail('?lsb=false');
+    const railButtons = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid^="left-sidebar-rail-"]'),
+    )
+      .map((el) => el.getAttribute('data-testid')!.replace('left-sidebar-rail-', ''))
+      // drop the expand control that sits above the tab icons
+      .filter((id) => id !== 'expand');
+    expect(railButtons).toEqual([
+      'accounts',
+      'hives',
+      'sentinel',
+      'queen',
+      'overwatch',
+      'blender',
+      'docs',
+      'agents',
+    ]);
   });
 
   it('deep-links a tab from ?lst= and mounts only that panel', async () => {

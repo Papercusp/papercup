@@ -17,6 +17,8 @@ const H = vi.hoisted(() => ({
   controlResult: { data: [] as unknown[], loading: false, error: null as unknown },
   nuqsState: { owsev: 'all' } as Record<string, unknown>,
   nuqsSetters: {} as Record<string, ReturnType<typeof vi.fn>>,
+  /** Per-queryName invalidate spies — the pane must refresh its OWN reads. */
+  invalidated: [] as string[],
 }));
 
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
@@ -32,8 +34,10 @@ vi.mock('nuqs', () => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: (opts: { queryName: string }) =>
-    opts.queryName === 'overwatch.snapshot' ? H.snapshotResult : H.controlResult,
+  useSyncQuery: (opts: { queryName: string }) => ({
+    ...(opts.queryName === 'overwatch.snapshot' ? H.snapshotResult : H.controlResult),
+    invalidate: () => H.invalidated.push(opts.queryName),
+  }),
 }));
 vi.mock('@/lib/useLexicon', async () => {
   const { lexiconFor } = await vi.importActual<typeof import('@papercusp/lexicon')>('@papercusp/lexicon');
@@ -73,6 +77,7 @@ beforeEach(() => {
   H.controlResult = { data: [control], loading: false, error: null };
   H.nuqsState = { owsev: 'all' };
   H.nuqsSetters = {};
+  H.invalidated = [];
 });
 afterEach(cleanup);
 
@@ -133,5 +138,88 @@ describe('OverwatchTab (sidebar)', () => {
     render(<OverwatchTab active />);
     expect(screen.getByText('Paused')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Start Kettle' })).toBeTruthy();
+  });
+
+  // ── The owner's 2026-07-25 report: "if I click pause or start the state doesn't
+  //    update until I click away and switch back." Two independent causes; these
+  //    pin the CLIENT half. (The server half — controlState reporting potSlug:null
+  //    once paused, so Start fired with no harness — is pinned in
+  //    packages/operator-core/lib/overwatch/snapshot.test.ts.)
+  describe('control toggle reflects immediately (owner bug 2026-07-25)', () => {
+    /** A fetch that never settles, so we can observe the pre-response UI. */
+    function pendingFetch() {
+      const mock = vi.fn().mockReturnValue(new Promise(() => {}));
+      vi.stubGlobal('fetch', mock);
+      return mock;
+    }
+
+    it('flips the header optimistically BEFORE the write resolves', () => {
+      const fetchMock = pendingFetch();
+      render(<OverwatchTab active />);
+      expect(screen.getByText('Running')).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pause Kettle' }));
+
+      // The server row is untouched (started still true) and the request has NOT
+      // come back — yet the header must already read Paused. Before the fix this
+      // stayed "Running" until a remount refetched, which is exactly what the
+      // owner saw as "only updates when I switch tabs".
+      expect(fetchMock).toHaveBeenCalled();
+      expect((H.controlResult.data[0] as { started: boolean }).started).toBe(true);
+      expect(screen.getByText('Paused')).toBeTruthy();
+      expect(screen.queryByText('Running')).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    it('invalidates its OWN reads after the write instead of waiting for the server push', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      render(<OverwatchTab active />);
+      fireEvent.click(screen.getByRole('button', { name: 'Pause Kettle' }));
+
+      await waitFor(() => expect(H.invalidated).toContain('overwatch.controlState'));
+      // All three reads derive from the started bit, so all three must refresh:
+      // the header, the brief that only exists while running, and the wake strip.
+      expect(H.invalidated).toContain('overwatch.snapshot');
+      expect(H.invalidated).toContain('overwatch.liveness');
+      vi.unstubAllGlobals();
+    });
+
+    it('rolls the optimistic flip back when the tool refuses', async () => {
+      // The exact refusal the server-side bug produced: no home harness resolved.
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: {
+            content: [{ text: JSON.stringify({ ok: false, error: 'no_home_harness', message: 'Pass `harness`' }) }],
+          },
+        }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      H.controlResult = { data: [{ ...control, started: false }], loading: false, error: null };
+      H.snapshotResult = { data: [], loading: false, error: null };
+      render(<OverwatchTab active />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Start Kettle' }));
+      // A refused write must NOT leave the header claiming a state the server
+      // never accepted — it reverts and surfaces the reason.
+      await waitFor(() => expect(screen.getByText(/Pass .harness./)).toBeTruthy());
+      expect(screen.getByText('Paused')).toBeTruthy();
+      vi.unstubAllGlobals();
+    });
+  });
+
+  // Owner question 2026-07-25: "there are pot labels on these interfaces — what do
+  // those pot labels mean if they should be operating at the workspace level?"
+  // The chip must state the SCOPE; the home-pot slug is provenance in the tooltip.
+  it('labels the header chip with the workspace scope, not the anchor pot slug', () => {
+    render(<OverwatchTab active />);
+    const chip = screen.getByTestId('overwatch-scope');
+    expect(chip.textContent).toBe('workspace');
+    expect(chip.textContent).not.toContain('papercup-hive');
   });
 });
