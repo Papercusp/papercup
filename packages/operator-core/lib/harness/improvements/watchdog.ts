@@ -2192,6 +2192,16 @@ interface StalledClaimRow {
    * (older callers behave exactly as before).
    */
   holder_active?: boolean | null;
+  /**
+   * EI-18633753937712900 (WI-3669 recurrence): the item is deliberately PARKED —
+   * a `blocked` status, or payload._claimHold=true (WI-2797) — a considered
+   * "nothing to do right now" disposition, NOT an abandoned/stuck claim, so
+   * re-picking it is futile (a blocked item stays blocked). Such rows are dropped
+   * from the signal. The SQL fetch also excludes these (one rule, two enforcement
+   * points — mirrors holder_active). Absent ⇒ not-parked (older callers behave
+   * exactly as before).
+   */
+  parked?: boolean | null;
 }
 /**
  * Pure (agent-activity-liveness-truth P-007, D-001): live-holder-but-no-progress
@@ -2210,6 +2220,13 @@ export function stalledClaimSignalsFromRows(
   // abandonment (dead/absent holder) is the orphaned-claim case, covered
   // elsewhere. Drop active holders before the signal is built.
   rows = rows.filter((r) => r.holder_active !== true);
+  // EI-18633753937712900 (WI-3669 recurrence): a deliberately PARKED claim — a
+  // `blocked` status, or payload._claimHold=true (WI-2797) — is a considered
+  // "nothing to do right now" disposition, not a stall to re-pick (re-picking a
+  // blocked item is futile). Drop it defensively; the SQL fetch also excludes
+  // these (one rule, two enforcement points — mirrors holder_active). This is the
+  // regression guard the SQL-only _claimHold exclusion previously lacked.
+  rows = rows.filter((r) => r.parked !== true);
   if (rows.length === 0) return [];
   const minMinutes = opts.minMinutes ?? 30;
   const sample = rows
@@ -2288,7 +2305,18 @@ export async function collectStalledClaimSignals(
               SELECT 1 FROM harness_shared.tool_invocations ti
                WHERE ti.coord_owner_id = fa.agent_id
                  AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
-            ))                                              AS holder_active
+            ))                                              AS holder_active,
+           -- EI-18633753937712900 (WI-3669 recurrence): the item is deliberately
+           -- PARKED — a `blocked` status, or payload._claimHold=true (WI-2797) —
+           -- a considered disposition, not a stuck claim. Exposed for the pure
+           -- signal's defensive drop (one rule, two enforcement points).
+           (fa.status = 'blocked' OR EXISTS (
+              SELECT 1 FROM harness_shared.work_items wi2
+               WHERE wi2.workspace_id = fa.workspace_id
+                 AND wi2.harness_slug = fa.harness_slug
+                 AND wi2.feature_id = fa.work_item_id
+                 AND COALESCE(wi2.payload, '{}'::jsonb) ->> '_claimHold' = 'true'
+            ))                                              AS parked
       FROM harness_shared.fleet_assignment fa
      WHERE fa.source = 'work_item_claim'
        AND fa.stalled IS TRUE
