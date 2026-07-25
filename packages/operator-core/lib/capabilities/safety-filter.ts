@@ -19,7 +19,37 @@ export type PaletteEligibility =
   | 'confirm' // show, but require an explicit confirm step before running
   | 'exclude'; // never offered in the palette (Phase 1)
 
-export function paletteEligibility(cap: Capability): PaletteEligibility {
+export interface PaletteEligibilityOpts {
+  /**
+   * The caller SUPPLIED the arguments (a sidebar pane / button invoking one
+   * specific tool with a fixed payload), so the `requiresArgs` exclusion does
+   * not apply to it.
+   *
+   * WHY this exists: `requiresArgs` was never a safety property — it encodes
+   * "the palette cannot PROMPT the user for args" (see the `requiresArgs` doc
+   * comment on CapabilityCore: *excluded ... until the palette grows an arg
+   * prompt*). But `/api/agent-mcp/run-tool` is shared by every operator UI
+   * surface, not just the keystroke palette, and those callers hard-code their
+   * arguments. Applying the prompt limitation to them refused calls that had
+   * nothing to prompt for: it made EVERY pause/resume control in the Blender,
+   * Docs and Agents panes fail with `not_palette_eligible`, because
+   * `routines:set` takes a required `name`. That surface exists so the owner
+   * can stop cron agents spending his token budget, and it could never stop
+   * one (owner report 2026-07-25).
+   *
+   * Streaming / interactive stay excluded regardless: those are limits of the
+   * dispatch+toast SHIM (it cannot host incremental state or a mid-run
+   * prompt), not of the arg prompt — supplying args does not make them
+   * hostable. Every real authority check (role gate, `authorize` PDP, the
+   * destructive/high-risk confirm below, audit) is untouched by this flag.
+   */
+  argsSupplied?: boolean;
+}
+
+export function paletteEligibility(
+  cap: Capability,
+  opts: PaletteEligibilityOpts = {},
+): PaletteEligibility {
   // Browser-reflexive commands run their own in-tab handler (which owns its
   // side effects). Phase 1 surfaces only those explicitly annotated for the
   // palette — i.e. today's existing `paletteEntry` commands.
@@ -29,8 +59,11 @@ export function paletteEligibility(cap: Capability): PaletteEligibility {
 
   // Server capabilities, executed via the dispatch + toast shim.
   // The shim cannot host streaming (publishState) or interactive (askUser)
-  // tools, and cannot prompt for required args — exclude them in Phase 1.
-  if (cap.streaming || cap.interactive || cap.requiresArgs) return 'exclude';
+  // tools — those are excluded however they are called.
+  if (cap.streaming || cap.interactive) return 'exclude';
+  // Required args are excluded only when the caller did NOT supply any: the
+  // palette has no way to ask for them. A caller that passes them is fine.
+  if (cap.requiresArgs && !opts.argsSupplied) return 'exclude';
 
   // Destructive / high-risk: show, but gate behind a confirm step. Never
   // fire-and-toast a one-keystroke irreversible action.

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { paletteInvokeGuard } from './invoke';
+import { paletteEligibility } from './safety-filter';
 import type { Capability } from './types';
 
 const base: Capability = {
@@ -41,5 +42,61 @@ describe('paletteInvokeGuard', () => {
 
   it('a browser capability without a palette annotation is excluded', () => {
     expect(paletteInvokeGuard({ ...base, runsIn: 'browser' }, true).allow).toBe(false);
+  });
+});
+
+/**
+ * Regression: every pause/resume control in the Blender, Docs and Agents panes
+ * was refused before dispatch. Those panes call `routines:set` through
+ * /api/agent-mcp/run-tool with a full, hard-coded argument payload, but the
+ * guard excluded the tool merely for HAVING a required arg (`name`) — a rule
+ * that exists because the keystroke palette cannot PROMPT for args, which has
+ * nothing to do with a caller that already supplied them. Net effect: the
+ * surface built so the owner could stop token-spending cron agents could not
+ * stop a single one (owner report 2026-07-25).
+ */
+describe('paletteInvokeGuard — a caller that supplies its own args', () => {
+  const needsArgs: Capability = { ...base, id: 'routines:set', requiresArgs: true };
+
+  it('admits an arg-requiring tool when the caller supplied args', () => {
+    expect(paletteInvokeGuard(needsArgs, false, true)).toEqual({ allow: true, cap: needsArgs });
+  });
+
+  it('still refuses an arg-requiring tool when NO args were supplied, and says why', () => {
+    const g = paletteInvokeGuard(needsArgs, true, false);
+    expect(g.allow).toBe(false);
+    if (!g.allow) {
+      expect(g.code).toBe('not_palette_eligible');
+      // The message must name the ACTUAL cause; the old one listed all three
+      // possible causes at once and misdiagnosed this case as a hard limit.
+      expect(g.message).toMatch(/requires arguments/);
+      expect(g.message).not.toMatch(/streams or prompts/);
+    }
+  });
+
+  it('does NOT waive the streaming/interactive exclusion — that is a shim limit, not a prompt limit', () => {
+    for (const bad of [
+      { ...base, streaming: true, requiresArgs: true },
+      { ...base, interactive: true, requiresArgs: true },
+    ]) {
+      const g = paletteInvokeGuard(bad, true, /* argsSupplied */ true);
+      expect(g.allow).toBe(false);
+      if (!g.allow) expect(g.message).toMatch(/streams or prompts/);
+    }
+  });
+
+  it('does NOT waive the destructive/high-risk confirm gate', () => {
+    const dangerous = { ...needsArgs, destructive: true };
+    const g = paletteInvokeGuard(dangerous, /* confirmed */ false, /* argsSupplied */ true);
+    expect(g.allow).toBe(false);
+    if (!g.allow) expect(g.code).toBe('confirmation_required');
+    expect(paletteInvokeGuard(dangerous, true, true).allow).toBe(true);
+  });
+
+  it('leaves the palette LISTING unchanged — an arg-requiring tool is still not offered', () => {
+    // The listing path calls paletteEligibility with no args, so an arg-taking
+    // tool must stay out of the palette until it grows an arg prompt.
+    expect(paletteEligibility(needsArgs)).toBe('exclude');
+    expect(paletteEligibility(needsArgs, { argsSupplied: true })).toBe('fire-and-toast');
   });
 });

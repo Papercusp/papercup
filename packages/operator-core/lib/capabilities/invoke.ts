@@ -25,7 +25,7 @@ import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { activeWorkspaceId } from '../workspace-registry';
 import { suggestClosestToolNames } from '../agent-tools/tools/unknown-tool-referral';
 import { projectedToolToCapability } from './from-tooldef';
-import { paletteEligibility } from './safety-filter';
+import { paletteEligibility, type PaletteEligibilityOpts } from './safety-filter';
 import type { Capability } from './types';
 
 export type InvokeGuard =
@@ -36,14 +36,29 @@ export type InvokeGuard =
  * The pure §3 admission decision for a palette invoke. Factored out so it's
  * unit-testable without the live catalog/dispatch.
  */
-export function paletteInvokeGuard(cap: Capability, confirmed: boolean): InvokeGuard {
-  const eligibility = paletteEligibility(cap);
+export function paletteInvokeGuard(
+  cap: Capability,
+  confirmed: boolean,
+  /** True when the caller passed arguments — see {@link PaletteEligibilityOpts.argsSupplied}. */
+  argsSupplied = false,
+): InvokeGuard {
+  const eligibility = paletteEligibility(cap, { argsSupplied });
   if (eligibility === 'exclude') {
+    // Say WHICH limit was hit. The old message named all three causes at once,
+    // so an arg-taking tool invoked WITH args reported "streaming, interactive,
+    // or requires arguments" and read as an unfixable capability limit rather
+    // than the missing-args case it actually was.
+    const why =
+      cap.streaming || cap.interactive
+        ? 'it streams or prompts mid-run, which this shim cannot host'
+        : cap.requiresArgs
+          ? 'it requires arguments and none were supplied'
+          : 'it is not exposed to this surface';
     return {
       allow: false,
       status: 403,
       code: 'not_palette_eligible',
-      message: `"${cap.id}" cannot be run from the palette (streaming, interactive, or requires arguments)`,
+      message: `"${cap.id}" cannot be run from here: ${why}`,
     };
   }
   if (eligibility === 'confirm' && !confirmed) {
@@ -92,7 +107,11 @@ export async function invokeServerCapability(opts: {
     { ...projected, capabilities: projected.capabilities as readonly string[] },
     tierFor,
   );
-  const guard = paletteInvokeGuard(cap, opts.confirmed === true);
+  // A non-empty args object means the caller supplied its own arguments, so the
+  // arg-PROMPT exclusion doesn't apply (see PaletteEligibilityOpts.argsSupplied).
+  const argsSupplied =
+    typeof opts.args === 'object' && opts.args !== null && Object.keys(opts.args).length > 0;
+  const guard = paletteInvokeGuard(cap, opts.confirmed === true, argsSupplied);
   if (!guard.allow) {
     return { ok: false, status: guard.status, code: guard.code, message: guard.message };
   }
