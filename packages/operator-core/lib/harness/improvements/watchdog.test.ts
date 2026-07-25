@@ -765,6 +765,29 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(signals[0].body).not.toContain('su-4d3eb54c');
   });
 
+  it('EI-18633753937712900 (WI-3669 recurrence): a deliberately PARKED claim (blocked / _claimHold) is NOT counted stalled', () => {
+    // WI-3669 was set state=blocked + payload._claimHold=true 5 days ago (a
+    // considered "nothing to do right now" disposition — it needs a live rig),
+    // yet its false-alive heartbeat kept it reading `stalled=true`. Re-picking a
+    // blocked/held item is futile, so it must never raise the stalled-claim
+    // signal. The SQL fetch excludes these; this is the regression guard for the
+    // pure signal's defensive drop (one rule, two enforcement points).
+    const parkedBlocked = { work_item_id: 'WI-3669', agent_id: 'su-97195e45', harness_slug: 'papercusp', detail: 'blocked', stalled_minutes: 7914, parked: true };
+    const parkedHeld = { work_item_id: 'WI-42', agent_id: 'su-held', harness_slug: 'papercusp', detail: 'claim-held', stalled_minutes: 900, parked: true };
+    const genuine = { work_item_id: 'WI-9', agent_id: 'bee-idle', harness_slug: 'alpha', detail: 'wedged', stalled_minutes: 42, parked: false };
+
+    // All rows parked → no signal (the WI-3669 5-day standing false-positive is gone).
+    expect(stalledClaimSignalsFromRows([parkedBlocked, parkedHeld], { minMinutes: 30 })).toEqual([]);
+
+    // Mixed → only the genuinely-idle, non-parked holder counts.
+    const signals = stalledClaimSignalsFromRows([parkedBlocked, parkedHeld, genuine], { minMinutes: 30 });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].body).toContain('1 work-item claim(s)');
+    expect(signals[0].body).toContain('WI-9<-bee-idle');
+    expect(signals[0].body).not.toContain('WI-3669');
+    expect(signals[0].body).not.toContain('WI-42');
+  });
+
   describe('spawn-ceiling-jam (EI-2186): admission consumed by non-streaming rows', () => {
     const now = Date.UTC(2026, 5, 21, 4, 0, 0);
     const minsAgo = (m: number) => new Date(now - m * 60_000);

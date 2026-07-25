@@ -2307,7 +2307,7 @@ export async function collectStalledClaimSignals(
                  AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
             ))                                              AS holder_active,
            -- EI-18633753937712900 (WI-3669 recurrence): the item is deliberately
-           -- PARKED — a `blocked` status, or payload._claimHold=true (WI-2797) —
+           -- PARKED — a blocked status, or payload._claimHold=true (WI-2797) —
            -- a considered disposition, not a stuck claim. Exposed for the pure
            -- signal's defensive drop (one rule, two enforcement points).
            (fa.status = 'blocked' OR EXISTS (
@@ -2341,9 +2341,12 @@ export async function collectStalledClaimSignals(
           WHERE ti.coord_owner_id = fa.agent_id
             AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
        )
-       -- (bug-drain-200k, WI-3669 recurrence) a deliberately claim-held item
-       -- (payload._claimHold = true, WI-2797) is a considered "nothing more to do
-       -- right now" disposition, not an abandoned/stuck claim — never raise it.
+       -- (bug-drain-200k / EI-18633753937712900, WI-3669 recurrence) a
+       -- deliberately PARKED item is a considered "nothing more to do right now"
+       -- disposition, not an abandoned/stuck claim — never raise it. Two shapes:
+       --   (a) a blocked status (re-picking a blocked item is futile), and
+       --   (b) payload._claimHold = true (WI-2797) — explicitly held out of pool.
+       AND fa.status IS DISTINCT FROM 'blocked'
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.work_items wi
           WHERE wi.workspace_id = fa.workspace_id
