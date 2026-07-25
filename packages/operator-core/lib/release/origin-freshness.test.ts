@@ -7,6 +7,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/release/origin-freshness.test.ts
  */
 import { describe, it, expect } from 'vitest';
+import { selectOriginWatermark } from './origin-freshness-watchdog';
 import {
   evaluateOriginFreshness,
   originFreshness,
@@ -161,5 +162,51 @@ describe('WI-5738 — a sustained publish refusal alarms on its own', () => {
     expect(v.state).toBe('ok');
     expect(v.publishRefused).toBe(false);
     expect(v.reason).toBeNull();
+  });
+});
+
+describe('WI-5738 — selectOriginWatermark: which signal the watchdog trusts', () => {
+  const EGRESS = 'a'.repeat(40);
+  const OBSERVED = 'b'.repeat(40);
+  const MIRROR = 'c'.repeat(40);
+
+  it('prefers the real egress head over everything else', () => {
+    expect(
+      selectOriginWatermark({ egressHead: EGRESS, lastObserved: OBSERVED, ingressMirror: MIRROR }),
+    ).toBe(EGRESS);
+  });
+
+  /**
+   * The regression that matters. `github_bridge` metadata is replaced wholesale
+   * every tick, so a tick that egressed nothing used to blank `egress_head`. If
+   * the watchdog then fell straight back to the ingress mirror, ONE quiet tick
+   * silently restored the blindness this whole incident was about — the mirror
+   * is fast-forwarded hourly by the release pipeline, so it reports healthy
+   * regardless of egress and resets the staleness clock.
+   */
+  it('falls back to its OWN last observation, never to the ingress mirror, when the egress head is momentarily absent', () => {
+    expect(
+      selectOriginWatermark({ egressHead: null, lastObserved: OBSERVED, ingressMirror: MIRROR }),
+    ).toBe(OBSERVED);
+  });
+
+  it('keeps the clock RUNNING on a vanished signal — the fallback equals the previous sha, so nothing re-dates the tip', () => {
+    // originSha === prevOriginSha ⇒ the watchdog does NOT restart the tip clock,
+    // so a genuine wedge keeps ageing toward an alarm instead of being reset.
+    const prev = OBSERVED;
+    const picked = selectOriginWatermark({ egressHead: null, lastObserved: prev, ingressMirror: MIRROR });
+    expect(picked).toBe(prev);
+  });
+
+  it('uses the ingress mirror ONLY when egress has never once reported', () => {
+    expect(
+      selectOriginWatermark({ egressHead: null, lastObserved: null, ingressMirror: MIRROR }),
+    ).toBe(MIRROR);
+  });
+
+  it('reports null when there is no signal at all (never observed) rather than inventing one', () => {
+    expect(
+      selectOriginWatermark({ egressHead: null, lastObserved: null, ingressMirror: null }),
+    ).toBeNull();
   });
 });

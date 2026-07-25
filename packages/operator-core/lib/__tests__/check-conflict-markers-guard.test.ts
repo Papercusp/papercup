@@ -16,11 +16,14 @@
  * Markers are built with `.repeat(7)` so this test's own source carries no
  * line-start bracket run — keeping the guard green on the test file itself.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only. Single-line
 // so the @ts-ignore covers the module-specifier line (TS7016 anchors there on a multiline import).
-import { findConflictMarker, CONFLICT_MARKER_ERE, isDirectCliInvocation } from '../../../../scripts/check-conflict-markers.mjs';
+import { findConflictMarker, CONFLICT_MARKER_ERE, isDirectCliInvocation, walkFallback } from '../../../../scripts/check-conflict-markers.mjs';
 
 const B = (c: string) => c.repeat(7); // a 7-char bracket run, without a literal marker here
 
@@ -105,6 +108,93 @@ describe('check-conflict-markers guard detector (EI-1836)', () => {
       expect(isDirectCliInvocation('/repo/node_modules/.bin/vitest')).toBe(false);
       expect(isDirectCliInvocation(undefined)).toBe(false);
       expect(isDirectCliInvocation('')).toBe(false);
+    });
+  });
+
+  describe('walkFallback (WI-5769 — no-.git VM build trees)', () => {
+    // mac-vm-verify-build.sh / release-local.sh rsync a HEAD snapshot to the build
+    // VM with `--exclude '.git'` BY DESIGN, so `git grep` always fails there with
+    // "not a git repository" — not because anything is actually wrong. Before this
+    // fix that fataled the whole sidecar build on every such snapshot build. This
+    // exercises the real filesystem walk the fallback uses instead of `git grep`,
+    // against a genuine temp directory (no `.git` present), proving it still finds
+    // a committed marker while skipping vendor/build dirs and binary extensions —
+    // the exact shape of tree a VM build sees.
+    let dir: string;
+
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('finds a marker in an ordinary tracked-shaped file', () => {
+      dir = mkdtempSync(join(tmpdir(), 'ccm-fallback-'));
+      const B = (c: string) => c.repeat(7);
+      writeFileSync(join(dir, 'clean.ts'), 'const x = 1;\n');
+      writeFileSync(join(dir, 'broken.css'), `selector {}\n${B('<')} Updated upstream\ncolor: red;`);
+
+      const out: string[] = [];
+      walkFallback(dir, out);
+
+      expect(out).toContain(join(dir, 'broken.css'));
+      expect(out).toContain(join(dir, 'clean.ts'));
+    });
+
+    it('skips excluded vendor/build directories (node_modules, .git, target, dist, ...)', () => {
+      dir = mkdtempSync(join(tmpdir(), 'ccm-fallback-'));
+      const B = (c: string) => c.repeat(7);
+      for (const excludedDir of ['node_modules', '.git', 'target', 'dist', 'build', '.next']) {
+        const sub = join(dir, excludedDir);
+        mkdirSync(sub, { recursive: true });
+        writeFileSync(join(sub, 'hidden.ts'), `${B('>')} should never be seen`);
+      }
+      writeFileSync(join(dir, 'visible.ts'), 'const y = 2;\n');
+
+      const out: string[] = [];
+      walkFallback(dir, out);
+
+      expect(out).toEqual([join(dir, 'visible.ts')]);
+    });
+
+    it('skips binary-ish extensions (png, dylib, wasm, ...) even inside included dirs', () => {
+      dir = mkdtempSync(join(tmpdir(), 'ccm-fallback-'));
+      writeFileSync(join(dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      writeFileSync(join(dir, 'lib.dylib'), Buffer.from([0x00, 0x01]));
+      writeFileSync(join(dir, 'source.ts'), 'const z = 3;\n');
+
+      const out: string[] = [];
+      walkFallback(dir, out);
+
+      expect(out).toEqual([join(dir, 'source.ts')]);
+    });
+
+    it('does not follow symlinks (avoids cycles / escaping the snapshot root)', () => {
+      dir = mkdtempSync(join(tmpdir(), 'ccm-fallback-'));
+      const real = mkdtempSync(join(tmpdir(), 'ccm-fallback-target-'));
+      writeFileSync(join(real, 'outside.ts'), 'const outside = true;\n');
+      writeFileSync(join(dir, 'inside.ts'), 'const inside = true;\n');
+      symlinkSync(real, join(dir, 'link-to-outside'));
+
+      const out: string[] = [];
+      walkFallback(dir, out);
+
+      expect(out).toEqual([join(dir, 'inside.ts')]);
+      rmSync(real, { recursive: true, force: true });
+    });
+
+    it('recurses into ordinary nested directories and finds a marker several levels deep', () => {
+      dir = mkdtempSync(join(tmpdir(), 'ccm-fallback-'));
+      const B = (c: string) => c.repeat(7);
+      const nested = join(dir, 'a', 'b', 'c');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(nested, 'deep.ts'), `x\n${B('|')} base\ny`);
+
+      const out: string[] = [];
+      walkFallback(dir, out);
+
+      expect(out).toContain(join(nested, 'deep.ts'));
+      // and the detector itself confirms the marker is actually flagged
+      const hit = findConflictMarker('deep.ts', `x\n${B('|')} base\ny`);
+      expect(hit).toMatchObject({ line: 2 });
     });
   });
 });

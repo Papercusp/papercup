@@ -83,7 +83,10 @@ const FALLBACK_SKIP_EXT = new Set([
   '.o', '.wasm', '.node', '.db', '.sqlite', '.sqlite3', '.lock', '.jpg',
 ]);
 
-function walkFallback(dir, out) {
+// Exported (not just used internally) so the no-`.git` path is directly unit-testable
+// against a real temp directory (check-conflict-markers-guard.test.ts) without having
+// to fake out `ROOT` or strip `.git` from the real repo tree.
+export function walkFallback(dir, out) {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });

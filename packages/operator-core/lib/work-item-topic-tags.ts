@@ -46,6 +46,24 @@ export function nextTagSet(current: unknown, topic: string, mode: 'add' | 'remov
   return tags.includes(topic) ? tags : [...tags, topic];
 }
 
+/**
+ * "This row's tag slot already holds `topic`" — as a THREE-VALUED-SAFE boolean.
+ *
+ * The NULL trap this exists to kill (it silently no-op'd the whole fix on the very
+ * row shape the bug is about): an UNTAGGED row has a SQL NULL tag slot, so
+ * `jsonb_typeof(NULL) = 'array'` is NULL, `NULL AND …` is NULL, and `NOT NULL` is
+ * NULL — which is not TRUE, so `WHERE NOT (…)` matched ZERO rows and the tag was
+ * never mirrored. COALESCE(…, false) collapses the unknown to a definite false so
+ * an absent/NULL/non-array tag slot reads as "does not have the tag".
+ */
+function hasFeatureTagSql(sql: ReturnType<typeof getOrgPg>['sql'], topic: string) {
+  return sql`COALESCE(jsonb_typeof(tags) = 'array' AND tags ? ${topic}, false)`;
+}
+/** The `payload.tags` twin of {@link hasFeatureTagSql} — same NULL-safety rationale. */
+function hasIssueTagSql(sql: ReturnType<typeof getOrgPg>['sql'], topic: string) {
+  return sql`COALESCE(jsonb_typeof(payload -> 'tags') = 'array' AND (payload -> 'tags') ? ${topic}, false)`;
+}
+
 export interface SyncTopicTagArgs {
   /** The work-item id (feature_id / issue_id). */
   id: string;
@@ -87,7 +105,7 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<b
            WHERE workspace_id = ${workspaceId}
              AND ${args.harness ? sql`harness_slug = ${args.harness}` : sql`TRUE`}
              AND feature_id = ${id}
-             AND (jsonb_typeof(tags) = 'array' AND tags ? ${topic})
+             AND ${hasFeatureTagSql(sql, topic)}
           RETURNING feature_id`
       : await sql<{ feature_id: string }[]>`
           UPDATE harness_shared.harness_features_consolidated
@@ -97,7 +115,7 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<b
            WHERE workspace_id = ${workspaceId}
              AND ${args.harness ? sql`harness_slug = ${args.harness}` : sql`TRUE`}
              AND feature_id = ${id}
-             AND NOT (jsonb_typeof(tags) = 'array' AND tags ? ${topic})
+             AND NOT ${hasFeatureTagSql(sql, topic)}
           RETURNING feature_id`;
     return rows.length > 0;
   }
@@ -113,7 +131,7 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<b
                updated_at = now()
          WHERE workspace_id = ${workspaceId}
            AND issue_id = ${id}
-           AND (jsonb_typeof(payload -> 'tags') = 'array' AND (payload -> 'tags') ? ${topic})
+           AND ${hasIssueTagSql(sql, topic)}
         RETURNING issue_id`
     : await sql<{ issue_id: string }[]>`
         UPDATE harness_shared.engineer_issues
@@ -127,7 +145,7 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<b
                updated_at = now()
          WHERE workspace_id = ${workspaceId}
            AND issue_id = ${id}
-           AND NOT (jsonb_typeof(payload -> 'tags') = 'array' AND (payload -> 'tags') ? ${topic})
+           AND NOT ${hasIssueTagSql(sql, topic)}
         RETURNING issue_id`;
   return rows.length > 0;
 }

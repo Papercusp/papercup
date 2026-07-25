@@ -1304,14 +1304,16 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
-    const rows = await sql<{ la: string | null; wb_sha: string | null }[]>`
+    const rows = await sql<{ la: string | null; wb_sha: string | null; prev_egress_head: string | null }[]>`
       SELECT metadata->'github_bridge'->>'last_admitted' AS la,
-             metadata->'worktree_bridge'->>'stagingSha' AS wb_sha
+             metadata->'worktree_bridge'->>'stagingSha' AS wb_sha,
+             metadata->'github_bridge'->>'egress_head' AS prev_egress_head
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const lastAdmitted = rows[0]?.la ?? null;
+    const prevEgressHead = rows[0]?.prev_egress_head ?? null;
 
     // Catch-up pin (WI-3500): the bare-side canonical mirror (refs/hive/staging)
     // is maintained on staging-advance ACCEPTANCE (worktree-bridge step 3.5),
@@ -1363,7 +1365,19 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
         needs_owner: outcome.verdict.needsOwner,
         // WI-5738: the truthful egress watermark the origin-freshness watchdog
         // measures against (see GithubBridgeTickOutcome.egressHead).
-        egress_head: outcome.egressHead ?? null,
+        //
+        // STICKY — a tick that egressed nothing must NOT erase it. This whole
+        // `github_bridge` object is replaced wholesale on every patch, so
+        // writing a bare `?? null` let one quiet tick (nothing to push, or the
+        // leg skipped before egress) blank the field. The watchdog then falls
+        // back to the ingress mirror of `github_default_branch` — the exact
+        // signal proven blind in this incident, because the release pipeline
+        // fast-forwards it hourly regardless of whether egress is wedged. So a
+        // single quiet tick silently reverted the watchdog to the broken
+        // detector it was fixed to stop using. The field means "what egress
+        // LAST landed", so absence of a new observation must leave the last
+        // one standing.
+        egress_head: outcome.egressHead ?? prevEgressHead,
         errors: outcome.errors.slice(0, 10),
       },
     });

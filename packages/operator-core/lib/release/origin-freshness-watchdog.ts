@@ -100,6 +100,39 @@ export interface OriginFreshnessWatchdogResult {
 }
 
 /**
+ * WI-5738 — which sha this watchdog treats as "where origin actually is".
+ *
+ * Extracted as a pure function because the PRECEDENCE is the whole bug. The
+ * original watchdog measured the ingress mirror of `github_default_branch`, and
+ * that is why a five-day egress outage read healthy the entire time: the RELEASE
+ * pipeline fast-forwards that branch hourly, so it reported a fresh tip and a
+ * small ahead-count no matter how wedged egress was — and it RESET the staleness
+ * clock every hour.
+ *
+ * Order, strongest evidence first:
+ *   1. `egressHead`   — what egress LAST ACTUALLY LANDED. The only signal that
+ *                       is a fact about the mechanism being watched.
+ *   2. `lastObserved` — this watchdog's own previous observation. Reusing it
+ *                       when a fresh reading is missing leaves the staleness
+ *                       clock RUNNING, so a genuine wedge still alarms. Silence
+ *                       must never read as health.
+ *   3. `ingressMirror`— last resort, for a hive that has NEVER observed an
+ *                       egress head (pre-upgrade metadata). A weak signal beats
+ *                       none, but it must never PREEMPT a real one.
+ *
+ * The trap this encodes: (2) exists so that a single quiet tick cannot demote
+ * the watchdog back to (3). Skipping straight from (1) to (3) silently restores
+ * the exact blindness this incident was about.
+ */
+export function selectOriginWatermark(input: {
+  egressHead: string | null;
+  lastObserved: string | null;
+  ingressMirror: string | null;
+}): string | null {
+  return input.egressHead ?? input.lastObserved ?? input.ingressMirror ?? null;
+}
+
+/**
  * One watchdog pass: scan every registry entry whose hive is in `bridged` mode and has a
  * GitHub remote configured, read the local bare store (best-effort — a missing/foreign-host
  * repo just degrades to "unknown", never a false alarm), evaluate freshness, and alarm/clear
@@ -211,9 +244,26 @@ export async function checkOriginFreshness(
       // ingress mirror remains a fallback ONLY for a hive whose egress has not
       // reported yet (pre-upgrade metadata), where the old signal is still
       // better than none.
-      const originSha = row?.egress_head ?? ingressMirrorSha;
-      const alerted = row?.of_alerted ?? false;
+      // Defence in depth for the same trap, from the READ side. Even with the
+      // sticky write, `egress_head` can be absent (pre-upgrade metadata, or a
+      // hive whose egress has genuinely never reported). Falling straight back
+      // to the ingress mirror is what made this watchdog blind for five days —
+      // that branch is fast-forwarded hourly by the RELEASE pipeline, so it
+      // reports healthy no matter how wedged egress is, and it RESETS the
+      // staleness clock every hour.
+      //
+      // `of_origin_sha` is this watchdog's OWN last real observation. Preferring
+      // it means a vanished signal leaves the clock RUNNING (so a genuine wedge
+      // still alarms) instead of being reset by an unrelated branch. The
+      // ingress mirror survives only as the last resort for a hive that has
+      // never once observed an egress head — there, a weak signal beats none.
       const prevOriginSha = row?.of_origin_sha ?? null;
+      const originSha = selectOriginWatermark({
+        egressHead: row?.egress_head ?? null,
+        lastObserved: prevOriginSha,
+        ingressMirror: ingressMirrorSha,
+      });
+      const alerted = row?.of_alerted ?? false;
       const prevOriginSinceMs = row?.of_origin_since_ms != null ? Number(row.of_origin_since_ms) : null;
 
       let originTipAgeMs: number | null = null;

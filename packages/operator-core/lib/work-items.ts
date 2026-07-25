@@ -106,6 +106,7 @@ import {
   promoteIssue,
   issuesScopeWorkspace,
   resolveIssuesScopeWorkspace,
+  resolveIssueWorkspace,
   mergeIssuePayload,
   markIssueProgress,
   type EngineerIssue,
@@ -1078,6 +1079,14 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       payload: input.payload,
     });
     const created = issueToWorkItem(issue);
+    // EI-18654138087054247: createIssue tags the coord topic store, which the
+    // claim-spec evaluator does not read — mirror each topic into `payload.tags`
+    // so a created-with-topics item is claim-admissible, not just create-time
+    // admissible (the asymmetry that produced "worked a minute ago, now
+    // fleet_scope_violation").
+    for (const topic of input.topics ?? []) {
+      await mirrorTopicTagToClaimTags(created, topic);
+    }
     maybeFireUrgentWake(input, created);
     maybeFireClaimedEvent(assignTo, created);
     maybeFireCreatedEvent(created);
@@ -1264,6 +1273,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // the change fan-out + federation, so no explicit deliver() here).
   for (const topic of input.topics ?? []) {
     await tags.addTag(workItemObjectRef(wi), topic, { created_by: input.createdBy, created_ts: nowIso() });
+    // EI-18654138087054247: also maintain the `tags` COLUMN the feature-family
+    // claim-spec SQL reads — the coord tag store alone is invisible to it.
+    await mirrorTopicTagToClaimTags(wi, topic);
   }
   if (input.createdBy) {
     await subs.subscribe({
