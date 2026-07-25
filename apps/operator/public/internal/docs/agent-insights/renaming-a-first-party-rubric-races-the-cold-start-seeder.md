@@ -54,6 +54,8 @@ BEGIN
    WHERE plan_slug = '<new-id>'
      AND owner = 'first-party-bundle';
 
+  -- sql-snippet-justified: a one-off seed-race REPAIR (guarded rename), not a read —
+  -- no tool exposes an atomic exists/not-exists precondition on a plan row.
   IF EXISTS (SELECT 1 FROM harness_shared.harness_plans WHERE plan_slug = '<old-id>')
      AND NOT EXISTS (SELECT 1 FROM harness_shared.harness_plans WHERE plan_slug = '<new-id>')
   THEN

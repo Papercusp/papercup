@@ -161,6 +161,8 @@
     "lint:no-eager-execfile-promisify": "node scripts/check-no-eager-execfile-promisify.mjs",
     "lint:no-sql-json": "node scripts/check-no-sql-json.mjs",
     "lint:no-sql-comment-backtick": "node scripts/check-sql-comment-backtick.mjs",
+    "lint:sql-guidance-justified": "node scripts/check-sql-guidance-justified.mjs",
+    "lint:sql-guidance-justified:report": "node scripts/check-sql-guidance-justified.mjs --report",
     "lint:no-control-bytes": "node scripts/check-no-control-bytes.mjs",
     "lint:no-box-identity": "node scripts/check-no-box-identity.mjs",
     "lint:no-box-identity:all": "node scripts/check-no-box-identity.mjs --all",

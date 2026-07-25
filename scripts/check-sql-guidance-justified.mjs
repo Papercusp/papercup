@@ -70,8 +70,11 @@ const SQL_RE = new RegExp(
   'i',
 );
 
-/** The justification marker; everything after the colon is the reason. */
-const MARKER_RE = /sql-snippet-justified:\s*(\S.*)$/i;
+/** The justification marker; everything after the colon is the reason. The `m`
+ *  flag matters: the marker is searched in a multi-LINE window, so `$` must mean
+ *  end-of-line, not end-of-window (without it only a marker on the window's last
+ *  line matched — every real justification read as unjustified). */
+const MARKER_RE = /sql-snippet-justified:[ \t]*(\S.*)$/im;
 /** How many lines above the hit may carry the marker. */
 const MARKER_LOOKBACK = 3;
 

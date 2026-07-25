@@ -141,7 +141,24 @@ function scan(file, text) {
         if (/^\s*(fi|elif|else)\b/.test(lines[j])) break;
         body += lines[j] + '\n';
       }
-      if (!/\b(return|exit)\b/.test(body) && /\becho\b/.test(body)) {
+      // A branch that sets a STATUS variable nonzero (`rc=1`, `FAIL=1`) is failing just
+      // as much as one that returns — but ONLY if that variable is provably propagated
+      // by the enclosing function/script (`return "$rc"` / `exit "$FAIL"`). Setting a
+      // status var that nothing ever returns is EXACTLY the silent-continue this rule
+      // exists to catch, so the propagation check is mandatory and never assumed: no
+      // matching `return`/`exit` of that var in the file ⇒ still a finding.
+      //
+      // Without this, R4 fired on correct code (scenario-coord-control-plane.sh CC-4/CC-5,
+      // mac-vm-fd-limit-verify.sh §1) whose empty branches DO fail via rc=1/FAIL=1. Making
+      // authors pragma correct code is how a lint dies: the pragma stops meaning "reviewed
+      // and genuinely safe" and starts meaning "this lint is noisy", and then a REAL hit
+      // gets pragma'd by reflex too.
+      const statusVars = [...body.matchAll(/(?:^\s*|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=([1-9]\d*)\s*(?:;|$)/gm)]
+        .map((m) => m[1]);
+      const propagatesFailure = statusVars.some((v) =>
+        lines.some((l) => new RegExp(`\\b(?:return|exit)\\s+"?\\$\\{?${v}\\}?"?`).test(l)),
+      );
+      if (!/\b(return|exit)\b/.test(body) && !propagatesFailure && /\becho\b/.test(body)) {
         add(
           i,
           'R4-empty-read-continues',

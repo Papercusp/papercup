@@ -11,6 +11,7 @@ You want to know "how much work is claimable / is the fleet idle?" so you write 
 obvious query:
 
 ```sql
+-- sql-snippet-justified: the WRONG query, quoted as the counter-example this page corrects.
 SELECT count(*) FROM harness_shared.work_items
  WHERE item_kind IN ('bug','change','task') AND status = 'open';   -- ⚠ WRONG
 ```
@@ -63,6 +64,8 @@ single source of truth:
 
 ```sql
 -- The claimable ISSUE-family backlog (fast — a cheap-floor prefilter + the full check):
+-- sql-snippet-justified: documents the SSOT view for a human at psql; agents call
+-- work_items:claimable, which wraps exactly this so the two cannot drift.
 SELECT count(*) FROM harness_shared.work_items_claimable WHERE harness_slug = 'papercusp';
 
 -- WHY is a specific row not claimable? (the violated floor labels; empty = claimable)

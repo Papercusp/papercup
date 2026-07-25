@@ -14,6 +14,7 @@ plan with the same human-chosen name).
 A raw `dev:pg_query` like:
 
 ```sql
+-- sql-snippet-justified: the under-scoped query this page exists to warn about.
 SELECT content, version, updated_at FROM harness_shared.harness_plans
 WHERE plan_slug = 'some-plan-slug'
 ```

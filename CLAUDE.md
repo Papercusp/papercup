@@ -327,8 +327,8 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   | you want | use | not |
   |---|---|---|
   | what issue-family work is claimable now | `work_items:claimable { harness }` | `WHERE status='open'` / the `work_items_claimable` view (overcounts ~13×) |
-  | a filtered work-item / issue slice | `work_items:list` (server-side filters) | `SELECT … FROM harness_shared.work_items` |
-  | what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` | `SELECT … FROM harness_shared.harness_plans` |
+  | a filtered work-item / issue slice | `work_items:list` (server-side filters) | a hand-written `harness_shared.work_items` query |
+  | what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` | a hand-written `harness_shared.harness_plans` query |
   | plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
   | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
   | prose / full-text | `search:fulltext` · `search:semantic` | `ILIKE '%…%'` |

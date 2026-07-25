@@ -296,6 +296,80 @@ The fix is different in kind:
   nothing must be distinguishable from a detector that emits nothing *because
   everything is fine*.
 
+## Shape D — the detector pointed at an empty set
+
+Shapes A–C are all about a detector that *runs* over the right population and
+still cannot see the failure. Shape D is nastier and simpler: the detector is
+written correctly, enumerates exactly the right kind of thing, and is pointed at
+a population that is **empty**. It then reports a clean pass forever.
+
+This is distinct from checklist question 6. Question 6 asks whether you
+enumerate the EXPECTED set or the ACHIEVED set. Shape D enumerates the expected
+set — it just enumerates it *somewhere nothing lives*.
+
+### Instance 5 — `origin-freshness-watchdog` swept the wrong workspace (WI-5791)
+
+The watchdog resolved its own scope as:
+
+```ts
+const workspaceId = opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
+const projects = (await loadHarnessRegistry(workspaceId)).projects;
+```
+
+No caller has ever passed `opts.workspaceId` — the boot path is
+`startOriginFreshnessWatchdog(sql)`, which forwards empty opts. And
+`DEFAULT_WORKSPACE_ID` is the literal `'default'`: on this install a scratch
+workspace holding 14 unrelated pots and **zero** bridged hives. Every real pot
+lives in `'papercusp-workspace'`.
+
+So every sweep since the watchdog shipped returned `checked: 0`. It never
+entered the per-entry body, never wrote `of_origin_sha`, never aged a tip, and
+therefore could never fire `tipAgeStale`. Measured, not inferred: a
+write-intercepting `sql` proxy over the real registry returned
+`{checked: 0, writes: 0}`, and `of_origin_sha` was NULL on all 21 `system:git-sync`
+routine rows fleet-wide — every pot, not just the one under investigation.
+
+The watchdog built to catch a silently-stalled egress was itself silently
+stalled for its entire life. It was written *in response to* a five-day egress
+outage, and it would not have caught that outage.
+
+**Why nothing noticed.** `{alarmed: [], recovered: [], checked: 0}` is
+success-shaped. There is no error, no throw, no warning — and no surface read
+`checked`. "Covered everything, all healthy" and "covered nothing" were the same
+value.
+
+**Why the tests didn't notice.** `origin-freshness.test.ts` covered the pure
+verdict functions (`evaluateOriginFreshness`, `selectOriginWatermark`)
+thoroughly, and was green the whole time. `checkOriginFreshness` — the wiring
+that decides *what gets judged* — had no test at all. A well-tested predicate
+over an untested selection. Unit tests structurally cannot catch this, because a
+test always injects an explicit `workspaceId`: the path under test is never the
+production path.
+
+**It is a class, not an instance.** At least four occurrences of
+`?? DEFAULT_WORKSPACE_ID` silently scoping work to the wrong or empty workspace:
+this one; EI-10103 (the sibling main-behind watchdog, whose escalation INSERT
+then violated a NOT NULL constraint and was swallowed by its own outer catch);
+an in-code comment at `agent-tools/plans/revisions.ts` recording that it read the
+wrong workspace's plan spine; and `host-bootstrap`'s stall-waker looping only the
+registry's first entry and no-op'ing the other 16. Tracked as
+EI-18660454282479136.
+
+### The fix shape
+
+1. **Enumerate the scope, don't default it.** `listRegistryWorkspaceIds(sql)`
+   over `harness_shared.harness_registry`, sweeping all of them.
+2. **Do not fall back to the default on a failed enumeration.** That fallback
+   *is* the bug. Return empty and let the guard below report it.
+3. **Self-report zero coverage.** Ask a cheap, INDEPENDENT question — "were there
+   bridged pots that a covering sweep must have checked?" — and if the answer is
+   yes while `checked === 0`, set `blind: true` and say so at the same volume as
+   a real alarm. The guard has to come from a different source than the sweep,
+   or it inherits the same blindness.
+
+The general form of (3): **any sweeper that can legitimately process zero units
+needs a second, independent opinion about whether zero was the right answer.**
+
 ## The checklist
 
 When you write or review a guard, latch, watchdog, or watermark:
@@ -314,6 +388,10 @@ When you write or review a guard, latch, watchdog, or watermark:
 6. **Does the detector enumerate the EXPECTED set or the ACHIEVED set?** If it
    iterates things that already succeeded, it is structurally blind to total
    failure — the case you most need it for.
+7. **Is the set it enumerates actually non-empty in production?** A correct
+   enumeration pointed at the wrong scope reports a clean pass forever. If a
+   zero-unit pass is possible, get a SECOND, independent opinion on whether zero
+   was right — and make a wrong zero as loud as an alarm.
 
 **Question 6 is the highest-yield of the six.** State it as a test you can apply
 without reading the implementation:
@@ -327,18 +405,39 @@ That one question catches instances 3 and 4 directly. It also catches the
 its bare store was dropped from the enumerated set entirely, which is the same
 blindness arriving by a different route.
 
+**Question 7 has its own version of that test**, and it is the one that catches
+Shape D:
+
+> **"If this detector were pointed at nothing at all, would its output differ
+> from a clean pass?"**
+
+For instance 5 the answer was no, for the entire life of the watchdog. Note that
+question 6's test does NOT catch it: if origin-freshness "never worked even
+once" it would still have produced a line — for a pot in the wrong workspace.
+The enumeration was the right shape, aimed at an empty room.
+
 ## Provenance
 
 Four instances, four agents, four lanes, one day:
 
-| # | Instance                                        | Shape          | Found by  |
-| - | ----------------------------------------------- | -------------- | --------- |
-| 1 | pot-git publish guards (×3)                     | A              | su-a8ea9  |
-| 2 | replication-liveness alarm latch                | A (reset path) | su-e3b21  |
-| 3 | `restart_settle_barrier` (EI-18645423267952485) | C              | su-48ed7a |
-| 4 | replication-liveness call site (WI-5781)        | C              | su-055ae  |
+| # | Instance                                                          | Shape          | Found by  |
+| - | ----------------------------------------------------------------- | -------------- | --------- |
+| 1 | pot-git publish guards (×3)                                       | A              | su-a8ea9  |
+| 2 | replication-liveness alarm latch                                  | A (reset path) | su-e3b21  |
+| 3 | `restart_settle_barrier` (EI-18645423267952485)                   | C              | su-48ed7a |
+| 4 | replication-liveness call site (WI-5781)                          | C              | su-055ae  |
+| 5 | `origin-freshness-watchdog` swept workspace `'default'` (WI-5791) | D              | su-a8ea9  |
 
 Shape B and the `origin-freshness-watchdog` latch leak: su-a8ea9.
+
+Shape D was added the day after, from WI-5791 — which is the sharpest evidence
+for this whole doc's thesis. WI-5791 was filed as a cautious follow-up to the
+Shape A/B fixes, with an explicit note not to assume the benign explanation. The
+benign explanation was wrong: the watchdog those fixes had just hardened had
+never once looked at a real pot. Every repair in Shape A and Shape B above was
+made to a detector that was, at that moment, still pointed at an empty room —
+and nothing in the fix-and-verify loop surfaced that, because a zero-coverage
+pass is success-shaped.
 
 None of this was written by one agent. The general statement came out of a
 coordination exchange: su-e3b21 asked whether the **reset path** had been
