@@ -10,14 +10,28 @@
  * tab and inside the header HivesRunningPill popover (one control, two mounts).
  */
 import { useCallback, useState } from 'react';
-import { Play, Square } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Play, Square, Boxes } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { useLexicon } from '@/lib/useLexicon';
 import { runHiveControl, countStarted, type HiveControlRow } from '../adv/hive-control';
+import RailSection from './RailSection';
 
-export default function LocalHivesControl() {
+export interface LocalHivesControlProps {
+  /**
+   * Render inside a collapsible RailSection instead of an always-open panel
+   * (owner ask 2026-07-25: the Pots tab must show its p2p roster without
+   * scrolling, and this control + the federation panel were what pushed the
+   * roster off-screen). The OTHER mount — the header HivesRunningPill popover —
+   * leaves this false: that popover exists solely to show this control, so
+   * collapsing it there would hide the only thing the popover is for.
+   */
+  collapsible?: boolean;
+}
+
+export default function LocalHivesControl({ collapsible = false }: LocalHivesControlProps = {}) {
   const t = useLexicon();
   const { data, loading, error } = useSyncQuery<HiveControlRow>({
     queryName: 'hive.controlState',
@@ -52,14 +66,12 @@ export default function LocalHivesControl() {
     setBusy(null);
   }, [askConfirm, t]);
 
-  return (
-    <div className="pclsb-panel" data-testid="local-hives-control">
-      {confirmEl}
-      <div className="pclsb-panel__bar">
-        <span className="pclsb-panel__bar-label">
-          local {t('pot', { plural: true, lower: true })} · {countStarted(hives)}/{hives.length} running
-        </span>
-      </div>
+  const started = countStarted(hives);
+
+  // In collapsible mode the RailSection header carries the label + the
+  // running-count summary, so the panel's own bar would be a duplicate title.
+  const body = (
+    <>
       {error && <div className="pclsb-panel__error">{String(error)}</div>}
       {hives.length === 0 && !loading && (
         <div className="pclsb-panel__empty">no local {t('pot', { plural: true, lower: true })} registered yet.</div>
@@ -100,6 +112,36 @@ export default function LocalHivesControl() {
           <strong>plan focus &amp; work-item steering</strong> in the ☕ {t('brain')} tab (left sidebar).
         </div>
       )}
+    </>
+  );
+
+  if (collapsible) {
+    return (
+      <>
+        {confirmEl}
+        <RailSection
+          paramKey="potsLocal"
+          icon={Boxes}
+          title={`Local ${t('pot', { plural: true, lower: true })}`}
+          summary={hives.length === 0 ? (loading ? '…' : 'none') : `${started}/${hives.length} running`}
+          tone={hives.length > 0 && started > 0 ? 'good' : 'mute'}
+          testId="local-hives-control"
+        >
+          {body}
+        </RailSection>
+      </>
+    );
+  }
+
+  return (
+    <div className="pclsb-panel" data-testid="local-hives-control">
+      {confirmEl}
+      <div className="pclsb-panel__bar">
+        <span className="pclsb-panel__bar-label">
+          local {t('pot', { plural: true, lower: true })} · {started}/{hives.length} running
+        </span>
+      </div>
+      {body}
     </div>
   );
 }

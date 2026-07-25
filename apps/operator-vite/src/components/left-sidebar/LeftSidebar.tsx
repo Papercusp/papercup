@@ -96,11 +96,26 @@ const AgentsTab = lazy(() => import('./AgentsTab'));
 // brand nouns resolve through the flag-gated pack — classic/public shows Pot,
 // Brain, Operator, Fleet; the-hive skin shows Hive, Queen, Sentinel, Colony.
 // Overwatch has no TermKey (D-002) so it stays literal in both packs.
+// ORDER IS OWNER-SET (2026-07-25): Accounts · Pots · Papercup · Mug · Kettle ·
+// Blender · Docs · Agents. The owner reads the rail left-to-right as
+// "who am I / what am I running / who talks to me" (Accounts → Pots → Papercup)
+// before the autonomous machinery (Mug → Kettle → the three scheduled-agent
+// panes). Tab IDS ARE FROZEN — `?lst=<id>` deep links, ui:dispatch, and the
+// collapsed rail buttons key on them — so reordering only moves array entries;
+// never rename an id to match a new position.
 const TABS = [
   { id: 'accounts', label: (_t: BoundLexicon) => 'Accounts', icon: KeyRound, tip: (_t: BoundLexicon) => 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
+  // (The Fleet + Peers tabs MOVED to the op-chat sidebar — owner ask 2026-07-17
+  // (WI-5162): they now sit right of the 🫖 Pot Health "kettle" button as faces
+  // of the far-left live surface, alongside the Inbox that moved there the day
+  // before (EI-13037). Same panes (SwarmTab / VoiceTab), composed for the
+  // sidebar in components/chat-faces/ChatFacesHost. This middle rail keeps the
+  // SETTINGS/steering surfaces.)
+  { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <PotsTab active={a} /> },
   // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
   // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
   // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
+  { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
   { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
   // 🌀 Blender + 📄 Docs sit immediately after the Kettle (overwatch) tab — owner
@@ -109,14 +124,6 @@ const TABS = [
   { id: 'blender', label: (_t: BoundLexicon) => 'Blender', icon: Blend, tip: (_t: BoundLexicon) => 'Learning agents — scheduled self-improvement loops, and what they cost', render: (a: boolean) => <BlenderTab active={a} /> },
   { id: 'docs', label: (_t: BoundLexicon) => 'Docs', icon: FileText, tip: (_t: BoundLexicon) => 'Documentation agents — doc regeneration & knowledge-pack schedules', render: (a: boolean) => <DocsTab active={a} /> },
   { id: 'agents', label: (_t: BoundLexicon) => 'Agents', icon: Bot, tip: (_t: BoundLexicon) => 'Every other scheduled agent — supervision, health sweeps, armed loops', render: (a: boolean) => <AgentsTab active={a} /> },
-  { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
-  // (The Fleet + Peers tabs MOVED to the op-chat sidebar — owner ask 2026-07-17
-  // (WI-5162): they now sit right of the 🫖 Pot Health "kettle" button as faces
-  // of the far-left live surface, alongside the Inbox that moved there the day
-  // before (EI-13037). Same panes (SwarmTab / VoiceTab), composed for the
-  // sidebar in components/chat-faces/ChatFacesHost. This middle rail keeps the
-  // SETTINGS/steering surfaces.)
-  { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <PotsTab active={a} /> },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
