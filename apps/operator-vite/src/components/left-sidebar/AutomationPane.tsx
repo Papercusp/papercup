@@ -13,32 +13,31 @@
  * model the Mug tab"): this pane is now built from the SAME three-part structure
  * MugTab uses, because the owner reads them as siblings in one rail:
  *   1. a header BAR — icon · title · subtitle · scope chip · whole-pane action,
- *   2. a LANE STRIP — each lane showing its own headline value, so the pane's two
- *      questions ("what is scheduled?" / "what did it cost?") are answerable
- *      without scrolling and only one body renders at a time,
- *   3. the selected lane's PANEL.
- * Before this it was one long scroll: blurb, then every routine, then spend at the
- * bottom where the number the owner actually came for was below the fold.
- *
- * The lane lives in the URL via nuqs (repo state rule: user-meaningful state is
- * deep-linkable + agent-driveable via ui:get_state / ui:dispatch), keyed per
- * consumer so Blender/Docs/Agents each remember their own lane.
+ *   2. a titled SECTION holding the routine list.
+ * Before this it was one long scroll with no header identity at all.
  *
  * Writes go through the audited run-tool bridge (`routines:set`), and — like every
  * other pane in this rail — the pane INVALIDATES ITS OWN READ after its own write
  * rather than waiting for the server's SSE push (see OverwatchTab's header comment
  * for what depending on that push costs).
  *
- * The spend section reports 7d cost BY ROLE, deliberately not per-routine — there
- * is no link from a usage row back to the routine that spawned it, so a per-routine
- * number would be a guess rendered as fact. See lib/automation/catalog.ts.
+ * ⚠ THERE IS NO SPEND SECTION HERE, deliberately (owner correction 2026-07-25:
+ * "Why is the spend tab inside blender? is that showing only blender related
+ * spend? It looks like not."). It wasn't — and could not be. Spend is recorded per
+ * agent ROLE with no FK back to the routine that spawned the agent, so the old
+ * per-pane lane just filtered roles by hand: Blender claimed
+ * ['scout','gym','worker','mug','kettle'] while Agents claimed
+ * ['worker','mug','kettle','release-fixer','cup'], and the same worker/mug/kettle
+ * dollars were counted in BOTH panes and presented as each one's own. Cost now
+ * lives in exactly one honest place, the workspace-wide SpendTab. Do not add a
+ * per-pane spend readout back: any role filter here is a guess rendered as fact.
+ * See lib/automation/catalog.ts.
  */
 import { useMemo, useState } from 'react';
 import type { ComponentType } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import { parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, CalendarClock, Coins, Pause, Play, Zap } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Coins, Pause, Play } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import type {
   AutomationCatalog,
@@ -83,17 +82,10 @@ function agoLabel(iso: string | null): string {
   return `${Math.round(hr / 24)}d ago`;
 }
 
-function usd(n: number): string {
-  if (n >= 100) return `$${Math.round(n)}`;
-  return `$${n.toFixed(2)}`;
-}
-
-export const AUTOMATION_VIEWS = ['schedule', 'spend'] as const;
-export type AutomationView = (typeof AUTOMATION_VIEWS)[number];
-
 /**
- * The Schedule lane's headline value — what the owner needs to know without
- * opening the lane: how many scheduled agents can spend money right now. Pure.
+ * The header's headline status — what the owner needs to know before reading a
+ * single row: how many of this pane's scheduled agents can spend money right now.
+ * Pure.
  */
 export function scheduleLaneValue(rows: readonly AutomationRoutine[]): string {
   if (rows.length === 0) return 'None scheduled';
@@ -112,11 +104,7 @@ export interface AutomationPaneProps {
   subtitle: string;
   /** lucide icon for the header bar. */
   icon: ComponentType<{ size?: number | string; 'aria-hidden'?: boolean }>;
-  /** nuqs key holding this pane's selected lane (distinct per consumer tab). */
-  viewParam: string;
   blurb: string;
-  /** Roles whose 7d spend belongs to this pane's story (empty ⇒ show all). */
-  spendRoles?: readonly string[];
 }
 
 export default function AutomationPane({
@@ -125,9 +113,7 @@ export default function AutomationPane({
   title,
   subtitle,
   icon: Icon,
-  viewParam,
   blurb,
-  spendRoles,
 }: AutomationPaneProps) {
   const cat = useSyncQuery<AutomationCatalog>({
     queryName: 'automation.catalog',
@@ -135,10 +121,6 @@ export default function AutomationPane({
     staleTime: 20_000,
     enabled: active,
   });
-  const [view, setView] = useQueryState(
-    viewParam,
-    parseAsStringLiteral(AUTOMATION_VIEWS).withDefault('schedule'),
-  );
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -161,16 +143,6 @@ export default function AutomationPane({
   }, [data, categories]);
 
   const activeSpawning = rows.filter((r) => r.active && r.spawnsAgent).length;
-
-  const spend = useMemo(() => {
-    if (!data) return [];
-    const list = spendRoles?.length
-      ? data.spend7d.filter((s) => spendRoles.includes(s.role))
-      : data.spend7d;
-    return list.slice(0, 6);
-  }, [data, spendRoles]);
-
-  const spendTotal = spend.reduce((a, b) => a + b.costUsd, 0);
 
   async function toggleRoutine(r: AutomationRoutine) {
     const key = `${r.installSlug}/${r.name}`;
@@ -215,14 +187,9 @@ export default function AutomationPane({
 
   if (!active) return null;
 
-  const lanes: Array<{ id: AutomationView; label: string; value: string; icon: typeof CalendarClock }> = [
-    { id: 'schedule', label: 'Schedule', value: scheduleLaneValue(rows), icon: CalendarClock },
-    { id: 'spend', label: 'Spend', value: spend.length > 0 ? `${usd(spendTotal)} · 7d` : 'No usage', icon: Coins },
-  ];
-
   return (
     <TooltipPrimitive.Provider delayDuration={250}>
-      <div className="pc-auto" data-testid={`automation-pane-${viewParam}`}>
+      <div className="pc-auto" data-testid={`automation-pane-${title.toLowerCase()}`}>
         {/* 1 — header bar (mirrors pc-queen__bar) */}
         <header className="pc-auto__bar">
           <Icon size={14} aria-hidden />
@@ -266,33 +233,6 @@ export default function AutomationPane({
           )}
         </header>
 
-        {/* 2 — lane strip (mirrors pc-queen__lanes) */}
-        <div className="pc-auto__lanes" role="tablist" aria-label={`${title} controls`}>
-          {lanes.map((lane) => {
-            const LaneIcon = lane.icon;
-            const selected = lane.id === view;
-            return (
-              <button
-                key={lane.id}
-                id={`automation-lane-${viewParam}-${lane.id}`}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                aria-controls={`automation-panel-${viewParam}-${lane.id}`}
-                className="pc-auto__lane"
-                onClick={() => void setView(lane.id)}
-                data-testid={`automation-lane-${lane.id}`}
-              >
-                <span className="pc-auto__lane-icon"><LaneIcon size={13} aria-hidden /></span>
-                <span className="pc-auto__lane-copy">
-                  <span className="pc-auto__lane-label">{lane.label}</span>
-                  <span className="pc-auto__lane-value">{lane.value}</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
         {err && (
           <div className="pc-auto__err" role="alert">
             <AlertTriangle size={12} aria-hidden /> {err}
@@ -300,16 +240,17 @@ export default function AutomationPane({
         )}
         {cat.error && <div className="pc-auto__err" role="alert">{String(cat.error)}</div>}
 
-        {/* 3 — the selected lane's panel (mirrors pc-queen__panel) */}
-        <div
-          id={`automation-panel-${viewParam}-${view}`}
-          className="pc-auto__panel"
-          role="tabpanel"
-          aria-labelledby={`automation-lane-${viewParam}-${view}`}
-        >
-          {view === 'schedule' && (
-            <>
-              <p className="pc-auto__blurb">{blurb}</p>
+        {/* 2 — the routine section (mirrors pc-queen__panel + pc-queen__section) */}
+        <div className="pc-auto__panel">
+          <p className="pc-auto__blurb">{blurb}</p>
+          <section className="pc-auto__section">
+            <div className="pc-auto__section-head">
+              <CalendarClock size={12} aria-hidden />
+              <span className="pc-auto__section-title">Scheduled agents</span>
+              <span className="pc-auto__count" data-testid="automation-status">
+                {scheduleLaneValue(rows)}
+              </span>
+            </div>
 
               {cat.loading && !data && <div className="pc-auto__placeholder">Loading…</div>}
 
@@ -362,44 +303,7 @@ export default function AutomationPane({
                   })}
                 </div>
               )}
-            </>
-          )}
-
-          {view === 'spend' && (
-            <section className="pc-auto__section">
-              <div className="pc-auto__section-head">
-                <Zap size={12} aria-hidden />
-                <span className="pc-auto__section-title">Last 7 days</span>
-                <span className="pc-auto__count">{usd(spendTotal)}</span>
-              </div>
-
-              {cat.loading && !data && <div className="pc-auto__placeholder">Loading…</div>}
-
-              {data && spend.length === 0 && (
-                <div className="pc-auto__placeholder">
-                  No recorded usage for these roles in the last 7 days.
-                </div>
-              )}
-
-              {spend.map((s) => (
-                <div className="pc-auto__spend-row" key={`${s.role}:${s.modelClass ?? ''}`}>
-                  <span className="pc-auto__spend-role">
-                    {s.role}
-                    {s.modelClass && <em> · {s.modelClass}</em>}
-                  </span>
-                  <span className="pc-auto__spend-turns">{s.turns.toLocaleString()} turns</span>
-                  <span className="pc-auto__spend-usd">{usd(s.costUsd)}</span>
-                </div>
-              ))}
-
-              {spend.length > 0 && (
-                <p className="pc-auto__foot">
-                  <AlertTriangle size={10} aria-hidden /> Cost is grouped by agent role, not by
-                  routine — usage rows carry no link back to the schedule that spawned them.
-                </p>
-              )}
-            </section>
-          )}
+          </section>
         </div>
       </div>
     </TooltipPrimitive.Provider>
