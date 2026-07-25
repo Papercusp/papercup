@@ -405,7 +405,19 @@ describe('AdvConversationsTab — Create-style shell', () => {
   it('opens the Ask composer from the + Ask action', async () => {
     render(<AdvConversationsTab />);
     fireEvent.click(screen.getByRole('button', { name: /Ask the agents/i }));
-    expect(await screen.findByPlaceholderText(/What do you want to ask the fleet/i)).toBeTruthy();
+    // The composer is recipient-directed (an ask targets one named agent), so the
+    // question field is no longer fleet-addressed copy.
+    expect(await screen.findByPlaceholderText(/What do you want to ask\?/i)).toBeTruthy();
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('requires picking a specific recipient before the ask can be sent', async () => {
+    render(<AdvConversationsTab />);
+    fireEvent.click(screen.getByRole('button', { name: /Ask the agents/i }));
+    const question = await screen.findByPlaceholderText(/What do you want to ask\?/i);
+    fireEvent.change(question, { target: { value: 'who owns the sync resolver?' } });
+    // A filled question alone is not enough: with no agent chosen, Ask stays disabled.
+    expect(screen.getByRole('button', { name: /^Ask$/i }).hasAttribute('disabled')).toBe(true);
   });
 
   it('uses the semantic accent token instead of a component-local brand color', () => {

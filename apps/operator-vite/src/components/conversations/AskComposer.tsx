@@ -19,6 +19,7 @@ import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '@/app/harness/Modal';
+import { Select, type SelectEntry } from '@/app/harness/Select';
 import {
   inputStyle,
   primaryBtnStyle,
@@ -137,10 +138,12 @@ export function parseTopics(raw: string): string[] {
 }
 
 /**
- * The required recipient picker. Rendered as a native `<select>` — it is a
- * single-choice-from-a-list control, it is keyboard- and screen-reader-correct
- * for free, and it degrades gracefully to a scrolling list when the roster is
- * long. Explicitly styled: a bare `<select>` does NOT inherit the panel theme.
+ * The required recipient picker.
+ *
+ * Built on the shared `Select` primitive rather than a native `<select>` — the
+ * design lint bans natives in app UI, and the primitive gives us grouped options
+ * (agents by fleet) with theming that actually matches the panel, which a bare
+ * `<select>` does not inherit.
  */
 export function AskAgentSelect({
   agents,
@@ -158,36 +161,29 @@ export function AskAgentSelect({
   compact?: boolean;
   id?: string;
 }) {
-  const groups = useMemo(() => groupOptions(agents), [agents]);
   const empty = !loading && agents.length === 0;
+  const options = useMemo<SelectEntry[]>(
+    () =>
+      groupOptions(agents).map((g) => ({
+        kind: 'group' as const,
+        label: g.label,
+        options: g.agents.map((a) => ({ value: a.ownerId, label: a.name })),
+      })),
+    [agents],
+  );
   return (
-    <select
+    <Select
       id={id}
-      className={compact ? 'pclsb-select' : undefined}
-      aria-label="Agent to ask"
-      required
+      testId="ask-agent-select"
+      ariaLabel="Agent to ask"
       value={value}
+      onChange={onChange}
+      options={options}
       disabled={empty}
-      onChange={(e) => onChange(e.target.value)}
-      style={
-        compact
-          ? undefined
-          : { ...inputStyle, cursor: 'pointer', appearance: 'auto' as const }
-      }
-    >
-      <option value="">
-        {loading ? 'Loading agents…' : empty ? 'No agents are running' : 'Choose an agent…'}
-      </option>
-      {groups.map((g) => (
-        <optgroup key={g.label} label={g.label}>
-          {g.agents.map((a) => (
-            <option key={a.ownerId} value={a.ownerId}>
-              {a.name}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
+      placeholder={loading ? 'Loading agents…' : empty ? 'No agents are running' : 'Choose an agent…'}
+      triggerClassName={compact ? 'pclsb-select' : undefined}
+      triggerStyle={compact ? undefined : { ...inputStyle, cursor: 'pointer' }}
+    />
   );
 }
 

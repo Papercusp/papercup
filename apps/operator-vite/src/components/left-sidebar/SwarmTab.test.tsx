@@ -127,6 +127,19 @@ describe('<SwarmTab> roster', () => {
     expect(screen.getByText(/coord down/)).toBeTruthy();
   });
 
+  // Regression: the sync layer can hand back a present-but-empty `data` while the
+  // first real read is still in flight. Rendering "· 0 live" there tells the owner
+  // the fleet is dead when it is not (observed live: a real 75-agent fleet showed
+  // "fleet · 0 live" for ~3s on a cold pane before settling).
+  it('shows a pending marker, never "0 live", while the first roster read is in flight', () => {
+    seed('advRoster.list', [], { loading: true });
+    render(<SwarmTab active={true} />);
+    expect(screen.getByText(/fleet · …/)).toBeTruthy();
+    expect(screen.queryByText(/fleet · 0 live/)).toBeNull();
+    // …and the "nothing is running" empty state must not claim that yet either.
+    expect(screen.queryByText('No agents active right now.')).toBeNull();
+  });
+
   it('excludes the stale agent, keeps a stale-but-loop-armed one, shows load pill + intent fallback', () => {
     seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);

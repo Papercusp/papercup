@@ -854,14 +854,93 @@ describe('connected_never_replicated axis (WI-183 zombie connections, rig run m1
     now += 1_000;
     sampleWith(on, now, { peers: 1, swarm: 1, pos: 5 });
     expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe('live');
-    // Once a log HAS replicated, the zombie axis stays off (no_replicator owns
-    // the was-replicating stall) — no double-alarm.
+    // WI-5639: a log that LOSES its replicator while the swarm still holds live
+    // connections RE-ARMS the zombie axis. This used to assert the opposite
+    // ("once a log HAS replicated the zombie axis stays off — no_replicator owns
+    // the was-replicating stall"), and that premise is precisely the bug:
+    // no_replicator is EXCLUDED from boot.ts's REPAIRABLE_EPISODE_KINDS, so
+    // handing this state to no_replicator alone left it with NO repair path at
+    // all (gate run 20260725-143908: frame a sat dead for 25 minutes, swallowing
+    // restart_durability's post-restart write and reconnect_catchup's baseline).
     now += 1_000;
     sampleWith(on, now, { peers: 0, swarm: 1, pos: 5 });
     now += GRACE;
     sampleWith(on, now, { peers: 0, swarm: 1, pos: 5 });
-    expect(episodes).toHaveLength(2);
+    expect(episodes).toHaveLength(3);
     expect(episodes[1]!.kind).toBe('no_replicator');
+    expect(episodes[2]!.kind).toBe('connected_never_replicated');
+    expect(episodes[2]!.detail).toContain('[replicator_lost]');
+  });
+
+  // WI-5639 REGRESSION GUARD. The failure class: peer restarts, this log's
+  // replicator detaches, but the swarm still reports live connections — so
+  // swarm.ts's severed-link escalation (needs liveConnectionCount === 0) never
+  // trips, `frozen` needs a replicator ATTACHED, and no_replicator is excluded
+  // from repair. The zombie axis is the ONLY repairable rung that can cover it,
+  // so it MUST fire on the SHORT zombie grace, not no_replicator's long one.
+  it('WI-5639: a log that LOST its replicator (swarm still connected) alarms on the ZOMBIE grace, not the long grace', () => {
+    const { episodes, on } = collect();
+    // The rig runs graceMs=180s with the zombie axis shortened to 15s; the same
+    // ratio at test scale (GRACE is 10s here).
+    const ZOMBIE = 2_000;
+    let now = 1_000_000;
+    const sample = (peers: number, swarm: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers, swarmConnections: swarm },
+        {
+          graceMs: GRACE,
+          connectedNeverReplicatedGraceMs: ZOMBIE,
+          nowMs: now,
+          onStallEpisode: on,
+        },
+      );
+
+    // Healthy: replicating normally.
+    sample(1, 1);
+    expect(episodes).toHaveLength(0);
+
+    // The peer restarts: the replicator detaches while the swarm socket stays up.
+    now += 1_000;
+    sample(0, 1);
+    expect(episodes).toHaveLength(0); // inside the zombie grace — no alarm yet
+
+    // Held past the ZOMBIE grace but FAR short of the long grace.
+    expect(ZOMBIE).toBeLessThan(GRACE); // the whole point: it must not wait for GRACE
+    now += ZOMBIE;
+    sample(0, 1);
+    // Exactly ONE episode: the long-grace no_replicator axis has NOT fired yet
+    // (that is what took 181s on the rig and is unrepairable anyway).
+    expect(episodes).toHaveLength(1);
+    expect(episodes.some((e) => e.kind === 'no_replicator')).toBe(false);
+    // The kind is deliberately unchanged so boot.ts's REPAIRABLE_EPISODE_KINDS
+    // already covers it and historical boot_events / rig log greps stay valid.
+    expect(episodes[0]!.kind).toBe('connected_never_replicated');
+    expect(episodes[0]!.detail).toContain('[replicator_lost]');
+  });
+
+  // WI-5639: the alarm latch must clear with the window it belongs to, or the
+  // `!st.alarmedConnectedNever` fire guard silences this log permanently.
+  it('WI-5639: a sustained-offline reset CLEARS the alarm latch so a later zombie window can re-fire', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // window opens
+    now += GRACE;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // alarms → latch set
+    expect(episodes).toHaveLength(1);
+
+    // Peer goes genuinely offline past churn tolerance → window + latch reset.
+    now += SWARM_CHURN_TOLERANCE_MS + 1_000;
+    sampleWith(on, now, { peers: 0, swarm: 0 });
+
+    // Peer returns; a FRESH zombie window must be able to alarm again.
+    now += 1_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 });
+    now += GRACE;
+    sampleWith(on, now, { peers: 0, swarm: 1 });
+    expect(episodes).toHaveLength(2);
+    expect(episodes[1]!.kind).toBe('connected_never_replicated');
   });
 
   // EI-4643: a zombie-connection EI must AUTO-CLOSE once the log attaches a live

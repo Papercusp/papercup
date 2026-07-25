@@ -189,8 +189,21 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
         remoteUrl: target.remote,
         refs: [{ sha: canonicalSha, remoteRef: BRIDGE_REMOTE_STAGING_REF }],
         runGit,
+        // WI-5738: the runtime secrets-guard path exemptions apply HERE too.
+        // Without this the egress guard consulted none, so the no-restart
+        // escape hatch existed only on the guard that was NOT wedged.
+        workspaceId: input.workspaceId,
       });
       errors.push(...egress.errors.map((e) => `egress: ${e}`));
+      if (egress.exemptedFindings.length > 0) {
+        console.warn(
+          `[github-bridge] ${input.potHomeSlug}: egress — ${egress.exemptedFindings.length} secret-scanner finding(s) ` +
+            `suppressed by a runtime path exemption: ${egress.exemptedFindings
+              .slice(0, 5)
+              .map((f) => `${f.path}:${f.line} [${f.rule}]`)
+              .join('; ')}`,
+        );
+      }
     } else {
       canonicalMissing = { canonicalRef: BRIDGE_CANONICAL_REF, watermarkSha: input.lastAdmitted };
       errors.push(

@@ -27,7 +27,7 @@
 import { spawn } from 'node:child_process';
 import { type RunGit, defaultRunGit } from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
-import { loadSecretsGuardPathExemptions } from './secrets-guard-exemptions';
+import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
 
 /** Default per-blob cap — matches GitHub's hard limit posture and
  *  foreign-mirror-quarantine's DEFAULT_MAX_BLOB_BYTES (the two "no one should
@@ -206,14 +206,13 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
       // exemptedFindings (kept for audit) rather than dropped silently.
       const load = input.loadPathExemptions ?? loadSecretsGuardPathExemptions;
       const exempt = await load(input.workspaceId);
-      if (exempt.size > 0) {
-        const stillBlocking: SecretFinding[] = [];
-        for (const f of res.secretFindings) {
-          if (exempt.has(f.path)) res.exemptedFindings.push(f);
-          else stillBlocking.push(f);
-        }
-        res.secretFindings = stillBlocking;
-      }
+      // WI-5738: matching goes through the SHARED partition helper, which also
+      // understands `dir/` and `dir/**` prefix entries. Exact-only matching
+      // made the escape hatch inapplicable to the accident class that
+      // motivated it (one bad directory = thousands of paths).
+      const { blocking, exempted } = partitionExemptFindings(res.secretFindings, exempt);
+      res.secretFindings = blocking;
+      res.exemptedFindings.push(...exempted);
     }
     if (res.secretFindings.length > 0) return refuse('secrets');
 
@@ -222,6 +221,157 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
   } catch (e) {
     return refuse('error', e instanceof Error ? e.message : String(e));
   }
+}
+
+/** The volume gates — aggregate/rate concerns, satisfiable by publishing LESS.
+ *  Contrast the hard gates (`blob-over-cap`, `secrets`), which no amount of
+ *  range-splitting can satisfy because a single object is the problem. */
+const VOLUME_REFUSALS: ReadonlySet<PublishRefusalCode> = new Set(['total-over-cap', 'object-flood']);
+
+export function isVolumeRefusal(code: PublishRefusalCode | null): boolean {
+  return code !== null && VOLUME_REFUSALS.has(code);
+}
+
+export interface IncrementalPublishResolution {
+  /** The furthest sha in (fromOid, toOid] that is safe to publish. Equals
+   *  `fromOid` when no progress is possible at all. */
+  safeSha: string | null;
+  /** True when `safeSha === toOid` — the whole range was admitted (fast path). */
+  complete: boolean;
+  /** A HARD refusal (oversized blob / secret / git error) at this commit.
+   *  Everything before it is still safe and reflected in `safeSha`. */
+  blocked: { commit: string; result: PublishGuardResult } | null;
+  /** True when a VOLUME cap forced a partial advance — not an error, just a
+   *  drain that continues next tick. */
+  drained: boolean;
+  /** A single commit that alone exceeds the volume caps and therefore cannot be
+   *  split any further. It is published anyway (see the header) and named here
+   *  so the health layer can say exactly what happened. */
+  oversizedCommit: string | null;
+  guardCalls: number;
+  errors: string[];
+}
+
+/**
+ * Resolve the furthest sha in (fromOid, toOid] that may be published, splitting
+ * the range when a VOLUME cap refuses it.
+ *
+ * WI-5738 — the ratchet this exists to break. `checkPublishGuard` is a verdict
+ * on a whole range, and every caller baselines that range on its own last
+ * SUCCESS (own-head-publish's namespace ref, ref-announce's sigrefs). So a
+ * refusal is TERMINAL by construction: the baseline can only advance through
+ * the publish being refused, while each new commit makes the refused range
+ * bigger. On 2026-07-20 a single accidental 2.26GB AppImage extraction put the
+ * range over the 500MB total cap; the guard then refused every tick for five
+ * days, and the total was still CLIMBING (2261MB → 2415MB) days later.
+ * Deleting the files did nothing — the guard enumerates objects introduced
+ * anywhere in the range, so the blobs stay counted while the commit that
+ * introduced them is inside it.
+ *
+ * The fix distinguishes two kinds of refusal:
+ *
+ *   - VOLUME (`total-over-cap`, `object-flood`) is an aggregate/rate concern:
+ *     "do not ask a peer to replicate this much at once". It is satisfiable by
+ *     publishing LESS, so we binary-search the longest admissible prefix and
+ *     publish that. The baseline advances, the remaining range shrinks, and the
+ *     backlog drains over subsequent ticks instead of deadlocking.
+ *
+ *   - HARD (`blob-over-cap`, `secrets`) cannot be satisfied by splitting — one
+ *     specific object is the problem — so those still refuse. But they now
+ *     refuse AT A COMMIT, with everything before it published, which both keeps
+ *     the plane moving and names the offender exactly.
+ *
+ * A single commit that alone busts the volume caps is published anyway: it
+ * cannot be split, and refusing it forever is precisely the outage this
+ * function removes. It is reported as `oversizedCommit` so the health layer can
+ * raise it. Prevention for that case belongs at COMMIT time (a cumulative dirty
+ * -bytes cap in git-sync), not as a terminal publish-time latch.
+ *
+ * Cost: the admitted fast path is ONE guard call, exactly as before. The split
+ * path is O(log n) guard calls and only runs while something is already wedged.
+ */
+export async function resolveIncrementalPublishSha(input: PublishGuardInput): Promise<IncrementalPublishResolution> {
+  const runGit = input.runGit ?? defaultRunGit;
+  const res: IncrementalPublishResolution = {
+    safeSha: input.fromOid,
+    complete: false,
+    blocked: null,
+    drained: false,
+    oversizedCommit: null,
+    guardCalls: 0,
+    errors: [],
+  };
+
+  const judge = async (to: string): Promise<PublishGuardResult> => {
+    res.guardCalls += 1;
+    return checkPublishGuard({ ...input, toOid: to });
+  };
+
+  // Fast path: the whole range is fine (the overwhelming majority of ticks).
+  const whole = await judge(input.toOid);
+  if (whole.ok) return { ...res, safeSha: input.toOid, complete: true };
+
+  // Enumerate the range oldest-first so a prefix is always a valid publish
+  // point. Cheap — commits only, no object walk.
+  const range = input.fromOid ? [`${input.fromOid}..${input.toOid}`] : [input.toOid];
+  const revs = await runGit(['rev-list', '--reverse', ...range], input.repoPath);
+  if (revs.code !== 0) {
+    res.errors.push(`rev-list --reverse failed, cannot split range: ${revs.stderr.trim()}`);
+    res.blocked = { commit: input.toOid, result: whole };
+    return res;
+  }
+  const commits = revs.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (commits.length <= 1) {
+    // Nothing to split. A volume-only refusal on a single indivisible commit is
+    // published anyway rather than wedging the plane forever.
+    if (isVolumeRefusal(whole.refusalCode) && commits.length === 1) {
+      return { ...res, safeSha: input.toOid, complete: true, oversizedCommit: commits[0], drained: true };
+    }
+    res.blocked = { commit: commits[0] ?? input.toOid, result: whole };
+    return res;
+  }
+
+  // Binary-search the longest admissible prefix. Cumulative object volume grows
+  // monotonically along the range, so the predicate is monotone for the volume
+  // gates; a hard refusal inside the prefix simply makes it look inadmissible,
+  // which is safe (we publish less, never more).
+  let lo = 0; // commits[0..lo] known-unknown
+  let hi = commits.length - 1;
+  let bestIdx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const verdict = await judge(commits[mid]);
+    if (verdict.ok) {
+      bestIdx = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  if (bestIdx >= 0) {
+    res.safeSha = commits[bestIdx];
+    res.drained = true;
+  }
+
+  // Judge the very next commit to attribute the stall precisely.
+  const nextIdx = bestIdx + 1;
+  if (nextIdx < commits.length) {
+    const nextVerdict = await judge(commits[nextIdx]);
+    if (!nextVerdict.ok) {
+      if (isVolumeRefusal(nextVerdict.refusalCode) && bestIdx === -1) {
+        // The FIRST commit alone busts a volume cap — indivisible. Publish it
+        // rather than latching the whole plane shut (see the header).
+        res.safeSha = commits[nextIdx];
+        res.oversizedCommit = commits[nextIdx];
+        res.drained = true;
+      } else if (!isVolumeRefusal(nextVerdict.refusalCode)) {
+        res.blocked = { commit: commits[nextIdx], result: nextVerdict };
+      }
+    }
+  }
+  res.complete = res.safeSha === input.toOid;
+  return res;
 }
 
 /** A one-line operator/log message for a refused publish (secrets already masked

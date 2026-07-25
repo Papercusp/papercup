@@ -609,6 +609,102 @@ ship-with-limitation rows, each with an accountable tracker:
   filed alongside this test (search `work_items` for "WI-971 live two-peer
   from-repo content roundtrip").
 
+### 11. Boot-window / silent-re-federation data-loss class for CDC-captured tables (WI-5441) — CONSCIOUSLY WAIVED for public release (2026-07-25, WI-5764)
+
+**Symptom (demonstrated live, 5+ independent repros across 2026-07-18/19):** a row
+written on the origin peer occasionally federates with **zero** corresponding
+`harness_shared.substrate_outbox` entry, ever — the write is silently and
+**permanently** non-federating, with no error, no stall-detect signal, and no
+reconciliation pass to catch it. First reproduced on `plan_item_assignments`
+(the generic `capture_substrate_outbox()` capture path, migs 359/446); the
+mechanism is not table-specific, so any table riding that generic capture
+function is exposed in principle — most consequentially
+`harness_shared.work_items` (features/issues), which rides the sibling
+`capture_work_items_outbox()` function (mig 375/423) and was flagged at filing
+time as the path where this class would be most damaging (the shared-pot
+editing surface). No work-items-family repro has been observed; this is a
+structural risk, not a demonstrated second instance.
+
+**What is CONFIRMED, after an exhaustive multi-session investigation (WI-5441
+posts, 2026-07-18 22:03 → 2026-07-19 17:10, 5+ agents):**
+- The federation-capture trigger (`capture_substrate_outbox_trg`) is always
+  attached and enabled well before the losing write in every repro — a
+  "trigger not yet attached at boot" race was directly falsified by OID/timing
+  forensics on 3 separate runs.
+- No online-guard, no `session_replication_role` override, no ON CONFLICT
+  short-circuit, no swallowed exception, and no GC-deletion timing explains a
+  bare local-origin INSERT losing its capture entry.
+- The clearest live-caught instance (real production content, plan
+  `health-tab-v2-2026-07-12` items P-013–015, not the synthetic seed probe):
+  a row's `origin` flips `remote→local` with **byte-identical** federated
+  content (no assignee/assigned_ts/strategy/note change) and produces **no**
+  outbox row — i.e. something **re-applies an already-materialized op through
+  the projection's `writeToPg`** with a provenance context that resolves
+  `origin` to `'local'` on a write that is not actually a fresh local edit.
+  The leading (unconfirmed) hypothesis is a periodic reconciliation/re-fold
+  pass constructing `OpEnvelope`s directly from DB rows rather than from a
+  peer-log op, without threading `provenance` — see WI-5441 post 52971 for the
+  exact code seam to instrument (`writeToPg`'s `provenance?.origin ?? 'local'`
+  fallback, `packages/operator-core/lib/sync/hyperbee/projections/
+  plan-item-assignments.ts`).
+- **Root-cause identification requires live rig instrumentation** (a debug
+  capture trigger armed from before boot) — static code reading across every
+  receive-side call site (own-log snapshot compaction, backfill-local-state,
+  the epoch decrypt gate, `withHiveHomeApplyGuard`, `resolveOpProvenance`'s
+  fallback) has been exhausted without a positive catch of the exact writer;
+  see WI-5441 posts 52968/52971/52980 for what has been ruled out and why.
+
+**What WAS fixed 2026-07-25 (WI-5764, defensive hardening — NOT proven to be
+this class's root cause):** a genuinely real, separate boot-ordering race was
+found and fixed in the **native `:5432` operator host** path
+(`apps/operator/bin/hono-host.ts` + `host-bootstrap.ts`): `startRequestServers()`
+previously ran unconditionally immediately after the fire-and-forget
+`runBootstrap()` call, with no ordering guarantee against the still-running
+migration apply — so an HTTP write could in principle reach a table before a
+still-applying migration set had created its capture trigger. Fixed by gating
+`startRequestServers()` on a new boot-gate flag
+(`markMigrationsAppliedForRequestGate`/`awaitMigrationsAppliedForRequestGate`,
+`packages/operator-core/lib/sync/hyperbee/boot-gate.ts`) that flips the instant
+`applyPendingMigrationsAtBoot()` returns; a request-only host
+(`PAPERCUSP_BACKGROUND_WORKERS=0`) or a timeout degrades open (log + serve
+anyway) so this can never wedge boot. **Caveat found while implementing this
+fix, worth recording explicitly:** the live-fed-gate / local-matrix rig that
+produced every WI-5441 repro above boots the **desktop/embedded-pg entrypoint**
+(`apps/operator/bin/serve.ts` → `startEmbeddedPostgresServer`), which
+`await`s its own migration-apply step to completion **before** `runBootstrap()`
+or `serve()` ever run — so that specific race does **not** explain the observed
+reds (consistent with WI-5441 post 52911's own finding that the capture
+trigger already existed ~4 minutes before the losing write in that repro). The
+hono-host.ts fix is real, low-risk, and worth having (it protects the native
+`:3070`/`:3170` dev-box hosts, a different boot path with the same class of
+race), but it is **not** the fix for this section's demonstrated defect —
+treat the two as separate, both real.
+
+**The waiver.** Given (a) the mechanism is narrowed but not pinned without a
+dedicated live-instrumentation session, (b) every prior attempt at that
+session was resource-constrained by the shared single-tenant rig, and (c) no
+second instance has been observed on the work-items family despite it being
+structurally exposed — **this class ships as a known, documented limitation
+for the public release**, not a release blocker, on the following basis:
+1. It requires a specific, uncommon interleaving (a re-apply of already-correct
+   content racing the capture path) — not a routine write path failure.
+2. The loss is confined to metadata/assignment-shaped federated tables observed
+   so far (`plan_item_assignments`); no core content (features/issues/plans/coord
+   threads) loss has been demonstrated.
+3. **The durable fix direction is known** (WI-5441 post 52911): a reconciliation
+   pass that compares TABLE STATE across peers for CDC-captured tables (rows
+   present on the publisher, absent/stale on the joiner) rather than trusting
+   outbox history alone — this is a bigger, higher-risk change (a new periodic
+   cross-peer state-diff mechanism) appropriately scoped as its own follow-up,
+   not something to rush unattended against the release-critical gate rig.
+
+**Tracking.** WI-5441 stays **open, `blocked`, claim-held** with this waiver
+recorded — do not silently re-close it as resolved. Any future session with a
+free rig slot should pick up the live-instrumentation step exactly where post
+52980 left off (a fresh rig with BOTH an INSERT and UPDATE debug trigger armed
+from before boot, per the first WI-5441 checkpoint). WI-5764 (this waiver +
+the defensive hono-host.ts fix) is the P-410 disposition for public release.
+
 ---
 
 ## Public-release checklist

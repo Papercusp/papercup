@@ -169,9 +169,14 @@ interface LogState {
   /** Last time mergedPosition advanced (seeded at first sample with a position). */
   lastIngestProgressMs: number | null;
   /**
-   * Start of the current swarm-connected-while-never-replicated window; null
-   * when the condition doesn't hold (sustained-offline, or the log has
-   * replicated at least once this lifetime). WI-183 zombie axis.
+   * Start of the current swarm-connected-while-NOT-replicating window; null
+   * when the condition doesn't hold (sustained-offline, or a replicator is
+   * attached right now). WI-183 zombie axis.
+   *
+   * WI-5639: this window used to be armed ONLY while the log had never
+   * attached a replicator this process lifetime (`lastNonZeroPeersMs === null`).
+   * It is now armed whenever NO replicator is attached *right now* — see the
+   * axis body for why that gate left a whole failure class unrepairable.
    */
   connectedNeverReplSinceMs: number | null;
   /**
@@ -610,13 +615,43 @@ export function sampleReplicationLiveness(
     }
   }
 
-  // ── swarm-connected-but-never-replicated axis (WI-183 zombie connections) ──
+  // ── swarm-connected-but-NOT-replicating axis (WI-183 zombie connections) ──
   // Fires when the harness topic HAS live swarm connections yet this admitted
-  // log has NEVER attached a replicator this process lifetime, held ≥ grace.
+  // log has NO replicator attached, held ≥ grace.
   // Discriminates the zombie-connection class (stale DHT announce record →
   // relay handshake connects, data path dead — rig run m1783114921: 18min
   // silent window) from ordinary churn (swarm 0 → peer offline → never alarm).
-  if (sample.swarmConnections !== undefined && st.lastNonZeroPeersMs === null) {
+  //
+  // WI-5639: this axis used to be gated on `st.lastNonZeroPeersMs === null` —
+  // i.e. it armed ONLY for a log that had never attached a replicator in this
+  // process lifetime, and was PERMANENTLY disarmed for that log the moment one
+  // attached (nothing resets lastNonZeroPeersMs; the only reset is the
+  // drop path's `logs.delete()`, which fires on revoke / re-verify-drop /
+  // handle-close — never on a PEER restart). That left the
+  // "was replicating → peer restarted → replicator detached → swarm sockets
+  // still live" state with NO repair path whatsoever, because every other rung
+  // is also blind to it:
+  //   - `no_replicator` fires (180s) but is EXCLUDED from boot.ts's
+  //     REPAIRABLE_EPISODE_KINDS, so its dispatchRepair() is a no-op;
+  //   - swarm.ts's severed-link escalation needs `liveConnectionCount === 0`
+  //     (swarm.ts:1350) and these sockets are live, so it never trips;
+  //   - `frozen` requires a replicator ATTACHED, which is the negation here.
+  // Live proof (gate run 20260725-143908, frame a, harness=hello-world):
+  // zombie repair healed the log at 18:48:29, `no_replicator` fired at
+  // 18:48:44 with NO repair, and the link then sat dead for 25 MINUTES —
+  // swallowing restart_durability's post-restart write and reconnect_catchup's
+  // baseline. Arming on "no replicator attached RIGHT NOW" closes that hole and
+  // needs no boot.ts change, since this kind is already repairable.
+  //
+  // This does NOT re-open the WI-5686 false-positive class. That regression
+  // came from shortening the `no_replicator` grace UNCONDITIONALLY, so an
+  // ordinary cold-restart re-peer — peer genuinely gone, swarmConnections === 0
+  // — false-fired and tore sessions down. The `swarmConnections > 0` gate below
+  // excludes exactly that case: while the peer is down the window is never
+  // started, and once it reconnects this grants the same zombieGraceMs
+  // attach-tolerance the never-attached path already gets.
+  const replicatorAttachedNow = (st.peersCount ?? 0) > 0;
+  if (sample.swarmConnections !== undefined && !replicatorAttachedNow) {
     if (sample.swarmConnections > 0) {
       st.lastSwarmSeenMs = now;
       if (st.connectedNeverReplSinceMs === null) st.connectedNeverReplSinceMs = now;
@@ -625,6 +660,19 @@ export function sampleReplicationLiveness(
         now - st.connectedNeverReplSinceMs >= zombieGraceMs
       ) {
         st.alarmedConnectedNever = true;
+        // WI-5639: keep the episode KIND stable (`connected_never_replicated`
+        // is persisted in boot_events/EI rows, matched by the rig's scenario
+        // greps, and already listed in REPAIRABLE_EPISODE_KINDS — renaming it
+        // would invalidate historical triage logs mid-release-stabilisation).
+        // The sub-case is carried in `detail` behind a stable grep token so
+        // forensics can still tell the two apart.
+        const subCase = st.lastNonZeroPeersMs === null
+          ? 'never_attached'
+          : 'replicator_lost';
+        const attachPhrase =
+          subCase === 'never_attached'
+            ? 'this log has NEVER attached a replicator'
+            : 'this log LOST its replicator and has not re-attached';
         const episode: ReplicationStallEpisode = {
           workspaceId,
           harnessSlug,
@@ -632,8 +680,8 @@ export function sampleReplicationLiveness(
           kind: 'connected_never_replicated',
           stalledForMs: now - st.connectedNeverReplSinceMs,
           detail:
-            `log=${sample.keyHex.slice(0, 12)}… swarm has ${sample.swarmConnections} live ` +
-            `connection(s) but this log has NEVER attached a replicator ` +
+            `[${subCase}] log=${sample.keyHex.slice(0, 12)}… swarm has ${sample.swarmConnections} live ` +
+            `connection(s) but ${attachPhrase} ` +
             `(${Math.round((now - st.connectedNeverReplSinceMs) / 1000)}s connected-but-dead — ` +
             `WI-183 zombie-connection class). Common cause: host-resource exhaustion on the ` +
             `PEER side (disk-full ENOSPC crash-looping its serve process, CPU/load starvation) ` +
@@ -654,9 +702,23 @@ export function sampleReplicationLiveness(
       // SUSTAINED offline (past churn tolerance) → genuinely-offline peer;
       // reset the window. A transient zero (zombie reconnect gap) keeps it.
       st.connectedNeverReplSinceMs = null;
+      // WI-5639: the alarm latch MUST clear with the window it belongs to.
+      // It used to leak: `alarmedConnectedNever` stayed true across a
+      // sustained-offline reset, so (i) the fire guard `!st.alarmedConnectedNever`
+      // suppressed the alarm FOREVER on the next zombie window for this log, and
+      // (ii) deriveVerdict kept reading 'no_replicator' off the stale latch.
+      // Previously near-unreachable (the axis only ran for never-replicated
+      // logs, which rarely see a sustained-offline reset); now that the axis
+      // arms for every currently-detached log, this is a live path.
+      st.alarmedConnectedNever = false;
     }
-  } else if (st.lastNonZeroPeersMs !== null && st.connectedNeverReplSinceMs !== null) {
+  } else if (replicatorAttachedNow && st.connectedNeverReplSinceMs !== null) {
     // Replication established — recovered; a future zombie window re-fires.
+    // WI-5639: keyed on "a replicator is attached RIGHT NOW", the exact
+    // negation of the arming condition above. The old `lastNonZeroPeersMs !==
+    // null` test meant "attached at SOME point this lifetime", which stayed
+    // true forever once set — so a log that lost its replicator could report a
+    // spurious recovery while still dead.
     // EI-4643: report the recovery so the durable EI a zombie episode filed
     // auto-closes. Previously only the no_replicator axis was wired, so a
     // connected_never_replicated EI (this exact class) sat open forever — it
@@ -771,12 +833,16 @@ function deriveVerdict(
   ) {
     return 'no_replicator';
   }
-  // WI-183 zombie axis: swarm-connected + never-replicated past grace reads as
+  // WI-183 zombie axis: swarm-connected + not-replicating past grace reads as
   // no_replicator (the symptom bucket every consumer already treats as red) —
   // the episode kind carries the precise diagnosis for triage.
+  // WI-5639: mirrors the sample-time arming condition exactly ("no replicator
+  // attached RIGHT NOW", not "never attached this lifetime"). These two must
+  // agree — a read-time gate stricter than the alarm makes the liveness RPC
+  // report 'live' for a log the sampler has already alarmed on.
   if (
     st.alarmedConnectedNever ||
-    (st.lastNonZeroPeersMs === null &&
+    ((st.peersCount ?? 0) === 0 &&
       st.connectedNeverReplSinceMs !== null &&
       now - st.connectedNeverReplSinceMs >= zombieGraceMs)
   ) {

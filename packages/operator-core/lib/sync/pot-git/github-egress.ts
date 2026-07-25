@@ -43,10 +43,14 @@
 
 import { type RunGit, NETWORK_RUN_GIT_TIMEOUT_MS, defaultRunGit } from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
+import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
 
-/** Upper bound on delta files scanned for secrets per egressed ref. Exceeding
- *  it BLOCKS the ref (`secret_scan_overflow`) rather than silently skipping the
- *  tail — fail-closed; callers with a legitimately huge first publish raise it. */
+/** Per-tick BUDGET on delta blobs scanned for secrets per egressed ref.
+ *  WI-5738: this used to be a cliff — exceeding it blocked the ref outright
+ *  (`overflow`), which meant a merely LARGE backlog was refused forever, since
+ *  the range only shrinks through the push being refused. It is now a budget:
+ *  the walk pushes the prefix it verified and resumes next tick, so a big
+ *  backlog DRAINS instead of deadlocking. Nothing unscanned is ever pushed. */
 export const DEFAULT_MAX_SCAN_FILES = 5_000;
 
 /** Blobs larger than this are skipped by the secret scan (binary/asset noise;
@@ -84,8 +88,21 @@ export interface EgressInput {
   runGit?: RunGit;
   /** Secret-scan the published delta (default true — S-2). */
   scanSecrets?: boolean;
-  /** Cap on delta files scanned per ref (default DEFAULT_MAX_SCAN_FILES). */
+  /** Cap on delta files scanned per ref (default DEFAULT_MAX_SCAN_FILES).
+   *  WI-5738: this is now a per-tick scan BUDGET (partial progress + resume),
+   *  not a cliff that refuses the whole push. */
   maxScanFiles?: number;
+  /**
+   * WI-5738: workspace whose runtime secrets-guard path exemptions
+   * (harness_shared.secrets_guard_path_exemptions) apply to this scan — the
+   * same no-restart escape hatch own-head-publish already honours. Egress
+   * previously consulted NO exemptions at all, so the one guard that was
+   * actually wedged was also the one an operator had no lever for. Omitted =>
+   * no runtime exemptions (only secrets-guard's static FIXTURE_FILES).
+   */
+  workspaceId?: string;
+  /** Injectable for tests; defaults to the real DB-backed loader. */
+  loadPathExemptions?: (workspaceId: string) => Promise<ReadonlySet<string>>;
 }
 
 export interface EgressPushed {
@@ -110,6 +127,12 @@ export interface EgressSecretBlock {
   overflow: boolean;
   /** Oversized blobs skipped by the scan (informational). */
   skippedLargeBlobs: number;
+  /** WI-5738: the EXACT commit that failed the scan. Everything before it was
+   *  verified and pushed — a block is now attributable to one commit instead of
+   *  "somewhere in this range". */
+  blockedAtCommit?: string;
+  /** How far the ref still advanced despite the block (null = not at all). */
+  advancedTo?: string | null;
 }
 
 export interface EgressResult {
@@ -121,6 +144,9 @@ export interface EgressResult {
   rejectedNonFF: EgressNonFF[];
   /** Refs blocked by the secrets gate — nothing left the machine for these. */
   blockedSecrets: EgressSecretBlock[];
+  /** WI-5738: findings suppressed by a runtime path exemption — surfaced for
+   *  audit so an exemption quietly holding the plane open is never invisible. */
+  exemptedFindings: SecretFinding[];
   tagsPushed: string[];
   tagsRejected: { name: string; reason: string }[];
   errors: string[];
@@ -167,40 +193,35 @@ async function isAncestor(repoPath: string, ancestor: string, descendant: string
  * blobs over MAX_SCAN_BLOB_BYTES or containing NUL (binary) are skipped and
  * counted, not scanned.
  */
-async function collectScanFiles(
+async function collectCommitBlobs(
   repoPath: string,
-  base: string | null,
-  target: string,
-  maxFiles: number,
+  commit: string,
+  seen: Set<string>,
   runGit: RunGit,
-): Promise<{ files: { path: string; content: string }[]; overflow: boolean; skippedLarge: number } | { error: string }> {
-  const range = base ? [`${base}..${target}`] : [target];
-  const revs = await runGit(['rev-list', ...range], repoPath);
-  if (revs.code !== 0) return { error: revs.stderr.trim() || `rev-list exited ${revs.code}` };
-  const commits = revs.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-
-  // blob sha → a path it appears at (for the finding report).
+): Promise<{ blobs: Map<string, string> } | { error: string }> {
+  // -m: diff merges against EACH parent (a merge can introduce blobs too);
+  // --root: a parentless commit diffs against the empty tree.
+  const raw = await runGit(['diff-tree', '-r', '-m', '--root', '--no-commit-id', commit], repoPath);
+  if (raw.code !== 0) return { error: raw.stderr.trim() || `diff-tree ${commit} exited ${raw.code}` };
   const blobs = new Map<string, string>();
-  let overflow = false;
-  outer: for (const c of commits) {
-    // -m: diff merges against EACH parent (a merge can introduce blobs too);
-    // --root: a parentless commit diffs against the empty tree.
-    const raw = await runGit(['diff-tree', '-r', '-m', '--root', '--no-commit-id', c], repoPath);
-    if (raw.code !== 0) return { error: raw.stderr.trim() || `diff-tree ${c} exited ${raw.code}` };
-    for (const line of raw.stdout.split('\n')) {
-      const m = line.match(/^:\d+ \d+ [0-9a-f]+ ([0-9a-f]+) ([A-Z])\d*\t(.+?)(?:\t.*)?$/);
-      if (!m) continue;
-      const [, dstSha, status, path] = m;
-      if (status === 'D' || /^0+$/.test(dstSha)) continue; // deletion — no new blob
-      if (blobs.has(dstSha)) continue;
-      if (blobs.size >= maxFiles) {
-        overflow = true;
-        break outer;
-      }
-      blobs.set(dstSha, path);
-    }
+  for (const line of raw.stdout.split('\n')) {
+    const m = line.match(/^:\d+ \d+ [0-9a-f]+ ([0-9a-f]+) ([A-Z])\d*\t(.+?)(?:\t.*)?$/);
+    if (!m) continue;
+    const [, dstSha, status, path] = m;
+    if (status === 'D' || /^0+$/.test(dstSha)) continue; // deletion — no new blob
+    if (seen.has(dstSha) || blobs.has(dstSha)) continue;
+    blobs.set(dstSha, path);
   }
+  return { blobs };
+}
 
+/** Read a blob set as scannable text. Blobs over MAX_SCAN_BLOB_BYTES or
+ *  containing NUL (binary) are skipped and counted, never silently dropped. */
+async function readScannableBlobs(
+  repoPath: string,
+  blobs: ReadonlyMap<string, string>,
+  runGit: RunGit,
+): Promise<{ files: { path: string; content: string }[]; skippedLarge: number }> {
   let skippedLarge = 0;
   const files: { path: string; content: string }[] = [];
   for (const [sha, path] of blobs) {
@@ -215,7 +236,109 @@ async function collectScanFiles(
     if (show.stdout.includes('\0')) continue; // binary — no line-oriented secrets
     files.push({ path, content: show.stdout });
   }
-  return { files, overflow, skippedLarge };
+  return { files, skippedLarge };
+}
+
+export interface SafeEgressResolution {
+  /** The furthest sha in (base, target] whose whole prefix scanned clean.
+   *  Equals `base` (or null) when even the first commit is blocked. */
+  safeSha: string | null;
+  /** Set when a commit in the range failed the scan — everything BEFORE it is
+   *  still safe to push, and `safeSha` points there. */
+  blocked: { commit: string; findings: SecretFinding[] } | null;
+  /** True when the per-tick scan budget ran out before reaching `target`. NOT a
+   *  refusal: `safeSha` advanced, and the next tick resumes from it. */
+  budgetExhausted: boolean;
+  exempted: SecretFinding[];
+  skippedLarge: number;
+  scannedBlobs: number;
+  error?: string;
+}
+
+/**
+ * Walk (base, target] OLDEST-FIRST and return the furthest sha whose entire
+ * prefix scans clean.
+ *
+ * WI-5738 — why this replaces the old judge-the-whole-range-at-once shape.
+ * The previous implementation collected every blob in the range, scanned them
+ * as one set, and refused the WHOLE push on any finding or on exceeding
+ * `maxFiles` (`overflow`). Because the range is `(origin/staging, canonical]`
+ * — i.e. baselined on egress's own last SUCCESS — a refusal was terminal by
+ * construction: the range could only shrink through the push it was blocking,
+ * while every new commit made it bigger. On 2026-07-20 one accidentally
+ * committed AppImage extraction put 358 commits and >5,000 blobs permanently
+ * inside the range; egress then refused every tick for five days, reporting
+ * `blockedSecrets: 1` with health surfaces reading green.
+ *
+ * Two properties fix that class outright:
+ *   1. PARTIAL PROGRESS. A bad commit blocks only itself and its descendants;
+ *      everything before it still ships, so the baseline advances and the
+ *      judged range keeps shrinking. Attribution is exact (`blocked.commit`)
+ *      instead of "something in these 358 commits".
+ *   2. A BUDGET, NOT A CLIFF. Exhausting `maxFiles` now stops the walk and
+ *      pushes what was verified, instead of refusing everything. A large
+ *      backlog drains over several ticks rather than deadlocking — and a
+ *      first-ever publish of a big repo can no longer be permanently
+ *      un-pushable.
+ *
+ * Blob reads are deduped ACROSS commits (`seen`), so the walk costs the same
+ * object reads the old single-pass collection did. A single commit that alone
+ * exceeds the budget is still scanned in full when no progress has been made
+ * yet — otherwise one fat commit would deadlock the walk at zero.
+ */
+export async function resolveSafeEgressSha(input: {
+  repoPath: string;
+  base: string | null;
+  target: string;
+  maxFiles: number;
+  runGit: RunGit;
+  exemptions?: ReadonlySet<string>;
+}): Promise<SafeEgressResolution> {
+  const { repoPath, base, target, maxFiles, runGit } = input;
+  const exemptions = input.exemptions ?? new Set<string>();
+  const res: SafeEgressResolution = {
+    safeSha: base,
+    blocked: null,
+    budgetExhausted: false,
+    exempted: [],
+    skippedLarge: 0,
+    scannedBlobs: 0,
+  };
+  // --reverse => oldest first, so `safeSha` only ever moves forward along a
+  // first-parent-consistent prefix of the range.
+  const range = base ? [`${base}..${target}`] : [target];
+  const revs = await runGit(['rev-list', '--reverse', ...range], repoPath);
+  if (revs.code !== 0) return { ...res, error: revs.stderr.trim() || `rev-list exited ${revs.code}` };
+  const commits = revs.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  const seen = new Set<string>();
+  for (const commit of commits) {
+    if (res.scannedBlobs >= maxFiles && res.safeSha !== base) {
+      // Budget spent AND we have something to show for it — ship the verified
+      // prefix now and resume here next tick.
+      res.budgetExhausted = true;
+      return res;
+    }
+    const collected = await collectCommitBlobs(repoPath, commit, seen, runGit);
+    if ('error' in collected) return { ...res, error: collected.error };
+    const { files, skippedLarge } = await readScannableBlobs(repoPath, collected.blobs, runGit);
+    for (const sha of collected.blobs.keys()) seen.add(sha);
+    res.skippedLarge += skippedLarge;
+    res.scannedBlobs += collected.blobs.size;
+
+    // MUST be the file-set entrypoint, never the per-line primitive: only
+    // `scanForSecrets` applies the fixture-path exemption (isFixtureFile).
+    // Calling `scanTextForSecrets` directly here froze origin/staging for
+    // hours (P-402 / EI-13924, 2026-07-19).
+    const { blocking, exempted } = partitionExemptFindings(scanForSecrets(files), exemptions);
+    res.exempted.push(...exempted);
+    if (blocking.length > 0) {
+      res.blocked = { commit, findings: blocking };
+      return res; // safeSha stays at the last clean commit — its ancestors still ship
+    }
+    res.safeSha = commit;
+  }
+  return res;
 }
 
 /**
@@ -228,8 +351,13 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
   const runGit = input.runGit ?? defaultRunGit;
   const scan = input.scanSecrets !== false;
   const maxScanFiles = input.maxScanFiles ?? DEFAULT_MAX_SCAN_FILES;
+  const exemptions =
+    scan && input.workspaceId
+      ? await (input.loadPathExemptions ?? loadSecretsGuardPathExemptions)(input.workspaceId)
+      : new Set<string>();
   const res: EgressResult = {
     ok: true,
+    exemptedFindings: [],
     pushed: [],
     upToDate: [],
     rejectedNonFF: [],
@@ -289,30 +417,47 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       }
     }
 
-    // 3. Secrets gate over the published delta (fail-closed).
+    // 3. Secrets gate over the published delta (fail-closed) — INCREMENTAL
+    //    (WI-5738): resolve the furthest safe sha instead of accepting or
+    //    refusing the whole range, so one bad commit blocks only itself and the
+    //    baseline still advances. See resolveSafeEgressSha's header for why the
+    //    all-or-nothing shape was self-perpetuating.
+    let pushSha = spec.sha;
     if (scan) {
-      const collected = await collectScanFiles(input.repoPath, remoteSha, spec.sha, maxScanFiles, runGit);
-      if ('error' in collected) {
+      const verdict = await resolveSafeEgressSha({
+        repoPath: input.repoPath,
+        base: remoteSha,
+        target: spec.sha,
+        maxFiles: maxScanFiles,
+        runGit,
+        exemptions,
+      });
+      if (verdict.error) {
         res.ok = false;
-        res.errors.push(`secret-scan collect ${spec.remoteRef}: ${collected.error}`);
+        res.errors.push(`secret-scan collect ${spec.remoteRef}: ${verdict.error}`);
         continue;
       }
-      // MUST be the file-set entrypoint, never the per-line primitive: only
-      // `scanForSecrets` applies the fixture-path exemption (isFixtureFile).
-      // Calling `scanTextForSecrets` directly here froze origin/staging for
-      // hours — the scanner's own test fixtures flagged, egress refused every
-      // tick, and because the offending blob is permanently inside the pushed
-      // range no re-commit could ever clear it (P-402 / EI-13924, 2026-07-19).
-      const findings = scanForSecrets(collected.files);
-      if (findings.length > 0 || collected.overflow) {
+      res.exemptedFindings.push(...verdict.exempted);
+      if (verdict.blocked) {
         res.blockedSecrets.push({
           remoteRef: spec.remoteRef,
-          findings,
-          overflow: collected.overflow,
-          skippedLargeBlobs: collected.skippedLarge,
+          findings: verdict.blocked.findings,
+          overflow: false,
+          skippedLargeBlobs: verdict.skippedLarge,
+          blockedAtCommit: verdict.blocked.commit,
+          advancedTo: verdict.safeSha !== remoteSha ? verdict.safeSha : null,
         });
-        continue;
+      } else if (verdict.budgetExhausted) {
+        // Not a refusal — a partial drain. Recorded so a stalled-looking
+        // watermark is explainable without reading the code.
+        res.errors.push(
+          `egress ${spec.remoteRef}: scan budget (${maxScanFiles} blobs) reached before the target; ` +
+            `pushing the verified prefix ${verdict.safeSha?.slice(0, 12)} — the remainder drains on following ticks`,
+        );
       }
+      // Nothing verified beyond what the remote already has → nothing to push.
+      if (!verdict.safeSha || verdict.safeSha === remoteSha) continue;
+      pushSha = verdict.safeSha;
     }
 
     // 4. The push — UN-FORCED, so the remote's own atomic old-sha check is the
@@ -321,12 +466,12 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     //    Generous network timeout — a genuine bulk transfer, not a local op
     //    (github-bridge-ingress-timeout-too-short-2026-07-20, EI-18189246091367226).
     const push = await runGit(
-      ['push', input.remoteUrl, `${spec.sha}:${spec.remoteRef}`],
+      ['push', input.remoteUrl, `${pushSha}:${spec.remoteRef}`],
       input.repoPath,
       { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
     );
     if (push.code === 0) {
-      res.pushed.push({ remoteRef: spec.remoteRef, from: remoteSha, to: spec.sha });
+      res.pushed.push({ remoteRef: spec.remoteRef, from: remoteSha, to: pushSha });
     } else if (/non-fast-forward|fetch first|failed to push some refs/i.test(push.stderr)) {
       res.rejectedNonFF.push({
         remoteRef: spec.remoteRef,

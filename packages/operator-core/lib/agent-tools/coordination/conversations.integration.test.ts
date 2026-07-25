@@ -158,6 +158,50 @@ describe('conversation lifecycle (real PG)', () => {
     expect(detail?.topics).toEqual(['zero-cache']);
   });
 
+  // WI-5754 — the owner's rule that asking the fleet must name a recipient only
+  // means anything if the named agent is actually REACHED. Topic routing cannot
+  // carry that: an untagged question, or one whose topics that agent does not
+  // follow, would silently reach nobody while still reporting success.
+  it('directed ask → the named agent is subscribed and notified even with NO topics', async () => {
+    const res = await openConversationCore(deps, ident('agA'), {
+      kind: 'question',
+      body: 'Can you take WI-5727 first?',
+      direct_to: ['agB'],
+    });
+
+    expect(res.direct_to).toEqual(['agB']);
+    // No topics at all, yet the question is routed — that is the whole point.
+    expect(res.topics).toEqual([]);
+    expect(res.unrouted).toBe(false);
+    expect(res.delivered).toBe(1);
+    expect(sinkBox.inbox.agB).toHaveLength(1);
+    expect(sinkBox.inbox.agB[0].notify_kind).toBe('question_opened');
+
+    // Subscribed, not merely notified — so the rest of the thread reaches them.
+    const subs = await deps.subs.listTargetSubscribers('object', `conversation:${res.conversation.id}`);
+    expect(subs.map((s) => s.subscriber_id)).toContain('agB');
+  });
+
+  it('directed ask → the asker is never notified of their own question', async () => {
+    const res = await openConversationCore(deps, ident('agA'), {
+      kind: 'question',
+      body: 'self-addressed?',
+      // A UI that preselects the current agent must not page them about it, and
+      // a duplicate must not double-deliver.
+      direct_to: ['agA', 'agB', 'agB'],
+    });
+    expect(res.direct_to).toEqual(['agB']);
+    expect(sinkBox.inbox.agA).toBeUndefined();
+    expect(sinkBox.inbox.agB).toHaveLength(1);
+    expect(res.delivered).toBe(1);
+  });
+
+  it('a question with neither topics nor a recipient is still reported unrouted', async () => {
+    const res = await openConversationCore(deps, ident('agA'), { kind: 'question', body: 'into the void' });
+    expect(res.unrouted).toBe(true);
+    expect(res.direct_to).toEqual([]);
+  });
+
   it('answer → asker notified, answerer excluded + auto-joined', async () => {
     const opened = await openConversationCore(deps, ident('agA'), { kind: 'question', body: 'q?', topics: ['t'] });
     sinkBox.clear();

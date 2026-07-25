@@ -1,6 +1,6 @@
 ---
 title: "p2p publish silently wedged for 5 days — the total-over-cap ratchet (handoff brief)"
-description: "One 2.26GB AppImage extraction auto-committed by git-sync pushed the pot-git publish guard's new-bytes total past its 500MB cap. The guard then refused EVERY publish — permanently, because its baseline only advances THROUGH the success it is blocking, and deleting the files does not shrink the judged range. It reported perfectly healthy the entire time (egress upToDate=1, divergence=clear, needs_owner=false) because health is measured against the frozen admission watermark, not the working HEAD. Includes the proven root cause, the unwedge runbook, and the three defects still open."
+description: "One 2.26GB AppImage extraction auto-committed by git-sync wedged ALL THREE pot-git publish guards at once — own_head_publish and ref_announce by total-bytes cap, GitHub egress by secrets+scan-overflow. Every one of them baselines on its OWN LAST SUCCESS, so each refusal is terminal by construction: the baseline can only advance through the success it is blocking, and deleting the files does not shrink the judged range. It reported healthy throughout because health is measured against the frozen watermark. Includes the proven root cause, the unwedge runbook, and five open defects. CORRECTED 2026-07-25: the original framing section had origin/staging exactly backwards — it IS the egress target and IS the p2p health signal."
 discovered: 2026-07-25
 tags: [p2p, pot-git, git-sync, publish-guard, own-head-publish, silent-failure, github-bridge, handoff, debugging]
 status: active
@@ -11,31 +11,52 @@ documents:
   - packages/operator-core/lib/harness/git-sync/git-sync-action.ts
 ---
 
-## Read this first — the framing trap
+## Read this first — the framing trap (CORRECTED 2026-07-25T21:10Z)
 
-`origin/staging` on papercusp has not moved since **2026-07-20T17:36Z**. This looks
-like a catastrophic outage. **It is not, and chasing it will waste your time.**
+> ⚠️ **This section previously said the opposite and was WRONG.** It claimed
+> `origin/staging` "is not a push target and is not a health signal" and told you
+> that chasing it would waste your time. **It is the push target, and it is the
+> health signal.** The correction is preserved rather than deleted because the
+> mistake is instructive — and because anyone who read the earlier revision was
+> pointed away from the one indicator that was telling the truth.
 
-`github_default_branch = main` for papercusp (`harness_shared.harness_registry`),
-and the GitHub bridge pushes only `branches: [github_default_branch ?? 'main']`
-(`git-sync-action.ts:1348`). **`origin/staging` is not a push target and is not a
-health signal.** `origin/main` has been pushed *hourly, continuously*, straight
-through the whole window:
+`origin/staging` on papercusp has not moved since **2026-07-20T17:36Z**. That is a
+**real, correct alarm.** The p2p GitHub bridge egresses the canonical hive ref to
+`origin/staging`:
 
+```ts
+// github-bridge-tick.ts
+export const BRIDGE_CANONICAL_REF     = 'refs/hive/staging';  // :36
+export const BRIDGE_REMOTE_STAGING_REF = 'refs/heads/staging'; // :38
+// …
+egress = await egressCanonicalRefs({
+  refs: [{ sha: canonicalSha, remoteRef: BRIDGE_REMOTE_STAGING_REF }],  // :188-192
+});
 ```
-git reflog show --date=iso refs/remotes/origin/main
-7af88efb36 @2026-07-25 15:33 -0400: update by push
-aaf7d88053 @2026-07-25 14:23 -0400: update by push
-c29667db53 @2026-07-25 13:18 -0400: update by push
-421c5a56cd @2026-07-25 12:17 -0400: update by push   … hourly, unbroken
+
+**The original error was conflating two different branch settings.** The
+`branches: [entry.github_default_branch ?? 'main']` at `git-sync-action.ts:1348`
+is the **INGRESS** list — which remote branches the bridge *pulls*. It has nothing
+to do with where the bridge *pushes*. Egress targets `refs/heads/staging`,
+unconditionally.
+
+And `origin/main` advancing hourly is a **different mechanism entirely** — the
+green-checkpoint / release pipeline fast-forwards `main` from *local* staging
+(see the memory note "the green-checkpoint gate and deploy consume LOCAL staging,
+not origin/staging"). A healthy `origin/main` therefore says nothing whatsoever
+about p2p bridge health. It was the reassuring-but-irrelevant signal; the alarming
+one was correct.
+
+The honest health question is **"is `origin/staging` tracking `refs/hive/staging`?"**
+
+```bash
+git ls-remote origin staging | cut -f1                      # egress watermark
+git -C ~/.papercusp/pot-git/<pot>/<repoKey>.git rev-parse refs/hive/staging
 ```
 
-The honest health question is **"how many commits are absent from ALL origin
-refs?"** — which was 6, not the 339 you get measuring against staging.
-
-> `git rev-list --count $(git ls-remote origin main | cut -f1)..HEAD`
-
-So: no work was ever at risk. What *was* genuinely broken is everything below.
+On 2026-07-25T21:05Z those were `7c79fe6a` and `8d520419ac` — **358 commits
+apart**. The bridge had been down for five days and was *still* down after the
+namespace-ref re-base described below.
 
 ## The pipeline (orientation)
 
@@ -193,19 +214,80 @@ recovery is not a hand-written ref.
 `maxBytes` and did not stop a 90.3 MB `.so` from being committed. Check its
 threshold and whether it is wired into this pot's commit path at all.
 
-**Open question — the second guard.** `ref_announce` has **not** advanced since
-`07-20T17:37Z`. It takes its `fromOid` from **sigrefs**, not the namespace ref
-(`ref-announce-tick.ts:179`), so the re-baseline above did not touch it. The staging
-pipeline advanced without it, so it is not blocking — but it has not recovered.
-**Check this first.**
+**D4 · The runtime secrets exemption covers only ONE of the guards.** WI-5591 added
+`harness_shared.secrets_guard_path_exemptions` as the no-restart escape hatch for a
+false-positive `secrets` refusal — and `own-head-publish` threads `workspaceId`
+into `checkPublishGuard` so it applies. **`github-egress.ts` does not**: it calls
+`scanForSecrets(collected.files)` with no workspace, so no runtime exemption can
+ever clear an egress block. The refusal log even *advertises* the exemption
+recovery ("insert a row into `harness_shared.secrets_guard_path_exemptions`") on a
+guard where it works — while the guard that is actually wedged ignores it.
 
-**Open question — is `origin/staging` meant to advance at all?** Nothing has pushed
-it since 07-20. If it is legacy, say so somewhere load-bearing, because its
-staleness reads as an outage to anyone auditing. If it is meant to advance, that is
-a third defect.
+**D5 · `overflow` is a silent permanent block with zero findings.**
+`collectScanFiles` stops at `DEFAULT_MAX_SCAN_FILES = 5_000` blobs and returns
+`overflow: true`, and `egressCanonicalRefs` blocks on `findings.length > 0 ||
+collected.overflow`. A range that is merely *large* is therefore refused with an
+empty findings list — indistinguishable in the metadata (`blockedSecrets: 1`) from
+a real secret. Because the range only shrinks through the push it is blocking, this
+is the same terminal ratchet. Fix: judge the range in bounded per-commit slices.
+
+## RESOLVED — the second and third guards (2026-07-25T21:05Z)
+
+Both open questions from the first revision are answered, by reproduction:
+
+**The second guard (`ref_announce`) is still wedged, by the identical ratchet.**
+Its `fromOid` comes from sigrefs (`ref-announce-tick.ts:179`), which the namespace
+re-base never touched — so it kept refusing:
+
+```
+16:28:47 [git-sync] papercusp: ref-announce publish reported errors:
+         publish guard refused refs/heads/staging — 2414586659 new bytes exceeds cap
+16:50:22 … 2415433855 new bytes exceeds cap      ← still climbing
+```
+
+**`origin/staging` is absolutely meant to advance — it is THE egress target** (see
+the corrected framing section above). It was not legacy and not a red herring. The
+third defect the first revision hypothesised is real, and it is the *same* defect:
+egress takes its baseline from `origin/staging`, i.e. from its own last success.
+
+Reproducing the egress verdict over the real range `(7c79fe6a, 8d520419ac]` —
+358 commits, mirroring `collectScanFiles` + `scanForSecrets` exactly:
+
+```
+{"commits":358,"blobs":5000,"overflow":true,"skippedLarge":68,"scanned":4174}
+FINDINGS: 2
+  tools/perf-test/wdio/.appimage-extract/…/hooks/cc/pretooluse-secrets-guard.mjs:175
+      rule=private-key-pem     ← FALSE POSITIVE: the secrets scanner's own detector
+                                 source, bundled inside the extracted AppImage
+  tools/perf-test/wdio/.appimage-extract/…/spa/assets/chunk-ZUYEQ4TG-BQBy34Os.js:1
+      rule=google-api-key      ← real key, but ALREADY PUBLIC
+```
+
+The Google key is already reachable from `origin/main` at
+`_retired/papercup/.next/static/chunks/01dz7pg7tl1pc.js` (verified with
+`git grep -l <key> <origin/main sha>`), so pushing it is **not new exposure**.
+It is still worth confirming it is referrer-restricted.
+
+So the same AppImage commit (`46c2a163d6`) wedged **all three** guards — by volume
+at `own_head_publish` and `ref_announce`, and by secrets+overflow at egress. One
+accident, three terminal refusals, because all three guards share the defect of
+baselining on their own last success.
 
 ## Prevention landed
 
 `.gitignore` now carries `**/.appimage-extract/` and `**/squashfs-root/` with the
 incident documented inline. Tracking: **WI-5738**; standing fact
 `p2p-publish-wedged-appimage-total-over-cap-2026-07-20`.
+
+## The one-line lesson
+
+**Never baseline a guard on its own last success.** `own_head_publish` (namespace
+ref), `ref_announce` (sigrefs), and `github egress` (`origin/staging`) each derive
+`fromOid` from the last range they *admitted*. That makes every refusal
+self-perpetuating and every subsequent commit an aggravator — a guard that can only
+be cleared by the thing it is blocking is not a guard, it is a latch. A volume cap
+in particular belongs at **commit** time (prevention), where it can still exclude
+the offending files; at publish time it must degrade to incremental draining plus a
+loud health signal, never a permanent wedge.
+
+Fixes tracked on plan **`p2p-publish-guard-recoverability-2026-07-25`**.

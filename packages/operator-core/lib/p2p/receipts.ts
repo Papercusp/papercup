@@ -223,19 +223,44 @@ export async function emitP2pReceipt(
 /**
  * M15: bump the LOCAL refused-op counter (the ONLY artifact for
  * UNAUTHENTICATED failure paths; also fed by emitP2pReceipt for receipted
- * ones). Never throws to the caller's hot path beyond PG errors — callers on
- * apply paths wrap in try/catch.
+ * ones). NEVER throws to the caller — every one of the ~5 call sites across
+ * the codebase (federation identity-gate refusals, boot-time scoped-announce
+ * refusals, the foreign-op guard, emitP2pReceipt) treats this as best-effort
+ * and wraps the call in its own swallowing try/catch or `.catch(() => {})`,
+ * on the correct theory that a bookkeeping failure must never block or
+ * mask the actual refusal.
+ *
+ * P-413 (attestation + trust-closure re-verify): that swallow-everywhere
+ * pattern previously meant a PG failure INSIDE this function (a bad
+ * workspace/pot partition, a lock timeout, a schema drift) was a fully
+ * SILENT no-op — the op was correctly refused, but the ONE artifact D-001
+ * relies on as evidence the trust layer refused it (v1 ships foreign-work
+ * spawn LIVE with no sandbox/containment — these counters ARE the safety
+ * boundary's evidence) would quietly fail to increment with zero trace
+ * anywhere. That is exactly the failure mode this counter exists to make
+ * impossible for the OP itself (M15: "loud is not unbounded") — it must not
+ * reappear one level down, in the counter's own write path. So: catch HERE,
+ * log loudly (never throw), so a persistent counter-write failure is at
+ * least diagnosable via logs even though it still never blocks a refusal.
  */
 export async function bumpRefusedOpCounter(
   args: { workspaceId: string; potSlug: string; reason: string },
   sqlOverride?: OrgSql,
 ): Promise<void> {
   const sql = sqlOverride ?? getOrgPg().sql;
-  await sql`
-    INSERT INTO harness_shared.p2p_refused_op_counters (workspace_id, harness_slug, reason, count, updated_at)
-    VALUES (${args.workspaceId}, ${args.potSlug}, ${args.reason}, 1, now())
-    ON CONFLICT (workspace_id, harness_slug, reason)
-    DO UPDATE SET count = harness_shared.p2p_refused_op_counters.count + 1, updated_at = now()`;
+  try {
+    await sql`
+      INSERT INTO harness_shared.p2p_refused_op_counters (workspace_id, harness_slug, reason, count, updated_at)
+      VALUES (${args.workspaceId}, ${args.potSlug}, ${args.reason}, 1, now())
+      ON CONFLICT (workspace_id, harness_slug, reason)
+      DO UPDATE SET count = harness_shared.p2p_refused_op_counters.count + 1, updated_at = now()`;
+  } catch (err) {
+    console.error(
+      `[p2p:refused-op-counter] FAILED to bump counter (trust-layer evidence gap) ` +
+        `workspace=${args.workspaceId} pot=${args.potSlug} reason=${args.reason}:`,
+      err,
+    );
+  }
 }
 
 /** Read receipts for p2p:trace / the P-002 audit surface. */

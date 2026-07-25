@@ -294,7 +294,9 @@ describe('ConversationsTab — detail mode', () => {
     H.results['conversations.messageDetail'] = { ...blank(), data: [MESSAGE] };
     render(<ConversationsTab active />);
     expect(screen.getByText('mug → su-4ca244e4')).toBeTruthy();
-    expect(screen.getByText(/WI-5727/)).toBeTruthy();
+    // The related-work callout, specifically — the id also appears in the row
+    // behind it, so scope the assertion to the callout body.
+    expect(screen.getByText('Related work').parentElement?.textContent).toContain('WI-5727');
   });
 });
 

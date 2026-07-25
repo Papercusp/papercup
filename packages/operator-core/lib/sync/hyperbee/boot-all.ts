@@ -1089,6 +1089,9 @@ export async function bootAllHarnessesForActiveWorkspace(
   void (async () => {
     try {
       const { ensureP2pHostRoutinesSeededOnce } = await import('../../p2p/ensure-host-routines');
+      // WI-5771: workspaceIds (the FULL registry list) is no longer used to
+      // seed — see ensure-host-routines.ts's module doc. Kept as an arg for
+      // now only for call-site symmetry with the sibling hygiene hooks above.
       ensureP2pHostRoutinesSeededOnce(workspaceIds);
     } catch {
       /* best-effort; boot-all never fails on p2p host-routine seeding */

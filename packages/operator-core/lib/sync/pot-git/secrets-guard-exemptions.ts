@@ -85,3 +85,51 @@ export async function removeSecretsGuardPathExemption(workspaceId: string, path:
   const { sql } = getOrgPg();
   await sql`DELETE FROM ${sql(TABLE)} WHERE workspace_id = ${workspaceId} AND path = ${path}`;
 }
+
+/**
+ * Does `path` match any exemption entry?
+ *
+ * WI-5738: exact-equality was the ONLY matching rule, which made the escape
+ * hatch useless against the incident class it exists for. The 2026-07-20 wedge
+ * was one accidentally-committed AppImage extraction — **4,174 scanned files**
+ * under a single directory. Clearing that by exact path would need thousands of
+ * INSERTs enumerated by hand from a scan the operator cannot easily run, so in
+ * practice the "no-restart remedy" did not apply to the very shape of accident
+ * that produced it.
+ *
+ * Three entry forms, in order of specificity — deliberately NOT a general glob
+ * engine (an exemption is a security-relevant waiver; a surprising match is a
+ * silent leak, so the grammar stays small enough to be obvious on sight):
+ *   - `a/b/c.js`   exact path (unchanged — every existing row keeps its meaning)
+ *   - `a/b/`       directory PREFIX — everything at or below `a/b/`
+ *   - `a/b/**`     the same directory prefix, spelled gitignore-style
+ *
+ * Note both prefix forms require the trailing separator, so `a/b/` can never
+ * accidentally exempt a sibling like `a/bc.js`.
+ */
+export function isPathExempt(exemptions: ReadonlySet<string>, path: string): boolean {
+  if (exemptions.size === 0) return false;
+  if (exemptions.has(path)) return true;
+  for (const entry of exemptions) {
+    const prefix = entry.endsWith('/**') ? entry.slice(0, -2) : entry.endsWith('/') ? entry : null;
+    if (prefix && path.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
+ * Partition findings into { blocking, exempted } using `isPathExempt`. The one
+ * place this split is expressed, so the publish guard and the GitHub egress
+ * guard cannot drift apart on what an exemption means (they did: before
+ * WI-5738 egress consulted no exemptions at all).
+ */
+export function partitionExemptFindings<T extends { path: string }>(
+  findings: readonly T[],
+  exemptions: ReadonlySet<string>,
+): { blocking: T[]; exempted: T[] } {
+  if (exemptions.size === 0) return { blocking: [...findings], exempted: [] };
+  const blocking: T[] = [];
+  const exempted: T[] = [];
+  for (const f of findings) (isPathExempt(exemptions, f.path) ? exempted : blocking).push(f);
+  return { blocking, exempted };
+}

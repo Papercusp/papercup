@@ -10,6 +10,9 @@ import {
   awaitEnsurePaths,
   BootGateTimeoutError,
   _resetFlagsForTests,
+  isMigrationsAppliedForRequestGate,
+  markMigrationsAppliedForRequestGate,
+  awaitMigrationsAppliedForRequestGate,
 } from '../boot-gate';
 
 afterEach(() => _resetFlagsForTests());
@@ -61,5 +64,32 @@ describe('boot-gate', () => {
         sql_migrations_complete: true,
       });
     }
+  });
+
+  // WI-5441/WI-5764: request-serving migrations gate — deliberately independent
+  // of sql_migrations_complete/runtime_ensure_complete above (see the field doc
+  // on request_gate_migrations_applied in boot-gate.ts).
+  describe('request-serving migrations gate (WI-5441/WI-5764)', () => {
+    it('is not applied before the flag is marked', () => {
+      expect(isMigrationsAppliedForRequestGate()).toBe(false);
+    });
+
+    it('is applied once marked, independent of the other two flags', () => {
+      markMigrationsAppliedForRequestGate();
+      expect(isMigrationsAppliedForRequestGate()).toBe(true);
+      expect(isReadyForProjection()).toBe(false);
+    });
+
+    it('awaitMigrationsAppliedForRequestGate resolves promptly once marked', async () => {
+      setTimeout(() => markMigrationsAppliedForRequestGate(), 50);
+      await awaitMigrationsAppliedForRequestGate({ timeoutMs: 1000, pollMs: 10 });
+      expect(isMigrationsAppliedForRequestGate()).toBe(true);
+    });
+
+    it('awaitMigrationsAppliedForRequestGate throws BootGateTimeoutError after the deadline', async () => {
+      await expect(
+        awaitMigrationsAppliedForRequestGate({ timeoutMs: 100, pollMs: 20 }),
+      ).rejects.toThrow(BootGateTimeoutError);
+    });
   });
 });

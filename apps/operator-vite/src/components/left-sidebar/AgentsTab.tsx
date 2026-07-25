@@ -82,7 +82,14 @@ export default function AgentsTab({ active }: { active: boolean }) {
     () => (roster.data?.[0]?.active ?? []).filter(isRunningAgent).length,
     [roster.data],
   );
-  const dynamicValue = roster.loading && !roster.data ? '…' : `${runningCount} running`;
+  // Guard on the DERIVED count, not on `!roster.data`, to match the Routines lane
+  // above. The sync layer can hand back a present-but-empty `data` while the first
+  // real read is still in flight, and `!roster.data` is false the moment that
+  // happens — so the old guard flashed a confident "0 running" (and SwarmTab's
+  // "fleet · 0 live") over a fleet of ~75, which reads as "the roster is broken"
+  // in exactly the pane this tab exists to show. Verified live 2026-07-25: the
+  // lane settled to "75 running" ~3s after the misleading 0.
+  const dynamicValue = roster.loading && runningCount === 0 ? '…' : `${runningCount} running`;
 
   const lanes = [
     { id: 'routines' as const, label: 'Routines', value: routineValue, icon: CalendarClock },

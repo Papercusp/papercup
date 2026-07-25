@@ -55,6 +55,8 @@ import {
   Send,
 } from 'lucide-react';
 import { useNavigate } from '@tanstack/react-router';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import { Tooltip } from '@/app/harness/Tooltip';
 // Relative, not `@/…`: the `@` alias points at the operator (Next) tree, so an
 // intra-operator-vite import must be a relative path or it won't resolve.
 import {
@@ -662,6 +664,7 @@ export default function ConversationsTab({ active }: { active: boolean }) {
       void navigate({ to: '/adv', search: (prev: Record<string, unknown>) => ({ ...prev, ...advSearchFor(row) }) });
     };
     return (
+      <TooltipPrimitive.Provider delayDuration={250}>
       <div className="pclsb-conv" data-testid="conversations-pane">
         <div className="pclsb-conv__backrow">
           <button
@@ -673,16 +676,20 @@ export default function ConversationsTab({ active }: { active: boolean }) {
             <ArrowLeft size={11} aria-hidden /> Conversations
           </button>
           <span className="pclsb-conv__spacer" />
-          <button
-            type="button"
-            className="pclsb-conv__chip"
-            aria-label="Open in the full Conversations view"
-            title="Open in the full Conversations view"
-            onClick={openWide}
-            data-testid="conversation-open-wide"
-          >
-            <ArrowUpRight size={11} aria-hidden />
-          </button>
+          {/* The shared Tooltip primitive, not a native `title=` — the design
+              lint bans title-only tooltips on buttons (they are invisible to
+              touch and slow to appear). */}
+          <Tooltip label="Open in the full Conversations view" side="right">
+            <button
+              type="button"
+              className="pclsb-conv__chip"
+              aria-label="Open in the full Conversations view"
+              onClick={openWide}
+              data-testid="conversation-open-wide"
+            >
+              <ArrowUpRight size={11} aria-hidden />
+            </button>
+          </Tooltip>
         </div>
         {selected.source === 'threads' ? (
           <QuestionDetail id={selected.id} summary={selectedRow} />
@@ -694,6 +701,7 @@ export default function ConversationsTab({ active }: { active: boolean }) {
           <MessageDetailBody id={selected.id} summary={selectedRow} />
         )}
       </div>
+      </TooltipPrimitive.Provider>
     );
   }
 

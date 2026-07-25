@@ -121,6 +121,40 @@ function startPackagedMcpProxy(): void {
   });
 }
 
+/**
+ * WI-5441/WI-5764: await this BETWEEN `runBootstrap()` and
+ * `startRequestServers()` (see hono-host.ts's onWorker) so no HTTP write can
+ * reach a table whose federation-capture trigger a still-applying migration
+ * set hasn't created yet — the root cause su-72ce40f2 diagnosed for the
+ * boot-window class of WI-5441 (WI-5441 post 53143).
+ *
+ * A request-only host (PAPERCUSP_BACKGROUND_WORKERS=0 — the :3170 staging
+ * operator, or a cluster-mode worker) never runs `applyPendingMigrationsAtBoot`
+ * itself, so it returns immediately without waiting: migrations there are the
+ * background-workers host's job, not this process's. On a backgroundWorkers
+ * host it polls the boot-gate flag flipped right after
+ * `applyPendingMigrationsAtBoot()` returns (see the substrate-boot IIFE
+ * above), and — matching this whole boot path's log-and-continue
+ * philosophy — a timeout is logged and swallowed rather than wedging boot:
+ * a permanently-stuck flag (e.g. because `backgroundWorkersEnabled()` raced
+ * true→false, which does not happen in practice) must never turn into a
+ * process that never serves traffic.
+ */
+export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void> {
+  if (!backgroundWorkersEnabled()) return;
+  try {
+    const { awaitMigrationsAppliedForRequestGate } = await import(
+      '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
+    );
+    await awaitMigrationsAppliedForRequestGate({ timeoutMs });
+  } catch (e) {
+    console.warn(
+      `[host-bootstrap] migrations-applied request gate did not flip within ${timeoutMs}ms — starting the request server anyway (non-fatal; WI-5441/WI-5764 boot-window guard degrades open, it never wedges boot):`,
+      e instanceof Error ? e.message : e,
+    );
+  }
+}
+
 export function runBootstrap(): void {
   const g = globalThis as GuardedGlobal;
   if (g[GUARD_KEY]) return;
@@ -976,6 +1010,31 @@ export function runBootstrap(): void {
       // substrate (which reads those tables) starts.
       const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
       await applyPendingMigrationsAtBoot();
+      // WI-5441/WI-5764 (public-release boot-window federation-capture-hole
+      // guard): flip the request-serving gate the INSTANT migrations are
+      // applied — i.e. the instant every table's substrate_outbox capture
+      // trigger is guaranteed live — deliberately BEFORE the rest of this IIFE
+      // (system-principals healing, bench reapers, the substrate boot itself
+      // below) runs. hono-host.ts's onWorker awaits this (via
+      // waitForBootMigrationGate) before calling startRequestServers(), so no
+      // HTTP write can land on a table whose capture trigger a still-applying
+      // migration set hasn't created yet (su-72ce40f2's WI-5441 diagnosis,
+      // WI-5441 post 53143: startRequestServers() previously ran unconditionally
+      // right after this whole substrate-boot IIFE was fired-and-forgotten, with
+      // no ordering guarantee against a slow/large migration run). Never throws
+      // (applyPendingMigrationsAtBoot is documented never-throw; this call is
+      // synchronous besides), so it never risks silently skipping the flip.
+      try {
+        const { markMigrationsAppliedForRequestGate } = await import(
+          '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
+        );
+        markMigrationsAppliedForRequestGate();
+      } catch (e) {
+        console.warn(
+          '[boot-migrate] failed to flip the request-serving migrations gate (non-fatal — request server proceeds on its own timeout):',
+          e instanceof Error ? e.message : e,
+        );
+      }
 
       // [EI-2048] Self-heal system-principal capability drift on boot. A cap added in
       // code (e.g. operator's memory + locks grant) reaches an ALREADY-provisioned row

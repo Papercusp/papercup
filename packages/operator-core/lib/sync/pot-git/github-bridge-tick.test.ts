@@ -47,6 +47,7 @@ const cleanEgress = (over: Partial<EgressResult> = {}): EgressResult => ({
   upToDate: [],
   rejectedNonFF: [],
   blockedSecrets: [],
+  exemptedFindings: [],
   tagsPushed: [],
   tagsRejected: [],
   errors: [],

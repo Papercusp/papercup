@@ -388,6 +388,8 @@ export default function SwarmTab({ active }: { active: boolean }) {
   return (
     <div className="pclsb-panel" data-testid="left-sidebar-swarm">
       <div className="pclsb-panel__bar">
+        {/* Same warm-up guard as the Agents lane value: a present-but-empty first
+            read must not render a confident "· 0 live" over a live fleet. */}
         <span className="pclsb-panel__bar-label">{t('fleet', { lower: true })} · {running.length} live</span>
       </div>
 

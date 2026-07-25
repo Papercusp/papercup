@@ -27,7 +27,7 @@ import './boot-flag-store';
 import cluster from 'node:cluster';
 import { serve, createAdaptorServer } from '@hono/node-server';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
-import { runBootstrap } from './host-bootstrap';
+import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
@@ -514,17 +514,32 @@ const clusterHandle = sidecarMode ? null : startCluster({
     // then start the HTTP/loop servers. In single mode this is the same process as
     // onPrimary, so runBootstrap no-ops the second call.
     runBootstrap();
-    startRequestServers();
-    // Heartbeat the primary so the cluster-lag-watchdog can detect a SYNCHRONOUS wedge
-    // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
-    // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
-    if (clusterWorkers > 1 && clusterLagWatchdogArmed()) startWorkerHeartbeat();
-    // EI-8816: cache the primary's periodic booted-handles broadcast so this
-    // request-only worker's substrate-status reads aren't a silent blind spot
-    // (the substrate boots only on the primary; this worker's own listBootedHandles()
-    // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
-    // opt-in perf feature (unlike the lag watchdog above).
-    if (clusterWorkers > 1) startWorkerBootedHandlesCache();
+    // WI-5441/WI-5764 (public-release boot-window federation-capture-hole guard):
+    // do NOT start accepting HTTP traffic until this process's own boot migrations
+    // have applied (a no-op wait on a request-only/cluster-worker host — see
+    // waitForBootMigrationGate's doc). Previously startRequestServers() ran
+    // unconditionally right here, immediately after the fire-and-forget
+    // runBootstrap() call, with NO ordering guarantee against the still-running
+    // migration IIFE it kicked off — so a write could land on a table whose
+    // federation-capture trigger a slow/large migration set hadn't created yet,
+    // permanently and silently never federating (su-72ce40f2's diagnosis, WI-5441
+    // post 53143). fire-and-forget here is intentional and safe: onWorker's
+    // declared return type is `() => void` and cluster-fork.ts never awaits it
+    // (see StartClusterOpts), and waitForBootMigrationGate degrades open on its
+    // own timeout, so this can never wedge boot.
+    void waitForBootMigrationGate().finally(() => {
+      startRequestServers();
+      // Heartbeat the primary so the cluster-lag-watchdog can detect a SYNCHRONOUS wedge
+      // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
+      // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
+      if (clusterWorkers > 1 && clusterLagWatchdogArmed()) startWorkerHeartbeat();
+      // EI-8816: cache the primary's periodic booted-handles broadcast so this
+      // request-only worker's substrate-status reads aren't a silent blind spot
+      // (the substrate boots only on the primary; this worker's own listBootedHandles()
+      // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
+      // opt-in perf feature (unlike the lag watchdog above).
+      if (clusterWorkers > 1) startWorkerBootedHandlesCache();
+    });
   },
   // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers
   // exits within the boot grace window and NONE ever stays up — an UNBOOTABLE build

@@ -51,14 +51,41 @@
  * ADD-only via each ensure*Routine's own upsert (existing rows — including a
  * human-edited active/config — are preserved by upsertRoutine's ON CONFLICT
  * update, which only ever refreshes trigger_config/target_role/active).
+ *
+ * WORKSPACE — SINGLE home workspace, resolved via `activeWorkspaceId()`
+ * (workspace-registry.ts), NEVER "every workspace in the registry" (WI-5771,
+ * found live 2026-07-25 mid-P-407 rig-verify prep): `installSlug` above is a
+ * SINGLE fixed value (operatorHomeHarnessSlug() — env-pinned, workspace-
+ * agnostic), so the workspace these routines seed under must ALSO be the
+ * one true home workspace, not a loop variable. `harness_shared.routines`
+ * still carries the PHASE-1 GLOBAL `UNIQUE(install_slug, name)` (see
+ * routines-runtime.ts's upsertRoutine doc — phase-2 per-workspace coexistence
+ * is a separate migration), so calling ensure*Routine once per registry
+ * workspace_id for the SAME fixed installSlug does not create N rows — it
+ * repeatedly UPSERTS THE SAME (install_slug, name) row, and upsertRoutine's
+ * ON CONFLICT DO UPDATE deliberately never touches `workspace_id` (the
+ * EI-2019 anti-clobber fix — the FIRST insert wins, permanently). Iterating
+ * boot-all's full `workspaceIds` (which includes non-federating/legacy
+ * partitions like 'default' and '*' — see resolveP2pGrantWorkspace,
+ * grant-store.ts) meant whichever of those happened to be first in an
+ * unordered registry scan won the row FOREVER: on this host that landed
+ * `p2p-foreign-supervision`/`p2p-work-intake` on workspace_id='default',
+ * which `resolveP2pGrantWorkspace` explicitly treats as unresolvable — so
+ * every ~60s tick refused with `workspace_unresolved` and the sweep never
+ * once actually ran, silently, since the routine started firing. Mirrors the
+ * already-correct pattern in seed-p2p-perf-routines.ts (same "home harness
+ * singleton routine" concern), which resolves via this SAME `activeWorkspaceId()`
+ * and lands cleanly on `papercusp-workspace`.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { projectDirForSlug } from '../operator-notes';
+import { activeWorkspaceId } from '../workspace-registry';
 import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import { resolveDeviceKeychainId, machineFingerprint } from '../identity/device-keychain-id';
+import { resolveP2pGrantWorkspace } from './grant-store';
 import { ensureSweepOrphanedForeignHarnessesRoutine } from '../harness/routines/sweep-orphaned-foreign-harnesses-action';
 import { ensureP2pForeignSupervisionRoutine } from '../harness/routines/foreign-supervision-action';
 import { ensureWorkIntakeRoutine } from '../harness/routines/work-intake-action';
@@ -184,28 +211,47 @@ export function _resetEnsureP2pHostRoutinesForTests(): void {
  * Once-per-process, best-effort, fire-and-forget boot hook — mirrors
  * ensureGitSyncRoutinesReconciledOnce's posture exactly (boot-all.ts's
  * sibling hygiene block). A seeding failure must NEVER affect harness boot.
+ *
+ * `workspaceIds` (boot-all's full registry list) is accepted for call-site
+ * compatibility with the other hygiene hooks in that block, but deliberately
+ * IGNORED for seeding — see the module doc's WORKSPACE note: these are
+ * THIS host's ONE home-harness routines, so the workspace they seed under is
+ * resolved via `activeWorkspaceId()` (the same singleton resolver
+ * seed-p2p-perf-routines.ts already uses for the identical concern), never a
+ * loop over every registry partition. When the resolved workspace is itself
+ * unresolvable for p2p writes (resolveP2pGrantWorkspace — e.g. the legacy
+ * 'default'/'*' partitions), this loudly skips rather than seeding a routine
+ * that would refuse on every fire.
  */
-export function ensureP2pHostRoutinesSeededOnce(workspaceIds: string[]): void {
+export function ensureP2pHostRoutinesSeededOnce(workspaceIds?: string[]): void {
+  void workspaceIds; // intentionally unused — see doc comment above
   if (seededOnce) return;
   seededOnce = true;
   void (async () => {
-    for (const workspaceId of workspaceIds) {
-      try {
-        const result = await ensureP2pHostRoutinesForWorkspace(workspaceId);
-        if (result.skippedReasons.length) {
-          console.log(
-            `[p2p-host-routines] ${workspaceId}: partial seed (sweep=${result.sweepSeeded} supervision=${result.supervisionSeeded} workIntake=${result.workIntakeSeeded}) — ${result.skippedReasons.join('; ')}`,
-          );
-        } else {
-          console.log(
-            `[p2p-host-routines] ${workspaceId}: seeded sweep+supervision+work-intake for installSlug '${result.installSlug}'.`,
-          );
-        }
-      } catch (err) {
+    const active = activeWorkspaceId();
+    const workspaceId = resolveP2pGrantWorkspace(active);
+    if (!workspaceId) {
+      console.log(
+        `[p2p-host-routines] skipped: activeWorkspaceId() resolved to '${active}', which is not a valid p2p ` +
+          `workspace partition (resolveP2pGrantWorkspace) — refusing to seed a routine that would only ever refuse.`,
+      );
+      return;
+    }
+    try {
+      const result = await ensureP2pHostRoutinesForWorkspace(workspaceId);
+      if (result.skippedReasons.length) {
         console.log(
-          `[p2p-host-routines] ${workspaceId}: seed failed — ${err instanceof Error ? err.message : String(err)}`,
+          `[p2p-host-routines] ${workspaceId}: partial seed (sweep=${result.sweepSeeded} supervision=${result.supervisionSeeded} workIntake=${result.workIntakeSeeded}) — ${result.skippedReasons.join('; ')}`,
+        );
+      } else {
+        console.log(
+          `[p2p-host-routines] ${workspaceId}: seeded sweep+supervision+work-intake for installSlug '${result.installSlug}'.`,
         );
       }
+    } catch (err) {
+      console.log(
+        `[p2p-host-routines] ${workspaceId}: seed failed — ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   })();
 }

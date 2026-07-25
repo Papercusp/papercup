@@ -1603,7 +1603,7 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
     }
   });
 
-  it('a healthy tick does not read recent ticks or self-escalate', async () => {
+  it('a healthy signal-bearing tick reads the prior tick for the delta gate but does not self-escalate', async () => {
     let readCalled = false;
     const { calls, capture } = captureRecorder();
     const res = await runTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
@@ -1612,9 +1612,13 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
       recordTick: async () => {},
       readRecentTicks: async () => { readCalled = true; return []; },
     });
-    expect(res.selfEscalations).toEqual([]);
-    expect(readCalled).toBe(false); // short-circuited: nothing failed this tick
-    expect(calls).toHaveLength(1); // only the real signal capture
+    expect(res.selfEscalations).toEqual([]); // nothing failed → no self-escalation
+    // The P-003 delta gate (watchdog-churn-delta-gate-2026-07-25) diffs this tick's signals
+    // against the previous ran tick's seenKeys, so a signal-bearing tick now takes ONE shared
+    // prior-tick read even when no collector failed. The old "no read unless something failed"
+    // short-circuit predated the delta gate; the read fails OPEN here (no prior → [] → fresh).
+    expect(readCalled).toBe(true);
+    expect(calls).toHaveLength(1); // only the real signal capture, still filed (fresh)
   });
 
   it('caps self-escalations per tick (maxSelfEscalationsPerTick)', async () => {

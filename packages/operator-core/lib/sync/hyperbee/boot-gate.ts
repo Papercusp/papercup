@@ -18,6 +18,20 @@
 interface EnsureFlags {
   sql_migrations_complete?: boolean;
   runtime_ensure_complete?: boolean;
+  /**
+   * WI-5441/WI-5764 boot-window federation-capture-hole guard: flips the
+   * instant `applyPendingMigrationsAtBoot()` returns (host-bootstrap.ts),
+   * BEFORE the rest of the substrate-boot IIFE (system-principals healing,
+   * bench reapers, substrate boot itself) runs — deliberately a narrower,
+   * earlier signal than sql_migrations_complete/runtime_ensure_complete
+   * above (those additionally wait on the substrate boot-gate flip, which is
+   * unrelated and would delay request-serving for no reason). Only a
+   * backgroundWorkers-enabled process ever sets this; a request-only host
+   * (PAPERCUSP_BACKGROUND_WORKERS=0) never runs applyPendingMigrationsAtBoot()
+   * itself and must not wait on it — see waitForBootMigrationGate in
+   * host-bootstrap.ts, which checks backgroundWorkersEnabled() first.
+   */
+  request_gate_migrations_applied?: boolean;
 }
 
 declare global {
@@ -37,6 +51,16 @@ export function markSqlMigrationsComplete(): void {
 
 export function markRuntimeEnsureComplete(): void {
   flags().runtime_ensure_complete = true;
+}
+
+/** WI-5441/WI-5764: see the field doc on `request_gate_migrations_applied`. */
+export function markMigrationsAppliedForRequestGate(): void {
+  flags().request_gate_migrations_applied = true;
+}
+
+/** WI-5441/WI-5764: see the field doc on `request_gate_migrations_applied`. */
+export function isMigrationsAppliedForRequestGate(): boolean {
+  return flags().request_gate_migrations_applied === true;
 }
 
 export function isReadyForProjection(): boolean {
@@ -62,6 +86,27 @@ export async function awaitEnsurePaths(opts: AwaitOpts = {}): Promise<void> {
   const pollMs = opts.pollMs ?? 100;
   const start = Date.now();
   while (!isReadyForProjection()) {
+    const elapsed = Date.now() - start;
+    if (elapsed >= timeoutMs) {
+      throw new BootGateTimeoutError({ ...flags() }, elapsed);
+    }
+    await new Promise<void>((r) => setTimeout(r, pollMs));
+  }
+}
+
+/**
+ * WI-5441/WI-5764: poll until `markMigrationsAppliedForRequestGate()` has
+ * fired, or throw a BootGateTimeoutError past `timeoutMs`. Deliberately
+ * separate from `awaitEnsurePaths` (which additionally waits on the
+ * substrate boot-gate) — see the field doc on `request_gate_migrations_applied`.
+ * Callers in host-bootstrap.ts treat a timeout as non-fatal (log + serve
+ * anyway) to match this whole boot path's log-and-continue philosophy.
+ */
+export async function awaitMigrationsAppliedForRequestGate(opts: AwaitOpts = {}): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const pollMs = opts.pollMs ?? 50;
+  const start = Date.now();
+  while (!isMigrationsAppliedForRequestGate()) {
     const elapsed = Date.now() - start;
     if (elapsed >= timeoutMs) {
       throw new BootGateTimeoutError({ ...flags() }, elapsed);

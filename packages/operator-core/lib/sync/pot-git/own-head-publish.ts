@@ -46,9 +46,10 @@ import {
 } from './storage';
 import { WORK_REF } from './integrator';
 import {
-  checkPublishGuard,
+  type IncrementalPublishResolution,
   type PublishGuardCaps,
   type PublishGuardResult,
+  resolveIncrementalPublishSha,
 } from './publish-guard';
 import type { SecretFinding } from './secrets-guard';
 
@@ -101,10 +102,25 @@ export interface OwnHeadPublishTickOutcome {
   headSha: string | null;
   /** The namespace ref's prior sha (null on first-ever publish). */
   priorSha: string | null;
-  /** Set when the G-10 guard REFUSED the range — the ref was NOT written,
-   *  nothing became servable; safe to retry after the offending commit is
-   *  removed. Deliberate refusal, not an error. */
+  /** Set when the G-10 guard REFUSED a commit for a HARD reason (oversized
+   *  blob / secret). WI-5738: this no longer implies nothing was published —
+   *  the range is drained up to the offending commit first, so check
+   *  `publishedSha`/`changed` for what DID become servable. Deliberate
+   *  refusal, not an error. */
   refused: PublishGuardResult | null;
+  /** WI-5738: the exact commit a hard refusal stopped at (null when none).
+   *  Attribution is now one commit, not "somewhere in this range". */
+  blockedAtCommit?: string | null;
+  /** WI-5738: true when the publish advanced but did NOT reach the worktree
+   *  head — a volume cap split the range and the remainder drains on
+   *  following ticks. Not an error; a healthy partial publish. */
+  drained?: boolean;
+  /** WI-5738: a single commit that alone exceeds the volume caps and so cannot
+   *  be split. It IS published (refusing it forever is the outage this
+   *  replaces); named here so the health layer can raise it. */
+  oversizedCommit?: string | null;
+  /** WI-5738: the sha actually written to the namespace ref this tick. */
+  publishedSha?: string | null;
   /** Secret findings suppressed by a runtime path exemption this tick (WI-5591)
    *  — populated whether the publish ultimately admitted or was refused for a
    *  DIFFERENT reason, so an exemption's use is always visible for audit. */
@@ -210,9 +226,18 @@ export async function runOwnHeadPublishTick(
   // genuinely unexposed delta instead of refusing the whole history (see
   // genesisBaselineSha).
   const guardBaseline = priorSha ?? input.genesisBaselineSha ?? null;
-  let guard: PublishGuardResult;
+  // WI-5738: resolve the furthest PUBLISHABLE sha instead of taking an
+  // all-or-nothing verdict on the whole range. A volume refusal
+  // (total-over-cap / object-flood) used to be TERMINAL here: the baseline
+  // below advances ONLY via writeNamespaceRef, which runs ONLY after guard.ok
+  // — so the baseline could only move through the publish it was blocking,
+  // while every new commit enlarged the refused range (2261MB → 2415MB over
+  // five days of total p2p outage, 2026-07-20). Now the range drains
+  // incrementally, and a HARD refusal (oversized blob / secret) stops at the
+  // exact offending commit with everything before it published.
+  let resolution: IncrementalPublishResolution;
   try {
-    guard = await checkPublishGuard({
+    resolution = await resolveIncrementalPublishSha({
       repoPath,
       fromOid: guardBaseline,
       toOid: headSha,
@@ -224,8 +249,23 @@ export async function runOwnHeadPublishTick(
     errors.push(`publish guard threw (refusing, fail-closed): ${e instanceof Error ? e.message : e}`);
     return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };
   }
-  if (!guard.ok) {
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: guard, exemptedFindings: guard.exemptedFindings, errors };
+  errors.push(...resolution.errors);
+  const guard = resolution.blocked?.result ?? null;
+  const exemptedFindings = guard?.exemptedFindings ?? [];
+  const publishSha = resolution.safeSha;
+  const base = {
+    ran: true as const,
+    branch,
+    headSha,
+    priorSha,
+    blockedAtCommit: resolution.blocked?.commit ?? null,
+    oversizedCommit: resolution.oversizedCommit,
+    exemptedFindings,
+    errors,
+  };
+  // No forward progress at all — a hard refusal, reported exactly as before.
+  if (!publishSha || publishSha === priorSha) {
+    return { ...base, changed: false, drained: false, publishedSha: null, refused: guard };
   }
 
   try {
@@ -233,13 +273,13 @@ export async function runOwnHeadPublishTick(
       repoPath,
       input.devicePubkeyBase64,
       branchRef,
-      headSha,
+      publishSha,
       runGit,
       priorSha ?? undefined,
     );
   } catch (e) {
     errors.push(`namespace ref CAS write failed: ${e instanceof Error ? e.message : e}`);
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: guard.exemptedFindings, errors };
+    return { ...base, changed: false, drained: false, publishedSha: null, refused: null };
   }
 
   // The integrator gates member heads at the canonical WORK_REF, not the
@@ -249,12 +289,14 @@ export async function runOwnHeadPublishTick(
   if (branchRef !== WORK_REF) {
     try {
       const workPrior = await readNamespaceRef(repoPath, input.devicePubkeyBase64, WORK_REF, runGit);
-      if (workPrior !== headSha) {
+      // WI-5738: the alias tracks what was ACTUALLY published (publishSha),
+      // never the unjudged head — on a partial drain those differ.
+      if (workPrior !== publishSha) {
         await writeNamespaceRef(
           repoPath,
           input.devicePubkeyBase64,
           WORK_REF,
-          headSha,
+          publishSha,
           runGit,
           workPrior ?? undefined,
         );
@@ -263,5 +305,11 @@ export async function runOwnHeadPublishTick(
       errors.push(`WORK_REF alias write failed (branch ref published): ${e instanceof Error ? e.message : e}`);
     }
   }
-  return { ran: true, changed: true, branch, headSha, priorSha, refused: null, exemptedFindings: guard.exemptedFindings, errors };
+  return {
+    ...base,
+    changed: true,
+    drained: !resolution.complete,
+    publishedSha: publishSha,
+    refused: guard,
+  };
 }

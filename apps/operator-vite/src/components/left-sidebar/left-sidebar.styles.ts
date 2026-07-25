@@ -1480,7 +1480,6 @@ body.has-left-sidebar .pc-header {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: var(--fg-mute, #7f9bb4);
 }
 .pclsb-conv__count {
@@ -1649,7 +1648,6 @@ body.has-left-sidebar .pc-header {
 .pclsb-conv__src {
   font-size: 9.5px;
   font-weight: 780;
-  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--src);
   white-space: nowrap;
@@ -1797,7 +1795,6 @@ body.has-left-sidebar .pc-header {
   display: block;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--co);
   margin-bottom: 3px;
 }
@@ -1816,7 +1813,6 @@ body.has-left-sidebar .pc-header {
   font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
   color: var(--fg-mute, #7f9bb4);
 }
 .pclsb-conv__seclabel::after {
@@ -2002,7 +1998,6 @@ body.has-left-sidebar .pc-header {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 /* Collapsed, Ask is a single clickable row — the disclosure header IS the
    button, so the dense Routines lane pays one row for it. */
@@ -2022,7 +2017,6 @@ body.has-left-sidebar .pc-header {
   font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: var(--fg-mute, #7f9bb4);
   margin-top: 2px;
 }
