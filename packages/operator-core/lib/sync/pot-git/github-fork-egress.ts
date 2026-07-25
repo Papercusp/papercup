@@ -130,6 +130,12 @@ export async function egressRatifiedRequestAsForkPr(input: ForkEgressInput): Pro
         remoteUrl: forkPushUrl(args.forkFullName, args.token),
         refs: [{ sha: req.headSha, remoteRef: `refs/heads/${args.branch}` }],
         runGit,
+        // This branch NAMES one ratified head, so the WI-5738 drain semantic
+        // (publish the verified prefix when the scan stops early) is wrong
+        // here: it would leave a branch on the fork misrepresenting what was
+        // ratified, right after refusing with "nothing left the machine".
+        // All-or-nothing — the message below is then literally true.
+        requireExactTarget: true,
       });
       if (egress.blockedSecrets.length > 0) {
         const b = egress.blockedSecrets[0];

@@ -381,4 +381,62 @@ describe('github-egress WI-5738 — incremental scan, partial progress, exemptio
     }
     expect(last).toBe(target); // fully drained — never a permanent refusal
   });
+
+  /**
+   * EI-18655490965643060 recurrence guard. readScannableBlobs used to spawn
+   * `cat-file -s` + `cat-file -p` PER BLOB, serially — so the scan cost 2xB
+   * sequential git process spawns. On the live backlog that was ~5m15s for one
+   * budget slice, and because the leg runs inside the git-sync DBOS workflow on
+   * the routines-critical queue it blocked every subsequent git-sync fire for
+   * the harness, presenting exactly like a wedged pipeline.
+   *
+   * The invariant is the one that matters: blob reads are BATCHED, so the spawn
+   * count is O(1) in the number of blobs, not O(B). Asserting a small constant
+   * (rather than a ratio) is what makes the per-blob shape impossible to
+   * reintroduce silently.
+   */
+  it('reads blobs in a BOUNDED number of git spawns — O(1) in blob count, not O(B)', async () => {
+    const manyBlobs = join(root, 'many');
+    const initMany = await defaultRunGit(['init', '-q', '-b', 'main', manyBlobs], root);
+    expect(initMany.code, initMany.stderr).toBe(0);
+
+    const BLOBS = 40;
+    for (let i = 0; i < BLOBS; i++) {
+      await writeFile(join(manyBlobs, `f${i}.txt`), `content number ${i}\n`);
+    }
+    const add = await defaultRunGit(['add', '-A'], manyBlobs);
+    expect(add.code, add.stderr).toBe(0);
+    const commit = await defaultRunGit(
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'many blobs'],
+      manyBlobs,
+    );
+    expect(commit.code, commit.stderr).toBe(0);
+    const target = (await defaultRunGit(['rev-parse', 'HEAD'], manyBlobs)).stdout.trim();
+
+    const manyStore = await ensurePotGitRepo('hive-bridge', 'repo-many');
+    const manyNsRef = namespaceRefPath(integrator, STAGING_REF);
+    await publishToStore(manyStore, manyBlobs, 'main', manyNsRef);
+
+    const manyOrigin = join(root, 'origin-many.git');
+    const initManyOrigin = await defaultRunGit(['init', '--bare', '-q', manyOrigin], root);
+    expect(initManyOrigin.code, initManyOrigin.stderr).toBe(0);
+
+    let stdinSpawns = 0;
+    const { defaultRunGitStdin } = await import('./storage');
+    const r = await egressCanonicalRefs({
+      repoPath: manyStore,
+      remoteUrl: manyOrigin,
+      refs: [{ sha: target, remoteRef: 'refs/heads/staging' }],
+      runGitStdin: async (args, cwd, stdin, opts) => {
+        stdinSpawns += 1;
+        return defaultRunGitStdin(args, cwd, stdin, opts);
+      },
+    });
+    // The scan must actually have happened (otherwise the assertion is vacuous).
+    expect(r.errors).toEqual([]);
+    expect(stdinSpawns).toBeGreaterThan(0);
+    // 40 blobs in ONE commit ⇒ at most 2 batched spawns (batch-check + batch).
+    // The old per-blob shape would have been 80.
+    expect(stdinSpawns).toBeLessThanOrEqual(2);
+  });
 });

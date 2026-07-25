@@ -609,6 +609,19 @@ ship-with-limitation rows, each with an accountable tracker:
   filed alongside this test (search `work_items` for "WI-971 live two-peer
   from-repo content roundtrip").
 
+  **CLOSED — live two-peer proof landed 2026-07-25 (WI-5775/WI-5628).** Two live
+  `two-instance-hive-from-repo-smoke.sh` runs (plain, and with the gate's exact
+  `WITNESS_PROBE=1 PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1` flags) against a real
+  built `.deb` in sidecar-bundle fallback mode both report `OVERALL: PASS`:
+  create/announce/discover/join/join-clone all PASS, and — the WI-971-specific
+  proof — `federate-A→B`, `federate-B→A`, and `federate-A→B #2` (continuous,
+  post-join) all PASS. `live-federation-gate.sh`'s `SKIP_FROMREPO` default stays
+  `1` (a separate, standing decision — WI-5629 — not reopened by this fix), but
+  its stale "expected WI-971 red" framing has been corrected: a from-repo RED is
+  now a genuine regression. (The gate-flags run's WITNESS sub-probe separately
+  surfaced an unrelated AK-ban enforcement gap — tracked as WI-5783, not a
+  WI-971 regression.)
+
 ### 11. Boot-window / silent-re-federation data-loss class for CDC-captured tables (WI-5441) — CONSCIOUSLY WAIVED for public release (2026-07-25, WI-5764)
 
 **Symptom (demonstrated live, 5+ independent repros across 2026-07-18/19):** a row

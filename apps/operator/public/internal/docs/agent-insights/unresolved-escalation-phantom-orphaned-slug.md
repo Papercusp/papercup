@@ -244,3 +244,41 @@ git-sync-watchdog:
 4. **The durable class-fix** — debouncing `collectEscalationSignals` so it does not file inside the
    mcp-dark recovery window — touches the **self-improvement loop's own code** (a protected surface),
    and is the same debounce already filed as **EI-8671** (human-gated). Do NOT auto-fix it.
+
+## The `github-bridge` phase — a self-clearing recovery-window phantom on a bridged hive (EI-18150552284724662)
+
+A fourth recurring flavor, key `escalation:<hive>:github-bridge` (phase `github-bridge`, e.g.
+`escalation:oddsmith-hive:github-bridge`), is written by the **GitHub-bridge divergence policy**
+(`recordDivergenceVerdict` in `sync/pot-git/github-divergence.ts`, `GITHUB_BRIDGE_ESCALATION_PHASE =
+'github-bridge'`) when a bridged hive's managed repo diverges from its GitHub origin (origin is never
+force-pushed — divergence is REPORTED-not-applied). Like `git-sync-watchdog` and `mcp-dark-int`, it
+**self-clears**: the very next **clean** bridge pass classifies `action: 'clear'` and nulls the row —
+
+```sql
+UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $now
+ WHERE harness_slug = $hive AND phase = 'github-bridge'
+   AND escalation IS NOT NULL AND (escalation::jsonb ->> 'kind') = 'github-bridge-divergence'
+```
+
+The improvement-watchdog simply filed the EI **inside that window** — after the diverging tick wrote
+the row and before the next clean tick cleared it. (Observed 2026-07-20: `oddsmith-hive`/`github-bridge`
+row written \~04:15, EI captured 04:15:15, row cleared 04:23:20; the collector then returned 0 rows.)
+
+The drill is the same "verify recovery, no manual clear needed if already null" path as git-sync-watchdog /
+mcp-dark-int:
+
+1. **Verify the PG row is already NULL** for that phase (the clean pass cleared it):
+   ```sql
+   SELECT COALESCE(escalation,'')<>'' AS has_esc, length(coalesce(escalation,'')) AS esc_len, mtime_ms
+     FROM harness_shared.harness_escalations
+    WHERE harness_slug = '<hive>' AND phase = 'github-bridge';
+   ```
+   `has_esc = false` (esc\_len 0) with an `mtime_ms` **after** the EI's `createdAt` ⇒ a clean bridge tick
+   cleared it. `collectEscalationSignals` gates on `COALESCE(e.escalation,'') <> ''`, so a NULL row is
+   never selected → it cannot re-dispatch. Reproducing the collector's own condition returns 0 rows —
+   that IS the verification for this state-only fix.
+2. **Resolve `fixed`** with that evidence (state-only, zero code diff). Do **not** try to "fix" the
+   GitHub bridge or force any push — divergence is deliberately reported-not-applied (S-4), and it
+   already cleared.
+3. **The durable class-fix** is the same debounce-`collectEscalationSignals`-against-a-self-clear-window
+   idea already filed as **EI-8671** (human-gated, touches the self-improvement loop). Do NOT auto-fix it.

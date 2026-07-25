@@ -4386,6 +4386,33 @@ export async function resolveWorkItemRef(targetId: string, harness?: string): Pr
   return wi ? workItemObjectRef(wi) : null;
 }
 
+/**
+ * EI-18654138087054247: mirror a topic tag into the tag field the CLAIM-SPEC
+ * evaluators read (`tags` column for feature-family, `payload.tags` for
+ * issue-family). Without this, a tag lands ONLY in the coord tag store, which
+ * neither evaluator reads — so `work_items:tag` reported ok, `work_items:get
+ * { detail:true }`.topics showed the topic, and the item still failed fleet
+ * admission with `fleet_scope_violation`. Shared by tag/untag AND the create
+ * path, so a topic is claim-visible however it was applied.
+ */
+async function mirrorTopicTagToClaimTags(
+  wi: WorkItem,
+  topic: string,
+  opts: { remove?: boolean } = {},
+): Promise<void> {
+  const { syncTopicTagToClaimTags } = await import('./work-item-topic-tags');
+  const workspaceId =
+    wi.family === 'issue' ? await resolveIssueWorkspace(wi.id, activeWorkspaceId()) : activeWorkspaceId();
+  await syncTopicTagToClaimTags({
+    id: wi.id,
+    family: wi.family,
+    workspaceId,
+    harness: wi.harness,
+    topic,
+    remove: opts.remove === true,
+  });
+}
+
 /** Taggable.addTag / removeTag (topic tags via coord_links rel='tagged'). */
 export async function tagWorkItem(
   id: string,
@@ -4396,6 +4423,7 @@ export async function tagWorkItem(
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await tagIssue(id, topic, opts.by);
   else await tags.addTag(workItemObjectRef(wi), topic, { created_by: opts.by, created_ts: nowIso() });
+  await mirrorTopicTagToClaimTags(wi, topic);
   return { ok: true };
 }
 export async function untagWorkItem(
@@ -4407,6 +4435,7 @@ export async function untagWorkItem(
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await untagIssue(id, topic);
   else await tags.removeTag(workItemObjectRef(wi), topic);
+  await mirrorTopicTagToClaimTags(wi, topic, { remove: true });
   return { ok: true };
 }
 

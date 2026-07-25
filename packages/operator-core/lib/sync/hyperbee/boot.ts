@@ -48,6 +48,10 @@ import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp, type RemoteLog 
 // per merge pass, right next to the legacy checkReplicationStall sampling.
 import {
   sampleReplicationLiveness,
+  // WI-5781: the expected-but-unadmitted axis — fed from `pendingPeers`, the
+  // one signal that can see a log which never made it into `admitted` at all.
+  sampleUnadmittedPeer,
+  clearUnadmittedPeer,
   dropReplicationLogState,
   dropReplicationLiveness,
   setDhtUniverseAssertion,
@@ -2424,6 +2428,50 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           }
         }
         logs.push(versionGatedLog(slug, log));
+      }
+
+      // ── WI-5781: the EXPECTED-but-unadmitted axis ──────────────────────────
+      // Everything above samples logs from `admitted`, so the detector can only
+      // ever report on logs it already attached. A log that never gets admitted
+      // is never iterated, never sampled, and emits NOTHING — "broken" and
+      // "healthy" become the same observable (silence), and the repair ladder
+      // never runs because nothing ever detects.
+      //
+      // `pendingPeers` is precisely the set of peers we ACCEPTED an announce
+      // from and are therefore SUPPOSED to be replicating, but have not
+      // admitted. Sampling it makes that failure a first-class alarm with the
+      // same durable-EI escalation as every other axis. Best-effort and fully
+      // isolated, exactly like the per-log samples: a detector hiccup must
+      // never break the merge pass it rides on.
+      try {
+        for (const [pendingKeyHex, pendingEntry] of pendingPeers) {
+          // An admitted key should never also be pending, but clear defensively
+          // so a transient overlap can't leave a latched alarm behind.
+          if (admitted.has(pendingKeyHex)) {
+            clearUnadmittedPeer(opts.workspaceId, opts.harnessSlug, pendingKeyHex);
+            continue;
+          }
+          sampleUnadmittedPeer(
+            opts.workspaceId,
+            opts.harnessSlug,
+            {
+              keyHex: pendingKeyHex,
+              pendingSinceMs: pendingEntry.since,
+              reason: 'buffered awaiting membership (announce accepted, admission not granted)',
+            },
+            { graceMs: REPLICATION_STALL_GRACE_MS },
+          );
+        }
+        // A peer that left the pending set by being ADMITTED must clear its
+        // alarm so the durable EI auto-resolves; without this the recovery is
+        // never reported and the EI stays open after replication is healthy.
+        for (const admittedKeyHex of admitted.keys()) {
+          if (!pendingPeers.has(admittedKeyHex)) {
+            clearUnadmittedPeer(opts.workspaceId, opts.harnessSlug, admittedKeyHex);
+          }
+        }
+      } catch {
+        // diagnostic-only — swallow
       }
 
       // Log-set change detection: any cursor entry whose log is GONE from the

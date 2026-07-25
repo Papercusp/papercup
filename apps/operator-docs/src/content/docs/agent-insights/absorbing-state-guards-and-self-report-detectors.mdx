@@ -10,6 +10,7 @@ documents:
   - packages/operator-core/lib/sync/hyperbee/replication-liveness.ts
   - packages/operator-core/lib/release/origin-freshness-watchdog.ts
   - packages/operator-core/lib/sync/hyperbee/boot.ts
+  - packages/operator-core/lib/sync/hyperbee/boot-history.ts
 ---
 
 ## Why this doc exists
@@ -213,19 +214,65 @@ Read the code and it is entirely reasonable: *iterate the attached logs, sample
 each one for liveness.* But the failure mode that matters is **a log that never
 attached** — which is, by construction, not in the loop.
 
-The evidence is unusually clean, because both frames ran in the same process on
-the same host on the same build (run `20260725-153724`):
+Both frames ran on the same host on the same build (run `20260725-153415`),
+which makes the asymmetry the whole finding:
 
-| | frame a (host path) | frame b (member / join path) |
+| | frame a (owner path) | frame b (member / join path) |
 |---|---|---|
-| swarm connections | live | 43 |
-| logs attached | yes | **none** |
+| swarm connections | live | live (14 `peer_connected` per harness) |
+| received the peer's announce | yes | **yes** — `recv log=5fe26c2e0135` ×7 |
+| peer log admitted | yes | **no** |
 | detector lines emitted | 3 | **0** |
 | detector fired + repaired | yes | — |
 
-Frame b is not a false negative. **The detector never executed.** This is the
-confirmed root cause of the p2p live-federation gate reds — the
-highest-consequence instance of the four.
+Frame b is not a false negative. **The detector never executed.**
+
+**Why the member and not the owner.** The asymmetry is one line in
+`classifySameHiveMember` (`boot.ts`):
+
+```ts
+if (memberDevices.includes(devicePubkey)) return 'admit';
+return isOwner ? 'admit' : 'miss';   // member BUFFERS
+```
+
+On a membership miss the **owner admits** (a deliberate fix for a different
+deadlock) and the **member buffers**. A buffered peer then retries every ~5s for
+up to 30 minutes and is dropped with `announce_rejected` — never once producing
+a liveness alarm. And it is *circular*: the member needs the owner's
+`hive_members` row to admit the log, that row arrives via replication, and
+replication requires the admission. `memberDevices` only ever advances on
+success, so this is Shape A feeding Shape C.
+
+#### Two traps when you confirm this from banked logs
+
+Both nearly produced a wrong conclusion here.
+
+1. **`recordBootEvent` writes to an in-memory ring** — not PG, not stdout. So
+   `announce_admitted` / `announce_pending` greps return **zero hits on a
+   PASSING run exactly as on a failing one**, and the restart you are
+   investigating is the event that destroys the buffer. The absence reads as
+   signal when it is an artifact. (Fixed: the sparse forensic kinds are now
+   mirrored to stdout, so they land in the banked serve logs.)
+2. **Do not compare runs of different length or scenario scope.** The failing
+   run was a 5-minute `replication_soak`-only run; the runs it was first
+   compared against were ~30-minute full-matrix runs with ~4× the activity.
+   "Zero detector lines" looked damning until the durations were checked — it
+   only survived scrutiny because three *other* runs emitted their first
+   detector line ~45s after start, so 5 minutes was ample.
+
+The general rule: before treating **silence** as evidence, prove the detector
+would have spoken. Silence from a detector that never ran, a buffer that was
+wiped, or a window too short to alarm are four different things that look
+identical.
+
+**The fix that landed (WI-5781).** Liveness is no longer driven only by the
+admitted set. The merge pass now also samples `pendingPeers` — precisely "we
+accepted this peer's announce, so we are *supposed* to be replicating it, and we
+have not admitted it" — through a new `expected_never_admitted` axis with the
+same durable-EI escalation as every other axis. That is the Shape C fix stated
+concretely: *enumerate the expected set, alarm on the gap.* Note the expected
+set was already in memory; no roster read or new I/O was needed, which is
+typical — the expectation usually already exists somewhere, unread.
 
 ### Instance 3 — `restart_settle_barrier` (EI-18645423267952485)
 

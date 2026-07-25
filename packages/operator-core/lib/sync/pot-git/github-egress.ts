@@ -41,7 +41,13 @@
  * "origin" repos, no network.
  */
 
-import { type RunGit, NETWORK_RUN_GIT_TIMEOUT_MS, defaultRunGit } from './storage';
+import {
+  type RunGit,
+  type RunGitStdin,
+  NETWORK_RUN_GIT_TIMEOUT_MS,
+  defaultRunGit,
+  defaultRunGitStdin,
+} from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
 import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
 
@@ -86,6 +92,26 @@ export interface EgressInput {
   /** Release tags to publish (create-only). */
   tags?: EgressTag[];
   runGit?: RunGit;
+  /** Seam for the stdin-fed `cat-file --batch` plumbing the secrets scan uses
+   *  (see readScannableBlobs). Defaults to defaultRunGitStdin. */
+  runGitStdin?: RunGitStdin;
+  /**
+   * ALL-OR-NOTHING: publish `spec.sha` or publish nothing for that ref.
+   *
+   * The default (false) is the WI-5738 incremental-drain semantic the BRIDGE
+   * wants: a blocked or budget-exhausted scan still publishes the verified
+   * PREFIX, so one fat or dirty commit cannot wedge the whole backlog forever.
+   * That is right for a continuously-advancing branch like canonical staging.
+   *
+   * It is WRONG for a ref whose identity IS a specific commit — the fork PR
+   * branch (github-fork-egress) names one ratified head, so publishing a
+   * partial prefix under that name creates a branch that misrepresents what was
+   * ratified, and leaves it on the fork after a refusal that promised nothing
+   * would leave. Those callers set this true: the prefix is still computed (so
+   * blockedSecrets still reports exactly where it stopped), but nothing is
+   * pushed unless the scan verified all the way to the requested sha.
+   */
+  requireExactTarget?: boolean;
   /** Secret-scan the published delta (default true — S-2). */
   scanSecrets?: boolean;
   /** Cap on delta files scanned per ref (default DEFAULT_MAX_SCAN_FILES).
@@ -216,25 +242,71 @@ async function collectCommitBlobs(
 }
 
 /** Read a blob set as scannable text. Blobs over MAX_SCAN_BLOB_BYTES or
- *  containing NUL (binary) are skipped and counted, never silently dropped. */
+ *  containing NUL (binary) are skipped and counted, never silently dropped.
+ *
+ *  TWO git spawns TOTAL, regardless of how many blobs (EI-18655490965643060).
+ *  This used to spawn `cat-file -s` + `cat-file -p` PER BLOB, serially — so a
+ *  backlog cost 2xB sequential process spawns. Draining one 5000-blob budget
+ *  slice took ~5m15s of pure fork/exec churn (bg-host pegged near 100% CPU at
+ *  near-zero disk I/O), and because this leg runs inside the git-sync DBOS
+ *  workflow on the `routines-critical` queue, that whole window blocked every
+ *  subsequent git-sync fire for the harness — indistinguishable from a wedged
+ *  pipeline. Batched via the `cat-file --batch` family, the same shape
+ *  publish-guard.ts and foreign-mirror-quarantine.ts already use. */
 async function readScannableBlobs(
   repoPath: string,
   blobs: ReadonlyMap<string, string>,
-  runGit: RunGit,
+  runGitStdin: RunGitStdin,
 ): Promise<{ files: { path: string; content: string }[]; skippedLarge: number }> {
   let skippedLarge = 0;
   const files: { path: string; content: string }[] = [];
-  for (const [sha, path] of blobs) {
-    const size = await runGit(['cat-file', '-s', sha], repoPath);
-    if (size.code !== 0) continue; // a submodule gitlink / non-blob entry
-    if (Number(size.stdout.trim()) > MAX_SCAN_BLOB_BYTES) {
+  if (blobs.size === 0) return { files, skippedLarge };
+
+  // 1. One batch-check pass: type + size for the whole set. Non-blob entries
+  //    (a submodule gitlink) and `<oid> missing` lines are skipped, exactly as
+  //    the per-blob `cat-file -s` non-zero exit did before.
+  const check = await runGitStdin(
+    ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)', '--buffer'],
+    repoPath,
+    [...blobs.keys()].join('\n') + '\n',
+  );
+  if (check.code !== 0) return { files, skippedLarge };
+
+  const wanted: string[] = [];
+  for (const line of check.stdout.toString('utf8').split('\n')) {
+    const [oid, type, sizeS] = line.trim().split(/\s+/);
+    if (!oid || type !== 'blob') continue;
+    if (Number(sizeS ?? 0) > MAX_SCAN_BLOB_BYTES) {
       skippedLarge += 1;
       continue;
     }
-    const show = await runGit(['cat-file', '-p', sha], repoPath);
-    if (show.code !== 0) continue;
-    if (show.stdout.includes('\0')) continue; // binary — no line-oriented secrets
-    files.push({ path, content: show.stdout });
+    wanted.push(oid);
+  }
+  if (wanted.length === 0) return { files, skippedLarge };
+
+  // 2. One batch pass for the contents. Frame format is
+  //    `<oid> SP <type> SP <size> LF <contents> LF`, so walk it by BYTE offset
+  //    off the Buffer — decoding first would desync the stream on any
+  //    non-ASCII content.
+  const batch = await runGitStdin(['cat-file', '--batch', '--buffer'], repoPath, wanted.join('\n') + '\n');
+  if (batch.code !== 0) return { files, skippedLarge };
+
+  const buf = batch.stdout;
+  let off = 0;
+  while (off < buf.length) {
+    const nl = buf.indexOf(0x0a, off);
+    if (nl < 0) break;
+    const [oid, type, sizeS] = buf.toString('utf8', off, nl).trim().split(/\s+/);
+    off = nl + 1;
+    if (!oid || type !== 'blob') continue; // `<oid> missing` — no content frame follows
+    const size = Number(sizeS ?? 0);
+    if (!Number.isFinite(size) || size < 0 || off + size > buf.length) break; // truncated/desynced — stop, never mis-attribute bytes
+    const content = buf.subarray(off, off + size);
+    off += size + 1; // +1 for the frame's trailing LF
+    const path = blobs.get(oid);
+    if (path === undefined) continue;
+    if (content.includes(0)) continue; // binary — no line-oriented secrets
+    files.push({ path, content: content.toString('utf8') });
   }
   return { files, skippedLarge };
 }
@@ -292,9 +364,11 @@ export async function resolveSafeEgressSha(input: {
   target: string;
   maxFiles: number;
   runGit: RunGit;
+  runGitStdin?: RunGitStdin;
   exemptions?: ReadonlySet<string>;
 }): Promise<SafeEgressResolution> {
   const { repoPath, base, target, maxFiles, runGit } = input;
+  const runGitStdin = input.runGitStdin ?? defaultRunGitStdin;
   const exemptions = input.exemptions ?? new Set<string>();
   const res: SafeEgressResolution = {
     safeSha: base,
@@ -321,7 +395,7 @@ export async function resolveSafeEgressSha(input: {
     }
     const collected = await collectCommitBlobs(repoPath, commit, seen, runGit);
     if ('error' in collected) return { ...res, error: collected.error };
-    const { files, skippedLarge } = await readScannableBlobs(repoPath, collected.blobs, runGit);
+    const { files, skippedLarge } = await readScannableBlobs(repoPath, collected.blobs, runGitStdin);
     for (const sha of collected.blobs.keys()) seen.add(sha);
     res.skippedLarge += skippedLarge;
     res.scannedBlobs += collected.blobs.size;
@@ -430,6 +504,7 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
         target: spec.sha,
         maxFiles: maxScanFiles,
         runGit,
+        runGitStdin: input.runGitStdin,
         exemptions,
       });
       if (verdict.error) {
@@ -455,6 +530,9 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
             `pushing the verified prefix ${verdict.safeSha?.slice(0, 12)} — the remainder drains on following ticks`,
         );
       }
+      // All-or-nothing callers publish the requested sha or nothing at all —
+      // never a partial prefix under a ref whose name means one exact commit.
+      if (input.requireExactTarget && verdict.safeSha !== spec.sha) continue;
       // Nothing verified beyond what the remote already has → nothing to push.
       if (!verdict.safeSha || verdict.safeSha === remoteSha) continue;
       pushSha = verdict.safeSha;

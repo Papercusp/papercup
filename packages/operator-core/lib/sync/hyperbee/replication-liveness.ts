@@ -94,7 +94,15 @@ export interface ReplicationStallEpisode {
   workspaceId: string;
   harnessSlug: string;
   logKeyHex: string;
-  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated';
+  kind:
+    | 'no_replicator'
+    | 'frozen'
+    | 'connected_never_replicated'
+    // WI-5781: a peer log this harness is SUPPOSED to be replicating (its
+    // signed announce arrived and was buffered) that never entered the
+    // admitted set. Every other kind above describes an ADMITTED log; this one
+    // is the axis that can see a log which never got that far.
+    | 'expected_never_admitted';
   /** How long the stall condition had been held when the episode fired (ms). */
   stalledForMs: number;
   /** Human-readable one-liner for the boot event / EI body. */
@@ -150,7 +158,21 @@ export interface HarnessReplicationLiveness {
     frozen: number;
     samplingStale: number;
     dhtUniverseMismatch: number;
+    /**
+     * WI-5781: peers whose announce we accepted but whose log has never been
+     * admitted, so no other count above can represent them (they are not in
+     * the merge set at all). Nonzero here means replication is expected and
+     * NOT happening — read it alongside `logs`, never instead of it.
+     */
+    expectedNeverAdmitted: number;
   };
+  /** WI-5781: the expected-but-unadmitted peers backing the count above. */
+  expectedNeverAdmitted: Array<{
+    keyHex: string;
+    pendingForMs: number;
+    reason: string | null;
+    alarmed: boolean;
+  }>;
   /** WI-3604: true when this harness's process is currently flagged as having
    * resolved the wrong DHT universe (see `setDhtUniverseAssertion`). */
   dhtUniverseMismatch: boolean;
@@ -196,6 +218,52 @@ interface LogState {
 
 /** Registry: `${workspaceId}::${harnessSlug}` → keyHex → state. */
 const registry = new Map<string, Map<string, LogState>>();
+
+/**
+ * WI-5781 — the EXPECTED-but-unadmitted axis.
+ *
+ * Every axis above samples logs drawn from the ADMITTED set, because the sole
+ * caller of `sampleReplicationLiveness` runs inside the merge pass's
+ * per-admitted-log loop. That makes the detector structurally incapable of
+ * reporting the failure where a log is never admitted at all: it is never
+ * iterated, so it is never sampled, so nothing is emitted — the monitor is
+ * gated on its own precondition, and "broken" and "healthy" produce the same
+ * observable (silence).
+ *
+ * This bit us for real. A member frame received the owner's signed announce,
+ * buffered it on a membership miss, and never admitted it. Replication was
+ * dead for the whole window and the member emitted ZERO detector lines, while
+ * the owner frame — which HAD admitted the member's log — alarmed and repaired
+ * correctly off the same code. The asymmetry is one line in
+ * `classifySameHiveMember`: on a membership miss the owner admits, the member
+ * buffers. A buffered peer then retries every ~5s for up to
+ * BOOT_PENDING_GRACE_MS (30 min) and is dropped with `announce_rejected` —
+ * without ever producing a liveness alarm or a durable EI.
+ *
+ * So liveness must ALSO be driven by what we are SUPPOSED to be replicating,
+ * not only by what we already attached. A peer whose announce we accepted and
+ * buffered is exactly that expectation, and it is the cheapest correct source
+ * for it: no roster read, no new I/O, already in memory.
+ *
+ * Kept in its own map rather than folded into `LogState` on purpose — an
+ * unadmitted peer has no knownLength / mergedPosition / peersCount, and
+ * synthesising those to fit the shared shape would feed meaningless values to
+ * the existing verdict logic and risk regressing the axes that DO work.
+ * Same module, same registry keyspace, same episode + durable-EI machinery.
+ */
+interface UnadmittedState {
+  keyHex: string;
+  /** When this peer entered the pending buffer (its announce's arrival). */
+  pendingSinceMs: number;
+  /** Last time the merge pass observed it still unadmitted. */
+  lastSampleMs: number;
+  /** Why admission has not happened yet, verbatim for the EI body. */
+  reason: string | null;
+  alarmed: boolean;
+}
+
+/** Registry: `${workspaceId}::${harnessSlug}` → keyHex → unadmitted state. */
+const unadmittedRegistry = new Map<string, Map<string, UnadmittedState>>();
 
 const hKey = (workspaceId: string, harnessSlug: string): string =>
   `${workspaceId}::${harnessSlug}`;
@@ -862,6 +930,104 @@ function deriveVerdict(
   return 'live';
 }
 
+/**
+ * WI-5781 — sample a peer we EXPECT to be replicating but have NOT admitted.
+ *
+ * Called from the merge pass for each entry still sitting in the pending
+ * buffer. Fires one episode (and its durable EI) once the peer has been
+ * expected-but-unadmitted for longer than `graceMs`, then stays latched until
+ * `clearUnadmittedPeer` reports the admission.
+ *
+ * Edge-triggered like every other axis: one alarm per episode, not one per
+ * merge pass. Best-effort throughout — this rides the merge pass and must
+ * never be able to break it.
+ */
+export function sampleUnadmittedPeer(
+  workspaceId: string,
+  harnessSlug: string,
+  sample: { keyHex: string; pendingSinceMs: number; reason?: string | null },
+  opts: { nowMs?: number; graceMs?: number; onStallEpisode?: (e: ReplicationStallEpisode) => void } = {},
+): void {
+  const now = opts.nowMs ?? Date.now();
+  const graceMs = opts.graceMs ?? DEFAULT_LIVENESS_GRACE_MS;
+  const onEpisode = opts.onStallEpisode ?? reportEpisode;
+
+  const key = hKey(workspaceId, harnessSlug);
+  let peers = unadmittedRegistry.get(key);
+  if (!peers) {
+    peers = new Map();
+    unadmittedRegistry.set(key, peers);
+  }
+  let st = peers.get(sample.keyHex);
+  if (!st) {
+    st = {
+      keyHex: sample.keyHex,
+      pendingSinceMs: sample.pendingSinceMs,
+      lastSampleMs: now,
+      reason: sample.reason ?? null,
+      alarmed: false,
+    };
+    peers.set(sample.keyHex, st);
+  } else {
+    st.lastSampleMs = now;
+    // Keep the EARLIEST known pending time: a re-buffer must not reset the
+    // clock, or a peer that re-announces every few seconds would never age
+    // past the grace window and would be permanently invisible — the exact
+    // absorbing-state shape this axis exists to break.
+    st.pendingSinceMs = Math.min(st.pendingSinceMs, sample.pendingSinceMs);
+    if (sample.reason != null) st.reason = sample.reason;
+  }
+
+  const pendingForMs = now - st.pendingSinceMs;
+  if (!st.alarmed && pendingForMs > graceMs) {
+    st.alarmed = true;
+    onEpisode({
+      workspaceId,
+      harnessSlug,
+      logKeyHex: st.keyHex,
+      kind: 'expected_never_admitted',
+      stalledForMs: pendingForMs,
+      detail:
+        `this peer's signed announce was accepted ${Math.round(pendingForMs / 1000)}s ago but its log has NEVER been ` +
+        `admitted, so it is not in the merge set and NO other replication axis can see it` +
+        (st.reason ? ` — pending reason: ${st.reason}` : '') +
+        `. On a MEMBER frame the usual cause is a membership miss: the owner's hive_members row has not federated in ` +
+        `yet, and the member buffers instead of admitting (the owner does the reverse). That is circular — the row ` +
+        `arrives via the replication this admission gates — so it can persist until the pending grace expires.`,
+    });
+  }
+}
+
+/**
+ * WI-5781 — a previously-unadmitted peer has been admitted (or dropped).
+ * Clears the pending state and, if an episode had fired, reports the recovery
+ * so the durable EI auto-resolves like every other axis.
+ */
+export function clearUnadmittedPeer(
+  workspaceId: string,
+  harnessSlug: string,
+  keyHex: string,
+  opts: { nowMs?: number; onRecovery?: (e: ReplicationStallEpisode) => void } = {},
+): void {
+  const key = hKey(workspaceId, harnessSlug);
+  const peers = unadmittedRegistry.get(key);
+  const st = peers?.get(keyHex);
+  if (!st || !peers) return;
+  peers.delete(keyHex);
+  if (peers.size === 0) unadmittedRegistry.delete(key);
+  if (!st.alarmed) return;
+  const now = opts.nowMs ?? Date.now();
+  const onRecovery = opts.onRecovery ?? ((e: ReplicationStallEpisode) => void reportRecovery(e));
+  onRecovery({
+    workspaceId,
+    harnessSlug,
+    logKeyHex: keyHex,
+    kind: 'expected_never_admitted',
+    stalledForMs: now - st.pendingSinceMs,
+    detail: `log was admitted after ${Math.round((now - st.pendingSinceMs) / 1000)}s expected-but-unadmitted`,
+  });
+}
+
 export interface GetReplicationLivenessOpts {
   workspaceId?: string;
   harnessSlug?: string;
@@ -888,7 +1054,14 @@ export function getReplicationLiveness(
   // WI-3604: iterate the UNION of registry keys ∪ dhtUniverseState keys — a
   // harness may have the mismatch flag set with zero sampled logs (e.g. it
   // just joined and hasn't admitted any remote logs yet, or has none).
-  const allKeys = new Set<string>([...registry.keys(), ...dhtUniverseState.keys()]);
+  // WI-5781: include harnesses that have ONLY unadmitted peers. Such a harness
+  // has zero sampled logs by definition — the whole point of the axis — so
+  // omitting this key would hide exactly the case it was added to surface.
+  const allKeys = new Set<string>([
+    ...registry.keys(),
+    ...dhtUniverseState.keys(),
+    ...unadmittedRegistry.keys(),
+  ]);
   for (const key of allKeys) {
     const sep = key.indexOf('::');
     const workspaceId = key.slice(0, sep);
@@ -906,7 +1079,19 @@ export function getReplicationLiveness(
       frozen: 0,
       samplingStale: 0,
       dhtUniverseMismatch: 0,
+      expectedNeverAdmitted: 0,
     };
+    // WI-5781: expected-but-unadmitted peers for this harness.
+    const unadmittedRows: HarnessReplicationLiveness['expectedNeverAdmitted'] = [];
+    for (const u of unadmittedRegistry.get(key)?.values() ?? []) {
+      unadmittedRows.push({
+        keyHex: u.keyHex,
+        pendingForMs: now - u.pendingSinceMs,
+        reason: u.reason,
+        alarmed: u.alarmed,
+      });
+    }
+    counts.expectedNeverAdmitted = unadmittedRows.length;
     for (const st of logs?.values() ?? []) {
       const verdict = deriveVerdict(st, now, graceMs, harnessMismatched, zombieGraceMs);
       if (verdict === 'live') counts.live += 1;
@@ -934,6 +1119,7 @@ export function getReplicationLiveness(
       harnessSlug,
       logs: rows,
       counts,
+      expectedNeverAdmitted: unadmittedRows,
       dhtUniverseMismatch: harnessMismatched,
       ...(mismatch?.detail ? { dhtUniverseDetail: mismatch.detail } : {}),
     });
@@ -1066,6 +1252,7 @@ export async function dropReplicationLiveness(
 /** Test seam — wipe the registry between tests. */
 export function _resetReplicationLivenessForTests(): void {
   registry.clear();
+  unadmittedRegistry.clear();
   dhtUniverseState.clear();
   episodeReporter = null;
   episodeRecoveredReporter = null;

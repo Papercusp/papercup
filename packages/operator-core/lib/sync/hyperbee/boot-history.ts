@@ -250,7 +250,60 @@ const epochBuffer: BootHistoryEntry[] = [];
 let cap = DEFAULT_CAP;
 let epochCap = DEFAULT_EPOCH_CAP;
 
+/**
+ * WI-5781 — kinds MIRRORED to stdout so they survive the process.
+ *
+ * Both rings are process-local: they clear on restart. That makes the
+ * admission-decision trail unavailable for exactly the failure classes it
+ * exists to serve — cold-restart re-peer, join-path, epoch rebind — because
+ * the restart IS the event that destroys it. Worse, it fails SILENTLY and
+ * ASYMMETRICALLY: a post-hoc `grep announce_admitted` over a banked serve log
+ * returns zero hits for a PASSING run exactly as for a failing one, so the
+ * absence reads as evidence when it is an artifact. That has now cost real
+ * diagnosis time twice — the 2026-07-10 false "zero announces" signal noted
+ * above (which the two-ring split fixed for EVICTION but not for VOLATILITY),
+ * and WI-5781, where determining whether a member frame ADMITTED or BUFFERED
+ * the owner's log was unrecoverable from any banked artifact and had to be
+ * inferred from the peer frame's behaviour instead of observed.
+ *
+ * Mirroring these to stdout puts them in the banked serve logs the rigs
+ * already capture, so "never admitted" becomes directly observable rather
+ * than inferred from silence. Deliberately EXCLUDES the high-frequency epoch
+ * trace and `peer_connected` (already logged by `[swarm]`, ~110/run): every
+ * kind here is edge-triggered and sparse, so this cannot become a hot path.
+ *
+ * This is the cheap half of the fix. The durable half is persisting boot
+ * history out of process (storage-policy default: Postgres) — tracked
+ * separately; see EI-18655247267756605.
+ */
+const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
+  // Admission decisions — the WI-5781 blind spot. A 'miss'-buffered peer log
+  // is otherwise INVISIBLE: it never enters `admitted`, so the merge pass never
+  // iterates it and the replication-liveness detector never samples it.
+  'announce_admitted',
+  'announce_pending',
+  'announce_rejected',
+  'announce_clock_skew',
+  'announce_error',
+  // Join lifecycle — 'join_started' with neither terminal kind is the
+  // silent-wedge signature (WI-1910); useless if it dies with the process.
+  'join_started',
+  'join_succeeded',
+  'swarm_join_failed',
+  // Peer admissibility transitions + boot failure.
+  'peer_revoked',
+  'peer_unrevoked',
+  'boot_fail',
+]);
+
 let _nowImpl: () => number = () => Date.now();
+
+/** Test seam: capture the stdout mirror instead of writing to the console. */
+let _mirrorImpl: (line: string) => void = (line) => console.log(line);
+
+export function _setMirrorForTests(impl: (line: string) => void): void {
+  _mirrorImpl = impl;
+}
 
 export function _setNowForTests(impl: () => number): void {
   _nowImpl = impl;
@@ -269,6 +322,7 @@ export function _resetBootHistoryForTests(): void {
   cap = DEFAULT_CAP;
   epochCap = DEFAULT_EPOCH_CAP;
   _nowImpl = () => Date.now();
+  _mirrorImpl = (line) => console.log(line);
 }
 
 export function recordBootEvent(
@@ -290,6 +344,19 @@ export function recordBootEvent(
   } else {
     buffer.push(entry);
     while (buffer.length > cap) buffer.shift();
+  }
+  // WI-5781: mirror the sparse forensic kinds to stdout so they outlive the
+  // process (see STDOUT_MIRROR_KINDS). Best-effort and fully isolated — a
+  // throwing console must never break the caller, since every call site here
+  // is a diagnostic on a live boot/merge/announce path.
+  if (STDOUT_MIRROR_KINDS.has(kind)) {
+    try {
+      _mirrorImpl(
+        `[boot-history] ${kind} harness=${harnessSlug}${message ? ` ${message}` : ''}`,
+      );
+    } catch {
+      // diagnostic-only — never let logging break a boot/announce path
+    }
   }
 }
 

@@ -97,6 +97,65 @@ export const defaultRunGit: RunGit = (args, cwd, opts) =>
   });
 
 /**
+ * The run-git seam for plumbing that takes its INPUT SET ON STDIN — the
+ * `cat-file --batch` / `--batch-check` family. {@link RunGit} is `(args, cwd)`
+ * only and cannot feed stdin, so before this seam existed each caller grew its
+ * own private copy (publish-guard.ts and foreign-mirror-quarantine.ts both had
+ * one). Lifted here, next to {@link defaultRunGit}, so there is ONE.
+ *
+ * `stdout` is a **Buffer**, not a string: `cat-file --batch` frames its output
+ * as `<oid> SP <type> SP <size> LF <contents> LF`, and walking those frames
+ * needs exact BYTE offsets. Decoding to a string first would silently shift
+ * every offset for any non-ASCII content and desynchronise the whole stream.
+ */
+export type RunGitStdin = (
+  args: string[],
+  cwd: string,
+  stdin: string,
+  opts?: RunGitOptions,
+) => Promise<{ code: number; stdout: Buffer; stderr: string }>;
+
+/** Default {@link RunGitStdin} — same bounded/C-locale/never-throw contract as
+ *  {@link defaultRunGit}, with the oid set written to stdin. */
+export const defaultRunGitStdin: RunGitStdin = (args, cwd, stdin, opts) =>
+  new Promise((resolve) => {
+    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
+    const chunks: Buffer[] = [];
+    let stderr = '';
+    let settled = false;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, stdout: Buffer.concat(chunks), stderr });
+    };
+    const timeoutMs = opts?.timeoutMs ?? 60_000;
+    const t = setTimeout(() => {
+      stderr += `\ngit ${args.join(' ')} timed out`;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 5_000).unref?.();
+      setTimeout(() => finish(-1), 10_000).unref?.();
+    }, timeoutMs);
+    t.unref?.();
+    child.stdout.on('data', (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d))));
+    child.stderr.on('data', (d) => (stderr += String(d)));
+    child.on('error', (e) => {
+      clearTimeout(t);
+      stderr += String(e);
+      finish(-1);
+    });
+    child.on('close', (code) => {
+      clearTimeout(t);
+      finish(code ?? -1);
+    });
+    child.stdin.on('error', () => {
+      /* EPIPE when git exits before consuming the whole oid list — the close
+         handler above still reports the real exit code. */
+    });
+    child.stdin.write(stdin);
+    child.stdin.end();
+  });
+
+/**
  * Timeout budget for a genuine bulk network transfer (GitHub fetch/push) —
  * see {@link RunGitOptions.timeoutMs}. 10 minutes: comfortably covers a
  * multi-hundred-MB catch-up at the ~2-3 MB/s throughput measured against

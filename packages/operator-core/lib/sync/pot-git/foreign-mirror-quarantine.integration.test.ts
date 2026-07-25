@@ -197,7 +197,14 @@ describe('P-109 legs iv+iii: foreign clone provision → quarantine fetch + judg
       clonePath,
       ORIGIN,
       'config.ts',
-      'export const AWS_KEY = "AKIA' + 'IOSFODNN7EXAMPLE";\n',
+      // Split concatenation so this source file does not itself carry a
+      // scannable key (house pattern — see github-fork-egress's `ghp_` fixture).
+      // The suffix must NOT end in "EXAMPLE": secrets-guard deliberately exempts
+      // AWS's documented …EXAMPLE keys (a runbook merely CITING one was wedging
+      // the whole publish plane), so the old AKIAIOSFODNN7EXAMPLE fixture made
+      // this test silently vacuous — it asserted a refusal the scanner had been
+      // taught, correctly, never to produce.
+      'export const AWS_KEY = "AKIA' + 'J7QK3RTZ2WLPX4NA";\n',
       'oops secret',
     );
     const r = await quarantineFetchAndJudge({
