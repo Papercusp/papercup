@@ -64,8 +64,44 @@ import {
   Pill,
 } from '@/app/harness/picker-kit';
 import { hiveHomeLabel } from '@/lib/hive-label';
+// Relative, not `@/…`: the `@` alias points at the operator (Next) tree, so an
+// intra-operator-vite import must be a relative path or it won't resolve.
+//
+// WI-5754: the unified-stream composition rules moved OUT of this file so the
+// left rail's Conversations tab can read the same four stores without
+// duplicating them. This file stays the source of the WIDE surface; what a
+// conversation IS now lives in one place both surfaces import.
+import {
+  composeUnifiedConversationRows,
+  conversationEpoch,
+  conversationErrText,
+  conversationMatchesQuery,
+  coordFetch,
+  fmtConversationRel,
+  fmtConversationTs,
+  isSystemConversationActor,
+  normalizedConversationText,
+  unifiedConversationSignature,
+  type AgentChatDetail,
+  type AgentChatRow,
+  type AgentChatTurn,
+  type ConvDetailT,
+  type ConvPost,
+  type ConvRow,
+  type DeliberationDetail,
+  type MsgRow,
+  type ThreadPost,
+  type ThreadRow,
+  type UnifiedConversationRow,
+} from '../conversations/unified-conversations';
+import AskComposer from '../conversations/AskComposer';
 import '@/app/admin/coordination/coordination.css';
 import '@/app/adv/harnesses/adv-panel-chrome.css';
+
+// Re-exported for the existing test-suite import surface (and because these are
+// genuinely part of this module's public contract). The definitions live in
+// ../conversations/unified-conversations.
+export { composeUnifiedConversationRows, isSystemConversationActor };
 
 // The comms `list` reads cap at this many rows; the server returns the true
 // `total` alongside `items`, so the rails can show "N of TOTAL" honestly.

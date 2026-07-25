@@ -29,6 +29,12 @@
  *                presence liveness, or a per-agent preference whose staleness
  *                is a UX nit, not a correctness bug).
  *
+ * One class is skipped STRUCTURALLY rather than listed: frozen `bak_*`
+ * pre-migration backup snapshots (`CREATE TABLE … AS SELECT` undo trails). They
+ * cannot be live claim state by construction, and hand-classifying each new one
+ * red the fleet-wide green-checkpoint four times. See
+ * isFrozenBackupSnapshotTable below for the full rationale and its limits.
+ *
  * A column the scan finds that is in NEITHER list fails the test — the same
  * shape as `production-defaults.test.ts`'s KNOWN_DARK_FLAGS watermark: a new
  * identity-keyed column must be a DELIBERATE decision (rebind it + add it
@@ -298,12 +304,13 @@ const ALLOWLIST: Record<string, Classification> = {
       'ambient-semantic-push-2026-07-14 P-013 (migration 614): per-SELF-session adjacency streak state, same ' +
       'shape and same "for pruning/debugging only" owner_id as collision_hysteresis.owner_id.',
   },
-  'bak_20260717_unify_work_items.taken_by': {
-    status: 'exempt',
-    reason:
-      'frozen pre-migration backup snapshot of work_items taken during the 2026-07-17 unify migration — no live ' +
-      'reader or reaper touches it; DELETE this entry when the bak_ table is dropped.',
-  },
+  // NOTE: `bak_*` snapshot tables are NOT listed here — they are skipped
+  // structurally by isFrozenBackupSnapshotTable (see its comment for why, and
+  // for the four gate reds that motivated it). The two entries that used to sit
+  // here (bak_20260717_unify_work_items.taken_by, bak_20260717_unify_subs.subscriber_id)
+  // were removed with that change: the scan no longer finds them, so leaving them
+  // would red the "allowlist has not rotted" test instead. A snapshot named
+  // OUTSIDE the `bak_` convention still needs a hand-written entry, like this one:
   '_pot_backfill_649_dropped.taken_by': {
     status: 'exempt',
     reason:
@@ -311,12 +318,6 @@ const ALLOWLIST: Record<string, Classification> = {
       'during the pot-membership backfill (CREATE TABLE … AS SELECT wi.* … before the DELETE, ' +
       '649-pot-membership-backfill.sql step 3) — no live reader or reaper touches it; DELETE this entry when the ' +
       '_pot_backfill_649_dropped table is dropped.',
-  },
-  'bak_20260717_unify_subs.subscriber_id': {
-    status: 'exempt',
-    reason:
-      'frozen pre-migration backup snapshot of subscriptions taken during the 2026-07-17 unify migration — no ' +
-      'live reader or reaper touches it; DELETE this entry when the bak_ table is dropped.',
   },
   'session_pending_gates.owner_id': {
     status: 'exempt',
@@ -358,6 +359,40 @@ function toSnakeCase(camel: string): string {
   return camel.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
 }
 
+/** Frozen pre-migration backup snapshots, recognised by the `bak_` prefix every
+ *  such migration in this repo uses (656's own comment: "these bak_ tables ARE
+ *  the undo path … same convention as bak_20260717_unify_work_items").
+ *
+ *  These are skipped STRUCTURALLY rather than hand-classified one by one, and
+ *  that is not a weakening of the gate — a `CREATE TABLE … AS SELECT` snapshot
+ *  cannot be live claim state by construction: it is written once by a
+ *  migration, never updated, and no reader or reaper can key on a table that
+ *  did not exist when the code was written (verified: no application source
+ *  references any `bak_*` table — the only files that name one are the two
+ *  generated schema mirrors and this test). So the answer for every one of them
+ *  is, and can only ever be, `exempt`.
+ *
+ *  Hand-classifying them instead cost real fleet time: each new snapshot red the
+ *  hourly green-checkpoint — and with it EVERY agent's deploys — hours after its
+ *  migration landed, four times (bak_20260717_unify_work_items.taken_by,
+ *  bak_20260717_unify_subs.subscriber_id, then bak_wi5720_retired_slug_plans.owner
+ *  at migration 656 / WI-5720; 15 such tables exist today). Worse, each entry then
+ *  became FUTURE gate-red debt via the "allowlist has not rotted" test below:
+ *  DROPPING a spent bak_ table — the correct hygiene those entries' own
+ *  "DELETE this entry when the bak_ table is dropped" notes ask for — would red
+ *  the gate a second time. The inventory is there to force a deliberate decision
+ *  about LIVE identity-keyed state; spending a fleet-wide deploy block on a
+ *  frozen undo trail is noise that erodes exactly that signal.
+ *
+ *  Deliberately narrow: only the `bak_` prefix. A snapshot named outside the
+ *  convention (e.g. `_pot_backfill_649_dropped`) still surfaces and must still be
+ *  classified by hand below, so an unrecognised table never slips through. */
+const BACKUP_SNAPSHOT_TABLE_RE = /^bak_/;
+
+export function isFrozenBackupSnapshotTable(table: string): boolean {
+  return BACKUP_SNAPSHOT_TABLE_RE.test(table);
+}
+
 interface ScanHit {
   table: string;
   column: string;
@@ -380,7 +415,10 @@ export function scanIdentityColumns(schemaSrc: string): ScanHit[] {
   const hits: ScanHit[] = [];
   for (const line of schemaSrc.split('\n')) {
     const ts = line.match(tableStart);
-    if (ts) currentTable = ts[1];
+    // A frozen `bak_` snapshot sets currentTable to null, so its columns are
+    // skipped by the `!currentTable` guard below until the next table block —
+    // see isFrozenBackupSnapshotTable for why that is safe, not a loophole.
+    if (ts) currentTable = isFrozenBackupSnapshotTable(ts[1]) ? null : ts[1];
     const cm = line.match(colLine);
     if (!cm || !currentTable) continue;
     const dbName = cm[2] ?? toSnakeCase(cm[1]);
@@ -418,6 +456,46 @@ export const bInHarnessShared = harnessShared.table("b", {
       { table: 'a', column: 'owner_id' },
       { table: 'b', column: 'assignee' },
     ]);
+  });
+
+  // Recurrence guard for the class of gate red that motivated the structural
+  // skip (WI-5755): a migration lands a frozen `bak_` undo snapshot, pull-schema
+  // regenerates generated.ts, and its inherited identity-shaped column reds the
+  // fleet-wide green-checkpoint hours later. If someone removes or loosens the
+  // skip, these fail HERE — as a pure parser assertion — instead of in the gate.
+  it('skips frozen bak_ backup snapshots, and resumes scanning at the next real table', () => {
+    const src = `
+export const bakWi5720RetiredSlugPlansInHarnessShared = harnessShared.table("bak_wi5720_retired_slug_plans", {
+	owner: text(),
+	takenBy: text("taken_by"),
+});
+export const liveInHarnessShared = harnessShared.table("live_table", {
+	ownerId: text("owner_id").notNull(),
+});
+`;
+    // The snapshot's columns are gone; the live table AFTER it is still scanned
+    // (i.e. the skip does not swallow the rest of the file).
+    expect(scanIdentityColumns(src)).toEqual([{ table: 'live_table', column: 'owner_id' }]);
+  });
+
+  it('only skips the bak_ convention — a snapshot named outside it still surfaces for classification', () => {
+    const src = `
+export const potBackfillInHarnessShared = harnessShared.table("_pot_backfill_649_dropped", {
+	takenBy: text("taken_by"),
+});
+export const backupsInHarnessShared = harnessShared.table("backups_owner_audit", {
+	ownerId: text("owner_id"),
+});
+`;
+    // Neither name matches /^bak_/, so both must still be swept in and be a
+    // deliberate decision — the skip is narrow, not a prefix free-for-all.
+    expect(scanIdentityColumns(src)).toEqual([
+      { table: '_pot_backfill_649_dropped', column: 'taken_by' },
+      { table: 'backups_owner_audit', column: 'owner_id' },
+    ]);
+    expect(isFrozenBackupSnapshotTable('_pot_backfill_649_dropped')).toBe(false);
+    expect(isFrozenBackupSnapshotTable('backups_owner_audit')).toBe(false);
+    expect(isFrozenBackupSnapshotTable('bak_20260717_unify_work_items')).toBe(true);
   });
 });
 
