@@ -14,7 +14,7 @@ export default function BlenderTab({ active }: { active: boolean }) {
   return (
     <AutomationPane
       active={active}
-      categories={['learning']}
+      categories={BLENDER_PANE_CATEGORIES}
       title="Blender"
       subtitle="Learns and self-improves"
       icon={Blend}

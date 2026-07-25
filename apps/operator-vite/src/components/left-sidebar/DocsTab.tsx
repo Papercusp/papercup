@@ -16,7 +16,7 @@ export default function DocsTab({ active }: { active: boolean }) {
   return (
     <AutomationPane
       active={active}
-      categories={['docs']}
+      categories={DOCS_PANE_CATEGORIES}
       title="Docs"
       subtitle="Writes and refreshes docs"
       icon={FileText}

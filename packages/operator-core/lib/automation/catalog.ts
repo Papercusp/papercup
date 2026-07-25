@@ -89,6 +89,22 @@ export interface AutomationRoutine {
   spawnsAgent: boolean;
   lastFiredAt: string | null;
   nextFireAt: string | null;
+  /**
+   * Which scheduling mechanism this row came from. `harness_shared.routines` is
+   * only ONE of five (see lib/schedule-inventory.ts); the pane used to read that
+   * one table alone, which is why scheduled work living in a DBOS workflow, a
+   * managedSetInterval timer or an in-process sweep was structurally invisible
+   * in the rail no matter how the categories were wired.
+   */
+  source: ScheduleSource;
+  /**
+   * Whether this row can be paused from the pane. Only `routines` rows can:
+   * `routines:set` writes that table and nothing else. A row with
+   * `controllable:false` MUST NOT render a working-looking pause button — the
+   * whole reason this pane was broken is that it offered controls that could
+   * not act, so an inert control here would repeat the same lie in a new place.
+   */
+  controllable: boolean;
 }
 
 export interface AutomationRoleSpend {
@@ -246,11 +262,54 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       spawnsAgent: routineSpawnsAgent(r.name),
       lastFiredAt: iso(r.last_fired_at),
       nextFireAt: iso(r.next_fire_at),
+      source: 'routines' as const,
+      controllable: true,
     };
   });
 
+  /*
+   * The other four scheduling mechanisms. `harness_shared.routines` above is one
+   * of five sources in the host (schedule-inventory.ts); reading only it is why
+   * the owner could ask "what about the routine that checks for drifted
+   * documentation?" and be right that it was missing — that sweep does not live
+   * in the routines table, so no amount of category wiring could surface it.
+   *
+   * These rows are LISTED but not controllable: `routines:set` writes the
+   * routines table and nothing else, so the pane shows them with their cadence
+   * and last fire and says plainly that they cannot be paused from here.
+   * Degrades to routines-only if the inventory throws — a partial pane beats a
+   * pane that fails to load.
+   */
+  let external: AutomationRoutine[] = [];
+  try {
+    const { collectScheduleInventory } = await import('../schedule-inventory');
+    const inventory = await collectScheduleInventory();
+    external = inventory
+      .filter((row) => row.source !== 'routines')
+      .map((row) => ({
+        name: row.name,
+        installSlug: row.installSlug ?? row.source,
+        group: row.groupSlug,
+        category: classifyRoutine(row.name, row.groupSlug),
+        cron: null,
+        cadence: row.cadence || null,
+        // `armed` is null for sources that cannot report it; treat unknown as
+        // running, because claiming a live sweep is "off" is the worse error.
+        active: row.armed !== false,
+        spawnsAgent: routineSpawnsAgent(row.name),
+        lastFiredAt: row.lastFire,
+        nextFireAt: row.nextFire,
+        source: row.source,
+        controllable: false,
+      }));
+  } catch {
+    external = [];
+  }
+
+  const allRoutines = [...routines, ...external];
+
   const categories: AutomationCategorySummary[] = AUTOMATION_CATEGORIES.map((category) => {
-    const inCat = routines.filter((x) => x.category === category);
+    const inCat = allRoutines.filter((x) => x.category === category);
     return {
       category,
       total: inCat.length,
